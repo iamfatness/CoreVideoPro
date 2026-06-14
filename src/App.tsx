@@ -60,6 +60,8 @@ import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type F
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
+import { assessZoomSdkReadiness, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
+import { inspectZoomWindowsSdkPackage, type ZoomWindowsSdkPackageReport } from "./engine/zoomWindowsSdkPackage";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
 import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
@@ -198,6 +200,22 @@ export function App({ engines, runtime }: AppProps) {
     displayName: "CoreVideo Producer",
     webinar: true
   });
+  const [sdkReadinessInput] = useState<ZoomSdkReadinessInput>({
+    platform: "windows",
+    sdkRuntimePresent: false,
+    sdkVersion: undefined,
+    appKeyPresent: false,
+    oauthConfigured: false,
+    jwtBrokerConfigured: false,
+    rawVideoEnabled: false,
+    rawAudioEnabled: false,
+    rawShareEnabled: false
+  });
+  const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
+  const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
+    sdkReadinessInput.platform === "windows"
+      ? inspectZoomWindowsSdkPackage({ architecture: "x64", entries: [] })
+      : undefined;
   const [joinStatus, setJoinStatus] = useState("Ready");
   const [outputPreflightStatus, setOutputPreflightStatus] = useState("Output preflight ready");
   const [recordingPreflightStatus, setRecordingPreflightStatus] = useState("Recording preflight ready");
@@ -414,12 +432,18 @@ export function App({ engines, runtime }: AppProps) {
       }
     });
 
+    if (meetingState === "in_meeting") {
+      void engines.spineController.syncProduction(production, sdkReadinessInput, { elapsedMs: elapsedSeconds * 1000 });
+    }
+
     return () => {
       mounted = false;
     };
   }, [
     elapsedSeconds,
     engines.mediaCore,
+    engines.spineController,
+    meetingState,
     production.activeSceneId,
     production.graphics,
     production.outputDestinations,
@@ -428,7 +452,8 @@ export function App({ engines, runtime }: AppProps) {
     production.recordingSettings.isoParticipantIds,
     production.scenes,
     production.streaming,
-    production.videoEffects
+    production.videoEffects,
+    sdkReadinessInput
   ]);
 
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
@@ -525,6 +550,10 @@ export function App({ engines, runtime }: AppProps) {
     try {
       const snapshot = await engines.zoom.join(request);
       await applySnapshot(snapshot);
+      void engines.spineController.joinProduction(production, sdkReadinessInput, {
+        elapsedMs: elapsedSeconds * 1000,
+        join: { meetingNumber: request.meetingUrl, displayName: request.displayName }
+      });
       setJoinStatus(`Joined as ${request.displayName}`);
     } catch (error) {
       setJoinStatus(error instanceof Error ? error.message : "Unable to join Zoom");
@@ -533,6 +562,7 @@ export function App({ engines, runtime }: AppProps) {
 
   async function leaveMeeting() {
     await applySnapshot(await engines.zoom.leave());
+    void engines.spineController.leave({ elapsedMs: elapsedSeconds * 1000 });
   }
 
   async function refreshFeeds() {
@@ -1390,7 +1420,12 @@ export function App({ engines, runtime }: AppProps) {
                   Leave
                 </button>
               ) : (
-                <button className="ghost-button" onClick={joinMeeting}>
+                <button
+                  className="ghost-button"
+                  disabled={sdkReadiness.status === "blocked"}
+                  title={sdkReadiness.status === "blocked" ? sdkReadiness.blockers[0] : undefined}
+                  onClick={joinMeeting}
+                >
                   <LogIn size={16} />
                   Join Zoom
                 </button>
@@ -1399,6 +1434,47 @@ export function App({ engines, runtime }: AppProps) {
                 <RefreshCw size={16} />
                 Refresh feeds
               </button>
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Zoom SDK readiness">
+            <div className="section-title">
+              <Activity size={15} />
+              Zoom SDK pre-flight
+            </div>
+            <div className={`sdk-readiness-panel status-${sdkReadiness.status}`} aria-label="SDK readiness panel">
+              <p className="sdk-readiness-summary">{sdkReadiness.summary}</p>
+              <div className="sdk-checks">
+                {sdkReadiness.checks.map((check) => (
+                  <div key={check.id} className={`sdk-check status-${check.status}`} aria-label={`SDK check ${check.id}`}>
+                    <span className="sdk-check-label">{check.label}</span>
+                    <span className={`sdk-check-status check-${check.status}`}>{check.status}</span>
+                    {check.status !== "ready" && <span className="sdk-check-detail">{check.detail}</span>}
+                  </div>
+                ))}
+              </div>
+              {sdkReadiness.blockers.length > 0 && (
+                <div className="sdk-blockers" aria-label="SDK blockers">
+                  {sdkReadiness.blockers.map((b) => (
+                    <p key={b} className="sdk-blocker">{b}</p>
+                  ))}
+                </div>
+              )}
+              {sdkPackageReport && (
+                <div className={`sdk-package-report pkg-${sdkPackageReport.status}`} aria-label="Windows SDK package">
+                  <span className="sdk-pkg-label">Windows SDK</span>
+                  <span>{sdkPackageReport.summary}</span>
+                  {sdkPackageReport.blockers.length > 0 && (
+                    <ul className="sdk-missing-files">
+                      {sdkPackageReport.requiredFiles
+                        .filter((f) => !f.present)
+                        .map((f) => (
+                          <li key={f.relativePath}>{f.relativePath}</li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 

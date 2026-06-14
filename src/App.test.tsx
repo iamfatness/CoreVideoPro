@@ -1789,3 +1789,26 @@ describe("news ticker", () => {
     expect(within(list).getByText("Special update")).toBeInTheDocument();
   });
 });
+
+describe("Zoom SDK pre-flight", () => {
+  it("shows the SDK readiness panel in the Settings tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("SDK readiness panel");
+    expect(panel).toBeInTheDocument();
+  });
+
+  it("Join Zoom button is disabled when SDK is blocked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+    // Leave the meeting so the Join Zoom button is visible.
+    await goToTab(user, "Settings");
+    await user.click(screen.getByRole("button", { name: "Leave" }));
+    // The default sdkReadinessInput has sdkRuntimePresent: false → "blocked".
+    const joinBtn = screen.getByRole("button", { name: /Join Zoom/i });
+    expect(joinBtn).toBeDisabled();
+  });
+});

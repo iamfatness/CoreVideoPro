@@ -23,6 +23,12 @@ import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./me
 import { InMemoryPresetEngine } from "./presets";
 import { InMemoryDiagnosticsEngine } from "./supportBundle";
 import type { NativeHostBridge } from "./nativeHostBridge";
+import { ZoomMediaSpineSessionController } from "./zoomMediaSpineSessionController";
+import {
+  InMemoryZoomMediaSpineTransport,
+  NativeHostZoomMediaSpineTransport,
+  createZoomMediaSpineTransport
+} from "./zoomMediaSpineTransport";
 
 export type EngineBundle = {
   zoom: ZoomCaptureEngine;
@@ -35,9 +41,12 @@ export type EngineBundle = {
   diagnostics: DiagnosticsEngine;
   captureDevices: CaptureDeviceEngine;
   mediaCore: MediaCoreSyncEngine;
+  spineController: ZoomMediaSpineSessionController;
+  spineTransport: InMemoryZoomMediaSpineTransport | NativeHostZoomMediaSpineTransport;
 };
 
 export function createMockEngineBundle(): EngineBundle {
+  const spineTransport = new InMemoryZoomMediaSpineTransport();
   return {
     zoom: new MockZoomCaptureEngine(),
     ai: new RuleBasedAiProductionEngine(),
@@ -48,11 +57,14 @@ export function createMockEngineBundle(): EngineBundle {
     presets: new InMemoryPresetEngine(),
     diagnostics: new InMemoryDiagnosticsEngine(),
     captureDevices: new MockCaptureDeviceEngine(),
-    mediaCore: new InMemoryMediaCoreSyncEngine()
+    mediaCore: new InMemoryMediaCoreSyncEngine(),
+    spineController: new ZoomMediaSpineSessionController(spineTransport),
+    spineTransport
   };
 }
 
 export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bridge?: NativeHostBridge): EngineBundle {
+  const { transport: spineTransport, nativeTransport } = createZoomMediaSpineTransport(bridge);
   return {
     zoom: new NativeZoomEngineAdapter(transport),
     ai: new RuleBasedAiProductionEngine(),
@@ -63,6 +75,8 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bri
     presets: new InMemoryPresetEngine(),
     diagnostics: new InMemoryDiagnosticsEngine(),
     captureDevices: new NativeCaptureDeviceEngineAdapter(transport),
-    mediaCore: bridge ? new NativeHostMediaCoreSyncEngine(bridge) : new InMemoryMediaCoreSyncEngine()
+    mediaCore: bridge ? new NativeHostMediaCoreSyncEngine(bridge) : new InMemoryMediaCoreSyncEngine(),
+    spineController: new ZoomMediaSpineSessionController(spineTransport),
+    spineTransport: nativeTransport ?? spineTransport
   };
 }

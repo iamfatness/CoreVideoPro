@@ -3775,3 +3775,26 @@ meter {
 .ticker-add-input:focus { outline: 1px solid #a78bfa; }
 .ticker-priority-select { background: #0d1520; border: 1px solid #1e2d3d; border-radius: 4px; color: #8aa0c0; font-size: 10px; padding: 3px 4px; }
 .ticker-tag-input { width: 60px; background: #0d1520; border: 1px solid #1e2d3d; border-radius: 4px; color: #8aa0c0; font-size: 10px; padding: 3px 6px; }
+
+/* ── Zoom SDK Pre-flight ─────────────────────────────────── */
+.sdk-readiness-panel { display: flex; flex-direction: column; gap: 6px; }
+.sdk-readiness-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+.sdk-readiness-panel.status-ready .sdk-readiness-summary { color: #4ade80; }
+.sdk-readiness-panel.status-blocked .sdk-readiness-summary { color: #ef4444; }
+.sdk-readiness-panel.status-warning .sdk-readiness-summary { color: #f59e0b; }
+.sdk-checks { display: flex; flex-direction: column; gap: 3px; }
+.sdk-check { display: grid; grid-template-columns: 1fr auto; gap: 4px; align-items: start; font-size: 10px; background: #0d1520; border-radius: 3px; padding: 4px 6px; }
+.sdk-check-label { color: #8aa0c0; }
+.sdk-check-status { font-weight: 700; text-transform: uppercase; font-size: 9px; }
+.check-ready { color: #4ade80; }
+.check-warning { color: #f59e0b; }
+.check-blocked { color: #ef4444; }
+.sdk-check-detail { grid-column: 1 / -1; color: #6a80a0; font-size: 9px; }
+.sdk-blockers { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.sdk-blocker { font-size: 10px; color: #ef4444; background: rgba(239,68,68,.08); border-radius: 3px; padding: 3px 6px; margin: 0; }
+.sdk-package-report { font-size: 10px; background: #0d1520; border-radius: 3px; padding: 5px 7px; display: flex; flex-direction: column; gap: 3px; }
+.pkg-ok { border-left: 3px solid #4ade80; }
+.pkg-missing { border-left: 3px solid #ef4444; }
+.sdk-pkg-label { font-size: 9px; font-weight: 700; text-transform: uppercase; color: #8aa0c0; }
+.sdk-missing-files { margin: 0; padding-left: 14px; color: #ef4444; }
+.sdk-missing-files li { font-size: 9px; }
