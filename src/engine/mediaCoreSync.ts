@@ -5,12 +5,15 @@ import type {
   NativeMediaCoreColorGrade,
   NativeMediaCoreCommand,
   NativeMediaCoreCompositorState,
+  NativeMediaCoreEncoderLifecycle,
   NativeMediaCoreEncoderSession,
   NativeMediaCoreEncoderTarget,
   NativeMediaCoreFrame,
+  NativeMediaCoreFrameSourceSnapshot,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
   NativeMediaCoreProgramFrame,
+  NativeMediaCoreProgramFrameTransport,
   NativeMediaCoreRenderPlan,
   NativeMediaCoreRecordingSession,
   NativeMediaCoreRecordingTargets,
@@ -31,6 +34,29 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private compositorDegradedFrameCount = 0;
   private lastReconfigureReason?: string;
   private programFrame?: NativeMediaCoreProgramFrame;
+  private sourceDroppedFrameCount = 0;
+  private sourceLowResolutionFrameCount = 0;
+  private sourceSnapshot: NativeMediaCoreFrameSourceSnapshot = {
+    adapterId: "renderer-test-pattern",
+    kind: "test-pattern",
+    status: "idle",
+    subscribedSourceCount: 0,
+    liveFrameCount: 0,
+    staleFrameCount: 0,
+    droppedFrameCount: 0,
+    lowResolutionFrameCount: 0,
+    warnings: []
+  };
+  private programTransport: NativeMediaCoreProgramFrameTransport = {
+    transportId: "in-process-preview",
+    status: "idle",
+    latencyMs: 0,
+    warning: "No program frame has been published."
+  };
+  private encoderLifecycle: NativeMediaCoreEncoderLifecycle = {
+    status: "idle",
+    lastTransition: "Encoder session idle."
+  };
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -70,6 +96,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const activeSpeaker = commands.find((command) => command.type === "set-active-speaker");
     const screenShareSource = commands.find((command) => command.type === "set-screen-share-source");
     const colorGrade = commands.find((command) => command.type === "set-color-grade");
+    const prepareEncoder = commands.find((command) => command.type === "prepare-encoder-session");
+    const startEncoder = commands.find((command) => command.type === "start-encoder-session");
+    const stopEncoder = commands.find((command) => command.type === "stop-encoder-session");
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
     if (sourceRoster) {
@@ -95,6 +124,46 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     if (outputProfile) {
       this.outputProfile = normalizeOutputProfile(outputProfile);
     }
+    if (!output && (this.encoderLifecycle.status === "encoding" || this.encoderLifecycle.status === "prepared")) {
+      this.encoderLifecycle = {
+        ...this.encoderLifecycle,
+        status: "stopped",
+        stoppedAtMs: elapsedMs,
+        lastTransition: "Encoder session stopped because no program outputs are active."
+      };
+    }
+    if (output && output.destinations.length > 0 && this.encoderLifecycle.status !== "encoding") {
+      this.encoderLifecycle = {
+        status: "encoding",
+        preparedAtMs: this.encoderLifecycle.preparedAtMs ?? elapsedMs,
+        startedAtMs: elapsedMs,
+        lastTransition: "Program output encoder session started."
+      };
+    }
+    if (prepareEncoder) {
+      this.encoderLifecycle = {
+        status: "prepared",
+        preparedAtMs: prepareEncoder.preparedAtMs ?? elapsedMs,
+        lastTransition: prepareEncoder.reason ?? "Encoder session prepared."
+      };
+    }
+    if (startEncoder) {
+      this.encoderLifecycle = {
+        ...this.encoderLifecycle,
+        status: "encoding",
+        preparedAtMs: this.encoderLifecycle.preparedAtMs ?? startEncoder.startedAtMs ?? elapsedMs,
+        startedAtMs: startEncoder.startedAtMs ?? elapsedMs,
+        lastTransition: "Encoder session started."
+      };
+    }
+    if (stopEncoder) {
+      this.encoderLifecycle = {
+        ...this.encoderLifecycle,
+        status: "stopped",
+        stoppedAtMs: stopEncoder.stoppedAtMs ?? elapsedMs,
+        lastTransition: stopEncoder.reason ?? "Encoder session stopped."
+      };
+    }
     const renderPlan = buildNativeMediaCoreRenderPlan({
       sceneGraph,
       sources: this.sources,
@@ -107,20 +176,33 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const frames = renderPlan.layers
       .filter((layer) => layer.kind === "participant-video" || layer.kind === "screen-share")
       .map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
+    this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
+    this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
     const encoderSession = this.encoderSession(output?.destinations ?? [], this.programFrame, recording);
     const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession);
     const compositor = this.compositorSnapshot();
-    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, ...encoderSession.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+    const allWarnings = [
+      ...new Set([
+        ...warnings,
+        ...this.sourceSnapshot.warnings,
+        ...renderPlan.warnings,
+        ...encoderSession.warnings,
+        recording?.warning,
+        recording?.error
+      ].filter(Boolean) as string[])
+    ];
 
     return {
       sceneId: sceneGraph?.sceneId,
       routeCount: sceneGraph?.routes.length ?? 0,
       frameCount: frames.length,
       frames,
+      sourceSnapshot: this.sourceSnapshot,
       programFrame: this.programFrame,
       programFrameCount: compositor.programFrameCount,
+      programTransport: this.programTransport,
       compositor,
       participantTransformCount: transforms.length,
       overlayCount: overlays.length,
@@ -142,9 +224,11 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         outputs: output?.destinations ?? [],
         outputProfile: this.outputProfile,
         outputHealth,
+        sourceSnapshot: this.sourceSnapshot,
         renderPlan,
         compositor,
         programFrame: this.programFrame,
+        programTransport: this.programTransport,
         encoderSession,
         recording,
         warnings: allWarnings,
@@ -172,6 +256,30 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       fps: isScreenShare ? 30 : 60,
       health: nextFrameNumber % 90 === 0 ? "dropped" : index >= 4 && !isScreenShare ? "low-resolution" : "live"
     } satisfies NativeMediaCoreFrame;
+  }
+
+  private buildSourceSnapshot(frames: NativeMediaCoreFrame[], elapsedMs: number): NativeMediaCoreFrameSourceSnapshot {
+    const droppedThisTick = frames.filter((frame) => frame.health === "dropped").length;
+    const lowResolutionThisTick = frames.filter((frame) => frame.health === "low-resolution").length;
+    this.sourceDroppedFrameCount += droppedThisTick;
+    this.sourceLowResolutionFrameCount += lowResolutionThisTick;
+    const warnings = [
+      lowResolutionThisTick > 0 ? `${lowResolutionThisTick} source frame${lowResolutionThisTick === 1 ? "" : "s"} below target resolution.` : undefined,
+      droppedThisTick > 0 ? `${droppedThisTick} source frame${droppedThisTick === 1 ? "" : "s"} dropped by media source.` : undefined
+    ].filter(Boolean) as string[];
+
+    return {
+      adapterId: "renderer-test-pattern",
+      kind: "test-pattern",
+      status: warnings.length ? "degraded" : frames.length > 0 ? "subscribed" : "idle",
+      subscribedSourceCount: frames.length,
+      liveFrameCount: frames.filter((frame) => frame.health === "live").length,
+      staleFrameCount: frames.filter((frame) => elapsedMs - frame.timestampMs > 250).length,
+      droppedFrameCount: this.sourceDroppedFrameCount,
+      lowResolutionFrameCount: this.sourceLowResolutionFrameCount,
+      lastFrameTimestampMs: frames.length ? elapsedMs : this.sourceSnapshot.lastFrameTimestampMs,
+      warnings
+    };
   }
 
   private syncRecordingCommands(commands: NativeMediaCoreCommand[], frames: NativeMediaCoreFrame[], elapsedMs: number) {
@@ -343,12 +451,20 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         status:
           recording.status === "failed" || encoderSession.status === "failed"
             ? "failed"
-            : recording.status === "warning" || encoderSession.status === "warning" || programFrame?.health === "degraded"
+            : recording.status === "warning" ||
+                encoderSession.status === "warning" ||
+                programFrame?.health === "degraded" ||
+                (destinations.length > 0 && encoderSession.lifecycle.status !== "encoding")
               ? "warning"
               : recording.active
                 ? "live"
                 : "idle",
-        message: recording.error ?? recording.warning ?? encoderSession.warnings[0] ?? (recording.active ? "Recording writer active." : "Recording stopped."),
+        message:
+          recording.error ??
+          recording.warning ??
+          encoderSession.warnings[0] ??
+          (destinations.length > 0 && encoderSession.lifecycle.status !== "encoding" ? encoderSession.lifecycle.lastTransition : undefined) ??
+          (recording.active ? "Recording writer active." : "Recording stopped."),
         droppedFrames: recording.totalDroppedFrames
       };
 
@@ -364,6 +480,14 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...item,
         status: item.status === "failed" ? item.status : ("warning" as const),
         message: programFrame.warning ?? "Program frame is degraded."
+      }));
+    }
+
+    if (destinations.length > 0 && encoderSession.lifecycle.status !== "encoding") {
+      return health.map((item) => ({
+        ...item,
+        status: item.status === "failed" ? item.status : ("warning" as const),
+        message: encoderSession.lifecycle.lastTransition
       }));
     }
 
@@ -420,6 +544,32 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     };
   }
 
+  private buildProgramTransport(programFrame: NativeMediaCoreProgramFrame | undefined, elapsedMs: number): NativeMediaCoreProgramFrameTransport {
+    if (!programFrame) {
+      return {
+        transportId: "in-process-preview",
+        status: "idle",
+        latencyMs: 0,
+        warning: "No program frame has been published."
+      };
+    }
+
+    return {
+      transportId: "in-process-preview",
+      status: programFrame.health === "live" ? "publishing" : "degraded",
+      frameNumber: programFrame.frameNumber,
+      renderPlanId: programFrame.renderPlanId,
+      timestampMs: programFrame.timestampMs,
+      latencyMs: Math.max(0, elapsedMs - programFrame.timestampMs),
+      warning:
+        programFrame.health === "dropped"
+          ? "Program transport skipped a dropped frame."
+          : programFrame.health === "degraded"
+            ? programFrame.warning ?? "Program transport is publishing degraded frames."
+            : undefined
+    };
+  }
+
   private encoderSession(
     outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">,
     programFrame?: NativeMediaCoreProgramFrame,
@@ -461,10 +611,20 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const hasWarning = targets.some((target) => target.status === "warning");
 
     return {
-      status: hasFailure ? "failed" : hasWarning ? "warning" : targets.length > 0 ? "encoding" : "idle",
+      status:
+        this.encoderLifecycle.status === "failed"
+          ? "failed"
+          : hasFailure
+            ? "failed"
+            : hasWarning
+              ? "warning"
+              : this.encoderLifecycle.status === "encoding" && targets.length > 0
+                ? "encoding"
+                : "idle",
       renderPlanId: programFrame?.renderPlanId,
       programFrameCount: programFrame && programFrame.health !== "dropped" ? 1 : 0,
       targets,
+      lifecycle: this.encoderLifecycle,
       warnings: [...new Set(warnings)]
     };
   }

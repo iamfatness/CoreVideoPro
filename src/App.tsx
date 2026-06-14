@@ -1588,8 +1588,11 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Resolved routes" value={`${mediaCoreSnapshot?.resolvedRouteCount ?? 0}`} />
               <ControlReadout label="Render plan" value={`${mediaCoreSnapshot?.renderPlan.layers.length ?? 0} layers`} />
               <ControlReadout label="Plan ID" value={mediaCoreSnapshot?.renderPlan.renderPlanId ?? "None"} />
+              <ControlReadout label="Media source" value={mediaCoreSnapshot?.sourceSnapshot.kind ?? "Idle"} />
               <ControlReadout label="Program frames" value={`${mediaCoreSnapshot?.programFrameCount ?? 0}`} />
+              <ControlReadout label="Transport" value={mediaCoreSnapshot?.programTransport.status ?? "Idle"} />
               <ControlReadout label="Compositor" value={mediaCoreSnapshot?.compositor.status ?? "Idle"} />
+              <ControlReadout label="Encoder" value={mediaCoreSnapshot?.encoderSession.lifecycle.status ?? "Idle"} />
               <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
               <ControlReadout label="Profile" value={mediaCoreSnapshot?.outputProfile.profileId ?? "1080p60"} />
               <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />

@@ -12,6 +12,13 @@ describe("media core sync engine", () => {
       sceneId: "speaker-slides",
       routeCount: 2,
       frameCount: 2,
+      sourceSnapshot: {
+        adapterId: "renderer-test-pattern",
+        kind: "test-pattern",
+        status: "subscribed",
+        subscribedSourceCount: 2,
+        liveFrameCount: 2
+      },
       participantTransformCount: 8,
       overlayCount: 1,
       sourceCount: 8,
@@ -43,7 +50,13 @@ describe("media core sync engine", () => {
           kind: "participant-video",
           timestampMs: 1200
         }
-      ]
+      ],
+      programTransport: {
+        transportId: "in-process-preview",
+        status: "publishing",
+        frameNumber: 1,
+        latencyMs: 0
+      }
     });
   });
 
@@ -53,6 +66,17 @@ describe("media core sync engine", () => {
       routeCount: 1,
       frameCount: 1,
       frames: [],
+      sourceSnapshot: {
+        adapterId: "native-test-source",
+        kind: "zoom-sdk" as const,
+        status: "idle" as const,
+        subscribedSourceCount: 0,
+        liveFrameCount: 0,
+        staleFrameCount: 0,
+        droppedFrameCount: 0,
+        lowResolutionFrameCount: 0,
+        warnings: []
+      },
       participantTransformCount: 0,
       overlayCount: 0,
       outputs: ["recording" as const],
@@ -67,6 +91,11 @@ describe("media core sync engine", () => {
       },
       outputHealth: [],
       programFrameCount: 0,
+      programTransport: {
+        transportId: "in-process-preview" as const,
+        status: "idle" as const,
+        latencyMs: 0
+      },
       compositor: {
         status: "idle" as const,
         programFrameCount: 0,
@@ -77,6 +106,10 @@ describe("media core sync engine", () => {
         status: "idle" as const,
         programFrameCount: 0,
         targets: [],
+        lifecycle: {
+          status: "idle" as const,
+          lastTransition: "Encoder session idle."
+        },
         warnings: []
       },
       sourceCount: 0,
@@ -112,6 +145,17 @@ describe("media core sync engine", () => {
           targetBitrateMbps: 8.2
         },
         outputHealth: [],
+        sourceSnapshot: {
+          adapterId: "native-test-source",
+          kind: "zoom-sdk" as const,
+          status: "idle" as const,
+          subscribedSourceCount: 0,
+          liveFrameCount: 0,
+          staleFrameCount: 0,
+          droppedFrameCount: 0,
+          lowResolutionFrameCount: 0,
+          warnings: []
+        },
         renderPlan: {
           renderPlanId: "rp-test",
           outputProfile: {
@@ -136,10 +180,19 @@ describe("media core sync engine", () => {
           droppedFrameCount: 0,
           degradedFrameCount: 0
         },
+        programTransport: {
+          transportId: "in-process-preview" as const,
+          status: "idle" as const,
+          latencyMs: 0
+        },
         encoderSession: {
           status: "idle" as const,
           programFrameCount: 0,
           targets: [],
+          lifecycle: {
+            status: "idle" as const,
+            lastTransition: "Encoder session idle."
+          },
           warnings: []
         },
         warnings: [],
@@ -216,12 +269,20 @@ describe("media core sync engine", () => {
         layerCount: 3
       },
       programFrameCount: 1,
+      programTransport: {
+        status: "publishing",
+        frameNumber: 1
+      },
       compositor: {
         status: "live",
         programFrameCount: 1
       },
       encoderSession: {
         status: "encoding",
+        lifecycle: {
+          status: "encoding",
+          lastTransition: "Program output encoder session started."
+        },
         targets: expect.arrayContaining([
           expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
           expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached" }),
@@ -231,6 +292,13 @@ describe("media core sync engine", () => {
       outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
       diagnostics: {
         generatedAtMs: 3000,
+        sourceSnapshot: {
+          adapterId: "renderer-test-pattern",
+          status: "subscribed"
+        },
+        programTransport: {
+          status: "publishing"
+        },
         recording: { sessionId: "AI_Product_Launch_Webinar-p1-p2" }
       }
     });

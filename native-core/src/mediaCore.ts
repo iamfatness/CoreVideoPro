@@ -3,17 +3,21 @@ import type {
   MediaCoreColorGrade,
   MediaCoreDestination,
   MediaCoreDiagnosticsSnapshot,
+  MediaCoreEncoderLifecycle,
   MediaCoreEncoderSession,
+  MediaCoreFrame,
+  MediaCoreFrameSourceSnapshot,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
   MediaCoreProgramFrame,
+  MediaCoreProgramFrameTransport,
   MediaCoreRenderPlan,
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreStateSnapshot,
   MediaCoreZoomSource
 } from "./protocol.js";
-import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
+import { TestPatternMediaSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
 import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
 import { ProgramCompositor } from "./compositor.js";
@@ -42,6 +46,13 @@ const DEFAULT_COLOR_GRADE: MediaCoreColorGrade = {
 };
 
 export class MediaCoreRuntime {
+  private readonly mediaSource: MediaFrameSource;
+
+  constructor(mediaSource: MediaFrameSource = new TestPatternMediaSource()) {
+    this.mediaSource = mediaSource;
+    this.sourceSnapshot = mediaSource.snapshot(0);
+  }
+
   private sceneGraph?: SceneGraphState;
   private sources: MediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
@@ -53,11 +64,21 @@ export class MediaCoreRuntime {
   private colorGrade = DEFAULT_COLOR_GRADE;
   private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
-  private readonly frameProducer = new FakeFrameProducer();
   private readonly compositor = new ProgramCompositor();
   private readonly recordingSink = new RecordingSink();
-  private frames = this.frameProducer.render([], 0);
+  private frames: MediaCoreFrame[] = [];
+  private sourceSnapshot: MediaCoreFrameSourceSnapshot;
   private programFrame?: MediaCoreProgramFrame;
+  private programTransport: MediaCoreProgramFrameTransport = {
+    transportId: "in-process-preview",
+    status: "idle",
+    latencyMs: 0,
+    warning: "No program frame has been published."
+  };
+  private encoderLifecycle: MediaCoreEncoderLifecycle = {
+    status: "idle",
+    lastTransition: "Encoder session idle."
+  };
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -98,6 +119,14 @@ export class MediaCoreRuntime {
     if (!outputCommand) {
       this.output = undefined;
       this.outputHealth.clear();
+      if (this.encoderLifecycle.status === "encoding" || this.encoderLifecycle.status === "prepared") {
+        this.encoderLifecycle = {
+          ...this.encoderLifecycle,
+          status: "stopped",
+          stoppedAtMs: this.elapsedMs,
+          lastTransition: "Encoder session stopped because no program outputs are active."
+        };
+      }
     }
 
     commands.forEach((command) => {
@@ -167,9 +196,47 @@ export class MediaCoreRuntime {
       if (command.type === "start-program-output") {
         this.output = command;
         this.syncOutputHealth(command.destinations);
+        if (command.destinations.length > 0 && this.encoderLifecycle.status !== "encoding") {
+          this.encoderLifecycle = {
+            status: "encoding",
+            preparedAtMs: this.encoderLifecycle.preparedAtMs ?? this.elapsedMs,
+            startedAtMs: this.elapsedMs,
+            lastTransition: "Program output encoder session started."
+          };
+        }
         if (command.destinations.length === 0) {
           warnings.push("Program output started without destinations.");
         }
+        return;
+      }
+
+      if (command.type === "prepare-encoder-session") {
+        this.encoderLifecycle = {
+          status: "prepared",
+          preparedAtMs: command.preparedAtMs ?? this.elapsedMs,
+          lastTransition: command.reason ?? "Encoder session prepared."
+        };
+        return;
+      }
+
+      if (command.type === "start-encoder-session") {
+        this.encoderLifecycle = {
+          ...this.encoderLifecycle,
+          status: "encoding",
+          preparedAtMs: this.encoderLifecycle.preparedAtMs ?? command.startedAtMs ?? this.elapsedMs,
+          startedAtMs: command.startedAtMs ?? this.elapsedMs,
+          lastTransition: "Encoder session started."
+        };
+        return;
+      }
+
+      if (command.type === "stop-encoder-session") {
+        this.encoderLifecycle = {
+          ...this.encoderLifecycle,
+          status: "stopped",
+          stoppedAtMs: command.stoppedAtMs ?? this.elapsedMs,
+          lastTransition: command.reason ?? "Encoder session stopped."
+        };
         return;
       }
 
@@ -228,7 +295,14 @@ export class MediaCoreRuntime {
     const encoderSession = this.encoderSession(recording);
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession);
     const allWarnings = [
-      ...new Set([...warnings, ...renderPlan.warnings, ...encoderSession.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])
+      ...new Set([
+        ...warnings,
+        ...this.sourceSnapshot.warnings,
+        ...renderPlan.warnings,
+        ...encoderSession.warnings,
+        recording?.warning,
+        recording?.error
+      ].filter(Boolean) as string[])
     ];
 
     return {
@@ -236,8 +310,10 @@ export class MediaCoreRuntime {
       routeCount: this.sceneGraph?.routes.length ?? 0,
       frameCount: this.frames.length,
       frames: this.frames,
+      sourceSnapshot: this.sourceSnapshot,
       programFrame: this.programFrame,
       programFrameCount: compositor.programFrameCount,
+      programTransport: this.programTransport,
       compositor,
       participantTransformCount: this.transforms.size,
       overlayCount: this.overlays.size,
@@ -259,8 +335,11 @@ export class MediaCoreRuntime {
   private tick(elapsedMs: number) {
     this.elapsedMs = Math.max(0, elapsedMs);
     const renderPlan = this.renderPlan();
-    this.frames = this.frameProducer.render(this.getFrameSources(renderPlan), this.elapsedMs);
+    const sourceResult = this.mediaSource.render(this.getFrameSources(renderPlan), this.elapsedMs);
+    this.frames = sourceResult.frames;
+    this.sourceSnapshot = sourceResult.snapshot;
     this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
+    this.programTransport = this.buildProgramTransport(this.programFrame);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs, this.programFrame);
   }
 
@@ -304,18 +383,36 @@ export class MediaCoreRuntime {
       });
     }
 
+    if ((this.output?.destinations.length ?? 0) > 0 && encoderSession.lifecycle.status !== "encoding") {
+      health.forEach((value, destination) => {
+        health.set(destination, {
+          ...value,
+          status: value.status === "failed" ? "failed" : "warning",
+          message: encoderSession.lifecycle.lastTransition
+        });
+      });
+    }
+
     if (recording) {
       health.set("recording", {
         destination: "recording",
         status:
           recording.status === "failed" || encoderSession.status === "failed"
             ? "failed"
-            : recording.status === "warning" || encoderSession.status === "warning" || programFrame?.health === "degraded"
+            : recording.status === "warning" ||
+                encoderSession.status === "warning" ||
+                programFrame?.health === "degraded" ||
+                ((this.output?.destinations.length ?? 0) > 0 && encoderSession.lifecycle.status !== "encoding")
               ? "warning"
               : recording.active
                 ? "live"
                 : "idle",
-        message: recording.error ?? recording.warning ?? encoderSession.warnings[0] ?? (recording.active ? "Recording writer active." : "Recording stopped."),
+        message:
+          recording.error ??
+          recording.warning ??
+          encoderSession.warnings[0] ??
+          (encoderSession.lifecycle.status !== "encoding" && (this.output?.destinations.length ?? 0) > 0 ? encoderSession.lifecycle.lastTransition : undefined) ??
+          (recording.active ? "Recording writer active." : "Recording stopped."),
         droppedFrames: recording.totalDroppedFrames
       });
     }
@@ -339,10 +436,12 @@ export class MediaCoreRuntime {
       outputs: this.output?.destinations ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      sourceSnapshot: this.sourceSnapshot,
       renderPlan,
       compositor,
       programFrame: this.programFrame,
       programFrameCount: compositor.programFrameCount,
+      programTransport: this.programTransport,
       encoderSession,
       recording,
       warnings,
@@ -354,11 +453,38 @@ export class MediaCoreRuntime {
     return buildEncoderSession({
       outputs: this.output?.destinations ?? [],
       programFrame: this.programFrame,
-      recording
+      recording,
+      lifecycle: this.encoderLifecycle
     });
   }
 
-  private getFrameSources(renderPlan: MediaCoreRenderPlan): FakeFrameSource[] {
+  private buildProgramTransport(programFrame?: MediaCoreProgramFrame): MediaCoreProgramFrameTransport {
+    if (!programFrame) {
+      return {
+        transportId: "in-process-preview",
+        status: "idle",
+        latencyMs: 0,
+        warning: "No program frame has been published."
+      };
+    }
+
+    return {
+      transportId: "in-process-preview",
+      status: programFrame.health === "live" ? "publishing" : "degraded",
+      frameNumber: programFrame.frameNumber,
+      renderPlanId: programFrame.renderPlanId,
+      timestampMs: programFrame.timestampMs,
+      latencyMs: Math.max(0, this.elapsedMs - programFrame.timestampMs),
+      warning:
+        programFrame.health === "dropped"
+          ? "Program transport skipped a dropped frame."
+          : programFrame.health === "degraded"
+            ? programFrame.warning ?? "Program transport is publishing degraded frames."
+            : undefined
+    };
+  }
+
+  private getFrameSources(renderPlan: MediaCoreRenderPlan): MediaCoreFrameSourceRequest[] {
     return renderPlan.layers
       .filter((layer): layer is typeof layer & { kind: "participant-video" | "screen-share" } => layer.kind === "participant-video" || layer.kind === "screen-share")
       .map((layer) => ({

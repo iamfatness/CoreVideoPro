@@ -1,6 +1,8 @@
 export { MediaCoreRuntime } from "./mediaCore.js";
+export { TestPatternMediaSource } from "./mediaSource.js";
 export { MediaCoreServiceClient } from "./client.js";
 export { handleLine } from "./service.js";
+export type { MediaCoreFrameSourceRequest, MediaCoreFrameSourceResult, MediaFrameSource } from "./mediaSource.js";
 export type {
   MediaCoreCommand,
   MediaCoreColorGrade,
@@ -8,6 +10,8 @@ export type {
   MediaCoreCompositorHealth,
   MediaCoreCompositorState,
   MediaCoreDestination,
+  MediaCoreEncoderLifecycle,
+  MediaCoreEncoderLifecycleStatus,
   MediaCoreEncoderSession,
   MediaCoreEncoderSessionStatus,
   MediaCoreEncoderTarget,
@@ -15,11 +19,16 @@ export type {
   MediaCoreFrame,
   MediaCoreFrameHealth,
   MediaCoreFrameKind,
+  MediaCoreFrameSourceSnapshot,
+  MediaCoreFrameSourceStatus,
+  MediaCoreFrameTransportStatus,
+  MediaCoreMediaSourceKind,
   MediaCoreOutputHealth,
   MediaCoreOutputHealthStatus,
   MediaCoreOutputProfile,
   MediaCoreProgramFrame,
   MediaCoreProgramFrameHealth,
+  MediaCoreProgramFrameTransport,
   MediaCoreRenderPlan,
   MediaCoreRenderPlanLayer,
   MediaCoreRecordingFormat,

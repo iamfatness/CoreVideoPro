@@ -54,8 +54,11 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Resolved routes2");
     expect(nativeCore).toHaveTextContent("Render plan3 layers");
     expect(nativeCore).toHaveTextContent(/Plan IDrp-/);
+    expect(nativeCore).toHaveTextContent("Media sourcetest-pattern");
     expect(nativeCore).toHaveTextContent("Program frames3");
+    expect(nativeCore).toHaveTextContent("Transportpublishing");
     expect(nativeCore).toHaveTextContent("Compositorlive");
+    expect(nativeCore).toHaveTextContent("Encoderencoding");
     expect(nativeCore).toHaveTextContent("Outputsrecording");
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");

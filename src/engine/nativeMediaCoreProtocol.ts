@@ -72,6 +72,20 @@ export type NativeMediaCoreCommand =
       destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
       isoParticipantIds: string[];
     }
+  | {
+      type: "prepare-encoder-session";
+      preparedAtMs?: number;
+      reason?: string;
+    }
+  | {
+      type: "start-encoder-session";
+      startedAtMs?: number;
+    }
+  | {
+      type: "stop-encoder-session";
+      stoppedAtMs?: number;
+      reason?: string;
+    }
   | ({
       type: "set-recording-targets";
     } & NativeMediaCoreRecordingTargets)
@@ -101,6 +115,21 @@ export type NativeMediaCoreFrame = {
   health: "live" | "stale" | "dropped" | "low-resolution";
 };
 
+export type NativeMediaCoreMediaSourceKind = "zoom-sdk" | "local-camera" | "test-pattern";
+
+export type NativeMediaCoreFrameSourceSnapshot = {
+  adapterId: string;
+  kind: NativeMediaCoreMediaSourceKind;
+  status: "idle" | "subscribed" | "degraded" | "failed";
+  subscribedSourceCount: number;
+  liveFrameCount: number;
+  staleFrameCount: number;
+  droppedFrameCount: number;
+  lowResolutionFrameCount: number;
+  lastFrameTimestampMs?: number;
+  warnings: string[];
+};
+
 export type NativeMediaCoreProgramFrame = {
   frameNumber: number;
   timestampMs: number;
@@ -112,6 +141,16 @@ export type NativeMediaCoreProgramFrame = {
   layerCount: number;
   colorGrade: NativeMediaCoreColorGrade;
   health: "live" | "degraded" | "dropped";
+  warning?: string;
+};
+
+export type NativeMediaCoreProgramFrameTransport = {
+  transportId: "in-process-preview";
+  status: "idle" | "publishing" | "degraded";
+  frameNumber?: number;
+  renderPlanId?: string;
+  timestampMs?: number;
+  latencyMs: number;
   warning?: string;
 };
 
@@ -247,11 +286,20 @@ export type NativeMediaCoreEncoderTarget = {
   warning?: string;
 };
 
+export type NativeMediaCoreEncoderLifecycle = {
+  status: "idle" | "prepared" | "encoding" | "stopped" | "failed";
+  preparedAtMs?: number;
+  startedAtMs?: number;
+  stoppedAtMs?: number;
+  lastTransition: string;
+};
+
 export type NativeMediaCoreEncoderSession = {
   status: "idle" | "encoding" | "warning" | "failed";
   renderPlanId?: string;
   programFrameCount: number;
   targets: NativeMediaCoreEncoderTarget[];
+  lifecycle: NativeMediaCoreEncoderLifecycle;
   warnings: string[];
 };
 
@@ -271,9 +319,11 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
+  sourceSnapshot: NativeMediaCoreFrameSourceSnapshot;
   renderPlan: NativeMediaCoreRenderPlan;
   compositor: NativeMediaCoreCompositorState;
   programFrame?: NativeMediaCoreProgramFrame;
+  programTransport: NativeMediaCoreProgramFrameTransport;
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
   warnings: string[];
@@ -285,8 +335,10 @@ export type NativeMediaCoreStateSnapshot = {
   routeCount: number;
   frameCount: number;
   frames: NativeMediaCoreFrame[];
+  sourceSnapshot: NativeMediaCoreFrameSourceSnapshot;
   programFrame?: NativeMediaCoreProgramFrame;
   programFrameCount: number;
+  programTransport: NativeMediaCoreProgramFrameTransport;
   compositor: NativeMediaCoreCompositorState;
   participantTransformCount: number;
   overlayCount: number;

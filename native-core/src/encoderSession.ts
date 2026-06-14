@@ -1,5 +1,6 @@
 import type {
   MediaCoreDestination,
+  MediaCoreEncoderLifecycle,
   MediaCoreEncoderSession,
   MediaCoreEncoderTarget,
   MediaCoreProgramFrame,
@@ -10,6 +11,7 @@ export function buildEncoderSession(input: {
   outputs: MediaCoreDestination[];
   programFrame?: MediaCoreProgramFrame;
   recording?: MediaCoreRecordingSession;
+  lifecycle: MediaCoreEncoderLifecycle;
 }): MediaCoreEncoderSession {
   const targets: MediaCoreEncoderTarget[] = [];
 
@@ -45,10 +47,20 @@ export function buildEncoderSession(input: {
   const hasWarning = targets.some((target) => target.status === "warning");
 
   return {
-    status: hasFailure ? "failed" : hasWarning ? "warning" : targets.length > 0 ? "encoding" : "idle",
+    status:
+      input.lifecycle.status === "failed"
+        ? "failed"
+        : hasFailure
+          ? "failed"
+          : hasWarning
+            ? "warning"
+            : input.lifecycle.status === "encoding" && targets.length > 0
+              ? "encoding"
+              : "idle",
     renderPlanId: input.programFrame?.renderPlanId,
     programFrameCount: input.programFrame && input.programFrame.health !== "dropped" ? 1 : 0,
     targets,
+    lifecycle: input.lifecycle,
     warnings: [...new Set(warnings)]
   };
 }

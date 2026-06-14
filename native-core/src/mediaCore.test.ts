@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MediaCoreRuntime } from "./mediaCore.js";
-import type { MediaCoreCommand } from "./protocol.js";
+import type { MediaCoreCommand, MediaCoreFrame, MediaCoreFrameSourceSnapshot } from "./protocol.js";
+import type { MediaCoreFrameSourceRequest, MediaCoreFrameSourceResult, MediaFrameSource } from "./mediaSource.js";
 
 const commands: MediaCoreCommand[] = [
   {
@@ -134,6 +135,13 @@ describe("MediaCoreRuntime", () => {
             height: 1080
           }
         ],
+        sourceSnapshot: {
+          adapterId: "test-pattern",
+          kind: "test-pattern",
+          status: "subscribed",
+          subscribedSourceCount: 2,
+          liveFrameCount: 2
+        },
         participantTransformCount: 1,
         overlayCount: 1,
         sourceCount: 2,
@@ -177,6 +185,12 @@ describe("MediaCoreRuntime", () => {
           layerCount: 3
         },
         programFrameCount: 1,
+        programTransport: {
+          transportId: "in-process-preview",
+          status: "publishing",
+          frameNumber: 1,
+          latencyMs: 0
+        },
         compositor: {
           status: "live",
           programFrameCount: 1,
@@ -184,6 +198,10 @@ describe("MediaCoreRuntime", () => {
         },
         encoderSession: {
           status: "encoding",
+          lifecycle: {
+            status: "encoding",
+            lastTransition: "Program output encoder session started."
+          },
           targets: expect.arrayContaining([
             expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
             expect.objectContaining({ targetId: "rtmp:program", streamKind: "program", status: "attached" }),
@@ -192,6 +210,27 @@ describe("MediaCoreRuntime", () => {
           ])
         },
         outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
+        diagnostics: {
+          sourceSnapshot: {
+            adapterId: "test-pattern",
+            status: "subscribed",
+            subscribedSourceCount: 2
+          },
+          programTransport: {
+            status: "publishing",
+            frameNumber: 1
+          },
+          encoderSession: {
+            lifecycle: {
+              status: "encoding"
+            },
+            targets: expect.arrayContaining([expect.objectContaining({ targetId: "rtmp:program" })])
+          },
+          recording: {
+            active: true,
+            totalFramesWritten: 2
+          }
+        },
         lastCommandTypes: [
           "set-zoom-source-roster",
           "set-active-speaker",
@@ -276,6 +315,132 @@ describe("MediaCoreRuntime", () => {
         }
       }
     });
+  });
+
+  it("accepts injectable media source adapters for future Zoom SDK or local camera frames", () => {
+    class LocalCameraSource implements MediaFrameSource {
+      readonly adapterId = "local-camera:a";
+      readonly kind = "local-camera" as const;
+      private frameNumber = 0;
+      private lastSnapshot: MediaCoreFrameSourceSnapshot = {
+        adapterId: this.adapterId,
+        kind: this.kind,
+        status: "idle",
+        subscribedSourceCount: 0,
+        liveFrameCount: 0,
+        staleFrameCount: 0,
+        droppedFrameCount: 0,
+        lowResolutionFrameCount: 0,
+        warnings: []
+      };
+
+      render(sources: MediaCoreFrameSourceRequest[], elapsedMs: number): MediaCoreFrameSourceResult {
+        this.frameNumber += 1;
+        const frames: MediaCoreFrame[] = sources.map((source) => ({
+          sourceId: source.sourceId,
+          participantId: source.participantId,
+          kind: source.kind,
+          frameNumber: this.frameNumber,
+          timestampMs: elapsedMs,
+          width: 3840,
+          height: 2160,
+          fps: 60,
+          health: "live"
+        }));
+        this.lastSnapshot = {
+          adapterId: this.adapterId,
+          kind: this.kind,
+          status: frames.length ? "subscribed" : "idle",
+          subscribedSourceCount: frames.length,
+          liveFrameCount: frames.length,
+          staleFrameCount: 0,
+          droppedFrameCount: 0,
+          lowResolutionFrameCount: 0,
+          lastFrameTimestampMs: frames.length ? elapsedMs : undefined,
+          warnings: []
+        };
+        return { frames, snapshot: this.lastSnapshot };
+      }
+
+      snapshot(): MediaCoreFrameSourceSnapshot {
+        return this.lastSnapshot;
+      }
+    }
+
+    const runtime = new MediaCoreRuntime(new LocalCameraSource());
+    const response = runtime.handle({
+      id: "local-camera",
+      type: "sync",
+      commands: [
+        commands[0],
+        {
+          type: "load-scene-graph",
+          sceneId: "camera-scene",
+          routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        frames: [{ sourceId: "participant:p1", width: 3840, height: 2160, fps: 60 }],
+        sourceSnapshot: {
+          adapterId: "local-camera:a",
+          kind: "local-camera",
+          status: "subscribed",
+          subscribedSourceCount: 1
+        },
+        programTransport: {
+          status: "publishing",
+          frameNumber: 1
+        }
+      }
+    });
+  });
+
+  it("exposes encoder lifecycle stops as output health warnings", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "encoder-stop",
+      type: "sync",
+      commands: [
+        ...commands,
+        {
+          type: "stop-encoder-session",
+          reason: "Operator stopped encoder during rehearsal."
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        encoderSession: {
+          status: "idle",
+          lifecycle: {
+            status: "stopped",
+            lastTransition: "Operator stopped encoder during rehearsal."
+          }
+        },
+      }
+    });
+    if (response.ok) {
+      expect(response.state.outputHealth).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            destination: "rtmp",
+            status: "warning",
+            message: "Operator stopped encoder during rehearsal."
+          }),
+          expect.objectContaining({
+            destination: "recording",
+            status: "warning",
+            message: "Operator stopped encoder during rehearsal."
+          })
+        ])
+      );
+    }
   });
 
   it("clears recording when a sync no longer includes recording output", () => {

@@ -7,12 +7,16 @@ export type MediaCoreFrameKind = "participant-video" | "screen-share";
 export type MediaCoreFrameHealth = "live" | "stale" | "dropped" | "low-resolution";
 export type MediaCoreProgramFrameHealth = "live" | "degraded" | "dropped";
 export type MediaCoreCompositorHealth = "idle" | "live" | "degraded" | "failed";
+export type MediaCoreMediaSourceKind = "zoom-sdk" | "local-camera" | "test-pattern";
+export type MediaCoreFrameSourceStatus = "idle" | "subscribed" | "degraded" | "failed";
 export type MediaCoreZoomSourceHealth = "live" | "low-resolution" | "recovering" | "video-off";
 export type MediaCoreRecordingStatus = "recording" | "warning" | "stopped" | "failed";
 export type MediaCoreRecordingWriterStatus = "writing" | "warning" | "stopped" | "failed";
 export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed";
 export type MediaCoreEncoderTargetStatus = "idle" | "attached" | "warning" | "failed";
 export type MediaCoreEncoderSessionStatus = "idle" | "encoding" | "warning" | "failed";
+export type MediaCoreEncoderLifecycleStatus = "idle" | "prepared" | "encoding" | "stopped" | "failed";
+export type MediaCoreFrameTransportStatus = "idle" | "publishing" | "degraded";
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 export type MediaCoreColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
@@ -98,6 +102,19 @@ export type MediaCoreProgramFrame = {
   warning?: string;
 };
 
+export type MediaCoreFrameSourceSnapshot = {
+  adapterId: string;
+  kind: MediaCoreMediaSourceKind;
+  status: MediaCoreFrameSourceStatus;
+  subscribedSourceCount: number;
+  liveFrameCount: number;
+  staleFrameCount: number;
+  droppedFrameCount: number;
+  lowResolutionFrameCount: number;
+  lastFrameTimestampMs?: number;
+  warnings: string[];
+};
+
 export type MediaCoreCompositorState = {
   status: MediaCoreCompositorHealth;
   renderPlanId?: string;
@@ -106,6 +123,16 @@ export type MediaCoreCompositorState = {
   degradedFrameCount: number;
   lastReconfigureReason?: string;
   lastFrame?: MediaCoreProgramFrame;
+};
+
+export type MediaCoreProgramFrameTransport = {
+  transportId: "in-process-preview";
+  status: MediaCoreFrameTransportStatus;
+  frameNumber?: number;
+  renderPlanId?: string;
+  timestampMs?: number;
+  latencyMs: number;
+  warning?: string;
 };
 
 export type MediaCoreEncoderTarget = {
@@ -118,11 +145,20 @@ export type MediaCoreEncoderTarget = {
   warning?: string;
 };
 
+export type MediaCoreEncoderLifecycle = {
+  status: MediaCoreEncoderLifecycleStatus;
+  preparedAtMs?: number;
+  startedAtMs?: number;
+  stoppedAtMs?: number;
+  lastTransition: string;
+};
+
 export type MediaCoreEncoderSession = {
   status: MediaCoreEncoderSessionStatus;
   renderPlanId?: string;
   programFrameCount: number;
   targets: MediaCoreEncoderTarget[];
+  lifecycle: MediaCoreEncoderLifecycle;
   warnings: string[];
 };
 
@@ -199,9 +235,11 @@ export type MediaCoreDiagnosticsSnapshot = {
   outputs: MediaCoreDestination[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
+  sourceSnapshot: MediaCoreFrameSourceSnapshot;
   renderPlan: MediaCoreRenderPlan;
   compositor: MediaCoreCompositorState;
   programFrame?: MediaCoreProgramFrame;
+  programTransport: MediaCoreProgramFrameTransport;
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
   warnings: string[];
@@ -256,6 +294,20 @@ export type MediaCoreCommand =
       destinations: MediaCoreDestination[];
       isoParticipantIds: string[];
     }
+  | {
+      type: "prepare-encoder-session";
+      preparedAtMs?: number;
+      reason?: string;
+    }
+  | {
+      type: "start-encoder-session";
+      startedAtMs?: number;
+    }
+  | {
+      type: "stop-encoder-session";
+      stoppedAtMs?: number;
+      reason?: string;
+    }
   | ({
       type: "set-recording-targets";
     } & MediaCoreRecordingTargets)
@@ -294,8 +346,10 @@ export type MediaCoreStateSnapshot = {
   routeCount: number;
   frameCount: number;
   frames: MediaCoreFrame[];
+  sourceSnapshot: MediaCoreFrameSourceSnapshot;
   programFrame?: MediaCoreProgramFrame;
   programFrameCount: number;
+  programTransport: MediaCoreProgramFrameTransport;
   compositor: MediaCoreCompositorState;
   participantTransformCount: number;
   overlayCount: number;
