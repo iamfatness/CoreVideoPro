@@ -20,7 +20,12 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
   EXPECT_EQ(line->getString("id"), "handshake");
   EXPECT_TRUE(line->get("ok")->asBool());
   ASSERT_NE(line->get("profile"), nullptr);
+#if COREVIDEO_WITH_D3D11
+  EXPECT_EQ(line->get("profile")->getString("name"), "CoreVideo Pro Native Media Core");
+  EXPECT_EQ(line->get("profile")->getString("renderer"), "d3d11");
+#else
   EXPECT_EQ(line->get("profile")->getString("name"), "CoreVideo Pro Native Media Core Stub");
+#endif
 }
 
 TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {

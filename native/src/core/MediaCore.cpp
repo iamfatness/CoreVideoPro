@@ -82,9 +82,10 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 MediaCore::MediaCore(modules::ModuleSet modules) : modules_(std::move(modules)) {}
 
 rpc::Json MediaCore::profile() const {
+  const auto renderer = modules_.compositor->rendererName();
   return rpc::Json::Object{
-      {"name", "CoreVideo Pro Native Media Core Stub"},
-      {"renderer", "software"},
+      {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
+      {"renderer", renderer},
       {"maxProgramResolution", "1920x1080"},
       {"maxProgramFps", 30},
       {"maxParticipantFeeds", 6},
@@ -97,7 +98,7 @@ rpc::Json MediaCore::health() const {
   const auto session = modules_.encoder->session();
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
-      {"renderer", "software"},
+      {"renderer", modules_.compositor->rendererName()},
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},

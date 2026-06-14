@@ -71,6 +71,7 @@ class IZoomCaptureSource {
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
+  virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
 };
 
@@ -102,6 +103,7 @@ struct ModuleSet {
   std::unique_ptr<ICaptureDevice> captureDevice;
 };
 
+ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
 
