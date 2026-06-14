@@ -14,7 +14,8 @@ const mockRuntime: RuntimeEnvironment = {
   label: "Mock studio",
   host: "browser-preview",
   platform: "web",
-  warnings: ["Running with simulated Zoom and output engines."]
+  warnings: ["Running with simulated Zoom and output engines."],
+  capabilities: []
 };
 
 function renderApp(engines: EngineBundle = createMockEngineBundle(), runtime: RuntimeEnvironment = mockRuntime) {
@@ -1787,5 +1788,91 @@ describe("news ticker", () => {
 
     const list = within(panel).getByLabelText("Ticker items");
     expect(within(list).getByText("Special update")).toBeInTheDocument();
+  });
+});
+
+describe("Zoom SDK pre-flight", () => {
+  it("shows the SDK readiness panel in the Settings tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("SDK readiness panel");
+    expect(panel).toBeInTheDocument();
+  });
+
+  it("Join Zoom button is disabled when SDK is blocked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+    // Leave the meeting so the Join Zoom button is visible.
+    await goToTab(user, "Settings");
+    await user.click(screen.getByRole("button", { name: "Leave" }));
+    // The default sdkReadinessInput has sdkRuntimePresent: false → "blocked".
+    const joinBtn = screen.getByRole("button", { name: /Join Zoom/i });
+    expect(joinBtn).toBeDisabled();
+  });
+});
+
+describe("supervisor health recovery", () => {
+  it("describeRuntimeEnvironment returns degraded when health shows core is recovering", async () => {
+    const { describeRuntimeEnvironment } = await import("./engine/runtimeEnvironment");
+    const mockBridge = {
+      host: "electron" as const,
+      platform: "win32" as const,
+      request: async () => ({ id: "x", ok: false as const, error: { code: "protocol-error" as const, message: "stub" } })
+    };
+    const runtime = describeRuntimeEnvironment(
+      mockBridge,
+      undefined,
+      { restartCount: 2, recovering: true, stopped: false }
+    );
+    expect(runtime.status).toBe("degraded");
+    expect(runtime.label).toMatch(/recovering/i);
+    expect(runtime.warnings[0]).toMatch(/crashed/i);
+  });
+});
+
+describe("A4 capability-gated outputs", () => {
+  it("disables SRT arming when srt-output is absent from capabilities", async () => {
+    const user = userEvent.setup();
+    // Runtime with NDI/WebRTC but NOT srt-output — matches the gate test scenario.
+    const capRuntime: RuntimeEnvironment = {
+      ...mockRuntime,
+      status: "ready",
+      label: "Native media ready",
+      capabilities: ["ndi-output", "webrtc-output", "rtmp-output", "program-recording", "iso-recording",
+        "zoom-raw-video", "zoom-raw-audio", "gpu-compositor", "scene-graph-rendering",
+        "dynamic-overlays", "chroma-key", "smart-framing", "audio-mixer"]
+    };
+    renderApp(createMockEngineBundle(), capRuntime);
+
+    await goToTab(user, "Settings");
+    // NDI arming button should be enabled (capability present).
+    const ndiBtn = screen.getByRole("button", { name: /NDI Program/i });
+    expect(ndiBtn).not.toBeDisabled();
+    // SRT arming button should be disabled (capability absent).
+    const srtBtn = screen.getByRole("button", { name: /SRT Backup/i });
+    expect(srtBtn).toBeDisabled();
+  });
+
+  it("shows virtual camera section in mock mode (capabilities empty = allow-all)", async () => {
+    const user = userEvent.setup();
+    renderApp(); // mock mode: capabilities = []
+    await goToTab(user, "Settings");
+    expect(screen.getByLabelText("Virtual camera")).toBeInTheDocument();
+  });
+
+  it("hides virtual camera section when virtual-camera capability is absent", async () => {
+    const user = userEvent.setup();
+    const capRuntime: RuntimeEnvironment = {
+      ...mockRuntime,
+      status: "ready",
+      label: "Native media ready",
+      capabilities: ["rtmp-output", "ndi-output"] // no virtual-camera
+    };
+    renderApp(createMockEngineBundle(), capRuntime);
+    await goToTab(user, "Settings");
+    expect(screen.queryByLabelText("Virtual camera")).not.toBeInTheDocument();
   });
 });

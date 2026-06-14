@@ -2,7 +2,7 @@
 // dev server URL is provided via COREVIDEO_RENDERER_URL), then starts Electron
 // against desktop/main.ts. Electron is an optional, on-demand dependency so the
 // stubs-only CI gate (npm run typecheck && npm run test) never has to fetch it.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,11 @@ const desktopDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(desktopDir);
 
 function resolveElectron() {
+  // Allow the caller to override the electron binary (e.g. from a Playwright
+  // test that already resolved the path via the `electron` npm package).
+  if (process.env.ELECTRON_OVERRIDE_BIN && existsSync(process.env.ELECTRON_OVERRIDE_BIN)) {
+    return process.env.ELECTRON_OVERRIDE_BIN;
+  }
   const candidates = [
     join(repoRoot, "node_modules", ".bin", "electron"),
     join(desktopDir, "node_modules", ".bin", "electron")
@@ -44,6 +49,26 @@ if (!useDevServer) {
   }
 }
 
+// Enable Electron verbose logging so crash info surfaces during development and
+// in Playwright smoke runs.
+process.env.ELECTRON_ENABLE_LOGGING = "1";
+
 console.info("[desktop] starting Electron…");
-const electron = spawnSync(electronBin, [join(desktopDir, "main.ts")], { cwd: repoRoot, stdio: "inherit" });
-process.exit(electron.status ?? 0);
+
+// Use async spawn so we can forward OS signals to the child process — this
+// ensures Ctrl-C and SIGTERM from process managers reach Electron cleanly.
+const child = spawn(electronBin, [join(desktopDir, "main.ts")], {
+  cwd: repoRoot,
+  stdio: "inherit",
+  env: { ...process.env }
+});
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(sig, () => {
+    child.kill(sig);
+  });
+}
+
+child.on("close", (code) => {
+  process.exit(code ?? 0);
+});

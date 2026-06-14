@@ -7,7 +7,7 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 import type { NativeBridgeCommand, NativeBridgeResponse } from "../src/engine/nativeBridgeProtocol";
-import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
@@ -15,6 +15,7 @@ const mediaCoreProfile = (ipcRenderer.sendSync("corevideo:handshake") as NativeM
 
 let syncCounter = 0;
 let spineCounter = 0;
+let healthCounter = 0;
 
 function request(command: NativeBridgeCommand): Promise<NativeBridgeResponse> {
   return ipcRenderer.invoke("corevideo:request", command) as Promise<NativeBridgeResponse>;
@@ -40,11 +41,21 @@ async function syncZoomMediaSpine(spinePayload: ZoomMediaSpineSyncPayload, elaps
   throw new Error(`zoom-media-spine sync failed: ${message}`);
 }
 
+async function getMediaCoreHealth(): Promise<MediaCoreHealth> {
+  healthCounter += 1;
+  const response = await request({ id: `media-core-health-${healthCounter}`, type: "get-media-core-health" });
+  if (response.ok && "health" in response) {
+    return response.health as MediaCoreHealth;
+  }
+  return { restartCount: 0, recovering: false, stopped: false };
+}
+
 contextBridge.exposeInMainWorld("coreVideoNative", {
   host: "electron",
   platform: process.platform,
   mediaCoreProfile,
   request,
   syncMediaCore,
-  syncZoomMediaSpine
+  syncZoomMediaSpine,
+  getMediaCoreHealth
 });

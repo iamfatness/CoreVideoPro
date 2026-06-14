@@ -8,7 +8,8 @@ function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PRO
     getProfile: () => profile,
     handshake: async () => profile,
     syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1),
-    syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs)
+    syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs),
+    getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
   };
 }
 

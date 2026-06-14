@@ -5,3 +5,5 @@ native/build*/
 *.tsbuildinfo
 .DS_Store
 .claude/worktrees/
+test-results/
+playwright-report/

@@ -12,7 +12,8 @@ export type NativeMediaCoreCapability =
   | "rtmp-output"
   | "ndi-output"
   | "srt-output"
-  | "webrtc-output";
+  | "webrtc-output"
+  | "virtual-camera";
 
 export type NativeMediaCoreProfile = {
   name: string;
@@ -460,6 +461,12 @@ export const requiredMvpMediaCoreCapabilities: NativeMediaCoreCapability[] = [
   "iso-recording",
   "rtmp-output"
 ];
+
+export type MediaCoreHealth = {
+  restartCount: number;
+  recovering: boolean;
+  stopped: boolean;
+};
 
 export function validateNativeMediaCoreProfile(profile: NativeMediaCoreProfile): NativeMediaCoreValidation {
   const missingCapabilities = requiredMvpMediaCoreCapabilities.filter((capability) => !profile.capabilities.includes(capability));

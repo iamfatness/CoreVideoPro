@@ -33,11 +33,20 @@ export class NativeOutputEngineAdapter implements OutputEngine {
       throw new NativeZoomBridgeError(response.error.code, response.error.message);
     }
 
-    if (!("health" in response)) {
+    // The `get-output-health` command is only handled by the output adapter,
+    // which always returns `NativeOutputResponse & { health: OutputHealth }`.
+    // The union also includes `NativeMediaCoreHealthResponse` (health: MediaCoreHealth)
+    // so we perform a discriminant check on a field unique to OutputHealth.
+    const health =
+      "health" in response && typeof response.health === "object" && response.health !== null && "resolution" in response.health
+        ? (response.health as OutputHealth)
+        : null;
+
+    if (!health) {
       throw new NativeZoomBridgeError("protocol-error", "Native output bridge returned a non-health response.");
     }
 
-    return response.health;
+    return health;
   }
 
   async getSession(): Promise<OutputSessionState> {

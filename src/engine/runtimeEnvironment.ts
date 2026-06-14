@@ -1,5 +1,5 @@
 import type { NativeHostBridge } from "./nativeHostBridge";
-import type { NativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreCapability, NativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
 import { validateNativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
 
 export type RuntimeEnvironmentStatus = "mock" | "ready" | "degraded" | "unsupported";
@@ -10,11 +10,14 @@ export type RuntimeEnvironment = {
   host: string;
   platform: string;
   warnings: string[];
+  /** Capabilities announced by the native core. Empty in mock/degraded/pending states. */
+  capabilities: NativeMediaCoreCapability[];
 };
 
 export function describeRuntimeEnvironment(
   bridge: NativeHostBridge | undefined,
-  profile?: NativeMediaCoreProfile
+  profile?: NativeMediaCoreProfile,
+  health?: MediaCoreHealth
 ): RuntimeEnvironment {
   if (!bridge) {
     return {
@@ -22,7 +25,20 @@ export function describeRuntimeEnvironment(
       label: "Mock studio",
       host: "browser-preview",
       platform: "web",
-      warnings: ["Running with simulated Zoom and output engines."]
+      warnings: ["Running with simulated Zoom and output engines."],
+      capabilities: []
+    };
+  }
+
+  if (health?.recovering) {
+    const restarts = health.restartCount;
+    return {
+      status: "degraded",
+      label: `Media core recovering (${restarts} restart${restarts === 1 ? "" : "s"})`,
+      host: bridge.host,
+      platform: bridge.platform,
+      warnings: ["The media core child process crashed and is restarting automatically."],
+      capabilities: profile?.capabilities ?? []
     };
   }
 
@@ -32,7 +48,8 @@ export function describeRuntimeEnvironment(
       label: "Native shell pending",
       host: bridge.host,
       platform: bridge.platform,
-      warnings: ["Native shell is present, but media core capabilities have not been announced."]
+      warnings: ["Native shell is present, but media core capabilities have not been announced."],
+      capabilities: []
     };
   }
 
@@ -43,6 +60,7 @@ export function describeRuntimeEnvironment(
     label: validation.ready ? "Native media ready" : "Native media incomplete",
     host: bridge.host,
     platform: bridge.platform,
-    warnings: [...validation.missingCapabilities.map((capability) => `Missing ${capability}.`), ...validation.warnings]
+    warnings: [...validation.missingCapabilities.map((capability) => `Missing ${capability}.`), ...validation.warnings],
+    capabilities: profile.capabilities
   };
 }

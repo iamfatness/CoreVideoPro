@@ -17,6 +17,7 @@ import { createIpcRouter } from "./ipcRouter.ts";
 import { buildNativeMediaCoreCommands } from "../src/engine/nativeMediaCoreCommands";
 import { describeRuntimeEnvironment } from "../src/engine/runtimeEnvironment";
 import {
+  attachBridgeMediaCoreHealth,
   attachBridgeMediaCoreSync,
   attachBridgeZoomMediaSpineSync,
   handshakeMediaCoreThroughBridge,
@@ -51,6 +52,7 @@ async function bootBridge(): Promise<NativeHostBridge> {
   };
   attachBridgeMediaCoreSync(bridge);
   attachBridgeZoomMediaSpineSync(bridge);
+  attachBridgeMediaCoreHealth(bridge);
   return bridge;
 }
 
@@ -133,5 +135,27 @@ describe("desktop integration gate", () => {
     const payload = buildZoomMediaSpineSyncPayload(initialProduction, readiness);
     const snapshot = await bridge.syncZoomMediaSpine!(payload, 5000);
     expect(snapshot.events).toContain("zoom-media-spine-sync accepted by Node stub core.");
+  });
+
+  it("A3 gate — force-crash triggers recovering health visible through the bridge", async () => {
+    const bridge = await bootBridge();
+    expect(bridge.getMediaCoreHealth).toBeDefined();
+
+    // Baseline: no crash yet.
+    const baseHealth = await bridge.getMediaCoreHealth!();
+    expect(baseHealth.recovering).toBe(false);
+    expect(baseHealth.restartCount).toBe(0);
+
+    // Crash the core; supervisor restarts it (give exit handler time to fire).
+    await active!.forceCrash();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const crashHealth = await bridge.getMediaCoreHealth!();
+    expect(crashHealth.restartCount).toBeGreaterThan(0);
+
+    // describeRuntimeEnvironment surfaces the recovering state as degraded.
+    const degraded = describeRuntimeEnvironment(bridge, bridge.mediaCoreProfile, crashHealth);
+    expect(degraded.status).toBe("degraded");
+    expect(degraded.label).toMatch(/recovering/i);
   });
 });
