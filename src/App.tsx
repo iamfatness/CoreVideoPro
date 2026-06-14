@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
+import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
@@ -47,6 +48,8 @@ import {
   type AutoProductionState,
   type BrandKit,
   type BrandKitFont,
+  type CaptionFontSize,
+  type CaptionStyle,
   type GraphicOverlay,
   type MediaFrameState,
   type OutputDestination,
@@ -88,6 +91,7 @@ const participantRoles: ParticipantRole[] = ["Host", "Presenter", "Panelist", "G
 const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]);
 const brandKitFonts: BrandKitFont[] = ["Inter", "Poppins", "Roboto", "Georgia"];
 const lowerThirdStyles: BrandKit["lowerThirdStyle"][] = ["solid", "minimal", "gradient"];
+const captionFontSizes: CaptionFontSize[] = ["small", "medium", "large"];
 
 const tabs = [
   { id: "studio", label: "Studio", icon: Clapperboard },
@@ -586,6 +590,13 @@ export function App({ engines, runtime }: AppProps) {
     }));
   }
 
+  function updateCaptionStyle(update: Partial<ProductionState["captionStyle"]>) {
+    setProduction((current) => ({
+      ...current,
+      captionStyle: { ...current.captionStyle, ...update }
+    }));
+  }
+
   function selectBreakoutRoom(roomId: string) {
     const nextParticipants =
       roomId === "all"
@@ -899,14 +910,17 @@ export function App({ engines, runtime }: AppProps) {
                   <ProgramGraphic key={graphic.id} graphic={graphic} />
                 ))}
               </div>
-              <div className="caption-strip-row">
+              <div
+                className={`caption-strip-row caption-size-${production.captionStyle.fontSize}`}
+                style={captionStyleVars(production.captionStyle) as React.CSSProperties}
+              >
                 <span className="cc-badge">
                   <Captions size={14} />
                   CC
                 </span>
                 <div className="caption-strip-text">
                   <strong>{production.captionOverlay.speakerName}</strong>
-                  <span>{production.captionOverlay.text}</span>
+                  <span>{formatCaptionText(production.captionOverlay.text, production.captionStyle)}</span>
                 </div>
               </div>
             </section>
@@ -1540,7 +1554,7 @@ export function App({ engines, runtime }: AppProps) {
             </button>
           </section>
 
-          <section className="panel">
+          <section className="panel" aria-label="Caption style">
             <div className="section-title">
               <Captions size={15} />
               Lower-third &amp; captions
@@ -1548,6 +1562,51 @@ export function App({ engines, runtime }: AppProps) {
             <div className="health-grid">
               <ControlReadout label="Lower-third" value={production.captionOverlay.lowerThirdPosition.replace("-", " ")} />
               <ControlReadout label="Captions" value={production.captionOverlay.captionPosition} />
+            </div>
+            <p className="brand-kit-summary">{summarizeCaptionStyle(production.captionStyle)}</p>
+            <div className="brand-kit-form">
+              <label className="brand-kit-field">
+                <span>Caption size</span>
+                <select
+                  aria-label="Caption size"
+                  onChange={(event) => updateCaptionStyle({ fontSize: event.target.value as CaptionFontSize })}
+                  value={production.captionStyle.fontSize}
+                >
+                  {captionFontSizes.map((size) => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="brand-kit-field">
+                <span>Caption color</span>
+                <input
+                  aria-label="Caption text color"
+                  onChange={(event) => updateCaptionStyle({ textColor: event.target.value })}
+                  type="color"
+                  value={production.captionStyle.textColor}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Backdrop opacity</span>
+                <input
+                  aria-label="Caption backdrop opacity"
+                  max={100}
+                  min={0}
+                  onChange={(event) => updateCaptionStyle({ backgroundOpacity: Number(event.target.value) })}
+                  step={5}
+                  type="range"
+                  value={production.captionStyle.backgroundOpacity}
+                />
+              </label>
+              <label className="brand-kit-field caption-uppercase-field">
+                <span>Uppercase</span>
+                <input
+                  aria-label="Uppercase captions"
+                  checked={production.captionStyle.uppercase}
+                  onChange={(event) => updateCaptionStyle({ uppercase: event.target.checked })}
+                  type="checkbox"
+                />
+              </label>
             </div>
           </section>
         </div>

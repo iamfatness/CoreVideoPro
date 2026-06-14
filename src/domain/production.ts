@@ -97,6 +97,15 @@ export type AudioMixState = {
   summary: string;
 };
 
+export type CaptionFontSize = "small" | "medium" | "large";
+
+export type CaptionStyle = {
+  fontSize: CaptionFontSize;
+  textColor: string;
+  backgroundOpacity: number;
+  uppercase: boolean;
+};
+
 export type CaptionOverlayState = {
   text: string;
   speakerName: string;
@@ -236,6 +245,7 @@ export type ProductionState = {
   outputDestinations: OutputDestination[];
   audioMix: AudioMixState;
   captionOverlay: CaptionOverlayState;
+  captionStyle: CaptionStyle;
   graphics: GraphicOverlay[];
   brandKit: BrandKit;
   videoEffects: ParticipantVideoEffect[];
@@ -561,6 +571,12 @@ export const initialProduction: ProductionState = {
     lowerThirdPosition: "upper-left",
     warnings: [],
     adaptiveSummary: "Captions clear; lower-third lifted away from captions"
+  },
+  captionStyle: {
+    fontSize: "medium",
+    textColor: "#f7fbf8",
+    backgroundOpacity: 70,
+    uppercase: false
   },
   graphics: [
     {

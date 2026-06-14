@@ -1595,7 +1595,7 @@ meter {
   gap: 10px;
   border: 1px solid rgba(189, 207, 196, 0.12);
   border-radius: 8px;
-  background: rgba(18, 23, 21, 0.78);
+  background: rgba(18, 23, 21, var(--caption-bg-opacity, 0.78));
   padding: 10px 12px;
 }
 
@@ -1625,10 +1625,22 @@ meter {
 
 .caption-strip-text span {
   overflow: hidden;
-  color: #ecf5ef;
-  font-size: 12px;
+  color: var(--caption-text-color, #ecf5ef);
+  font-size: var(--caption-font-size, 12px);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.caption-uppercase-field {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.caption-uppercase-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #44c1a1;
+  cursor: pointer;
 }
 
 /* Participants column */
