@@ -25,6 +25,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json leaveZoom();
   [[nodiscard]] rpc::Json zoomSnapshot();
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
+  [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
 

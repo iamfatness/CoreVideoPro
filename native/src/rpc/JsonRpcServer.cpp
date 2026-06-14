@@ -157,7 +157,14 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       continue;
     }
     output << handle(*request).stringify() << '\n';
+    flushFrameEvents(output);
     output.flush();
+  }
+}
+
+void JsonRpcServer::flushFrameEvents(std::ostream& output) {
+  for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
+    output << event.stringify() << '\n';
   }
 }
 

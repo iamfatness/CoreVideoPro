@@ -412,6 +412,13 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
   return snapshot;
 }
 
+std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->drainFrameEvents();
+  }
+  return {};
+}
+
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands) {
   for (const auto& command : commands) {
     (void)applyCommand(command);

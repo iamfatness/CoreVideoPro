@@ -33,6 +33,7 @@ TEST(ZoomEngineRuntime, IsDisabledWhenNoEnginePathIsConfigured) {
   EXPECT_TRUE(runtime.join(corevideo::rpc::Json::Object{}).isNull());
   EXPECT_TRUE(runtime.leave().isNull());
   EXPECT_TRUE(runtime.snapshot().isNull());
+  EXPECT_TRUE(runtime.drainFrameEvents().empty());
 }
 
 TEST(ZoomEngineRuntime, RejectsJoinWithoutNumericMeetingIdBeforeLaunch) {

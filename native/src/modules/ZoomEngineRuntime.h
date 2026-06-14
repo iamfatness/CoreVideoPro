@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace corevideo::modules {
 
@@ -24,6 +25,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json leave();
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
+  [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
 
  private:
   struct Config {
@@ -46,6 +48,7 @@ class ZoomEngineRuntime {
   void stopReader();
   [[nodiscard]] rpc::Json rawCaptureSnapshotLocked();
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
+  void enqueueFrameEventLocked(const ZoomEngineEvent& event);
 
   Config config_;
   std::unique_ptr<ZoomEngineProcessClient> process_;
@@ -55,6 +58,7 @@ class ZoomEngineRuntime {
   bool readerRunning_ = false;
   bool initialized_ = false;
   int fallbackTick_ = 0;
+  std::vector<rpc::Json> pendingFrameEvents_;
 };
 
 }  // namespace corevideo::modules

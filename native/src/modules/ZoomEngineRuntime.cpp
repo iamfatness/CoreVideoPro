@@ -1,5 +1,7 @@
 #include "modules/ZoomEngineRuntime.h"
 
+#include "engine-ipc.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -19,7 +21,7 @@ int envInt(const char* name, int fallback) {
     return fallback;
   }
   try {
-    return std::max(0, std::stoi(value));
+    return (std::max)(0, std::stoi(value));
   } catch (...) {
     return fallback;
   }
@@ -221,6 +223,13 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   return spineSnapshotLocked(payload, elapsedMs);
 }
 
+std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto events = std::move(pendingFrameEvents_);
+  pendingFrameEvents_.clear();
+  return events;
+}
+
 bool ZoomEngineRuntime::ensureStartedLocked() {
   if (process_ && process_->running()) {
     return true;
@@ -268,6 +277,9 @@ void ZoomEngineRuntime::readerLoop() {
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
   std::lock_guard<std::mutex> lock(mutex_);
   state_.apply(event);
+  if (event.kind == ZoomEngineEventKind::Frame) {
+    enqueueFrameEventLocked(event);
+  }
 }
 
 void ZoomEngineRuntime::stopReader() {
@@ -364,6 +376,42 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       {"warnings", stringArray(runtime.warnings)},
       {"events", stringArray(runtime.events)},
   };
+}
+
+void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
+  if (event.sourceUuid.empty() || event.participantId == 0 || event.width == 0 || event.height == 0) {
+    return;
+  }
+
+  ShmRegion region;
+  const auto size = zoomEngineI420FrameByteSize(event.width, event.height);
+  if (!shm_region_open_read(region, zoomEngineVideoSharedMemoryName(event.sourceUuid), size)) {
+    return;
+  }
+  const auto closeRegion = [&region]() { shm_region_destroy(region); };
+  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 320, 180);
+  closeRegion();
+  if (!frame) {
+    return;
+  }
+
+  rpc::Json::Array rgba;
+  rgba.reserve(frame->rgba.size());
+  for (const auto byte : frame->rgba) {
+    rgba.emplace_back(static_cast<int>(byte));
+  }
+
+  pendingFrameEvents_.emplace_back(rpc::Json::Object{
+      {"type", "zoom-video-frame"},
+      {"frame",
+       rpc::Json::Object{
+           {"participantId", frame->participantId},
+           {"width", static_cast<int>(frame->width)},
+           {"height", static_cast<int>(frame->height)},
+           {"frameId", static_cast<int>(frame->frameId)},
+           {"rgba", rgba},
+       }},
+  });
 }
 
 }  // namespace corevideo::modules
