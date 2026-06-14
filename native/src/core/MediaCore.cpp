@@ -189,6 +189,63 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
   return captureDeviceArray(modules_.captureDevice->connect(deviceId));
 }
 
+rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
+  zoomJoined_ = true;
+  const std::string displayName = payload.getString("displayName", zoomDisplayName_);
+  if (!displayName.empty()) {
+    zoomDisplayName_ = displayName;
+  }
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::leaveZoom() {
+  zoomJoined_ = false;
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::zoomSnapshot() {
+  ++zoomSnapshotTick_;
+  if (!zoomJoined_) {
+    return rpc::Json::Object{
+        {"meetingState", "idle"},
+        {"participants", rpc::Json::Array{}},
+        {"tick", zoomSnapshotTick_},
+    };
+  }
+
+  return rpc::Json::Object{
+      {"meetingState", "in_meeting"},
+      {"activeSpeakerId", "operator-1"},
+      {"caption", ""},
+      {"tick", zoomSnapshotTick_},
+      {"participants",
+       rpc::Json::Array{
+           rpc::Json::Object{
+               {"userId", "operator-1"},
+               {"displayName", zoomDisplayName_},
+               {"role", "Host"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", true},
+               {"audioLevel", 76},
+               {"networkQuality", "good"},
+           },
+           rpc::Json::Object{
+               {"userId", "guest-1"},
+               {"displayName", "Guest 1"},
+               {"role", "Guest"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", false},
+               {"audioLevel", 22},
+               {"networkQuality", "good"},
+           },
+       }},
+  };
+}
+
 rpc::Json MediaCore::sessionState() const {
   const auto session = modules_.encoder->session();
   rpc::Json::Object state{

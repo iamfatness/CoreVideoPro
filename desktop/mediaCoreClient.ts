@@ -8,6 +8,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
+import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
@@ -128,6 +130,33 @@ export class MediaCoreSupervisor {
     }
     const message = response.ok ? "Unexpected response type." : response.error.message;
     throw new Error(`zoom-media-spine sync failed: ${message}`);
+  }
+
+  async joinZoom(payload: ZoomJoinRequest): Promise<RawCaptureSnapshot> {
+    const response = await this.send({ id: this.createId(), type: "zoom-join", payload });
+    if (response.ok && response.type === "zoom-join") {
+      return response.snapshot;
+    }
+    const message = response.ok ? "Unexpected response type." : response.error.message;
+    throw new Error(`zoom join failed: ${message}`);
+  }
+
+  async leaveZoom(): Promise<RawCaptureSnapshot> {
+    const response = await this.send({ id: this.createId(), type: "zoom-leave" });
+    if (response.ok && response.type === "zoom-leave") {
+      return response.snapshot;
+    }
+    const message = response.ok ? "Unexpected response type." : response.error.message;
+    throw new Error(`zoom leave failed: ${message}`);
+  }
+
+  async getZoomSnapshot(): Promise<RawCaptureSnapshot> {
+    const response = await this.send({ id: this.createId(), type: "zoom-snapshot" });
+    if (response.ok && response.type === "zoom-snapshot") {
+      return response.snapshot;
+    }
+    const message = response.ok ? "Unexpected response type." : response.error.message;
+    throw new Error(`zoom snapshot failed: ${message}`);
   }
 
   /** Test hook: ask the core to crash, exercising restart. */

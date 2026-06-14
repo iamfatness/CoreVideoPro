@@ -35,6 +35,22 @@ describe("MediaCoreSupervisor", () => {
     expect(snapshot.programFrame?.health).toBe("live");
   });
 
+  it("round-trips Zoom join, snapshot, and leave through the supervised core", async () => {
+    const supervisor = makeSupervisor();
+    await supervisor.start();
+
+    const joined = await supervisor.joinZoom({ meetingUrl: "https://zoom.us/j/123", displayName: "Operator", webinar: false });
+    expect(joined.meetingState).toBe("in_meeting");
+    expect(joined.participants[0]?.displayName).toBe("Operator");
+
+    const snapshot = await supervisor.getZoomSnapshot();
+    expect(snapshot.meetingState).toBe("in_meeting");
+
+    const left = await supervisor.leaveZoom();
+    expect(left.meetingState).toBe("idle");
+    expect(left.participants).toHaveLength(0);
+  });
+
   it("answers pings", async () => {
     const supervisor = makeSupervisor();
     await supervisor.start();

@@ -70,7 +70,10 @@ inline constexpr std::array<std::string_view, 14> kNativeBridgeCommandTypes = {
     "connect-capture-device",
 };
 
-inline constexpr std::array<std::string_view, 1> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 4> kCoreRequestTypes = {
+    "zoom-join",
+    "zoom-leave",
+    "zoom-snapshot",
     "zoom-media-spine-sync",
 };
 
