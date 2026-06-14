@@ -18,11 +18,32 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
-rpc::Json::Array capabilityArray() {
+rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
   rpc::Json::Array result;
-  for (auto capability : kNativeMediaCoreCapabilities) {
-    result.emplace_back(std::string(capability));
+  result.emplace_back("audio-mixer");
+  result.emplace_back("scene-graph-rendering");
+  result.emplace_back("dynamic-overlays");
+
+  if (renderer != "software") {
+    result.emplace_back("gpu-compositor");
+    result.emplace_back("chroma-key");
+    result.emplace_back("smart-framing");
   }
+
+#if COREVIDEO_WITH_ZOOM
+  result.emplace_back("zoom-raw-video");
+  result.emplace_back("zoom-raw-audio");
+#endif
+
+  if (encoderSession.hardwareAccelerated) {
+    result.emplace_back("program-recording");
+    result.emplace_back("iso-recording");
+  }
+
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  result.emplace_back("rtmp-output");
+#endif
+
   return result;
 }
 
@@ -120,15 +141,16 @@ MediaCore::MediaCore(modules::ModuleSet modules) : modules_(std::move(modules)) 
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
+  const auto encoderSession = modules_.encoder->session();
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
-      {"encoder", modules_.encoder->session().encoderName},
+      {"encoder", encoderSession.encoderName},
       {"maxProgramResolution", "1920x1080"},
       {"maxProgramFps", 30},
       {"maxParticipantFeeds", 6},
       {"maxIsoRecordings", 2},
-      {"capabilities", capabilityArray()},
+      {"capabilities", capabilityArray(renderer, encoderSession)},
   };
 }
 
