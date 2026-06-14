@@ -1701,3 +1701,33 @@ describe("audience Q&A", () => {
     expect(within(panel).getAllByText("approved").length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("teleprompter", () => {
+  it("shows the teleprompter panel with the script in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Teleprompter panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Teleprompter script")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /^Start$/ })).toBeInTheDocument();
+  });
+
+  it("starts scrolling when Start is clicked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Teleprompter panel");
+    const startBtn = within(panel).getByRole("button", { name: /^Start$/ });
+    expect(startBtn).not.toBeDisabled();
+
+    await user.click(startBtn);
+
+    expect(within(panel).getAllByText("scrolling").length).toBeGreaterThanOrEqual(1);
+    expect(within(panel).getByRole("button", { name: /^Pause$/ })).not.toBeDisabled();
+  });
+});
