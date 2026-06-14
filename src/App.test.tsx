@@ -413,6 +413,22 @@ describe("App production controls", () => {
     expect(screen.getByText(/live 12 Mbps/i)).toBeInTheDocument();
   });
 
+  it("plans multitrack audio from the ISO recording selection", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const plan = await screen.findByLabelText("Multitrack audio plan");
+
+    // Seeded ISO selection is p1 + p2 → master + two ISO tracks.
+    expect(within(plan).getByText("3 tracks - 4 ch - 0.58 MB/s")).toBeInTheDocument();
+    expect(within(plan).getByText(/Program master - stereo/)).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Michael Thompson ISO recording"));
+    expect(within(plan).getByText(/Michael Thompson ISO - mono/)).toBeInTheDocument();
+    expect(within(plan).getByRole("status")).toHaveTextContent(/Michael Thompson's ISO track will be silent while muted/);
+  });
+
   it("uses editable recording settings when recording starts", async () => {
     const user = userEvent.setup();
     const engines = createMockEngineBundle();

@@ -1448,6 +1448,54 @@ meter {
   grid-column: 1 / -1;
 }
 
+.multitrack-plan {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(189, 207, 196, 0.09);
+}
+
+.multitrack-summary {
+  color: #8fdcc8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.multitrack-tracks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multitrack-track {
+  border: 1px solid rgba(189, 207, 196, 0.16);
+  border-radius: 6px;
+  background: rgba(4, 11, 12, 0.6);
+  color: #c6d4cc;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.multitrack-track.track-master {
+  border-color: rgba(61, 220, 151, 0.3);
+  color: #8fdcc8;
+}
+
+.multitrack-track.muted {
+  color: #ef8f8f;
+  border-color: rgba(239, 79, 79, 0.3);
+}
+
+.multitrack-warning {
+  margin: 0;
+  border-radius: 6px;
+  background: rgba(28, 18, 8, 0.6);
+  color: #ffd39b;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+
 .brand-kit-field span {
   color: #94a59b;
   font-size: 12px;
