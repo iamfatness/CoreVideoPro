@@ -77,6 +77,7 @@ import { buildWatermarkSpec, classificationColor, confidentialityLevels, createW
 import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/networkDiagnostics";
 import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAnimationFrame, dismissAnimation, getAnimationPreset, startAnimation, type AnimationState } from "./engine/graphicAnimator";
 import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, type Poll } from "./engine/pollEngine";
+import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -227,6 +228,15 @@ export function App({ engines, runtime }: AppProps) {
   const [activePoll, setActivePoll] = useState<Poll>(() =>
     createPoll("Favourite session format?", ["Live Q&A", "Presentation only", "Panel discussion"])
   );
+  const [activeCueSheet, setActiveCueSheet] = useState<CueSheet>(() => {
+    let s = createCueSheet("Live Show Rundown");
+    s = addCue(s, "intro", "Welcome & Housekeeping", 300);
+    s = addCue(s, "segment", "Keynote Presentation", 1800);
+    s = addCue(s, "break", "Break", 600);
+    s = addCue(s, "qa", "Live Q&A", 900);
+    s = addCue(s, "outro", "Wrap-up & Goodbye", 300);
+    return s;
+  });
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -3396,6 +3406,68 @@ export function App({ engines, runtime }: AppProps) {
                     >
                       Reset
                     </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Cue sheet">
+            <div className="section-title">
+              <FileText size={15} />
+              Cue sheet
+            </div>
+            {(() => {
+              const nowSec = Math.floor(Date.now() / 1000);
+              const sheetSummary = summarizeCueSheet(activeCueSheet, nowSec);
+              const next = nextCue(activeCueSheet);
+              return (
+                <div className="cue-sheet-panel" aria-label="Cue sheet panel">
+                  <div className="cue-sheet-header">
+                    <span className="cue-sheet-title">{activeCueSheet.showTitle}</span>
+                  </div>
+                  <div className="cue-list" aria-label="Cue list">
+                    {activeCueSheet.cues.map((cue) => (
+                      <div
+                        key={cue.id}
+                        className={`cue-row cue-status-${cue.status}${cue.id === activeCueSheet.activeCueId ? " cue-active" : ""}`}
+                      >
+                        <span className="cue-order">{cue.order}</span>
+                        <span className="cue-type-label">{cueTypeLabel(cue.type)}</span>
+                        <span className="cue-title">{cue.title}</span>
+                        <span className="cue-duration">{Math.floor(cue.plannedDurationSec / 60)}:{String(cue.plannedDurationSec % 60).padStart(2, "0")}</span>
+                        <span className={`cue-status-badge cue-badge-${cue.status}`}>{cue.status}</span>
+                        <div className="cue-row-actions">
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status === "done" || cue.status === "skipped"}
+                            onClick={() => setActiveCueSheet((s) => goLiveCue(s, cue.id, nowSec))}
+                          >
+                            Live
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status !== "live"}
+                            onClick={() => setActiveCueSheet((s) => endCue(s, cue.id, nowSec))}
+                          >
+                            End
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status !== "pending" && cue.status !== "ready"}
+                            onClick={() => setActiveCueSheet((s) => skipCue(s, cue.id))}
+                          >
+                            Skip
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="cue-sheet-stats">
+                    <ControlReadout label="Done" value={String(sheetSummary.doneCount)} />
+                    <ControlReadout label="Pending" value={String(sheetSummary.pendingCount)} />
+                    <ControlReadout label="Overrun" value={sheetSummary.overrunSec > 0 ? `${Math.round(sheetSummary.overrunSec)}s` : "—"} />
+                    <ControlReadout label="Next" value={next?.title ?? "—"} />
                   </div>
                 </div>
               );

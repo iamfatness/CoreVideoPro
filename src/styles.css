@@ -3664,3 +3664,25 @@ meter {
 .poll-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .poll-controls { display: flex; gap: 6px; flex-wrap: wrap; }
 .poll-controls .ghost-button { font-size: 10px; padding: 3px 8px; }
+
+/* Cue sheet */
+.cue-sheet-panel { display: flex; flex-direction: column; gap: 8px; }
+.cue-sheet-header { display: flex; align-items: center; justify-content: space-between; }
+.cue-sheet-title { font-size: 12px; font-weight: 600; color: #c0d4f0; }
+.cue-list { display: flex; flex-direction: column; gap: 4px; }
+.cue-row { display: grid; grid-template-columns: 18px 60px 1fr 36px 52px auto; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 4px; background: #0a1520; border: 1px solid #1a2a40; }
+.cue-row.cue-active { background: #0d1f0d; border-color: #2a4a2a; }
+.cue-row.cue-status-done { opacity: 0.5; }
+.cue-row.cue-status-skipped { opacity: 0.35; text-decoration: line-through; }
+.cue-order { font-size: 10px; color: #5a7090; text-align: right; }
+.cue-type-label { font-size: 10px; color: #6080a0; }
+.cue-title { font-size: 11px; color: #c0d4f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cue-duration { font-size: 10px; color: #5a7090; font-variant-numeric: tabular-nums; }
+.cue-status-badge { font-size: 9px; text-transform: uppercase; font-weight: 600; padding: 1px 4px; border-radius: 2px; background: #1a2a40; color: #5a7090; }
+.cue-badge-live { background: #1a3a1a; color: #4ade80; }
+.cue-badge-done { background: #1a1a3a; color: #818cf8; }
+.cue-badge-skipped { background: #2a1a1a; color: #f87171; }
+.cue-badge-ready { background: #2a2a1a; color: #fbbf24; }
+.cue-row-actions { display: flex; gap: 3px; }
+.cue-row-actions .ghost-button { font-size: 9px; padding: 2px 5px; }
+.cue-sheet-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
