@@ -584,7 +584,7 @@ describe("App production controls", () => {
     expect(within(program).getByLabelText("Smart panel grid")).toBeInTheDocument();
     expect(screen.getByText(/Set & Forget took Panel/i)).toBeInTheDocument();
     expect(screen.getByText("Auto director")).toBeInTheDocument();
-    expect(screen.getAllByText(/take 90%/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/take 92%/i).length).toBeGreaterThan(0);
   });
 
   it("toggles recording and streaming states", async () => {

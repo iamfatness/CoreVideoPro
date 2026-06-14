@@ -206,6 +206,9 @@ export type AutoProductionState = {
   reason: string;
   action: "hold" | "queue" | "take";
   lastAppliedSceneId?: string;
+  ruleId?: string;
+  overrideReason?: string;
+  signals?: string[];
 };
 
 export type OutputHealth = {
