@@ -80,6 +80,7 @@ import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, typ
 import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
 import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
 import { advanceScroll, createTeleprompter, formatReadTime, jumpToLine, pauseScroll, resetScroll, setSpeed, startScroll, teleprompterView, type TeleprompterState } from "./engine/teleprompter";
+import { addPlate, createDeck, queuedPlates, requeuePlate, showNext, showPlate, summarizeDeck, takeDown, toneLabel, type LowerThirdDeck } from "./engine/lowerThird";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -257,6 +258,13 @@ export function App({ engines, runtime }: AppProps) {
       ].join("\n")
     )
   );
+  const [plateDeck, setPlateDeck] = useState<LowerThirdDeck>(() => {
+    let d = createDeck();
+    d = addPlate(d, "Dr. Amara Okafor", "Keynote Speaker", "Quantum Systems Lab", "accent");
+    d = addPlate(d, "James Whitfield", "Panel Moderator", "CoreVideo", "neutral");
+    d = addPlate(d, "Sofia Marchetti", "Special Guest", "Marchetti Studios", "guest");
+    return d;
+  });
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -3626,6 +3634,80 @@ export function App({ engines, runtime }: AppProps) {
                       Speed
                     </button>
                   </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Lower thirds">
+            <div className="section-title">
+              <LayoutTemplate size={15} />
+              Lower thirds
+            </div>
+            {(() => {
+              const deckSummary = summarizeDeck(plateDeck);
+              const queued = queuedPlates(plateDeck);
+              return (
+                <div className="plate-panel" aria-label="Lower third deck">
+                  <div className={`plate-preview ${deckSummary.onAir ? `tone-${deckSummary.onAir.tone}` : "plate-preview-empty"}`}>
+                    {deckSummary.onAir ? (
+                      <>
+                        <span className="plate-preview-name">{deckSummary.onAir.name}</span>
+                        <span className="plate-preview-title">{deckSummary.onAir.title}</span>
+                        {deckSummary.onAir.role && <span className="plate-preview-role">{deckSummary.onAir.role}</span>}
+                      </>
+                    ) : (
+                      <span className="plate-preview-off">No plate on air</span>
+                    )}
+                  </div>
+                  <div className="plate-transport">
+                    <button
+                      className="ghost-button"
+                      disabled={plateDeck.queue.length === 0}
+                      onClick={() => setPlateDeck(showNext)}
+                    >
+                      Show Next
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={plateDeck.onAirId === null}
+                      onClick={() => setPlateDeck(takeDown)}
+                    >
+                      Take Down
+                    </button>
+                  </div>
+                  <div className="plate-queue" aria-label="Plate queue">
+                    {queued.map((plate) => (
+                      <div key={plate.id} className={`plate-row tone-${plate.tone}`}>
+                        <div className="plate-row-info">
+                          <span className="plate-row-name">{plate.name}</span>
+                          <span className="plate-row-title">{plate.title}</span>
+                        </div>
+                        <span className="plate-tone-badge">{toneLabel(plate.tone)}</span>
+                        <button
+                          className="ghost-button"
+                          onClick={() => setPlateDeck((d) => showPlate(d, plate.id))}
+                        >
+                          Show
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="plate-summary">{deckSummary.summary}</p>
+                  <div className="plate-stats">
+                    <ControlReadout label="On air" value={deckSummary.onAir?.name ?? "—"} />
+                    <ControlReadout label="Queued" value={String(deckSummary.queuedCount)} />
+                    <ControlReadout label="Shown" value={String(deckSummary.shownCount)} />
+                    <ControlReadout label="Next" value={deckSummary.next?.name ?? "—"} />
+                  </div>
+                  {plateDeck.shownIds.length > 0 && (
+                    <button
+                      className="ghost-button plate-requeue-all"
+                      onClick={() => setPlateDeck((d) => d.shownIds.reduce((acc, id) => requeuePlate(acc, id), d))}
+                    >
+                      Requeue shown
+                    </button>
+                  )}
                 </div>
               );
             })()}
