@@ -1,4 +1,11 @@
-import type { OutputDestination, OutputHealth, OutputProfile, OutputSessionState, RecordingSettings } from "../domain/production";
+import type {
+  CaptureDeviceState,
+  OutputDestination,
+  OutputHealth,
+  OutputProfile,
+  OutputSessionState,
+  RecordingSettings
+} from "../domain/production";
 import type { ZoomJoinRequest } from "./contracts";
 import type { RawCaptureSnapshot } from "./captureSnapshotMapper";
 
@@ -52,7 +59,36 @@ export type NativeOutputCommand =
       type: "get-output-session";
     };
 
-export type NativeBridgeCommand = NativeZoomCommand | NativeOutputCommand;
+export type NativeCaptureDeviceCommand =
+  | {
+      id: string;
+      type: "list-capture-devices";
+    }
+  | {
+      id: string;
+      type: "select-capture-input";
+      payload: {
+        deviceId: string;
+        inputId: string;
+      };
+    }
+  | {
+      id: string;
+      type: "set-capture-audio-sync-offset";
+      payload: {
+        deviceId: string;
+        offsetMs: number;
+      };
+    }
+  | {
+      id: string;
+      type: "connect-capture-device";
+      payload: {
+        deviceId: string;
+      };
+    };
+
+export type NativeBridgeCommand = NativeZoomCommand | NativeOutputCommand | NativeCaptureDeviceCommand;
 
 export type NativeZoomResponse =
   | {
@@ -96,7 +132,28 @@ export type NativeOutputResponse =
       };
     };
 
-export type NativeBridgeResponse = NativeZoomResponse | NativeOutputResponse;
+export type NativeCaptureDeviceResponse =
+  | {
+      id: string;
+      ok: true;
+      devices: CaptureDeviceState[];
+    }
+  | {
+      id: string;
+      ok: false;
+      error: {
+        code:
+          | "native-unavailable"
+          | "list-devices-failed"
+          | "select-input-failed"
+          | "audio-sync-failed"
+          | "connect-device-failed"
+          | "protocol-error";
+        message: string;
+      };
+    };
+
+export type NativeBridgeResponse = NativeZoomResponse | NativeOutputResponse | NativeCaptureDeviceResponse;
 
 export interface NativeZoomTransport {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
