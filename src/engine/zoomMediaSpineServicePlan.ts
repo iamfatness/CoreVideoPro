@@ -165,7 +165,7 @@ export function buildZoomMediaSpineServicePlan(
     requests,
     warnings: payload.warnings,
     summary: payload.blocked
-      ? `Zoom media spine service plan blocked; ${payload.warnings.length} warning${payload.warnings.length === 1 ? "" : "s"} require attention.`
+      ? `Zoom media spine service plan blocked; ${payload.warnings.length} warning${payload.warnings.length === 1 ? "" : "s"} ${payload.warnings.length === 1 ? "requires" : "require"} attention.`
       : `${requests.length} Zoom media spine service request${requests.length === 1 ? "" : "s"} planned.`
   };
 }
