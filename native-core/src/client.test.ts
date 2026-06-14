@@ -146,4 +146,91 @@ describe("MediaCoreServiceClient", () => {
       }
     });
   });
+
+  it("drives Zoom media spine requests through the native-core service process", async () => {
+    const client = new MediaCoreServiceClient({
+      command: process.execPath,
+      args: [resolve(workspaceRoot, "node_modules/tsx/dist/cli.mjs"), "src/service.ts"],
+      cwd: nativeCoreRoot,
+      requestTimeoutMs: 10000
+    });
+    clients.push(client);
+
+    await expect(
+      client.configureZoom({
+        platform: "windows",
+        sdkRuntimePresent: true,
+        sdkVersion: "6.2.0",
+        appKeyPresent: true,
+        oauthConfigured: true,
+        jwtBrokerConfigured: true,
+        rawVideoEnabled: true,
+        rawAudioEnabled: true,
+        rawShareEnabled: true
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      zoom: {
+        meetingState: "idle",
+        sdkVersion: "6.2.0"
+      }
+    });
+
+    await expect(
+      client.joinZoom(
+        { meetingNumber: "123456789", displayName: "Producer" },
+        [
+          {
+            sdkUserId: "sdk-presenter",
+            displayName: "Andre Wallace",
+            role: "panelist",
+            videoOn: true,
+            muted: false,
+            talking: true,
+            sharingScreen: true,
+            audioLevel: 82,
+            networkQuality: "good"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      zoom: {
+        meetingState: "in-meeting",
+        participantCount: 1,
+        activeSpeakerId: "sdk-presenter"
+      }
+    });
+
+    await client.syncZoomSubscriptions([
+      { participantId: "sdk-presenter", kind: "participant-video", purpose: "program", priority: 1 },
+      { participantId: "sdk-presenter", kind: "participant-audio", purpose: "mix", priority: 2 }
+    ]);
+    await client.startZoomRecording({ filenamePrefix: "client-zoom-proof", isoParticipantIds: ["sdk-presenter"] });
+    const tick = await client.tickZoom(33);
+
+    expect(tick).toMatchObject({
+      ok: true,
+      zoom: {
+        recording: {
+          evidence: {
+            programFramesWritten: 1,
+            isoFramesWritten: 1,
+            audioPacketsObserved: 1,
+            subscribedVideoFeeds: 1
+          }
+        }
+      }
+    });
+
+    const leave = await client.leaveZoom();
+    expect(leave).toMatchObject({
+      ok: true,
+      zoom: {
+        meetingState: "idle",
+        participantCount: 0,
+        subscriptions: []
+      }
+    });
+  });
 });

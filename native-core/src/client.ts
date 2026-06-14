@@ -1,9 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { MediaCoreCommand, MediaCoreRequest, MediaCoreResponse } from "./protocol.js";
+import type {
+  ZoomMediaSpineJoinRequest,
+  ZoomMediaSpineParticipant,
+  ZoomMediaSpineRuntimeConfig,
+  ZoomMediaSpineSubscriptionRequest
+} from "./zoomMediaSpine.js";
+import type { ZoomMediaSpineServiceRequest, ZoomMediaSpineServiceResponse } from "./zoomMediaSpineServiceProtocol.js";
+import type { MediaCoreRecordingTargets } from "./protocol.js";
 
 type PendingRequest = {
-  resolve(response: MediaCoreResponse): void;
+  resolve(response: MediaCoreResponse | ZoomMediaSpineServiceResponse): void;
   reject(error: Error): void;
 };
 
@@ -42,15 +50,51 @@ export class MediaCoreServiceClient {
   }
 
   sync(commands: MediaCoreCommand[]) {
-    return this.send({ id: this.createRequestId(), type: "sync", commands });
+    return this.send<MediaCoreResponse>({ id: this.createRequestId(), type: "sync", commands });
   }
 
   snapshot() {
-    return this.send({ id: this.createRequestId(), type: "snapshot" });
+    return this.send<MediaCoreResponse>({ id: this.createRequestId(), type: "snapshot" });
   }
 
   tick(elapsedMs: number) {
-    return this.send({ id: this.createRequestId(), type: "tick", elapsedMs });
+    return this.send<MediaCoreResponse>({ id: this.createRequestId(), type: "tick", elapsedMs });
+  }
+
+  configureZoom(config: ZoomMediaSpineRuntimeConfig) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-configure", config });
+  }
+
+  joinZoom(join: ZoomMediaSpineJoinRequest, participants: ZoomMediaSpineParticipant[] = []) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-join", join, participants });
+  }
+
+  updateZoomRoster(participants: ZoomMediaSpineParticipant[]) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-roster", participants });
+  }
+
+  syncZoomSubscriptions(subscriptions: ZoomMediaSpineSubscriptionRequest[]) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-subscriptions", subscriptions });
+  }
+
+  startZoomRecording(targets?: Partial<MediaCoreRecordingTargets>) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-start-recording", targets });
+  }
+
+  stopZoomRecording() {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-stop-recording" });
+  }
+
+  tickZoom(elapsedMs: number) {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-tick", elapsedMs });
+  }
+
+  leaveZoom() {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-leave" });
+  }
+
+  zoomSnapshot() {
+    return this.send<ZoomMediaSpineServiceResponse>({ id: this.createRequestId(), type: "zoom-snapshot" });
   }
 
   close() {
@@ -59,8 +103,8 @@ export class MediaCoreServiceClient {
     this.process.kill();
   }
 
-  private send(request: MediaCoreRequest) {
-    return new Promise<MediaCoreResponse>((resolve, reject) => {
+  private send<TResponse extends MediaCoreResponse | ZoomMediaSpineServiceResponse>(request: MediaCoreRequest | ZoomMediaSpineServiceRequest) {
+    return new Promise<TResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(request.id);
         reject(new Error(`native-core request ${request.id} timed out.`));
@@ -69,7 +113,7 @@ export class MediaCoreServiceClient {
       this.pending.set(request.id, {
         resolve: (response) => {
           clearTimeout(timeout);
-          resolve(response);
+          resolve(response as TResponse);
         },
         reject: (error) => {
           clearTimeout(timeout);
@@ -81,7 +125,7 @@ export class MediaCoreServiceClient {
   }
 
   private handleResponseLine(line: string) {
-    const response = JSON.parse(line) as MediaCoreResponse;
+    const response = JSON.parse(line) as MediaCoreResponse | ZoomMediaSpineServiceResponse;
     const pending = this.pending.get(response.id);
     if (!pending) {
       return;
