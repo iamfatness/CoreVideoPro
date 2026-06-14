@@ -4,7 +4,8 @@ import {
   createMediaCoreHandshakeCommand,
   createMediaCoreSyncCommand,
   isMediaCoreProfileResponse,
-  isMediaCoreSnapshotResponse
+  isMediaCoreSnapshotResponse,
+  nextBridgeCommandId
 } from "./nativeBridgeProtocol";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
@@ -81,6 +82,36 @@ export async function handshakeMediaCoreThroughBridge(
 export function attachBridgeMediaCoreSync(bridge: NativeHostBridge): NativeHostBridge {
   if (!bridge.syncMediaCore) {
     bridge.syncMediaCore = (commands, elapsedMs) => syncMediaCoreThroughBridge(bridge, commands, elapsedMs);
+  }
+  return bridge;
+}
+
+/**
+ * Forward a `ZoomMediaSpineSyncPayload` through the bridge `request` RPC and
+ * unwrap the resulting `ZoomMediaSpineNativeSnapshot`. The renderer end of the
+ * seam that connects `NativeHostZoomMediaSpineSyncEngine` to the native core.
+ */
+export async function syncZoomMediaSpineThroughBridge(
+  bridge: NativeHostBridge,
+  payload: ZoomMediaSpineSyncPayload,
+  elapsedMs: number
+): Promise<ZoomMediaSpineNativeSnapshot> {
+  const id = nextBridgeCommandId("zoom-media-spine-sync");
+  const response = await bridge.request({ id, type: "zoom-media-spine-sync", payload: { spinePayload: payload, elapsedMs } });
+  if (response.ok && "spineSnapshot" in response) {
+    return response.spineSnapshot;
+  }
+  const message = response.ok ? "Bridge did not return a spine snapshot." : response.error.message;
+  throw new NativeZoomBridgeError("protocol-error", `zoom-media-spine sync failed: ${message}`);
+}
+
+/**
+ * Ensure a bridge exposes `syncZoomMediaSpine`, backing it with the unified
+ * `request` RPC. Mutates and returns the bridge.
+ */
+export function attachBridgeZoomMediaSpineSync(bridge: NativeHostBridge): NativeHostBridge {
+  if (!bridge.syncZoomMediaSpine) {
+    bridge.syncZoomMediaSpine = (payload, elapsedMs) => syncZoomMediaSpineThroughBridge(bridge, payload, elapsedMs);
   }
   return bridge;
 }

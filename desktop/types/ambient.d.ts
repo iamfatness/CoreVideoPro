@@ -10,6 +10,10 @@ interface ImportMeta {
   url: string;
 }
 
+declare const window: {
+  coreVideoNative?: import("../../src/engine/nativeHostBridge").NativeHostBridge;
+};
+
 declare const process: {
   execPath: string;
   platform: string;

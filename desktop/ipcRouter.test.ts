@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createIpcRouter, type MediaCoreBackend } from "./ipcRouter.ts";
-import { SYNTHETIC_PROFILE, synthesizeSnapshot } from "./syntheticMediaCore.ts";
+import { SYNTHETIC_PROFILE, synthesizeSnapshot, synthesizeSpineSnapshot } from "./syntheticMediaCore.ts";
 import type { NativeMediaCoreProfile } from "../src/engine/nativeMediaCoreProtocol";
 
 function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PROFILE): MediaCoreBackend {
   return {
     getProfile: () => profile,
     handshake: async () => profile,
-    syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1)
+    syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1),
+    syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs)
   };
 }
 

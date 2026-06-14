@@ -16,12 +16,15 @@ import type {
 } from "../src/engine/nativeBridgeProtocol";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
+import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
 /** The slice of the supervisor the router depends on (eases testing). */
 export type MediaCoreBackend = {
   getProfile(): NativeMediaCoreProfile | undefined;
   handshake(): Promise<NativeMediaCoreProfile | undefined>;
   syncMediaCore(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+  syncZoomMediaSpine(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
 };
 
 export type IpcRouterOptions = {
@@ -177,6 +180,12 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
         case "media-core-sync": {
           const snapshot = await mediaCore.syncMediaCore(command.payload.commands, command.payload.elapsedMs);
           return { id, ok: true, snapshot };
+        }
+
+        // ----- Zoom media spine (delegated to the supervised child process) -----
+        case "zoom-media-spine-sync": {
+          const spineSnapshot = await mediaCore.syncZoomMediaSpine(command.payload.spinePayload, command.payload.elapsedMs);
+          return { id, ok: true, spineSnapshot };
         }
 
         // ----- Audio (stub) -----
