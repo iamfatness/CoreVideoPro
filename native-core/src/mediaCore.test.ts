@@ -209,8 +209,26 @@ describe("MediaCoreRuntime", () => {
             expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
           ])
         },
+        outputSenderSession: {
+          status: "live",
+          activeSenderCount: 1,
+          senders: [
+            {
+              senderId: "rtmp:program",
+              destination: "rtmp",
+              status: "live",
+              framesSent: 1,
+              latencyMs: 2100,
+              bitrateMbps: 8.2
+            }
+          ]
+        },
         outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
         diagnostics: {
+          outputSenderSession: {
+            status: "live",
+            activeSenderCount: 1
+          },
           sourceSnapshot: {
             adapterId: "test-pattern",
             status: "subscribed",

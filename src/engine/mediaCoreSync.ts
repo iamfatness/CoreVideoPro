@@ -13,6 +13,8 @@ import type {
   NativeMediaCoreMediaSourceKind,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
+  NativeMediaCoreOutputSender,
+  NativeMediaCoreOutputSenderSession,
   NativeMediaCoreProgramFrame,
   NativeMediaCoreProgramFrameTransport,
   NativeMediaCoreRenderPlan,
@@ -60,6 +62,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     status: "idle",
     lastTransition: "Encoder session idle."
   };
+  private readonly outputSenders = new Map<"rtmp" | "ndi" | "srt" | "webrtc", NativeMediaCoreOutputSender>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -192,7 +195,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
     const encoderSession = this.encoderSession(output?.destinations ?? [], this.programFrame, recording);
-    const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession);
+    const outputSenderSession = this.outputSenderSession(output?.destinations ?? [], this.programFrame, elapsedMs);
+    const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession, outputSenderSession);
     const compositor = this.compositorSnapshot();
     const allWarnings = [
       ...new Set([
@@ -200,6 +204,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...this.sourceSnapshot.warnings,
         ...renderPlan.warnings,
         ...encoderSession.warnings,
+        ...outputSenderSession.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -221,6 +226,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       isoParticipantIds: output?.isoParticipantIds ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      outputSenderSession,
       sourceCount: this.sources.length,
       resolvedRouteCount: renderPlan.resolvedRouteCount,
       renderPlan,
@@ -235,6 +241,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         outputs: output?.destinations ?? [],
         outputProfile: this.outputProfile,
         outputHealth,
+        outputSenderSession,
         sourceSnapshot: this.sourceSnapshot,
         renderPlan,
         compositor,
@@ -443,7 +450,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">,
     recording: NativeMediaCoreRecordingSession | undefined,
     programFrame: NativeMediaCoreProgramFrame | undefined,
-    encoderSession: NativeMediaCoreEncoderSession
+    encoderSession: NativeMediaCoreEncoderSession,
+    outputSenderSession: NativeMediaCoreOutputSenderSession
   ) {
     const health = destinations.map(
       (destination): NativeMediaCoreOutputHealth => ({
@@ -504,7 +512,57 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       }));
     }
 
+    outputSenderSession.senders
+      .filter((sender) => encoderSession.lifecycle.status === "encoding" && sender.status !== "stopped" && sender.status !== "idle")
+      .forEach((sender) => {
+      const index = health.findIndex((item) => item.destination === sender.destination);
+      const senderHealth: NativeMediaCoreOutputHealth = {
+        destination: sender.destination,
+        status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
+        message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
+        droppedFrames: 0
+      };
+      if (index >= 0) {
+        health[index] = senderHealth;
+      } else {
+        health.push(senderHealth);
+      }
+      });
+
     return health;
+  }
+
+  private outputSenderSession(
+    destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">,
+    programFrame: NativeMediaCoreProgramFrame | undefined,
+    elapsedMs: number
+  ): NativeMediaCoreOutputSenderSession {
+    const networkDestinations = destinations.filter((destination): destination is "rtmp" | "ndi" | "srt" | "webrtc" => destination !== "recording");
+    const activeSet = new Set(networkDestinations);
+
+    [...this.outputSenders.entries()].forEach(([destination, sender]) => {
+      if (!activeSet.has(destination) && sender.status !== "stopped") {
+        this.outputSenders.set(destination, { ...sender, status: "stopped", stoppedAtMs: elapsedMs, warning: undefined });
+      }
+    });
+
+    networkDestinations.forEach((destination) => {
+      const existing = this.outputSenders.get(destination);
+      this.outputSenders.set(destination, nextOutputSender(destination, existing, programFrame, this.outputProfile, elapsedMs));
+    });
+
+    const senders = [...this.outputSenders.values()].sort((left, right) => left.destination.localeCompare(right.destination));
+    const warnings = [...new Set(senders.map((sender) => sender.warning).filter(Boolean) as string[])];
+    const activeSenderCount = senders.filter((sender) => sender.status === "live" || sender.status === "warning" || sender.status === "starting").length;
+    const hasFailure = senders.some((sender) => sender.status === "failed");
+    const hasWarning = senders.some((sender) => sender.status === "warning");
+
+    return {
+      status: hasFailure ? "failed" : hasWarning ? "warning" : activeSenderCount > 0 ? "live" : "idle",
+      activeSenderCount,
+      senders,
+      warnings
+    };
   }
 
   private composeProgramFrame(renderPlan: NativeMediaCoreRenderPlan, elapsedMs: number) {
@@ -717,6 +775,69 @@ function encoderForQuality(quality: "standard" | "high" | "archive") {
 function estimateDiskRate(streamCount: number, quality: "standard" | "high" | "archive") {
   const qualityMultiplier = quality === "archive" ? 2.2 : quality === "high" ? 1.35 : 1;
   return Number((Math.max(1, streamCount) * 1.85 * qualityMultiplier).toFixed(2));
+}
+
+function nextOutputSender(
+  destination: "rtmp" | "ndi" | "srt" | "webrtc",
+  existing: NativeMediaCoreOutputSender | undefined,
+  programFrame: NativeMediaCoreProgramFrame | undefined,
+  outputProfile: NativeMediaCoreOutputProfile,
+  elapsedMs: number
+): NativeMediaCoreOutputSender {
+  const base = {
+    senderId: existing?.senderId ?? `${destination}:program`,
+    destination,
+    startedAtMs: existing?.startedAtMs ?? elapsedMs,
+    stoppedAtMs: undefined,
+    framesSent: existing?.framesSent ?? 0,
+    retryCount: existing?.retryCount ?? 0,
+    latencyMs: senderLatency(destination),
+    bitrateMbps: senderBitrate(destination, outputProfile)
+  };
+
+  if (!programFrame) {
+    return {
+      ...base,
+      status: "starting",
+      warning: `${destination.toUpperCase()} sender is waiting for a program frame.`
+    };
+  }
+
+  if (programFrame.health === "dropped") {
+    return {
+      ...base,
+      status: "warning",
+      lastFrameNumber: existing?.lastFrameNumber,
+      retryCount: (existing?.retryCount ?? 0) + 1,
+      warning: `${destination.toUpperCase()} sender skipped a dropped program frame.`
+    };
+  }
+
+  return {
+    ...base,
+    status: programFrame.health === "degraded" ? "warning" : "live",
+    lastFrameNumber: programFrame.frameNumber,
+    framesSent: (existing?.framesSent ?? 0) + 1,
+    warning: programFrame.health === "degraded" ? `${destination.toUpperCase()} sender is publishing degraded program frames.` : undefined
+  };
+}
+
+function senderLatency(destination: "rtmp" | "ndi" | "srt" | "webrtc") {
+  if (destination === "ndi") {
+    return 80;
+  }
+  if (destination === "webrtc") {
+    return 220;
+  }
+  if (destination === "srt") {
+    return 420;
+  }
+  return 2100;
+}
+
+function senderBitrate(destination: "rtmp" | "ndi" | "srt" | "webrtc", outputProfile: NativeMediaCoreOutputProfile) {
+  const multiplier = destination === "ndi" ? 1.6 : destination === "webrtc" ? 0.8 : 1;
+  return Number((outputProfile.targetBitrateMbps * multiplier).toFixed(1));
 }
 
 export class NativeHostMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {

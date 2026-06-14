@@ -59,6 +59,7 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Transportpublishing");
     expect(nativeCore).toHaveTextContent("Compositorlive");
     expect(nativeCore).toHaveTextContent("Encoderencoding");
+    expect(nativeCore).toHaveTextContent("Senders0 idle");
     expect(nativeCore).toHaveTextContent("Outputsrecording");
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");

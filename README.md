@@ -27,6 +27,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native compositor contract with stable render-plan IDs, program-frame snapshots, compositor health, reconfigure reasons, degraded/dropped frame counts, and a clear split between source frames for ISO capture and composed program frames for output.
 - Native program-frame transport snapshot for the in-process preview/program path so the UI can inspect whether composed frames are being published before pixel transport lands.
 - Native encoder target and lifecycle boundary that attaches recording, ISO, RTMP, NDI, SRT, and WebRTC outputs to the program-frame stream and surfaces per-target health, prepare/start/stop state, and output warnings before real sender implementations land.
+- Native output sender session model for RTMP, NDI, SRT, and WebRTC program senders, including active sender counts, sent frame counts, latency, bitrate, retry warnings, and stopped sender diagnostics.
 - Backend recording-session snapshots with session IDs, target folders, encoder intent, program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, byte counters, stopped/failed writer states, and warning state surfaced in the app's Native core readout.
 - Native media-core diagnostic snapshots with source adapter health, scene/output state, program transport, compositor state, encoder targets, recording health, warnings, and command history for future support-bundle export.
 - Native output profile snapshots for shared recording/RTMP/NDI/SRT/WebRTC resolution, FPS, and target bitrate decisions before real sender implementations land.
@@ -104,6 +105,7 @@ CoreVideo Pro Desktop Shell
   -> program compositor / program frame stream
   -> in-process preview/program transport
   -> encoder target + lifecycle boundary
+  -> output sender sessions (RTMP / NDI / SRT / WebRTC)
   -> recording writer lifecycle / program + ISO stream counters
   -> output profile model
   -> output health and diagnostics snapshots

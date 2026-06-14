@@ -17,6 +17,7 @@ export type MediaCoreEncoderTargetStatus = "idle" | "attached" | "warning" | "fa
 export type MediaCoreEncoderSessionStatus = "idle" | "encoding" | "warning" | "failed";
 export type MediaCoreEncoderLifecycleStatus = "idle" | "prepared" | "encoding" | "stopped" | "failed";
 export type MediaCoreFrameTransportStatus = "idle" | "publishing" | "degraded";
+export type MediaCoreOutputSenderStatus = "idle" | "starting" | "live" | "warning" | "stopped" | "failed";
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 export type MediaCoreColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
@@ -226,6 +227,27 @@ export type MediaCoreOutputHealth = {
   droppedFrames: number;
 };
 
+export type MediaCoreOutputSender = {
+  senderId: string;
+  destination: Exclude<MediaCoreDestination, "recording">;
+  status: MediaCoreOutputSenderStatus;
+  startedAtMs?: number;
+  stoppedAtMs?: number;
+  lastFrameNumber?: number;
+  framesSent: number;
+  retryCount: number;
+  latencyMs: number;
+  bitrateMbps: number;
+  warning?: string;
+};
+
+export type MediaCoreOutputSenderSession = {
+  status: "idle" | "live" | "warning" | "failed";
+  activeSenderCount: number;
+  senders: MediaCoreOutputSender[];
+  warnings: string[];
+};
+
 export type MediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;
@@ -235,6 +257,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   outputs: MediaCoreDestination[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
+  outputSenderSession: MediaCoreOutputSenderSession;
   sourceSnapshot: MediaCoreFrameSourceSnapshot;
   renderPlan: MediaCoreRenderPlan;
   compositor: MediaCoreCompositorState;
@@ -362,6 +385,7 @@ export type MediaCoreStateSnapshot = {
   isoParticipantIds: string[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
+  outputSenderSession: MediaCoreOutputSenderSession;
   sourceCount: number;
   resolvedRouteCount: number;
   renderPlan: MediaCoreRenderPlan;

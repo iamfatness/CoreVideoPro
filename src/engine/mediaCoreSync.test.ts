@@ -97,6 +97,12 @@ describe("media core sync engine", () => {
         targetBitrateMbps: 8.2
       },
       outputHealth: [],
+      outputSenderSession: {
+        status: "idle" as const,
+        activeSenderCount: 0,
+        senders: [],
+        warnings: []
+      },
       programFrameCount: 0,
       programTransport: {
         transportId: "in-process-preview" as const,
@@ -152,6 +158,12 @@ describe("media core sync engine", () => {
           targetBitrateMbps: 8.2
         },
         outputHealth: [],
+        outputSenderSession: {
+          status: "idle" as const,
+          activeSenderCount: 0,
+          senders: [],
+          warnings: []
+        },
         sourceSnapshot: {
           adapterId: "native-test-source",
           kind: "zoom-sdk" as const,
@@ -346,9 +358,18 @@ describe("media core sync engine", () => {
           expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
         ])
       },
+      outputSenderSession: {
+        status: "idle",
+        activeSenderCount: 0,
+        senders: []
+      },
       outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
       diagnostics: {
         generatedAtMs: 3000,
+        outputSenderSession: {
+          status: "idle",
+          activeSenderCount: 0
+        },
         sourceSnapshot: {
           adapterId: "renderer-test-pattern",
           status: "subscribed"
@@ -357,6 +378,41 @@ describe("media core sync engine", () => {
           status: "publishing"
         },
         recording: { sessionId: "AI_Product_Launch_Webinar-p1-p2" }
+      }
+    });
+  });
+
+  it("tracks network output sender sessions when streaming is active", async () => {
+    const engine = new InMemoryMediaCoreSyncEngine();
+    const snapshot = await engine.syncProduction({ ...initialProduction, recording: true, streaming: true }, 4100);
+
+    expect(snapshot).toMatchObject({
+      outputs: ["recording", "rtmp"],
+      outputSenderSession: {
+        status: "live",
+        activeSenderCount: 1,
+        senders: [
+          {
+            senderId: "rtmp:program",
+            destination: "rtmp",
+            status: "live",
+            framesSent: 1,
+            latencyMs: 2100,
+            bitrateMbps: 8.2
+          }
+        ]
+      },
+      outputHealth: expect.arrayContaining([
+        expect.objectContaining({
+          destination: "rtmp",
+          status: "live",
+          message: "RTMP sender live."
+        })
+      ]),
+      diagnostics: {
+        outputSenderSession: {
+          activeSenderCount: 1
+        }
       }
     });
   });

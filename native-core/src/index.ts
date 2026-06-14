@@ -1,5 +1,6 @@
 export { MediaCoreRuntime } from "./mediaCore.js";
 export { LocalCameraMediaSource, TestPatternMediaSource, createMediaFrameSource } from "./mediaSource.js";
+export { OutputSenderSessionModel } from "./outputSenderSession.js";
 export { MediaCoreServiceClient } from "./client.js";
 export { handleLine } from "./service.js";
 export type { MediaCoreFrameSourceRequest, MediaCoreFrameSourceResult, MediaFrameSource } from "./mediaSource.js";
@@ -26,6 +27,9 @@ export type {
   MediaCoreOutputHealth,
   MediaCoreOutputHealthStatus,
   MediaCoreOutputProfile,
+  MediaCoreOutputSender,
+  MediaCoreOutputSenderSession,
+  MediaCoreOutputSenderStatus,
   MediaCoreProgramFrame,
   MediaCoreProgramFrameHealth,
   MediaCoreProgramFrameTransport,

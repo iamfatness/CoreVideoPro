@@ -315,6 +315,27 @@ export type NativeMediaCoreOutputHealth = {
   droppedFrames: number;
 };
 
+export type NativeMediaCoreOutputSender = {
+  senderId: string;
+  destination: "rtmp" | "ndi" | "srt" | "webrtc";
+  status: "idle" | "starting" | "live" | "warning" | "stopped" | "failed";
+  startedAtMs?: number;
+  stoppedAtMs?: number;
+  lastFrameNumber?: number;
+  framesSent: number;
+  retryCount: number;
+  latencyMs: number;
+  bitrateMbps: number;
+  warning?: string;
+};
+
+export type NativeMediaCoreOutputSenderSession = {
+  status: "idle" | "live" | "warning" | "failed";
+  activeSenderCount: number;
+  senders: NativeMediaCoreOutputSender[];
+  warnings: string[];
+};
+
 export type NativeMediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;
@@ -324,6 +345,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
+  outputSenderSession: NativeMediaCoreOutputSenderSession;
   sourceSnapshot: NativeMediaCoreFrameSourceSnapshot;
   renderPlan: NativeMediaCoreRenderPlan;
   compositor: NativeMediaCoreCompositorState;
@@ -351,6 +373,7 @@ export type NativeMediaCoreStateSnapshot = {
   isoParticipantIds: string[];
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
+  outputSenderSession: NativeMediaCoreOutputSenderSession;
   sourceCount: number;
   resolvedRouteCount: number;
   renderPlan: NativeMediaCoreRenderPlan;

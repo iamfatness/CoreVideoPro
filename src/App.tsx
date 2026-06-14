@@ -1653,6 +1653,7 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Transport" value={mediaCoreSnapshot?.programTransport.status ?? "Idle"} />
               <ControlReadout label="Compositor" value={mediaCoreSnapshot?.compositor.status ?? "Idle"} />
               <ControlReadout label="Encoder" value={mediaCoreSnapshot?.encoderSession.lifecycle.status ?? "Idle"} />
+              <ControlReadout label="Senders" value={mediaCoreSnapshot ? `${mediaCoreSnapshot.outputSenderSession.activeSenderCount} ${mediaCoreSnapshot.outputSenderSession.status}` : "0 idle"} />
               <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
               <ControlReadout label="Profile" value={mediaCoreSnapshot?.outputProfile.profileId ?? "1080p60"} />
               <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />

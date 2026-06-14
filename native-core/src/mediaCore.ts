@@ -9,6 +9,7 @@ import type {
   MediaCoreFrameSourceSnapshot,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
+  MediaCoreOutputSenderSession,
   MediaCoreProgramFrame,
   MediaCoreProgramFrameTransport,
   MediaCoreRenderPlan,
@@ -22,6 +23,7 @@ import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
 import { ProgramCompositor } from "./compositor.js";
 import { buildEncoderSession } from "./encoderSession.js";
+import { OutputSenderSessionModel } from "./outputSenderSession.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -65,6 +67,7 @@ export class MediaCoreRuntime {
   private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
   private readonly compositor = new ProgramCompositor();
+  private readonly outputSenderSessionModel = new OutputSenderSessionModel();
   private readonly recordingSink = new RecordingSink();
   private frames: MediaCoreFrame[] = [];
   private sourceSnapshot: MediaCoreFrameSourceSnapshot;
@@ -300,13 +303,15 @@ export class MediaCoreRuntime {
     const renderPlan = this.renderPlan();
     const compositor = this.compositor.snapshot();
     const encoderSession = this.encoderSession(recording);
-    const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession);
+    const outputSenderSession = this.outputSenderSession();
+    const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
     const allWarnings = [
       ...new Set([
         ...warnings,
         ...this.sourceSnapshot.warnings,
         ...renderPlan.warnings,
         ...encoderSession.warnings,
+        ...outputSenderSession.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -328,12 +333,13 @@ export class MediaCoreRuntime {
       isoParticipantIds: this.output?.isoParticipantIds ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      outputSenderSession,
       sourceCount: this.sources.length,
       resolvedRouteCount: renderPlan.resolvedRouteCount,
       renderPlan,
       encoderSession,
       recording,
-      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession),
+      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession, outputSenderSession),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
     };
@@ -377,7 +383,12 @@ export class MediaCoreRuntime {
     });
   }
 
-  private buildOutputHealth(recording: MediaCoreStateSnapshot["recording"], programFrame: MediaCoreProgramFrame | undefined, encoderSession: MediaCoreEncoderSession) {
+  private buildOutputHealth(
+    recording: MediaCoreStateSnapshot["recording"],
+    programFrame: MediaCoreProgramFrame | undefined,
+    encoderSession: MediaCoreEncoderSession,
+    outputSenderSession: MediaCoreOutputSenderSession
+  ) {
     const health = new Map(this.outputHealth);
 
     if (programFrame?.health === "degraded") {
@@ -399,6 +410,17 @@ export class MediaCoreRuntime {
         });
       });
     }
+
+    outputSenderSession.senders
+      .filter((sender) => encoderSession.lifecycle.status === "encoding" && sender.status !== "stopped" && sender.status !== "idle")
+      .forEach((sender) => {
+      health.set(sender.destination, {
+        destination: sender.destination,
+        status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
+        message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
+        droppedFrames: 0
+      });
+      });
 
     if (recording) {
       health.set("recording", {
@@ -433,7 +455,8 @@ export class MediaCoreRuntime {
     recording: MediaCoreStateSnapshot["recording"],
     renderPlan: MediaCoreRenderPlan,
     compositor: MediaCoreStateSnapshot["compositor"],
-    encoderSession: MediaCoreEncoderSession
+    encoderSession: MediaCoreEncoderSession,
+    outputSenderSession: MediaCoreOutputSenderSession
   ): MediaCoreDiagnosticsSnapshot {
     return {
       generatedAtMs: this.elapsedMs,
@@ -443,6 +466,7 @@ export class MediaCoreRuntime {
       outputs: this.output?.destinations ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      outputSenderSession,
       sourceSnapshot: this.sourceSnapshot,
       renderPlan,
       compositor,
@@ -463,6 +487,10 @@ export class MediaCoreRuntime {
       recording,
       lifecycle: this.encoderLifecycle
     });
+  }
+
+  private outputSenderSession() {
+    return this.outputSenderSessionModel.sync(this.output?.destinations ?? [], this.programFrame, this.outputProfile, this.elapsedMs);
   }
 
   private buildProgramTransport(programFrame?: MediaCoreProgramFrame): MediaCoreProgramFrameTransport {
