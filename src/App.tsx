@@ -41,6 +41,7 @@ import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } fr
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
+import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
 import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { summarizeArming } from "./engine/outputArming";
@@ -699,6 +700,13 @@ export function App({ engines, runtime }: AppProps) {
     }));
   }
 
+  function updateColorGrade(update: Partial<ProductionState["colorGrade"]>) {
+    setProduction((current) => ({
+      ...current,
+      colorGrade: { ...current.colorGrade, ...update }
+    }));
+  }
+
   function selectBreakoutRoom(roomId: string) {
     const nextParticipants =
       roomId === "all"
@@ -998,7 +1006,7 @@ export function App({ engines, runtime }: AppProps) {
             <section className="program-frame" aria-label="Program preview">
               <div
                 className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}
-                style={{ background: programBackgroundStyle(production.brandKit) }}
+                style={{ background: programBackgroundStyle(production.brandKit), filter: colorGradeFilter(production.colorGrade) }}
               >
                 <ScenePreview
                   activeShareFrame={activeShareFrame}
@@ -1951,6 +1959,41 @@ export function App({ engines, runtime }: AppProps) {
 
       <div aria-label="Media tab" className={`tab-content ${activeTab === "media" ? "active" : ""}`} hidden={activeTab !== "media"}>
         <div className="tab-panel">
+          <section className="panel" aria-label="Program color grade">
+            <div className="section-title">
+              <Palette size={15} />
+              Color grade
+            </div>
+            <p className="brand-kit-summary">{summarizeColorGrade(production.colorGrade)}</p>
+            <label className="role-control">
+              <span>LUT preset</span>
+              <select
+                aria-label="Color LUT"
+                onChange={(event) => updateColorGrade({ lut: event.target.value as ProductionState["colorGrade"]["lut"] })}
+                value={production.colorGrade.lut}
+              >
+                {colorGradeLuts.map((lut) => (
+                  <option key={lut} value={lut}>{lut}</option>
+                ))}
+              </select>
+            </label>
+            {(["exposure", "contrast", "saturation", "temperature"] as const).map((axis) => (
+              <label className="gain-control" key={axis}>
+                <span>{axis}</span>
+                <input
+                  aria-label={`Color ${axis}`}
+                  max={50}
+                  min={-50}
+                  onChange={(event) => updateColorGrade({ [axis]: Number(event.target.value) })}
+                  step={1}
+                  type="range"
+                  value={production.colorGrade[axis]}
+                />
+                <em>{production.colorGrade[axis] > 0 ? `+${production.colorGrade[axis]}` : production.colorGrade[axis]}</em>
+              </label>
+            ))}
+          </section>
+
           {selectedParticipant && (
             <section className="panel detail-panel">
               <div className="section-title">
