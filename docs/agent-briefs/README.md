@@ -12,6 +12,21 @@ context and architecture seam, then dispatch each agent with its brief.
 - `02-track-b-native-media-core.md` — Agent B (Codex): C++20 native media-core
   process skeleton with stubbed, interface-isolated SDK adapters.
 
+### Round 2 — next-milestone plans
+
+The round-1 scaffolding (Electron shell, IPC bridge, native core skeleton,
+6-family bridge protocol, typed Zoom media spine) is **already built and merged**.
+The round-2 plans pick up from that baseline — real integration behind the
+existing seams, not new scaffolding:
+
+- `03-track-a-next-milestones.md` — Agent A: wire the Zoom media spine through
+  the real native bridge path, drive the spine controller + readiness in the UI,
+  harden the supervisor, capability-gate Phase-2 outputs, packaging + e2e smoke.
+- `04-track-b-next-milestones.md` — Agent B: implement real adapters behind the
+  existing `native/` interfaces (Zoom SDK, GPU compositor, hardware encoder +
+  recording, output senders, capture devices), gated by
+  `COREVIDEO_ENABLE_DEV_ADAPTERS` so the default in-container build stays green.
+
 ## Ground rules for both agents
 
 - **Environment constraint:** the default build/test target is a plain Linux
