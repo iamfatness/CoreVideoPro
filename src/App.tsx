@@ -56,6 +56,7 @@ import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPr
 import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engine/streamHealth";
 import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engine/srtOutput";
 import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutput";
+import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type FeedHealthSignal } from "./engine/feedHealth";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1833,6 +1834,47 @@ export function App({ engines, runtime }: AppProps) {
                 </div>
               ))}
             </div>
+          </section>
+
+          <section className="panel" aria-label="Feed health roster">
+            <div className="section-title">
+              <Wifi size={15} />
+              Zoom feed health
+            </div>
+            {(() => {
+              const signals: FeedHealthSignal[] = visibleParticipants.map((p) => ({
+                hasVideo: p.health !== "video-off",
+                hasAudio: !p.isMuted,
+                isMuted: p.isMuted,
+                isVideoOff: p.health === "video-off",
+                resolutionTier: p.health === "low-resolution" ? 1 : p.health === "video-off" ? 0 : 2,
+                msSinceLastFrame: p.health === "recovering" ? 6000 : 50,
+                isReconnecting: p.health === "recovering",
+              }));
+              const statuses = signals.map(evaluateFeedHealth);
+              const roster = summarizeRosterHealth(statuses);
+              return (
+                <div className="feed-health-roster">
+                  <p className="feed-health-summary" aria-label="Feed health summary">{roster.summary}</p>
+                  <div className="feed-health-list">
+                    {visibleParticipants.map((p, i) => {
+                      const status = statuses[i];
+                      const color = feedHealthBadgeColor(status.state);
+                      return (
+                        <div key={p.id} className={`feed-health-row color-${color}`}>
+                          <span className="feed-health-name">{p.name}</span>
+                          <span className="feed-health-role">{p.role}</span>
+                          <span className={`feed-health-badge color-${color}`}>{status.label}</span>
+                          {status.needsAttention && (
+                            <span className="feed-health-detail">{status.detail}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel" aria-label="Capture devices">
