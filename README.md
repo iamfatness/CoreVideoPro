@@ -6,6 +6,8 @@ This is not intended to ship as a browser-hosted SPA. The React/Vite surface is 
 
 The shell choice must stay replaceable. Electron, Tauri, or a custom native shell can host the renderer, but the end-state product depends on a native media core for real-time Zoom ingest, GPU compositing, chroma key, overlays, audio mixing, recording, ISO capture, and streaming.
 
+**Roadmap:** the demo-driven, sprint-by-sprint path to the first live demo lives in [`docs/roadmap/index.html`](docs/roadmap/index.html) — open it in a browser.
+
 ## Current Slice
 
 - React + Vite app shell for the operator console.

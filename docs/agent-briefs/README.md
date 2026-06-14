@@ -4,6 +4,10 @@ These documents hand off the CoreVideo Pro native build work to two coding
 agents working in parallel. Read `00-native-build-plan.md` first for the full
 context and architecture seam, then dispatch each agent with its brief.
 
+> **Demo-driven roadmap:** for the sprint-by-sprint path to the first live demo
+> (weekly sprints, a demo every Friday), open
+> [`../roadmap/index.html`](../roadmap/index.html) in a browser.
+
 - `00-native-build-plan.md` — the overall work plan, environment constraints,
   track split, coordination rules, and integration gate.
 - `01-track-a-desktop-shell.md` — Agent A (Claude): Electron desktop shell +
