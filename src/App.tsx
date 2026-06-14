@@ -66,6 +66,7 @@ import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type Scen
 import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summarizeCaptionQuality } from "./engine/captionQuality";
 import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCandidate } from "./engine/participantSpotlight";
 import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type ProtocolLatencyProfile } from "./engine/latencyBudget";
+import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stingerEngine";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2798,6 +2799,40 @@ export function App({ engines, runtime }: AppProps) {
             </div>
             <p className="transition-descriptor">{describeTransition(production.transition.style, production.transition.durationMs).summary}</p>
             <p className="transition-status">{production.transition.statusText}</p>
+          </section>
+
+          <section className="panel" aria-label="Stinger presets">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Stinger presets
+            </div>
+            {(() => {
+              const presets = stingerPresets();
+              const activeStingerId = production.transition.style === "stinger" ? (presets[0]?.id ?? null) : null;
+              const activePreset = activeStingerId ? getStingerPreset(activeStingerId) : null;
+              return (
+                <div className="stinger-list" aria-label="Stinger list">
+                  {presets.map((preset) => (
+                    <div
+                      key={preset.id}
+                      className={`stinger-row ${preset.id === activeStingerId ? "active" : ""}`}
+                      aria-label={`Stinger ${preset.name}`}
+                    >
+                      <span className="stinger-name">{preset.name}</span>
+                      <span className="stinger-desc">{describeStinger(preset)}</span>
+                    </div>
+                  ))}
+                  {activePreset && (
+                    <div className="stinger-active-detail">
+                      <ControlReadout label="In" value={`${activePreset.inDurationMs}ms`} />
+                      <ControlReadout label="Hold" value={`${activePreset.holdDurationMs}ms`} />
+                      <ControlReadout label="Out" value={`${activePreset.outDurationMs}ms`} />
+                      <ControlReadout label="Switch point" value={activePreset.sceneSwitchPoint} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel template-box">
