@@ -15,11 +15,14 @@
 #include <rawdata/zoom_rawdata_api.h>
 #include <meeting_service_components/meeting_audio_interface.h>
 #include <meeting_service_components/meeting_participants_ctrl_interface.h>
+#include <meeting_service_components/meeting_raw_archiving_interface.h>
+#include <meeting_service_components/meeting_recording_interface.h>
 #include <meeting_service_components/meeting_video_interface.h>
 #include <meeting_service_interface.h>
 #include <zoom_sdk.h>
 
 #include <algorithm>
+#include <ctime>
 #include <cstdint>
 #include <exception>
 #include <map>
@@ -121,6 +124,18 @@ std::string userRoleName(ZOOMSDK::UserRole role) {
   }
 }
 
+std::string recordingStatusName(ZOOMSDK::RecordingStatus status) {
+  switch (status) {
+    case ZOOMSDK::Recording_Start: return "recording";
+    case ZOOMSDK::Recording_Stop: return "stopped";
+    case ZOOMSDK::Recording_DiskFull: return "failed";
+    case ZOOMSDK::Recording_Pause: return "paused";
+    case ZOOMSDK::Recording_Connecting: return "starting";
+    case ZOOMSDK::Recording_Fail: return "failed";
+    default: return "status-" + std::to_string(static_cast<int>(status));
+  }
+}
+
 int clampAudioLevel(int level) {
   return std::max(0, std::min(100, level));
 }
@@ -214,6 +229,33 @@ class MeetingVideoEventSink final : public ZOOMSDK::IMeetingVideoCtrlEvent {
   std::string activeVideoUserId_;
 };
 
+class MeetingRecordingEventSink final : public ZOOMSDK::IMeetingRecordingCtrlEvent {
+ public:
+  void onRecordingStatus(ZOOMSDK::RecordingStatus status) override { localStatus_ = recordingStatusName(status); }
+  void onCloudRecordingStatus(ZOOMSDK::RecordingStatus status) override { cloudStatus_ = recordingStatusName(status); }
+  void onRecordPrivilegeChanged(bool canRecord) override { canRecord_ = canRecord; }
+  void onLocalRecordingPrivilegeRequestStatus(ZOOMSDK::RequestLocalRecordingStatus) override {}
+  void onRequestCloudRecordingResponse(ZOOMSDK::RequestStartCloudRecordingStatus) override {}
+  void onLocalRecordingPrivilegeRequested(ZOOMSDK::IRequestLocalRecordingPrivilegeHandler*) override {}
+  void onStartCloudRecordingRequested(ZOOMSDK::IRequestStartCloudRecordingHandler*) override {}
+#if defined(WIN32)
+  void onRecording2MP4Done(bool, int, const zchar_t*) override {}
+  void onRecording2MP4Processing(int) override {}
+  void onCustomizedLocalRecordingSourceNotification(ZOOMSDK::ICustomizedLocalRecordingLayoutHelper*) override {}
+#endif
+  void onCloudRecordingStorageFull(time_t) override { cloudStatus_ = "failed"; }
+  void onEnableAndStartSmartRecordingRequested(ZOOMSDK::IRequestEnableAndStartSmartRecordingHandler*) override {}
+  void onSmartRecordingEnableActionCallback(ZOOMSDK::ISmartRecordingEnableActionHandler*) override {}
+
+  std::string status() const { return localStatus_; }
+  bool canRecord() const { return canRecord_; }
+
+ private:
+  std::string localStatus_ = "idle";
+  std::string cloudStatus_ = "idle";
+  bool canRecord_ = false;
+};
+
 class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
  public:
   explicit ZoomMeetingSdkCaptureSource(ZoomMeetingSdkRuntimeConfig config)
@@ -271,6 +313,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       }
     }
     joined_ = false;
+    (void)stopRecordingProof();
     activeSpeakerId_.clear();
     subscriptions_.clear();
     subscriptionStates_.clear();
@@ -427,6 +470,103 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
     return states;
   }
+
+  bool startRecordingProof() override {
+    if (!canSubscribeRawMedia()) {
+      recordingProof_.active = false;
+      recordingProof_.status = "failed";
+      recordingProof_.lastResultCode = "not-in-meeting";
+      recordingProof_.warning = "Zoom raw recording proof cannot start until meeting status is in-meeting.";
+      return false;
+    }
+
+    if (!recordingController_) {
+      recordingProof_.active = false;
+      recordingProof_.status = "failed";
+      recordingProof_.lastResultCode = "recording-controller-unavailable";
+      recordingProof_.warning = "Zoom Meeting SDK recording controller is unavailable.";
+      return false;
+    }
+
+    const auto canStartRaw = recordingController_->CanStartRawRecording();
+    if (canStartRaw != ZOOMSDK::SDKERR_SUCCESS) {
+      recordingProof_.active = false;
+      recordingProof_.status = "failed";
+      recordingProof_.lastResultCode = sdkErrorName(canStartRaw);
+      recordingProof_.warning = "Zoom Meeting SDK CanStartRawRecording returned " + recordingProof_.lastResultCode + ".";
+      return false;
+    }
+
+    const auto rawRecordingResult = recordingController_->StartRawRecording();
+    if (rawRecordingResult != ZOOMSDK::SDKERR_SUCCESS) {
+      recordingProof_.active = false;
+      recordingProof_.status = "failed";
+      recordingProof_.lastResultCode = sdkErrorName(rawRecordingResult);
+      recordingProof_.warning = "Zoom Meeting SDK StartRawRecording returned " + recordingProof_.lastResultCode + ".";
+      return false;
+    }
+
+    recordingProof_.rawRecordingActive = true;
+    recordingProof_.rawArchivingActive = false;
+    if (rawArchivingController_) {
+      const auto rawArchivingResult = rawArchivingController_->StartRawArchiving();
+      if (rawArchivingResult == ZOOMSDK::SDKERR_SUCCESS) {
+        recordingProof_.rawArchivingActive = true;
+      } else {
+        recordingProof_.warning = "Zoom Meeting SDK StartRawArchiving returned " + sdkErrorName(rawArchivingResult) + ".";
+      }
+    }
+
+    recordingProof_.active = true;
+    recordingProof_.status = recordingProof_.warning.empty() ? "recording" : "warning";
+    recordingProof_.lastResultCode = "ok";
+    recordingProof_.startedAtUnixSeconds = static_cast<int64_t>(std::time(nullptr));
+    recordingProof_.stoppedAtUnixSeconds = 0;
+    return true;
+  }
+
+  bool stopRecordingProof() override {
+    bool stoppedCleanly = true;
+    if (recordingProof_.rawArchivingActive && rawArchivingController_) {
+      const auto error = rawArchivingController_->StopRawArchiving();
+      stoppedCleanly = stoppedCleanly && error == ZOOMSDK::SDKERR_SUCCESS;
+      if (error != ZOOMSDK::SDKERR_SUCCESS) {
+        recordingProof_.warning = "Zoom Meeting SDK StopRawArchiving returned " + sdkErrorName(error) + ".";
+        recordingProof_.lastResultCode = sdkErrorName(error);
+      }
+    }
+
+    if (recordingProof_.rawRecordingActive && recordingController_) {
+      const auto error = recordingController_->StopRawRecording();
+      stoppedCleanly = stoppedCleanly && error == ZOOMSDK::SDKERR_SUCCESS;
+      if (error != ZOOMSDK::SDKERR_SUCCESS) {
+        recordingProof_.warning = "Zoom Meeting SDK StopRawRecording returned " + sdkErrorName(error) + ".";
+        recordingProof_.lastResultCode = sdkErrorName(error);
+      }
+    }
+
+    recordingProof_.active = false;
+    recordingProof_.rawRecordingActive = false;
+    recordingProof_.rawArchivingActive = false;
+    recordingProof_.status = stoppedCleanly ? "stopped" : "warning";
+    recordingProof_.stoppedAtUnixSeconds = static_cast<int64_t>(std::time(nullptr));
+    if (stoppedCleanly) {
+      recordingProof_.lastResultCode = "ok";
+    }
+    return stoppedCleanly;
+  }
+
+  ZoomMeetingSdkRecordingProof recordingProof() const override {
+    auto proof = recordingProof_;
+    if (recordingEvent_) {
+      const auto eventStatus = recordingEvent_->status();
+      if (proof.active && eventStatus != "idle") {
+        proof.status = eventStatus;
+      }
+    }
+    return proof;
+  }
+
   std::vector<std::string> warnings() const override { return warnings_; }
 
  private:
@@ -488,6 +628,24 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     participantsController_ = meetingService_->GetMeetingParticipantsController();
     if (!participantsController_) {
       warnings_.push_back("Zoom Meeting SDK participants controller is unavailable; roster will remain empty.");
+    }
+
+    recordingController_ = meetingService_->GetMeetingRecordingController();
+    if (recordingController_) {
+      recordingEvent_ = std::make_unique<MeetingRecordingEventSink>();
+      error = recordingController_->SetEvent(recordingEvent_.get());
+      if (error != ZOOMSDK::SDKERR_SUCCESS) {
+        warnings_.push_back("Zoom Meeting SDK recording controller SetEvent returned " + sdkErrorName(error) + ".");
+        recordingEvent_.reset();
+        recordingController_ = nullptr;
+      }
+    } else {
+      warnings_.push_back("Zoom Meeting SDK recording controller is unavailable; raw recording proof cannot start.");
+    }
+
+    rawArchivingController_ = meetingService_->GetMeetingRawArchivingController();
+    if (!rawArchivingController_) {
+      warnings_.push_back("Zoom Meeting SDK raw archiving controller is unavailable; raw recording proof will use raw recording only.");
     }
 
     videoController_ = meetingService_->GetMeetingVideoController();
@@ -655,6 +813,11 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
         (void)videoController_->SetEvent(nullptr);
         videoController_ = nullptr;
       }
+      if (recordingController_) {
+        (void)recordingController_->SetEvent(nullptr);
+        recordingController_ = nullptr;
+      }
+      rawArchivingController_ = nullptr;
       participantsController_ = nullptr;
       (void)meetingService_->SetEvent(nullptr);
       (void)ZOOMSDK::DestroyMeetingService(meetingService_);
@@ -679,14 +842,18 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::string activeSpeakerId_;
   std::string meetingState_ = "idle";
   std::string joinReturnCode_;
+  ZoomMeetingSdkRecordingProof recordingProof_;
   std::wstring webDomain_;
   std::wstring brandingName_;
   ZOOMSDK::IMeetingService* meetingService_ = nullptr;
   ZOOMSDK::IMeetingParticipantsController* participantsController_ = nullptr;
   ZOOMSDK::IMeetingVideoController* videoController_ = nullptr;
+  ZOOMSDK::IMeetingRecordingController* recordingController_ = nullptr;
+  ZOOMSDK::IMeetingRawArchivingController* rawArchivingController_ = nullptr;
   ZOOMSDK::IZoomSDKAudioRawDataHelper* audioHelper_ = nullptr;
   std::unique_ptr<MeetingServiceEventSink> meetingEvent_;
   std::unique_ptr<MeetingVideoEventSink> videoEvent_;
+  std::unique_ptr<MeetingRecordingEventSink> recordingEvent_;
   std::unique_ptr<RawVideoDelegate> rawVideoDelegate_;
   std::unique_ptr<RawAudioDelegate> rawAudioDelegate_;
   std::vector<RendererSubscription> renderers_;

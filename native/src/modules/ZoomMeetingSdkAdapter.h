@@ -49,6 +49,17 @@ struct ZoomMeetingSdkParticipant {
   int audioLevel = 0;
 };
 
+struct ZoomMeetingSdkRecordingProof {
+  bool active = false;
+  bool rawRecordingActive = false;
+  bool rawArchivingActive = false;
+  std::string status = "idle";
+  std::string lastResultCode = "not-started";
+  int64_t startedAtUnixSeconds = 0;
+  int64_t stoppedAtUnixSeconds = 0;
+  std::string warning;
+};
+
 struct ZoomMeetingSdkRuntimeConfig {
   std::string sdkRoot;
   std::string sdkVersion = "unknown";
@@ -71,6 +82,9 @@ class IZoomMeetingSdkCaptureSource : public IZoomCaptureSource {
   virtual std::string meetingState() const = 0;
   virtual std::vector<ZoomMeetingSdkParticipant> participants() const = 0;
   virtual std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates() const = 0;
+  virtual bool startRecordingProof() = 0;
+  virtual bool stopRecordingProof() = 0;
+  virtual ZoomMeetingSdkRecordingProof recordingProof() const = 0;
   virtual std::vector<std::string> warnings() const = 0;
 };
 

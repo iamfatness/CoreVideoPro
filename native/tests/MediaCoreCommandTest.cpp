@@ -147,6 +147,32 @@ TEST(ZoomMeetingSdkAdapter, DevGateReturnsEmptyRosterBeforeSdkJoin) {
 #endif
 }
 
+TEST(ZoomMeetingSdkAdapter, DevGateRejectsRecordingProofBeforeMeeting) {
+#if COREVIDEO_WITH_ZOOM
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
+      "sdk-root",
+      "7.0.5",
+      "https://zoom.us",
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+  });
+  ASSERT_NE(source, nullptr);
+
+  EXPECT_FALSE(source->startRecordingProof());
+  const auto proof = source->recordingProof();
+  EXPECT_FALSE(proof.active);
+  EXPECT_EQ(proof.status, "failed");
+  EXPECT_EQ(proof.lastResultCode, "not-in-meeting");
+  EXPECT_FALSE(proof.warning.empty());
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions) {
 #if COREVIDEO_WITH_ZOOM
   auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
