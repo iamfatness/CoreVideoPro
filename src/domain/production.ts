@@ -377,6 +377,14 @@ export type SupportBundleMediaCore = {
     subscribedSourceCount: number;
     droppedFrameCount: number;
     lowResolutionFrameCount: number;
+    issues: Array<{
+      sourceId: string;
+      participantId?: string;
+      displayName?: string;
+      health: FeedHealth;
+      severity: "warning" | "critical";
+      detail: string;
+    }>;
   };
   compositor: {
     status: "idle" | "live" | "degraded" | "failed";

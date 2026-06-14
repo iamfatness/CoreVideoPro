@@ -149,7 +149,17 @@ export type NativeMediaCoreFrameSourceSnapshot = {
   droppedFrameCount: number;
   lowResolutionFrameCount: number;
   lastFrameTimestampMs?: number;
+  issues?: NativeMediaCoreSourceHealthIssue[];
   warnings: string[];
+};
+
+export type NativeMediaCoreSourceHealthIssue = {
+  sourceId: string;
+  participantId?: string;
+  displayName?: string;
+  health: NativeMediaCoreZoomSource["health"];
+  severity: "warning" | "critical";
+  detail: string;
 };
 
 export type NativeMediaCoreProgramFrame = {

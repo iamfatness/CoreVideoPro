@@ -19,6 +19,7 @@ import type {
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreStateSnapshot,
+  MediaCoreSourceHealthIssue,
   MediaCoreZoomSource
 } from "./protocol.js";
 import { TestPatternMediaSource, createMediaFrameSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
@@ -373,7 +374,9 @@ export class MediaCoreRuntime {
         recording?.error
       ].filter(Boolean) as string[])
     ];
-    this.addWarningsAsEvents(allWarnings);
+    const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
+    this.addSourceIssueEvents(this.sourceSnapshot.issues ?? []);
+    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)));
 
     return {
       sceneId: this.sceneGraph?.sceneId,
@@ -410,7 +413,7 @@ export class MediaCoreRuntime {
     const renderPlan = this.renderPlan();
     const sourceResult = this.mediaSource.render(this.getFrameSources(renderPlan), this.elapsedMs);
     this.frames = sourceResult.frames;
-    this.sourceSnapshot = sourceResult.snapshot;
+    this.sourceSnapshot = enrichSourceSnapshotWithZoomIssues(sourceResult.snapshot, this.frames, this.sources);
     this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs, this.programFrame);
@@ -547,6 +550,12 @@ export class MediaCoreRuntime {
     warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning));
   }
 
+  private addSourceIssueEvents(issues: MediaCoreSourceHealthIssue[]) {
+    issues.forEach((issue) => {
+      this.addEvent(issue.severity, "source", sourceIssueTitle(issue), issue.detail, undefined, issue.participantId ?? issue.sourceId);
+    });
+  }
+
   private warn(
     warnings: string[],
     area: MediaCoreEventArea,
@@ -673,6 +682,73 @@ function normalizeSources(sources: MediaCoreZoomSource[]) {
     hasAudio: source.hasAudio,
     audioLevel: clampRange(source.audioLevel, 0, 100)
   }));
+}
+
+function enrichSourceSnapshotWithZoomIssues(
+  snapshot: MediaCoreFrameSourceSnapshot,
+  frames: MediaCoreFrame[],
+  sources: MediaCoreZoomSource[]
+): MediaCoreFrameSourceSnapshot {
+  const issues = buildZoomSourceHealthIssues(frames, sources);
+  if (issues.length === 0) {
+    return {
+      ...snapshot,
+      issues: snapshot.issues ?? []
+    };
+  }
+
+  const warnings = [...new Set([...snapshot.warnings, ...issues.map((issue) => issue.detail)])];
+
+  return {
+    ...snapshot,
+    status: snapshot.status === "failed" ? "failed" : "degraded",
+    issues,
+    warnings
+  };
+}
+
+function buildZoomSourceHealthIssues(frames: MediaCoreFrame[], sources: MediaCoreZoomSource[]): MediaCoreSourceHealthIssue[] {
+  const renderedParticipantIds = new Set(frames.map((frame) => frame.participantId).filter(Boolean) as string[]);
+  const renderedSourceIds = new Set(frames.map((frame) => frame.sourceId));
+
+  return sources
+    .filter((source) => renderedParticipantIds.has(source.participantId) || renderedSourceIds.has(source.sourceId))
+    .map(sourceHealthIssue)
+    .filter((issue): issue is MediaCoreSourceHealthIssue => Boolean(issue));
+}
+
+function sourceHealthIssue(source: MediaCoreZoomSource): MediaCoreSourceHealthIssue | undefined {
+  if (source.health === "live") {
+    return undefined;
+  }
+
+  const detail =
+    source.health === "low-resolution"
+      ? `${source.displayName} feed is below target resolution.`
+      : source.health === "recovering"
+        ? `${source.displayName} feed is recovering.`
+        : `${source.displayName} camera is off.`;
+
+  return {
+    sourceId: source.sourceId,
+    participantId: source.participantId,
+    displayName: source.displayName,
+    health: source.health,
+    severity: source.health === "video-off" ? "critical" : "warning",
+    detail
+  };
+}
+
+function sourceIssueTitle(issue: MediaCoreSourceHealthIssue) {
+  if (issue.health === "recovering") {
+    return "Zoom feed recovering";
+  }
+
+  if (issue.health === "video-off") {
+    return "Zoom feed unavailable";
+  }
+
+  return "Zoom feed quality warning";
 }
 
 function clampRange(value: number, min: number, max: number) {

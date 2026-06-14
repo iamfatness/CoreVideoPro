@@ -102,6 +102,7 @@ export class TestPatternMediaSource implements MediaFrameSource {
       droppedFrameCount: this.droppedFrameCount,
       lowResolutionFrameCount: this.lowResolutionFrameCount,
       lastFrameTimestampMs: this.lastFrameTimestampMs,
+      issues: [],
       warnings
     };
   }
@@ -159,6 +160,7 @@ export class LocalCameraMediaSource implements MediaFrameSource {
       droppedFrameCount: 0,
       lowResolutionFrameCount: 0,
       lastFrameTimestampMs: this.lastFrameTimestampMs,
+      issues: [],
       warnings: []
     };
   }

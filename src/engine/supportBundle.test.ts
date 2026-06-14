@@ -119,6 +119,57 @@ describe("createSupportBundle", () => {
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
   });
 
+  it("includes routed Zoom source health issues in media-core diagnostics", () => {
+    class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
+      runRoutedLowResolutionFeed() {
+        return this.snapshot(
+          [
+            {
+              type: "set-zoom-source-roster",
+              sources: [
+                {
+                  sourceId: "participant:p1",
+                  participantId: "p1",
+                  displayName: "Maya Chen",
+                  role: "Host",
+                  breakoutRoomId: "main",
+                  breakoutRoomName: "Main room",
+                  hasVideo: true,
+                  hasAudio: true,
+                  isMuted: false,
+                  isActiveSpeaker: false,
+                  isScreenSharing: false,
+                  audioLevel: 64,
+                  health: "low-resolution"
+                }
+              ]
+            },
+            {
+              type: "load-scene-graph",
+              sceneId: "single",
+              routes: [{ routeId: "guest", mode: "fixed", participantId: "p1", audioRole: "mix" }]
+            }
+          ],
+          2000
+        );
+      }
+    }
+
+    const mediaCore = new TestMediaCoreSyncEngine().runRoutedLowResolutionFeed();
+    const bundle = createSupportBundle(initialProduction, mediaCore);
+
+    expect(bundle.mediaCore?.source.issues).toEqual([
+      {
+        sourceId: "participant:p1",
+        participantId: "p1",
+        displayName: "Maya Chen",
+        health: "low-resolution",
+        severity: "warning",
+        detail: "Maya Chen feed is below target resolution."
+      }
+    ]);
+  });
+
   it("includes media-core operator actions for support triage", async () => {
     class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
       runFailure() {

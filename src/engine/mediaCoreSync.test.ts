@@ -67,6 +67,103 @@ describe("media core sync engine", () => {
     });
   });
 
+  it("creates source actions and events only for routed Zoom feed health issues", () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const roster = [
+      {
+        sourceId: "participant:p1",
+        participantId: "p1",
+        displayName: "Maya Chen",
+        role: "Host",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: false,
+        isScreenSharing: false,
+        audioLevel: 64,
+        health: "low-resolution" as const
+      },
+      {
+        sourceId: "participant:p2",
+        participantId: "p2",
+        displayName: "Andre Wallace",
+        role: "Presenter",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: false,
+        isScreenSharing: false,
+        audioLevel: 82,
+        health: "live" as const
+      }
+    ];
+
+    const unrouted = engine.runCommands(
+      [
+        { type: "set-zoom-source-roster", sources: roster },
+        {
+          type: "load-scene-graph",
+          sceneId: "single",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p2", audioRole: "mix" }]
+        }
+      ],
+      1000
+    );
+
+    expect(unrouted.sourceSnapshot.issues).toEqual([]);
+    expect(unrouted.operatorActions.find((action) => action.actionId.startsWith("source:"))).toBeUndefined();
+
+    const routed = engine.runCommands(
+      [
+        { type: "set-zoom-source-roster", sources: roster },
+        {
+          type: "load-scene-graph",
+          sceneId: "single",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p1", audioRole: "mix" }]
+        }
+      ],
+      1500
+    );
+
+    expect(routed.sourceSnapshot).toMatchObject({
+      status: "degraded",
+      issues: [
+        {
+          sourceId: "participant:p1",
+          participantId: "p1",
+          displayName: "Maya Chen",
+          health: "low-resolution",
+          severity: "warning",
+          detail: "Maya Chen feed is below target resolution."
+        }
+      ]
+    });
+    expect(routed.operatorActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "source:p1:check",
+          area: "source",
+          title: "Check Maya Chen feed",
+          detail: "Maya Chen feed is below target resolution."
+        })
+      ])
+    );
+    expect(routed.eventLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          area: "source",
+          title: "Zoom feed quality warning",
+          detail: "Maya Chen feed is below target resolution.",
+          relatedId: "p1"
+        })
+      ])
+    );
+  });
+
   it("forwards sync commands to a native host bridge when available", async () => {
     const syncMediaCore = vi.fn(async () => ({
       sceneId: "native-scene",

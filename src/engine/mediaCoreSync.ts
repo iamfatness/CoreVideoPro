@@ -23,6 +23,7 @@ import type {
   NativeMediaCoreRecordingSession,
   NativeMediaCoreRecordingTargets,
   NativeMediaCoreStateSnapshot,
+  NativeMediaCoreSourceHealthIssue,
   NativeMediaCoreZoomSource
 } from "./nativeMediaCoreProtocol";
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
@@ -56,6 +57,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     staleFrameCount: 0,
     droppedFrameCount: 0,
     lowResolutionFrameCount: 0,
+    issues: [],
     warnings: []
   };
   private programTransport: NativeMediaCoreProgramFrameTransport = {
@@ -245,7 +247,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         recording?.error
       ].filter(Boolean) as string[])
     ];
-    this.addWarningsAsEvents(allWarnings, elapsedMs);
+    const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
+    this.addSourceIssueEvents(this.sourceSnapshot.issues ?? [], elapsedMs);
+    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)), elapsedMs);
 
     return {
       sceneId: sceneGraph?.sceneId,
@@ -301,10 +305,11 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private frameFromRenderLayer(layer: NativeMediaCoreRenderPlan["layers"][number], index: number, elapsedMs: number) {
     const isScreenShare = layer.kind === "screen-share";
     const sourceId = layer.sourceId ?? layer.layerId;
+    const zoomSource = findZoomSourceForLayer(this.sources, layer);
     const nextFrameNumber = (this.frameNumbers.get(sourceId) ?? 0) + 1;
     this.frameNumbers.set(sourceId, nextFrameNumber);
     const isStressPattern = this.mediaSourceKind !== "local-camera";
-    const isLowResolution = isStressPattern && index >= 4 && !isScreenShare;
+    const isLowResolution = (isStressPattern && index >= 4 && !isScreenShare) || (!isScreenShare && zoomSource?.health === "low-resolution");
 
     return {
       sourceId,
@@ -322,11 +327,13 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private buildSourceSnapshot(frames: NativeMediaCoreFrame[], elapsedMs: number): NativeMediaCoreFrameSourceSnapshot {
     const droppedThisTick = frames.filter((frame) => frame.health === "dropped").length;
     const lowResolutionThisTick = frames.filter((frame) => frame.health === "low-resolution").length;
+    const issues = buildZoomSourceHealthIssues(frames, this.sources);
     this.sourceDroppedFrameCount += droppedThisTick;
     this.sourceLowResolutionFrameCount += lowResolutionThisTick;
     const warnings = [
       lowResolutionThisTick > 0 ? `${lowResolutionThisTick} source frame${lowResolutionThisTick === 1 ? "" : "s"} below target resolution.` : undefined,
-      droppedThisTick > 0 ? `${droppedThisTick} source frame${droppedThisTick === 1 ? "" : "s"} dropped by media source.` : undefined
+      droppedThisTick > 0 ? `${droppedThisTick} source frame${droppedThisTick === 1 ? "" : "s"} dropped by media source.` : undefined,
+      ...issues.map((issue) => issue.detail)
     ].filter(Boolean) as string[];
 
     return {
@@ -339,6 +346,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       droppedFrameCount: this.sourceDroppedFrameCount,
       lowResolutionFrameCount: this.sourceLowResolutionFrameCount,
       lastFrameTimestampMs: frames.length ? elapsedMs : this.sourceSnapshot.lastFrameTimestampMs,
+      issues,
       warnings
     };
   }
@@ -806,6 +814,12 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning, undefined, undefined, elapsedMs));
   }
 
+  private addSourceIssueEvents(issues: NativeMediaCoreSourceHealthIssue[], elapsedMs: number) {
+    issues.forEach((issue) => {
+      this.addEvent(issue.severity, "source", sourceIssueTitle(issue), issue.detail, undefined, issue.participantId ?? issue.sourceId, elapsedMs);
+    });
+  }
+
   private addEvent(
     severity: NativeMediaCoreEvent["severity"],
     area: NativeMediaCoreEvent["area"],
@@ -987,6 +1001,62 @@ function senderLatency(destination: "rtmp" | "ndi" | "srt" | "webrtc") {
 function senderBitrate(destination: "rtmp" | "ndi" | "srt" | "webrtc", outputProfile: NativeMediaCoreOutputProfile) {
   const multiplier = destination === "ndi" ? 1.6 : destination === "webrtc" ? 0.8 : 1;
   return Number((outputProfile.targetBitrateMbps * multiplier).toFixed(1));
+}
+
+function findZoomSourceForLayer(sources: NativeMediaCoreZoomSource[], layer: NativeMediaCoreRenderPlan["layers"][number]) {
+  if (layer.participantId) {
+    return sources.find((source) => source.participantId === layer.participantId);
+  }
+
+  if (layer.sourceId) {
+    return sources.find((source) => source.sourceId === layer.sourceId);
+  }
+
+  return undefined;
+}
+
+function buildZoomSourceHealthIssues(frames: NativeMediaCoreFrame[], sources: NativeMediaCoreZoomSource[]): NativeMediaCoreSourceHealthIssue[] {
+  const renderedParticipantIds = new Set(frames.map((frame) => frame.participantId).filter(Boolean) as string[]);
+  const renderedSourceIds = new Set(frames.map((frame) => frame.sourceId));
+
+  return sources
+    .filter((source) => renderedParticipantIds.has(source.participantId) || renderedSourceIds.has(source.sourceId))
+    .map(sourceHealthIssue)
+    .filter((issue): issue is NativeMediaCoreSourceHealthIssue => Boolean(issue));
+}
+
+function sourceHealthIssue(source: NativeMediaCoreZoomSource): NativeMediaCoreSourceHealthIssue | undefined {
+  if (source.health === "live") {
+    return undefined;
+  }
+
+  const detail =
+    source.health === "low-resolution"
+      ? `${source.displayName} feed is below target resolution.`
+      : source.health === "recovering"
+        ? `${source.displayName} feed is recovering.`
+        : `${source.displayName} camera is off.`;
+
+  return {
+    sourceId: source.sourceId,
+    participantId: source.participantId,
+    displayName: source.displayName,
+    health: source.health,
+    severity: source.health === "video-off" ? "critical" : "warning",
+    detail
+  };
+}
+
+function sourceIssueTitle(issue: NativeMediaCoreSourceHealthIssue) {
+  if (issue.health === "recovering") {
+    return "Zoom feed recovering";
+  }
+
+  if (issue.health === "video-off") {
+    return "Zoom feed unavailable";
+  }
+
+  return "Zoom feed quality warning";
 }
 
 export class NativeHostMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {

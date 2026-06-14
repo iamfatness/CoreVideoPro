@@ -75,6 +75,8 @@ export function buildNativeMediaCoreOperatorActions(input: NativeMediaCoreOperat
     });
   }
 
+  const sourceIssues = input.sourceSnapshot.issues ?? [];
+
   if (input.sourceSnapshot.status === "failed") {
     actions.push({
       actionId: "source:recover",
@@ -83,6 +85,18 @@ export function buildNativeMediaCoreOperatorActions(input: NativeMediaCoreOperat
       title: "Recover media source",
       detail: input.sourceSnapshot.warnings[0] ?? "Media source failed.",
       relatedId: input.sourceSnapshot.adapterId
+    });
+  } else if (sourceIssues.length > 0) {
+    sourceIssues.forEach((issue) => {
+      const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
+      actions.push({
+        actionId: `source:${issue.participantId ?? issue.sourceId}:check`,
+        severity: issue.severity,
+        area: "source",
+        title: `Check ${label} feed`,
+        detail: issue.detail,
+        relatedId: issue.participantId ?? issue.sourceId
+      });
     });
   } else if (input.sourceSnapshot.status === "degraded" || input.sourceSnapshot.droppedFrameCount > 0 || input.sourceSnapshot.lowResolutionFrameCount > 0) {
     actions.push({

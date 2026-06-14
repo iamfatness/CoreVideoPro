@@ -117,7 +117,17 @@ export type MediaCoreFrameSourceSnapshot = {
   droppedFrameCount: number;
   lowResolutionFrameCount: number;
   lastFrameTimestampMs?: number;
+  issues?: MediaCoreSourceHealthIssue[];
   warnings: string[];
+};
+
+export type MediaCoreSourceHealthIssue = {
+  sourceId: string;
+  participantId?: string;
+  displayName?: string;
+  health: MediaCoreZoomSourceHealth;
+  severity: MediaCoreOperatorActionSeverity;
+  detail: string;
 };
 
 export type MediaCoreCompositorState = {

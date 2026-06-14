@@ -95,7 +95,15 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
       status: snapshot.sourceSnapshot.status,
       subscribedSourceCount: snapshot.sourceSnapshot.subscribedSourceCount,
       droppedFrameCount: snapshot.sourceSnapshot.droppedFrameCount,
-      lowResolutionFrameCount: snapshot.sourceSnapshot.lowResolutionFrameCount
+      lowResolutionFrameCount: snapshot.sourceSnapshot.lowResolutionFrameCount,
+      issues: (snapshot.sourceSnapshot.issues ?? []).map((issue) => ({
+        sourceId: issue.sourceId,
+        participantId: issue.participantId,
+        displayName: issue.displayName,
+        health: issue.health,
+        severity: issue.severity,
+        detail: issue.detail
+      }))
     },
     compositor: {
       status: snapshot.compositor.status,

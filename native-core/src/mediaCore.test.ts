@@ -266,6 +266,91 @@ describe("MediaCoreRuntime", () => {
     });
   });
 
+  it("turns routed Zoom feed health into source issues, events, and operator actions", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "sync-source-health",
+      type: "sync",
+      commands: [
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              role: "Host",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 64,
+              health: "recovering"
+            },
+            {
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              role: "Presenter",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 82,
+              health: "low-resolution"
+            }
+          ]
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "single",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p1", audioRole: "mix" }]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        sourceSnapshot: {
+          status: "degraded",
+          issues: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              health: "recovering",
+              severity: "warning",
+              detail: "Maya Chen feed is recovering."
+            }
+          ]
+        },
+        operatorActions: [
+          {
+            actionId: "source:p1:check",
+            area: "source",
+            title: "Check Maya Chen feed",
+            detail: "Maya Chen feed is recovering."
+          }
+        ],
+        eventLog: [
+          {
+            area: "source",
+            title: "Zoom feed recovering",
+            detail: "Maya Chen feed is recovering.",
+            relatedId: "p1"
+          }
+        ]
+      }
+    });
+  });
+
   it("returns snapshots without requiring a renderer sync", () => {
     const runtime = new MediaCoreRuntime();
 
