@@ -1646,3 +1646,31 @@ describe("poll engine", () => {
     expect(within(panel).getByRole("button", { name: /Sim Vote/i })).not.toBeDisabled();
   });
 });
+
+describe("cue sheet", () => {
+  it("shows the cue sheet panel with cue list in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Cue sheet panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Cue list")).toBeInTheDocument();
+    expect(within(panel).getAllByRole("button", { name: /Live/i }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("transitions a cue to live when Live button is clicked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Cue sheet panel");
+    const liveButtons = within(panel).getAllByRole("button", { name: /Live/i });
+    await user.click(liveButtons[0]);
+
+    const liveBadges = within(panel).getAllByText("live");
+    expect(liveBadges.length).toBeGreaterThanOrEqual(1);
+  });
+});
