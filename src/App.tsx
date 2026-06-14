@@ -55,6 +55,7 @@ import { applyShowPreset as applyShowPresetState } from "./engine/presets";
 import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
 import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engine/streamHealth";
 import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engine/srtOutput";
+import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutput";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1462,6 +1463,22 @@ export function App({ engines, runtime }: AppProps) {
                           <span className="srt-latency-hint">Recommended latency: {recommended} ms (2.5× RTT)</span>
                         )}
                         {srt.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {destination.protocol === "WebRTC" && destination.endpoint && (() => {
+                    const webrtc = parseWebRtcEndpoint(destination.endpoint, destination.streamKey ?? "");
+                    if (!webrtc.valid) return null;
+                    const monitor = describeWebRtcMonitor(webrtc.params!);
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} WebRTC detail`}>
+                        <span>{monitor.summary}</span>
+                        <span className={`webrtc-latency-class latency-${monitor.latencyClass}`}>
+                          {monitor.latencyLabel} · up to {monitor.maxViewers} viewers
+                        </span>
+                        {webrtc.warnings.map((w) => (
                           <span key={w} className="srt-warning">{w}</span>
                         ))}
                       </div>
