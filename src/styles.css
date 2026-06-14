@@ -188,11 +188,66 @@ button:disabled {
   color: #f7fbf8;
 }
 
-.transition-status {
+.transition-descriptor {
   margin: 10px 0 0;
+  color: #8fdcc8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transition-status {
+  margin: 6px 0 0;
   color: #94a59b;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.transition-wipe {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  animation-timing-function: cubic-bezier(0.7, 0, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.transition-wipe.wipe-wipe {
+  background: var(--wipe-accent, #44c1a1);
+  transform-origin: left center;
+  animation-name: program-wipe;
+}
+
+.transition-wipe.wipe-stinger {
+  background: linear-gradient(120deg, var(--wipe-accent, #44c1a1), rgba(8, 12, 16, 0.96));
+  animation-name: program-stinger;
+}
+
+@keyframes program-wipe {
+  0% {
+    transform: scaleX(0);
+  }
+  50% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+    transform-origin: right center;
+  }
+}
+
+@keyframes program-stinger {
+  0% {
+    opacity: 0;
+    transform: translateX(-12%);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(12%);
+  }
 }
 
 .auto-director-status {

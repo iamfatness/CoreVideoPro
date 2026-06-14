@@ -179,7 +179,7 @@ export type SceneTemplate = {
 };
 
 export type TransitionState = {
-  style: "cut" | "fade" | "slide";
+  style: "cut" | "fade" | "slide" | "wipe" | "stinger";
   durationMs: number;
   statusText: string;
   lastTakenSceneId?: string;
