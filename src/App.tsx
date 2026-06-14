@@ -79,6 +79,7 @@ import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAn
 import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, type Poll } from "./engine/pollEngine";
 import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
 import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
+import { advanceScroll, createTeleprompter, formatReadTime, jumpToLine, pauseScroll, resetScroll, setSpeed, startScroll, teleprompterView, type TeleprompterState } from "./engine/teleprompter";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -245,6 +246,17 @@ export function App({ engines, runtime }: AppProps) {
     q = submitQuestion(q, "Lena", "Can we run this with an external hardware encoder?");
     return q;
   });
+  const [teleprompter, setTeleprompter] = useState<TeleprompterState>(() =>
+    createTeleprompter(
+      [
+        "Good evening everyone, and welcome to tonight's broadcast.",
+        "I'm thrilled to have you joining us from all around the world.",
+        "Before we dive in, a quick reminder to drop your questions in the chat.",
+        "Our first guest needs no introduction, so let's bring them on stage.",
+        "Thanks so much for being here — let's get started.",
+      ].join("\n")
+    )
+  );
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -3545,6 +3557,74 @@ export function App({ engines, runtime }: AppProps) {
                     <ControlReadout label="Ready" value={String(qaSummary.approvedCount)} />
                     <ControlReadout label="Answered" value={String(qaSummary.answeredCount)} />
                     <ControlReadout label="Upvotes" value={String(qaSummary.totalUpvotes)} />
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Teleprompter">
+            <div className="section-title">
+              <FileText size={15} />
+              Teleprompter
+            </div>
+            {(() => {
+              const view = teleprompterView(teleprompter);
+              return (
+                <div className="prompter-panel" aria-label="Teleprompter panel">
+                  <div className="prompter-script" aria-label="Teleprompter script">
+                    {teleprompter.lines.map((line) => (
+                      <button
+                        key={line.index}
+                        className={`prompter-line${line.index === view.activeLineIndex ? " prompter-line-active" : ""}`}
+                        onClick={() => setTeleprompter((t) => jumpToLine(t, line.index))}
+                      >
+                        {line.text}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="prompter-progress-bar">
+                    <div className="prompter-progress-fill" style={{ width: `${view.progressPct}%` }} />
+                  </div>
+                  <div className="prompter-stats">
+                    <ControlReadout label="Status" value={view.running ? "scrolling" : "paused"} />
+                    <ControlReadout label="Speed" value={`${teleprompter.speed}x`} />
+                    <ControlReadout label="Remaining" value={formatReadTime(view.remainingSec)} />
+                    <ControlReadout label="Total" value={formatReadTime(view.totalReadSec)} />
+                  </div>
+                  <div className="prompter-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={teleprompter.running}
+                      onClick={() => setTeleprompter(startScroll)}
+                    >
+                      Start
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={!teleprompter.running}
+                      onClick={() => setTeleprompter(pauseScroll)}
+                    >
+                      Pause
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter((t) => advanceScroll(startScroll(t), 2000))}
+                    >
+                      Advance
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter(resetScroll)}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter((t) => setSpeed(t, t.speed >= 4 ? 0.5 : t.speed + 0.5))}
+                    >
+                      Speed
+                    </button>
                   </div>
                 </div>
               );
