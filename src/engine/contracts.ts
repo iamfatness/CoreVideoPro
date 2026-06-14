@@ -1,6 +1,7 @@
 import type {
   AudioMixState,
   AutoProductionState,
+  AiStudioState,
   CaptionOverlayState,
   CaptureDeviceState,
   MediaFrameState,
@@ -84,6 +85,10 @@ export type CaptionOverlayRequest = {
 
 export interface CaptionOverlayEngine {
   buildOverlay(request: CaptionOverlayRequest): Promise<CaptionOverlayState>;
+}
+
+export interface AiStudioEngine {
+  generate(state: ProductionState): Promise<AiStudioState>;
 }
 
 export interface PresetEngine {

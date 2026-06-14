@@ -34,6 +34,21 @@ describe("App production controls", () => {
     expect(within(runtime).getByText("browser-preview / web")).toBeInTheDocument();
   });
 
+  it("renders AI Studio show notes and highlight suggestions", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const notes = await screen.findByLabelText("AI Studio show notes");
+    expect(within(notes).getByText("AI Product Launch Webinar show notes")).toBeInTheDocument();
+    expect(within(notes).getByText(/Andre Wallace/i)).toBeInTheDocument();
+
+    const highlights = screen.getByLabelText("AI Studio highlights");
+    expect(within(highlights).getByText("Presenter plus slides moment")).toBeInTheDocument();
+    expect(within(highlights).getByText("ai-product-launch-webinar-andre-wallace-speaker-slides")).toBeInTheDocument();
+  });
+
   it("runs Magic Scene through the engine and updates status", async () => {
     const user = userEvent.setup();
     renderApp();

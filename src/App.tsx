@@ -7,6 +7,7 @@ import {
   CircleDot,
   Clapperboard,
   Expand,
+  FileText,
   Gauge,
   HardDrive,
   LayoutTemplate,
@@ -49,6 +50,7 @@ import {
   getBreakoutRooms,
   initialProduction,
   sortParticipantsForProduction,
+  type AiStudioState,
   type AutoProductionState,
   type BrandKit,
   type BrandKitFont,
@@ -156,6 +158,7 @@ export function App({ engines, runtime }: AppProps) {
   const [presetStatus, setPresetStatus] = useState("No presets saved");
   const [supportBundleStatus, setSupportBundleStatus] = useState("Support bundle ready");
   const [supportBundle, setSupportBundle] = useState<SupportBundle | undefined>();
+  const [aiStudio, setAiStudio] = useState<AiStudioState>();
   const [showPreviewMonitor, setShowPreviewMonitor] = useState(false);
   const [commandStatus, setCommandStatus] = useState("Ready");
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
@@ -247,6 +250,32 @@ export function App({ engines, runtime }: AppProps) {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    engines.aiStudio.generate(production).then((studio) => {
+      if (mounted) {
+        setAiStudio(studio);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    engines.aiStudio,
+    production.activeSceneId,
+    production.captionOverlay,
+    production.captions,
+    production.meetingTitle,
+    production.outputSession.elapsedSeconds,
+    production.outputSession.statusText,
+    production.participants,
+    production.previewSceneId,
+    production.recording,
+    production.scenes
+  ]);
 
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
     const captureDevices = await engines.captureDevices.selectInput(deviceId, inputId);
@@ -1864,6 +1893,40 @@ export function App({ engines, runtime }: AppProps) {
               Magic Scene
             </button>
           </section>
+
+          {aiStudio && (
+            <section className="panel ai-studio-panel">
+              <div className="section-title">
+                <FileText size={15} />
+                AI Studio
+              </div>
+              <div className="ai-show-notes" aria-label="AI Studio show notes">
+                <strong>{aiStudio.showNotes.title}</strong>
+                <p>{aiStudio.showNotes.summary}</p>
+                <div className="ai-chip-row">
+                  <span>{aiStudio.transcript.length} segment</span>
+                  <span>{aiStudio.chapters.length} chapter</span>
+                  <span>{aiStudio.highlights.length} highlights</span>
+                </div>
+              </div>
+              <div className="ai-list" aria-label="AI Studio highlights">
+                {aiStudio.highlights.slice(0, 2).map((highlight) => (
+                  <div key={highlight.id}>
+                    <strong>{highlight.title}</strong>
+                    <span>{highlight.suggestedClipName}</span>
+                    <em>{highlight.confidence}%</em>
+                  </div>
+                ))}
+              </div>
+              <div className="ai-list" aria-label="AI Studio next actions">
+                {aiStudio.showNotes.nextActions.slice(0, 3).map((action) => (
+                  <div key={action}>
+                    <span>{action}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
 

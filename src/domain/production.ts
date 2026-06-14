@@ -236,6 +236,48 @@ export type OutputSessionState = {
   statusText: string;
 };
 
+export type TranscriptSegment = {
+  id: string;
+  startSeconds: number;
+  endSeconds: number;
+  speakerName: string;
+  text: string;
+  confidence: number;
+};
+
+export type AiChapter = {
+  id: string;
+  title: string;
+  startSeconds: number;
+  summary: string;
+};
+
+export type AiHighlight = {
+  id: string;
+  title: string;
+  summary: string;
+  startSeconds: number;
+  endSeconds: number;
+  speakerName: string;
+  confidence: number;
+  suggestedClipName: string;
+};
+
+export type AiShowNotes = {
+  title: string;
+  summary: string;
+  bullets: string[];
+  nextActions: string[];
+};
+
+export type AiStudioState = {
+  transcript: TranscriptSegment[];
+  chapters: AiChapter[];
+  highlights: AiHighlight[];
+  showNotes: AiShowNotes;
+  rundown: string[];
+};
+
 export type ProductionState = {
   meetingTitle: string;
   mode: "manual" | "set-and-forget";

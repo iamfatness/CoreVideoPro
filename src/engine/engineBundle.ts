@@ -1,5 +1,6 @@
 import type {
   AiProductionEngine,
+  AiStudioEngine,
   AudioMixEngine,
   CaptionOverlayEngine,
   CaptureDeviceEngine,
@@ -16,12 +17,14 @@ import { NativeZoomEngineAdapter } from "./nativeZoomEngineAdapter";
 import type { NativeZoomTransport } from "./nativeBridgeProtocol";
 import { SimulatedAudioMixEngine } from "./audioMix";
 import { SimulatedCaptionOverlayEngine } from "./captionOverlay";
+import { RuleBasedAiStudioEngine } from "./aiStudio";
 import { InMemoryPresetEngine } from "./presets";
 import { InMemoryDiagnosticsEngine } from "./supportBundle";
 
 export type EngineBundle = {
   zoom: ZoomCaptureEngine;
   ai: AiProductionEngine;
+  aiStudio: AiStudioEngine;
   output: OutputEngine;
   audio: AudioMixEngine;
   captions: CaptionOverlayEngine;
@@ -34,6 +37,7 @@ export function createMockEngineBundle(): EngineBundle {
   return {
     zoom: new MockZoomCaptureEngine(),
     ai: new RuleBasedAiProductionEngine(),
+    aiStudio: new RuleBasedAiStudioEngine(),
     output: new MockOutputEngine(),
     audio: new SimulatedAudioMixEngine(),
     captions: new SimulatedCaptionOverlayEngine(),
@@ -47,6 +51,7 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport): En
   return {
     zoom: new NativeZoomEngineAdapter(transport),
     ai: new RuleBasedAiProductionEngine(),
+    aiStudio: new RuleBasedAiStudioEngine(),
     output: new NativeOutputEngineAdapter(transport),
     audio: new SimulatedAudioMixEngine(),
     captions: new SimulatedCaptionOverlayEngine(),
