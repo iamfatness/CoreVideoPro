@@ -7,6 +7,7 @@ import {
   CircleDot,
   Clapperboard,
   Expand,
+  FileText,
   Gauge,
   HardDrive,
   LayoutTemplate,
@@ -35,21 +36,67 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
+import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
+import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } from "./engine/brandKit";
+import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
+import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
+import { summarizeCaptureFleet } from "./engine/captureFleet";
+import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
+import { controlButtonStatus, controlSurface, summarizeControlSurface, type ControlAction } from "./engine/controlSurface";
+import { addMediaAsset, groupMediaBin, mediaAssetKinds, removeMediaAsset, summarizeMediaBin } from "./engine/mediaBin";
+import { planMultitrackAudio } from "./engine/multitrackAudio";
+import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
+import { describeVirtualCamera } from "./engine/virtualCamera";
 import { getFrameForParticipant } from "./engine/mediaFrames";
+import { summarizeArming } from "./engine/outputArming";
+import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
+import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
+import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engine/streamHealth";
+import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engine/srtOutput";
+import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutput";
+import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type FeedHealthSignal } from "./engine/feedHealth";
+import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
+import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
+import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
+import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
+import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
+import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
+import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summarizeCaptionQuality } from "./engine/captionQuality";
+import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCandidate } from "./engine/participantSpotlight";
+import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type ProtocolLatencyProfile } from "./engine/latencyBudget";
+import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stingerEngine";
+import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/bandwidthPlanner";
+import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markShowOver } from "./engine/preShowCountdown";
+import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight";
+import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type ClipMarker, type ClipRegion } from "./engine/clipTrimmer";
+import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeChapters, validateChapters, type ChapterList } from "./engine/chapterMarker";
+import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, snapshotTotals, speakerSharePct } from "./engine/speakerTimer";
+import { buildWatermarkSpec, classificationColor, confidentialityLevels, createWatermark, updateWatermark, validateWatermark, watermarkPositions, type WatermarkConfig } from "./engine/outputWatermark";
+import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/networkDiagnostics";
+import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAnimationFrame, dismissAnimation, getAnimationPreset, startAnimation, type AnimationState } from "./engine/graphicAnimator";
+import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, type Poll } from "./engine/pollEngine";
+import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
+import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
+import { advanceScroll, createTeleprompter, formatReadTime, jumpToLine, pauseScroll, resetScroll, setSpeed, startScroll, teleprompterView, type TeleprompterState } from "./engine/teleprompter";
+import { addPlate, createDeck, queuedPlates, requeuePlate, showNext, showPlate, summarizeDeck, takeDown, toneLabel, type LowerThirdDeck } from "./engine/lowerThird";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
   initialProduction,
   sortParticipantsForProduction,
+  type AiStudioState,
   type AutoProductionState,
   type BrandKit,
   type BrandKitFont,
+  type CaptionFontSize,
+  type CaptionStyle,
   type GraphicOverlay,
+  type MediaAssetKind,
   type MediaFrameState,
   type OutputDestination,
+  type OutputHealth,
   type OutputProfile,
   type Participant,
   type ParticipantRole,
@@ -64,6 +111,7 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
+import type { NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
@@ -83,11 +131,19 @@ const commandLabels = {
 } as const;
 
 type CommandKey = keyof typeof commandLabels;
+type DiagnosticsFilter = "all" | "critical" | "warning" | "recovery";
 
 const participantRoles: ParticipantRole[] = ["Host", "Presenter", "Panelist", "Guest"];
 const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]);
+const diagnosticsFilters: Array<{ id: DiagnosticsFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "critical", label: "Critical" },
+  { id: "warning", label: "Warnings" },
+  { id: "recovery", label: "Recovery" }
+];
 const brandKitFonts: BrandKitFont[] = ["Inter", "Poppins", "Roboto", "Georgia"];
 const lowerThirdStyles: BrandKit["lowerThirdStyle"][] = ["solid", "minimal", "gradient"];
+const captionFontSizes: CaptionFontSize[] = ["small", "medium", "large"];
 
 const tabs = [
   { id: "studio", label: "Studio", icon: Clapperboard },
@@ -148,13 +204,74 @@ export function App({ engines, runtime }: AppProps) {
   const [presetStatus, setPresetStatus] = useState("No presets saved");
   const [supportBundleStatus, setSupportBundleStatus] = useState("Support bundle ready");
   const [supportBundle, setSupportBundle] = useState<SupportBundle | undefined>();
+  const [aiStudio, setAiStudio] = useState<AiStudioState>();
+  const [mediaCoreSnapshot, setMediaCoreSnapshot] = useState<NativeMediaCoreStateSnapshot>();
   const [showPreviewMonitor, setShowPreviewMonitor] = useState(false);
   const [commandStatus, setCommandStatus] = useState("Ready");
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
   const [activeTab, setActiveTab] = useState<TabId>("studio");
+  const [diagnosticsFilter, setDiagnosticsFilter] = useState<DiagnosticsFilter>("all");
+  const [selectedStreamingPresetId, setSelectedStreamingPresetId] = useState(streamingPresets[0].id);
+  const [mediaAssetKind, setMediaAssetKind] = useState<MediaAssetKind>(mediaAssetKinds[0]);
   const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
   const [expandedParticipantId, setExpandedParticipantId] = useState<string | null>(null);
+  const [showClockSegmentIndex, setShowClockSegmentIndex] = useState(-1);
+  const [showClockSegmentElapsed, setShowClockSegmentElapsed] = useState(0);
+  const [showClockTotalElapsed, setShowClockTotalElapsed] = useState(0);
+  const [preShowSecondsToLive, setPreShowSecondsToLive] = useState(900);
+  const [clipRegion, setClipRegion] = useState<ClipRegion>({ inPointSec: 0, outPointSec: 30, fps: 30 });
+  const [clipMarkers, setClipMarkers] = useState<ClipMarker[]>([]);
+  const clipSourceDurationSec = 60;
+  const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
+  const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
+  const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
+  const [selectedAnimPresetId, setSelectedAnimPresetId] = useState(animationPresets[0].id);
+  const [animState, setAnimState] = useState<AnimationState | null>(null);
+  const [activePoll, setActivePoll] = useState<Poll>(() =>
+    createPoll("Favourite session format?", ["Live Q&A", "Presentation only", "Panel discussion"])
+  );
+  const [activeCueSheet, setActiveCueSheet] = useState<CueSheet>(() => {
+    let s = createCueSheet("Live Show Rundown");
+    s = addCue(s, "intro", "Welcome & Housekeeping", 300);
+    s = addCue(s, "segment", "Keynote Presentation", 1800);
+    s = addCue(s, "break", "Break", 600);
+    s = addCue(s, "qa", "Live Q&A", 900);
+    s = addCue(s, "outro", "Wrap-up & Goodbye", 300);
+    return s;
+  });
+  const [qaQueue, setQaQueue] = useState<QaQueue>(() => {
+    let q = createQaQueue("Audience Q&A");
+    q = submitQuestion(q, "Priya", "Will the slides be shared afterwards?");
+    q = submitQuestion(q, "Marcus", "How does the auto-framing handle multiple speakers?");
+    q = submitQuestion(q, "Lena", "Can we run this with an external hardware encoder?");
+    return q;
+  });
+  const [teleprompter, setTeleprompter] = useState<TeleprompterState>(() =>
+    createTeleprompter(
+      [
+        "Good evening everyone, and welcome to tonight's broadcast.",
+        "I'm thrilled to have you joining us from all around the world.",
+        "Before we dive in, a quick reminder to drop your questions in the chat.",
+        "Our first guest needs no introduction, so let's bring them on stage.",
+        "Thanks so much for being here — let's get started.",
+      ].join("\n")
+    )
+  );
+  const [plateDeck, setPlateDeck] = useState<LowerThirdDeck>(() => {
+    let d = createDeck();
+    d = addPlate(d, "Dr. Amara Okafor", "Keynote Speaker", "Quantum Systems Lab", "accent");
+    d = addPlate(d, "James Whitfield", "Panel Moderator", "CoreVideo", "neutral");
+    d = addPlate(d, "Sofia Marchetti", "Special Guest", "Marchetti Studios", "guest");
+    return d;
+  });
+  const [networkSamples] = useState<NetworkSample[]>([
+    { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
+    { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
+    { rttMs: 38, packetLossPct: 0, jitterMs: 2, timestampMs: Date.now() - 3000 },
+    { rttMs: 61, packetLossPct: 0.2, jitterMs: 6, timestampMs: Date.now() - 2000 },
+    { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
+  ]);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -166,6 +283,15 @@ export function App({ engines, runtime }: AppProps) {
   const selectedVideoEffect = useMemo(
     () => getVideoEffect(production.videoEffects, selectedParticipantId),
     [production.videoEffects, selectedParticipantId]
+  );
+  const selectedAutoCrop = useMemo(
+    () => (selectedParticipant ? computeAutoCrop(selectedParticipant) : undefined),
+    [selectedParticipant]
+  );
+  const captureFleet = useMemo(() => summarizeCaptureFleet(production.captureDevices), [production.captureDevices]);
+  const multitrackPlan = useMemo(
+    () => planMultitrackAudio(production.participants, production.recordingSettings.isoParticipantIds),
+    [production.participants, production.recordingSettings.isoParticipantIds]
   );
   const breakoutRooms = useMemo(() => getBreakoutRooms(production.participants), [production.participants]);
   const visibleParticipants = useMemo(
@@ -202,8 +328,16 @@ export function App({ engines, runtime }: AppProps) {
   );
   const destinationStates = production.outputDestinations.map((destination) => {
     const sessionState = production.outputSession.destinations.find((item) => item.id === destination.id);
-    return sessionState ?? { ...destination, active: false, health: "idle" as const, bitrateMbps: 0 };
+    // The live destination list is the source of truth for the armed/endpoint
+    // fields the operator edits; the session contributes runtime fields only.
+    return {
+      ...destination,
+      active: sessionState?.active ?? false,
+      health: sessionState?.health ?? ("idle" as const),
+      bitrateMbps: sessionState?.bitrateMbps ?? 0
+    };
   });
+  const mediaCoreEvents = useMemo(() => filterMediaCoreEvents(mediaCoreSnapshot?.eventLog ?? [], diagnosticsFilter), [diagnosticsFilter, mediaCoreSnapshot?.eventLog]);
 
   useEffect(() => {
     let mounted = true;
@@ -234,6 +368,58 @@ export function App({ engines, runtime }: AppProps) {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+
+    engines.aiStudio.generate(production).then((studio) => {
+      if (mounted) {
+        setAiStudio(studio);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    engines.aiStudio,
+    production.activeSceneId,
+    production.captionOverlay,
+    production.captions,
+    production.meetingTitle,
+    production.outputSession.elapsedSeconds,
+    production.outputSession.statusText,
+    production.participants,
+    production.previewSceneId,
+    production.recording,
+    production.scenes
+  ]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    engines.mediaCore.syncProduction(production, elapsedSeconds * 1000).then((snapshot) => {
+      if (mounted) {
+        setMediaCoreSnapshot(snapshot);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    elapsedSeconds,
+    engines.mediaCore,
+    production.activeSceneId,
+    production.graphics,
+    production.outputDestinations,
+    production.participants,
+    production.recording,
+    production.recordingSettings.isoParticipantIds,
+    production.scenes,
+    production.streaming,
+    production.videoEffects
+  ]);
+
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
     const captureDevices = await engines.captureDevices.selectInput(deviceId, inputId);
     setProduction((current) => ({ ...current, captureDevices }));
@@ -241,6 +427,11 @@ export function App({ engines, runtime }: AppProps) {
 
   async function setCaptureDeviceAudioSyncOffset(deviceId: string, offsetMs: number) {
     const captureDevices = await engines.captureDevices.setAudioSyncOffset(deviceId, offsetMs);
+    setProduction((current) => ({ ...current, captureDevices }));
+  }
+
+  async function connectCaptureDevice(deviceId: string) {
+    const captureDevices = await engines.captureDevices.connectDevice(deviceId);
     setProduction((current) => ({ ...current, captureDevices }));
   }
 
@@ -275,6 +466,10 @@ export function App({ engines, runtime }: AppProps) {
       audioMix,
       autoProduction,
       captionOverlay,
+      captionTranscript: appendCaptionEntry(
+        current.captionTranscript,
+        attributeCaption(captionOverlay, participants, snapshot.elapsedSeconds)
+      ),
       captions: snapshot.caption,
       selectedBreakoutRoomId:
         current.selectedBreakoutRoomId === "all" ||
@@ -419,18 +614,12 @@ export function App({ engines, runtime }: AppProps) {
   }
 
   function setTransitionStyle(style: TransitionState["style"]) {
-    const durations: Record<TransitionState["style"], number> = {
-      cut: 0,
-      fade: 420,
-      slide: 520
-    };
-
     setProduction((current) => ({
       ...current,
       transition: {
         ...current.transition,
         style,
-        durationMs: durations[style],
+        durationMs: recommendedTransitionDuration(style),
         statusText: `${style} transition selected`
       }
     }));
@@ -460,6 +649,29 @@ export function App({ engines, runtime }: AppProps) {
             : `Set & Forget enabled: ${current.autoProduction.reason}`
       }
     }));
+  }
+
+  function triggerControlAction(action: ControlAction) {
+    switch (action) {
+      case "take":
+        void runCommand("t");
+        break;
+      case "preview":
+        void runCommand("p");
+        break;
+      case "magic-scene":
+        void runMagicScene();
+        break;
+      case "set-and-forget":
+        toggleAutomation();
+        break;
+      case "record":
+        void toggleRecording();
+        break;
+      case "stream":
+        void toggleStreaming();
+        break;
+    }
   }
 
   async function toggleRecording() {
@@ -563,6 +775,17 @@ export function App({ engines, runtime }: AppProps) {
     }));
   }
 
+  function addStreamingDestination() {
+    if (production.streaming) {
+      return;
+    }
+
+    setProduction((current) => ({
+      ...current,
+      outputDestinations: addDestinationFromPreset(selectedStreamingPresetId, current.outputDestinations)
+    }));
+  }
+
   function toggleGraphic(graphicId: string) {
     setProduction((current) => ({
       ...current,
@@ -583,6 +806,41 @@ export function App({ engines, runtime }: AppProps) {
     setProduction((current) => ({
       ...current,
       graphics: applyBrandKitToGraphics(current.graphics, current.brandKit)
+    }));
+  }
+
+  function updateCaptionStyle(update: Partial<ProductionState["captionStyle"]>) {
+    setProduction((current) => ({
+      ...current,
+      captionStyle: { ...current.captionStyle, ...update }
+    }));
+  }
+
+  function updateColorGrade(update: Partial<ProductionState["colorGrade"]>) {
+    setProduction((current) => ({
+      ...current,
+      colorGrade: { ...current.colorGrade, ...update }
+    }));
+  }
+
+  function updateVirtualCamera(update: Partial<ProductionState["virtualCamera"]>) {
+    setProduction((current) => ({
+      ...current,
+      virtualCamera: { ...current.virtualCamera, ...update }
+    }));
+  }
+
+  function addBinAsset() {
+    setProduction((current) => ({
+      ...current,
+      mediaBin: addMediaAsset(current.mediaBin, mediaAssetKind)
+    }));
+  }
+
+  function removeBinAsset(assetId: string) {
+    setProduction((current) => ({
+      ...current,
+      mediaBin: removeMediaAsset(current.mediaBin, assetId)
     }));
   }
 
@@ -644,9 +902,15 @@ export function App({ engines, runtime }: AppProps) {
   }
 
   async function exportSupportBundle() {
-    const bundle = await engines.diagnostics.createSupportBundle(production);
+    const bundle = await engines.diagnostics.createSupportBundle(production, mediaCoreSnapshot);
     setSupportBundle(bundle);
     setSupportBundleStatus(`${bundle.id} exported`);
+  }
+
+  async function executeMediaCoreAction(action: NativeMediaCoreOperatorAction) {
+    const snapshot = await engines.mediaCore.executeOperatorAction(production, action, elapsedSeconds * 1000);
+    setMediaCoreSnapshot(snapshot);
+    setSupportBundleStatus(`${action.title} executed`);
   }
 
   async function toggleSelectedParticipantMute() {
@@ -762,6 +1026,15 @@ export function App({ engines, runtime }: AppProps) {
   });
 
   const outputProfileBadge = production.outputProfiles.find((profile) => profile.id === production.selectedOutputProfileId);
+  const programResLabel = shortResolutionLabel(
+    outputProfileBadge?.resolution ?? production.output.resolution,
+    outputProfileBadge?.fps ?? production.output.fps
+  );
+  const outputProfileReadout = outputProfileBadge
+    ? computeOutputProfileReadout(outputProfileBadge, production.outputDestinations)
+    : undefined;
+  const armingSummary = summarizeArming(production.outputDestinations);
+  const armingReadinessById = new Map(armingSummary.destinations.map((destination) => [destination.id, destination]));
   const cpuLoad = production.output.encoderLoad;
   const memoryLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.7 + 10));
   const diskLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.4 + 20));
@@ -850,7 +1123,7 @@ export function App({ engines, runtime }: AppProps) {
           <section className="program-column">
             <div className="program-toolbar">
               <span className="program-label">PROGRAM</span>
-              <span className="badge">{outputProfileBadge?.resolution ?? production.output.resolution}{outputProfileBadge ? outputProfileBadge.fps : production.output.fps}</span>
+              <span className="badge">{programResLabel}</span>
               <span className="badge">16:9</span>
               <div className="program-toolbar-actions">
                 <button
@@ -874,7 +1147,10 @@ export function App({ engines, runtime }: AppProps) {
             </div>
 
             <section className="program-frame" aria-label="Program preview">
-              <div className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}>
+              <div
+                className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}
+                style={{ background: programBackgroundStyle(production.brandKit), filter: colorGradeFilter(production.colorGrade) }}
+              >
                 <ScenePreview
                   activeShareFrame={activeShareFrame}
                   participants={programParticipants}
@@ -888,9 +1164,21 @@ export function App({ engines, runtime }: AppProps) {
                     LIVE
                   </div>
                 )}
-                <div className={`lower-third position-${production.captionOverlay.lowerThirdPosition}`}>
+                {transitionUsesWipe(production.transition.style) && production.transition.lastTakenSceneId && (
+                  <div
+                    aria-hidden="true"
+                    className={`transition-wipe wipe-${production.transition.style}`}
+                    key={`${production.transition.style}-${production.transition.lastTakenSceneId}`}
+                    style={{
+                      animationDuration: `${production.transition.durationMs}ms`,
+                      "--wipe-accent": production.brandKit.brandColor
+                    } as React.CSSProperties}
+                  />
+                )}
+                <div className={`lower-third lower-third-bar position-${production.captionOverlay.lowerThirdPosition}`}>
                   <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
-                  <span>{selectedParticipant?.title ?? "Zoom-native production"}</span>
+                  <span className="lower-third-title">{selectedParticipant?.title ?? "Zoom-native production"}</span>
+                  <span className="lower-third-org">{production.brandKit.logoText.split(" ")[0]}</span>
                 </div>
                 {production.captionOverlay.warnings.length > 0 && (
                   <div className="overlay-warning">{production.captionOverlay.warnings[0]}</div>
@@ -899,14 +1187,17 @@ export function App({ engines, runtime }: AppProps) {
                   <ProgramGraphic key={graphic.id} graphic={graphic} />
                 ))}
               </div>
-              <div className="caption-strip-row">
+              <div
+                className={`caption-strip-row caption-size-${production.captionStyle.fontSize}`}
+                style={captionStyleVars(production.captionStyle) as React.CSSProperties}
+              >
                 <span className="cc-badge">
                   <Captions size={14} />
                   CC
                 </span>
                 <div className="caption-strip-text">
                   <strong>{production.captionOverlay.speakerName}</strong>
-                  <span>{production.captionOverlay.text}</span>
+                  <span>{formatCaptionText(production.captionOverlay.text, production.captionStyle)}</span>
                 </div>
               </div>
             </section>
@@ -1166,6 +1457,66 @@ export function App({ engines, runtime }: AppProps) {
                   </label>
                 ))}
               </div>
+              {(() => {
+                const isoParticipants = production.participants
+                  .filter((p) => production.recordingSettings.isoParticipantIds.includes(p.id))
+                  .map((p) => ({ id: p.id, name: p.name }));
+                const isoPlan = planIsoRecording(isoParticipants, {
+                  includeProgramMix: true,
+                  sessionName: production.recordingSettings.filenamePrefix || "session",
+                });
+                const diskErrors = validateIsoAgainstDisk(
+                  isoPlan,
+                  production.output.availableDiskGb,
+                  60
+                );
+                return (
+                  <div className="iso-plan" aria-label="ISO recording plan">
+                    <span className="iso-plan-summary">{summarizeIsoPlan(isoPlan)}</span>
+                    {isoPlan.valid && (
+                      <div className="iso-track-list">
+                        {isoPlan.tracks.map((track) => (
+                          <span className={`iso-track iso-track-${track.source}`} key={track.trackIndex}>
+                            {isoOutputPath(isoPlan.outputFolder, track.label, track.trackIndex)
+                              .split("/")
+                              .pop()}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {[...isoPlan.warnings, ...diskErrors].map((w) => (
+                      <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                    ))}
+                  </div>
+                );
+              })()}
+              <div className="multitrack-plan" aria-label="Multitrack audio plan">
+                <span className="multitrack-summary">{multitrackPlan.summary}</span>
+                <div className="multitrack-tracks">
+                  {multitrackPlan.tracks.map((track) => (
+                    <span className={`multitrack-track track-${track.kind} ${track.muted ? "muted" : ""}`} key={track.id}>
+                      {track.label} - {track.channels === 2 ? "stereo" : "mono"}
+                    </span>
+                  ))}
+                </div>
+                {multitrackPlan.warnings.map((warning) => (
+                  <p className="multitrack-warning" role="status" key={warning}>{warning}</p>
+                ))}
+              </div>
+              {(() => {
+                const videoRateMbps = outputProfileBadge?.targetBitrateMbps ?? production.output.bitrateMbps;
+                const diskRateMBps = multitrackPlan.estimatedDiskRateMBps + videoRateMbps / 8;
+                const disk = evaluateDiskSpace(production.output.availableDiskGb, diskRateMBps);
+                return (
+                  <div className={`disk-space-status level-${disk.level}`} aria-label="Disk space status">
+                    <HardDrive size={13} />
+                    <span className="disk-space-summary">{diskSpaceSummary(disk)}</span>
+                    {disk.warnings.map((w) => (
+                      <span key={w} className="disk-space-warning">{w}</span>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </section>
 
@@ -1174,10 +1525,26 @@ export function App({ engines, runtime }: AppProps) {
               <Radio size={15} />
               Destinations
             </div>
+            <div className="arming-summary" aria-label="Arming readiness">
+              <strong>{armingSummary.summary}</strong>
+              {armingSummary.blockers.length > 0 ? (
+                <ul className="arming-blockers">
+                  {armingSummary.blockers.map((blocker) => (
+                    <li key={blocker}>{blocker}</li>
+                  ))}
+                </ul>
+              ) : (
+                <span>{armingSummary.armedCount > 0 ? "All armed destinations are ready to go live." : "Arm a destination to go live."}</span>
+              )}
+            </div>
             <div className="destination-list">
-              {destinationStates.map((destination) => (
+              {destinationStates.map((destination) => {
+                const readiness = armingReadinessById.get(destination.id);
+                return (
                 <div
-                  className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""}`}
+                  className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""} ${
+                    destination.enabled && readiness && !readiness.ready ? "needs-attention" : ""
+                  }`}
                   key={destination.id}
                 >
                   <button disabled={production.streaming} onClick={() => toggleOutputDestination(destination.id)}>
@@ -1187,7 +1554,13 @@ export function App({ engines, runtime }: AppProps) {
                         {destination.protocol} - {destination.latencyMs} ms
                       </span>
                     </div>
-                    <em>{destination.active ? `${destination.health} ${destination.bitrateMbps} Mbps` : destination.enabled ? "Armed" : "Off"}</em>
+                    <em>
+                      {destination.active
+                        ? `${destination.health} ${destination.bitrateMbps} Mbps`
+                        : destination.enabled
+                          ? readiness?.statusLabel ?? "Armed"
+                          : "Off"}
+                    </em>
                   </button>
                   <div className="destination-settings">
                     <label>
@@ -1212,9 +1585,130 @@ export function App({ engines, runtime }: AppProps) {
                       </label>
                     )}
                   </div>
+                  {destination.enabled && readiness && (
+                    <p className={`destination-readiness ${readiness.ready ? "ready" : "needs-attention"}`}>{readiness.detail}</p>
+                  )}
+                  {destination.protocol === "SRT" && destination.endpoint && (() => {
+                    const srt = parseSrtUrl(destination.endpoint);
+                    if (!srt.valid) return null;
+                    const params = srt.params!;
+                    const recommended = recommendSrtLatency(destination.latencyMs);
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} SRT detail`}>
+                        <span>{describeSrtConnection(params)}</span>
+                        {recommended !== params.latencyMs && (
+                          <span className="srt-latency-hint">Recommended latency: {recommended} ms (2.5× RTT)</span>
+                        )}
+                        {srt.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {destination.protocol === "WebRTC" && destination.endpoint && (() => {
+                    const webrtc = parseWebRtcEndpoint(destination.endpoint, destination.streamKey ?? "");
+                    if (!webrtc.valid) return null;
+                    const monitor = describeWebRtcMonitor(webrtc.params!);
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} WebRTC detail`}>
+                        <span>{monitor.summary}</span>
+                        <span className={`webrtc-latency-class latency-${monitor.latencyClass}`}>
+                          {monitor.latencyLabel} · up to {monitor.maxViewers} viewers
+                        </span>
+                        {webrtc.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {destination.protocol === "NDI" && destination.endpoint && (() => {
+                    const ndi = parseNdiSourceName(destination.endpoint);
+                    const bandwidth = estimateNdiBandwidth(
+                      outputProfileBadge?.resolution ?? production.output.resolution,
+                      outputProfileBadge?.fps ?? production.output.fps
+                    );
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} NDI detail`}>
+                        {ndi.valid && ndi.sourceName && (
+                          <span>{describeNdiSource(ndi.sourceName)}</span>
+                        )}
+                        <span className={bandwidth.bandwidthWarning ? "srt-latency-hint" : ""}>
+                          {bandwidth.summary}
+                        </span>
+                        {ndi.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
-              ))}
+                );
+              })}
             </div>
+            <div className="add-destination" aria-label="Add streaming destination">
+              <label>
+                <span>Streaming preset</span>
+                <select
+                  aria-label="Streaming preset"
+                  disabled={production.streaming}
+                  onChange={(event) => setSelectedStreamingPresetId(event.target.value)}
+                  value={selectedStreamingPresetId}
+                >
+                  {streamingPresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>{preset.name}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="ghost-button wide" disabled={production.streaming} onClick={addStreamingDestination}>
+                <Plus size={16} />
+                Add destination
+              </button>
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Bandwidth plan">
+            <div className="section-title">
+              <Wifi size={15} />
+              Bandwidth plan
+            </div>
+            {(() => {
+              const activeDests = destinationStates
+                .filter((d) => d.enabled || d.active)
+                .map((d) => ({
+                  id: d.id,
+                  name: d.name,
+                  protocol: d.protocol,
+                  bitrateKbps: production.output.bitrateMbps * 1000,
+                }));
+              const bwPlan = planBandwidth(activeDests, { uplinkCapacityMbps: 50 });
+              const reduction = suggestBitrateReduction(bwPlan);
+              return (
+                <div className={`bandwidth-plan-panel status-${bwPlan.status}`} aria-label="Bandwidth plan panel">
+                  <div className="bandwidth-plan-summary">{bwPlan.summary}</div>
+                  <div className="health-grid">
+                    <ControlReadout label="Total" value={formatKbps(bwPlan.totalKbps)} />
+                    <ControlReadout label="Uplink" value={formatKbps(bwPlan.uplinkCapacityKbps)} />
+                    <ControlReadout label="Usage" value={`${Math.round(bwPlan.usageFraction * 100)}%`} />
+                    <ControlReadout label="Status" value={bwPlan.status} />
+                  </div>
+                  {bwPlan.destinations.map((d) => (
+                    <div key={d.destinationId} className="bandwidth-dest-row">
+                      <span className="bandwidth-dest-name">{d.name}</span>
+                      <span className="bandwidth-dest-total">{formatKbps(d.totalKbps)}</span>
+                      <span className="bandwidth-dest-proto">{d.protocol} +{Math.round((d.overheadKbps / (d.videoBitrateKbps + d.audioBitrateKbps)) * 100)}% overhead</span>
+                    </div>
+                  ))}
+                  {reduction && (
+                    <p className="multitrack-warning" role="status">
+                      Reduce each destination to ~{formatKbps(reduction.targetKbpsPerDestination)} (−{reduction.reductionPct}%) to stay within budget.
+                    </p>
+                  )}
+                  {bwPlan.warnings.filter((w) => !w.includes("Reduce")).map((w) => (
+                    <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel">
@@ -1230,13 +1724,32 @@ export function App({ engines, runtime }: AppProps) {
                   key={profile.id}
                   onClick={() => selectOutputProfile(profile)}
                 >
-                  <strong>{profile.name}</strong>
+                  <strong>
+                    {profile.name}
+                    {isUltraHdProfile(profile) && <span className="profile-tag">4K</span>}
+                  </strong>
                   <span>
                     {profile.resolution} - {profile.fps}fps - {profile.targetBitrateMbps} Mbps
                   </span>
                 </button>
               ))}
             </div>
+            {outputProfileReadout && (
+              <div className="encoder-readout" aria-label="Encoder headroom">
+                <div className="health-grid">
+                  <ControlReadout label="Encoder headroom" value={`${outputProfileReadout.encoderHeadroomPercent}%`} />
+                  <ControlReadout label="Upload bandwidth" value={`${outputProfileReadout.uploadBandwidthMbps} Mbps`} />
+                  <ControlReadout label="Stream targets" value={`${outputProfileReadout.networkDestinationCount} network`} />
+                </div>
+                {outputProfileReadout.warnings.length > 0 && (
+                  <ul className="encoder-warnings">
+                    {outputProfileReadout.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="panel">
@@ -1256,7 +1769,7 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Route health" value={previewRouteWarnings[0] ?? "Ready"} />
               <ControlReadout label="Auto director" value={`${production.autoProduction.action} ${production.autoProduction.confidence}%`} />
               <ControlReadout label="Output time" value={formatElapsed(production.outputSession.elapsedSeconds)} />
-              <ControlReadout label="Recording file" value={production.outputSession.recordingFile ? "Active" : "Not recording"} />
+              <ControlReadout label="Recording file" value={production.outputSession.recordingFile ?? "Not recording"} />
               <ControlReadout label="Recording quality" value={production.recordingSettings.quality} />
               <ControlReadout label="Record preflight" value={recordingPreflightStatus} />
               <ControlReadout label="Support bundle" value={supportBundleStatus} />
@@ -1267,6 +1780,257 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Captions" value="Adaptive realtime" />
               <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
               <ControlReadout label="Preflight" value={outputPreflightStatus} />
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Stream health">
+            <div className="section-title">
+              <Wifi size={15} />
+              Stream health
+            </div>
+            {(() => {
+              const targetKbps = (outputProfileBadge?.targetBitrateMbps ?? 6) * 1000;
+              const activeDestinations = destinationStates.filter((d) => d.active);
+              if (activeDestinations.length === 0) {
+                return <p className="brand-kit-summary">No active destinations — health scoring available during live output.</p>;
+              }
+              const reports = activeDestinations.map((dest) =>
+                scoreStreamHealth(
+                  {
+                    bitrateKbps: dest.bitrateMbps * 1000,
+                    droppedFrames: production.output.droppedFrames,
+                    rttMs: dest.latencyMs,
+                    encoderLoadPct: production.output.encoderLoad,
+                    timestampMs: Date.now(),
+                  },
+                  targetKbps
+                )
+              );
+              const agg = aggregateStreamHealth(reports);
+              return (
+                <div className="stream-health-panel">
+                  <div className={`stream-health-aggregate grade-${agg.worstGrade}`}>
+                    <strong>{agg.worstGrade.charAt(0).toUpperCase() + agg.worstGrade.slice(1)}</strong>
+                    <span>Avg score: {agg.avgScore}/100</span>
+                  </div>
+                  <div className="stream-health-destinations">
+                    {activeDestinations.map((dest, i) => {
+                      const report = reports[i];
+                      return (
+                        <div key={dest.id} className={`stream-health-dest grade-${report.grade}`}>
+                          <div className="stream-health-dest-header">
+                            <strong>{dest.name}</strong>
+                            <span className={`health-badge grade-${report.grade}`}>{report.score}/100</span>
+                          </div>
+                          <div className="stream-health-metrics">
+                            <span>Bitrate: {formatBitrate(report.bitrateKbps)}</span>
+                            <span>RTT: {report.rttMs} ms</span>
+                            <span>Encoder: {report.encoderLoadPct}%</span>
+                            <span>Drops: {report.droppedFrames}</span>
+                          </div>
+                          {report.warnings.length > 0 && (
+                            <ul className="stream-health-warnings">
+                              {report.warnings.map((w) => <li key={w}>{w}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Latency budget">
+            <div className="section-title">
+              <Activity size={15} />
+              Latency budget
+            </div>
+            {(() => {
+              const armedDestination = destinationStates.find((d) => d.active || d.enabled);
+              const protocol = armedDestination?.protocol ?? "rtmp-hls";
+              const protocolMap: Record<string, ProtocolLatencyProfile> = {
+                RTMP: "rtmp-hls",
+                SRT: "srt",
+                WebRTC: "webrtc-whip",
+                NDI: "ndi",
+              };
+              const latencyProtocol: ProtocolLatencyProfile = protocolMap[protocol] ?? "rtmp-hls";
+              const budget = computeLatencyBudget({
+                protocol: latencyProtocol,
+                outputFps: production.output.fps || 30,
+              });
+              return (
+                <div className="latency-budget-panel" aria-label="Latency budget panel">
+                  <div className={`latency-class-badge class-${budget.latencyClass}`}>
+                    {latencyClassLabel(budget.latencyClass)}
+                  </div>
+                  <p className="latency-summary">{budget.summary}</p>
+                  <div className="latency-stages">
+                    {budget.stages.map((stage) => (
+                      <div key={stage.stage} className="latency-stage-row">
+                        <span className="latency-stage-label">{stage.label}</span>
+                        <span className="latency-stage-value">{formatLatencyMs(stage.estimatedMs)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Network diagnostics">
+            <div className="section-title">
+              <Wifi size={15} />
+              Network diagnostics
+            </div>
+            {(() => {
+              const samples = trimSamples(networkSamples, 60);
+              const report = diagnoseNetwork(samples);
+              return (
+                <div className={`network-diag-panel quality-${report.quality}`} aria-label="Network diagnostics panel">
+                  <p className="network-diag-summary">{report.summary}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="Quality" value={report.quality} />
+                    <ControlReadout label="Score" value={`${report.qualityScore}/100`} />
+                    <ControlReadout label="Avg RTT" value={`${report.stats.avgRttMs}ms`} />
+                    <ControlReadout label="Max RTT" value={`${report.stats.maxRttMs}ms`} />
+                    <ControlReadout label="Jitter" value={`${report.stats.avgJitterMs}ms`} />
+                    <ControlReadout label="Loss" value={`${report.stats.avgPacketLossPct}%`} />
+                  </div>
+                  {report.issues.map((issue) => (
+                    <p key={issue} className="network-diag-issue" role="status">{issue}</p>
+                  ))}
+                  {report.suggestions.length > 0 && (
+                    <div className="network-diag-suggestions">
+                      {report.suggestions.map((s) => (
+                        <p key={s} className="network-diag-suggestion">{s}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Virtual camera">
+            <div className="section-title">
+              <Video size={15} />
+              Virtual camera
+            </div>
+            <p className="brand-kit-summary">{describeVirtualCamera(production.virtualCamera, production.output).label}</p>
+            <label className="brand-kit-field">
+              <span>Device name</span>
+              <input
+                aria-label="Virtual camera device name"
+                onChange={(event) => updateVirtualCamera({ deviceName: event.target.value })}
+                type="text"
+                value={production.virtualCamera.deviceName}
+              />
+            </label>
+            <ControlReadout label="Published format" value={describeVirtualCamera(production.virtualCamera, production.output).outputFormat} />
+            <label className="caption-uppercase-field brand-kit-field">
+              <span>Mirror output</span>
+              <input
+                aria-label="Mirror virtual camera"
+                checked={production.virtualCamera.mirrored}
+                onChange={(event) => updateVirtualCamera({ mirrored: event.target.checked })}
+                type="checkbox"
+              />
+            </label>
+            <button
+              className={`ghost-button wide ${production.virtualCamera.enabled ? "selected" : ""}`}
+              onClick={() => updateVirtualCamera({ enabled: !production.virtualCamera.enabled })}
+            >
+              <Video size={16} />
+              {production.virtualCamera.enabled ? "Stop virtual camera" : "Start virtual camera"}
+            </button>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Gauge size={15} />
+              Native core
+            </div>
+            <div className="health-grid" aria-label="Native core sync">
+              <ControlReadout label="Synced scene" value={mediaCoreSnapshot?.sceneId ?? "Pending"} />
+              <ControlReadout label="Routes" value={`${mediaCoreSnapshot?.routeCount ?? 0}`} />
+              <ControlReadout label="Frames" value={`${mediaCoreSnapshot?.frameCount ?? 0}`} />
+              <ControlReadout label="Transforms" value={`${mediaCoreSnapshot?.participantTransformCount ?? 0}`} />
+              <ControlReadout label="Overlays" value={`${mediaCoreSnapshot?.overlayCount ?? 0}`} />
+              <ControlReadout label="Sources" value={`${mediaCoreSnapshot?.sourceCount ?? 0}`} />
+              <ControlReadout label="Resolved routes" value={`${mediaCoreSnapshot?.resolvedRouteCount ?? 0}`} />
+              <ControlReadout label="Render plan" value={`${mediaCoreSnapshot?.renderPlan.layers.length ?? 0} layers`} />
+              <ControlReadout label="Plan ID" value={mediaCoreSnapshot?.renderPlan.renderPlanId ?? "None"} />
+              <ControlReadout label="Media source" value={mediaCoreSnapshot?.sourceSnapshot.kind ?? "Idle"} />
+              <ControlReadout label="Program frames" value={`${mediaCoreSnapshot?.programFrameCount ?? 0}`} />
+              <ControlReadout label="Transport" value={mediaCoreSnapshot?.programTransport.status ?? "Idle"} />
+              <ControlReadout label="Compositor" value={mediaCoreSnapshot?.compositor.status ?? "Idle"} />
+              <ControlReadout label="Encoder" value={mediaCoreSnapshot?.encoderSession.lifecycle.status ?? "Idle"} />
+              <ControlReadout label="Senders" value={mediaCoreSnapshot ? `${mediaCoreSnapshot.outputSenderSession.activeSenderCount} ${mediaCoreSnapshot.outputSenderSession.status}` : "0 idle"} />
+              <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
+              <ControlReadout label="Profile" value={mediaCoreSnapshot?.outputProfile.profileId ?? "1080p60"} />
+              <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />
+              <ControlReadout label="Recorded frames" value={`${mediaCoreSnapshot?.recording?.totalFramesWritten ?? 0}`} />
+              <ControlReadout label="Disk rate" value={mediaCoreSnapshot?.recording ? `${mediaCoreSnapshot.recording.estimatedDiskRateMBps} MB/s` : "0 MB/s"} />
+              <ControlReadout label="Output health" value={mediaCoreSnapshot?.outputHealth[0]?.status ?? "Idle"} />
+              <ControlReadout label="Action" value={mediaCoreSnapshot?.operatorActions[0]?.title ?? "None"} />
+              <ControlReadout label="Events" value={mediaCoreSnapshot?.eventLog.length ? `${mediaCoreSnapshot.eventLog.length} - ${mediaCoreSnapshot.eventLog.at(-1)?.title}` : "None"} />
+              <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
+            </div>
+          </section>
+
+          <section className="panel media-core-diagnostics" aria-label="Media core diagnostics">
+            <div className="section-title">
+              <Activity size={15} />
+              Diagnostics
+            </div>
+            <div className="health-grid">
+              <ControlReadout label="Action queue" value={`${mediaCoreSnapshot?.operatorActions.length ?? 0}`} />
+              <ControlReadout label="Timeline" value={`${mediaCoreSnapshot?.eventLog.length ?? 0} events`} />
+            </div>
+            <div className="diagnostics-filter" aria-label="Media core diagnostics filter">
+              {diagnosticsFilters.map((filter) => (
+                <button
+                  className={diagnosticsFilter === filter.id ? "selected" : ""}
+                  key={filter.id}
+                  onClick={() => setDiagnosticsFilter(filter.id)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+            {mediaCoreSnapshot?.operatorActions.length ? (
+              <div className="operator-action-list" aria-label="Media core actions">
+                {mediaCoreSnapshot.operatorActions.map((action) => (
+                  <button
+                    className={`operator-action operator-action-${action.severity}`}
+                    disabled={!action.command}
+                    key={action.actionId}
+                    onClick={() => void executeMediaCoreAction(action)}
+                  >
+                    <RefreshCw size={15} />
+                    <span>
+                      <strong>{action.title}</strong>
+                      <em>{action.detail}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="event-timeline" aria-label="Media core event timeline">
+              {mediaCoreEvents.length ? (
+                mediaCoreEvents.map((event) => (
+                  <div className={`event-row event-row-${event.severity}`} key={event.eventId}>
+                    <span>{formatEventTime(event.atMs)}</span>
+                    <strong>{event.title}</strong>
+                    <em>{event.detail}</em>
+                  </div>
+                ))
+              ) : (
+                <p className="preset-status">No matching media-core events</p>
+              )}
             </div>
           </section>
 
@@ -1381,12 +2145,193 @@ export function App({ engines, runtime }: AppProps) {
             </div>
           </section>
 
+          <section className="panel" aria-label="Feed health roster">
+            <div className="section-title">
+              <Wifi size={15} />
+              Zoom feed health
+            </div>
+            {(() => {
+              const signals: FeedHealthSignal[] = visibleParticipants.map((p) => ({
+                hasVideo: p.health !== "video-off",
+                hasAudio: !p.isMuted,
+                isMuted: p.isMuted,
+                isVideoOff: p.health === "video-off",
+                resolutionTier: p.health === "low-resolution" ? 1 : p.health === "video-off" ? 0 : 2,
+                msSinceLastFrame: p.health === "recovering" ? 6000 : 50,
+                isReconnecting: p.health === "recovering",
+              }));
+              const statuses = signals.map(evaluateFeedHealth);
+              const roster = summarizeRosterHealth(statuses);
+              return (
+                <div className="feed-health-roster">
+                  <p className="feed-health-summary" aria-label="Feed health summary">{roster.summary}</p>
+                  <div className="feed-health-list">
+                    {visibleParticipants.map((p, i) => {
+                      const status = statuses[i];
+                      const color = feedHealthBadgeColor(status.state);
+                      return (
+                        <div key={p.id} className={`feed-health-row color-${color}`}>
+                          <span className="feed-health-name">{p.name}</span>
+                          <span className="feed-health-role">{p.role}</span>
+                          <span className={`feed-health-badge color-${color}`}>{status.label}</span>
+                          {status.needsAttention && (
+                            <span className="feed-health-detail">{status.detail}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Participant spotlight">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Participant spotlight
+            </div>
+            {(() => {
+              const roleWeights: Record<string, number> = {
+                Host: 4, Presenter: 3, Guest: 2, Panelist: 1,
+              };
+              const candidates: SpotlightCandidate[] = visibleParticipants.map((p) => ({
+                id: p.id,
+                name: p.name,
+                isActiveSpeaker: p.isActiveSpeaker,
+                hasVideo: p.health !== "video-off",
+                roleWeight: roleWeights[p.role] ?? 1,
+                secondsSinceLastSpoke: p.isActiveSpeaker ? 0 : 45,
+                totalSpeakingSeconds: p.audioLevel * 2,
+              }));
+              const decision = selectSpotlight(candidates, { pickSecondary: true });
+              return (
+                <div className="spotlight-panel" aria-label="Spotlight decision">
+                  <div className="spotlight-summary">{spotlightSummary(decision)}</div>
+                  <div className="spotlight-list">
+                    {decision.scores.filter((s) => s.score > 0).map((s) => (
+                      <div key={s.participantId} className={`spotlight-row ${s.participantId === decision.primaryId ? "primary" : s.participantId === decision.secondaryId ? "secondary" : ""}`}>
+                        <span className="spotlight-name">{s.name}</span>
+                        <span className="spotlight-score">{s.score} pts</span>
+                        <span className="spotlight-reason">{explainSpotlight(s)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Tally lights">
+            <div className="section-title">
+              <Radio size={15} />
+              Tally lights
+            </div>
+            {(() => {
+              const activeScene = production.scenes.find((s: SceneTemplate) => s.id === production.activeSceneId) ?? production.scenes[0];
+              const previewScene = production.scenes.find((s: SceneTemplate) => s.id === production.previewSceneId) ?? activeScene;
+              const programIds = (activeScene?.slots ?? []);
+              const previewIds = (previewScene?.slots ?? []).filter((id) => !programIds.includes(id));
+              const tallySources = visibleParticipants.map((p) => ({ sourceId: p.id, label: p.name }));
+              if (screenShareActive) {
+                tallySources.push({ sourceId: "screen-share", label: "Screen Share" });
+              }
+              const snap = computeTally(tallySources, programIds, previewIds);
+              return (
+                <div className="tally-panel" aria-label="Tally panel">
+                  <p className="tally-summary">{snap.summary}</p>
+                  <div className="tally-grid">
+                    {snap.sources.map((src) => (
+                      <div
+                        key={src.sourceId}
+                        className={`tally-row tally-${src.tally}`}
+                        aria-label={`${src.label} tally`}
+                      >
+                        <span
+                          className="tally-dot"
+                          style={{ background: tallyColorHex(src.tally) }}
+                        />
+                        <span className="tally-label">{src.label}</span>
+                        <span className="tally-state">{src.tally}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="tally-counts">
+                    <ControlReadout label="On air" value={String(filterByTally(snap, "program").length)} />
+                    <ControlReadout label="In preview" value={String(filterByTally(snap, "preview").length)} />
+                    <ControlReadout label="Idle" value={String(filterByTally(snap, "idle").length)} />
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Speaker timer">
+            <div className="section-title">
+              <Gauge size={15} />
+              Speaker timer
+            </div>
+            {(() => {
+              const activeSpeakerId = visibleParticipants.find((p) => p.isActiveSpeaker)?.id ?? null;
+              const nowSec = elapsedSeconds;
+              let timerState = createSpeakerTimer(
+                visibleParticipants.map((p) => ({ id: p.id, name: p.name })),
+                300 // 5 min target per speaker
+              );
+              timerState = setActiveSpeaker(timerState, nowSec - 30, activeSpeakerId);
+              timerState = snapshotTotals(timerState, nowSec);
+              const report = buildSpeakerReport(timerState);
+              return (
+                <div className="speaker-timer-panel" aria-label="Speaker timer panel">
+                  <p className="speaker-timer-summary">{report.summary}</p>
+                  <div className="speaker-timer-list">
+                    {report.state.speakers.map((s) => (
+                      <div
+                        key={s.participantId}
+                        className={`speaker-row ${s.participantId === report.dominantSpeakerId ? "dominant" : ""} ${s.isSpeaking ? "speaking" : ""}`}
+                        aria-label={`${s.name} speaker time`}
+                      >
+                        <span className="speaker-name">{s.name}</span>
+                        <span className="speaker-time">{formatSec(s.totalSec)}</span>
+                        <span className="speaker-share">{speakerSharePct(s, report.state.speakers)}%</span>
+                        <div className="speaker-bar-wrap">
+                          <div
+                            className="speaker-bar"
+                            style={{ width: `${speakerSharePct(s, report.state.speakers)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="Balance" value={`${report.balanceScore}%`} />
+                    <ControlReadout label="Alerts" value={String(report.alerts.length)} />
+                  </div>
+                  {report.alerts.map((alert) => (
+                    <p key={alert.participantId} className={`speaker-alert speaker-alert-${alert.severity}`} role="status">
+                      {alert.message}
+                    </p>
+                  ))}
+                </div>
+              );
+            })()}
+          </section>
+
           <section className="panel" aria-label="Capture devices">
             <div className="section-title">
               <Cable size={15} />
               Capture Devices
             </div>
             {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
+            {production.captureDevices.length > 0 && (
+              <div className="capture-fleet" aria-label="Capture fleet">
+                <p className="capture-fleet-summary">{captureFleet.summary}</p>
+                {captureFleet.dualCapture && <span className="capture-fleet-badge">Dual capture live</span>}
+                {captureFleet.warnings.map((warning) => (
+                  <p className="capture-fleet-warning" role="status" key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
             {production.captureDevices.map((device) => (
               <div className="capture-device" key={device.id}>
                 <div className="capture-device-header">
@@ -1399,6 +2344,12 @@ export function App({ engines, runtime }: AppProps) {
                   {device.resolution.width}x{device.resolution.height} - {device.frameRate}fps -{" "}
                   {device.signalPresent ? "Signal present" : "No signal"}
                 </p>
+                {device.connectionState !== "connected" && (
+                  <button className="ghost-button wide" onClick={() => connectCaptureDevice(device.id)}>
+                    <Cable size={16} />
+                    Bring online as program source
+                  </button>
+                )}
                 <label className="capture-device-field">
                   Input
                   <select
@@ -1509,6 +2460,16 @@ export function App({ engines, runtime }: AppProps) {
                   value={production.brandKit.backgroundColor}
                 />
               </label>
+              <label className="brand-kit-field brand-kit-field-wide">
+                <span>Background image URL</span>
+                <input
+                  aria-label="Brand background image URL"
+                  onChange={(event) => updateBrandKit({ backgroundImageUrl: event.target.value })}
+                  placeholder="https://…  (blank for branded gradient)"
+                  type="url"
+                  value={production.brandKit.backgroundImageUrl}
+                />
+              </label>
               <label className="brand-kit-field">
                 <span>Font</span>
                 <select
@@ -1540,7 +2501,7 @@ export function App({ engines, runtime }: AppProps) {
             </button>
           </section>
 
-          <section className="panel">
+          <section className="panel" aria-label="Caption style">
             <div className="section-title">
               <Captions size={15} />
               Lower-third &amp; captions
@@ -1549,6 +2510,276 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Lower-third" value={production.captionOverlay.lowerThirdPosition.replace("-", " ")} />
               <ControlReadout label="Captions" value={production.captionOverlay.captionPosition} />
             </div>
+            <p className="brand-kit-summary">{summarizeCaptionStyle(production.captionStyle)}</p>
+            <div className="brand-kit-form">
+              <label className="brand-kit-field">
+                <span>Caption size</span>
+                <select
+                  aria-label="Caption size"
+                  onChange={(event) => updateCaptionStyle({ fontSize: event.target.value as CaptionFontSize })}
+                  value={production.captionStyle.fontSize}
+                >
+                  {captionFontSizes.map((size) => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="brand-kit-field">
+                <span>Caption color</span>
+                <input
+                  aria-label="Caption text color"
+                  onChange={(event) => updateCaptionStyle({ textColor: event.target.value })}
+                  type="color"
+                  value={production.captionStyle.textColor}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Backdrop opacity</span>
+                <input
+                  aria-label="Caption backdrop opacity"
+                  max={100}
+                  min={0}
+                  onChange={(event) => updateCaptionStyle({ backgroundOpacity: Number(event.target.value) })}
+                  step={5}
+                  type="range"
+                  value={production.captionStyle.backgroundOpacity}
+                />
+              </label>
+              <label className="brand-kit-field caption-uppercase-field">
+                <span>Uppercase</span>
+                <input
+                  aria-label="Uppercase captions"
+                  checked={production.captionStyle.uppercase}
+                  onChange={(event) => updateCaptionStyle({ uppercase: event.target.checked })}
+                  type="checkbox"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Speaker captions">
+            <div className="section-title">
+              <Captions size={15} />
+              Speaker captions
+            </div>
+            <div className="transcript-list">
+              {production.captionTranscript.map((entry) => (
+                <div className="transcript-entry" key={entry.id}>
+                  <div className="transcript-meta">
+                    <strong>{entry.speakerName}</strong>
+                    <span>{entry.role} - {entry.confidence}%</span>
+                  </div>
+                  <p>{entry.text}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Caption quality">
+            <div className="section-title">
+              <Activity size={15} />
+              Caption quality
+            </div>
+            {(() => {
+              const confidenceValues = production.captionTranscript.map((e) => e.confidence);
+              const qualityReport = computeCaptionQuality(confidenceValues);
+              const hasActiveSpeaker = production.participants.some((p) => p.isActiveSpeaker);
+              const currentText = production.captionOverlay.text;
+              const signal = {
+                confidencePct: production.captionOverlay.confidence,
+                msSinceLastWord: hasActiveSpeaker ? 500 : 5000,
+                text: currentText,
+                activeSpeakerPresent: hasActiveSpeaker,
+                screenShareActive,
+              };
+              const visibility = decideCaptionVisibility(signal);
+              const deadAir = detectDeadAir(signal.msSinceLastWord);
+              return (
+                <div className={`caption-quality-panel tier-${qualityReport.tier}`} aria-label="Caption quality panel">
+                  <div className="caption-quality-summary">{summarizeCaptionQuality(qualityReport)}</div>
+                  <div className="health-grid">
+                    <ControlReadout label="Avg confidence" value={`${qualityReport.avgConfidence}%`} />
+                    <ControlReadout label="Min confidence" value={`${qualityReport.minConfidence}%`} />
+                    <ControlReadout label="Tier" value={qualityReport.tier} />
+                    <ControlReadout label="Visibility" value={visibility.state} />
+                    <ControlReadout label="Dead air" value={deadAir} />
+                    <ControlReadout label="Samples" value={String(qualityReport.sampleCount)} />
+                  </div>
+                  {qualityReport.warnings.map((w) => (
+                    <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                  ))}
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Graphic animator">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Graphic animator
+            </div>
+            {(() => {
+              const preset = getAnimationPreset(selectedAnimPresetId) ?? animationPresets[0];
+              const simState = animState ?? { preset, phase: "idle" as const, phaseElapsedMs: 0, totalElapsedMs: 0 };
+              // Simulate 500ms advance for preview when running
+              const previewState = simState.phase !== "idle" && simState.phase !== "done"
+                ? advanceAnimation(simState, 0)
+                : simState;
+              const frame = computeAnimationFrame(previewState);
+              return (
+                <div className="anim-panel" aria-label="Animator panel">
+                  <label className="role-control">
+                    <span>Preset</span>
+                    <select
+                      aria-label="Animation preset"
+                      value={selectedAnimPresetId}
+                      onChange={(e) => {
+                        setSelectedAnimPresetId(e.target.value);
+                        setAnimState(null);
+                      }}
+                    >
+                      {animationPresets.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="health-grid">
+                    <ControlReadout label="Phase" value={previewState.phase} />
+                    <ControlReadout label="Opacity" value={`${Math.round(frame.opacity * 100)}%`} />
+                    <ControlReadout label="Duration" value={`${animationTotalDurationMs(preset)}ms`} />
+                    <ControlReadout label="Easing" value={preset.easing} />
+                  </div>
+                  <div className="anim-preview-track">
+                    <div
+                      className="anim-preview-indicator"
+                      style={{
+                        left: `${Math.min(100, (previewState.totalElapsedMs / animationTotalDurationMs(preset)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="anim-controls">
+                    <button
+                      className="ghost-button"
+                      aria-label="Play animation"
+                      disabled={previewState.phase !== "idle" && previewState.phase !== "done"}
+                      onClick={() => setAnimState(startAnimation(preset))}
+                    >
+                      Play
+                    </button>
+                    <button
+                      className="ghost-button"
+                      aria-label="Dismiss animation"
+                      disabled={previewState.phase === "idle" || previewState.phase === "done" || previewState.phase === "outro"}
+                      onClick={() => setAnimState((s) => s ? dismissAnimation(s) : s)}
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setAnimState(null)}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Output watermark">
+            <div className="section-title">
+              <Shield size={15} />
+              Output watermark
+            </div>
+            {(() => {
+              const spec = buildWatermarkSpec(watermarkConfig);
+              const issues = validateWatermark(watermarkConfig);
+              return (
+                <div className="watermark-panel" aria-label="Watermark panel">
+                  <p className="watermark-summary">{spec.summary}</p>
+                  <label className="role-control">
+                    <span>Mode</span>
+                    <select
+                      aria-label="Watermark mode"
+                      value={watermarkConfig.mode}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { mode: e.target.value as WatermarkConfig["mode"] }))}
+                    >
+                      <option value="disabled">Disabled</option>
+                      <option value="live">Live overlay</option>
+                      <option value="burn-in">Burn-in</option>
+                    </select>
+                  </label>
+                  <label className="role-control">
+                    <span>Text</span>
+                    <input
+                      aria-label="Watermark text"
+                      value={watermarkConfig.text}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { text: e.target.value }))}
+                      placeholder="e.g. DRAFT, © 2025"
+                    />
+                  </label>
+                  <label className="role-control">
+                    <span>Position</span>
+                    <select
+                      aria-label="Watermark position"
+                      value={watermarkConfig.position}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { position: e.target.value as WatermarkConfig["position"] }))}
+                    >
+                      {watermarkPositions.map((pos) => (
+                        <option key={pos} value={pos}>{pos}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="gain-control">
+                    <span>Opacity</span>
+                    <input
+                      aria-label="Watermark opacity"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={watermarkConfig.opacityPct}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { opacityPct: Number(e.target.value) }))}
+                    />
+                    <em>{watermarkConfig.opacityPct}%</em>
+                  </label>
+                  <label className="webinar-toggle">
+                    <input
+                      type="checkbox"
+                      aria-label="Show classification banner"
+                      checked={watermarkConfig.showClassification}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { showClassification: e.target.checked }))}
+                    />
+                    Classification banner
+                  </label>
+                  {watermarkConfig.showClassification && (
+                    <label className="role-control">
+                      <span>Level</span>
+                      <select
+                        aria-label="Classification level"
+                        value={watermarkConfig.classification}
+                        onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { classification: e.target.value as WatermarkConfig["classification"] }))}
+                      >
+                        {confidentialityLevels.map((level) => (
+                          <option key={level} value={level}>{level}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {spec.classificationBanner && (
+                    <div
+                      className="watermark-classification"
+                      style={{ color: classificationColor(watermarkConfig.classification) }}
+                      aria-label="Classification banner"
+                    >
+                      {spec.classificationBanner}
+                    </div>
+                  )}
+                  {issues.map((issue) => (
+                    <p key={issue} className="watermark-issue" role="status">{issue}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
         </div>
       </div>
@@ -1632,11 +2863,275 @@ export function App({ engines, runtime }: AppProps) {
               </button>
             </section>
           )}
+
+          <section className="panel" aria-label="Loudness normalisation">
+            <div className="section-title">
+              <Gauge size={15} />
+              Loudness normalisation
+            </div>
+            {(() => {
+              const integratedLufs = production.audioMix.loudnessLufs;
+              const limiterActive = production.audioMix.limiterActive;
+              const reading = {
+                integratedLufs,
+                shortTermLufs: integratedLufs + 1.2,
+                truePeakDbtp: limiterActive ? -1.5 : -6,
+                loudnessRangeLu: 9,
+              };
+              const plan = planLoudnessNormalisation(reading, "zoom");
+              const { status } = plan;
+              return (
+                <div className={`loudness-panel level-${status.level}`} aria-label="Loudness status">
+                  <div className="loudness-header">
+                    <span className="loudness-reading">{formatLufs(integratedLufs)}</span>
+                    <span className="loudness-target">target {formatLufs(plan.target.targetLufs)}</span>
+                    <span className={`loudness-level level-${status.level}`}>{status.level.replace("-", " ")}</span>
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="True peak" value={formatDbtp(reading.truePeakDbtp)} />
+                    <ControlReadout label="Peak limit" value={formatDbtp(plan.limiterCeilingDbtp)} />
+                    <ControlReadout label="Gain adjust" value={`${status.gainAdjustmentDb >= 0 ? "+" : ""}${status.gainAdjustmentDb.toFixed(1)} dB`} />
+                    <ControlReadout label="Compressor" value={plan.suggestedRatio === 1 ? "Not needed" : `${plan.suggestedRatio}:1`} />
+                    <ControlReadout label="Standard" value={plan.target.standard} />
+                  </div>
+                  {status.warnings.map((w) => (
+                    <p key={w} className="multitrack-warning" role="status">{w}</p>
+                  ))}
+                  <label className="role-control">
+                    <span>Target standard</span>
+                    <select aria-label="Loudness target" defaultValue="zoom" onChange={() => {}}>
+                      {loudnessTargets.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              );
+            })()}
+          </section>
         </div>
       </div>
 
       <div aria-label="Media tab" className={`tab-content ${activeTab === "media" ? "active" : ""}`} hidden={activeTab !== "media"}>
         <div className="tab-panel">
+          <section className="panel" aria-label="Program color grade">
+            <div className="section-title">
+              <Palette size={15} />
+              Color grade
+            </div>
+            <p className="brand-kit-summary">{summarizeColorGrade(production.colorGrade)}</p>
+            <label className="role-control">
+              <span>LUT preset</span>
+              <select
+                aria-label="Color LUT"
+                onChange={(event) => updateColorGrade({ lut: event.target.value as ProductionState["colorGrade"]["lut"] })}
+                value={production.colorGrade.lut}
+              >
+                {colorGradeLuts.map((lut) => (
+                  <option key={lut} value={lut}>{lut}</option>
+                ))}
+              </select>
+            </label>
+            {(["exposure", "contrast", "saturation", "temperature"] as const).map((axis) => (
+              <label className="gain-control" key={axis}>
+                <span>{axis}</span>
+                <input
+                  aria-label={`Color ${axis}`}
+                  max={50}
+                  min={-50}
+                  onChange={(event) => updateColorGrade({ [axis]: Number(event.target.value) })}
+                  step={1}
+                  type="range"
+                  value={production.colorGrade[axis]}
+                />
+                <em>{production.colorGrade[axis] > 0 ? `+${production.colorGrade[axis]}` : production.colorGrade[axis]}</em>
+              </label>
+            ))}
+          </section>
+
+          <section className="panel" aria-label="Media bin">
+            <div className="section-title">
+              <Save size={15} />
+              Media bin
+            </div>
+            <p className="brand-kit-summary">{summarizeMediaBin(production.mediaBin)}</p>
+            <div className="media-bin-groups">
+              {groupMediaBin(production.mediaBin).map((group) => (
+                <div className="media-bin-group" key={group.kind}>
+                  <span className="media-bin-kind">{group.label}</span>
+                  {group.assets.map((asset) => (
+                    <div className="media-bin-asset" key={asset.id}>
+                      <strong>{asset.name}</strong>
+                      {asset.durationMs !== undefined && <em>{Math.round(asset.durationMs / 100) / 10}s</em>}
+                      <button
+                        className="icon-button"
+                        aria-label={`Remove ${asset.name}`}
+                        onClick={() => removeBinAsset(asset.id)}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="add-destination" aria-label="Add media asset">
+              <label>
+                <span>Asset type</span>
+                <select
+                  aria-label="Media asset type"
+                  onChange={(event) => setMediaAssetKind(event.target.value as MediaAssetKind)}
+                  value={mediaAssetKind}
+                >
+                  {mediaAssetKinds.map((kind) => (
+                    <option key={kind} value={kind}>{kind}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="ghost-button wide" onClick={addBinAsset}>
+                <Plus size={16} />
+                Add asset
+              </button>
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Clip trimmer">
+            <div className="section-title">
+              <Clapperboard size={15} />
+              Clip trimmer
+            </div>
+            {(() => {
+              const result = trimClip(clipRegion, clipSourceDurationSec);
+              return (
+                <div className="clip-trim-panel" aria-label="Clip trim controls">
+                  <p className="clip-trim-summary">{summarizeTrim(result, clipRegion.fps)}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="In" value={formatTimecode(result.region.inPointSec, clipRegion.fps)} />
+                    <ControlReadout label="Out" value={formatTimecode(result.region.outPointSec, clipRegion.fps)} />
+                    <ControlReadout label="Duration" value={formatTimecode(result.durationSec, clipRegion.fps)} />
+                    <ControlReadout label="FPS" value={String(clipRegion.fps)} />
+                  </div>
+                  {result.warnings.map((w) => (
+                    <p className="clip-trim-warning" key={w} role="status">{w}</p>
+                  ))}
+                  <div className="clip-trim-bar" aria-label="Trim bar">
+                    <div
+                      className="trim-range"
+                      style={{
+                        left: `${(result.region.inPointSec / clipSourceDurationSec) * 100}%`,
+                        width: `${(result.durationSec / clipSourceDurationSec) * 100}%`,
+                      }}
+                    />
+                    {clipMarkers.map((m) => (
+                      <div
+                        key={m.id}
+                        className="trim-marker"
+                        aria-label={`Marker ${m.label}`}
+                        style={{
+                          left: `${(m.positionSec / clipSourceDurationSec) * 100}%`,
+                          background: m.color,
+                        }}
+                        title={m.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="clip-trim-controls">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "in", deltaSec: -1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      ← In
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "in", deltaSec: 1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      In →
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "out", deltaSec: -1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      ← Out
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "out", deltaSec: 1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      Out →
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipMarkers((ms) => addMarker(ms, (clipRegion.inPointSec + clipRegion.outPointSec) / 2, "Cue"))}
+                    >
+                      Add marker
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Chapter markers">
+            <div className="section-title">
+              <FileText size={15} />
+              Chapter markers
+            </div>
+            {(() => {
+              const warnings = validateChapters(chapterList, "youtube");
+              const nowChapter = activeChapterAt(chapterList, elapsedSeconds);
+              const exported = chapterList.markers.length > 0 ? exportChapters(chapterList, chapterExportFormat) : "";
+              return (
+                <div className="chapter-panel" aria-label="Chapter panel">
+                  <p className="chapter-summary">{summarizeChapters(chapterList)}</p>
+                  {nowChapter && (
+                    <p className="chapter-active">Now: <strong>{nowChapter.title}</strong></p>
+                  )}
+                  <div className="chapter-list">
+                    {chapterList.markers.map((m) => (
+                      <div key={m.id} className="chapter-row" aria-label={`Chapter ${m.title}`}>
+                        <span className="chapter-time">{m.startSec === 0 ? "00:00" : `${Math.floor(m.startSec / 60).toString().padStart(2, "0")}:${(Math.floor(m.startSec) % 60).toString().padStart(2, "0")}`}</span>
+                        <span className="chapter-title">{m.title}</span>
+                        <button
+                          className="icon-button"
+                          aria-label={`Remove chapter ${m.title}`}
+                          onClick={() => setChapterList((cl) => removeChapter(cl, m.id))}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {warnings.map((w) => (
+                    <p className="chapter-warning" key={w} role="status">{w}</p>
+                  ))}
+                  <button
+                    className="ghost-button wide"
+                    onClick={() => setChapterList((cl) => addChapter(cl, Math.floor(elapsedSeconds), `Chapter ${cl.markers.length + 1}`))}
+                  >
+                    <Plus size={14} />
+                    Mark chapter now ({Math.floor(elapsedSeconds)}s)
+                  </button>
+                  {chapterList.markers.length > 0 && (
+                    <div className="chapter-export">
+                      <select
+                        aria-label="Chapter export format"
+                        value={chapterExportFormat}
+                        onChange={(e) => setChapterExportFormat(e.target.value as typeof chapterExportFormat)}
+                      >
+                        <option value="youtube">YouTube</option>
+                        <option value="vtt">WebVTT</option>
+                        <option value="text">Text</option>
+                        <option value="json">JSON</option>
+                      </select>
+                      <pre className="chapter-export-preview" aria-label="Chapter export preview">{exported}</pre>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </section>
+
           {selectedParticipant && (
             <section className="panel detail-panel">
               <div className="section-title">
@@ -1645,6 +3140,20 @@ export function App({ engines, runtime }: AppProps) {
               </div>
               <h2>{selectedParticipant.name}</h2>
               <p>{selectedParticipant.title}</p>
+              {selectedAutoCrop && (
+                <div className="auto-crop-panel" aria-label="Face-aware auto-crop">
+                  <p className="brand-kit-summary">{describeFraming(selectedAutoCrop)}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="Auto framing" value={selectedAutoCrop.framingLabel} />
+                    <ControlReadout label="Recommended zoom" value={`${selectedAutoCrop.zoom.toFixed(2)}x`} />
+                    <ControlReadout label="Headroom" value={`${selectedAutoCrop.headroomPercent}%`} />
+                    <ControlReadout label="Feed quality" value={selectedAutoCrop.quality} />
+                  </div>
+                  {selectedAutoCrop.warning && (
+                    <p className="auto-crop-warning" role="status">{selectedAutoCrop.warning}</p>
+                  )}
+                </div>
+              )}
               <ControlReadout label="Smart crop" value={`${selectedParticipant.cropConfidence}% confidence`} />
               <ControlReadout label="Crop mode" value={selectedVideoEffect.cropMode} />
               <ControlReadout label="Manual zoom" value={`${selectedVideoEffect.manualZoom.toFixed(2)}x`} />
@@ -1679,13 +3188,568 @@ export function App({ engines, runtime }: AppProps) {
             </p>
           </section>
 
+          <section className="panel" aria-label="Scene intelligence">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Scene intelligence
+            </div>
+            {(() => {
+              const signal = {
+                videoOnCount: production.participants.filter((p) => p.health !== "video-off").length,
+                screenShareActive,
+                hasActiveSpeaker: production.participants.some((p) => p.isActiveSpeaker),
+                hostVideoOn: production.participants.some((p) => p.role === "Host" && p.health !== "video-off"),
+                isOutro: production.scenes.some((s: SceneTemplate) => s.layout === "outro" && s.id === production.activeSceneId),
+              };
+              const rec = recommendScene(signal);
+              const automationOn = production.mode === "set-and-forget";
+              const autoDecision = decideAutoSwitch(
+                (production.scenes.find((s: SceneTemplate) => s.id === production.activeSceneId)?.layout ?? "smart-grid") as SceneLayout,
+                signal,
+                0
+              );
+              return (
+                <div className="scene-intelligence-panel" aria-label="Scene intelligence panel">
+                  <div className="scene-intel-summary">
+                    {summarizeSceneIntelligence(signal, automationOn)}
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="Recommended" value={rec.sceneName} />
+                    <ControlReadout label="Layout" value={rec.layout} />
+                    <ControlReadout label="Confidence" value={rec.confidence} />
+                    <ControlReadout label="Cameras on" value={String(signal.videoOnCount)} />
+                    <ControlReadout label="Screen share" value={signal.screenShareActive ? "Active" : "Off"} />
+                    <ControlReadout label="Auto-switch" value={autoDecision.shouldSwitch ? "Now" : autoDecision.holdUntilMs > 0 ? `Hold ${(autoDecision.holdUntilMs / 1000).toFixed(0)}s` : "Stable"} />
+                  </div>
+                  <p className="scene-intel-reason">{rec.reason}</p>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Show clock">
+            <div className="section-title">
+              <Activity size={15} />
+              Show clock
+            </div>
+            {(() => {
+              const sceneNames = production.scenes.map((s: SceneTemplate) => s.name);
+              const rundown = buildRundownFromScenes(sceneNames, Math.ceil(sceneNames.length * 8));
+              const clock = computeShowClock(rundown, showClockSegmentIndex, showClockSegmentElapsed, showClockTotalElapsed);
+              return (
+                <div className="show-clock-panel">
+                  <div className="show-clock-display" aria-label="Show clock display">
+                    <span className="show-clock-elapsed">{clock.elapsedLabel}</span>
+                    <span className={`show-clock-remaining ${clock.showOver ? "over" : ""}`}>
+                      {clock.remainingLabel}
+                    </span>
+                    <span className="show-clock-total">{formatClock(clock.totalPlannedSeconds)} planned</span>
+                  </div>
+                  <div className="show-clock-segments">
+                    {clock.segments.map((seg, i) => (
+                      <button
+                        key={seg.segmentId}
+                        className={`show-clock-seg status-${seg.status}`}
+                        onClick={() => {
+                          setShowClockSegmentIndex(i);
+                          setShowClockSegmentElapsed(0);
+                        }}
+                        aria-label={`${seg.name} segment`}
+                      >
+                        <strong>{seg.name}</strong>
+                        <span>{formatClock(seg.plannedSeconds)}</span>
+                        <span className={`seg-status status-${seg.status}`}>{seg.status}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="show-clock-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={showClockSegmentIndex < 0}
+                      onClick={() => setShowClockSegmentElapsed((s) => s + 60)}
+                    >
+                      +1 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => {
+                        setShowClockSegmentIndex(-1);
+                        setShowClockSegmentElapsed(0);
+                        setShowClockTotalElapsed(0);
+                      }}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={showClockSegmentIndex >= rundown.length - 1}
+                      onClick={() => {
+                        const next = showClockSegmentIndex + 1;
+                        setShowClockSegmentIndex(next);
+                        setShowClockSegmentElapsed(0);
+                        setShowClockTotalElapsed((t) => t + (rundown[showClockSegmentIndex]?.plannedSeconds ?? 0));
+                      }}
+                    >
+                      Next segment
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Pre-show countdown">
+            <div className="section-title">
+              <Activity size={15} />
+              Pre-show countdown
+            </div>
+            {(() => {
+              const now = 0;
+              const show = {
+                scheduledAtUnixSec: preShowSecondsToLive,
+                lobbyDurationSec: 600,
+                showTitle: production.meetingTitle || "Upcoming Show",
+              };
+              const countdown = computeCountdown(now, show);
+              const cues = buildPreShowCues(now, show);
+              return (
+                <div className="pre-show-panel" aria-label="Pre-show countdown panel">
+                  <div className="pre-show-display">
+                    <span className="pre-show-tminus" aria-label="T-minus label">{formatTMinus(countdown.secondsToLive)}</span>
+                    <span className={`pre-show-phase phase-${countdown.phase}`}>{countdown.phase}</span>
+                  </div>
+                  <p className="pre-show-summary">{countdown.summary}</p>
+                  {countdown.hotWarning && (
+                    <p className="pre-show-warning">{countdown.hotWarning}</p>
+                  )}
+                  <div className="pre-show-cues" aria-label="Pre-show cues">
+                    {cues.map((cue) => (
+                      <div className="pre-show-cue" key={cue.label}>
+                        <span className="cue-label">{cue.label}</span>
+                        <span className="cue-time">{cue.secondsFromNow >= 0 ? `in ${Math.round(cue.secondsFromNow)}s` : `${Math.round(-cue.secondsFromNow)}s ago`}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pre-show-controls">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setPreShowSecondsToLive((s) => Math.max(0, s - 300))}
+                    >
+                      -5 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setPreShowSecondsToLive((s) => s + 300)}
+                    >
+                      +5 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={countdown.phase === "live"}
+                      onClick={() => {
+                        const liveState = markShowLive(countdown);
+                        void liveState;
+                        setPreShowSecondsToLive(0);
+                      }}
+                    >
+                      Go Live
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={countdown.phase !== "live"}
+                      onClick={() => {
+                        const overState = markShowOver(countdown);
+                        void overState;
+                        setPreShowSecondsToLive(-1);
+                      }}
+                    >
+                      End Show
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Audience poll">
+            <div className="section-title">
+              <Radio size={15} />
+              Audience poll
+            </div>
+            {(() => {
+              const nowMs = Date.now();
+              const tally = tallyResults(activePoll);
+              return (
+                <div className="poll-panel" aria-label="Poll panel">
+                  <div className="poll-header">
+                    <span className="poll-question">{activePoll.question}</span>
+                    <span className={`poll-status-badge status-${activePoll.status}`}>{activePoll.status}</span>
+                  </div>
+                  <div className="poll-options" aria-label="Poll options">
+                    {tally.sortedOptions.map((opt) => (
+                      <div key={opt.id} className={`poll-option ${opt.id === tally.winner?.id ? "winner" : ""}`}>
+                        <span className="poll-opt-text">{opt.text}</span>
+                        <div className="poll-opt-bar">
+                          <div className="poll-opt-fill" style={{ width: `${opt.pct}%` }} />
+                        </div>
+                        <span className="poll-opt-count">{opt.voteCount} ({opt.pct}%)</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="poll-summary">{tally.summary}</p>
+                  <div className="poll-stats">
+                    <ControlReadout label="Status" value={activePoll.status} />
+                    <ControlReadout label="Votes" value={String(tally.totalVotes)} />
+                    <ControlReadout label="Voters" value={String(activePoll.voterIds.length)} />
+                    <ControlReadout label="Winner" value={tally.isTie ? "Tie" : (tally.winner?.text ?? "—")} />
+                  </div>
+                  <div className="poll-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "draft"}
+                      onClick={() => setActivePoll((p) => openPoll(p, nowMs))}
+                    >
+                      Open Poll
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "open"}
+                      onClick={() => {
+                        const v1 = castVote(activePoll, `sim-${Date.now()}`, [activePoll.options[0].id]);
+                        if (v1.accepted) setActivePoll(v1.poll);
+                      }}
+                    >
+                      Sim Vote
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "open"}
+                      onClick={() => setActivePoll((p) => closePoll(p, nowMs))}
+                    >
+                      Close Poll
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setActivePoll(resetPoll(activePoll))}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Cue sheet">
+            <div className="section-title">
+              <FileText size={15} />
+              Cue sheet
+            </div>
+            {(() => {
+              const nowSec = Math.floor(Date.now() / 1000);
+              const sheetSummary = summarizeCueSheet(activeCueSheet, nowSec);
+              const next = nextCue(activeCueSheet);
+              return (
+                <div className="cue-sheet-panel" aria-label="Cue sheet panel">
+                  <div className="cue-sheet-header">
+                    <span className="cue-sheet-title">{activeCueSheet.showTitle}</span>
+                  </div>
+                  <div className="cue-list" aria-label="Cue list">
+                    {activeCueSheet.cues.map((cue) => (
+                      <div
+                        key={cue.id}
+                        className={`cue-row cue-status-${cue.status}${cue.id === activeCueSheet.activeCueId ? " cue-active" : ""}`}
+                      >
+                        <span className="cue-order">{cue.order}</span>
+                        <span className="cue-type-label">{cueTypeLabel(cue.type)}</span>
+                        <span className="cue-title">{cue.title}</span>
+                        <span className="cue-duration">{Math.floor(cue.plannedDurationSec / 60)}:{String(cue.plannedDurationSec % 60).padStart(2, "0")}</span>
+                        <span className={`cue-status-badge cue-badge-${cue.status}`}>{cue.status}</span>
+                        <div className="cue-row-actions">
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status === "done" || cue.status === "skipped"}
+                            onClick={() => setActiveCueSheet((s) => goLiveCue(s, cue.id, nowSec))}
+                          >
+                            Live
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status !== "live"}
+                            onClick={() => setActiveCueSheet((s) => endCue(s, cue.id, nowSec))}
+                          >
+                            End
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={cue.status !== "pending" && cue.status !== "ready"}
+                            onClick={() => setActiveCueSheet((s) => skipCue(s, cue.id))}
+                          >
+                            Skip
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="cue-sheet-stats">
+                    <ControlReadout label="Done" value={String(sheetSummary.doneCount)} />
+                    <ControlReadout label="Pending" value={String(sheetSummary.pendingCount)} />
+                    <ControlReadout label="Overrun" value={sheetSummary.overrunSec > 0 ? `${Math.round(sheetSummary.overrunSec)}s` : "—"} />
+                    <ControlReadout label="Next" value={next?.title ?? "—"} />
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Audience Q&A">
+            <div className="section-title">
+              <Users size={15} />
+              Audience Q&amp;A
+            </div>
+            {(() => {
+              const qaSummary = summarizeQaQueue(qaQueue);
+              const ranked = sortedQuestions(qaQueue, "votes").filter((q) => q.status !== "dismissed" && q.status !== "answered");
+              return (
+                <div className="qa-panel" aria-label="Q&A panel">
+                  <p className="qa-summary">{qaSummary.summary}</p>
+                  <div className="qa-list" aria-label="Q&A questions">
+                    {ranked.map((question) => (
+                      <div key={question.id} className={`qa-row qa-status-${question.status}`}>
+                        <button
+                          className="qa-upvote"
+                          aria-label={`Upvote question from ${question.author}`}
+                          onClick={() => setQaQueue((q) => upvoteQuestion(q, question.id, `op-${Date.now()}`))}
+                        >
+                          <Plus size={11} />
+                          <span className="qa-upvote-count">{upvoteCount(question)}</span>
+                        </button>
+                        <div className="qa-body">
+                          <span className="qa-text">{question.text}</span>
+                          <span className="qa-author">{question.author}</span>
+                        </div>
+                        <span className={`qa-status-badge qa-badge-${question.status}`}>{question.status}</span>
+                        <div className="qa-row-actions">
+                          <button
+                            className="ghost-button"
+                            disabled={question.status !== "pending"}
+                            onClick={() => setQaQueue((q) => approveQuestion(q, question.id))}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={question.status !== "approved" && question.status !== "live"}
+                            onClick={() => setQaQueue((q) => goLiveQuestion(q, question.id))}
+                          >
+                            Live
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() => setQaQueue((q) => answerQuestion(q, question.id, Date.now()))}
+                          >
+                            Answered
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() => setQaQueue((q) => dismissQuestion(q, question.id))}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="qa-stats">
+                    <ControlReadout label="Pending" value={String(qaSummary.pendingCount)} />
+                    <ControlReadout label="Ready" value={String(qaSummary.approvedCount)} />
+                    <ControlReadout label="Answered" value={String(qaSummary.answeredCount)} />
+                    <ControlReadout label="Upvotes" value={String(qaSummary.totalUpvotes)} />
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Teleprompter">
+            <div className="section-title">
+              <FileText size={15} />
+              Teleprompter
+            </div>
+            {(() => {
+              const view = teleprompterView(teleprompter);
+              return (
+                <div className="prompter-panel" aria-label="Teleprompter panel">
+                  <div className="prompter-script" aria-label="Teleprompter script">
+                    {teleprompter.lines.map((line) => (
+                      <button
+                        key={line.index}
+                        className={`prompter-line${line.index === view.activeLineIndex ? " prompter-line-active" : ""}`}
+                        onClick={() => setTeleprompter((t) => jumpToLine(t, line.index))}
+                      >
+                        {line.text}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="prompter-progress-bar">
+                    <div className="prompter-progress-fill" style={{ width: `${view.progressPct}%` }} />
+                  </div>
+                  <div className="prompter-stats">
+                    <ControlReadout label="Status" value={view.running ? "scrolling" : "paused"} />
+                    <ControlReadout label="Speed" value={`${teleprompter.speed}x`} />
+                    <ControlReadout label="Remaining" value={formatReadTime(view.remainingSec)} />
+                    <ControlReadout label="Total" value={formatReadTime(view.totalReadSec)} />
+                  </div>
+                  <div className="prompter-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={teleprompter.running}
+                      onClick={() => setTeleprompter(startScroll)}
+                    >
+                      Start
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={!teleprompter.running}
+                      onClick={() => setTeleprompter(pauseScroll)}
+                    >
+                      Pause
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter((t) => advanceScroll(startScroll(t), 2000))}
+                    >
+                      Advance
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter(resetScroll)}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setTeleprompter((t) => setSpeed(t, t.speed >= 4 ? 0.5 : t.speed + 0.5))}
+                    >
+                      Speed
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Lower thirds">
+            <div className="section-title">
+              <LayoutTemplate size={15} />
+              Lower thirds
+            </div>
+            {(() => {
+              const deckSummary = summarizeDeck(plateDeck);
+              const queued = queuedPlates(plateDeck);
+              return (
+                <div className="plate-panel" aria-label="Lower third deck">
+                  <div className={`plate-preview ${deckSummary.onAir ? `tone-${deckSummary.onAir.tone}` : "plate-preview-empty"}`}>
+                    {deckSummary.onAir ? (
+                      <>
+                        <span className="plate-preview-name">{deckSummary.onAir.name}</span>
+                        <span className="plate-preview-title">{deckSummary.onAir.title}</span>
+                        {deckSummary.onAir.role && <span className="plate-preview-role">{deckSummary.onAir.role}</span>}
+                      </>
+                    ) : (
+                      <span className="plate-preview-off">No plate on air</span>
+                    )}
+                  </div>
+                  <div className="plate-transport">
+                    <button
+                      className="ghost-button"
+                      disabled={plateDeck.queue.length === 0}
+                      onClick={() => setPlateDeck(showNext)}
+                    >
+                      Show Next
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={plateDeck.onAirId === null}
+                      onClick={() => setPlateDeck(takeDown)}
+                    >
+                      Take Down
+                    </button>
+                  </div>
+                  <div className="plate-queue" aria-label="Plate queue">
+                    {queued.map((plate) => (
+                      <div key={plate.id} className={`plate-row tone-${plate.tone}`}>
+                        <div className="plate-row-info">
+                          <span className="plate-row-name">{plate.name}</span>
+                          <span className="plate-row-title">{plate.title}</span>
+                        </div>
+                        <span className="plate-tone-badge">{toneLabel(plate.tone)}</span>
+                        <button
+                          className="ghost-button"
+                          onClick={() => setPlateDeck((d) => showPlate(d, plate.id))}
+                        >
+                          Show
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="plate-summary">{deckSummary.summary}</p>
+                  <div className="plate-stats">
+                    <ControlReadout label="On air" value={deckSummary.onAir?.name ?? "—"} />
+                    <ControlReadout label="Queued" value={String(deckSummary.queuedCount)} />
+                    <ControlReadout label="Shown" value={String(deckSummary.shownCount)} />
+                    <ControlReadout label="Next" value={deckSummary.next?.name ?? "—"} />
+                  </div>
+                  {plateDeck.shownIds.length > 0 && (
+                    <button
+                      className="ghost-button plate-requeue-all"
+                      onClick={() => setPlateDeck((d) => d.shownIds.reduce((acc, id) => requeuePlate(acc, id), d))}
+                    >
+                      Requeue shown
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Control surface">
+            <div className="section-title">
+              <Settings2 size={15} />
+              Control surface
+            </div>
+            <p className="brand-kit-summary">{summarizeControlSurface()}</p>
+            <div className="control-surface-grid">
+              {controlSurface.map((button) => {
+                const status = controlButtonStatus(button.action, {
+                  recording: production.recording,
+                  streaming: production.streaming,
+                  automation: production.mode === "set-and-forget",
+                  inMeeting: meetingState === "in_meeting"
+                });
+                return (
+                  <button
+                    aria-label={`Control ${button.label}`}
+                    className={`control-key ${status.active ? "active" : ""}`}
+                    disabled={status.disabled}
+                    key={button.id}
+                    onClick={() => triggerControlAction(button.action)}
+                  >
+                    <strong>{button.label}</strong>
+                    <em>{status.stateLabel}</em>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           <section className="panel">
             <div className="section-title">
               <Clapperboard size={15} />
               Transition
             </div>
             <div className="transition-picker" aria-label="Transition controls">
-              {(["cut", "fade", "slide"] as const).map((style) => (
+              {transitionStyles.map((style) => (
                 <button
                   className={production.transition.style === style ? "selected" : ""}
                   key={style}
@@ -1695,7 +3759,42 @@ export function App({ engines, runtime }: AppProps) {
                 </button>
               ))}
             </div>
+            <p className="transition-descriptor">{describeTransition(production.transition.style, production.transition.durationMs).summary}</p>
             <p className="transition-status">{production.transition.statusText}</p>
+          </section>
+
+          <section className="panel" aria-label="Stinger presets">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Stinger presets
+            </div>
+            {(() => {
+              const presets = stingerPresets();
+              const activeStingerId = production.transition.style === "stinger" ? (presets[0]?.id ?? null) : null;
+              const activePreset = activeStingerId ? getStingerPreset(activeStingerId) : null;
+              return (
+                <div className="stinger-list" aria-label="Stinger list">
+                  {presets.map((preset) => (
+                    <div
+                      key={preset.id}
+                      className={`stinger-row ${preset.id === activeStingerId ? "active" : ""}`}
+                      aria-label={`Stinger ${preset.name}`}
+                    >
+                      <span className="stinger-name">{preset.name}</span>
+                      <span className="stinger-desc">{describeStinger(preset)}</span>
+                    </div>
+                  ))}
+                  {activePreset && (
+                    <div className="stinger-active-detail">
+                      <ControlReadout label="In" value={`${activePreset.inDurationMs}ms`} />
+                      <ControlReadout label="Hold" value={`${activePreset.holdDurationMs}ms`} />
+                      <ControlReadout label="Out" value={`${activePreset.outDurationMs}ms`} />
+                      <ControlReadout label="Switch point" value={activePreset.sceneSwitchPoint} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel template-box">
@@ -1709,6 +3808,40 @@ export function App({ engines, runtime }: AppProps) {
               Magic Scene
             </button>
           </section>
+
+          {aiStudio && (
+            <section className="panel ai-studio-panel">
+              <div className="section-title">
+                <FileText size={15} />
+                AI Studio
+              </div>
+              <div className="ai-show-notes" aria-label="AI Studio show notes">
+                <strong>{aiStudio.showNotes.title}</strong>
+                <p>{aiStudio.showNotes.summary}</p>
+                <div className="ai-chip-row">
+                  <span>{aiStudio.transcript.length} segment</span>
+                  <span>{aiStudio.chapters.length} chapter</span>
+                  <span>{aiStudio.highlights.length} highlights</span>
+                </div>
+              </div>
+              <div className="ai-list" aria-label="AI Studio highlights">
+                {aiStudio.highlights.slice(0, 2).map((highlight) => (
+                  <div key={highlight.id}>
+                    <strong>{highlight.title}</strong>
+                    <span>{highlight.suggestedClipName}</span>
+                    <em>{highlight.confidence}%</em>
+                  </div>
+                ))}
+              </div>
+              <div className="ai-list" aria-label="AI Studio next actions">
+                {aiStudio.showNotes.nextActions.slice(0, 3).map((action) => (
+                  <div key={action}>
+                    <span>{action}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
 
@@ -1754,31 +3887,56 @@ export function App({ engines, runtime }: AppProps) {
             <span className="connection-dot" />
             OUTPUTS
           </div>
-          <StatusMetric icon={<MonitorUp size={16} />} label="Program" value={`${production.output.resolution} - ${healthLabels.live}`} />
-          <StatusMetric icon={<Radio size={16} />} label="Stream" value={production.streaming ? `${production.output.bitrateMbps} Mbps` : "Idle"} />
-          <StatusMetric icon={<CircleDot size={16} />} label="Record" value={production.outputSession.recordingFile ?? "Not recording"} />
+          <OutputStat label="Program" value={programResLabel} health={production.output.network} />
+          <OutputStat
+            label="Stream"
+            value={production.streaming ? `${programResLabel} ${production.output.bitrateMbps} Mbps` : "Idle"}
+            health={production.streaming ? production.output.network : "idle"}
+          />
+          <OutputStat
+            label="Record"
+            value={production.recording ? programResLabel : "Idle"}
+            health={production.recording ? "good" : "idle"}
+          />
           <div className="mini-stats">
             <MiniStat icon={<Gauge size={14} />} label="CPU" value={cpuLoad} />
             <MiniStat icon={<Activity size={14} />} label="Memory" value={memoryLoad} />
             <MiniStat icon={<HardDrive size={14} />} label="Disk" value={diskLoad} />
-            <StatusMetric icon={<Activity size={16} />} label="Drops" value={`${production.output.droppedFrames}`} />
-            <StatusMetric icon={<Clapperboard size={16} />} label="Live" value={formatElapsed(production.outputSession.elapsedSeconds)} />
+            <div className="stat-readout">
+              <span className="stat-label">Frame Drops</span>
+              <strong>{production.output.droppedFrames} (0.0%)</strong>
+            </div>
+            <div className="stat-readout">
+              <span className="stat-label">Live</span>
+              <strong>{formatElapsed(production.outputSession.elapsedSeconds)}</strong>
+            </div>
           </div>
           <div className="master-audio">
             <div className="master-audio-header">
-              <Volume2 size={14} />
               MASTER AUDIO
-              <span className="lufs-readout">{production.audioMix.loudnessLufs} LUFS</span>
-              <Settings2 size={14} className="decorative-icon" aria-hidden="true" />
+              <span className="db-scale" aria-hidden="true">
+                {[-60, -48, -36, -24, -12, -6, -3, 0].map((tick) => (
+                  <span key={tick}>{tick}</span>
+                ))}
+              </span>
             </div>
             <div className="master-meter" aria-label="Master audio levels">
+              <span className="meter-channel">L</span>
               <div className="meter-bar">
                 <span className="meter-fill" style={{ width: `${masterLevel}%` }} />
               </div>
+            </div>
+            <div className="master-meter" aria-label="Master audio levels right">
+              <span className="meter-channel">R</span>
               <div className="meter-bar">
                 <span className="meter-fill" style={{ width: `${Math.max(0, masterLevel - 4)}%` }} />
               </div>
             </div>
+          </div>
+          <div className="master-volume">
+            <Volume2 size={16} />
+            <span>0.0 dB</span>
+            <Settings2 size={14} className="decorative-icon" aria-hidden="true" />
           </div>
         </div>
       </footer>
@@ -1900,11 +4058,23 @@ function MiniStat({ icon, label, value }: { icon: React.ReactNode; label: string
         <span>{label}</span>
         <strong>{value}%</strong>
       </div>
-      <div className="mini-stat-bar">
-        <span className="mini-stat-fill" style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
-      </div>
+      <svg className="mini-stat-spark" viewBox="0 0 60 16" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points={sparklinePoints(value, label)} />
+      </svg>
     </div>
   );
+}
+
+function sparklinePoints(value: number, seed: string) {
+  const seedNum = seed.split("").reduce((total, char) => total + char.charCodeAt(0), 0);
+  const samples = 12;
+  return Array.from({ length: samples }, (_, index) => {
+    const wave = Math.sin((index / samples) * Math.PI * 2 + seedNum) * 9;
+    const point = Math.min(100, Math.max(0, value + wave));
+    const x = (index / (samples - 1)) * 60;
+    const y = 16 - (point / 100) * 14 - 1;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
 }
 
 function ProgramGraphic({ graphic }: { graphic: GraphicOverlay }) {
@@ -2261,14 +4431,21 @@ function ScenePreview({
   );
 }
 
-function StatusMetric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function OutputStat({
+  label,
+  value,
+  health
+}: {
+  label: string;
+  value: string;
+  health: OutputHealth["network"] | "idle";
+}) {
+  const healthLabel = health === "idle" ? "Idle" : health === "warning" ? "Warning" : "Good";
   return (
-    <div className="status-metric">
-      {icon}
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-      </div>
+    <div className="output-stat">
+      <span className="output-stat-label">{label}</span>
+      <strong className="output-stat-value">{value}</strong>
+      <span className={`output-stat-health health-${health}`}>{healthLabel}</span>
     </div>
   );
 }
@@ -2321,6 +4498,39 @@ function formatElapsed(seconds: number) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   const remainingSeconds = (seconds % 60).toString().padStart(2, "0");
   return `${minutes}:${remainingSeconds}`;
+}
+
+function shortResolutionLabel(resolution: string, fps: number) {
+  const height = Number(resolution.split("x")[1]);
+  if (!Number.isFinite(height)) {
+    return `${resolution} ${fps}fps`;
+  }
+
+  const tier = height >= 2160 ? "4K" : `${height}p`;
+  return `${tier}${fps}`;
+}
+
+function filterMediaCoreEvents(events: NativeMediaCoreEvent[], filter: DiagnosticsFilter) {
+  const sorted = [...events].sort((left, right) => right.atMs - left.atMs);
+
+  if (filter === "critical") {
+    return sorted.filter((event) => event.severity === "critical");
+  }
+
+  if (filter === "warning") {
+    return sorted.filter((event) => event.severity === "warning");
+  }
+
+  if (filter === "recovery") {
+    return sorted.filter((event) => event.severity === "info" || /recover/i.test(`${event.title} ${event.detail}`));
+  }
+
+  return sorted;
+}
+
+function formatEventTime(atMs: number) {
+  const seconds = Math.max(0, Math.floor(atMs / 1000));
+  return formatElapsed(seconds);
 }
 
 function isEditableTarget(target: EventTarget | null) {

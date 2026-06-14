@@ -48,6 +48,28 @@ describe("native media core protocol", () => {
   it("models direct scene graph, transform, overlay, and output commands outside the UI shell", () => {
     const commands: NativeMediaCoreCommand[] = [
       {
+        type: "set-zoom-source-roster",
+        sources: [
+          {
+            sourceId: "participant:p2",
+            participantId: "p2",
+            displayName: "Andre Wallace",
+            role: "Presenter",
+            breakoutRoomId: "main",
+            breakoutRoomName: "Main room",
+            hasVideo: true,
+            hasAudio: true,
+            isMuted: false,
+            isActiveSpeaker: true,
+            isScreenSharing: true,
+            audioLevel: 82,
+            health: "live"
+          }
+        ]
+      },
+      { type: "set-active-speaker", participantId: "p2" },
+      { type: "set-screen-share-source", participantId: "p2" },
+      {
         type: "load-scene-graph",
         sceneId: "speaker-slides",
         routes: [
@@ -69,17 +91,54 @@ describe("native media core protocol", () => {
         position: "lower-third"
       },
       {
+        type: "set-color-grade",
+        lut: "warm-film",
+        exposure: 2,
+        contrast: 6,
+        saturation: 8,
+        temperature: 5
+      },
+      {
+        type: "set-output-profile",
+        profileId: "1080p60",
+        resolution: "1920x1080",
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        targetBitrateMbps: 8.2
+      },
+      {
         type: "start-program-output",
         destinations: ["recording", "rtmp", "ndi"],
+        isoParticipantIds: ["p1", "p2"]
+      },
+      {
+        type: "set-recording-targets",
+        targetFolder: "Recordings/CoreVideo Pro",
+        filenamePrefix: "launch-show",
+        format: "mp4",
+        quality: "high",
+        isoParticipantIds: ["p1", "p2"]
+      },
+      {
+        type: "start-recording-session",
+        sessionId: "launch-show-p1-p2",
         isoParticipantIds: ["p1", "p2"]
       }
     ];
 
     expect(commands.map((command) => command.type)).toEqual([
+      "set-zoom-source-roster",
+      "set-active-speaker",
+      "set-screen-share-source",
       "load-scene-graph",
       "set-participant-transform",
       "set-overlay-asset",
-      "start-program-output"
+      "set-color-grade",
+      "set-output-profile",
+      "start-program-output",
+      "set-recording-targets",
+      "start-recording-session"
     ]);
   });
 });

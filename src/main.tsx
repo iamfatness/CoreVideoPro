@@ -9,7 +9,7 @@ import "./styles.css";
 const nativeBridge = getNativeHostBridge();
 const runtime = describeRuntimeEnvironment(nativeBridge, nativeBridge?.mediaCoreProfile);
 const engines = nativeBridge
-  ? createNativeZoomEngineBundle(createNativeHostTransport(nativeBridge))
+  ? createNativeZoomEngineBundle(createNativeHostTransport(nativeBridge), nativeBridge)
   : createMockEngineBundle();
 
 createRoot(document.getElementById("root")!).render(

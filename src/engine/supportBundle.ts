@@ -4,18 +4,21 @@ import type {
   Participant,
   ProductionState,
   SceneTemplate,
-  SupportBundle
+  SupportBundle,
+  SupportBundleMediaCore
 } from "../domain/production";
+import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import { buildRecordingManifest } from "./recordingManifest";
 
 const MOCK_FREE_DISK_BYTES = 86 * 1024 * 1024 * 1024;
 
 export class InMemoryDiagnosticsEngine {
-  async createSupportBundle(state: ProductionState): Promise<SupportBundle> {
-    return createSupportBundle(state);
+  async createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle> {
+    return createSupportBundle(state, mediaCore);
   }
 }
 
-export function createSupportBundle(state: ProductionState): SupportBundle {
+export function createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): SupportBundle {
   const createdAt = new Date().toISOString();
   const duplicateAssignments = countDuplicateAssignments(state.scenes);
   const unavailableScreenShare = countUnavailableScreenShare(state);
@@ -78,7 +81,125 @@ export function createSupportBundle(state: ProductionState): SupportBundle {
       sdkSubscribeErrors: 0
     },
     isoCapacity,
+    mediaCore: mediaCore ? summarizeMediaCore(mediaCore, state) : undefined,
     warnings
+  };
+}
+
+function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: ProductionState): SupportBundleMediaCore {
+  const recordingManifest = state ? buildRecordingManifest(state, snapshot) : undefined;
+  return {
+    sceneId: snapshot.sceneId,
+    renderPlanId: snapshot.renderPlan.renderPlanId,
+    source: {
+      adapterId: snapshot.sourceSnapshot.adapterId,
+      kind: snapshot.sourceSnapshot.kind,
+      status: snapshot.sourceSnapshot.status,
+      subscribedSourceCount: snapshot.sourceSnapshot.subscribedSourceCount,
+      droppedFrameCount: snapshot.sourceSnapshot.droppedFrameCount,
+      lowResolutionFrameCount: snapshot.sourceSnapshot.lowResolutionFrameCount,
+      issues: (snapshot.sourceSnapshot.issues ?? []).map((issue) => ({
+        sourceId: issue.sourceId,
+        participantId: issue.participantId,
+        displayName: issue.displayName,
+        health: issue.health,
+        severity: issue.severity,
+        detail: issue.detail
+      }))
+    },
+    compositor: {
+      status: snapshot.compositor.status,
+      programFrameCount: snapshot.compositor.programFrameCount,
+      droppedFrameCount: snapshot.compositor.droppedFrameCount,
+      degradedFrameCount: snapshot.compositor.degradedFrameCount
+    },
+    transport: {
+      status: snapshot.programTransport.status,
+      frameNumber: snapshot.programTransport.frameNumber,
+      latencyMs: snapshot.programTransport.latencyMs
+    },
+    encoder: {
+      status: snapshot.encoderSession.status,
+      lifecycle: snapshot.encoderSession.lifecycle.status,
+      targetCount: snapshot.encoderSession.targets.length
+    },
+    senders: {
+      status: snapshot.outputSenderSession.status,
+      activeSenderCount: snapshot.outputSenderSession.activeSenderCount,
+      destinations: snapshot.outputSenderSession.senders.map((sender) => ({
+        destination: sender.destination,
+        status: sender.status,
+        startedAtMs: sender.startedAtMs,
+        stoppedAtMs: sender.stoppedAtMs,
+        lastFrameNumber: sender.lastFrameNumber,
+        framesSent: sender.framesSent,
+        retryCount: sender.retryCount,
+        latencyMs: sender.latencyMs,
+        bitrateMbps: sender.bitrateMbps,
+        warning: sender.warning
+      }))
+    },
+    recording: snapshot.recording
+      ? {
+          status: snapshot.recording.status,
+          writerStatus: snapshot.recording.writerStatus,
+          totalFramesWritten: snapshot.recording.totalFramesWritten,
+          totalDroppedFrames: snapshot.recording.totalDroppedFrames,
+          estimatedDiskRateMBps: snapshot.recording.estimatedDiskRateMBps,
+          streams: snapshot.recording.streams.map((stream) => ({
+            kind: stream.kind,
+            participantId: stream.participantId,
+            status: stream.status,
+            readiness: stream.readiness,
+            expectedFrames: stream.expectedFrames,
+            framesWritten: stream.framesWritten,
+            missingFrames: stream.missingFrames,
+            droppedFrames: stream.droppedFrames,
+            bytesWritten: stream.bytesWritten,
+            warning: stream.warning
+          }))
+        }
+      : undefined,
+    recordingManifest: recordingManifest
+      ? {
+          manifestId: recordingManifest.manifestId,
+          sessionId: recordingManifest.sessionId,
+          status: recordingManifest.status,
+          active: recordingManifest.active,
+          sceneId: recordingManifest.sceneId,
+          targetFolder: recordingManifest.targetFolder,
+          filenamePrefix: recordingManifest.filenamePrefix,
+          format: recordingManifest.format,
+          quality: recordingManifest.quality,
+          outputProfile: recordingManifest.outputProfile,
+          trackCount: recordingManifest.tracks.length,
+          isoTrackCount: recordingManifest.tracks.filter((track) => track.kind === "iso").length,
+          estimatedTotalMbps: recordingManifest.isoPlan.estimatedTotalMbps,
+          estimatedFileSizeGbPerHour: recordingManifest.isoPlan.estimatedFileSizeGbPerHour,
+          totals: recordingManifest.totals,
+          warnings: recordingManifest.warnings
+        }
+      : undefined,
+    operatorActions: snapshot.operatorActions.map((action) => ({
+      actionId: action.actionId,
+      severity: action.severity,
+      area: action.area,
+      title: action.title,
+      detail: action.detail,
+      command: action.command,
+      relatedId: action.relatedId
+    })),
+    eventLog: snapshot.eventLog.map((event) => ({
+      eventId: event.eventId,
+      atMs: event.atMs,
+      severity: event.severity,
+      area: event.area,
+      title: event.title,
+      detail: event.detail,
+      relatedId: event.relatedId,
+      commandType: event.commandType
+    })),
+    warnings: snapshot.warnings
   };
 }
 

@@ -7,7 +7,7 @@ describe("SimulatedZoomSession", () => {
     const snapshot = await session.getSnapshot();
 
     expect(snapshot.meetingState).toBe("in_meeting");
-    expect(snapshot.participants).toHaveLength(4);
+    expect(snapshot.participants).toHaveLength(8);
     expect(snapshot.screenShareActive).toBe(true);
   });
 
@@ -25,7 +25,7 @@ describe("SimulatedZoomSession", () => {
 
     const snapshot = await session.getSnapshot();
     expect(snapshot.meetingState).toBe("in_meeting");
-    expect(snapshot.participants).toHaveLength(4);
+    expect(snapshot.participants).toHaveLength(8);
   });
 
   it("advances active speaker and captions deterministically", async () => {
@@ -43,6 +43,6 @@ describe("SimulatedZoomSession", () => {
     const snapshot = await session.getSnapshot();
     expect(() => snapshot.participants.pop()).toThrow();
 
-    expect((await session.getSnapshot()).participants).toHaveLength(4);
+    expect((await session.getSnapshot()).participants).toHaveLength(8);
   });
 });

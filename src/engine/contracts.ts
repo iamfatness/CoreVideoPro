@@ -1,6 +1,7 @@
 import type {
   AudioMixState,
   AutoProductionState,
+  AiStudioState,
   CaptionOverlayState,
   CaptureDeviceState,
   MediaFrameState,
@@ -16,6 +17,7 @@ import type {
   ShowPreset,
   SupportBundle
 } from "../domain/production";
+import type { NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 export type MeetingState = "idle" | "joining" | "in_meeting" | "reconnecting" | "error";
 
@@ -86,6 +88,15 @@ export interface CaptionOverlayEngine {
   buildOverlay(request: CaptionOverlayRequest): Promise<CaptionOverlayState>;
 }
 
+export interface AiStudioEngine {
+  generate(state: ProductionState): Promise<AiStudioState>;
+}
+
+export interface MediaCoreSyncEngine {
+  syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+  executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+}
+
 export interface PresetEngine {
   savePreset(state: ProductionState): Promise<ShowPreset>;
   loadPreset(id: string): Promise<ShowPreset | undefined>;
@@ -93,11 +104,12 @@ export interface PresetEngine {
 }
 
 export interface DiagnosticsEngine {
-  createSupportBundle(state: ProductionState): Promise<SupportBundle>;
+  createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle>;
 }
 
 export interface CaptureDeviceEngine {
   listDevices(): Promise<CaptureDeviceState[]>;
   selectInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]>;
   setAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]>;
+  connectDevice(deviceId: string): Promise<CaptureDeviceState[]>;
 }

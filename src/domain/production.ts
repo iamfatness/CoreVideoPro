@@ -97,6 +97,15 @@ export type AudioMixState = {
   summary: string;
 };
 
+export type CaptionFontSize = "small" | "medium" | "large";
+
+export type CaptionStyle = {
+  fontSize: CaptionFontSize;
+  textColor: string;
+  backgroundOpacity: number;
+  uppercase: boolean;
+};
+
 export type CaptionOverlayState = {
   text: string;
   speakerName: string;
@@ -106,6 +115,15 @@ export type CaptionOverlayState = {
   lowerThirdPosition: "lower-left" | "upper-left";
   warnings: string[];
   adaptiveSummary: string;
+};
+
+export type CaptionTranscriptEntry = {
+  id: string;
+  speakerName: string;
+  role: string;
+  text: string;
+  confidence: number;
+  atSeconds: number;
 };
 
 export type GraphicOverlay = {
@@ -126,8 +144,34 @@ export type BrandKit = {
   brandColor: string;
   accentColor: string;
   backgroundColor: string;
+  backgroundImageUrl: string;
   fontFamily: BrandKitFont;
   lowerThirdStyle: "solid" | "minimal" | "gradient";
+};
+
+export type ColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
+
+export type ColorGrade = {
+  lut: ColorGradeLut;
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  temperature: number;
+};
+
+export type VirtualCameraState = {
+  enabled: boolean;
+  deviceName: string;
+  mirrored: boolean;
+};
+
+export type MediaAssetKind = "stinger" | "lower-third" | "audio-bed" | "slate";
+
+export type MediaAsset = {
+  id: string;
+  name: string;
+  kind: MediaAssetKind;
+  durationMs?: number;
 };
 
 export type SourceRoute = {
@@ -150,7 +194,7 @@ export type SceneTemplate = {
 };
 
 export type TransitionState = {
-  style: "cut" | "fade" | "slide";
+  style: "cut" | "fade" | "slide" | "wipe" | "stinger";
   durationMs: number;
   statusText: string;
   lastTakenSceneId?: string;
@@ -162,6 +206,9 @@ export type AutoProductionState = {
   reason: string;
   action: "hold" | "queue" | "take";
   lastAppliedSceneId?: string;
+  ruleId?: string;
+  overrideReason?: string;
+  signals?: string[];
 };
 
 export type OutputHealth = {
@@ -171,6 +218,8 @@ export type OutputHealth = {
   droppedFrames: number;
   encoderLoad: number;
   network: "excellent" | "good" | "warning";
+  /** Available disk space on the recording volume in GB */
+  availableDiskGb: number;
 };
 
 export type OutputProfile = {
@@ -218,6 +267,48 @@ export type OutputSessionState = {
   statusText: string;
 };
 
+export type TranscriptSegment = {
+  id: string;
+  startSeconds: number;
+  endSeconds: number;
+  speakerName: string;
+  text: string;
+  confidence: number;
+};
+
+export type AiChapter = {
+  id: string;
+  title: string;
+  startSeconds: number;
+  summary: string;
+};
+
+export type AiHighlight = {
+  id: string;
+  title: string;
+  summary: string;
+  startSeconds: number;
+  endSeconds: number;
+  speakerName: string;
+  confidence: number;
+  suggestedClipName: string;
+};
+
+export type AiShowNotes = {
+  title: string;
+  summary: string;
+  bullets: string[];
+  nextActions: string[];
+};
+
+export type AiStudioState = {
+  transcript: TranscriptSegment[];
+  chapters: AiChapter[];
+  highlights: AiHighlight[];
+  showNotes: AiShowNotes;
+  rundown: string[];
+};
+
 export type ProductionState = {
   meetingTitle: string;
   mode: "manual" | "set-and-forget";
@@ -236,8 +327,13 @@ export type ProductionState = {
   outputDestinations: OutputDestination[];
   audioMix: AudioMixState;
   captionOverlay: CaptionOverlayState;
+  captionStyle: CaptionStyle;
+  captionTranscript: CaptionTranscriptEntry[];
   graphics: GraphicOverlay[];
   brandKit: BrandKit;
+  colorGrade: ColorGrade;
+  virtualCamera: VirtualCameraState;
+  mediaBin: MediaAsset[];
   videoEffects: ParticipantVideoEffect[];
   captions: string;
   participants: Participant[];
@@ -272,6 +368,127 @@ export type PresetSummary = {
   sceneCount: number;
   armedDestinationCount: number;
   enabledGraphicCount: number;
+};
+
+export type SupportBundleMediaCore = {
+  sceneId?: string;
+  renderPlanId?: string;
+  source: {
+    adapterId: string;
+    kind: "zoom-sdk" | "local-camera" | "test-pattern";
+    status: "idle" | "subscribed" | "degraded" | "failed";
+    subscribedSourceCount: number;
+    droppedFrameCount: number;
+    lowResolutionFrameCount: number;
+    issues: Array<{
+      sourceId: string;
+      participantId?: string;
+      displayName?: string;
+      health: FeedHealth;
+      severity: "warning" | "critical";
+      detail: string;
+    }>;
+  };
+  compositor: {
+    status: "idle" | "live" | "degraded" | "failed";
+    programFrameCount: number;
+    droppedFrameCount: number;
+    degradedFrameCount: number;
+  };
+  transport: {
+    status: "idle" | "publishing" | "degraded";
+    frameNumber?: number;
+    latencyMs: number;
+  };
+  encoder: {
+    status: "idle" | "encoding" | "warning" | "failed";
+    lifecycle: "idle" | "prepared" | "encoding" | "stopped" | "failed";
+    targetCount: number;
+  };
+  senders: {
+    status: "idle" | "live" | "warning" | "failed";
+    activeSenderCount: number;
+    destinations: Array<{
+      destination: "rtmp" | "ndi" | "srt" | "webrtc";
+      status: "idle" | "starting" | "live" | "warning" | "stopped" | "failed";
+      startedAtMs?: number;
+      stoppedAtMs?: number;
+      lastFrameNumber?: number;
+      framesSent: number;
+      retryCount: number;
+      latencyMs: number;
+      bitrateMbps: number;
+      warning?: string;
+    }>;
+  };
+  recording?: {
+    status: "recording" | "warning" | "stopped" | "failed";
+    writerStatus: "writing" | "warning" | "stopped" | "failed";
+    totalFramesWritten: number;
+    totalDroppedFrames: number;
+    estimatedDiskRateMBps: number;
+    streams: Array<{
+      kind: "program" | "iso";
+      participantId?: string;
+      status: "writing" | "warning" | "stopped" | "failed";
+      readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
+      expectedFrames?: number;
+      framesWritten: number;
+      missingFrames?: number;
+      droppedFrames: number;
+      bytesWritten: number;
+      warning?: string;
+    }>;
+  };
+  recordingManifest?: {
+    manifestId: string;
+    sessionId?: string;
+    status: "idle" | "recording" | "warning" | "stopped" | "failed";
+    active: boolean;
+    sceneId?: string;
+    targetFolder: string;
+    filenamePrefix: string;
+    format: string;
+    quality: string;
+    outputProfile: {
+      profileId: string;
+      resolution: string;
+      fps: number;
+      targetBitrateMbps: number;
+    };
+    trackCount: number;
+    isoTrackCount: number;
+    estimatedTotalMbps: number;
+    estimatedFileSizeGbPerHour: number;
+    totals: {
+      framesWritten: number;
+      droppedFrames: number;
+      missingFrames: number;
+      bytesWritten: number;
+      estimatedDiskRateMBps?: number;
+    };
+    warnings: string[];
+  };
+  operatorActions: Array<{
+    actionId: string;
+    severity: "info" | "warning" | "critical";
+    area: "source" | "routing" | "program" | "recording" | "sender" | "encoder";
+    title: string;
+    detail: string;
+    command?: string;
+    relatedId?: string;
+  }>;
+  eventLog: Array<{
+    eventId: string;
+    atMs: number;
+    severity: "info" | "warning" | "critical";
+    area: "source" | "routing" | "program" | "recording" | "sender" | "encoder" | "system";
+    title: string;
+    detail: string;
+    relatedId?: string;
+    commandType?: string;
+  }>;
+  warnings: string[];
 };
 
 export type SupportBundle = {
@@ -334,6 +551,7 @@ export type SupportBundle = {
     recordingRunwayMinutes: number;
     warning?: string;
   };
+  mediaCore?: SupportBundleMediaCore;
   warnings: string[];
 };
 
@@ -400,6 +618,70 @@ export const initialParticipants: Participant[] = [
     gainDb: 2,
     noiseSuppression: true,
     cropConfidence: 91,
+    health: "live"
+  },
+  {
+    id: "p5",
+    name: "Jeremy Collins",
+    title: "Engineering Panelist",
+    role: "Panelist",
+    breakoutRoomId: "main",
+    breakoutRoomName: "Main room",
+    isActiveSpeaker: false,
+    isMuted: false,
+    isScreenSharing: false,
+    audioLevel: 38,
+    gainDb: 1,
+    noiseSuppression: true,
+    cropConfidence: 90,
+    health: "live"
+  },
+  {
+    id: "p6",
+    name: "Ava Patel",
+    title: "Customer Panelist",
+    role: "Panelist",
+    breakoutRoomId: "main",
+    breakoutRoomName: "Main room",
+    isActiveSpeaker: false,
+    isMuted: false,
+    isScreenSharing: false,
+    audioLevel: 34,
+    gainDb: 1.5,
+    noiseSuppression: true,
+    cropConfidence: 89,
+    health: "live"
+  },
+  {
+    id: "p7",
+    name: "Michael Thompson",
+    title: "Attendee",
+    role: "Guest",
+    breakoutRoomId: "main",
+    breakoutRoomName: "Main room",
+    isActiveSpeaker: false,
+    isMuted: true,
+    isScreenSharing: false,
+    audioLevel: 8,
+    gainDb: 0,
+    noiseSuppression: true,
+    cropConfidence: 87,
+    health: "live"
+  },
+  {
+    id: "p8",
+    name: "Linda Park",
+    title: "Attendee",
+    role: "Guest",
+    breakoutRoomId: "main",
+    breakoutRoomName: "Main room",
+    isActiveSpeaker: false,
+    isMuted: false,
+    isScreenSharing: false,
+    audioLevel: 30,
+    gainDb: 0.5,
+    noiseSuppression: true,
+    cropConfidence: 88,
     health: "live"
   }
 ];
@@ -490,7 +772,8 @@ export const initialProduction: ProductionState = {
       bitrateMbps: 0,
       droppedFrames: 0,
       encoderLoad: 18,
-      network: "good"
+      network: "good",
+      availableDiskGb: 247.3
     },
     statusText: "Outputs idle"
   },
@@ -562,6 +845,30 @@ export const initialProduction: ProductionState = {
     warnings: [],
     adaptiveSummary: "Captions clear; lower-third lifted away from captions"
   },
+  captionStyle: {
+    fontSize: "medium",
+    textColor: "#f7fbf8",
+    backgroundOpacity: 70,
+    uppercase: false
+  },
+  captionTranscript: [
+    {
+      id: "cc-1",
+      speakerName: "Maya Chen",
+      role: "Host",
+      text: "Welcome to the AI Product Launch Webinar.",
+      confidence: 96,
+      atSeconds: 4
+    },
+    {
+      id: "cc-2",
+      speakerName: "Andre Wallace",
+      role: "Presenter",
+      text: "Let me share the roadmap slides now.",
+      confidence: 93,
+      atSeconds: 12
+    }
+  ],
   graphics: [
     {
       id: "brand-bug",
@@ -597,9 +904,27 @@ export const initialProduction: ProductionState = {
     brandColor: "#44c1a1",
     accentColor: "#f0a85c",
     backgroundColor: "#0c1118",
+    backgroundImageUrl: "",
     fontFamily: "Inter",
     lowerThirdStyle: "gradient"
   },
+  colorGrade: {
+    lut: "none",
+    exposure: 0,
+    contrast: 0,
+    saturation: 0,
+    temperature: 0
+  },
+  virtualCamera: {
+    enabled: false,
+    deviceName: "CoreVideo Pro Camera",
+    mirrored: false
+  },
+  mediaBin: [
+    { id: "stinger-1", name: "Brand stinger", kind: "stinger", durationMs: 900 },
+    { id: "lower-third-1", name: "Host lower-third", kind: "lower-third" },
+    { id: "audio-bed-1", name: "Intro bed", kind: "audio-bed", durationMs: 30000 }
+  ],
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,
     cropMode: "auto",
@@ -631,7 +956,8 @@ export const initialProduction: ProductionState = {
     bitrateMbps: 8.2,
     droppedFrames: 0,
     encoderLoad: 42,
-    network: "excellent"
+    network: "excellent",
+    availableDiskGb: 247.3
   },
   captureDevices: []
 };

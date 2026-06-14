@@ -103,6 +103,8 @@ describe("recommendAutoProduction", () => {
     expect(recommendation.recommendedSceneId).toBe("panel");
     expect(recommendation.action).toBe("take");
     expect(recommendation.confidence).toBeGreaterThanOrEqual(90);
+    expect(recommendation.ruleId).toBe("panel-discussion");
+    expect(recommendation.signals).toContain("rule panel-discussion");
   });
 
   it("queues recommendations in manual mode", () => {
@@ -124,5 +126,60 @@ describe("recommendAutoProduction", () => {
 
     expect(recommendation.recommendedSceneId).toBe("panel");
     expect(recommendation.action).toBe("queue");
+  });
+
+  it("holds set-and-forget when the producer has a different preview override", () => {
+    const snapshot = mapCaptureSnapshot({
+      meetingState: "in_meeting",
+      tick: 1,
+      activeSpeakerId: "p1",
+      participants: initialProduction.participants.map((participant) => ({
+        userId: participant.id,
+        displayName: participant.name,
+        role: participant.role,
+        talking: participant.id === "p1",
+        sharingScreen: false,
+        networkQuality: "good"
+      }))
+    });
+
+    const recommendation = recommendAutoProduction(
+      {
+        ...initialProduction,
+        activeSceneId: "speaker-slides",
+        previewSceneId: "interview"
+      },
+      snapshot
+    );
+
+    expect(recommendation.recommendedSceneId).toBe("panel");
+    expect(recommendation.action).toBe("hold");
+    expect(recommendation.ruleId).toBe("producer-preview-override");
+    expect(recommendation.overrideReason).toBe("Producer preview override is holding Interview.");
+  });
+
+  it("uses a host-focused scene when only one live speaker remains", () => {
+    const snapshot = mapCaptureSnapshot({
+      meetingState: "in_meeting",
+      tick: 1,
+      activeSpeakerId: "p1",
+      participants: [
+        {
+          userId: "p1",
+          displayName: "Maya Chen",
+          role: "Host",
+          talking: true,
+          sharingScreen: false,
+          networkQuality: "good"
+        }
+      ]
+    });
+
+    const recommendation = recommendAutoProduction({ ...initialProduction, activeSceneId: "panel", previewSceneId: "panel" }, snapshot);
+
+    expect(recommendation.recommendedSceneId).toBe("intro");
+    expect(recommendation.action).toBe("take");
+    expect(recommendation.ruleId).toBe("single-speaker");
+    expect(recommendation.reason).toContain("One live speaker");
   });
 });

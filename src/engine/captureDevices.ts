@@ -68,6 +68,16 @@ export class SimulatedCaptureDeviceSession {
 
     return this.listDevices();
   }
+
+  connectDevice(deviceId: string): CaptureDeviceState[] {
+    this.devices = this.devices.map((device) =>
+      device.id === deviceId && device.connectionState !== "connected"
+        ? { ...device, connectionState: "connected", signalPresent: true }
+        : device
+    );
+
+    return this.listDevices();
+  }
 }
 
 export class MockCaptureDeviceEngine implements CaptureDeviceEngine {
@@ -83,5 +93,9 @@ export class MockCaptureDeviceEngine implements CaptureDeviceEngine {
 
   async setAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]> {
     return this.session.setAudioSyncOffset(deviceId, offsetMs);
+  }
+
+  async connectDevice(deviceId: string): Promise<CaptureDeviceState[]> {
+    return this.session.connectDevice(deviceId);
   }
 }

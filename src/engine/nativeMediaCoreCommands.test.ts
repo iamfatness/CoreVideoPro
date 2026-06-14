@@ -82,6 +82,35 @@ describe("native media core command builder", () => {
     });
 
     expect(commands).toContainEqual({
+      type: "set-active-speaker",
+      participantId: "p2"
+    });
+    expect(commands).toContainEqual({
+      type: "set-screen-share-source",
+      participantId: "p2"
+    });
+    expect(commands).toContainEqual({
+      type: "set-color-grade",
+      ...initialProduction.colorGrade
+    });
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "set-zoom-source-roster",
+          sources: expect.arrayContaining([
+            expect.objectContaining({
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              isActiveSpeaker: true,
+              isScreenSharing: true,
+              health: "live"
+            })
+          ])
+        })
+      ])
+    );
+    expect(commands).toContainEqual({
       type: "set-overlay-asset",
       overlayId: "brand-bug",
       text: "CoreVideo Pro",
@@ -94,9 +123,59 @@ describe("native media core command builder", () => {
       position: "bottom-right"
     });
     expect(commands).toContainEqual({
+      type: "set-output-profile",
+      profileId: "1080p60",
+      resolution: "1920x1080",
+      width: 1920,
+      height: 1080,
+      fps: 60,
+      targetBitrateMbps: 8.2
+    });
+    expect(commands).toContainEqual({
+      type: "prepare-encoder-session",
+      reason: "Production outputs armed."
+    });
+    expect(commands).toContainEqual({
       type: "start-program-output",
       destinations: ["recording", "rtmp", "ndi"],
       isoParticipantIds: ["p1", "p2"]
+    });
+    expect(commands).toContainEqual({
+      type: "start-encoder-session"
+    });
+    expect(commands).toContainEqual({
+      type: "set-recording-targets",
+      targetFolder: "Recordings/CoreVideo Pro",
+      filenamePrefix: "AI_Product_Launch_Webinar",
+      format: "mp4",
+      quality: "high",
+      isoParticipantIds: ["p1", "p2"]
+    });
+    expect(commands).toContainEqual({
+      type: "start-recording-session",
+      sessionId: "AI_Product_Launch_Webinar-p1-p2",
+      targetFolder: "Recordings/CoreVideo Pro",
+      filenamePrefix: "AI_Product_Launch_Webinar",
+      format: "mp4",
+      quality: "high",
+      isoParticipantIds: ["p1", "p2"]
+    });
+  });
+
+  it("stops encoder lifecycle when production outputs are idle", () => {
+    const commands = buildNativeMediaCoreCommands({
+      ...initialProduction,
+      recording: false,
+      streaming: false
+    });
+
+    expect(commands).toContainEqual({
+      type: "stop-encoder-session",
+      reason: "Outputs disabled in production state."
+    });
+    expect(commands).toContainEqual({
+      type: "stop-recording-session",
+      reason: "Recording disabled in production state."
     });
   });
 });

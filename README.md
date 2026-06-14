@@ -19,7 +19,19 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native Zoom bridge adapter shell with typed command/response protocol for a future SDK process or desktop IPC transport.
 - Shell-agnostic native host bridge bootstrap: the renderer uses a preload/native bridge when present and falls back to mock engines only for local development.
 - Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
-- Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, recording ISOs, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
+- Native media-core command builder that serializes the Zoom source roster, active speaker, screen-share source, active scene graph, Zoom participant routes, participant transforms, color grade, enabled graphics, selected output profile, explicit recording targets/session lifecycle, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
+- Renderer-to-media-core sync engine that pushes production state into native media-core snapshots and surfaces synced source count, resolved routes, render-plan layers, scene, frame, transform, overlay, output health, recording health, and warning status in the app.
+- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, pluggable media-source adapter contract, deterministic test-pattern source, recording writer lifecycle model, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
+- Runtime-selectable media-source adapters through `set-media-source-adapter`, currently covering deterministic test-pattern and clean local-camera-shaped sources behind the same contract future Zoom SDK ingest will use.
+- Native source routing registry and render-plan snapshots that resolve fixed participant, active-speaker, spotlight, screen-share, and disabled routes into compositor-ready layers with operator warnings for missing feeds, muted isolated audio, duplicate video assignments, and unavailable screen share.
+- Native compositor contract with stable render-plan IDs, program-frame snapshots, compositor health, reconfigure reasons, degraded/dropped frame counts, and a clear split between source frames for ISO capture and composed program frames for output.
+- Native program-frame transport snapshot for the in-process preview/program path so the UI can inspect whether composed frames are being published before pixel transport lands.
+- Native encoder target and lifecycle boundary that attaches recording, ISO, RTMP, NDI, SRT, and WebRTC outputs to the program-frame stream and surfaces per-target health, prepare/start/stop state, and output warnings before real sender implementations land.
+- Native output sender session model for RTMP, NDI, SRT, and WebRTC program senders, including active sender counts, sent frame counts, latency, bitrate, retry warnings, and stopped sender diagnostics.
+- Explicit runtime recovery commands for failed output senders and recording writers so diagnostics preserve failures until the operator or automation recovers the affected path.
+- Backend recording-session snapshots with session IDs, target folders, encoder intent, program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, byte counters, stopped/failed writer states, and warning state surfaced in the app's Native core readout.
+- Native media-core diagnostic snapshots with source adapter health, scene/output state, program transport, compositor state, encoder targets, recording health, warnings, and command history for future support-bundle export.
+- Native output profile snapshots for shared recording/RTMP/NDI/SRT/WebRTC resolution, FPS, and target bitrate decisions before real sender implementations land.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
 - Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
@@ -27,7 +39,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Output profile controls for 1080p/4K and 30/60fps with bitrate and encoder-health simulation.
 - Multi-destination output model for RTMP, NDI, and SRT targets with editable endpoint/key settings, armed/live state, latency, bitrate, and per-destination health.
 - Output preflight checks that block streaming when armed destinations are missing required endpoints, stream keys, or protocol-compatible URLs.
-- Diagnostics support bundle engine with redacted output secrets, human triage lines, output health, participant feed guidance, and ISO runway estimates.
+- Diagnostics support bundle engine with redacted output secrets, human triage lines, output health, participant feed guidance, ISO runway estimates, and sanitized native media-core runtime summaries.
 - Smart audio mix engine for per-participant gain, mute state, noise suppression, limiter status, master level, and loudness summary.
 - Manual per-participant audio gain trim layered on top of smart leveling for fast producer correction.
 - Adaptive caption and overlay engine with speaker attribution, confidence, latency, lower-third placement, and collision warnings.
@@ -86,6 +98,18 @@ CoreVideo Pro Desktop Shell
   -> OutputEngine
   -> NativeOutputEngineAdapter
   -> NativeMediaCoreCommands
+  -> MediaCoreServiceClient
+  -> native-core service boundary
+  -> Zoom source registry / route resolver
+  -> compositor render plan
+  -> media source adapter (Zoom SDK / local camera / test pattern)
+  -> program compositor / program frame stream
+  -> in-process preview/program transport
+  -> encoder target + lifecycle boundary
+  -> output sender sessions (RTMP / NDI / SRT / WebRTC)
+  -> recording writer lifecycle / program + ISO stream counters
+  -> output profile model
+  -> output health and diagnostics snapshots
   -> Native Media Core
   -> Zoom SDK raw audio/video ingest
   -> GPU compositor / scene graph / overlays / chroma key
@@ -99,9 +123,12 @@ The current `src/engine/contracts.ts` and `src/engine/engineBundle.ts` files are
 ```powershell
 npm install
 npm run dev
+npm run dev:native-core
 npm run test
+npm run test:native-core
 npm run typecheck
 npm run build
+npm run build:native-core
 ```
 
 ## MVP North Star

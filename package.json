@@ -3,12 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "native-core"
+  ],
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "build:native-core": "npm run build --workspace native-core",
+    "dev:native-core": "npm run dev --workspace native-core",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test:native-core": "npm run test --workspace native-core",
+    "typecheck": "tsc --noEmit",
+    "typecheck:desktop": "tsc -p desktop/tsconfig.json",
+    "desktop": "node desktop/scripts/launch.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

@@ -13,6 +13,32 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
   const activeScene = state.scenes.find((scene) => scene.id === state.activeSceneId) ?? state.scenes[0];
   const commands: NativeMediaCoreCommand[] = [
     {
+      type: "set-zoom-source-roster",
+      sources: state.participants.map((participant) => ({
+        sourceId: `participant:${participant.id}`,
+        participantId: participant.id,
+        displayName: participant.name,
+        role: participant.role,
+        breakoutRoomId: participant.breakoutRoomId,
+        breakoutRoomName: participant.breakoutRoomName,
+        hasVideo: participant.health !== "video-off",
+        hasAudio: true,
+        isMuted: participant.isMuted,
+        isActiveSpeaker: participant.isActiveSpeaker,
+        isScreenSharing: participant.isScreenSharing,
+        audioLevel: participant.audioLevel,
+        health: participant.health
+      }))
+    },
+    {
+      type: "set-active-speaker",
+      participantId: state.participants.find((participant) => participant.isActiveSpeaker && participant.health !== "video-off")?.id
+    },
+    {
+      type: "set-screen-share-source",
+      participantId: state.participants.find((participant) => participant.isScreenSharing)?.id
+    },
+    {
       type: "load-scene-graph",
       sceneId: activeScene.id,
       routes: getSceneRoutes(activeScene, state.participants).map((route) => ({
@@ -23,13 +49,23 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
       }))
     },
     ...state.videoEffects.map(buildTransformCommand),
-    ...state.graphics.filter((graphic) => graphic.enabled).map(buildOverlayCommand)
+    ...state.graphics.filter((graphic) => graphic.enabled).map(buildOverlayCommand),
+    {
+      type: "set-color-grade",
+      ...state.colorGrade
+    },
+    buildOutputProfileCommand(state)
   ];
 
   const outputCommand = buildOutputCommand(state);
   if (outputCommand) {
+    commands.push({ type: "prepare-encoder-session", reason: "Production outputs armed." });
     commands.push(outputCommand);
+    commands.push({ type: "start-encoder-session" });
+  } else {
+    commands.push({ type: "stop-encoder-session", reason: "Outputs disabled in production state." });
   }
+  commands.push(...buildRecordingCommands(state));
 
   return commands;
 }
@@ -122,6 +158,21 @@ function buildOverlayCommand(graphic: GraphicOverlay): NativeMediaCoreCommand {
   };
 }
 
+function buildOutputProfileCommand(state: ProductionState): NativeMediaCoreCommand {
+  const profile = state.outputProfiles.find((candidate) => candidate.id === state.selectedOutputProfileId) ?? state.outputProfiles[0];
+  const [width, height] = profile.resolution.split("x").map((part) => Number(part));
+
+  return {
+    type: "set-output-profile",
+    profileId: profile.id,
+    resolution: profile.resolution,
+    width,
+    height,
+    fps: profile.fps,
+    targetBitrateMbps: profile.targetBitrateMbps
+  };
+}
+
 function buildOutputCommand(state: ProductionState): NativeMediaCoreCommand | undefined {
   if (!state.recording && !state.streaming) {
     return undefined;
@@ -137,6 +188,32 @@ function buildOutputCommand(state: ProductionState): NativeMediaCoreCommand | un
     destinations: [...new Set(destinations)],
     isoParticipantIds: state.recording ? state.recordingSettings.isoParticipantIds : []
   };
+}
+
+function buildRecordingCommands(state: ProductionState): NativeMediaCoreCommand[] {
+  if (!state.recording) {
+    return [{ type: "stop-recording-session", reason: "Recording disabled in production state." }];
+  }
+
+  const targets = {
+    targetFolder: state.recordingSettings.folder,
+    filenamePrefix: state.recordingSettings.filenamePrefix,
+    format: state.recordingSettings.format,
+    quality: state.recordingSettings.quality,
+    isoParticipantIds: state.recordingSettings.isoParticipantIds
+  };
+
+  return [
+    {
+      type: "set-recording-targets",
+      ...targets
+    },
+    {
+      type: "start-recording-session",
+      sessionId: `${targets.filenamePrefix}-${targets.isoParticipantIds.join("-") || "program"}`,
+      ...targets
+    }
+  ];
 }
 
 function mapDestinationProtocol(destination: OutputDestination) {
