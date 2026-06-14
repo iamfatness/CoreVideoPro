@@ -137,7 +137,8 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 }  // namespace
 
-MediaCore::MediaCore(modules::ModuleSet modules) : modules_(std::move(modules)) {}
+MediaCore::MediaCore(modules::ModuleSet modules)
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
@@ -189,6 +190,75 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
   return captureDeviceArray(modules_.captureDevice->connect(deviceId));
 }
 
+rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->join(payload);
+  }
+
+  zoomJoined_ = true;
+  const std::string displayName = payload.getString("displayName", zoomDisplayName_);
+  if (!displayName.empty()) {
+    zoomDisplayName_ = displayName;
+  }
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::leaveZoom() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->leave();
+  }
+
+  zoomJoined_ = false;
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::zoomSnapshot() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->snapshot();
+  }
+
+  ++zoomSnapshotTick_;
+  if (!zoomJoined_) {
+    return rpc::Json::Object{
+        {"meetingState", "idle"},
+        {"participants", rpc::Json::Array{}},
+        {"tick", zoomSnapshotTick_},
+    };
+  }
+
+  return rpc::Json::Object{
+      {"meetingState", "in_meeting"},
+      {"activeSpeakerId", "operator-1"},
+      {"caption", ""},
+      {"tick", zoomSnapshotTick_},
+      {"participants",
+       rpc::Json::Array{
+           rpc::Json::Object{
+               {"userId", "operator-1"},
+               {"displayName", zoomDisplayName_},
+               {"role", "Host"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", true},
+               {"audioLevel", 76},
+               {"networkQuality", "good"},
+           },
+           rpc::Json::Object{
+               {"userId", "guest-1"},
+               {"displayName", "Guest 1"},
+               {"role", "Guest"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", false},
+               {"audioLevel", 22},
+               {"networkQuality", "good"},
+           },
+       }},
+  };
+}
+
 rpc::Json MediaCore::sessionState() const {
   const auto session = modules_.encoder->session();
   rpc::Json::Object state{
@@ -215,7 +285,11 @@ rpc::Json MediaCore::sessionState() const {
   return state;
 }
 
-rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const {
+rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
+  }
+
   const rpc::Json* participantsNode = payload.get("participants");
   const rpc::Json* subscriptionsNode = payload.get("subscriptions");
   const auto& participants = participantsNode && participantsNode->isArray() ? participantsNode->asArray() : rpc::Json::Array{};
@@ -336,6 +410,13 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     snapshot.emplace("screenShareParticipantId", screenShare->getString("sdkUserId"));
   }
   return snapshot;
+}
+
+std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->drainFrameEvents();
+  }
+  return {};
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands) {

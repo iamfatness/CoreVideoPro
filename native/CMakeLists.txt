@@ -12,7 +12,7 @@ option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device ada
 option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored OBS-free Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
-set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ and lib/)")
+set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ or h/, plus lib/)")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,12 +29,17 @@ add_library(corevideo_native
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
   src/modules/StubModules.cpp
+  src/modules/ZoomEngineClient.cpp
+  src/modules/ZoomEngineProcess.cpp
+  src/modules/ZoomEngineRuntime.cpp
+  src/modules/ZoomEngineState.cpp
   src/modules/ZoomMeetingSdkAdapter.cpp
   src/rpc/Json.cpp
   src/rpc/JsonRpcServer.cpp
 )
 
 target_include_directories(corevideo_native PUBLIC src)
+target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
 target_compile_definitions(corevideo_native
   PUBLIC
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
@@ -153,6 +158,13 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   if(NOT ZOOM_SDK_DIR)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR=<path to Zoom SDK>")
   endif()
+  if(EXISTS "${ZOOM_SDK_DIR}/include")
+    set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/include")
+  elseif(EXISTS "${ZOOM_SDK_DIR}/h")
+    set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/h")
+  else()
+    message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected include/ or h/ under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
+  endif()
 
   add_executable(corevideo-zoom-engine
     zoom-engine/engine/main.cpp
@@ -163,12 +175,20 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   target_include_directories(corevideo-zoom-engine PRIVATE
     zoom-engine/engine
     zoom-engine/shared
-    "${ZOOM_SDK_DIR}/include"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
   )
   if(WIN32)
     file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
     target_link_libraries(corevideo-zoom-engine PRIVATE
       ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
+    if(EXISTS "${ZOOM_SDK_DIR}/bin")
+      add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${ZOOM_SDK_DIR}/bin"
+          "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
+    endif()
   elseif(APPLE)
     target_link_libraries(corevideo-zoom-engine PRIVATE
       "-F${ZOOM_SDK_DIR}/lib" "-framework ZoomSDK"
@@ -188,9 +208,14 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/ZoomEngineClientTest.cpp
+    tests/ZoomEngineProcessTest.cpp
+    tests/ZoomEngineRuntimeTest.cpp
+    tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
   target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_REPO_ROOT="${CMAKE_SOURCE_DIR}/..")
+  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared)
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)

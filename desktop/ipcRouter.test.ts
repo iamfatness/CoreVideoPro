@@ -1,14 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { createIpcRouter, type MediaCoreBackend } from "./ipcRouter.ts";
-import { SYNTHETIC_PROFILE, synthesizeSnapshot, synthesizeSpineSnapshot } from "./syntheticMediaCore.ts";
+import {
+  SYNTHETIC_PROFILE,
+  createSyntheticZoomCaptureState,
+  synthesizeSnapshot,
+  synthesizeSpineSnapshot,
+  synthesizeZoomJoinSnapshot,
+  synthesizeZoomLeaveSnapshot,
+  synthesizeZoomSnapshot
+} from "./syntheticMediaCore.ts";
 import type { NativeMediaCoreProfile } from "../src/engine/nativeMediaCoreProtocol";
 
 function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PROFILE): MediaCoreBackend {
+  const zoomState = createSyntheticZoomCaptureState();
   return {
     getProfile: () => profile,
     handshake: async () => profile,
     syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1),
     syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs),
+    joinZoom: async (payload) => synthesizeZoomJoinSnapshot(zoomState, payload),
+    leaveZoom: async () => synthesizeZoomLeaveSnapshot(zoomState),
+    getZoomSnapshot: async () => synthesizeZoomSnapshot(zoomState),
     getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
   };
 }
@@ -22,10 +34,11 @@ describe("createIpcRouter", () => {
 
   it("dispatches zoom join to a raw capture snapshot", async () => {
     const route = createIpcRouter({ mediaCore: fakeBackend() });
-    const response = await route({ id: "1", type: "join", payload: { meetingNumber: "1", displayName: "Op" } as never });
+    const response = await route({ id: "1", type: "join", payload: { meetingUrl: "https://zoom.us/j/1", displayName: "Op", webinar: false } });
     expect(response.ok).toBe(true);
     if (response.ok && "snapshot" in response) {
       expect(response.snapshot.meetingState).toBe("in_meeting");
+      expect(response.snapshot.participants[0]?.displayName).toBe("Op");
     }
   });
 
@@ -58,7 +71,12 @@ describe("createIpcRouter", () => {
     const noProfile: MediaCoreBackend = {
       getProfile: () => undefined,
       handshake: async () => undefined,
-      syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1)
+      syncMediaCore: async (commands, elapsedMs) => synthesizeSnapshot(commands, elapsedMs, 1),
+      syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs),
+      joinZoom: async (payload) => synthesizeZoomJoinSnapshot(createSyntheticZoomCaptureState(), payload),
+      leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
+      getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
+      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
     };
     const route = createIpcRouter({ mediaCore: noProfile });
     const response = await route({ id: "5", type: "media-core-handshake" });
@@ -105,7 +123,12 @@ describe("createIpcRouter", () => {
       handshake: async () => SYNTHETIC_PROFILE,
       syncMediaCore: async () => {
         throw new Error("boom");
-      }
+      },
+      syncZoomMediaSpine: async (payload, elapsedMs) => synthesizeSpineSnapshot(payload, elapsedMs),
+      joinZoom: async (payload) => synthesizeZoomJoinSnapshot(createSyntheticZoomCaptureState(), payload),
+      leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
+      getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
+      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
     };
     const route = createIpcRouter({ mediaCore: failing });
     const response = await route({ id: "9", type: "media-core-sync", payload: { commands: [], elapsedMs: 0 } });

@@ -23,6 +23,8 @@ import type {
   ZoomMediaSpineNativeSubscription,
   ZoomMediaSpineSubscriptionStatus
 } from "../src/engine/zoomMediaSpineNativeSync";
+import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
+import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
 const DEFAULT_OUTPUT_PROFILE: NativeMediaCoreOutputProfile = {
@@ -70,6 +72,50 @@ export const SYNTHETIC_PROFILE: NativeMediaCoreProfile = {
     "webrtc-output"
   ]
 };
+
+export type SyntheticZoomCaptureState = {
+  joined: boolean;
+  tick: number;
+  displayName: string;
+};
+
+export function createSyntheticZoomCaptureState(): SyntheticZoomCaptureState {
+  return { joined: false, tick: 0, displayName: "Guest Producer" };
+}
+
+export function synthesizeZoomJoinSnapshot(
+  state: SyntheticZoomCaptureState,
+  request: ZoomJoinRequest
+): RawCaptureSnapshot {
+  state.joined = true;
+  state.displayName = request.displayName.trim() || state.displayName;
+  state.tick += 1;
+  return synthesizeZoomSnapshot(state);
+}
+
+export function synthesizeZoomLeaveSnapshot(state: SyntheticZoomCaptureState): RawCaptureSnapshot {
+  state.joined = false;
+  state.tick += 1;
+  return synthesizeZoomSnapshot(state);
+}
+
+export function synthesizeZoomSnapshot(state: SyntheticZoomCaptureState): RawCaptureSnapshot {
+  state.tick += 1;
+  if (!state.joined) {
+    return { meetingState: "idle", participants: [], tick: state.tick };
+  }
+
+  return {
+    meetingState: "in_meeting",
+    activeSpeakerId: "operator-1",
+    caption: "",
+    tick: state.tick,
+    participants: [
+      { userId: "operator-1", displayName: state.displayName, role: "Host", videoOn: true, muted: false, talking: true, audioLevel: 76, networkQuality: "good" },
+      { userId: "guest-1", displayName: "Guest 1", role: "Guest", videoOn: true, muted: false, talking: false, audioLevel: 22, networkQuality: "good" }
+    ]
+  };
+}
 
 function emptySourceSnapshot(sourceCount: number, elapsedMs: number): NativeMediaCoreFrameSourceSnapshot {
   return {

@@ -4,6 +4,7 @@ import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineServiceResponse, ZoomMediaSpineServiceTransport } from "./zoomMediaSpineServiceExecutor";
 import type { ZoomMediaSpineServiceRequest } from "./zoomMediaSpineServicePlan";
 import { ZoomMediaSpineSessionController } from "./zoomMediaSpineSessionController";
+import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 import type { ZoomSdkReadinessInput } from "./zoomSdkReadiness";
 
 const readinessInput: ZoomSdkReadinessInput = {
@@ -42,10 +43,18 @@ function snapshot(request: ZoomMediaSpineServiceRequest): ZoomMediaSpineNativeSn
 
 class MemoryZoomServiceTransport implements ZoomMediaSpineServiceTransport {
   readonly requests: ZoomMediaSpineServiceRequest[] = [];
+  readonly payloadUpdates: Array<{ payload: ZoomMediaSpineSyncPayload; elapsedMs: number }> = [];
+  readonly order: string[] = [];
   failType?: ZoomMediaSpineServiceRequest["type"];
+
+  updatePayload(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): void {
+    this.payloadUpdates.push({ payload, elapsedMs });
+    this.order.push("payload");
+  }
 
   async request(request: ZoomMediaSpineServiceRequest): Promise<ZoomMediaSpineServiceResponse> {
     this.requests.push(request);
+    this.order.push(request.type);
     if (request.type === this.failType) {
       return {
         id: request.id,
@@ -99,6 +108,11 @@ describe("ZoomMediaSpineSessionController", () => {
         passcodePresent: true
       }
     });
+    expect(transport.order[0]).toBe("payload");
+    expect(transport.payloadUpdates).toHaveLength(1);
+    expect(transport.payloadUpdates[0].elapsedMs).toBe(66);
+    expect(transport.payloadUpdates[0].payload.participants.length).toBe(initialProduction.participants.length);
+    expect(transport.payloadUpdates[0].payload.subscriptions.length).toBeGreaterThan(0);
   });
 
   it("emits stop-recording on sync after recording was previously active", async () => {

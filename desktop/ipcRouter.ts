@@ -14,6 +14,7 @@ import type {
   NativeCaptionCueState,
   NativeCaptionTrackState
 } from "../src/engine/nativeBridgeProtocol";
+import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
@@ -25,6 +26,9 @@ export type MediaCoreBackend = {
   handshake(): Promise<NativeMediaCoreProfile | undefined>;
   syncMediaCore(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
+  joinZoom(payload: ZoomJoinRequest): Promise<RawCaptureSnapshot>;
+  leaveZoom(): Promise<RawCaptureSnapshot>;
+  getZoomSnapshot(): Promise<RawCaptureSnapshot>;
   getHealth(): MediaCoreHealth;
 };
 
@@ -35,41 +39,6 @@ export type IpcRouterOptions = {
 };
 
 export type IpcRouter = (command: NativeBridgeCommand) => Promise<NativeBridgeResponse>;
-
-/** Minimal in-memory Zoom capture simulation producing RawCaptureSnapshots. */
-class SimulatedZoom {
-  private tick = 0;
-  private joined = false;
-
-  join(): RawCaptureSnapshot {
-    this.joined = true;
-    this.tick += 1;
-    return this.snapshot();
-  }
-
-  leave(): RawCaptureSnapshot {
-    this.joined = false;
-    this.tick += 1;
-    return this.snapshot();
-  }
-
-  snapshot(): RawCaptureSnapshot {
-    this.tick += 1;
-    if (!this.joined) {
-      return { meetingState: "idle", participants: [], tick: this.tick };
-    }
-    return {
-      meetingState: "in_meeting",
-      activeSpeakerId: "host-1",
-      caption: "",
-      tick: this.tick,
-      participants: [
-        { userId: "host-1", displayName: "Host", role: "Host", videoOn: true, talking: true, audioLevel: 0.6 },
-        { userId: "guest-1", displayName: "Guest", role: "Guest", videoOn: true, talking: false, audioLevel: 0.1 }
-      ]
-    };
-  }
-}
 
 /** In-memory audio mix stub (until audio is delegated to native). */
 class AudioStub {
@@ -128,7 +97,6 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
   const { mediaCore } = options;
   const output = options.output ?? new MockOutputEngine();
   const captureDevices = options.captureDevices ?? new MockCaptureDeviceEngine();
-  const zoom = new SimulatedZoom();
   const audio = new AudioStub();
   const caption = new CaptionStub();
 
@@ -138,11 +106,11 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
       switch (command.type) {
         // ----- Zoom -----
         case "join":
-          return { id, ok: true, snapshot: zoom.join() };
+          return { id, ok: true, snapshot: await mediaCore.joinZoom(command.payload) };
         case "leave":
-          return { id, ok: true, snapshot: zoom.leave() };
+          return { id, ok: true, snapshot: await mediaCore.leaveZoom() };
         case "snapshot":
-          return { id, ok: true, snapshot: zoom.snapshot() };
+          return { id, ok: true, snapshot: await mediaCore.getZoomSnapshot() };
 
         // ----- Output -----
         case "set-output-profile":
@@ -218,6 +186,15 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
       const message = error instanceof Error ? error.message : "Router failure.";
       if (command.type === "media-core-sync" || command.type === "media-core-handshake") {
         return { id, ok: false, error: { code: "media-core-failed", message } };
+      }
+      if (command.type === "join") {
+        return { id, ok: false, error: { code: "join-failed", message } };
+      }
+      if (command.type === "leave") {
+        return { id, ok: false, error: { code: "leave-failed", message } };
+      }
+      if (command.type === "snapshot") {
+        return { id, ok: false, error: { code: "snapshot-failed", message } };
       }
       return { id, ok: false, error: { code: "protocol-error", message } };
     }

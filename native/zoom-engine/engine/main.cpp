@@ -40,9 +40,19 @@
 #include <string>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+static void trace_engine_stage(const std::string &stage)
+{
+    const char *path = std::getenv("COREVIDEO_ZOOM_ENGINE_TRACE");
+    if (!path || !*path) return;
+    std::ofstream out(path, std::ios::app);
+    if (out) out << stage << "\n";
+}
 
 static std::string redacted_tail(const std::string &value)
 {
@@ -127,6 +137,7 @@ static bool ipc_connect_timeout(HANDLE pipe, DWORD timeout_ms)
 
 static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
 {
+    trace_engine_stage("ipc_setup:begin");
     p2e = CreateNamedPipeA(PIPE_P2E,
                            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -135,11 +146,18 @@ static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
                            PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                            1, 65536, 65536, 0, nullptr);
-    if (p2e == INVALID_HANDLE_VALUE || e2p == INVALID_HANDLE_VALUE) return false;
+    if (p2e == INVALID_HANDLE_VALUE || e2p == INVALID_HANDLE_VALUE) {
+        trace_engine_stage("ipc_setup:create_pipe_failed");
+        return false;
+    }
+    trace_engine_stage("ipc_setup:pipes_created");
     constexpr DWORD kConnectTimeoutMs = 30000;
     if (!ipc_connect_timeout(p2e, kConnectTimeoutMs) ||
-        !ipc_connect_timeout(e2p, kConnectTimeoutMs))
+        !ipc_connect_timeout(e2p, kConnectTimeoutMs)) {
+        trace_engine_stage("ipc_setup:connect_timeout");
         return false;
+    }
+    trace_engine_stage("ipc_setup:connected");
     return true;
 }
 
@@ -236,19 +254,24 @@ static int unix_accept_timeout(int srv, int timeout_ms)
 
 static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
 {
+    trace_engine_stage("ipc_setup:begin");
     int srv_p2e = unix_listen(SOCK_P2E);
     int srv_e2p = unix_listen(SOCK_E2P);
     if (srv_p2e < 0 || srv_e2p < 0) {
         if (srv_p2e >= 0) close(srv_p2e);
         if (srv_e2p >= 0) close(srv_e2p);
+        trace_engine_stage("ipc_setup:create_socket_failed");
         return false;
     }
+    trace_engine_stage("ipc_setup:sockets_created");
     constexpr int kConnectTimeoutMs = 30000; // 30 s
     p2e = unix_accept_timeout(srv_p2e, kConnectTimeoutMs);
     e2p = unix_accept_timeout(srv_e2p, kConnectTimeoutMs);
     close(srv_p2e);
     close(srv_e2p);
-    return p2e >= 0 && e2p >= 0;
+    const bool connected = p2e >= 0 && e2p >= 0;
+    trace_engine_stage(connected ? "ipc_setup:connected" : "ipc_setup:connect_timeout");
+    return connected;
 }
 
 static void ipc_teardown(IpcFd p2e, IpcFd e2p)
@@ -1096,9 +1119,11 @@ private:
 
 int main()
 {
+    trace_engine_stage("main:entered");
     IpcFd p2e = kIpcInvalidFd;
     IpcFd e2p = kIpcInvalidFd;
     if (!ipc_setup(p2e, e2p)) return 1;
+    trace_engine_stage("main:ipc_ready");
     EngineIpc::init(e2p); // must be called before any SDK callbacks can fire
 
     EngineIpc::write(R"({"cmd":"ready"})");

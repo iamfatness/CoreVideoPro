@@ -47,13 +47,43 @@ Json JsonRpcServer::handle(const Json& request) {
   }
 
   if (hasType(request, "zoom-media-spine-sync")) {
-    const Json* payload = request.get("payload");
+    const Json* payload = request.get("spinePayload");
+    if (!payload) {
+      payload = request.get("payload");
+    }
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "Zoom media spine sync request must include payload.");
     }
+    const auto snapshot = mediaCore_.syncZoomMediaSpine(*payload, request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0);
     return success(id, Json::Object{
                            {"type", "zoom-media-spine-sync"},
-                           {"zoom", mediaCore_.syncZoomMediaSpine(*payload, request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0)},
+                           {"spineSnapshot", snapshot},
+                           {"zoom", snapshot},
+                       });
+  }
+
+  if (hasType(request, "zoom-join")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "zoom-join requires a payload.");
+    }
+    return success(id, Json::Object{
+                           {"type", "zoom-join"},
+                           {"snapshot", mediaCore_.joinZoom(*payload)},
+                       });
+  }
+
+  if (hasType(request, "zoom-leave")) {
+    return success(id, Json::Object{
+                           {"type", "zoom-leave"},
+                           {"snapshot", mediaCore_.leaveZoom()},
+                       });
+  }
+
+  if (hasType(request, "zoom-snapshot")) {
+    return success(id, Json::Object{
+                           {"type", "zoom-snapshot"},
+                           {"snapshot", mediaCore_.zoomSnapshot()},
                        });
   }
 
@@ -127,7 +157,14 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       continue;
     }
     output << handle(*request).stringify() << '\n';
+    flushFrameEvents(output);
     output.flush();
+  }
+}
+
+void JsonRpcServer::flushFrameEvents(std::ostream& output) {
+  for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
+    output << event.stringify() << '\n';
   }
 }
 

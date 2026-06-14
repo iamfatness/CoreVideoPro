@@ -8,9 +8,18 @@
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
-import { SYNTHETIC_PROFILE, synthesizeSnapshot, synthesizeSpineSnapshot } from "./syntheticMediaCore.ts";
+import {
+  SYNTHETIC_PROFILE,
+  createSyntheticZoomCaptureState,
+  synthesizeSnapshot,
+  synthesizeSpineSnapshot,
+  synthesizeZoomJoinSnapshot,
+  synthesizeZoomLeaveSnapshot,
+  synthesizeZoomSnapshot
+} from "./syntheticMediaCore.ts";
 
 let frameNumber = 0;
+const zoomCaptureState = createSyntheticZoomCaptureState();
 
 export function handleCoreRequest(raw: string): CoreResponse | null {
   let request: Partial<CoreRequest>;
@@ -42,6 +51,17 @@ export function handleCoreRequest(raw: string): CoreResponse | null {
         snapshot: synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber)
       };
     }
+    case "zoom-join": {
+      const join = request as Extract<CoreRequest, { type: "zoom-join" }>;
+      if (!join.payload || typeof join.payload.displayName !== "string") {
+        return { id: request.id, ok: false, error: { code: "invalid-request", message: "zoom-join needs a payload." } };
+      }
+      return { id: request.id, ok: true, type: "zoom-join", snapshot: synthesizeZoomJoinSnapshot(zoomCaptureState, join.payload) };
+    }
+    case "zoom-leave":
+      return { id: request.id, ok: true, type: "zoom-leave", snapshot: synthesizeZoomLeaveSnapshot(zoomCaptureState) };
+    case "zoom-snapshot":
+      return { id: request.id, ok: true, type: "zoom-snapshot", snapshot: synthesizeZoomSnapshot(zoomCaptureState) };
     case "zoom-media-spine-sync": {
       const spine = request as Extract<CoreRequest, { type: "zoom-media-spine-sync" }>;
       if (!spine.spinePayload || typeof spine.elapsedMs !== "number") {
