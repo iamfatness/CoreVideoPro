@@ -126,6 +126,7 @@ rpc::Json MediaCore::sessionState() const {
       {"hardwareEncoder", session.hardwareAccelerated},
       {"active", session.active},
       {"encoderSession", encoderSessionState(session)},
+      {"outputSenderSession", outputSenderSessionState()},
       {"health", health()},
       {"profile", profile()},
   };
@@ -283,6 +284,10 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     startEncoderSession(command);
   } else if (type == "stop-encoder-session") {
     stopEncoderSession(command);
+  } else if (type == "fail-output-sender") {
+    failOutputSender(command);
+  } else if (type == "recover-output-sender") {
+    recoverOutputSender(command);
   } else if (type == "set-recording-targets") {
     setRecordingTargets(command);
   } else if (type == "start-recording-session") {
@@ -336,6 +341,14 @@ void MediaCore::stopEncoderSession(const rpc::Json& command) {
   encoderLifecycleStatus_ = "stopped";
   encoderStoppedAtMs_ = command.get("stoppedAtMs") ? command.get("stoppedAtMs")->asNumber() : encoderStoppedAtMs_;
   encoderLastTransition_ = command.getString("reason", "Program output encoder session stopped.");
+}
+
+void MediaCore::failOutputSender(const rpc::Json& command) {
+  modules_.outputSender->fail(command.getString("destination"), command.getString("message", "Output sender failed."), command.get("failedAtMs") ? command.get("failedAtMs")->asNumber() : 0);
+}
+
+void MediaCore::recoverOutputSender(const rpc::Json& command) {
+  modules_.outputSender->recover(command.getString("destination"), command.get("recoveredAtMs") ? command.get("recoveredAtMs")->asNumber() : 0, command.getString("reason", ""));
 }
 
 void MediaCore::setRecordingTargets(const rpc::Json& command) {
@@ -432,6 +445,42 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   };
 }
 
+rpc::Json MediaCore::outputSenderSessionState() const {
+  const auto senderSession = modules_.outputSender->session();
+  rpc::Json::Array senders;
+  for (const auto& sender : senderSession.senders) {
+    rpc::Json::Object senderJson{
+        {"senderId", sender.senderId},
+        {"destination", sender.destination},
+        {"status", sender.status},
+        {"framesSent", static_cast<double>(sender.framesSent)},
+        {"retryCount", sender.retryCount},
+        {"latencyMs", sender.latencyMs},
+        {"bitrateMbps", sender.bitrateMbps},
+    };
+    if (sender.startedAtMs > 0) {
+      senderJson.emplace("startedAtMs", sender.startedAtMs);
+    }
+    if (sender.stoppedAtMs > 0) {
+      senderJson.emplace("stoppedAtMs", sender.stoppedAtMs);
+    }
+    if (sender.lastFrameNumber > 0) {
+      senderJson.emplace("lastFrameNumber", static_cast<double>(sender.lastFrameNumber));
+    }
+    if (!sender.warning.empty()) {
+      senderJson.emplace("warning", sender.warning);
+    }
+    senders.emplace_back(std::move(senderJson));
+  }
+
+  return rpc::Json::Object{
+      {"status", senderSession.status},
+      {"activeSenderCount", senderSession.activeSenderCount},
+      {"senders", senders},
+      {"warnings", stringArray(senderSession.warnings)},
+  };
+}
+
 rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
   if (recordingSessionId_.empty() && recordingStatus_ == "stopped") {
     return nullptr;
@@ -519,9 +568,10 @@ void MediaCore::renderSyntheticTick() {
   }
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   modules_.encoder->submit(lastProgramFrame_);
+  const auto session = modules_.encoder->session();
+  modules_.outputSender->sync(session.destinations, &lastProgramFrame_, static_cast<double>(lastProgramFrame_.frameNumber * 33));
   if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
     ++recordingProgramFramesWritten_;
-    const auto session = modules_.encoder->session();
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
     recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
     recordingElapsedMs_ += 33;

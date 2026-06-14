@@ -171,6 +171,73 @@ TEST(MediaCoreCommand, AppliesRecordingFailureAndRecoveryCommands) {
   EXPECT_EQ(recovered.get("recording")->getString("warning"), "Recording writer recovered.");
 }
 
+TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording", "rtmp"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+
+  const auto* senderSession = state.get("outputSenderSession");
+  ASSERT_NE(senderSession, nullptr);
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  EXPECT_TRUE(senderSession->getString("status") == "live" || senderSession->getString("status") == "warning");
+#else
+  EXPECT_EQ(senderSession->getString("status"), "live");
+#endif
+  EXPECT_EQ(senderSession->get("activeSenderCount")->asNumber(), 1);
+  ASSERT_TRUE(senderSession->get("senders")->asArray().size() == 1);
+  const auto& sender = senderSession->get("senders")->asArray()[0];
+  EXPECT_EQ(sender.getString("destination"), "rtmp");
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  EXPECT_TRUE(sender.getString("status") == "live" || sender.getString("status") == "warning");
+#else
+  EXPECT_EQ(sender.getString("status"), "live");
+  EXPECT_GE(sender.get("framesSent")->asNumber(), 1);
+#endif
+}
+
+TEST(MediaCoreCommand, AppliesOutputSenderFailureAndRecoveryCommands) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+
+  const auto failed = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "fail-output-sender"},
+      {"destination", "rtmp"},
+      {"message", "RTMP ingest rejected credentials."},
+      {"failedAtMs", 2000},
+  });
+  const auto* failedSession = failed.get("outputSenderSession");
+  ASSERT_NE(failedSession, nullptr);
+  EXPECT_EQ(failedSession->getString("status"), "failed");
+  ASSERT_TRUE(failedSession->get("senders")->asArray().size() == 1);
+  EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("status"), "failed");
+  EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("warning"), "RTMP ingest rejected credentials.");
+
+  const auto recovered = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "recover-output-sender"},
+      {"destination", "rtmp"},
+      {"reason", "RTMP sender recovered."},
+      {"recoveredAtMs", 2500},
+  });
+  const auto* recoveredSession = recovered.get("outputSenderSession");
+  ASSERT_NE(recoveredSession, nullptr);
+  EXPECT_EQ(recoveredSession->getString("status"), "warning");
+  ASSERT_TRUE(recoveredSession->get("senders")->asArray().size() == 1);
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  EXPECT_TRUE(recoveredSession->get("senders")->asArray()[0].getString("status") == "starting" ||
+              recoveredSession->get("senders")->asArray()[0].getString("status") == "warning");
+#else
+  EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("status"), "starting");
+#endif
+  EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("warning"), "RTMP sender recovered.");
+}
+
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
 #if COREVIDEO_WITH_D3D11
   auto compositor = corevideo::modules::createD3D11Compositor();
@@ -201,6 +268,19 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
   EXPECT_EQ(encoder->session().encodedFrameCount, 1);
 #else
   EXPECT_EQ(corevideo::modules::createMediaFoundationEncoderSink(), nullptr);
+#endif
+}
+
+TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  const auto session = sender->sync({"rtmp"}, nullptr, 0);
+  EXPECT_GE(session.activeSenderCount, 1);
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].destination, "rtmp");
+#else
+  EXPECT_EQ(corevideo::modules::createRtmpOutputSender(), nullptr);
 #endif
 }
 

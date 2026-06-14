@@ -59,6 +59,27 @@ struct OutputSession {
   bool hardwareAccelerated = false;
 };
 
+struct OutputSender {
+  std::string senderId;
+  std::string destination;
+  std::string status = "idle";
+  double startedAtMs = 0;
+  double stoppedAtMs = 0;
+  int64_t lastFrameNumber = 0;
+  int64_t framesSent = 0;
+  int retryCount = 0;
+  int latencyMs = 2100;
+  double bitrateMbps = 6.0;
+  std::string warning;
+};
+
+struct OutputSenderSession {
+  std::string status = "idle";
+  int activeSenderCount = 0;
+  std::vector<OutputSender> senders;
+  std::vector<std::string> warnings;
+};
+
 struct CaptureDeviceInfo {
   std::string id;
   std::string name;
@@ -93,6 +114,15 @@ class IEncoderSink {
   virtual OutputSession session() const = 0;
 };
 
+class IOutputSender {
+ public:
+  virtual ~IOutputSender() = default;
+  virtual OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) = 0;
+  virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
+  virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
+  virtual OutputSenderSession session() const = 0;
+};
+
 class ICaptureDevice {
  public:
   virtual ~ICaptureDevice() = default;
@@ -104,6 +134,7 @@ struct ModuleSet {
   std::unique_ptr<ICompositor> compositor;
   std::unique_ptr<IAudioMixer> mixer;
   std::unique_ptr<IEncoderSink> encoder;
+  std::unique_ptr<IOutputSender> outputSender;
   std::unique_ptr<ICaptureDevice> captureDevice;
 };
 
@@ -111,5 +142,6 @@ ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
+std::unique_ptr<IOutputSender> createRtmpOutputSender();
 
 }  // namespace corevideo::modules
