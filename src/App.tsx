@@ -62,6 +62,7 @@ import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./e
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
+import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2522,6 +2523,45 @@ export function App({ engines, runtime }: AppProps) {
             <p className="auto-director-status">
               Auto: {production.autoProduction.action} {production.autoProduction.confidence}% - {production.autoProduction.reason}
             </p>
+          </section>
+
+          <section className="panel" aria-label="Scene intelligence">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Scene intelligence
+            </div>
+            {(() => {
+              const signal = {
+                videoOnCount: production.participants.filter((p) => p.health !== "video-off").length,
+                screenShareActive,
+                hasActiveSpeaker: production.participants.some((p) => p.isActiveSpeaker),
+                hostVideoOn: production.participants.some((p) => p.role === "Host" && p.health !== "video-off"),
+                isOutro: production.scenes.some((s: SceneTemplate) => s.layout === "outro" && s.id === production.activeSceneId),
+              };
+              const rec = recommendScene(signal);
+              const automationOn = production.mode === "set-and-forget";
+              const autoDecision = decideAutoSwitch(
+                (production.scenes.find((s: SceneTemplate) => s.id === production.activeSceneId)?.layout ?? "smart-grid") as SceneLayout,
+                signal,
+                0
+              );
+              return (
+                <div className="scene-intelligence-panel" aria-label="Scene intelligence panel">
+                  <div className="scene-intel-summary">
+                    {summarizeSceneIntelligence(signal, automationOn)}
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="Recommended" value={rec.sceneName} />
+                    <ControlReadout label="Layout" value={rec.layout} />
+                    <ControlReadout label="Confidence" value={rec.confidence} />
+                    <ControlReadout label="Cameras on" value={String(signal.videoOnCount)} />
+                    <ControlReadout label="Screen share" value={signal.screenShareActive ? "Active" : "Off"} />
+                    <ControlReadout label="Auto-switch" value={autoDecision.shouldSwitch ? "Now" : autoDecision.holdUntilMs > 0 ? `Hold ${(autoDecision.holdUntilMs / 1000).toFixed(0)}s` : "Stable"} />
+                  </div>
+                  <p className="scene-intel-reason">{rec.reason}</p>
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel" aria-label="Show clock">

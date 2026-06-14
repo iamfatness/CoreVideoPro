@@ -3154,3 +3154,27 @@ meter {
 
 .iso-track-program-mix { color: #60a5fa; }
 .iso-track-screen-share { color: #a78bfa; }
+
+/* Scene intelligence panel */
+.scene-intelligence-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scene-intel-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #4ade80;
+  padding: 6px 8px;
+  background: #0f1a14;
+  border-radius: 5px;
+  border: 1px solid #1e3a28;
+}
+
+.scene-intel-reason {
+  font-size: 10px;
+  color: #7a9a8a;
+  margin: 0;
+  font-style: italic;
+}

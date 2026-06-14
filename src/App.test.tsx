@@ -1166,6 +1166,32 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("scene intelligence", () => {
+  it("shows the scene intelligence panel with a recommendation in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Scene intelligence panel");
+    expect(panel).toBeInTheDocument();
+    // Should show readout labels and a confidence value
+    expect(within(panel).getAllByText(/Recommended/i).length).toBeGreaterThanOrEqual(1);
+    expect(within(panel).getByText(/^high$|^medium$|^low$/i)).toBeInTheDocument();
+  });
+
+  it("shows the automation mode in the scene intelligence summary", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Scene intelligence panel");
+    // Seed is set-and-forget mode → Auto prefix
+    expect(within(panel).getByText(/^Auto:/i)).toBeInTheDocument();
+  });
+});
+
 describe("ISO recording plan", () => {
   it("shows the ISO plan panel with a track summary in Settings > Recording", async () => {
     const user = userEvent.setup();
