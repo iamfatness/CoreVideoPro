@@ -1731,3 +1731,31 @@ describe("teleprompter", () => {
     expect(within(panel).getByRole("button", { name: /^Pause$/ })).not.toBeDisabled();
   });
 });
+
+describe("lower thirds", () => {
+  it("shows the lower-third deck with a queue in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Lower third deck");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Plate queue")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Show Next/i })).toBeInTheDocument();
+  });
+
+  it("puts the next plate on air when Show Next is clicked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Lower third deck");
+    await user.click(within(panel).getByRole("button", { name: /Show Next/i }));
+
+    // The first queued plate (keynote speaker) is now on air in the preview.
+    expect(within(panel).getAllByText("Dr. Amara Okafor").length).toBeGreaterThanOrEqual(1);
+    expect(within(panel).getByRole("button", { name: /Take Down/i })).not.toBeDisabled();
+  });
+});

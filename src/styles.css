@@ -3718,3 +3718,32 @@ meter {
 .prompter-stats { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
 .prompter-controls { display: flex; gap: 6px; flex-wrap: wrap; }
 .prompter-controls .ghost-button { font-size: 10px; padding: 3px 8px; }
+
+/* Lower thirds */
+.plate-panel { display: flex; flex-direction: column; gap: 8px; }
+.plate-preview { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 4px; background: #060c14; border-left: 3px solid #3b82f6; min-height: 52px; justify-content: center; }
+.plate-preview.plate-preview-empty { border-left-color: #1a2a40; align-items: center; }
+.plate-preview.tone-accent { border-left-color: #3b82f6; }
+.plate-preview.tone-guest { border-left-color: #a855f7; }
+.plate-preview.tone-breaking { border-left-color: #ef4444; }
+.plate-preview.tone-neutral { border-left-color: #5a7090; }
+.plate-preview-name { font-size: 14px; font-weight: 700; color: #e8f0fc; }
+.plate-preview-title { font-size: 11px; color: #8aa0c0; }
+.plate-preview-role { font-size: 10px; color: #5a7090; text-transform: uppercase; letter-spacing: 0.04em; }
+.plate-preview-off { font-size: 11px; color: #5a7090; font-style: italic; }
+.plate-transport { display: flex; gap: 6px; }
+.plate-transport .ghost-button { font-size: 10px; padding: 3px 8px; }
+.plate-queue { display: flex; flex-direction: column; gap: 4px; }
+.plate-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 7px; padding: 5px 6px; border-radius: 4px; background: #0a1520; border: 1px solid #1a2a40; border-left-width: 3px; }
+.plate-row.tone-accent { border-left-color: #3b82f6; }
+.plate-row.tone-guest { border-left-color: #a855f7; }
+.plate-row.tone-breaking { border-left-color: #ef4444; }
+.plate-row.tone-neutral { border-left-color: #5a7090; }
+.plate-row-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.plate-row-name { font-size: 11px; font-weight: 600; color: #c0d4f0; }
+.plate-row-title { font-size: 10px; color: #5a7090; }
+.plate-tone-badge { font-size: 9px; text-transform: uppercase; font-weight: 600; padding: 1px 4px; border-radius: 2px; background: #1a2a40; color: #8aa0c0; }
+.plate-row .ghost-button { font-size: 9px; padding: 2px 6px; }
+.plate-summary { font-size: 11px; color: #8aa0c0; margin: 0; font-style: italic; }
+.plate-stats { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
+.plate-requeue-all { font-size: 10px; padding: 3px 8px; align-self: flex-start; }
