@@ -1,5 +1,5 @@
 export { MediaCoreRuntime } from "./mediaCore.js";
-export { TestPatternMediaSource } from "./mediaSource.js";
+export { LocalCameraMediaSource, TestPatternMediaSource, createMediaFrameSource } from "./mediaSource.js";
 export { MediaCoreServiceClient } from "./client.js";
 export { handleLine } from "./service.js";
 export type { MediaCoreFrameSourceRequest, MediaCoreFrameSourceResult, MediaFrameSource } from "./mediaSource.js";

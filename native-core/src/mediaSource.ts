@@ -18,13 +18,26 @@ export interface MediaFrameSource {
   snapshot(elapsedMs: number): MediaCoreFrameSourceSnapshot;
 }
 
+export function createMediaFrameSource(kind: MediaCoreMediaSourceKind, adapterId?: string): MediaFrameSource {
+  if (kind === "local-camera") {
+    return new LocalCameraMediaSource(adapterId);
+  }
+
+  return new TestPatternMediaSource(adapterId ?? (kind === "zoom-sdk" ? "zoom-sdk-placeholder" : "test-pattern"), kind);
+}
+
 export class TestPatternMediaSource implements MediaFrameSource {
-  readonly adapterId = "test-pattern";
-  readonly kind = "test-pattern";
+  readonly adapterId: string;
+  readonly kind: MediaCoreMediaSourceKind;
   private readonly frameNumbers = new Map<string, number>();
   private droppedFrameCount = 0;
   private lowResolutionFrameCount = 0;
   private lastFrameTimestampMs?: number;
+
+  constructor(adapterId = "test-pattern", kind: MediaCoreMediaSourceKind = "test-pattern") {
+    this.adapterId = adapterId;
+    this.kind = kind;
+  }
 
   render(sources: MediaCoreFrameSourceRequest[], elapsedMs: number): MediaCoreFrameSourceResult {
     let droppedThisTick = 0;
@@ -90,6 +103,63 @@ export class TestPatternMediaSource implements MediaFrameSource {
       lowResolutionFrameCount: this.lowResolutionFrameCount,
       lastFrameTimestampMs: this.lastFrameTimestampMs,
       warnings
+    };
+  }
+}
+
+export class LocalCameraMediaSource implements MediaFrameSource {
+  readonly adapterId: string;
+  readonly kind = "local-camera";
+  private readonly frameNumbers = new Map<string, number>();
+  private lastFrameTimestampMs?: number;
+
+  constructor(adapterId = "local-camera") {
+    this.adapterId = adapterId;
+  }
+
+  render(sources: MediaCoreFrameSourceRequest[], elapsedMs: number): MediaCoreFrameSourceResult {
+    const frames = sources.map((source) => {
+      const nextFrameNumber = (this.frameNumbers.get(source.sourceId) ?? 0) + 1;
+      this.frameNumbers.set(source.sourceId, nextFrameNumber);
+      const isScreenShare = source.kind === "screen-share";
+
+      return {
+        sourceId: source.sourceId,
+        participantId: source.participantId,
+        kind: source.kind,
+        frameNumber: nextFrameNumber,
+        timestampMs: elapsedMs,
+        width: isScreenShare ? 1920 : 1920,
+        height: isScreenShare ? 1080 : 1080,
+        fps: isScreenShare ? 30 : 60,
+        health: "live"
+      } satisfies MediaCoreFrame;
+    });
+
+    this.lastFrameTimestampMs = frames.length ? elapsedMs : this.lastFrameTimestampMs;
+
+    return {
+      frames,
+      snapshot: this.buildSnapshot(sources.length, frames)
+    };
+  }
+
+  snapshot(): MediaCoreFrameSourceSnapshot {
+    return this.buildSnapshot(0, []);
+  }
+
+  private buildSnapshot(subscribedSourceCount: number, frames: MediaCoreFrame[]): MediaCoreFrameSourceSnapshot {
+    return {
+      adapterId: this.adapterId,
+      kind: this.kind,
+      status: subscribedSourceCount > 0 ? "subscribed" : "idle",
+      subscribedSourceCount,
+      liveFrameCount: frames.length,
+      staleFrameCount: 0,
+      droppedFrameCount: 0,
+      lowResolutionFrameCount: 0,
+      lastFrameTimestampMs: this.lastFrameTimestampMs,
+      warnings: []
     };
   }
 }

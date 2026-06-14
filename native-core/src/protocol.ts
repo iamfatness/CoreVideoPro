@@ -276,6 +276,11 @@ export type MediaCoreCommand =
       sources: MediaCoreZoomSource[];
     }
   | {
+      type: "set-media-source-adapter";
+      kind: MediaCoreMediaSourceKind;
+      adapterId?: string;
+    }
+  | {
       type: "set-active-speaker";
       participantId?: string;
     }

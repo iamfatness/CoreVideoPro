@@ -2,8 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { initialProduction } from "../domain/production";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import type { NativeHostBridge } from "./nativeHostBridge";
+import type { NativeMediaCoreCommand } from "./nativeMediaCoreProtocol";
 
 describe("media core sync engine", () => {
+  class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
+    runCommands(commands: NativeMediaCoreCommand[], elapsedMs: number) {
+      return this.snapshot(commands, elapsedMs);
+    }
+  }
+
   it("syncs production state into a backend-style media snapshot", async () => {
     const engine = new InMemoryMediaCoreSyncEngine();
     const snapshot = await engine.syncProduction(initialProduction, 1200);
@@ -223,6 +230,56 @@ describe("media core sync engine", () => {
       outputs: ["recording"]
     });
     expect(syncMediaCore).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ type: "load-scene-graph" })]), 2400);
+  });
+
+  it("switches renderer fallback source adapters through media-core commands", () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const snapshot = engine.runCommands(
+      [
+        { type: "set-media-source-adapter", kind: "local-camera", adapterId: "camera-a" },
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              role: "Host",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: true,
+              isScreenSharing: false,
+              audioLevel: 64,
+              health: "live"
+            }
+          ]
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "camera",
+          routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+        }
+      ],
+      1500
+    );
+
+    expect(snapshot).toMatchObject({
+      sourceSnapshot: {
+        adapterId: "camera-a",
+        kind: "local-camera",
+        status: "subscribed"
+      },
+      frames: [{ sourceId: "participant:p1", width: 1920, height: 1080, health: "live" }],
+      diagnostics: {
+        sourceSnapshot: {
+          adapterId: "camera-a",
+          kind: "local-camera"
+        }
+      }
+    });
   });
 
   it("creates recording session metadata when production is recording", async () => {

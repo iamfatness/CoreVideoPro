@@ -17,7 +17,7 @@ import type {
   MediaCoreStateSnapshot,
   MediaCoreZoomSource
 } from "./protocol.js";
-import { TestPatternMediaSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
+import { TestPatternMediaSource, createMediaFrameSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
 import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
 import { ProgramCompositor } from "./compositor.js";
@@ -46,7 +46,7 @@ const DEFAULT_COLOR_GRADE: MediaCoreColorGrade = {
 };
 
 export class MediaCoreRuntime {
-  private readonly mediaSource: MediaFrameSource;
+  private mediaSource: MediaFrameSource;
 
   constructor(mediaSource: MediaFrameSource = new TestPatternMediaSource()) {
     this.mediaSource = mediaSource;
@@ -161,6 +161,13 @@ export class MediaCoreRuntime {
         if (command.sources.length === 0) {
           warnings.push("Zoom source roster is empty.");
         }
+        return;
+      }
+
+      if (command.type === "set-media-source-adapter") {
+        this.mediaSource = createMediaFrameSource(command.kind, command.adapterId);
+        this.frames = [];
+        this.sourceSnapshot = this.mediaSource.snapshot(this.elapsedMs);
         return;
       }
 

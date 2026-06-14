@@ -399,6 +399,43 @@ describe("MediaCoreRuntime", () => {
     });
   });
 
+  it("switches media source adapters through the runtime command protocol", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "source-adapter",
+      type: "sync",
+      commands: [
+        { type: "set-media-source-adapter", kind: "local-camera", adapterId: "camera-a" },
+        commands[0],
+        {
+          type: "load-scene-graph",
+          sceneId: "camera-scene",
+          routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      appliedCommandCount: 3,
+      state: {
+        frames: [{ sourceId: "participant:p1", width: 1920, height: 1080, health: "live" }],
+        sourceSnapshot: {
+          adapterId: "camera-a",
+          kind: "local-camera",
+          status: "subscribed",
+          subscribedSourceCount: 1
+        },
+        diagnostics: {
+          sourceSnapshot: {
+            adapterId: "camera-a",
+            kind: "local-camera"
+          }
+        }
+      }
+    });
+  });
+
   it("exposes encoder lifecycle stops as output health warnings", () => {
     const runtime = new MediaCoreRuntime();
     const response = runtime.handle({

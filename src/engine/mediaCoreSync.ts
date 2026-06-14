@@ -10,6 +10,7 @@ import type {
   NativeMediaCoreEncoderTarget,
   NativeMediaCoreFrame,
   NativeMediaCoreFrameSourceSnapshot,
+  NativeMediaCoreMediaSourceKind,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
   NativeMediaCoreProgramFrame,
@@ -36,6 +37,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private programFrame?: NativeMediaCoreProgramFrame;
   private sourceDroppedFrameCount = 0;
   private sourceLowResolutionFrameCount = 0;
+  private mediaSourceKind: NativeMediaCoreMediaSourceKind = "test-pattern";
+  private mediaSourceAdapterId = "renderer-test-pattern";
   private sourceSnapshot: NativeMediaCoreFrameSourceSnapshot = {
     adapterId: "renderer-test-pattern",
     kind: "test-pattern",
@@ -93,6 +96,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const output = commands.find((command) => command.type === "start-program-output");
     const outputProfile = commands.find((command) => command.type === "set-output-profile");
     const sourceRoster = commands.find((command) => command.type === "set-zoom-source-roster");
+    const sourceAdapter = commands.find((command) => command.type === "set-media-source-adapter");
     const activeSpeaker = commands.find((command) => command.type === "set-active-speaker");
     const screenShareSource = commands.find((command) => command.type === "set-screen-share-source");
     const colorGrade = commands.find((command) => command.type === "set-color-grade");
@@ -105,6 +109,13 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
       this.activeSpeakerId = sourceRoster.sources.find((source) => source.isActiveSpeaker)?.participantId ?? this.activeSpeakerId;
       this.screenShareParticipantId = sourceRoster.sources.find((source) => source.isScreenSharing)?.participantId ?? this.screenShareParticipantId;
+    }
+    if (sourceAdapter) {
+      this.mediaSourceKind = sourceAdapter.kind;
+      this.mediaSourceAdapterId = sourceAdapter.adapterId ?? (sourceAdapter.kind === "test-pattern" ? "renderer-test-pattern" : `renderer-${sourceAdapter.kind}`);
+      this.frameNumbers.clear();
+      this.sourceDroppedFrameCount = 0;
+      this.sourceLowResolutionFrameCount = 0;
     }
     if (activeSpeaker) {
       this.activeSpeakerId = activeSpeaker.participantId;
@@ -244,6 +255,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const sourceId = layer.sourceId ?? layer.layerId;
     const nextFrameNumber = (this.frameNumbers.get(sourceId) ?? 0) + 1;
     this.frameNumbers.set(sourceId, nextFrameNumber);
+    const isStressPattern = this.mediaSourceKind !== "local-camera";
+    const isLowResolution = isStressPattern && index >= 4 && !isScreenShare;
 
     return {
       sourceId,
@@ -251,10 +264,10 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       kind: isScreenShare ? "screen-share" : "participant-video",
       frameNumber: nextFrameNumber,
       timestampMs: elapsedMs,
-      width: isScreenShare ? 1920 : index >= 4 ? 960 : 1280,
-      height: isScreenShare ? 1080 : index >= 4 ? 540 : 720,
+      width: isScreenShare ? 1920 : this.mediaSourceKind === "local-camera" ? 1920 : isLowResolution ? 960 : 1280,
+      height: isScreenShare ? 1080 : this.mediaSourceKind === "local-camera" ? 1080 : isLowResolution ? 540 : 720,
       fps: isScreenShare ? 30 : 60,
-      health: nextFrameNumber % 90 === 0 ? "dropped" : index >= 4 && !isScreenShare ? "low-resolution" : "live"
+      health: isStressPattern && nextFrameNumber % 90 === 0 ? "dropped" : isLowResolution ? "low-resolution" : "live"
     } satisfies NativeMediaCoreFrame;
   }
 
@@ -269,8 +282,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     ].filter(Boolean) as string[];
 
     return {
-      adapterId: "renderer-test-pattern",
-      kind: "test-pattern",
+      adapterId: this.mediaSourceAdapterId,
+      kind: this.mediaSourceKind,
       status: warnings.length ? "degraded" : frames.length > 0 ? "subscribed" : "idle",
       subscribedSourceCount: frames.length,
       liveFrameCount: frames.filter((frame) => frame.health === "live").length,

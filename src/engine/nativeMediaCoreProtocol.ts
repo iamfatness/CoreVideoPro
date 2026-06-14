@@ -54,6 +54,11 @@ export type NativeMediaCoreCommand =
       sources: NativeMediaCoreZoomSource[];
     }
   | {
+      type: "set-media-source-adapter";
+      kind: NativeMediaCoreMediaSourceKind;
+      adapterId?: string;
+    }
+  | {
       type: "set-active-speaker";
       participantId?: string;
     }
