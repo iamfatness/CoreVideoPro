@@ -26,11 +26,20 @@ advance the parked `ZoomMeetingSdkAdapter`.
 1. Build `corevideo-zoom-engine` on the dev machine:
    `-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON -DZOOM_SDK_DIR=…`. Resolve any
    include/link issues from the vendoring.
-2. Frame path: read I420 from the engine's shared memory (port the plugin's read
-   loop from `zoom-source.cpp` `output_video_from_shared_memory`), downscale +
-   convert to RGBA thumbnails (~320×180, 10–15fps/participant), emit over the
-   `onZoomVideoFrame` channel → the renderer's `<canvas>` tiles already consume
-   it (`src/ParticipantVideoCanvas.tsx`, `src/engine/zoomVideoFrames.ts`).
+2. Frame path. **The SDK-free pieces are already built and tested — do NOT
+   re-implement them; call into them:**
+   - `native/src/zoom/ShmFrameReader.h` — `tryReadFrame(base, size, out)` parses
+     the engine's shared-memory frame (`ShmFrameHeader` + Y/U/V) with the
+     lock-free even-sequence read.
+   - `native/src/zoom/I420Convert.h` — `i420ToRgbaThumbnail(...)` downscales +
+     converts to RGBA (~320×180).
+   - `desktop/coreProtocol.ts` — emit the unsolicited `zoom-video-frame`
+     `CoreEvent` (base64 RGBA); the supervisor decodes it into the renderer's
+     `onZoomVideoFrame`, which the `<canvas>` tiles already consume
+     (`src/ParticipantVideoCanvas.tsx`, `src/engine/zoomVideoFrames.ts`).
+   - **Your remaining work here:** in the core, open the engine's shm region for
+     each subscribed participant, `tryReadFrame` → `i420ToRgbaThumbnail` →
+     base64 → emit a `zoom-video-frame` event (~10–15fps/participant).
 3. Join wiring: have `MediaCoreSupervisor` (`desktop/mediaCoreClient.ts`) spawn /
    supervise the engine; translate `ZoomMediaSpineSessionController` join/sync/
    leave into the engine's `ZoomEngineClient` IPC (`init`/`join`/`subscribe`);

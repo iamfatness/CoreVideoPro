@@ -74,8 +74,8 @@ export function parseCoreEvent(line: string): CoreEvent | null {
     return null;
   }
   try {
-    const value = JSON.parse(trimmed) as { type?: string; frame?: ZoomVideoFrameWire };
-    if (value?.type !== "zoom-video-frame" || !value.frame) {
+    const value = JSON.parse(trimmed) as { id?: unknown; type?: string; frame?: ZoomVideoFrameWire };
+    if (value?.id !== undefined || value?.type !== "zoom-video-frame" || !value.frame) {
       return null;
     }
     const { participantId, width, height, frameId, rgba } = value.frame;
