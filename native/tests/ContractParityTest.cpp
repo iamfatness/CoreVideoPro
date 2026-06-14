@@ -75,3 +75,42 @@ TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
     expectAllStringsPresent(milestoneBrief, corevideo::core::kCoreRequestTypes);
   }
 }
+
+TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContracts) {
+  const std::string cmakeSource = readRepoFile("native/CMakeLists.txt");
+  const std::string adapterHeader = readRepoFile("native/src/modules/ZoomMeetingSdkAdapter.h");
+  const std::string readinessSource = readRepoFile("src/engine/zoomSdkReadiness.ts");
+  const std::string packageSource = readRepoFile("src/engine/zoomWindowsSdkPackage.ts");
+  ASSERT_FALSE(cmakeSource.empty());
+  ASSERT_FALSE(adapterHeader.empty());
+  ASSERT_FALSE(readinessSource.empty());
+  ASSERT_FALSE(packageSource.empty());
+
+  EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_ZOOM"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_ENABLE_DEV_ADAPTERS"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_ZOOM_SDK_ROOT"), std::string::npos);
+  EXPECT_NE(adapterHeader.find("IZoomMeetingSdkCaptureSource"), std::string::npos);
+  EXPECT_NE(adapterHeader.find("IZoomCaptureSource"), std::string::npos);
+
+  const std::array<std::string_view, 7> requiredPackageFiles = {
+      "bin/sdk.dll",
+      "lib/sdk.lib",
+      "h/zoom_sdk.h",
+      "h/meeting_service_interface.h",
+      "h/rawdata/zoom_rawdata_api.h",
+      "h/rawdata/rawdata_renderer_interface.h",
+      "h/rawdata/rawdata_audio_helper_interface.h",
+  };
+  expectAllStringsPresent(cmakeSource + packageSource, requiredPackageFiles);
+
+  const std::array<std::string_view, 7> readinessChecks = {
+      "sdk-runtime",
+      "app-key",
+      "oauth",
+      "jwt-broker",
+      "raw-video",
+      "raw-audio",
+      "raw-share",
+  };
+  expectAllStringsPresent(readinessSource, readinessChecks);
+}
