@@ -722,4 +722,36 @@ describe("App production controls", () => {
     expect(within(fleet).getByText(/2 live \/ 2 connected/)).toBeInTheDocument();
     expect(within(fleet).getByText("Dual capture live")).toBeInTheDocument();
   });
+
+  it("summarizes NDI/SRT arming readiness as destinations are armed", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const arming = screen.getByLabelText("Arming readiness");
+    expect(within(arming).getByText("2/2 ready - 2 RTMP")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /NDI Program/i }));
+    await user.click(screen.getByRole("button", { name: /SRT Backup/i }));
+    expect(within(arming).getByText("4/4 ready - 2 RTMP, 1 NDI, 1 SRT")).toBeInTheDocument();
+    expect(screen.getByText(/NDI Program will publish on the local network/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("SRT Backup stream key"), { target: { value: "short" } });
+    expect(within(arming).getByText("3/4 ready - 2 RTMP, 1 NDI, 1 SRT")).toBeInTheDocument();
+    expect(within(arming).getByText(/SRT Backup passphrase must be at least 10 characters/i)).toBeInTheDocument();
+  });
+
+  it("shows encoder headroom and upload bandwidth for the selected output profile", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const headroom = screen.getByLabelText("Encoder headroom");
+    expect(within(headroom).getByText("75%")).toBeInTheDocument();
+    expect(within(headroom).getByText("16.4 Mbps")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: /4K 60/i }));
+    expect(within(headroom).getByText("0%")).toBeInTheDocument();
+    expect(within(headroom).getByText(/only 0% encoder headroom/i)).toBeInTheDocument();
+  });
 });
