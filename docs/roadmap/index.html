@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoreVideo Pro — Demo-Driven Roadmap</title>
+<style>
+  :root{
+    --bg:#070914; --bg2:#101528; --panel:#0e1426; --panel2:#131a30;
+    --line:rgba(125,239,255,.16); --text:#f7faff; --muted:#9daac2;
+    --cyan:#22e7e8; --blue:#2aa8ff; --good:#3ad29f; --warn:#f0a85c; --wip:#8b9bd6;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;color:var(--text);line-height:1.6;
+    font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    background:
+      radial-gradient(1100px 620px at 50% -10%,rgba(42,168,255,.10),transparent 60%),
+      radial-gradient(900px 600px at 88% 0%,rgba(34,231,232,.07),transparent 55%),
+      linear-gradient(180deg,var(--bg2),var(--bg) 42%) fixed;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{width:min(1080px,calc(100% - 40px));margin:0 auto;padding:48px 0 80px}
+  header.hero{
+    border:1px solid var(--line);border-radius:14px;padding:40px clamp(24px,5vw,56px);
+    background:linear-gradient(135deg,rgba(9,13,27,.96),rgba(12,17,34,.82)),
+      radial-gradient(circle at 12% 20%,rgba(34,231,232,.16),transparent 22rem);
+    box-shadow:0 24px 90px rgba(0,0,0,.5);
+  }
+  .eyebrow{color:var(--cyan);font-size:13px;font-weight:750;letter-spacing:.09em;text-transform:uppercase;margin:0 0 12px}
+  h1{margin:0 0 14px;font-size:clamp(30px,5vw,50px);line-height:1.1}
+  .northstar{font-size:18px;color:#d5def0;max-width:760px;margin:0}
+  .northstar b{color:var(--cyan)}
+  .meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;color:var(--muted);background:rgba(255,255,255,.03)}
+  .chip b{color:var(--text)}
+  h2{font-size:24px;margin:54px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .lead{color:var(--cyan)}
+  .sub{color:var(--muted);margin:0 0 22px;max-width:760px}
+  /* ritual */
+  .ritual{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .ritual div{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:18px 20px}
+  .ritual h3{margin:0 0 6px;font-size:15px;color:var(--text)}
+  .ritual p{margin:0;color:var(--muted);font-size:14px}
+  /* timeline */
+  .sprint{
+    position:relative;border:1px solid var(--line);border-radius:14px;background:var(--panel);
+    padding:22px clamp(20px,3vw,30px);margin-bottom:18px;overflow:hidden;
+  }
+  .sprint::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,var(--cyan),var(--blue))}
+  .sprint.done::before{background:var(--good)}
+  .sprint.next::before{background:linear-gradient(180deg,var(--cyan),var(--blue));box-shadow:0 0 24px rgba(34,231,232,.5)}
+  .s-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;margin-bottom:6px}
+  .s-tag{font-size:12px;font-weight:750;letter-spacing:.06em;text-transform:uppercase;color:#06111a;background:linear-gradient(135deg,var(--cyan),var(--blue));border-radius:999px;padding:3px 11px}
+  .sprint.done .s-tag{background:var(--good)}
+  .s-title{font-size:20px;font-weight:750;margin:0}
+  .s-week{color:var(--muted);font-size:13px;margin-left:auto}
+  .s-demo{margin:12px 0;padding:12px 16px;border-left:3px solid var(--cyan);background:rgba(34,231,232,.07);border-radius:0 8px 8px 0}
+  .s-demo b{color:var(--cyan)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px 28px;margin-top:8px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .grid2 h4{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  ul{margin:0;padding-left:18px}
+  li{margin-bottom:5px;font-size:14.5px;color:#d6deee}
+  .foot{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+  .pill{font-size:12px;border-radius:999px;padding:4px 11px;border:1px solid var(--line);color:var(--muted)}
+  .pill.owner{color:var(--blue);border-color:rgba(42,168,255,.4)}
+  .pill.risk{color:var(--warn);border-color:rgba(240,168,92,.4)}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:14.5px;margin-top:6px}
+  th,td{text-align:left;border:1px solid var(--line);padding:9px 12px;vertical-align:top}
+  th{background:rgba(34,231,232,.08)}
+  .st{font-weight:750;white-space:nowrap}
+  .st.ok{color:var(--good)} .st.live{color:var(--cyan)} .st.wip{color:var(--wip)}
+  .callout{border:1px solid rgba(240,168,92,.35);background:rgba(240,168,92,.08);border-radius:12px;padding:18px 22px}
+  .callout li{color:#f3e6d4}
+  footer{margin-top:48px;color:var(--muted);font-size:13px;text-align:center}
+  a{color:var(--cyan)}
+  @media print{body{background:#fff;color:#000}.sprint,.ritual div,header.hero{box-shadow:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">CoreVideo Pro · Development Roadmap</p>
+    <h1>Path to our first demo</h1>
+    <p class="northstar">North star for Demo 1: <b>join a real Zoom meeting and see live individual participant feeds in CoreVideo Pro.</b> Every sprint after that adds one demoable layer until we hit the MVP: a Zoom call turned into a recorded, streamed, auto-directed show.</p>
+    <div class="meta">
+      <span class="chip">Cadence: <b>1-week sprints</b></span>
+      <span class="chip">Ritual: <b>demo every Friday</b></span>
+      <span class="chip">Tracks: <b>Agent A · Codex B · dev-machine</b></span>
+      <span class="chip">Status: <b>Sprint 0 complete</b></span>
+    </div>
+  </header>
+
+  <h2><span class="lead">The ritual.</span> How we run each week</h2>
+  <p class="sub">Demos are the heartbeat. Each sprint targets one capability that we can show working in the real Electron app — not a slide, not a passing test.</p>
+  <div class="ritual">
+    <div><h3>🎯 One demoable goal</h3><p>Each sprint commits to a single capability with a written demo script and exit criteria, agreed Monday.</p></div>
+    <div><h3>📺 Friday demo</h3><p>15-minute live run-through against a real (or realistic) scenario. If it can't be demoed live, it isn't done.</p></div>
+    <div><h3>✅ Definition of done</h3><p>Works in the packaged/dev Electron app, reviewed, merged. Tests are necessary but not sufficient.</p></div>
+    <div><h3>🔁 Adjust &amp; commit</h3><p>Re-scope from what we learned, then lock the next sprint's single goal.</p></div>
+  </div>
+
+  <h2><span class="lead">Sprint 0 — done.</span> Foundations &amp; the mocked studio</h2>
+  <p class="sub">The skeleton that everything plugs into is built and merged.</p>
+  <div class="sprint done">
+    <div class="s-head"><span class="s-tag">Shipped</span><h3 class="s-title">Foundations</h3><span class="s-week">complete</span></div>
+    <div class="grid2">
+      <div><h4>What's in</h4>
+        <ul>
+          <li>Full operator console UI on simulated data</li>
+          <li>Electron shell + typed IPC bridge + <code>MediaCoreSupervisor</code> (A-series)</li>
+          <li>Native core skeleton + JSON-RPC + stub modules; gated dev adapters: Zoom SDK, D3D11 compositor, MF encoder, RTMP (B-series)</li>
+          <li>Vendored <b>proven OBS-free Zoom capture engine</b> + renderer frame path (canvas tiles)</li>
+          <li>Zoom media spine orchestration, SDK readiness, capability-gated outputs</li>
+        </ul>
+      </div>
+      <div><h4>Demo it tells</h4>
+        <ul>
+          <li>Click through a fully simulated production: join, Magic Scene, Set &amp; Forget, audio mixer, outputs, diagnostics — proving the whole UI and contract surface.</li>
+          <li>~27k lines of TypeScript + tests; native stub build green in CI.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot"><span class="pill owner">Agent A + Codex B</span><span class="pill">in-container</span></div>
+  </div>
+
+  <h2><span class="lead">The road ahead.</span> One demo per week</h2>
+  <p class="sub">Each card is a sprint: its single goal, the demo we'll show on Friday, what "done" means, who drives it, and the main risk.</p>
+
+  <!-- Sprint 1 -->
+  <div class="sprint next">
+    <div class="s-head"><span class="s-tag">Sprint 1 · NEXT</span><h3 class="s-title">First Live Demo — Join &amp; See Feeds</h3><span class="s-week">week 1</span></div>
+    <div class="s-demo"><b>Demo:</b> join a real Zoom meeting and watch live individual participant tiles appear, with the roster and the active speaker highlighted — in CoreVideo Pro, not OBS.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>Build the vendored capture engine on the dev machine against the Zoom SDK</li>
+        <li>Wire I420 → RGBA thumbnail → IPC push → <code>&lt;canvas&gt;</code> tiles</li>
+        <li>Real join via <code>ZoomMediaSpineSessionController</code>; map roster + active speaker</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>Live video for ≥3 participants, &lt;1s to first frame</li>
+        <li>Roster + active-speaker correct against the real call</li>
+        <li>Runs in the dev Electron app end-to-end</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">Codex B + dev-machine</span><span class="pill risk">Risk: SDK raw-data privilege; first dev build</span></div>
+  </div>
+
+  <!-- Sprint 2 -->
+  <div class="sprint">
+    <div class="s-head"><span class="s-tag">Sprint 2</span><h3 class="s-title">Switch the Show</h3><span class="s-week">week 2</span></div>
+    <div class="s-demo"><b>Demo:</b> build a 2–3 person show live and cut between layouts — grid, speaker focus, PIP — with lower-thirds from real Zoom names.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>Real feeds drive scenes/layouts; preview → Take</li>
+        <li>Magic Scene on live participants</li>
+        <li>Auto lower-thirds from real display names/roles</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>Operator cuts cleanly between ≥3 layouts live</li>
+        <li>Magic Scene produces a sensible show from the call</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">Agent A</span><span class="pill risk">Risk: layout perf with live frames</span></div>
+  </div>
+
+  <!-- Sprint 3 -->
+  <div class="sprint">
+    <div class="s-head"><span class="s-tag">Sprint 3</span><h3 class="s-title">Output It</h3><span class="s-week">week 3</span></div>
+    <div class="s-demo"><b>Demo:</b> record a real 1080p MP4 of the show and/or go live to an RTMP destination.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>GPU compositor renders the program (D3D11 adapter)</li>
+        <li>Record to MP4 via the hardware encoder adapter</li>
+        <li>RTMP push via the output-sender adapter</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>Stable 1080p MP4 plays back clean</li>
+        <li>Live RTMP stream visible on a platform</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">Codex B + dev-machine</span><span class="pill risk">Risk: encoder/compositor on real GPU</span></div>
+  </div>
+
+  <!-- Sprint 4 -->
+  <div class="sprint">
+    <div class="s-head"><span class="s-tag">Sprint 4</span><h3 class="s-title">Make It Sound Right</h3><span class="s-week">week 4</span></div>
+    <div class="s-demo"><b>Demo:</b> a full webinar segment with balanced per-participant audio and real-time captions on the program.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>Engine audio path → program mix</li>
+        <li>Per-source leveling + noise suppression</li>
+        <li>Real-time captions wired to a transcription source</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>Audio balanced without manual riding</li>
+        <li>Captions track the program with usable latency</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">Codex B + Agent A</span><span class="pill risk">Risk: caption latency/cost</span></div>
+  </div>
+
+  <!-- Sprint 5 -->
+  <div class="sprint">
+    <div class="s-head"><span class="s-tag">Sprint 5</span><h3 class="s-title">Run It Hands-Off</h3><span class="s-week">week 5</span></div>
+    <div class="s-demo"><b>Demo:</b> an auto-produced show — screen share + Set &amp; Forget directing the cuts, brand kit applied — with minimal operator input.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>Set &amp; Forget auto-director on live signal</li>
+        <li>Screen-share layout switching</li>
+        <li>Brand kit (logo/color/font) applied automatically</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>A webinar runs itself for a sustained segment</li>
+        <li>Manual override always wins, one-click back to auto</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">Agent A</span><span class="pill risk">Risk: director jitter/holds</span></div>
+  </div>
+
+  <!-- Sprint 6 -->
+  <div class="sprint">
+    <div class="s-head"><span class="s-tag">Sprint 6</span><h3 class="s-title">Ship-Ready</h3><span class="s-week">week 6</span></div>
+    <div class="s-demo"><b>Demo:</b> install the signed app and run a real show end-to-end — meeting the MVP exit criteria.</div>
+    <div class="grid2">
+      <div><h4>Goals</h4><ul>
+        <li>Packaging + code signing (mac/Windows)</li>
+        <li>Crash recovery + diagnostics bundle</li>
+        <li>Beta polish; <i>stretch:</i> local Blackmagic/AJA capture</li>
+      </ul></div>
+      <div><h4>Exit criteria</h4><ul>
+        <li>All MVP exit criteria green (table below)</li>
+        <li>A non-engineer runs a show from a signed install</li>
+      </ul></div>
+    </div>
+    <div class="foot"><span class="pill owner">All tracks</span><span class="pill risk">Risk: signing/notarization</span></div>
+  </div>
+
+  <h2><span class="lead">MVP exit criteria.</span> What "done" means for v1</h2>
+  <p class="sub">From the product spec. Status reflects today.</p>
+  <table>
+    <thead><tr><th>#</th><th>Criterion</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Join Zoom and see clean participant feeds</td><td class="st live">Sprint 1</td></tr>
+      <tr><td>2</td><td>Magic Scene → polished show in &lt;10 min</td><td class="st wip">UI ✓ · live in S2</td></tr>
+      <tr><td>3</td><td>4-person webinar: screen share, lower-thirds, captions, leveling</td><td class="st wip">S2–S4</td></tr>
+      <tr><td>4</td><td>Record a stable 1080p MP4</td><td class="st wip">Sprint 3</td></tr>
+      <tr><td>5</td><td>Stream to RTMP</td><td class="st wip">Sprint 3</td></tr>
+      <tr><td>6</td><td>Set &amp; Forget produces a show unattended</td><td class="st wip">logic ✓ · live in S5</td></tr>
+      <tr><td>7</td><td>Manual overrides always work</td><td class="st ok">✓ built</td></tr>
+      <tr><td>8</td><td>No dependency on OBS</td><td class="st ok">✓ standalone</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="lead">Open decisions &amp; risks.</span> Resolve early</h2>
+  <div class="callout">
+    <ul>
+      <li><b>Converge the two Zoom capture paths.</b> The vendored proven plugin engine vs. Codex's from-scratch <code>ZoomMeetingSdkAdapter</code>. Pick one before Sprint 1 wiring so effort converges — recommendation: ship Demo 1 on the vendored engine.</li>
+      <li><b>Zoom raw-data privilege.</b> Clean per-participant video needs the Meeting SDK raw-data entitlement on the app — confirm it's enabled before Sprint 1.</li>
+      <li><b>Dev machine for native builds.</b> The Zoom SDK / GPU / encoder code can't be built or validated in the CI container — it needs a real Mac/Windows box (Codex building locally).</li>
+      <li><b>CI test flakiness.</b> The full UI test suite hits timeouts in the slow sandbox; CI gates on CodeQL today. Stabilize/segment vitest before relying on it as a gate.</li>
+    </ul>
+  </div>
+
+  <footer>
+    CoreVideo Pro internal roadmap · 1-week sprints, weekly demos · open <code>docs/roadmap/index.html</code> in a browser.<br>
+    CoreVideo and CoreVideo Pro are independent products and are not affiliated with Zoom Video Communications, Inc.
+  </footer>
+
+</div>
+</body>
+</html>
