@@ -3070,3 +3070,51 @@ meter {
   flex: 1;
   font-size: 12px;
 }
+
+/* Loudness normalisation panel */
+.loudness-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #0b1512;
+  border: 1px solid #1e2e28;
+}
+
+.loudness-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.loudness-reading {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #c6d4cc;
+}
+
+.loudness-target {
+  font-size: 12px;
+  color: #5a7a6c;
+}
+
+.loudness-level {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #1a2620;
+  text-transform: capitalize;
+}
+
+.loudness-level.level-ok { color: #4ade80; }
+.loudness-level.level-too-loud { color: #fbbf24; }
+.loudness-level.level-too-quiet { color: #60a5fa; }
+.loudness-level.level-clipping { color: #f87171; }
+
+.loudness-panel.level-clipping { border-color: #7c1f1f; }
+.loudness-panel.level-too-loud { border-color: #7c5c00; }

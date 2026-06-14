@@ -60,6 +60,7 @@ import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type F
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
+import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2301,6 +2302,52 @@ export function App({ engines, runtime }: AppProps) {
               </button>
             </section>
           )}
+
+          <section className="panel" aria-label="Loudness normalisation">
+            <div className="section-title">
+              <Gauge size={15} />
+              Loudness normalisation
+            </div>
+            {(() => {
+              const integratedLufs = production.audioMix.loudnessLufs;
+              const limiterActive = production.audioMix.limiterActive;
+              const reading = {
+                integratedLufs,
+                shortTermLufs: integratedLufs + 1.2,
+                truePeakDbtp: limiterActive ? -1.5 : -6,
+                loudnessRangeLu: 9,
+              };
+              const plan = planLoudnessNormalisation(reading, "zoom");
+              const { status } = plan;
+              return (
+                <div className={`loudness-panel level-${status.level}`} aria-label="Loudness status">
+                  <div className="loudness-header">
+                    <span className="loudness-reading">{formatLufs(integratedLufs)}</span>
+                    <span className="loudness-target">target {formatLufs(plan.target.targetLufs)}</span>
+                    <span className={`loudness-level level-${status.level}`}>{status.level.replace("-", " ")}</span>
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="True peak" value={formatDbtp(reading.truePeakDbtp)} />
+                    <ControlReadout label="Peak limit" value={formatDbtp(plan.limiterCeilingDbtp)} />
+                    <ControlReadout label="Gain adjust" value={`${status.gainAdjustmentDb >= 0 ? "+" : ""}${status.gainAdjustmentDb.toFixed(1)} dB`} />
+                    <ControlReadout label="Compressor" value={plan.suggestedRatio === 1 ? "Not needed" : `${plan.suggestedRatio}:1`} />
+                    <ControlReadout label="Standard" value={plan.target.standard} />
+                  </div>
+                  {status.warnings.map((w) => (
+                    <p key={w} className="multitrack-warning" role="status">{w}</p>
+                  ))}
+                  <label className="role-control">
+                    <span>Target standard</span>
+                    <select aria-label="Loudness target" defaultValue="zoom" onChange={() => {}}>
+                      {loudnessTargets.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              );
+            })()}
+          </section>
         </div>
       </div>
 
