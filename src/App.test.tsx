@@ -1166,6 +1166,33 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("ISO recording plan", () => {
+  it("shows the ISO plan panel with a track summary in Settings > Recording", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    // Seed has p1 + p2 selected → 2 participants + program mix = 3 tracks
+    const plan = screen.getByLabelText("ISO recording plan");
+    expect(plan).toBeInTheDocument();
+    expect(within(plan).getByText(/ISO track/i)).toBeInTheDocument();
+    expect(within(plan).getByText(/Mbps/i)).toBeInTheDocument();
+  });
+
+  it("shows track file names in the ISO plan when feeds are selected", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const plan = screen.getByLabelText("ISO recording plan");
+    // track files should show .mov filenames
+    const tracks = within(plan).getAllByText(/\.mov$/i);
+    expect(tracks.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("loudness normalisation", () => {
   it("shows the loudness panel with reading and target in the Audio tab", async () => {
     const user = userEvent.setup();
