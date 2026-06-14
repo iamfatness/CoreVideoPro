@@ -3513,3 +3513,47 @@ meter {
   color: #8aa0c0;
   margin: 0;
 }
+
+/* Speaker timer */
+.speaker-timer-panel { display: flex; flex-direction: column; gap: 8px; }
+.speaker-timer-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+
+.speaker-timer-list { display: flex; flex-direction: column; gap: 4px; }
+
+.speaker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: #0d1520;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.speaker-row.speaking { border-left: 2px solid #4ade80; }
+.speaker-row.dominant { border-left: 2px solid #60a5fa; }
+
+.speaker-name { flex: 1; color: #c8d8e8; font-weight: 500; }
+.speaker-time { font-family: monospace; color: #60a5fa; min-width: 36px; text-align: right; }
+.speaker-share { color: #4a6070; min-width: 30px; text-align: right; font-size: 10px; }
+
+.speaker-bar-wrap {
+  width: 60px;
+  height: 4px;
+  background: #1a2a3a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.speaker-bar {
+  height: 100%;
+  background: #1a4a7a;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.speaker-row.dominant .speaker-bar { background: #60a5fa; }
+
+.speaker-alert { font-size: 11px; margin: 0; }
+.speaker-alert-warning { color: #fbbf24; }
+.speaker-alert-over-time { color: #f87171; }

@@ -72,6 +72,7 @@ import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markSho
 import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight";
 import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type ClipMarker, type ClipRegion } from "./engine/clipTrimmer";
 import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeChapters, validateChapters, type ChapterList } from "./engine/chapterMarker";
+import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, snapshotTotals, speakerSharePct } from "./engine/speakerTimer";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2171,6 +2172,57 @@ export function App({ engines, runtime }: AppProps) {
                     <ControlReadout label="In preview" value={String(filterByTally(snap, "preview").length)} />
                     <ControlReadout label="Idle" value={String(filterByTally(snap, "idle").length)} />
                   </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Speaker timer">
+            <div className="section-title">
+              <Gauge size={15} />
+              Speaker timer
+            </div>
+            {(() => {
+              const activeSpeakerId = visibleParticipants.find((p) => p.isActiveSpeaker)?.id ?? null;
+              const nowSec = elapsedSeconds;
+              let timerState = createSpeakerTimer(
+                visibleParticipants.map((p) => ({ id: p.id, name: p.name })),
+                300 // 5 min target per speaker
+              );
+              timerState = setActiveSpeaker(timerState, nowSec - 30, activeSpeakerId);
+              timerState = snapshotTotals(timerState, nowSec);
+              const report = buildSpeakerReport(timerState);
+              return (
+                <div className="speaker-timer-panel" aria-label="Speaker timer panel">
+                  <p className="speaker-timer-summary">{report.summary}</p>
+                  <div className="speaker-timer-list">
+                    {report.state.speakers.map((s) => (
+                      <div
+                        key={s.participantId}
+                        className={`speaker-row ${s.participantId === report.dominantSpeakerId ? "dominant" : ""} ${s.isSpeaking ? "speaking" : ""}`}
+                        aria-label={`${s.name} speaker time`}
+                      >
+                        <span className="speaker-name">{s.name}</span>
+                        <span className="speaker-time">{formatSec(s.totalSec)}</span>
+                        <span className="speaker-share">{speakerSharePct(s, report.state.speakers)}%</span>
+                        <div className="speaker-bar-wrap">
+                          <div
+                            className="speaker-bar"
+                            style={{ width: `${speakerSharePct(s, report.state.speakers)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="health-grid">
+                    <ControlReadout label="Balance" value={`${report.balanceScore}%`} />
+                    <ControlReadout label="Alerts" value={String(report.alerts.length)} />
+                  </div>
+                  {report.alerts.map((alert) => (
+                    <p key={alert.participantId} className={`speaker-alert speaker-alert-${alert.severity}`} role="status">
+                      {alert.message}
+                    </p>
+                  ))}
                 </div>
               );
             })()}

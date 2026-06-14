@@ -1512,3 +1512,29 @@ describe("chapter markers", () => {
     expect(within(panel).getByLabelText("Chapter export format")).toBeInTheDocument();
   });
 });
+
+describe("speaker timer", () => {
+  it("shows the speaker timer panel in the Sources tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Speaker timer panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText("Balance")).toBeInTheDocument();
+  });
+
+  it("shows a speaker row for each participant", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Speaker timer panel");
+    const rows = within(panel).getAllByRole("generic").filter(
+      (el) => el.getAttribute("aria-label")?.includes("speaker time")
+    );
+    expect(rows.length).toBeGreaterThan(0);
+  });
+});
