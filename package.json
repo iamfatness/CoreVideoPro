@@ -14,7 +14,9 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:native-core": "npm run test --workspace native-core",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:desktop": "tsc -p desktop/tsconfig.json",
+    "desktop": "node desktop/scripts/launch.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",

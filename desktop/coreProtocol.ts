@@ -1,0 +1,36 @@
+/**
+ * Stdio JSON-RPC wire protocol between the desktop supervisor
+ * (`mediaCoreClient.ts`) and the spawned media-core process (`coreStub.ts`,
+ * later replaced by Track B's native binary). One JSON object per line.
+ *
+ * This is intentionally distinct from the renderer-facing `nativeBridgeProtocol`:
+ * the IPC router translates bridge commands into these core requests.
+ */
+import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+
+export type CoreRequest =
+  | { id: string; type: "handshake" }
+  | { id: string; type: "ping" }
+  | { id: string; type: "media-core-sync"; commands: NativeMediaCoreCommand[]; elapsedMs: number }
+  /** Test-only hook: makes the stub exit non-zero to exercise crash isolation. */
+  | { id: string; type: "__crash" };
+
+export type CoreResponse =
+  | { id: string; ok: true; type: "handshake"; profile: NativeMediaCoreProfile }
+  | { id: string; ok: true; type: "ping" }
+  | { id: string; ok: true; type: "media-core-sync"; snapshot: NativeMediaCoreStateSnapshot }
+  | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed"; message: string } };
+
+/** Parse a single stdio line into a CoreResponse, or null when unparseable. */
+export function parseCoreResponse(line: string): CoreResponse | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(trimmed) as CoreResponse;
+    return typeof value?.id === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
