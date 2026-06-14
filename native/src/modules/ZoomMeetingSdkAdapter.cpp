@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <exception>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -59,6 +60,14 @@ std::optional<uint32_t> parseSdkUserId(const std::string& participantId) {
   } catch (const std::exception&) {
     return std::nullopt;
   }
+}
+
+int videoWidthFor(const std::string& kind) {
+  return kind == "screen-share" ? 1920 : 1280;
+}
+
+int videoHeightFor(const std::string& kind) {
+  return kind == "screen-share" ? 1080 : 720;
 }
 
 std::string sdkErrorName(ZOOMSDK::SDKError error) {
@@ -212,6 +221,8 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     activeSpeakerId_.clear();
     subscriptions_.clear();
     subscriptionStates_.clear();
+    lastPolledVideoFrameCounts_.clear();
+    lastPolledAudioPacketCounts_.clear();
     destroyRenderers();
     if (audioHelper_) {
       (void)audioHelper_->unSubscribe();
@@ -223,6 +234,8 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) override {
     subscriptions_ = requests;
     subscriptionStates_.clear();
+    lastPolledVideoFrameCounts_.clear();
+    lastPolledAudioPacketCounts_.clear();
     destroyRenderers();
     if (audioHelper_) {
       (void)audioHelper_->unSubscribe();
@@ -240,9 +253,17 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
 
     std::vector<VideoFrame> frames;
-    for (const auto& subscription : subscriptions_) {
-      if (subscription.kind == "participant-video" || subscription.kind == "screen-share") {
-        frames.push_back({subscription.participantId, subscription.kind == "screen-share" ? 1920 : 1280, subscription.kind == "screen-share" ? 1080 : 720, ++timestampMs_});
+    for (const auto& state : subscriptionStates()) {
+      const auto& request = state.request;
+      if (state.status != "subscribed" || (request.kind != "participant-video" && request.kind != "screen-share")) {
+        continue;
+      }
+
+      const auto subscriptionId = subscriptionIdFor(request);
+      const auto previousCount = lastPolledVideoFrameCounts_[subscriptionId];
+      if (state.framesReceived > previousCount) {
+        frames.push_back({request.participantId, videoWidthFor(request.kind), videoHeightFor(request.kind), ++timestampMs_});
+        lastPolledVideoFrameCounts_[subscriptionId] = state.framesReceived;
       }
     }
     return frames;
@@ -254,9 +275,17 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
 
     std::vector<AudioFrame> frames;
-    for (const auto& subscription : subscriptions_) {
-      if (subscription.kind == "participant-audio") {
-        frames.push_back({subscription.participantId, 48000, 1, ++timestampMs_});
+    for (const auto& state : subscriptionStates()) {
+      const auto& request = state.request;
+      if (state.status != "subscribed" || request.kind != "participant-audio") {
+        continue;
+      }
+
+      const auto subscriptionId = subscriptionIdFor(request);
+      const auto previousCount = lastPolledAudioPacketCounts_[subscriptionId];
+      if (state.audioPacketsReceived > previousCount) {
+        frames.push_back({request.participantId, 48000, 1, ++timestampMs_});
+        lastPolledAudioPacketCounts_[subscriptionId] = state.audioPacketsReceived;
       }
     }
     return frames;
@@ -530,6 +559,8 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::vector<RendererSubscription> renderers_;
   std::vector<ZoomMeetingSdkSubscriptionRequest> subscriptions_;
   std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates_;
+  std::map<std::string, int64_t> lastPolledVideoFrameCounts_;
+  std::map<std::string, int64_t> lastPolledAudioPacketCounts_;
   std::vector<std::string> warnings_;
 };
 

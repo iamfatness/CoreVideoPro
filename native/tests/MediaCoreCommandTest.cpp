@@ -125,3 +125,31 @@ TEST(ZoomMeetingSdkAdapter, DevGateTracksDeferredRawSubscriptions) {
   EXPECT_TRUE(true);
 #endif
 }
+
+TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions) {
+#if COREVIDEO_WITH_ZOOM
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
+      "sdk-root",
+      "7.0.5",
+      "https://zoom.us",
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+  });
+  ASSERT_NE(source, nullptr);
+
+  source->syncSubscriptions({
+      {"12345", "participant-video", "program", 1},
+      {"12345", "participant-audio", "mix", 2},
+      {"12345", "screen-share", "program", 3},
+  });
+
+  EXPECT_TRUE(source->pollVideoFrames().empty());
+  EXPECT_TRUE(source->pollAudioFrames().empty());
+#else
+  EXPECT_TRUE(true);
+#endif
+}
