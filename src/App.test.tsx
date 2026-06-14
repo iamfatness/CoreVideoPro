@@ -1674,3 +1674,30 @@ describe("cue sheet", () => {
     expect(liveBadges.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("audience Q&A", () => {
+  it("shows the Q&A panel with questions in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Q&A panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Q&A questions")).toBeInTheDocument();
+    expect(within(panel).getAllByRole("button", { name: /Approve/i }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("approves a pending question and reveals it as ready", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Q&A panel");
+    const approveButtons = within(panel).getAllByRole("button", { name: /Approve/i });
+    await user.click(approveButtons[0]);
+
+    expect(within(panel).getAllByText("approved").length).toBeGreaterThanOrEqual(1);
+  });
+});
