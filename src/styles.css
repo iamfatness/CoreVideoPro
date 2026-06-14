@@ -1723,6 +1723,82 @@ meter {
   opacity: 0.58;
 }
 
+.media-core-diagnostics {
+  align-content: start;
+}
+
+.diagnostics-filter {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.diagnostics-filter button {
+  border: 1px solid rgba(189, 207, 196, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a59b;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  min-height: 30px;
+}
+
+.diagnostics-filter button.selected {
+  border-color: rgba(68, 193, 161, 0.58);
+  background: rgba(68, 193, 161, 0.13);
+  color: #f7fbf8;
+}
+
+.event-timeline {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 2px 10px;
+  border-left: 3px solid rgba(189, 207, 196, 0.2);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 8px 9px;
+}
+
+.event-row span {
+  grid-row: span 2;
+  color: #94a59b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-row strong {
+  overflow-wrap: anywhere;
+  color: #f7fbf8;
+  font-size: 12px;
+}
+
+.event-row em {
+  overflow-wrap: anywhere;
+  color: #94a59b;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.event-row-critical {
+  border-color: #ec5757;
+}
+
+.event-row-warning {
+  border-color: #f0a85c;
+}
+
+.event-row-info {
+  border-color: #44c1a1;
+}
+
 .ai-studio-panel {
   display: grid;
   gap: 10px;

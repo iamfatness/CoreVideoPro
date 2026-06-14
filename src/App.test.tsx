@@ -6,7 +6,7 @@ import { createMockEngineBundle, type EngineBundle } from "./engine/engineBundle
 import { mapCaptureSnapshot } from "./engine/captureSnapshotMapper";
 import { InMemoryMediaCoreSyncEngine } from "./engine/mediaCoreSync";
 import type { ProductionState } from "./domain/production";
-import type { NativeMediaCoreOperatorAction } from "./engine/nativeMediaCoreProtocol";
+import type { NativeMediaCoreEvent, NativeMediaCoreOperatorAction } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const mockRuntime: RuntimeEnvironment = {
@@ -114,6 +114,77 @@ describe("App production controls", () => {
     await waitFor(() => expect(executeOperatorAction).toHaveBeenCalledWith(expect.any(Object), action, expect.any(Number)));
     await waitFor(() => expect(nativeCore).toHaveTextContent("ActionNone"));
     expect(screen.getAllByText("Recover RTMP sender executed").length).toBeGreaterThan(0);
+  });
+
+  it("filters media-core diagnostics events by severity and recovery", async () => {
+    const user = userEvent.setup();
+    const events: NativeMediaCoreEvent[] = [
+      {
+        eventId: "critical-sender",
+        atMs: 3000,
+        severity: "critical",
+        area: "sender",
+        title: "RTMP sender failed",
+        detail: "RTMP connection refused.",
+        relatedId: "rtmp",
+        commandType: "fail-output-sender"
+      },
+      {
+        eventId: "warning-route",
+        atMs: 2000,
+        severity: "warning",
+        area: "routing",
+        title: "Media core warning",
+        detail: "Screen share route requested but no active screen share source is available."
+      },
+      {
+        eventId: "info-recovery",
+        atMs: 5000,
+        severity: "info",
+        area: "sender",
+        title: "RTMP sender recovery requested",
+        detail: "RTMP sender recovered from operator action.",
+        relatedId: "rtmp",
+        commandType: "recover-output-sender"
+      }
+    ];
+    class DiagnosticsMediaCoreEngine extends InMemoryMediaCoreSyncEngine {
+      override async syncProduction(state: ProductionState, elapsedMs: number) {
+        const snapshot = await super.syncProduction(state, elapsedMs);
+        return {
+          ...snapshot,
+          eventLog: events,
+          diagnostics: {
+            ...snapshot.diagnostics,
+            eventLog: events
+          }
+        };
+      }
+    }
+    renderApp({
+      ...createMockEngineBundle(),
+      mediaCore: new DiagnosticsMediaCoreEngine()
+    });
+
+    await goToTab(user, "Settings");
+    const diagnostics = await screen.findByLabelText("Media core diagnostics");
+    const timeline = screen.getByLabelText("Media core event timeline");
+    expect(within(diagnostics).getByText("3 events")).toBeInTheDocument();
+    expect(within(timeline).getByText("RTMP sender failed")).toBeInTheDocument();
+    expect(within(timeline).getByText("Media core warning")).toBeInTheDocument();
+    expect(within(timeline).getByText("RTMP sender recovery requested")).toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("Media core diagnostics filter")).getByRole("button", { name: "Critical" }));
+    expect(within(timeline).getByText("RTMP sender failed")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Media core warning")).not.toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("Media core diagnostics filter")).getByRole("button", { name: "Warnings" }));
+    expect(within(timeline).getByText("Media core warning")).toBeInTheDocument();
+    expect(within(timeline).queryByText("RTMP sender failed")).not.toBeInTheDocument();
+
+    await user.click(within(screen.getByLabelText("Media core diagnostics filter")).getByRole("button", { name: "Recovery" }));
+    expect(within(timeline).getByText("RTMP sender recovery requested")).toBeInTheDocument();
+    expect(within(timeline).queryByText("Media core warning")).not.toBeInTheDocument();
   });
 
   it("renders AI Studio show notes and highlight suggestions", async () => {

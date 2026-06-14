@@ -87,7 +87,7 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
-import type { NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
+import type { NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
@@ -107,9 +107,16 @@ const commandLabels = {
 } as const;
 
 type CommandKey = keyof typeof commandLabels;
+type DiagnosticsFilter = "all" | "critical" | "warning" | "recovery";
 
 const participantRoles: ParticipantRole[] = ["Host", "Presenter", "Panelist", "Guest"];
 const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]);
+const diagnosticsFilters: Array<{ id: DiagnosticsFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "critical", label: "Critical" },
+  { id: "warning", label: "Warnings" },
+  { id: "recovery", label: "Recovery" }
+];
 const brandKitFonts: BrandKitFont[] = ["Inter", "Poppins", "Roboto", "Georgia"];
 const lowerThirdStyles: BrandKit["lowerThirdStyle"][] = ["solid", "minimal", "gradient"];
 const captionFontSizes: CaptionFontSize[] = ["small", "medium", "large"];
@@ -180,6 +187,7 @@ export function App({ engines, runtime }: AppProps) {
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
   const [activeTab, setActiveTab] = useState<TabId>("studio");
+  const [diagnosticsFilter, setDiagnosticsFilter] = useState<DiagnosticsFilter>("all");
   const [selectedStreamingPresetId, setSelectedStreamingPresetId] = useState(streamingPresets[0].id);
   const [mediaAssetKind, setMediaAssetKind] = useState<MediaAssetKind>(mediaAssetKinds[0]);
   const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
@@ -249,6 +257,7 @@ export function App({ engines, runtime }: AppProps) {
       bitrateMbps: sessionState?.bitrateMbps ?? 0
     };
   });
+  const mediaCoreEvents = useMemo(() => filterMediaCoreEvents(mediaCoreSnapshot?.eventLog ?? [], diagnosticsFilter), [diagnosticsFilter, mediaCoreSnapshot?.eventLog]);
 
   useEffect(() => {
     let mounted = true;
@@ -1706,6 +1715,28 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Events" value={mediaCoreSnapshot?.eventLog.length ? `${mediaCoreSnapshot.eventLog.length} - ${mediaCoreSnapshot.eventLog.at(-1)?.title}` : "None"} />
               <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
             </div>
+          </section>
+
+          <section className="panel media-core-diagnostics" aria-label="Media core diagnostics">
+            <div className="section-title">
+              <Activity size={15} />
+              Diagnostics
+            </div>
+            <div className="health-grid">
+              <ControlReadout label="Action queue" value={`${mediaCoreSnapshot?.operatorActions.length ?? 0}`} />
+              <ControlReadout label="Timeline" value={`${mediaCoreSnapshot?.eventLog.length ?? 0} events`} />
+            </div>
+            <div className="diagnostics-filter" aria-label="Media core diagnostics filter">
+              {diagnosticsFilters.map((filter) => (
+                <button
+                  className={diagnosticsFilter === filter.id ? "selected" : ""}
+                  key={filter.id}
+                  onClick={() => setDiagnosticsFilter(filter.id)}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
             {mediaCoreSnapshot?.operatorActions.length ? (
               <div className="operator-action-list" aria-label="Media core actions">
                 {mediaCoreSnapshot.operatorActions.map((action) => (
@@ -1724,6 +1755,19 @@ export function App({ engines, runtime }: AppProps) {
                 ))}
               </div>
             ) : null}
+            <div className="event-timeline" aria-label="Media core event timeline">
+              {mediaCoreEvents.length ? (
+                mediaCoreEvents.map((event) => (
+                  <div className={`event-row event-row-${event.severity}`} key={event.eventId}>
+                    <span>{formatEventTime(event.atMs)}</span>
+                    <strong>{event.title}</strong>
+                    <em>{event.detail}</em>
+                  </div>
+                ))
+              ) : (
+                <p className="preset-status">No matching media-core events</p>
+              )}
+            </div>
           </section>
 
           <section className="panel">
@@ -3120,6 +3164,29 @@ function shortResolutionLabel(resolution: string, fps: number) {
 
   const tier = height >= 2160 ? "4K" : `${height}p`;
   return `${tier}${fps}`;
+}
+
+function filterMediaCoreEvents(events: NativeMediaCoreEvent[], filter: DiagnosticsFilter) {
+  const sorted = [...events].sort((left, right) => right.atMs - left.atMs);
+
+  if (filter === "critical") {
+    return sorted.filter((event) => event.severity === "critical");
+  }
+
+  if (filter === "warning") {
+    return sorted.filter((event) => event.severity === "warning");
+  }
+
+  if (filter === "recovery") {
+    return sorted.filter((event) => event.severity === "info" || /recover/i.test(`${event.title} ${event.detail}`));
+  }
+
+  return sorted;
+}
+
+function formatEventTime(atMs: number) {
+  const seconds = Math.max(0, Math.floor(atMs / 1000));
+  return formatElapsed(seconds);
 }
 
 function isEditableTarget(target: EventTarget | null) {
