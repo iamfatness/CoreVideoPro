@@ -61,6 +61,7 @@ import {
   type GraphicOverlay,
   type MediaFrameState,
   type OutputDestination,
+  type OutputHealth,
   type OutputProfile,
   type Participant,
   type ParticipantRole,
@@ -841,6 +842,10 @@ export function App({ engines, runtime }: AppProps) {
   });
 
   const outputProfileBadge = production.outputProfiles.find((profile) => profile.id === production.selectedOutputProfileId);
+  const programResLabel = shortResolutionLabel(
+    outputProfileBadge?.resolution ?? production.output.resolution,
+    outputProfileBadge?.fps ?? production.output.fps
+  );
   const outputProfileReadout = outputProfileBadge
     ? computeOutputProfileReadout(outputProfileBadge, production.outputDestinations)
     : undefined;
@@ -934,7 +939,7 @@ export function App({ engines, runtime }: AppProps) {
           <section className="program-column">
             <div className="program-toolbar">
               <span className="program-label">PROGRAM</span>
-              <span className="badge">{outputProfileBadge?.resolution ?? production.output.resolution}{outputProfileBadge ? outputProfileBadge.fps : production.output.fps}</span>
+              <span className="badge">{programResLabel}</span>
               <span className="badge">16:9</span>
               <div className="program-toolbar-actions">
                 <button
@@ -972,9 +977,10 @@ export function App({ engines, runtime }: AppProps) {
                     LIVE
                   </div>
                 )}
-                <div className={`lower-third position-${production.captionOverlay.lowerThirdPosition}`}>
+                <div className={`lower-third lower-third-bar position-${production.captionOverlay.lowerThirdPosition}`}>
                   <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
-                  <span>{selectedParticipant?.title ?? "Zoom-native production"}</span>
+                  <span className="lower-third-title">{selectedParticipant?.title ?? "Zoom-native production"}</span>
+                  <span className="lower-third-org">{production.brandKit.logoText.split(" ")[0]}</span>
                 </div>
                 {production.captionOverlay.warnings.length > 0 && (
                   <div className="overlay-warning">{production.captionOverlay.warnings[0]}</div>
@@ -1407,7 +1413,7 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Route health" value={previewRouteWarnings[0] ?? "Ready"} />
               <ControlReadout label="Auto director" value={`${production.autoProduction.action} ${production.autoProduction.confidence}%`} />
               <ControlReadout label="Output time" value={formatElapsed(production.outputSession.elapsedSeconds)} />
-              <ControlReadout label="Recording file" value={production.outputSession.recordingFile ? "Active" : "Not recording"} />
+              <ControlReadout label="Recording file" value={production.outputSession.recordingFile ?? "Not recording"} />
               <ControlReadout label="Recording quality" value={production.recordingSettings.quality} />
               <ControlReadout label="Record preflight" value={recordingPreflightStatus} />
               <ControlReadout label="Support bundle" value={supportBundleStatus} />
@@ -2031,31 +2037,56 @@ export function App({ engines, runtime }: AppProps) {
             <span className="connection-dot" />
             OUTPUTS
           </div>
-          <StatusMetric icon={<MonitorUp size={16} />} label="Program" value={`${production.output.resolution} - ${healthLabels.live}`} />
-          <StatusMetric icon={<Radio size={16} />} label="Stream" value={production.streaming ? `${production.output.bitrateMbps} Mbps` : "Idle"} />
-          <StatusMetric icon={<CircleDot size={16} />} label="Record" value={production.outputSession.recordingFile ?? "Not recording"} />
+          <OutputStat label="Program" value={programResLabel} health={production.output.network} />
+          <OutputStat
+            label="Stream"
+            value={production.streaming ? `${programResLabel} ${production.output.bitrateMbps} Mbps` : "Idle"}
+            health={production.streaming ? production.output.network : "idle"}
+          />
+          <OutputStat
+            label="Record"
+            value={production.recording ? programResLabel : "Idle"}
+            health={production.recording ? "good" : "idle"}
+          />
           <div className="mini-stats">
             <MiniStat icon={<Gauge size={14} />} label="CPU" value={cpuLoad} />
             <MiniStat icon={<Activity size={14} />} label="Memory" value={memoryLoad} />
             <MiniStat icon={<HardDrive size={14} />} label="Disk" value={diskLoad} />
-            <StatusMetric icon={<Activity size={16} />} label="Drops" value={`${production.output.droppedFrames}`} />
-            <StatusMetric icon={<Clapperboard size={16} />} label="Live" value={formatElapsed(production.outputSession.elapsedSeconds)} />
+            <div className="stat-readout">
+              <span className="stat-label">Frame Drops</span>
+              <strong>{production.output.droppedFrames} (0.0%)</strong>
+            </div>
+            <div className="stat-readout">
+              <span className="stat-label">Live</span>
+              <strong>{formatElapsed(production.outputSession.elapsedSeconds)}</strong>
+            </div>
           </div>
           <div className="master-audio">
             <div className="master-audio-header">
-              <Volume2 size={14} />
               MASTER AUDIO
-              <span className="lufs-readout">{production.audioMix.loudnessLufs} LUFS</span>
-              <Settings2 size={14} className="decorative-icon" aria-hidden="true" />
+              <span className="db-scale" aria-hidden="true">
+                {[-60, -48, -36, -24, -12, -6, -3, 0].map((tick) => (
+                  <span key={tick}>{tick}</span>
+                ))}
+              </span>
             </div>
             <div className="master-meter" aria-label="Master audio levels">
+              <span className="meter-channel">L</span>
               <div className="meter-bar">
                 <span className="meter-fill" style={{ width: `${masterLevel}%` }} />
               </div>
+            </div>
+            <div className="master-meter" aria-label="Master audio levels right">
+              <span className="meter-channel">R</span>
               <div className="meter-bar">
                 <span className="meter-fill" style={{ width: `${Math.max(0, masterLevel - 4)}%` }} />
               </div>
             </div>
+          </div>
+          <div className="master-volume">
+            <Volume2 size={16} />
+            <span>0.0 dB</span>
+            <Settings2 size={14} className="decorative-icon" aria-hidden="true" />
           </div>
         </div>
       </footer>
@@ -2177,11 +2208,23 @@ function MiniStat({ icon, label, value }: { icon: React.ReactNode; label: string
         <span>{label}</span>
         <strong>{value}%</strong>
       </div>
-      <div className="mini-stat-bar">
-        <span className="mini-stat-fill" style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
-      </div>
+      <svg className="mini-stat-spark" viewBox="0 0 60 16" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points={sparklinePoints(value, label)} />
+      </svg>
     </div>
   );
+}
+
+function sparklinePoints(value: number, seed: string) {
+  const seedNum = seed.split("").reduce((total, char) => total + char.charCodeAt(0), 0);
+  const samples = 12;
+  return Array.from({ length: samples }, (_, index) => {
+    const wave = Math.sin((index / samples) * Math.PI * 2 + seedNum) * 9;
+    const point = Math.min(100, Math.max(0, value + wave));
+    const x = (index / (samples - 1)) * 60;
+    const y = 16 - (point / 100) * 14 - 1;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
 }
 
 function ProgramGraphic({ graphic }: { graphic: GraphicOverlay }) {
@@ -2538,14 +2581,21 @@ function ScenePreview({
   );
 }
 
-function StatusMetric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function OutputStat({
+  label,
+  value,
+  health
+}: {
+  label: string;
+  value: string;
+  health: OutputHealth["network"] | "idle";
+}) {
+  const healthLabel = health === "idle" ? "Idle" : health === "warning" ? "Warning" : "Good";
   return (
-    <div className="status-metric">
-      {icon}
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-      </div>
+    <div className="output-stat">
+      <span className="output-stat-label">{label}</span>
+      <strong className="output-stat-value">{value}</strong>
+      <span className={`output-stat-health health-${health}`}>{healthLabel}</span>
     </div>
   );
 }
@@ -2598,6 +2648,16 @@ function formatElapsed(seconds: number) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   const remainingSeconds = (seconds % 60).toString().padStart(2, "0");
   return `${minutes}:${remainingSeconds}`;
+}
+
+function shortResolutionLabel(resolution: string, fps: number) {
+  const height = Number(resolution.split("x")[1]);
+  if (!Number.isFinite(height)) {
+    return `${resolution} ${fps}fps`;
+  }
+
+  const tier = height >= 2160 ? "4K" : `${height}p`;
+  return `${tier}${fps}`;
 }
 
 function isEditableTarget(target: EventTarget | null) {
