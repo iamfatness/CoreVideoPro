@@ -53,6 +53,10 @@ struct OutputSession {
   std::vector<std::string> destinations;
   std::vector<std::string> isoParticipantIds;
   int64_t encodedFrameCount = 0;
+  std::string encoderName = "software-counting";
+  std::string codec = "h264";
+  int targetBitrateMbps = 10;
+  bool hardwareAccelerated = false;
 };
 
 struct CaptureDeviceInfo {
@@ -106,5 +110,6 @@ struct ModuleSet {
 ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 
 }  // namespace corevideo::modules

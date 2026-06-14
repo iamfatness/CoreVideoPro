@@ -86,6 +86,7 @@ rpc::Json MediaCore::profile() const {
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
+      {"encoder", modules_.encoder->session().encoderName},
       {"maxProgramResolution", "1920x1080"},
       {"maxProgramFps", 30},
       {"maxParticipantFeeds", 6},
@@ -99,6 +100,10 @@ rpc::Json MediaCore::health() const {
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
       {"renderer", modules_.compositor->rendererName()},
+      {"encoder", session.encoderName},
+      {"codec", session.codec},
+      {"targetBitrateMbps", session.targetBitrateMbps},
+      {"hardwareEncoder", session.hardwareAccelerated},
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
@@ -109,17 +114,26 @@ rpc::Json MediaCore::health() const {
 
 rpc::Json MediaCore::sessionState() const {
   const auto session = modules_.encoder->session();
-  return rpc::Json::Object{
+  rpc::Json::Object state{
       {"sceneId", sceneId_},
       {"routeCount", routeCount_},
       {"transformCount", transformCount_},
       {"overlayCount", overlayCount_},
       {"outputs", stringArray(session.destinations)},
       {"isoParticipantIds", stringArray(session.isoParticipantIds)},
+      {"encoder", session.encoderName},
+      {"codec", session.codec},
+      {"hardwareEncoder", session.hardwareAccelerated},
       {"active", session.active},
+      {"encoderSession", encoderSessionState(session)},
       {"health", health()},
       {"profile", profile()},
   };
+  const auto recording = recordingState(session);
+  if (!recording.isNull()) {
+    state.emplace("recording", recording);
+  }
+  return state;
 }
 
 rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const {
@@ -263,6 +277,22 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "start-program-output") {
     startProgramOutput(command);
+  } else if (type == "prepare-encoder-session") {
+    prepareEncoderSession(command);
+  } else if (type == "start-encoder-session") {
+    startEncoderSession(command);
+  } else if (type == "stop-encoder-session") {
+    stopEncoderSession(command);
+  } else if (type == "set-recording-targets") {
+    setRecordingTargets(command);
+  } else if (type == "start-recording-session") {
+    startRecordingSession(command);
+  } else if (type == "stop-recording-session") {
+    stopRecordingSession(command);
+  } else if (type == "fail-recording-session") {
+    failRecordingSession(command);
+  } else if (type == "recover-recording-session") {
+    recoverRecordingSession(command);
   }
   return sessionState();
 }
@@ -283,7 +313,186 @@ void MediaCore::setOverlayAsset(const rpc::Json&) {
 
 void MediaCore::startProgramOutput(const rpc::Json& command) {
   modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
+  if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
+    encoderLifecycleStatus_ = "encoding";
+    encoderLastTransition_ = "Program output encoder session started.";
+  }
   renderSyntheticTick();
+}
+
+void MediaCore::prepareEncoderSession(const rpc::Json& command) {
+  encoderLifecycleStatus_ = "prepared";
+  encoderPreparedAtMs_ = command.get("preparedAtMs") ? command.get("preparedAtMs")->asNumber() : encoderPreparedAtMs_;
+  encoderLastTransition_ = command.getString("reason", "Program output encoder session prepared.");
+}
+
+void MediaCore::startEncoderSession(const rpc::Json& command) {
+  encoderLifecycleStatus_ = "encoding";
+  encoderStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : encoderStartedAtMs_;
+  encoderLastTransition_ = "Program output encoder session started.";
+}
+
+void MediaCore::stopEncoderSession(const rpc::Json& command) {
+  encoderLifecycleStatus_ = "stopped";
+  encoderStoppedAtMs_ = command.get("stoppedAtMs") ? command.get("stoppedAtMs")->asNumber() : encoderStoppedAtMs_;
+  encoderLastTransition_ = command.getString("reason", "Program output encoder session stopped.");
+}
+
+void MediaCore::setRecordingTargets(const rpc::Json& command) {
+  recordingTargetFolder_ = command.getString("targetFolder", recordingTargetFolder_);
+  recordingFilenamePrefix_ = command.getString("filenamePrefix", recordingFilenamePrefix_);
+  recordingFormat_ = command.getString("format", recordingFormat_);
+  recordingQuality_ = command.getString("quality", recordingQuality_);
+  if (command.get("isoParticipantIds")) {
+    recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
+  }
+}
+
+void MediaCore::startRecordingSession(const rpc::Json& command) {
+  setRecordingTargets(command);
+  recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
+  recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
+  recordingElapsedMs_ = 0;
+  recordingStatus_ = "recording";
+  recordingWriterStatus_ = "writing";
+  recordingError_.clear();
+  recordingWarning_.clear();
+  if (encoderLifecycleStatus_ != "encoding") {
+    encoderLifecycleStatus_ = "encoding";
+    encoderLastTransition_ = "Recording session started encoder.";
+  }
+  renderSyntheticTick();
+}
+
+void MediaCore::stopRecordingSession(const rpc::Json& command) {
+  recordingStatus_ = "stopped";
+  recordingWriterStatus_ = "stopped";
+  recordingWarning_ = command.getString("reason", "");
+}
+
+void MediaCore::failRecordingSession(const rpc::Json& command) {
+  recordingStatus_ = "failed";
+  recordingWriterStatus_ = "failed";
+  recordingError_ = command.getString("message", "Recording writer failed.");
+}
+
+void MediaCore::recoverRecordingSession(const rpc::Json& command) {
+  recordingStatus_ = recordingWarning_.empty() ? "recording" : "warning";
+  recordingWriterStatus_ = recordingWarning_.empty() ? "writing" : "warning";
+  recordingError_.clear();
+  recordingWarning_ = command.getString("reason", recordingWarning_);
+}
+
+rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) const {
+  rpc::Json::Array targets;
+  for (const auto& destination : session.destinations) {
+    targets.emplace_back(rpc::Json::Object{
+        {"targetId", destination + ":program"},
+        {"destination", destination},
+        {"streamKind", "program"},
+        {"status", encoderLifecycleStatus_ == "encoding" ? "attached" : "idle"},
+        {"attachedFrameCount", static_cast<double>(session.encodedFrameCount)},
+    });
+    if (destination == "recording") {
+      for (const auto& participantId : session.isoParticipantIds) {
+        targets.emplace_back(rpc::Json::Object{
+            {"targetId", "recording:iso:" + participantId},
+            {"destination", "recording"},
+            {"streamKind", "iso"},
+            {"participantId", participantId},
+            {"status", encoderLifecycleStatus_ == "encoding" ? "attached" : "idle"},
+            {"attachedFrameCount", static_cast<double>(session.encodedFrameCount)},
+        });
+      }
+    }
+  }
+
+  rpc::Json::Object lifecycle{
+      {"status", encoderLifecycleStatus_},
+      {"lastTransition", encoderLastTransition_},
+  };
+  if (encoderPreparedAtMs_ > 0) {
+    lifecycle.emplace("preparedAtMs", encoderPreparedAtMs_);
+  }
+  if (encoderStartedAtMs_ > 0) {
+    lifecycle.emplace("startedAtMs", encoderStartedAtMs_);
+  }
+  if (encoderStoppedAtMs_ > 0) {
+    lifecycle.emplace("stoppedAtMs", encoderStoppedAtMs_);
+  }
+
+  const bool warning = session.active && encoderLifecycleStatus_ != "encoding";
+  return rpc::Json::Object{
+      {"status", warning ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
+      {"renderPlanId", lastProgramFrame_.renderPlanId},
+      {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
+      {"targets", targets},
+      {"lifecycle", lifecycle},
+      {"warnings", warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{}},
+  };
+}
+
+rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
+  if (recordingSessionId_.empty() && recordingStatus_ == "stopped") {
+    return nullptr;
+  }
+
+  const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
+  rpc::Json::Array streams{
+      rpc::Json::Object{
+          {"kind", "program"},
+          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+          {"status", recordingWriterStatus_},
+          {"expectedFrames", static_cast<double>(recordingProgramFramesWritten_ + recordingDroppedFrames_)},
+          {"framesWritten", static_cast<double>(recordingProgramFramesWritten_)},
+          {"missingFrames", 0},
+          {"droppedFrames", static_cast<double>(recordingDroppedFrames_)},
+          {"bytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 260000)},
+      },
+  };
+  for (const auto& participantId : isoIds) {
+    streams.emplace_back(rpc::Json::Object{
+        {"kind", "iso"},
+        {"participantId", participantId},
+        {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
+        {"status", recordingWriterStatus_},
+        {"readiness", "ready"},
+        {"framesWritten", static_cast<double>(recordingProgramFramesWritten_)},
+        {"bytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 140000)},
+    });
+  }
+
+  rpc::Json::Object recording{
+      {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
+      {"active", recordingStatus_ == "recording" || recordingStatus_ == "warning"},
+      {"status", recordingStatus_},
+      {"writerStatus", recordingWriterStatus_},
+      {"startedAtMs", recordingStartedAtMs_},
+      {"elapsedMs", recordingElapsedMs_},
+      {"targetFolder", recordingTargetFolder_},
+      {"filenamePrefix", recordingFilenamePrefix_},
+      {"format", recordingFormat_},
+      {"quality", recordingQuality_},
+      {"encoder",
+       rpc::Json::Object{
+           {"codec", session.codec},
+           {"hardwareAccelerated", session.hardwareAccelerated},
+           {"targetBitrateMbps", session.targetBitrateMbps},
+       }},
+      {"estimatedDiskRateMBps", 4.99},
+      {"programPath", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
+      {"streams", streams},
+      {"totalFramesWritten", static_cast<double>(recordingProgramFramesWritten_ + recordingIsoFramesWritten_)},
+      {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
+      {"totalBytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000)},
+  };
+  if (!recordingError_.empty()) {
+    recording.emplace("error", recordingError_);
+  }
+  if (!recordingWarning_.empty()) {
+    recording.emplace("warning", recordingWarning_);
+  }
+  return recording;
 }
 
 void MediaCore::renderSyntheticTick() {
@@ -310,6 +519,13 @@ void MediaCore::renderSyntheticTick() {
   }
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   modules_.encoder->submit(lastProgramFrame_);
+  if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
+    ++recordingProgramFramesWritten_;
+    const auto session = modules_.encoder->session();
+    const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
+    recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
+    recordingElapsedMs_ += 33;
+  }
 }
 
 }  // namespace corevideo::core

@@ -57,6 +57,10 @@ class CountingEncoderSink final : public IEncoderSink {
     session_.active = true;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds;
+    session_.encoderName = "software-counting";
+    session_.codec = "h264";
+    session_.targetBitrateMbps = 10;
+    session_.hardwareAccelerated = false;
     return session_;
   }
 
@@ -98,6 +102,9 @@ ModuleSet createDefaultModules() {
   auto modules = createStubModules();
   if (auto compositor = createD3D11Compositor()) {
     modules.compositor = std::move(compositor);
+  }
+  if (auto encoder = createMediaFoundationEncoderSink()) {
+    modules.encoder = std::move(encoder);
   }
   return modules;
 }
