@@ -18,6 +18,12 @@ import type {
   NativeMediaCoreRenderPlan,
   NativeMediaCoreStateSnapshot
 } from "../src/engine/nativeMediaCoreProtocol";
+import type {
+  ZoomMediaSpineNativeSnapshot,
+  ZoomMediaSpineNativeSubscription,
+  ZoomMediaSpineSubscriptionStatus
+} from "../src/engine/zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
 const DEFAULT_OUTPUT_PROFILE: NativeMediaCoreOutputProfile = {
   profileId: "1080p60",
@@ -223,5 +229,63 @@ export function synthesizeSnapshot(
     diagnostics,
     lastCommandTypes,
     warnings: []
+  };
+}
+
+/**
+ * Synthetic Zoom media spine snapshot for the Node stub core. Mirrors the
+ * structure of buildFallbackZoomMediaSpineSnapshot but originates from the
+ * child-process side so the renderer knows it came from the native path.
+ */
+export function synthesizeSpineSnapshot(
+  payload: ZoomMediaSpineSyncPayload,
+  elapsedMs: number
+): ZoomMediaSpineNativeSnapshot {
+  const participantsById = new Map(payload.participants.map((p) => [p.sdkUserId, p]));
+  const subscriptions: ZoomMediaSpineNativeSubscription[] = payload.subscriptions.map((sub) => {
+    const participant = participantsById.get(sub.participantId);
+    const videoOff =
+      participant && (sub.kind === "participant-video" || sub.kind === "screen-share") && !participant.videoOn;
+    const status: ZoomMediaSpineSubscriptionStatus = videoOff ? "failed" : "subscribed";
+    const isAudio = sub.kind === "participant-audio";
+    return {
+      ...sub,
+      subscriptionId: `${sub.kind}:${sub.participantId}:${sub.purpose}`,
+      displayName: participant?.displayName,
+      status,
+      lastResultCode: videoOff ? "video-off" : "ok",
+      deliveredWidth: sub.kind === "screen-share" ? 1920 : 1280,
+      deliveredHeight: sub.kind === "screen-share" ? 1080 : 720,
+      deliveredFps: 30,
+      framesReceived: isAudio || videoOff ? 0 : Math.max(1, Math.floor(elapsedMs / 33)),
+      audioPacketsReceived: isAudio && !videoOff ? Math.max(1, Math.floor(elapsedMs / 20)) : 0
+    };
+  });
+
+  const activeSpeaker = payload.participants.find((p) => p.talking);
+  const screenShare = payload.participants.find((p) => p.sharingScreen);
+  const subscribedFeeds = subscriptions.filter(
+    (s) => s.status !== "failed" && s.kind === "participant-video"
+  ).length;
+  const totalAudioPackets = subscriptions.reduce((t, s) => t + s.audioPacketsReceived, 0);
+
+  return {
+    meetingState: payload.blocked ? "error" : "in-meeting",
+    sdkVersion: payload.readiness.sdkVersion,
+    participantCount: payload.participants.length,
+    activeSpeakerId: activeSpeaker?.sdkUserId,
+    screenShareParticipantId: screenShare?.sdkUserId,
+    participants: payload.participants,
+    subscriptions,
+    recording: {
+      evidence: {
+        programFramesWritten: subscribedFeeds > 0 ? Math.max(1, Math.floor(elapsedMs / 33)) : 0,
+        isoFramesWritten: 0,
+        audioPacketsObserved: totalAudioPackets,
+        subscribedVideoFeeds: subscribedFeeds
+      }
+    },
+    warnings: [...payload.warnings],
+    events: ["zoom-media-spine-sync accepted by Node stub core.", payload.summary]
   };
 }

@@ -8,7 +8,7 @@
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
-import { SYNTHETIC_PROFILE, synthesizeSnapshot } from "./syntheticMediaCore.ts";
+import { SYNTHETIC_PROFILE, synthesizeSnapshot, synthesizeSpineSnapshot } from "./syntheticMediaCore.ts";
 
 let frameNumber = 0;
 
@@ -40,6 +40,18 @@ export function handleCoreRequest(raw: string): CoreResponse | null {
         ok: true,
         type: "media-core-sync",
         snapshot: synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber)
+      };
+    }
+    case "zoom-media-spine-sync": {
+      const spine = request as Extract<CoreRequest, { type: "zoom-media-spine-sync" }>;
+      if (!spine.spinePayload || typeof spine.elapsedMs !== "number") {
+        return { id: request.id, ok: false, error: { code: "invalid-request", message: "zoom-media-spine-sync needs spinePayload and elapsedMs." } };
+      }
+      return {
+        id: request.id,
+        ok: true,
+        type: "zoom-media-spine-sync",
+        spineSnapshot: synthesizeSpineSnapshot(spine.spinePayload, spine.elapsedMs)
       };
     }
     case "__crash":

@@ -8,10 +8,13 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { NativeBridgeCommand, NativeBridgeResponse } from "../src/engine/nativeBridgeProtocol";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
 const mediaCoreProfile = (ipcRenderer.sendSync("corevideo:handshake") as NativeMediaCoreProfile | null) ?? undefined;
 
 let syncCounter = 0;
+let spineCounter = 0;
 
 function request(command: NativeBridgeCommand): Promise<NativeBridgeResponse> {
   return ipcRenderer.invoke("corevideo:request", command) as Promise<NativeBridgeResponse>;
@@ -27,10 +30,21 @@ async function syncMediaCore(commands: NativeMediaCoreCommand[], elapsedMs: numb
   throw new Error(`media-core sync failed: ${message}`);
 }
 
+async function syncZoomMediaSpine(spinePayload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot> {
+  spineCounter += 1;
+  const response = await request({ id: `zoom-media-spine-sync-${spineCounter}`, type: "zoom-media-spine-sync", payload: { spinePayload, elapsedMs } });
+  if (response.ok && "spineSnapshot" in response) {
+    return response.spineSnapshot;
+  }
+  const message = response.ok ? "Bridge returned a non-spine-snapshot response." : response.error.message;
+  throw new Error(`zoom-media-spine sync failed: ${message}`);
+}
+
 contextBridge.exposeInMainWorld("coreVideoNative", {
   host: "electron",
   platform: process.platform,
   mediaCoreProfile,
   request,
-  syncMediaCore
+  syncMediaCore,
+  syncZoomMediaSpine
 });

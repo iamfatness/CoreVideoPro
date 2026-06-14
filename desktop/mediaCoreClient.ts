@@ -9,6 +9,8 @@ import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
 import { parseCoreResponse } from "./coreProtocol.ts";
 
@@ -99,6 +101,15 @@ export class MediaCoreSupervisor {
     }
     const message = response.ok ? "Unexpected response type." : response.error.message;
     throw new Error(`media-core sync failed: ${message}`);
+  }
+
+  async syncZoomMediaSpine(spinePayload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot> {
+    const response = await this.send({ id: this.createId(), type: "zoom-media-spine-sync", spinePayload, elapsedMs });
+    if (response.ok && response.type === "zoom-media-spine-sync") {
+      return response.spineSnapshot;
+    }
+    const message = response.ok ? "Unexpected response type." : response.error.message;
+    throw new Error(`zoom-media-spine sync failed: ${message}`);
   }
 
   /** Test hook: ask the core to crash, exercising restart. */

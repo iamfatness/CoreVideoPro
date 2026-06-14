@@ -18,11 +18,15 @@ import { buildNativeMediaCoreCommands } from "../src/engine/nativeMediaCoreComma
 import { describeRuntimeEnvironment } from "../src/engine/runtimeEnvironment";
 import {
   attachBridgeMediaCoreSync,
+  attachBridgeZoomMediaSpineSync,
   handshakeMediaCoreThroughBridge,
   syncMediaCoreThroughBridge,
+  syncZoomMediaSpineThroughBridge,
   type NativeHostBridge
 } from "../src/engine/nativeHostBridge";
 import { initialProduction } from "../src/domain/production";
+import { buildZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { ZoomSdkReadinessInput } from "../src/engine/zoomSdkReadiness";
 
 let active: MediaCoreSupervisor | undefined;
 
@@ -46,6 +50,7 @@ async function bootBridge(): Promise<NativeHostBridge> {
     request: (command) => route(command)
   };
   attachBridgeMediaCoreSync(bridge);
+  attachBridgeZoomMediaSpineSync(bridge);
   return bridge;
 }
 
@@ -84,5 +89,49 @@ describe("desktop integration gate", () => {
     const commands = buildNativeMediaCoreCommands(initialProduction);
     const snapshot = await bridge.syncMediaCore!(commands, 3000);
     expect(snapshot.compositor.status).toBe("live");
+  });
+
+  it("A1 gate — Zoom media spine round-trips through Electron→main→core, returning stub-sourced snapshot", async () => {
+    const bridge = await bootBridge();
+
+    const readiness: ZoomSdkReadinessInput = {
+      platform: "windows",
+      sdkRuntimePresent: true,
+      sdkVersion: "6.1.0",
+      appKeyPresent: true,
+      oauthConfigured: true,
+      jwtBrokerConfigured: false,
+      rawVideoEnabled: true,
+      rawAudioEnabled: true,
+      rawShareEnabled: false
+    };
+    const payload = buildZoomMediaSpineSyncPayload(initialProduction, readiness);
+    const spineSnapshot = await syncZoomMediaSpineThroughBridge(bridge, payload, 4000);
+
+    // Response originated from the Node stub (not the renderer fallback).
+    expect(spineSnapshot.events).toContain("zoom-media-spine-sync accepted by Node stub core.");
+    // The stub reflects the participant list from the payload.
+    expect(spineSnapshot.participantCount).toBe(payload.participants.length);
+    // meetingState driven by payload.blocked (subscription plan); either is from the real pipe.
+    expect(["in-meeting", "error"]).toContain(spineSnapshot.meetingState);
+  });
+
+  it("attachBridgeZoomMediaSpineSync wires syncZoomMediaSpine on the bridge", async () => {
+    const bridge = await bootBridge();
+    expect(bridge.syncZoomMediaSpine).toBeDefined();
+    const readiness: ZoomSdkReadinessInput = {
+      platform: "windows",
+      sdkRuntimePresent: true,
+      sdkVersion: "6.1.0",
+      appKeyPresent: true,
+      oauthConfigured: true,
+      jwtBrokerConfigured: false,
+      rawVideoEnabled: true,
+      rawAudioEnabled: true,
+      rawShareEnabled: false
+    };
+    const payload = buildZoomMediaSpineSyncPayload(initialProduction, readiness);
+    const snapshot = await bridge.syncZoomMediaSpine!(payload, 5000);
+    expect(snapshot.events).toContain("zoom-media-spine-sync accepted by Node stub core.");
   });
 });
