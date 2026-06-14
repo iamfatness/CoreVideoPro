@@ -2,10 +2,14 @@
 
 #include "rpc/Json.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "engine-ipc.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace corevideo::modules {
@@ -20,6 +24,30 @@ std::uint32_t uintField(const Json& object, const std::string& key) {
   }
   const auto number = value->asNumber();
   return number > 0 ? static_cast<std::uint32_t>(number) : 0;
+}
+
+std::uint8_t clampByte(int value) {
+  return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
+}
+
+void i420ToRgbaPixel(
+    const std::uint8_t* yPlane,
+    const std::uint8_t* uPlane,
+    const std::uint8_t* vPlane,
+    std::uint32_t sourceWidth,
+    std::uint32_t sourceX,
+    std::uint32_t sourceY,
+    std::uint8_t* rgba) {
+  const int y = static_cast<int>(yPlane[sourceY * sourceWidth + sourceX]);
+  const int u = static_cast<int>(uPlane[(sourceY / 2) * (sourceWidth / 2) + (sourceX / 2)]);
+  const int v = static_cast<int>(vPlane[(sourceY / 2) * (sourceWidth / 2) + (sourceX / 2)]);
+  const int c = y - 16;
+  const int d = u - 128;
+  const int e = v - 128;
+  rgba[0] = clampByte((298 * c + 409 * e + 128) >> 8);
+  rgba[1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8);
+  rgba[2] = clampByte((298 * c + 516 * d + 128) >> 8);
+  rgba[3] = 255;
 }
 
 std::string commandLine(Json::Object object) {
@@ -158,6 +186,78 @@ std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t heigh
 
 std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength) {
   return sizeof(ShmAudioHeader) + static_cast<std::size_t>(byteLength);
+}
+
+std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
+    const void* sharedMemory,
+    std::size_t sharedMemorySize,
+    const std::string& sourceUuid,
+    std::uint32_t participantId,
+    std::uint32_t maxWidth,
+    std::uint32_t maxHeight) {
+  if (!sharedMemory || sharedMemorySize < sizeof(ShmFrameHeader) || maxWidth == 0 || maxHeight == 0) {
+    return std::nullopt;
+  }
+
+  ShmFrameHeader before{};
+  std::memcpy(&before, sharedMemory, sizeof(before));
+  if (before.sequence == 0 || (before.sequence & 1u) != 0 || before.width == 0 || before.height == 0) {
+    return std::nullopt;
+  }
+  if ((before.width & 1u) != 0 || (before.height & 1u) != 0) {
+    return std::nullopt;
+  }
+  const std::size_t yLength = static_cast<std::size_t>(before.width) * static_cast<std::size_t>(before.height);
+  if (before.y_len != yLength) {
+    return std::nullopt;
+  }
+  const std::size_t requiredSize = zoomEngineI420FrameByteSize(before.width, before.height);
+  if (sharedMemorySize < requiredSize) {
+    return std::nullopt;
+  }
+
+  const auto* bytes = static_cast<const std::uint8_t*>(sharedMemory);
+  const std::uint8_t* yPlane = bytes + sizeof(ShmFrameHeader);
+  const std::uint8_t* uPlane = yPlane + yLength;
+  const std::uint8_t* vPlane = uPlane + yLength / 4;
+
+  std::uint32_t outputWidth = before.width;
+  std::uint32_t outputHeight = before.height;
+  if (outputWidth > maxWidth || outputHeight > maxHeight) {
+    const double scale = (std::min)(
+        static_cast<double>(maxWidth) / static_cast<double>(before.width),
+        static_cast<double>(maxHeight) / static_cast<double>(before.height));
+    outputWidth = (std::max)(std::uint32_t{1}, static_cast<std::uint32_t>(std::floor(before.width * scale)));
+    outputHeight = (std::max)(std::uint32_t{1}, static_cast<std::uint32_t>(std::floor(before.height * scale)));
+  }
+
+  ZoomEngineRgbaFrame frame;
+  frame.sourceUuid = sourceUuid;
+  frame.participantId = std::to_string(participantId);
+  frame.width = outputWidth;
+  frame.height = outputHeight;
+  frame.frameId = before.sequence;
+  frame.rgba.resize(static_cast<std::size_t>(outputWidth) * static_cast<std::size_t>(outputHeight) * 4);
+
+  for (std::uint32_t y = 0; y < outputHeight; ++y) {
+    const std::uint32_t sourceY = (std::min)(before.height - 1, static_cast<std::uint32_t>(
+        (static_cast<std::uint64_t>(y) * before.height) / outputHeight));
+    for (std::uint32_t x = 0; x < outputWidth; ++x) {
+      const std::uint32_t sourceX = (std::min)(before.width - 1, static_cast<std::uint32_t>(
+          (static_cast<std::uint64_t>(x) * before.width) / outputWidth));
+      auto* rgba = frame.rgba.data() + (static_cast<std::size_t>(y) * outputWidth + x) * 4;
+      i420ToRgbaPixel(yPlane, uPlane, vPlane, before.width, sourceX, sourceY, rgba);
+    }
+  }
+
+  ShmFrameHeader after{};
+  std::memcpy(&after, sharedMemory, sizeof(after));
+  if (after.sequence != before.sequence || (after.sequence & 1u) != 0 || after.width != before.width ||
+      after.height != before.height || after.y_len != before.y_len) {
+    return std::nullopt;
+  }
+
+  return frame;
 }
 
 }  // namespace corevideo::modules

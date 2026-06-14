@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace corevideo::modules {
 
@@ -61,6 +62,15 @@ struct ZoomEngineEvent {
   bool ok = false;
 };
 
+struct ZoomEngineRgbaFrame {
+  std::string sourceUuid;
+  std::string participantId;
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t frameId = 0;
+  std::vector<std::uint8_t> rgba;
+};
+
 std::string buildZoomEngineInitCommand(const ZoomEngineInitCommand& command);
 std::string buildZoomEngineJoinCommand(const ZoomEngineJoinCommand& command);
 std::string buildZoomEngineLeaveCommand();
@@ -77,5 +87,12 @@ std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid);
 std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid);
 std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t height);
 std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength);
+std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
+    const void* sharedMemory,
+    std::size_t sharedMemorySize,
+    const std::string& sourceUuid,
+    std::uint32_t participantId,
+    std::uint32_t maxWidth,
+    std::uint32_t maxHeight);
 
 }  // namespace corevideo::modules

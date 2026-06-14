@@ -1,7 +1,13 @@
 #include "modules/ZoomEngineClient.h"
 #include "rpc/Json.h"
 
+#include "engine-ipc.h"
+
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace {
 
@@ -9,6 +15,24 @@ corevideo::rpc::Json parseCommand(const std::string& line) {
   auto parsed = corevideo::rpc::Json::parse(line);
   EXPECT_TRUE(parsed.has_value());
   return parsed.value_or(nullptr);
+}
+
+std::vector<std::uint8_t> makeI420SharedMemory(std::uint32_t width, std::uint32_t height, std::uint8_t y, std::uint8_t u, std::uint8_t v) {
+  const auto size = corevideo::modules::zoomEngineI420FrameByteSize(width, height);
+  std::vector<std::uint8_t> memory(size);
+  ShmFrameHeader header{};
+  header.sequence = 2;
+  header.width = width;
+  header.height = height;
+  header.y_len = width * height;
+  std::memcpy(memory.data(), &header, sizeof(header));
+  auto* yPlane = memory.data() + sizeof(ShmFrameHeader);
+  auto* uPlane = yPlane + header.y_len;
+  auto* vPlane = uPlane + header.y_len / 4;
+  std::fill(yPlane, yPlane + header.y_len, y);
+  std::fill(uPlane, uPlane + header.y_len / 4, u);
+  std::fill(vPlane, vPlane + header.y_len / 4, v);
+  return memory;
 }
 
 }  // namespace
@@ -124,4 +148,40 @@ TEST(ZoomEngineClient, MirrorsSharedMemoryNamesAndSizes) {
   EXPECT_EQ(corevideo::modules::zoomEngineAudioSharedMemoryName("source-123"), "ZoomObsPlugin_source-123_audio");
   EXPECT_EQ(corevideo::modules::zoomEngineI420FrameByteSize(1280, 720), static_cast<std::size_t>(16 + 1280 * 720 + 1280 * 720 / 2));
   EXPECT_EQ(corevideo::modules::zoomEnginePcmAudioByteSize(960), static_cast<std::size_t>(16 + 960));
+}
+
+TEST(ZoomEngineClient, ReadsI420SharedMemoryIntoRgbaThumbnail) {
+  auto memory = makeI420SharedMemory(4, 2, 235, 128, 128);
+  const auto frame = corevideo::modules::readZoomEngineI420FrameSnapshot(
+      memory.data(),
+      memory.size(),
+      "source-123",
+      42,
+      2,
+      2);
+
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_EQ(frame->sourceUuid, "source-123");
+  EXPECT_EQ(frame->participantId, "42");
+  EXPECT_EQ(frame->width, 2u);
+  EXPECT_EQ(frame->height, 1u);
+  EXPECT_EQ(frame->frameId, 2u);
+  ASSERT_TRUE(frame->rgba.size() == 8u);
+  EXPECT_TRUE(frame->rgba[0] >= 250);
+  EXPECT_TRUE(frame->rgba[1] >= 250);
+  EXPECT_TRUE(frame->rgba[2] >= 250);
+  EXPECT_EQ(frame->rgba[3], 255);
+}
+
+TEST(ZoomEngineClient, RejectsIncompleteOrInProgressSharedMemoryFrames) {
+  auto memory = makeI420SharedMemory(4, 2, 16, 128, 128);
+  EXPECT_FALSE(corevideo::modules::readZoomEngineI420FrameSnapshot(memory.data(), sizeof(ShmFrameHeader) + 1, "source", 1, 4, 2).has_value());
+
+  auto* header = reinterpret_cast<ShmFrameHeader*>(memory.data());
+  header->sequence = 3;
+  EXPECT_FALSE(corevideo::modules::readZoomEngineI420FrameSnapshot(memory.data(), memory.size(), "source", 1, 4, 2).has_value());
+
+  header->sequence = 4;
+  header->y_len = 1;
+  EXPECT_FALSE(corevideo::modules::readZoomEngineI420FrameSnapshot(memory.data(), memory.size(), "source", 1, 4, 2).has_value());
 }
