@@ -8,6 +8,7 @@ import type {
   NativeMediaCoreEncoderLifecycle,
   NativeMediaCoreEncoderSession,
   NativeMediaCoreEncoderTarget,
+  NativeMediaCoreEvent,
   NativeMediaCoreFrame,
   NativeMediaCoreFrameSourceSnapshot,
   NativeMediaCoreMediaSourceKind,
@@ -26,6 +27,8 @@ import type {
 } from "./nativeMediaCoreProtocol";
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
 import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions";
+
+const MAX_EVENT_LOG_LENGTH = 80;
 
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
@@ -66,6 +69,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     lastTransition: "Encoder session idle."
   };
   private readonly outputSenders = new Map<"rtmp" | "ndi" | "srt" | "webrtc", NativeMediaCoreOutputSender>();
+  private readonly eventLog: NativeMediaCoreEvent[] = [];
+  private readonly seenEventKeys = new Set<string>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -240,6 +245,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         recording?.error
       ].filter(Boolean) as string[])
     ];
+    this.addWarningsAsEvents(allWarnings, elapsedMs);
 
     return {
       sceneId: sceneGraph?.sceneId,
@@ -264,6 +270,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       encoderSession,
       recording,
       operatorActions,
+      eventLog: [...this.eventLog],
       diagnostics: {
         generatedAtMs: elapsedMs,
         sceneId: sceneGraph?.sceneId,
@@ -282,6 +289,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         encoderSession,
         recording,
         operatorActions,
+        eventLog: [...this.eventLog],
         warnings: allWarnings,
         lastCommandTypes: commands.map((command) => command.type)
       },
@@ -356,6 +364,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
 
       if (command.type === "recover-recording-session") {
         this.recoverRecording(command.recoveredAtMs ?? elapsedMs);
+        this.addEvent("info", "recording", "Recording writer recovery requested", command.reason ?? "Recording writer recovered.", command.type, this.recording?.sessionId, command.recoveredAtMs ?? elapsedMs);
       }
     });
 
@@ -467,6 +476,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       this.recording.streams.forEach((stream) => {
         stream.status = "failed";
       });
+      this.addEvent("critical", "recording", "Recording writer failed", message, "fail-recording-session", this.recording.sessionId, elapsedMs);
     }
   }
 
@@ -636,6 +646,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       bitrateMbps: existing?.bitrateMbps ?? 0,
       warning: message
     });
+    this.addEvent("critical", "sender", `${destination.toUpperCase()} sender failed`, message, "fail-output-sender", destination, elapsedMs);
   }
 
   private recoverOutputSender(destination: "rtmp" | "ndi" | "srt" | "webrtc", elapsedMs: number, reason = `${destination.toUpperCase()} sender recovered.`) {
@@ -653,6 +664,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       bitrateMbps: existing?.bitrateMbps ?? 0,
       warning: reason
     });
+    this.addEvent("info", "sender", `${destination.toUpperCase()} sender recovery requested`, reason, "recover-output-sender", destination, elapsedMs);
   }
 
   private composeProgramFrame(renderPlan: NativeMediaCoreRenderPlan, elapsedMs: number) {
@@ -788,6 +800,42 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       lifecycle: this.encoderLifecycle,
       warnings: [...new Set(warnings)]
     };
+  }
+
+  private addWarningsAsEvents(warnings: string[], elapsedMs: number) {
+    warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning, undefined, undefined, elapsedMs));
+  }
+
+  private addEvent(
+    severity: NativeMediaCoreEvent["severity"],
+    area: NativeMediaCoreEvent["area"],
+    title: string,
+    detail: string,
+    commandType?: NativeMediaCoreCommand["type"],
+    relatedId?: string,
+    atMs = 0
+  ) {
+    const eventKey = `${severity}:${area}:${title}:${detail}:${relatedId ?? ""}`;
+    if (this.seenEventKeys.has(eventKey)) {
+      return;
+    }
+
+    this.seenEventKeys.add(eventKey);
+    this.eventLog.push({
+      eventId: `${atMs}-${this.eventLog.length + 1}-${area}`,
+      atMs,
+      severity,
+      area,
+      title,
+      detail,
+      relatedId,
+      commandType
+    });
+
+    if (this.eventLog.length > MAX_EVENT_LOG_LENGTH) {
+      const removed = this.eventLog.splice(0, this.eventLog.length - MAX_EVENT_LOG_LENGTH);
+      removed.forEach((event) => this.seenEventKeys.delete(`${event.severity}:${event.area}:${event.title}:${event.detail}:${event.relatedId ?? ""}`));
+    }
   }
 }
 

@@ -5,6 +5,9 @@ import type {
   MediaCoreDiagnosticsSnapshot,
   MediaCoreEncoderLifecycle,
   MediaCoreEncoderSession,
+  MediaCoreEvent,
+  MediaCoreEventArea,
+  MediaCoreEventSeverity,
   MediaCoreFrame,
   MediaCoreFrameSourceSnapshot,
   MediaCoreOutputHealth,
@@ -48,6 +51,8 @@ const DEFAULT_COLOR_GRADE: MediaCoreColorGrade = {
   temperature: 0
 };
 
+const MAX_EVENT_LOG_LENGTH = 80;
+
 export class MediaCoreRuntime {
   private mediaSource: MediaFrameSource;
 
@@ -83,6 +88,8 @@ export class MediaCoreRuntime {
     status: "idle",
     lastTransition: "Encoder session idle."
   };
+  private readonly eventLog: MediaCoreEvent[] = [];
+  private readonly seenEventKeys = new Set<string>();
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -137,7 +144,7 @@ export class MediaCoreRuntime {
       if (command.type === "load-scene-graph") {
         this.sceneGraph = command;
         if (command.routes.length === 0) {
-          warnings.push("Scene graph loaded without routes.");
+          this.warn(warnings, "routing", "Scene graph has no routes", "Scene graph loaded without routes.", command.type);
         }
         return;
       }
@@ -145,7 +152,7 @@ export class MediaCoreRuntime {
       if (command.type === "set-participant-transform") {
         this.transforms.set(command.participantId, normalizeTransform(command));
         if (command.crop.width <= 0 || command.crop.height <= 0) {
-          warnings.push(`${command.participantId} transform has an empty crop region.`);
+          this.warn(warnings, "program", "Transform has empty crop", `${command.participantId} transform has an empty crop region.`, command.type, command.participantId);
         }
         return;
       }
@@ -153,7 +160,7 @@ export class MediaCoreRuntime {
       if (command.type === "set-overlay-asset") {
         this.overlays.set(command.overlayId, command);
         if (!command.text && !command.imageUri) {
-          warnings.push(`${command.overlayId} overlay has no text or image asset.`);
+          this.warn(warnings, "program", "Overlay has no asset", `${command.overlayId} overlay has no text or image asset.`, command.type, command.overlayId);
         }
         return;
       }
@@ -163,7 +170,7 @@ export class MediaCoreRuntime {
         this.activeSpeakerId = command.sources.find((source) => source.isActiveSpeaker)?.participantId ?? this.activeSpeakerId;
         this.screenShareParticipantId = command.sources.find((source) => source.isScreenSharing)?.participantId ?? this.screenShareParticipantId;
         if (command.sources.length === 0) {
-          warnings.push("Zoom source roster is empty.");
+          this.warn(warnings, "source", "Zoom roster is empty", "Zoom source roster is empty.", command.type);
         }
         return;
       }
@@ -178,7 +185,7 @@ export class MediaCoreRuntime {
       if (command.type === "set-active-speaker") {
         this.activeSpeakerId = command.participantId;
         if (command.participantId && !this.sources.some((source) => source.participantId === command.participantId)) {
-          warnings.push(`${command.participantId} active speaker is not present in the Zoom source roster.`);
+          this.warn(warnings, "routing", "Active speaker missing", `${command.participantId} active speaker is not present in the Zoom source roster.`, command.type, command.participantId);
         }
         return;
       }
@@ -186,7 +193,7 @@ export class MediaCoreRuntime {
       if (command.type === "set-screen-share-source") {
         this.screenShareParticipantId = command.participantId;
         if (command.participantId && !this.sources.some((source) => source.participantId === command.participantId && source.isScreenSharing)) {
-          warnings.push(`${command.participantId} is not publishing a screen share source.`);
+          this.warn(warnings, "routing", "Screen share source missing", `${command.participantId} is not publishing a screen share source.`, command.type, command.participantId);
         }
         return;
       }
@@ -199,7 +206,7 @@ export class MediaCoreRuntime {
       if (command.type === "set-output-profile") {
         this.outputProfile = normalizeOutputProfile(command);
         if (this.outputProfile.width > 1920 || this.outputProfile.height > 1080) {
-          warnings.push(`${this.outputProfile.resolution} output profile requires 4K-capable GPU encoding.`);
+          this.warn(warnings, "encoder", "4K encoder required", `${this.outputProfile.resolution} output profile requires 4K-capable GPU encoding.`, command.type, this.outputProfile.profileId);
         }
         return;
       }
@@ -216,7 +223,7 @@ export class MediaCoreRuntime {
           };
         }
         if (command.destinations.length === 0) {
-          warnings.push("Program output started without destinations.");
+          this.warn(warnings, "sender", "Output has no destinations", "Program output started without destinations.", command.type);
         }
         return;
       }
@@ -253,19 +260,28 @@ export class MediaCoreRuntime {
 
       if (command.type === "fail-output-sender") {
         this.outputSenderSessionModel.fail(command.destination, command.message, command.failedAtMs ?? this.elapsedMs);
-        warnings.push(command.message);
+        this.warn(warnings, "sender", `${command.destination.toUpperCase()} sender failed`, command.message, command.type, command.destination, "critical");
         return;
       }
 
       if (command.type === "recover-output-sender") {
         this.outputSenderSessionModel.recover(command.destination, command.recoveredAtMs ?? this.elapsedMs, command.reason);
+        this.addEvent(
+          "info",
+          "sender",
+          `${command.destination.toUpperCase()} sender recovery requested`,
+          command.reason ?? `${command.destination.toUpperCase()} sender recovered.`,
+          command.type,
+          command.destination,
+          command.recoveredAtMs ?? this.elapsedMs
+        );
         return;
       }
 
       if (command.type === "set-recording-targets") {
         const recording = this.recordingSink.setTargets(command);
         if (recording?.warning) {
-          warnings.push(recording.warning);
+          this.warn(warnings, "recording", "Recording target warning", recording.warning, command.type, recording.sessionId);
         }
         return;
       }
@@ -273,7 +289,7 @@ export class MediaCoreRuntime {
       if (command.type === "start-recording-session") {
         const recording = this.recordingSink.start(command, command.startedAtMs ?? this.elapsedMs, command.sessionId);
         if (recording?.warning) {
-          warnings.push(recording.warning);
+          this.warn(warnings, "recording", "Recording writer warning", recording.warning, command.type, recording.sessionId);
         }
         this.outputHealth.set("recording", {
           destination: "recording",
@@ -297,7 +313,7 @@ export class MediaCoreRuntime {
 
       if (command.type === "fail-recording-session") {
         const recording = this.recordingSink.fail(command.message, this.elapsedMs);
-        warnings.push(command.message);
+        this.warn(warnings, "recording", "Recording writer failed", command.message, command.type, recording?.sessionId, "critical");
         this.outputHealth.set("recording", {
           destination: "recording",
           status: "failed",
@@ -309,6 +325,15 @@ export class MediaCoreRuntime {
 
       if (command.type === "recover-recording-session") {
         const recording = this.recordingSink.recover(command.recoveredAtMs ?? this.elapsedMs);
+        this.addEvent(
+          "info",
+          "recording",
+          "Recording writer recovery requested",
+          command.reason ?? recording?.warning ?? "Recording writer recovered.",
+          command.type,
+          recording?.sessionId,
+          command.recoveredAtMs ?? this.elapsedMs
+        );
         this.outputHealth.set("recording", {
           destination: "recording",
           status: recording?.status === "warning" ? "warning" : "live",
@@ -348,6 +373,7 @@ export class MediaCoreRuntime {
         recording?.error
       ].filter(Boolean) as string[])
     ];
+    this.addWarningsAsEvents(allWarnings);
 
     return {
       sceneId: this.sceneGraph?.sceneId,
@@ -372,6 +398,7 @@ export class MediaCoreRuntime {
       encoderSession,
       recording,
       operatorActions,
+      eventLog: [...this.eventLog],
       diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession, outputSenderSession, operatorActions),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
@@ -510,9 +537,59 @@ export class MediaCoreRuntime {
       encoderSession,
       recording,
       operatorActions,
+      eventLog: [...this.eventLog],
       warnings,
       lastCommandTypes: this.lastCommandTypes
     };
+  }
+
+  private addWarningsAsEvents(warnings: string[]) {
+    warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning));
+  }
+
+  private warn(
+    warnings: string[],
+    area: MediaCoreEventArea,
+    title: string,
+    detail: string,
+    commandType?: MediaCoreCommand["type"],
+    relatedId?: string,
+    severity: MediaCoreEventSeverity = "warning"
+  ) {
+    warnings.push(detail);
+    this.addEvent(severity, area, title, detail, commandType, relatedId);
+  }
+
+  private addEvent(
+    severity: MediaCoreEventSeverity,
+    area: MediaCoreEventArea,
+    title: string,
+    detail: string,
+    commandType?: MediaCoreCommand["type"],
+    relatedId?: string,
+    atMs = this.elapsedMs
+  ) {
+    const eventKey = `${severity}:${area}:${title}:${detail}:${relatedId ?? ""}`;
+    if (this.seenEventKeys.has(eventKey)) {
+      return;
+    }
+
+    this.seenEventKeys.add(eventKey);
+    this.eventLog.push({
+      eventId: `${atMs}-${this.eventLog.length + 1}-${area}`,
+      atMs,
+      severity,
+      area,
+      title,
+      detail,
+      relatedId,
+      commandType
+    });
+
+    if (this.eventLog.length > MAX_EVENT_LOG_LENGTH) {
+      const removed = this.eventLog.splice(0, this.eventLog.length - MAX_EVENT_LOG_LENGTH);
+      removed.forEach((event) => this.seenEventKeys.delete(`${event.severity}:${event.area}:${event.title}:${event.detail}:${event.relatedId ?? ""}`));
+    }
   }
 
   private encoderSession(recording: MediaCoreStateSnapshot["recording"]) {

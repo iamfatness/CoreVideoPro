@@ -104,6 +104,7 @@ describe("media core sync engine", () => {
         warnings: []
       },
       operatorActions: [],
+      eventLog: [],
       programFrameCount: 0,
       programTransport: {
         transportId: "in-process-preview" as const,
@@ -216,6 +217,7 @@ describe("media core sync engine", () => {
           warnings: []
         },
         operatorActions: [],
+        eventLog: [],
         warnings: [],
         lastCommandTypes: ["load-scene-graph"]
       },
@@ -478,6 +480,20 @@ describe("media core sync engine", () => {
         status: "failed",
         error: "Recording writer crashed."
       },
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "critical",
+          area: "sender",
+          title: "RTMP sender failed",
+          detail: "RTMP connection refused."
+        }),
+        expect.objectContaining({
+          severity: "critical",
+          area: "recording",
+          title: "Recording writer failed",
+          detail: "Recording writer crashed."
+        })
+      ]),
       operatorActions: [
         {
           actionId: "recording:recover",
@@ -519,6 +535,18 @@ describe("media core sync engine", () => {
         error: undefined
       },
       operatorActions: [],
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "info",
+          area: "sender",
+          title: "RTMP sender recovery requested"
+        }),
+        expect.objectContaining({
+          severity: "info",
+          area: "recording",
+          title: "Recording writer recovery requested"
+        })
+      ]),
       outputHealth: expect.arrayContaining([
         expect.objectContaining({ destination: "rtmp", status: "live" }),
         expect.objectContaining({ destination: "recording", status: "live" })
@@ -577,6 +605,14 @@ describe("media core sync engine", () => {
         senders: [{ destination: "rtmp", status: "live", warning: undefined }]
       },
       operatorActions: [],
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "info",
+          area: "sender",
+          title: "RTMP sender recovery requested",
+          commandType: "recover-output-sender"
+        })
+      ]),
       lastCommandTypes: expect.arrayContaining(["recover-output-sender"])
     });
   });
@@ -613,6 +649,13 @@ describe("media core sync engine", () => {
           actionId: "routing:speaker-slides-1:resolve",
           severity: "warning",
           title: "Resolve missing route speaker-slides-1"
+        })
+      ]),
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "warning",
+          title: "Media core warning",
+          detail: "Screen share route requested but no active screen share source is available."
         })
       ]),
       warnings: ["Screen share route requested but no active screen share source is available."]

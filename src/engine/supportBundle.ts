@@ -142,6 +142,16 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
       command: action.command,
       relatedId: action.relatedId
     })),
+    eventLog: snapshot.eventLog.map((event) => ({
+      eventId: event.eventId,
+      atMs: event.atMs,
+      severity: event.severity,
+      area: event.area,
+      title: event.title,
+      detail: event.detail,
+      relatedId: event.relatedId,
+      commandType: event.commandType
+    })),
     warnings: snapshot.warnings
   };
 }

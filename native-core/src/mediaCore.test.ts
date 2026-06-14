@@ -589,6 +589,20 @@ describe("MediaCoreRuntime", () => {
           status: "failed",
           error: "Recording writer crashed."
         },
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "critical",
+            area: "sender",
+            title: "RTMP sender failed",
+            detail: "RTMP connection refused."
+          }),
+          expect.objectContaining({
+            severity: "critical",
+            area: "recording",
+            title: "Recording writer failed",
+            detail: "Recording writer crashed."
+          })
+        ]),
         operatorActions: [
           {
             actionId: "recording:recover",
@@ -641,6 +655,18 @@ describe("MediaCoreRuntime", () => {
           error: undefined
         },
         operatorActions: [],
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "info",
+            area: "sender",
+            title: "RTMP sender recovery requested"
+          }),
+          expect.objectContaining({
+            severity: "info",
+            area: "recording",
+            title: "Recording writer recovery requested"
+          })
+        ]),
         outputHealth: expect.arrayContaining([
           expect.objectContaining({ destination: "rtmp", status: "live" }),
           expect.objectContaining({ destination: "recording", status: "live" })

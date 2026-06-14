@@ -419,6 +419,16 @@ export type SupportBundleMediaCore = {
     command?: string;
     relatedId?: string;
   }>;
+  eventLog: Array<{
+    eventId: string;
+    atMs: number;
+    severity: "info" | "warning" | "critical";
+    area: "source" | "routing" | "program" | "recording" | "sender" | "encoder" | "system";
+    title: string;
+    detail: string;
+    relatedId?: string;
+    commandType?: string;
+  }>;
   warnings: string[];
 };
 

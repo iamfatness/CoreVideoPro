@@ -68,6 +68,7 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
     expect(nativeCore).toHaveTextContent("Output healthlive");
     expect(nativeCore).toHaveTextContent("ActionNone");
+    expect(nativeCore).toHaveTextContent("EventsNone");
   });
 
   it("executes media-core recovery actions from Settings", async () => {
@@ -87,9 +88,11 @@ describe("App production controls", () => {
         return {
           ...snapshot,
           operatorActions: [action],
+          eventLog: [],
           diagnostics: {
             ...snapshot.diagnostics,
-            operatorActions: [action]
+            operatorActions: [action],
+            eventLog: []
           }
         };
       }

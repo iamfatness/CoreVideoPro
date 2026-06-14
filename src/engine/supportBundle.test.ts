@@ -112,7 +112,8 @@ describe("createSupportBundle", () => {
         totalFramesWritten: 2,
         estimatedDiskRateMBps: 7.49
       },
-      operatorActions: []
+      operatorActions: [],
+      eventLog: []
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
@@ -181,5 +182,21 @@ describe("createSupportBundle", () => {
         command: "recover-output-sender:rtmp"
       })
     ]);
+    expect(bundle.mediaCore?.eventLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "critical",
+          area: "sender",
+          title: "RTMP sender failed",
+          detail: "RTMP connection refused."
+        }),
+        expect.objectContaining({
+          severity: "critical",
+          area: "recording",
+          title: "Recording writer failed",
+          detail: "Recording writer crashed."
+        })
+      ])
+    );
   });
 });
