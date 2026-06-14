@@ -1,0 +1,21 @@
+{
+  "skill_name": "native-core-capability",
+  "evals": [
+    {
+      "id": 1,
+      "name": "program-loudness-target",
+      "prompt": "In CoreVideo Pro, producers need a program loudness target so streams hit platform spec. Add a native media-core capability where the producer picks a target loudness (-14, -16, or -23 LUFS) and the native core reports a simulated measured program loudness plus whether it's within +/-1 LU of target. Surface the target, measured LUFS, and a compliance status in the Native core readout. Add tests at every layer you touch, and keep the renderer shell-agnostic.",
+      "expected_output": "A clean vertical slice: a new command in native-core/src/protocol.ts + handler/state in mediaCore.ts + snapshot fields; mirrored into src/engine/nativeMediaCoreProtocol.ts; a build helper in nativeMediaCoreCommands.ts; mock simulation in mediaCoreSync.ts (InMemoryMediaCoreSyncEngine); ControlReadout rows in App.tsx; README bullets; and a paired test at each changed layer. test:native-core, test, and typecheck all pass.",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 2,
+      "name": "standby-holding-source",
+      "prompt": "Add a native standby source to CoreVideo Pro's media core: when no participant feed is healthy, the core should fall back to a producer-selected standby slate (e.g. 'Be Right Back') and the Native core readout should show whether standby is active and which slate is showing. Wire it end to end through the typed boundary with a paired test at every layer you change.",
+      "expected_output": "A vertical slice adding a standby command + state + snapshot fields through native-core (protocol/mediaCore), the renderer mirror, command builder, in-memory sync simulation, App.tsx readout, README bullets, and tests at each layer. Backend emits a warning / active flag when standby engages. All three verification commands pass.",
+      "files": [],
+      "expectations": []
+    }
+  ]
+}

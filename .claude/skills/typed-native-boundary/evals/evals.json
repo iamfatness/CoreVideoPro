@@ -1,0 +1,21 @@
+{
+  "skill_name": "typed-native-boundary",
+  "evals": [
+    {
+      "id": 1,
+      "name": "corevideo-instant-replay-design",
+      "prompt": "I'm about to add an 'instant replay' feature to CoreVideo Pro: the native core keeps a rolling 30-second buffer and the producer can trigger a replay to air. Before I write any code, give me the boundary design - the command/snapshot protocol shape, how the mock and native engines split, where state mutates, the fallback behavior if the native buffer isn't available, the safety posture, and the layer-by-layer test plan. Follow our house conventions.",
+      "expected_output": "A design (not code) that applies the house pattern: a transport-neutral command + immutable snapshot read model; a mock-first in-memory engine plus a native adapter that forwards with graceful fallback; state mutating only in the backend; health/warnings represented as data; a clear safety/fallback posture when the buffer is unavailable; and a per-layer test plan. Names/structure consistent with CoreVideo Pro's native media core.",
+      "files": [],
+      "expectations": []
+    },
+    {
+      "id": 2,
+      "name": "resonance-midi-controller-design",
+      "prompt": "We want Resonance's desktop app to accept input from a hardware MIDI controller (jog wheels, faders) to drive the decks. I haven't started yet - design how the renderer should talk to this new native MIDI layer following our typed-boundary conventions: protocol/message shape, mock-first vs real adapter with fallback, where state lives, how health/warnings surface, what stays blocked until proven safe, and the tests at each layer.",
+      "expected_output": "A design applying the seven principles to a new domain: a JSON-line/IPC message protocol over the preload bridge; a mock MIDI source for dev/tests plus a real native adapter with fallback; engine-owned state with the renderer reading snapshots; health/warnings as data; an inspect-but-stay-blocked posture for untrusted/unverified controllers; and a layered test plan. Consistent with Resonance's engine + preload-bridge architecture.",
+      "files": [],
+      "expectations": []
+    }
+  ]
+}
