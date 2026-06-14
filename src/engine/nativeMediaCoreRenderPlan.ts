@@ -1,0 +1,136 @@
+import type {
+  NativeMediaCoreColorGrade,
+  NativeMediaCoreCommand,
+  NativeMediaCoreOutputProfile,
+  NativeMediaCoreRenderPlan,
+  NativeMediaCoreResolvedRoute,
+  NativeMediaCoreZoomSource
+} from "./nativeMediaCoreProtocol";
+
+type SceneGraph = Extract<NativeMediaCoreCommand, { type: "load-scene-graph" }>;
+type Overlay = Extract<NativeMediaCoreCommand, { type: "set-overlay-asset" }>;
+
+export function buildNativeMediaCoreRenderPlan(input: {
+  sceneGraph?: SceneGraph;
+  sources: NativeMediaCoreZoomSource[];
+  activeSpeakerId?: string;
+  screenShareParticipantId?: string;
+  overlays: Overlay[];
+  outputProfile: NativeMediaCoreOutputProfile;
+  colorGrade: NativeMediaCoreColorGrade;
+}): NativeMediaCoreRenderPlan {
+  const warnings: string[] = [];
+  const assignedParticipants = new Set<string>();
+  const routes = (input.sceneGraph?.routes ?? []).map((route): NativeMediaCoreResolvedRoute => {
+    const resolved = resolveRoute(route, input.sources, input.activeSpeakerId, input.screenShareParticipantId);
+
+    if (resolved.participantId && route.audioRole === "isolated") {
+      const source = input.sources.find((candidate) => candidate.participantId === resolved.participantId);
+      if (source?.isMuted) {
+        resolved.warning = `${source.displayName} is muted but assigned isolated audio.`;
+      }
+    }
+
+    if (resolved.participantId && resolved.kind !== "screen-share" && assignedParticipants.has(resolved.participantId)) {
+      resolved.warning = `${resolved.participantId} is assigned to multiple program routes.`;
+    }
+
+    if (resolved.participantId && resolved.kind !== "screen-share") {
+      assignedParticipants.add(resolved.participantId);
+    }
+
+    if (resolved.warning) {
+      warnings.push(resolved.warning);
+    }
+
+    return resolved;
+  });
+
+  const videoLayers = routes
+    .filter((route) => route.status === "resolved" && route.sourceId && route.kind)
+    .map((route, index) => ({
+      layerId: `route:${route.routeId}`,
+      kind: route.kind!,
+      sourceId: route.sourceId,
+      participantId: route.participantId,
+      order: index,
+      routeId: route.routeId
+    }));
+  const overlayLayers = input.overlays.map((overlay, index) => ({
+    layerId: `overlay:${overlay.overlayId}`,
+    kind: "overlay" as const,
+    overlayId: overlay.overlayId,
+    order: videoLayers.length + index,
+    position: overlay.position
+  }));
+
+  return {
+    sceneId: input.sceneGraph?.sceneId,
+    outputProfile: input.outputProfile,
+    colorGrade: input.colorGrade,
+    sourceCount: input.sources.length,
+    resolvedRouteCount: routes.filter((route) => route.status === "resolved").length,
+    layers: [...videoLayers, ...overlayLayers],
+    routes,
+    warnings: [...new Set(warnings)]
+  };
+}
+
+function resolveRoute(
+  route: SceneGraph["routes"][number],
+  sources: NativeMediaCoreZoomSource[],
+  activeSpeakerId?: string,
+  screenShareParticipantId?: string
+): NativeMediaCoreResolvedRoute {
+  if (route.mode === "none") {
+    return { routeId: route.routeId, mode: route.mode, audioRole: route.audioRole, status: "disabled" };
+  }
+
+  if (route.mode === "screen-share") {
+    const source = screenShareParticipantId
+      ? sources.find((candidate) => candidate.participantId === screenShareParticipantId && candidate.isScreenSharing)
+      : sources.find((candidate) => candidate.isScreenSharing);
+
+    return source
+      ? resolved(route, source, "screen-share")
+      : missing(route, "Screen share route requested but no active screen share source is available.");
+  }
+
+  const participantId = route.mode === "active-speaker" ? activeSpeakerId : route.participantId;
+  if (!participantId) {
+    return missing(route, `${route.mode} route has no participant assignment.`);
+  }
+
+  const source = sources.find((candidate) => candidate.participantId === participantId);
+  if (!source) {
+    return missing(route, `${participantId} is not present in the Zoom source roster.`);
+  }
+
+  if (!source.hasVideo || source.health === "video-off") {
+    return missing(route, `${source.displayName} has no clean video feed.`);
+  }
+
+  return resolved(route, source, "participant-video");
+}
+
+function resolved(route: SceneGraph["routes"][number], source: NativeMediaCoreZoomSource, kind: "participant-video" | "screen-share"): NativeMediaCoreResolvedRoute {
+  return {
+    routeId: route.routeId,
+    mode: route.mode,
+    audioRole: route.audioRole,
+    sourceId: kind === "screen-share" ? `screen-share:${source.participantId}` : source.sourceId,
+    participantId: source.participantId,
+    kind,
+    status: "resolved"
+  };
+}
+
+function missing(route: SceneGraph["routes"][number], warning: string): NativeMediaCoreResolvedRoute {
+  return {
+    routeId: route.routeId,
+    mode: route.mode,
+    audioRole: route.audioRole,
+    status: "missing",
+    warning
+  };
+}

@@ -3,6 +3,8 @@ export { MediaCoreServiceClient } from "./client.js";
 export { handleLine } from "./service.js";
 export type {
   MediaCoreCommand,
+  MediaCoreColorGrade,
+  MediaCoreColorGradeLut,
   MediaCoreDestination,
   MediaCoreFrame,
   MediaCoreFrameHealth,
@@ -10,6 +12,8 @@ export type {
   MediaCoreOutputHealth,
   MediaCoreOutputHealthStatus,
   MediaCoreOutputProfile,
+  MediaCoreRenderPlan,
+  MediaCoreRenderPlanLayer,
   MediaCoreRecordingFormat,
   MediaCoreRecordingQuality,
   MediaCoreRecordingSession,
@@ -17,8 +21,11 @@ export type {
   MediaCoreRecordingStream,
   MediaCoreRecordingTargets,
   MediaCoreRecordingWriterStatus,
+  MediaCoreResolvedRoute,
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreDiagnosticsSnapshot,
-  MediaCoreStateSnapshot
+  MediaCoreStateSnapshot,
+  MediaCoreZoomSource,
+  MediaCoreZoomSourceHealth
 } from "./protocol.js";

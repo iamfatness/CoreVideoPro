@@ -2,14 +2,18 @@ import type { ProductionState } from "../domain/production";
 import { buildNativeMediaCoreCommands } from "./nativeMediaCoreCommands";
 import type { NativeHostBridge } from "./nativeHostBridge";
 import type {
+  NativeMediaCoreColorGrade,
   NativeMediaCoreCommand,
   NativeMediaCoreFrame,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
+  NativeMediaCoreRenderPlan,
   NativeMediaCoreRecordingSession,
   NativeMediaCoreRecordingTargets,
-  NativeMediaCoreStateSnapshot
+  NativeMediaCoreStateSnapshot,
+  NativeMediaCoreZoomSource
 } from "./nativeMediaCoreProtocol";
+import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
 
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
@@ -17,6 +21,9 @@ export interface MediaCoreSyncEngine {
 
 export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly frameNumbers = new Map<string, number>();
+  private sources: NativeMediaCoreZoomSource[] = [];
+  private activeSpeakerId?: string;
+  private screenShareParticipantId?: string;
   private outputProfile: NativeMediaCoreOutputProfile = {
     profileId: "1080p60",
     resolution: "1920x1080",
@@ -24,6 +31,13 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     height: 1080,
     fps: 60,
     targetBitrateMbps: 8
+  };
+  private colorGrade: NativeMediaCoreColorGrade = {
+    lut: "none",
+    exposure: 0,
+    contrast: 0,
+    saturation: 0,
+    temperature: 0
   };
   private recording?: NativeMediaCoreRecordingSession;
   private recordingTargets: NativeMediaCoreRecordingTargets = {
@@ -42,36 +56,75 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const sceneGraph = commands.find((command) => command.type === "load-scene-graph");
     const output = commands.find((command) => command.type === "start-program-output");
     const outputProfile = commands.find((command) => command.type === "set-output-profile");
+    const sourceRoster = commands.find((command) => command.type === "set-zoom-source-roster");
+    const activeSpeaker = commands.find((command) => command.type === "set-active-speaker");
+    const screenShareSource = commands.find((command) => command.type === "set-screen-share-source");
+    const colorGrade = commands.find((command) => command.type === "set-color-grade");
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
+    if (sourceRoster) {
+      this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
+      this.activeSpeakerId = sourceRoster.sources.find((source) => source.isActiveSpeaker)?.participantId ?? this.activeSpeakerId;
+      this.screenShareParticipantId = sourceRoster.sources.find((source) => source.isScreenSharing)?.participantId ?? this.screenShareParticipantId;
+    }
+    if (activeSpeaker) {
+      this.activeSpeakerId = activeSpeaker.participantId;
+    }
+    if (screenShareSource) {
+      this.screenShareParticipantId = screenShareSource.participantId;
+    }
+    if (colorGrade) {
+      this.colorGrade = {
+        lut: colorGrade.lut,
+        exposure: clampRange(colorGrade.exposure, -100, 100),
+        contrast: clampRange(colorGrade.contrast, -100, 100),
+        saturation: clampRange(colorGrade.saturation, -100, 100),
+        temperature: clampRange(colorGrade.temperature, -100, 100)
+      };
+    }
     if (outputProfile) {
       this.outputProfile = normalizeOutputProfile(outputProfile);
     }
-    const frames = sceneGraph?.routes.map((route, index) => this.frameFromRoute(route, index, elapsedMs)).filter(Boolean) as NativeMediaCoreFrame[] | undefined;
+    const renderPlan = buildNativeMediaCoreRenderPlan({
+      sceneGraph,
+      sources: this.sources,
+      activeSpeakerId: this.activeSpeakerId,
+      screenShareParticipantId: this.screenShareParticipantId,
+      overlays,
+      outputProfile: this.outputProfile,
+      colorGrade: this.colorGrade
+    });
+    const frames = renderPlan.layers
+      .filter((layer) => layer.kind === "participant-video" || layer.kind === "screen-share")
+      .map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
     const outputHealth = this.outputHealth(output?.destinations ?? [], recording);
-    const allWarnings = [...new Set([...warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
 
     return {
       sceneId: sceneGraph?.sceneId,
       routeCount: sceneGraph?.routes.length ?? 0,
-      frameCount: frames?.length ?? 0,
-      frames: frames ?? [],
+      frameCount: frames.length,
+      frames,
       participantTransformCount: transforms.length,
       overlayCount: overlays.length,
       outputs: output?.destinations ?? [],
       isoParticipantIds: output?.isoParticipantIds ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      sourceCount: this.sources.length,
+      resolvedRouteCount: renderPlan.resolvedRouteCount,
+      renderPlan,
       recording,
       diagnostics: {
         generatedAtMs: elapsedMs,
         sceneId: sceneGraph?.sceneId,
         routeCount: sceneGraph?.routes.length ?? 0,
-        frameCount: frames?.length ?? 0,
+        frameCount: frames.length,
         outputs: output?.destinations ?? [],
         outputProfile: this.outputProfile,
         outputHealth,
+        renderPlan,
         recording,
         warnings: allWarnings,
         lastCommandTypes: commands.map((command) => command.type)
@@ -81,23 +134,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     };
   }
 
-  private frameFromRoute(route: Extract<NativeMediaCoreCommand, { type: "load-scene-graph" }>["routes"][number], index: number, elapsedMs: number) {
-    if (route.mode === "none") {
-      return undefined;
-    }
-
-    const isScreenShare = route.mode === "screen-share";
-    const sourceId = isScreenShare
-      ? `screen-share:${route.routeId}`
-      : route.participantId
-        ? `participant:${route.participantId}`
-        : `${route.mode}:${route.routeId}`;
+  private frameFromRenderLayer(layer: NativeMediaCoreRenderPlan["layers"][number], index: number, elapsedMs: number) {
+    const isScreenShare = layer.kind === "screen-share";
+    const sourceId = layer.sourceId ?? layer.layerId;
     const nextFrameNumber = (this.frameNumbers.get(sourceId) ?? 0) + 1;
     this.frameNumbers.set(sourceId, nextFrameNumber);
 
     return {
       sourceId,
-      participantId: route.participantId,
+      participantId: layer.participantId,
       kind: isScreenShare ? "screen-share" : "participant-video",
       frameNumber: nextFrameNumber,
       timestampMs: elapsedMs,
@@ -176,13 +221,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const writableFrames = frames.filter((frame) => frame.health !== "dropped");
     this.recording.streams.forEach((stream) => {
       const droppedFrames =
-        stream.kind === "program" ? frames.length - writableFrames.length : frames.filter((frame) => frame.health === "dropped" && frame.participantId === stream.participantId).length;
+        stream.kind === "program"
+          ? frames.length - writableFrames.length
+          : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
       if (stream.kind === "program") {
         stream.framesWritten += writableFrames.length;
         stream.droppedFrames += droppedFrames;
         stream.bytesWritten += writableFrames.length * 260_000;
       } else {
-        const isoFrames = writableFrames.filter((frame) => frame.participantId === stream.participantId).length;
+        const isoFrames = writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
         stream.framesWritten += isoFrames;
         stream.droppedFrames += droppedFrames;
         stream.bytesWritten += isoFrames * 140_000;
@@ -307,6 +354,10 @@ function normalizeOutputProfile(profile: NativeMediaCoreOutputProfile): NativeMe
     fps: Math.max(1, profile.fps),
     targetBitrateMbps: Math.max(0, profile.targetBitrateMbps)
   };
+}
+
+function clampRange(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeTargets(targets: NativeMediaCoreRecordingTargets): NativeMediaCoreRecordingTargets {

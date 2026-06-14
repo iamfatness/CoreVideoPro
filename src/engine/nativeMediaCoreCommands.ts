@@ -13,6 +13,32 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
   const activeScene = state.scenes.find((scene) => scene.id === state.activeSceneId) ?? state.scenes[0];
   const commands: NativeMediaCoreCommand[] = [
     {
+      type: "set-zoom-source-roster",
+      sources: state.participants.map((participant) => ({
+        sourceId: `participant:${participant.id}`,
+        participantId: participant.id,
+        displayName: participant.name,
+        role: participant.role,
+        breakoutRoomId: participant.breakoutRoomId,
+        breakoutRoomName: participant.breakoutRoomName,
+        hasVideo: participant.health !== "video-off",
+        hasAudio: true,
+        isMuted: participant.isMuted,
+        isActiveSpeaker: participant.isActiveSpeaker,
+        isScreenSharing: participant.isScreenSharing,
+        audioLevel: participant.audioLevel,
+        health: participant.health
+      }))
+    },
+    {
+      type: "set-active-speaker",
+      participantId: state.participants.find((participant) => participant.isActiveSpeaker && participant.health !== "video-off")?.id
+    },
+    {
+      type: "set-screen-share-source",
+      participantId: state.participants.find((participant) => participant.isScreenSharing)?.id
+    },
+    {
       type: "load-scene-graph",
       sceneId: activeScene.id,
       routes: getSceneRoutes(activeScene, state.participants).map((route) => ({
@@ -24,6 +50,10 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
     },
     ...state.videoEffects.map(buildTransformCommand),
     ...state.graphics.filter((graphic) => graphic.enabled).map(buildOverlayCommand),
+    {
+      type: "set-color-grade",
+      ...state.colorGrade
+    },
     buildOutputProfileCommand(state)
   ];
 

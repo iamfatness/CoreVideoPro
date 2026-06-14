@@ -50,6 +50,9 @@ describe("App production controls", () => {
 
     await user.click(screen.getByRole("button", { name: "Record" }));
     await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingrecording"));
+    expect(nativeCore).toHaveTextContent("Sources8");
+    expect(nativeCore).toHaveTextContent("Resolved routes2");
+    expect(nativeCore).toHaveTextContent("Render plan3 layers");
     expect(nativeCore).toHaveTextContent("Outputsrecording");
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");

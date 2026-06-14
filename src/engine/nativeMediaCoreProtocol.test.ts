@@ -48,6 +48,28 @@ describe("native media core protocol", () => {
   it("models direct scene graph, transform, overlay, and output commands outside the UI shell", () => {
     const commands: NativeMediaCoreCommand[] = [
       {
+        type: "set-zoom-source-roster",
+        sources: [
+          {
+            sourceId: "participant:p2",
+            participantId: "p2",
+            displayName: "Andre Wallace",
+            role: "Presenter",
+            breakoutRoomId: "main",
+            breakoutRoomName: "Main room",
+            hasVideo: true,
+            hasAudio: true,
+            isMuted: false,
+            isActiveSpeaker: true,
+            isScreenSharing: true,
+            audioLevel: 82,
+            health: "live"
+          }
+        ]
+      },
+      { type: "set-active-speaker", participantId: "p2" },
+      { type: "set-screen-share-source", participantId: "p2" },
+      {
         type: "load-scene-graph",
         sceneId: "speaker-slides",
         routes: [
@@ -67,6 +89,14 @@ describe("native media core protocol", () => {
         overlayId: "lower-third",
         text: "Andre Wallace - Product Lead",
         position: "lower-third"
+      },
+      {
+        type: "set-color-grade",
+        lut: "warm-film",
+        exposure: 2,
+        contrast: 6,
+        saturation: 8,
+        temperature: 5
       },
       {
         type: "set-output-profile",
@@ -98,9 +128,13 @@ describe("native media core protocol", () => {
     ];
 
     expect(commands.map((command) => command.type)).toEqual([
+      "set-zoom-source-roster",
+      "set-active-speaker",
+      "set-screen-share-source",
       "load-scene-graph",
       "set-participant-transform",
       "set-overlay-asset",
+      "set-color-grade",
       "set-output-profile",
       "start-program-output",
       "set-recording-targets",

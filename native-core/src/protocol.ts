@@ -5,11 +5,13 @@ export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recordin
 export type MediaCoreFrameKind = "participant-video" | "screen-share";
 
 export type MediaCoreFrameHealth = "live" | "stale" | "dropped" | "low-resolution";
+export type MediaCoreZoomSourceHealth = "live" | "low-resolution" | "recovering" | "video-off";
 export type MediaCoreRecordingStatus = "recording" | "warning" | "stopped" | "failed";
 export type MediaCoreRecordingWriterStatus = "writing" | "warning" | "stopped" | "failed";
 export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed";
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
+export type MediaCoreColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
 
 export type MediaCoreOutputProfile = {
   profileId: string;
@@ -18,6 +20,63 @@ export type MediaCoreOutputProfile = {
   height: number;
   fps: number;
   targetBitrateMbps: number;
+};
+
+export type MediaCoreColorGrade = {
+  lut: MediaCoreColorGradeLut;
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  temperature: number;
+};
+
+export type MediaCoreZoomSource = {
+  sourceId: string;
+  participantId: string;
+  displayName: string;
+  role: string;
+  breakoutRoomId: string;
+  breakoutRoomName: string;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  isMuted: boolean;
+  isActiveSpeaker: boolean;
+  isScreenSharing: boolean;
+  audioLevel: number;
+  health: MediaCoreZoomSourceHealth;
+};
+
+export type MediaCoreResolvedRoute = {
+  routeId: string;
+  mode: MediaCoreRouteMode;
+  audioRole: MediaCoreAudioRole;
+  sourceId?: string;
+  participantId?: string;
+  kind?: MediaCoreFrameKind;
+  status: "resolved" | "missing" | "disabled";
+  warning?: string;
+};
+
+export type MediaCoreRenderPlanLayer = {
+  layerId: string;
+  kind: MediaCoreFrameKind | "overlay";
+  sourceId?: string;
+  participantId?: string;
+  overlayId?: string;
+  order: number;
+  routeId?: string;
+  position?: "top-right" | "bottom-right" | "center" | "lower-third";
+};
+
+export type MediaCoreRenderPlan = {
+  sceneId?: string;
+  outputProfile: MediaCoreOutputProfile;
+  colorGrade: MediaCoreColorGrade;
+  sourceCount: number;
+  resolvedRouteCount: number;
+  layers: MediaCoreRenderPlanLayer[];
+  routes: MediaCoreResolvedRoute[];
+  warnings: string[];
 };
 
 export type MediaCoreFrame = {
@@ -92,6 +151,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   outputs: MediaCoreDestination[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
+  renderPlan: MediaCoreRenderPlan;
   recording?: MediaCoreRecordingSession;
   warnings: string[];
   lastCommandTypes: string[];
@@ -122,6 +182,21 @@ export type MediaCoreCommand =
       imageUri?: string;
       position: "top-right" | "bottom-right" | "center" | "lower-third";
     }
+  | {
+      type: "set-zoom-source-roster";
+      sources: MediaCoreZoomSource[];
+    }
+  | {
+      type: "set-active-speaker";
+      participantId?: string;
+    }
+  | {
+      type: "set-screen-share-source";
+      participantId?: string;
+    }
+  | ({
+      type: "set-color-grade";
+    } & MediaCoreColorGrade)
   | ({
       type: "set-output-profile";
     } & MediaCoreOutputProfile)
@@ -174,6 +249,9 @@ export type MediaCoreStateSnapshot = {
   isoParticipantIds: string[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
+  sourceCount: number;
+  resolvedRouteCount: number;
+  renderPlan: MediaCoreRenderPlan;
   recording?: MediaCoreRecordingSession;
   diagnostics: MediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];

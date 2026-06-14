@@ -23,6 +23,28 @@ describe("MediaCoreServiceClient", () => {
 
     const commands: MediaCoreCommand[] = [
       {
+        type: "set-zoom-source-roster",
+        sources: [
+          {
+            sourceId: "participant:p1",
+            participantId: "p1",
+            displayName: "Maya Chen",
+            role: "Host",
+            breakoutRoomId: "main",
+            breakoutRoomName: "Main room",
+            hasVideo: true,
+            hasAudio: true,
+            isMuted: false,
+            isActiveSpeaker: true,
+            isScreenSharing: true,
+            audioLevel: 64,
+            health: "live"
+          }
+        ]
+      },
+      { type: "set-active-speaker", participantId: "p1" },
+      { type: "set-screen-share-source", participantId: "p1" },
+      {
         type: "load-scene-graph",
         sceneId: "panel",
         routes: [
@@ -62,7 +84,7 @@ describe("MediaCoreServiceClient", () => {
     const sync = await client.sync(commands);
     expect(sync).toMatchObject({
       ok: true,
-      appliedCommandCount: 5,
+      appliedCommandCount: 8,
       state: {
         sceneId: "panel",
         routeCount: 2,
@@ -79,7 +101,7 @@ describe("MediaCoreServiceClient", () => {
           programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
             { kind: "program", framesWritten: 2 },
-            { kind: "iso", participantId: "p1", framesWritten: 0 }
+            { kind: "iso", participantId: "p1", framesWritten: 1 }
           ]
         }
       }
@@ -103,12 +125,12 @@ describe("MediaCoreServiceClient", () => {
         frameCount: 2,
         frames: [
           {
-            sourceId: "active-speaker:active",
+            sourceId: "participant:p1",
             frameNumber: 2,
             timestampMs: 33
           },
           {
-            sourceId: "screen-share:screen",
+            sourceId: "screen-share:p1",
             frameNumber: 2,
             timestampMs: 33
           }
@@ -117,9 +139,9 @@ describe("MediaCoreServiceClient", () => {
           elapsedMs: 33,
           streams: [
             { kind: "program", framesWritten: 4 },
-            { kind: "iso", participantId: "p1", framesWritten: 0 }
+            { kind: "iso", participantId: "p1", framesWritten: 2 }
           ],
-          totalFramesWritten: 4
+          totalFramesWritten: 6
         }
       }
     });

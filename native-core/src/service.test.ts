@@ -45,6 +45,27 @@ describe("native-core service", () => {
         type: "sync",
         commands: [
           {
+            type: "set-zoom-source-roster",
+            sources: [
+              {
+                sourceId: "participant:p1",
+                participantId: "p1",
+                displayName: "Maya Chen",
+                role: "Host",
+                breakoutRoomId: "main",
+                breakoutRoomName: "Main room",
+                hasVideo: true,
+                hasAudio: true,
+                isMuted: false,
+                isActiveSpeaker: true,
+                isScreenSharing: false,
+                audioLevel: 64,
+                health: "live"
+              }
+            ]
+          },
+          { type: "set-active-speaker", participantId: "p1" },
+          {
             type: "load-scene-graph",
             sceneId: "panel",
             routes: [{ routeId: "active", mode: "active-speaker", audioRole: "mix" }]

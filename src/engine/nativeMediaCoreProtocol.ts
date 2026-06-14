@@ -49,6 +49,21 @@ export type NativeMediaCoreCommand =
       imageUri?: string;
       position: "top-right" | "bottom-right" | "center" | "lower-third";
     }
+  | {
+      type: "set-zoom-source-roster";
+      sources: NativeMediaCoreZoomSource[];
+    }
+  | {
+      type: "set-active-speaker";
+      participantId?: string;
+    }
+  | {
+      type: "set-screen-share-source";
+      participantId?: string;
+    }
+  | ({
+      type: "set-color-grade";
+    } & NativeMediaCoreColorGrade)
   | ({
       type: "set-output-profile";
     } & NativeMediaCoreOutputProfile)
@@ -84,6 +99,52 @@ export type NativeMediaCoreFrame = {
   height: number;
   fps: number;
   health: "live" | "stale" | "dropped" | "low-resolution";
+};
+
+export type NativeMediaCoreZoomSource = {
+  sourceId: string;
+  participantId: string;
+  displayName: string;
+  role: string;
+  breakoutRoomId: string;
+  breakoutRoomName: string;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  isMuted: boolean;
+  isActiveSpeaker: boolean;
+  isScreenSharing: boolean;
+  audioLevel: number;
+  health: "live" | "low-resolution" | "recovering" | "video-off";
+};
+
+export type NativeMediaCoreColorGrade = {
+  lut: "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  temperature: number;
+};
+
+export type NativeMediaCoreResolvedRoute = {
+  routeId: string;
+  mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
+  audioRole: "mix" | "isolated" | "audience";
+  sourceId?: string;
+  participantId?: string;
+  kind?: "participant-video" | "screen-share";
+  status: "resolved" | "missing" | "disabled";
+  warning?: string;
+};
+
+export type NativeMediaCoreRenderPlanLayer = {
+  layerId: string;
+  kind: "participant-video" | "screen-share" | "overlay";
+  sourceId?: string;
+  participantId?: string;
+  overlayId?: string;
+  order: number;
+  routeId?: string;
+  position?: "top-right" | "bottom-right" | "center" | "lower-third";
 };
 
 export type NativeMediaCoreRecordingStream = {
@@ -140,6 +201,17 @@ export type NativeMediaCoreOutputProfile = {
   targetBitrateMbps: number;
 };
 
+export type NativeMediaCoreRenderPlan = {
+  sceneId?: string;
+  outputProfile: NativeMediaCoreOutputProfile;
+  colorGrade: NativeMediaCoreColorGrade;
+  sourceCount: number;
+  resolvedRouteCount: number;
+  layers: NativeMediaCoreRenderPlanLayer[];
+  routes: NativeMediaCoreResolvedRoute[];
+  warnings: string[];
+};
+
 export type NativeMediaCoreOutputHealth = {
   destination: "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
   status: "idle" | "live" | "warning" | "failed";
@@ -155,6 +227,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
+  renderPlan: NativeMediaCoreRenderPlan;
   recording?: NativeMediaCoreRecordingSession;
   warnings: string[];
   lastCommandTypes: string[];
@@ -171,6 +244,9 @@ export type NativeMediaCoreStateSnapshot = {
   isoParticipantIds: string[];
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
+  sourceCount: number;
+  resolvedRouteCount: number;
+  renderPlan: NativeMediaCoreRenderPlan;
   recording?: NativeMediaCoreRecordingSession;
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];

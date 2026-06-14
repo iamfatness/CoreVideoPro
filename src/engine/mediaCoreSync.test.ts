@@ -14,11 +14,24 @@ describe("media core sync engine", () => {
       frameCount: 2,
       participantTransformCount: 8,
       overlayCount: 1,
+      sourceCount: 8,
+      resolvedRouteCount: 2,
       outputs: [],
       isoParticipantIds: [],
+      renderPlan: {
+        sceneId: "speaker-slides",
+        sourceCount: 8,
+        resolvedRouteCount: 2,
+        colorGrade: { lut: "none" },
+        layers: [
+          { layerId: "route:speaker-slides-1", kind: "screen-share", sourceId: "screen-share:p2", participantId: "p2" },
+          { layerId: "route:speaker-slides-2", kind: "participant-video", sourceId: "participant:p2", participantId: "p2" },
+          { layerId: "overlay:brand-bug", kind: "overlay", overlayId: "brand-bug" }
+        ]
+      },
       frames: [
         {
-          sourceId: "screen-share:speaker-slides-1",
+          sourceId: "screen-share:p2",
           kind: "screen-share",
           timestampMs: 1200,
           width: 1920,
@@ -53,6 +66,24 @@ describe("media core sync engine", () => {
         targetBitrateMbps: 8.2
       },
       outputHealth: [],
+      sourceCount: 0,
+      resolvedRouteCount: 0,
+      renderPlan: {
+        outputProfile: {
+          profileId: "1080p60",
+          resolution: "1920x1080",
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          targetBitrateMbps: 8.2
+        },
+        colorGrade: { lut: "none" as const, exposure: 0, contrast: 0, saturation: 0, temperature: 0 },
+        sourceCount: 0,
+        resolvedRouteCount: 0,
+        layers: [],
+        routes: [],
+        warnings: []
+      },
       diagnostics: {
         generatedAtMs: 2400,
         routeCount: 1,
@@ -67,6 +98,22 @@ describe("media core sync engine", () => {
           targetBitrateMbps: 8.2
         },
         outputHealth: [],
+        renderPlan: {
+          outputProfile: {
+            profileId: "1080p60",
+            resolution: "1920x1080",
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            targetBitrateMbps: 8.2
+          },
+          colorGrade: { lut: "none" as const, exposure: 0, contrast: 0, saturation: 0, temperature: 0 },
+          sourceCount: 0,
+          resolvedRouteCount: 0,
+          layers: [],
+          routes: [],
+          warnings: []
+        },
         warnings: [],
         lastCommandTypes: ["load-scene-graph"]
       },
@@ -112,6 +159,14 @@ describe("media core sync engine", () => {
         fps: 60,
         targetBitrateMbps: 8.2
       },
+      sourceCount: 8,
+      resolvedRouteCount: 2,
+      renderPlan: {
+        routes: [
+          { routeId: "speaker-slides-1", status: "resolved", kind: "screen-share", sourceId: "screen-share:p2" },
+          { routeId: "speaker-slides-2", status: "resolved", kind: "participant-video", sourceId: "participant:p2" }
+        ]
+      },
       recording: {
         active: true,
         status: "recording",
@@ -131,6 +186,37 @@ describe("media core sync engine", () => {
         generatedAtMs: 3000,
         recording: { sessionId: "AI_Product_Launch_Webinar-p1-p2" }
       }
+    });
+  });
+
+  it("surfaces render plan warnings when a scene asks for unavailable screen share", async () => {
+    const engine = new InMemoryMediaCoreSyncEngine();
+    const snapshot = await engine.syncProduction(
+      {
+        ...initialProduction,
+        participants: initialProduction.participants.map((participant) => ({ ...participant, isScreenSharing: false }))
+      },
+      3200
+    );
+
+    expect(snapshot).toMatchObject({
+      sceneId: "speaker-slides",
+      resolvedRouteCount: 1,
+      renderPlan: {
+        routes: [
+          {
+            routeId: "speaker-slides-1",
+            status: "missing",
+            warning: "Screen share route requested but no active screen share source is available."
+          },
+          {
+            routeId: "speaker-slides-2",
+            status: "resolved",
+            sourceId: "participant:p2"
+          }
+        ]
+      },
+      warnings: ["Screen share route requested but no active screen share source is available."]
     });
   });
 

@@ -4,6 +4,49 @@ import type { MediaCoreCommand } from "./protocol.js";
 
 const commands: MediaCoreCommand[] = [
   {
+    type: "set-zoom-source-roster",
+    sources: [
+      {
+        sourceId: "participant:p1",
+        participantId: "p1",
+        displayName: "Maya Chen",
+        role: "Host",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: false,
+        isScreenSharing: false,
+        audioLevel: 64,
+        health: "live"
+      },
+      {
+        sourceId: "participant:p2",
+        participantId: "p2",
+        displayName: "Andre Wallace",
+        role: "Presenter",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: true,
+        isScreenSharing: true,
+        audioLevel: 82,
+        health: "live"
+      }
+    ]
+  },
+  {
+    type: "set-active-speaker",
+    participantId: "p2"
+  },
+  {
+    type: "set-screen-share-source",
+    participantId: "p2"
+  },
+  {
     type: "load-scene-graph",
     sceneId: "speaker-slides",
     routes: [
@@ -23,6 +66,14 @@ const commands: MediaCoreCommand[] = [
     overlayId: "brand-bug",
     text: "CoreVideo Pro",
     position: "top-right"
+  },
+  {
+    type: "set-color-grade",
+    lut: "warm-film",
+    exposure: 2,
+    contrast: 6,
+    saturation: 8,
+    temperature: 5
   },
   {
     type: "set-output-profile",
@@ -61,7 +112,7 @@ describe("MediaCoreRuntime", () => {
     expect(response).toMatchObject({
       id: "sync-1",
       ok: true,
-      appliedCommandCount: 7,
+      appliedCommandCount: 11,
       state: {
         sceneId: "speaker-slides",
         routeCount: 2,
@@ -76,7 +127,7 @@ describe("MediaCoreRuntime", () => {
             height: 720
           },
           {
-            sourceId: "screen-share:slides",
+            sourceId: "screen-share:p2",
             kind: "screen-share",
             frameNumber: 1,
             width: 1920,
@@ -85,6 +136,17 @@ describe("MediaCoreRuntime", () => {
         ],
         participantTransformCount: 1,
         overlayCount: 1,
+        sourceCount: 2,
+        resolvedRouteCount: 2,
+        renderPlan: {
+          sceneId: "speaker-slides",
+          colorGrade: { lut: "warm-film" },
+          layers: [
+            { layerId: "route:speaker", sourceId: "participant:p2", participantId: "p2", kind: "participant-video" },
+            { layerId: "route:slides", sourceId: "screen-share:p2", participantId: "p2", kind: "screen-share" },
+            { layerId: "overlay:brand-bug", kind: "overlay", overlayId: "brand-bug" }
+          ]
+        },
         outputs: ["recording", "rtmp"],
         outputProfile: {
           profileId: "1080p60",
@@ -110,9 +172,13 @@ describe("MediaCoreRuntime", () => {
         },
         outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
         lastCommandTypes: [
+          "set-zoom-source-roster",
+          "set-active-speaker",
+          "set-screen-share-source",
           "load-scene-graph",
           "set-participant-transform",
           "set-overlay-asset",
+          "set-color-grade",
           "set-output-profile",
           "start-program-output",
           "set-recording-targets",
@@ -173,7 +239,7 @@ describe("MediaCoreRuntime", () => {
             timestampMs: 33
           },
           {
-            sourceId: "screen-share:slides",
+            sourceId: "screen-share:p2",
             frameNumber: 2,
             timestampMs: 33
           }
@@ -252,6 +318,124 @@ describe("MediaCoreRuntime", () => {
         diagnostics: {
           warnings: ["Encoder process exited."]
         }
+      }
+    });
+  });
+
+  it("resolves active speaker and screen share routes from the Zoom source roster", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "sync-routes",
+      type: "sync",
+      commands: [
+        commands[0],
+        { type: "set-active-speaker", participantId: "p2" },
+        { type: "set-screen-share-source", participantId: "p2" },
+        {
+          type: "load-scene-graph",
+          sceneId: "panel",
+          routes: [
+            { routeId: "active", mode: "active-speaker", audioRole: "mix" },
+            { routeId: "screen", mode: "screen-share", audioRole: "audience" }
+          ]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        sourceCount: 2,
+        resolvedRouteCount: 2,
+        renderPlan: {
+          routes: [
+            { routeId: "active", mode: "active-speaker", status: "resolved", sourceId: "participant:p2" },
+            { routeId: "screen", mode: "screen-share", status: "resolved", sourceId: "screen-share:p2" }
+          ],
+          layers: [
+            { layerId: "route:active", kind: "participant-video", sourceId: "participant:p2" },
+            { layerId: "route:screen", kind: "screen-share", sourceId: "screen-share:p2" }
+          ]
+        }
+      }
+    });
+  });
+
+  it("warns for unavailable participants, missing screen share, muted isolated audio, and duplicate video assignments", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "sync-warnings",
+      type: "sync",
+      commands: [
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              role: "Host",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: true,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 0,
+              health: "live"
+            },
+            {
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              role: "Presenter",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: false,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 40,
+              health: "video-off"
+            }
+          ]
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "problem-scene",
+          routes: [
+            { routeId: "muted", mode: "fixed", participantId: "p1", audioRole: "isolated" },
+            { routeId: "dupe", mode: "fixed", participantId: "p1", audioRole: "mix" },
+            { routeId: "video-off", mode: "fixed", participantId: "p2", audioRole: "mix" },
+            { routeId: "missing", mode: "fixed", participantId: "p9", audioRole: "mix" },
+            { routeId: "screen", mode: "screen-share", audioRole: "audience" }
+          ]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        resolvedRouteCount: 2,
+        renderPlan: {
+          routes: [
+            { routeId: "muted", status: "resolved", warning: "Maya Chen is muted but assigned isolated audio." },
+            { routeId: "dupe", status: "resolved", warning: "p1 is assigned to multiple program routes." },
+            { routeId: "video-off", status: "missing", warning: "Andre Wallace has no clean video feed." },
+            { routeId: "missing", status: "missing", warning: "p9 is not present in the Zoom source roster." },
+            { routeId: "screen", status: "missing", warning: "Screen share route requested but no active screen share source is available." }
+          ]
+        },
+        warnings: expect.arrayContaining([
+          "Maya Chen is muted but assigned isolated audio.",
+          "p1 is assigned to multiple program routes.",
+          "Andre Wallace has no clean video feed.",
+          "p9 is not present in the Zoom source roster.",
+          "Screen share route requested but no active screen share source is available."
+        ])
       }
     });
   });

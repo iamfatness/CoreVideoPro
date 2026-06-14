@@ -82,6 +82,35 @@ describe("native media core command builder", () => {
     });
 
     expect(commands).toContainEqual({
+      type: "set-active-speaker",
+      participantId: "p2"
+    });
+    expect(commands).toContainEqual({
+      type: "set-screen-share-source",
+      participantId: "p2"
+    });
+    expect(commands).toContainEqual({
+      type: "set-color-grade",
+      ...initialProduction.colorGrade
+    });
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "set-zoom-source-roster",
+          sources: expect.arrayContaining([
+            expect.objectContaining({
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              isActiveSpeaker: true,
+              isScreenSharing: true,
+              health: "live"
+            })
+          ])
+        })
+      ])
+    );
+    expect(commands).toContainEqual({
       type: "set-overlay-asset",
       overlayId: "brand-bug",
       text: "CoreVideo Pro",

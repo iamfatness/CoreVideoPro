@@ -59,9 +59,13 @@ export class RecordingSink {
     const droppedFrames = frames.length - writableFrames.length;
     this.session.streams.forEach((stream) => {
       const matchingFrames =
-        stream.kind === "program" ? writableFrames : writableFrames.filter((frame) => frame.participantId === stream.participantId);
+        stream.kind === "program"
+          ? writableFrames
+          : writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId);
       const matchingDropped =
-        stream.kind === "program" ? droppedFrames : frames.filter((frame) => frame.health === "dropped" && frame.participantId === stream.participantId).length;
+        stream.kind === "program"
+          ? droppedFrames
+          : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
 
       stream.framesWritten += matchingFrames.length;
       stream.droppedFrames += matchingDropped;

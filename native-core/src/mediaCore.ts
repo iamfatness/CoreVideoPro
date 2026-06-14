@@ -1,15 +1,19 @@
 import type {
   MediaCoreCommand,
+  MediaCoreColorGrade,
   MediaCoreDestination,
   MediaCoreDiagnosticsSnapshot,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
+  MediaCoreRenderPlan,
   MediaCoreRequest,
   MediaCoreResponse,
-  MediaCoreStateSnapshot
+  MediaCoreStateSnapshot,
+  MediaCoreZoomSource
 } from "./protocol.js";
 import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
 import { RecordingSink } from "./recordingSink.js";
+import { buildRenderPlan } from "./renderPlan.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -25,12 +29,24 @@ const DEFAULT_OUTPUT_PROFILE: MediaCoreOutputProfile = {
   targetBitrateMbps: 8
 };
 
+const DEFAULT_COLOR_GRADE: MediaCoreColorGrade = {
+  lut: "none",
+  exposure: 0,
+  contrast: 0,
+  saturation: 0,
+  temperature: 0
+};
+
 export class MediaCoreRuntime {
   private sceneGraph?: SceneGraphState;
+  private sources: MediaCoreZoomSource[] = [];
+  private activeSpeakerId?: string;
+  private screenShareParticipantId?: string;
   private readonly transforms = new Map<string, TransformState>();
   private readonly overlays = new Map<string, OverlayState>();
   private output?: OutputState;
   private outputProfile = DEFAULT_OUTPUT_PROFILE;
+  private colorGrade = DEFAULT_COLOR_GRADE;
   private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
   private readonly frameProducer = new FakeFrameProducer();
@@ -103,6 +119,37 @@ export class MediaCoreRuntime {
         return;
       }
 
+      if (command.type === "set-zoom-source-roster") {
+        this.sources = normalizeSources(command.sources);
+        this.activeSpeakerId = command.sources.find((source) => source.isActiveSpeaker)?.participantId ?? this.activeSpeakerId;
+        this.screenShareParticipantId = command.sources.find((source) => source.isScreenSharing)?.participantId ?? this.screenShareParticipantId;
+        if (command.sources.length === 0) {
+          warnings.push("Zoom source roster is empty.");
+        }
+        return;
+      }
+
+      if (command.type === "set-active-speaker") {
+        this.activeSpeakerId = command.participantId;
+        if (command.participantId && !this.sources.some((source) => source.participantId === command.participantId)) {
+          warnings.push(`${command.participantId} active speaker is not present in the Zoom source roster.`);
+        }
+        return;
+      }
+
+      if (command.type === "set-screen-share-source") {
+        this.screenShareParticipantId = command.participantId;
+        if (command.participantId && !this.sources.some((source) => source.participantId === command.participantId && source.isScreenSharing)) {
+          warnings.push(`${command.participantId} is not publishing a screen share source.`);
+        }
+        return;
+      }
+
+      if (command.type === "set-color-grade") {
+        this.colorGrade = normalizeColorGrade(command);
+        return;
+      }
+
       if (command.type === "set-output-profile") {
         this.outputProfile = normalizeOutputProfile(command);
         if (this.outputProfile.width > 1920 || this.outputProfile.height > 1080) {
@@ -171,7 +218,8 @@ export class MediaCoreRuntime {
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
     const recording = this.recordingSink.snapshot();
     const outputHealth = this.buildOutputHealth(recording);
-    const allWarnings = [...new Set([...warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+    const renderPlan = this.renderPlan();
+    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
 
     return {
       sceneId: this.sceneGraph?.sceneId,
@@ -184,8 +232,11 @@ export class MediaCoreRuntime {
       isoParticipantIds: this.output?.isoParticipantIds ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      sourceCount: this.sources.length,
+      resolvedRouteCount: renderPlan.resolvedRouteCount,
+      renderPlan,
       recording,
-      diagnostics: this.diagnostics(outputHealth, allWarnings, recording),
+      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
     };
@@ -195,6 +246,18 @@ export class MediaCoreRuntime {
     this.elapsedMs = Math.max(0, elapsedMs);
     this.frames = this.frameProducer.render(this.getFrameSources(), this.elapsedMs);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs);
+  }
+
+  private renderPlan() {
+    return buildRenderPlan({
+      sceneGraph: this.sceneGraph,
+      sources: this.sources,
+      activeSpeakerId: this.activeSpeakerId,
+      screenShareParticipantId: this.screenShareParticipantId,
+      overlays: [...this.overlays.values()],
+      outputProfile: this.outputProfile,
+      colorGrade: this.colorGrade
+    });
   }
 
   private syncOutputHealth(destinations: MediaCoreDestination[]) {
@@ -230,7 +293,8 @@ export class MediaCoreRuntime {
   private diagnostics(
     outputHealth: MediaCoreOutputHealth[],
     warnings: string[],
-    recording: MediaCoreStateSnapshot["recording"]
+    recording: MediaCoreStateSnapshot["recording"],
+    renderPlan: MediaCoreRenderPlan
   ): MediaCoreDiagnosticsSnapshot {
     return {
       generatedAtMs: this.elapsedMs,
@@ -240,6 +304,7 @@ export class MediaCoreRuntime {
       outputs: this.output?.destinations ?? [],
       outputProfile: this.outputProfile,
       outputHealth,
+      renderPlan,
       recording,
       warnings,
       lastCommandTypes: this.lastCommandTypes
@@ -247,37 +312,13 @@ export class MediaCoreRuntime {
   }
 
   private getFrameSources(): FakeFrameSource[] {
-    if (!this.sceneGraph) {
-      return [];
-    }
-
-    return this.sceneGraph.routes
-      .map((route): FakeFrameSource | undefined => {
-        if (route.mode === "screen-share") {
-          return {
-            sourceId: `screen-share:${route.routeId}`,
-            kind: "screen-share"
-          };
-        }
-
-        if (route.participantId) {
-          return {
-            sourceId: `participant:${route.participantId}`,
-            participantId: route.participantId,
-            kind: "participant-video"
-          };
-        }
-
-        if (route.mode === "active-speaker") {
-          return {
-            sourceId: `active-speaker:${route.routeId}`,
-            kind: "participant-video"
-          };
-        }
-
-        return undefined;
-      })
-      .filter(Boolean) as FakeFrameSource[];
+    return this.renderPlan().layers
+      .filter((layer): layer is typeof layer & { kind: "participant-video" | "screen-share" } => layer.kind === "participant-video" || layer.kind === "screen-share")
+      .map((layer) => ({
+        sourceId: layer.sourceId ?? layer.layerId,
+        participantId: layer.participantId,
+        kind: layer.kind
+      }));
   }
 }
 
@@ -293,6 +334,29 @@ function normalizeOutputProfile(profile: MediaCoreOutputProfile): MediaCoreOutpu
     fps: Math.max(1, profile.fps),
     targetBitrateMbps: Math.max(0, profile.targetBitrateMbps)
   };
+}
+
+function normalizeColorGrade(colorGrade: MediaCoreColorGrade): MediaCoreColorGrade {
+  return {
+    lut: colorGrade.lut,
+    exposure: clampRange(colorGrade.exposure, -100, 100),
+    contrast: clampRange(colorGrade.contrast, -100, 100),
+    saturation: clampRange(colorGrade.saturation, -100, 100),
+    temperature: clampRange(colorGrade.temperature, -100, 100)
+  };
+}
+
+function normalizeSources(sources: MediaCoreZoomSource[]) {
+  return sources.map((source) => ({
+    ...source,
+    hasVideo: source.hasVideo && source.health !== "video-off",
+    hasAudio: source.hasAudio,
+    audioLevel: clampRange(source.audioLevel, 0, 100)
+  }));
+}
+
+function clampRange(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeTransform(command: TransformState): TransformState {
