@@ -76,6 +76,7 @@ import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, sn
 import { buildWatermarkSpec, classificationColor, confidentialityLevels, createWatermark, updateWatermark, validateWatermark, watermarkPositions, type WatermarkConfig } from "./engine/outputWatermark";
 import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/networkDiagnostics";
 import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAnimationFrame, dismissAnimation, getAnimationPreset, startAnimation, type AnimationState } from "./engine/graphicAnimator";
+import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, type Poll } from "./engine/pollEngine";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -223,6 +224,9 @@ export function App({ engines, runtime }: AppProps) {
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
   const [selectedAnimPresetId, setSelectedAnimPresetId] = useState(animationPresets[0].id);
   const [animState, setAnimState] = useState<AnimationState | null>(null);
+  const [activePoll, setActivePoll] = useState<Poll>(() =>
+    createPoll("Favourite session format?", ["Live Q&A", "Presentation only", "Panel discussion"])
+  );
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -3322,6 +3326,75 @@ export function App({ engines, runtime }: AppProps) {
                       }}
                     >
                       End Show
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Audience poll">
+            <div className="section-title">
+              <Radio size={15} />
+              Audience poll
+            </div>
+            {(() => {
+              const nowMs = Date.now();
+              const tally = tallyResults(activePoll);
+              return (
+                <div className="poll-panel" aria-label="Poll panel">
+                  <div className="poll-header">
+                    <span className="poll-question">{activePoll.question}</span>
+                    <span className={`poll-status-badge status-${activePoll.status}`}>{activePoll.status}</span>
+                  </div>
+                  <div className="poll-options" aria-label="Poll options">
+                    {tally.sortedOptions.map((opt) => (
+                      <div key={opt.id} className={`poll-option ${opt.id === tally.winner?.id ? "winner" : ""}`}>
+                        <span className="poll-opt-text">{opt.text}</span>
+                        <div className="poll-opt-bar">
+                          <div className="poll-opt-fill" style={{ width: `${opt.pct}%` }} />
+                        </div>
+                        <span className="poll-opt-count">{opt.voteCount} ({opt.pct}%)</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="poll-summary">{tally.summary}</p>
+                  <div className="poll-stats">
+                    <ControlReadout label="Status" value={activePoll.status} />
+                    <ControlReadout label="Votes" value={String(tally.totalVotes)} />
+                    <ControlReadout label="Voters" value={String(activePoll.voterIds.length)} />
+                    <ControlReadout label="Winner" value={tally.isTie ? "Tie" : (tally.winner?.text ?? "—")} />
+                  </div>
+                  <div className="poll-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "draft"}
+                      onClick={() => setActivePoll((p) => openPoll(p, nowMs))}
+                    >
+                      Open Poll
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "open"}
+                      onClick={() => {
+                        const v1 = castVote(activePoll, `sim-${Date.now()}`, [activePoll.options[0].id]);
+                        if (v1.accepted) setActivePoll(v1.poll);
+                      }}
+                    >
+                      Sim Vote
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={activePoll.status !== "open"}
+                      onClick={() => setActivePoll((p) => closePoll(p, nowMs))}
+                    >
+                      Close Poll
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setActivePoll(resetPoll(activePoll))}
+                    >
+                      Reset
                     </button>
                   </div>
                 </div>
