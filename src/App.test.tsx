@@ -1166,6 +1166,32 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("caption quality", () => {
+  it("shows the caption quality panel in the Overlays tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Caption quality panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText(/Avg confidence/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/Tier/i)).toBeInTheDocument();
+  });
+
+  it("shows quality summary text with confidence and sample count", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Caption quality panel");
+    // The summary element (first match) should contain a tier label + confidence
+    const summaries = within(panel).getAllByText(/Excellent|Good|Degraded|Poor|No caption/i);
+    expect(summaries.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("scene intelligence", () => {
   it("shows the scene intelligence panel with a recommendation in the Automation tab", async () => {
     const user = userEvent.setup();

@@ -63,6 +63,7 @@ import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
 import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
+import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summarizeCaptionQuality } from "./engine/captionQuality";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2254,6 +2255,44 @@ export function App({ engines, runtime }: AppProps) {
                 </div>
               ))}
             </div>
+          </section>
+
+          <section className="panel" aria-label="Caption quality">
+            <div className="section-title">
+              <Activity size={15} />
+              Caption quality
+            </div>
+            {(() => {
+              const confidenceValues = production.captionTranscript.map((e) => e.confidence);
+              const qualityReport = computeCaptionQuality(confidenceValues);
+              const hasActiveSpeaker = production.participants.some((p) => p.isActiveSpeaker);
+              const currentText = production.captionOverlay.text;
+              const signal = {
+                confidencePct: production.captionOverlay.confidence,
+                msSinceLastWord: hasActiveSpeaker ? 500 : 5000,
+                text: currentText,
+                activeSpeakerPresent: hasActiveSpeaker,
+                screenShareActive,
+              };
+              const visibility = decideCaptionVisibility(signal);
+              const deadAir = detectDeadAir(signal.msSinceLastWord);
+              return (
+                <div className={`caption-quality-panel tier-${qualityReport.tier}`} aria-label="Caption quality panel">
+                  <div className="caption-quality-summary">{summarizeCaptionQuality(qualityReport)}</div>
+                  <div className="health-grid">
+                    <ControlReadout label="Avg confidence" value={`${qualityReport.avgConfidence}%`} />
+                    <ControlReadout label="Min confidence" value={`${qualityReport.minConfidence}%`} />
+                    <ControlReadout label="Tier" value={qualityReport.tier} />
+                    <ControlReadout label="Visibility" value={visibility.state} />
+                    <ControlReadout label="Dead air" value={deadAir} />
+                    <ControlReadout label="Samples" value={String(qualityReport.sampleCount)} />
+                  </div>
+                  {qualityReport.warnings.map((w) => (
+                    <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
         </div>
       </div>
