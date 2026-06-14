@@ -1567,3 +1567,28 @@ describe("output watermark", () => {
     expect(within(panel).getAllByLabelText("Classification banner").length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("network diagnostics", () => {
+  it("shows the network diagnostics panel in the Settings tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Network diagnostics panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText("Quality")).toBeInTheDocument();
+    expect(within(panel).getByText("Avg RTT")).toBeInTheDocument();
+  });
+
+  it("shows quality score and loss readouts", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Network diagnostics panel");
+    expect(within(panel).getByText("Score")).toBeInTheDocument();
+    expect(within(panel).getByText("Loss")).toBeInTheDocument();
+  });
+});
