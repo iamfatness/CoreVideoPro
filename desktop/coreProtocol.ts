@@ -9,6 +9,7 @@
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 
 export type CoreRequest =
   | { id: string; type: "handshake" }
@@ -26,6 +27,8 @@ export type CoreResponse =
   | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
   | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-spine-failed"; message: string } };
 
+export type CoreEvent = { type: "zoom-video-frame"; frame: ZoomVideoFrame };
+
 /** Parse a single stdio line into a CoreResponse, or null when unparseable. */
 export function parseCoreResponse(line: string): CoreResponse | null {
   const trimmed = line.trim();
@@ -35,6 +38,20 @@ export function parseCoreResponse(line: string): CoreResponse | null {
   try {
     const value = JSON.parse(trimmed) as CoreResponse;
     return typeof value?.id === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a single unsolicited stdio line into a CoreEvent, or null when unparseable. */
+export function parseCoreEvent(line: string): CoreEvent | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(trimmed) as CoreEvent;
+    return value?.type === "zoom-video-frame" && value.frame ? value : null;
   } catch {
     return null;
   }

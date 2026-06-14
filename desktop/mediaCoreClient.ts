@@ -11,8 +11,9 @@ import { dirname, join } from "node:path";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
-import { parseCoreResponse } from "./coreProtocol.ts";
+import { parseCoreEvent, parseCoreResponse } from "./coreProtocol.ts";
 
 export type MediaCoreSupervisorOptions = {
   /** Executable to spawn. Defaults to the current Node binary. */
@@ -27,6 +28,8 @@ export type MediaCoreSupervisorOptions = {
   onProfile?: (profile: NativeMediaCoreProfile) => void;
   /** Called on each unexpected exit (after crash isolation, before restart). */
   onCrash?: (info: { code: number | null; restartCount: number }) => void;
+  /** Called for unsolicited decoded Zoom participant frames from the core. */
+  onZoomVideoFrame?: (frame: ZoomVideoFrame) => void;
 };
 
 type Pending = {
@@ -152,6 +155,12 @@ export class MediaCoreSupervisor {
   }
 
   private onLine(line: string): void {
+    const event = parseCoreEvent(line);
+    if (event) {
+      this.options.onZoomVideoFrame?.(event.frame);
+      return;
+    }
+
     const response = parseCoreResponse(line);
     if (!response) {
       return;

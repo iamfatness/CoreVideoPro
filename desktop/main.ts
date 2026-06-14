@@ -18,7 +18,12 @@ import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
 const here = dirname(fileURLToPath(import.meta.url));
 const supervisor = new MediaCoreSupervisor({
   onCrash: (info) => console.warn(`[media-core] crashed (code ${info.code}); restart #${info.restartCount}`),
-  onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`)
+  onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`),
+  onZoomVideoFrame: (frame) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("corevideo:zoom-video-frame", frame);
+    }
+  }
 });
 const route = createIpcRouter({ mediaCore: supervisor });
 
