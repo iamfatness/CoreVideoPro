@@ -53,6 +53,7 @@ import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputPr
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
 import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
+import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engine/streamHealth";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1537,6 +1538,65 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
               <ControlReadout label="Preflight" value={outputPreflightStatus} />
             </div>
+          </section>
+
+          <section className="panel" aria-label="Stream health">
+            <div className="section-title">
+              <Wifi size={15} />
+              Stream health
+            </div>
+            {(() => {
+              const targetKbps = (outputProfileBadge?.targetBitrateMbps ?? 6) * 1000;
+              const activeDestinations = destinationStates.filter((d) => d.active);
+              if (activeDestinations.length === 0) {
+                return <p className="brand-kit-summary">No active destinations — health scoring available during live output.</p>;
+              }
+              const reports = activeDestinations.map((dest) =>
+                scoreStreamHealth(
+                  {
+                    bitrateKbps: dest.bitrateMbps * 1000,
+                    droppedFrames: production.output.droppedFrames,
+                    rttMs: dest.latencyMs,
+                    encoderLoadPct: production.output.encoderLoad,
+                    timestampMs: Date.now(),
+                  },
+                  targetKbps
+                )
+              );
+              const agg = aggregateStreamHealth(reports);
+              return (
+                <div className="stream-health-panel">
+                  <div className={`stream-health-aggregate grade-${agg.worstGrade}`}>
+                    <strong>{agg.worstGrade.charAt(0).toUpperCase() + agg.worstGrade.slice(1)}</strong>
+                    <span>Avg score: {agg.avgScore}/100</span>
+                  </div>
+                  <div className="stream-health-destinations">
+                    {activeDestinations.map((dest, i) => {
+                      const report = reports[i];
+                      return (
+                        <div key={dest.id} className={`stream-health-dest grade-${report.grade}`}>
+                          <div className="stream-health-dest-header">
+                            <strong>{dest.name}</strong>
+                            <span className={`health-badge grade-${report.grade}`}>{report.score}/100</span>
+                          </div>
+                          <div className="stream-health-metrics">
+                            <span>Bitrate: {formatBitrate(report.bitrateKbps)}</span>
+                            <span>RTT: {report.rttMs} ms</span>
+                            <span>Encoder: {report.encoderLoadPct}%</span>
+                            <span>Drops: {report.droppedFrames}</span>
+                          </div>
+                          {report.warnings.length > 0 && (
+                            <ul className="stream-health-warnings">
+                              {report.warnings.map((w) => <li key={w}>{w}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel" aria-label="Virtual camera">
