@@ -117,7 +117,7 @@ import {
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
 import type { MediaCoreHealth, NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
-import { createEmbeddedZoomSdkReadinessInput } from "./config/zoomMeetingSdk";
+import { deriveZoomSdkReadinessInputForRuntime } from "./config/zoomMeetingSdk";
 import { describeRuntimeEnvironment } from "./engine/runtimeEnvironment";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
@@ -204,12 +204,6 @@ export function App({ engines, runtime }: AppProps) {
     displayName: "CoreVideo Producer",
     webinar: true
   });
-  const [sdkReadinessInput] = useState<ZoomSdkReadinessInput>(() => createEmbeddedZoomSdkReadinessInput());
-  const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
-  const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
-    sdkReadinessInput.platform === "windows"
-      ? inspectZoomWindowsSdkPackage({ architecture: "x64", entries: [] })
-      : undefined;
   const [joinStatus, setJoinStatus] = useState("Ready");
   const [outputPreflightStatus, setOutputPreflightStatus] = useState("Output preflight ready");
   const [recordingPreflightStatus, setRecordingPreflightStatus] = useState("Recording preflight ready");
@@ -296,6 +290,23 @@ export function App({ engines, runtime }: AppProps) {
     { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
   ]);
   const [mediaCoreHealth, setMediaCoreHealth] = useState<MediaCoreHealth | undefined>(undefined);
+  const nativeBridgeForRuntime = (window as { coreVideoNative?: import("./engine/nativeHostBridge").NativeHostBridge }).coreVideoNative;
+  const liveRuntime = useMemo(
+    () =>
+      nativeBridgeForRuntime && runtime
+        ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
+        : runtime,
+    [nativeBridgeForRuntime, runtime, mediaCoreHealth]
+  );
+  const sdkReadinessInput = useMemo(
+    () => deriveZoomSdkReadinessInputForRuntime(liveRuntime),
+    [liveRuntime?.status, liveRuntime?.host]
+  );
+  const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
+  const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
+    sdkReadinessInput.platform === "windows"
+      ? inspectZoomWindowsSdkPackage({ architecture: "x64", entries: [] })
+      : undefined;
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -456,10 +467,6 @@ export function App({ engines, runtime }: AppProps) {
     sdkReadinessInput
   ]);
 
-  const nativeBridgeForRuntime = (window as { coreVideoNative?: import("./engine/nativeHostBridge").NativeHostBridge }).coreVideoNative;
-  const liveRuntime = nativeBridgeForRuntime && runtime
-    ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
-    : runtime;
   const joinBlockedBySdk = shouldBlockZoomJoin(liveRuntime, sdkReadiness);
 
   // When capabilities is non-empty (native mode), gates are active; empty = mock/allow-all.

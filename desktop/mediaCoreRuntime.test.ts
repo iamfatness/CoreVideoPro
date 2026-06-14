@@ -13,10 +13,13 @@ describe("mediaCoreSupervisorOptionsFromEnv", () => {
         COREVIDEO_MEDIA_CORE_ARGS: "--dev --trace",
         COREVIDEO_MEDIA_CORE_CWD: "native/build"
       })
-    ).toEqual({
+    ).toMatchObject({
       command: "native/build/corevideo-native.exe",
       args: ["--dev", "--trace"],
-      cwd: "native/build"
+      cwd: "native/build",
+      env: {
+        COREVIDEO_ZOOM_PUBLIC_APP_KEY: "y6sIWSwiTZe1JygMx4C9EQ"
+      }
     });
   });
 });

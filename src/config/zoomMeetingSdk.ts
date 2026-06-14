@@ -1,3 +1,4 @@
+import type { RuntimeEnvironment } from "../engine/runtimeEnvironment";
 import type { ZoomSdkReadinessInput } from "../engine/zoomSdkReadiness";
 import manifest from "./zoomMeetingSdk.json";
 
@@ -31,6 +32,30 @@ export function createEmbeddedZoomSdkReadinessInput(
     rawVideoEnabled: false,
     rawAudioEnabled: false,
     rawShareEnabled: false,
+    ...overrides
+  };
+}
+
+/** Vendored zoom-engine path: treat native media ready as SDK-ready for Sprint 1. */
+export function deriveZoomSdkReadinessInputForRuntime(
+  runtime: RuntimeEnvironment | undefined,
+  overrides: Partial<ZoomSdkReadinessInput> = {}
+): ZoomSdkReadinessInput {
+  const base = createEmbeddedZoomSdkReadinessInput(overrides);
+  if (runtime?.status !== "ready") {
+    return base;
+  }
+
+  return {
+    ...base,
+    sdkRuntimePresent: true,
+    sdkVersion: "zoom-engine",
+    oauthConfigured: true,
+    jwtBrokerConfigured: true,
+    rawVideoEnabled: true,
+    rawAudioEnabled: true,
+    rawShareEnabled: true,
+    packagingPath: runtime.host,
     ...overrides
   };
 }

@@ -39,6 +39,8 @@ declare const console: {
 
 declare function setTimeout(handler: () => void, ms: number): { readonly __timer: unique symbol };
 declare function clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+declare function setInterval(handler: () => void, ms: number): { readonly __timer: unique symbol };
+declare function clearInterval(timer: ReturnType<typeof setInterval>): void;
 
 interface NodeJS_ReadableStream {
   on(event: string, listener: (chunk: unknown) => void): this;

@@ -144,6 +144,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    (void)ensureMediaStartedLocked();
     ZoomEngineJoinCommand command;
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
@@ -183,6 +184,7 @@ rpc::Json ZoomEngineRuntime::leave() {
     (void)process_->sendLine(buildZoomEngineLeaveCommand());
   }
   state_.reset();
+  mediaStarted_ = false;
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -202,6 +204,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  (void)ensureMediaStartedLocked();
   const rpc::Json* subscriptions = payload.get("subscriptions");
   if (process_ && process_->running() && subscriptions && subscriptions->isArray()) {
     for (const auto& request : subscriptions->asArray()) {
@@ -380,6 +383,21 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       {"warnings", stringArray(runtime.warnings)},
       {"events", stringArray(runtime.events)},
   };
+}
+
+bool ZoomEngineRuntime::ensureMediaStartedLocked() {
+  if (mediaStarted_ || !process_ || !process_->running()) {
+    return mediaStarted_;
+  }
+  if (state_.snapshot().meetingState != "in-meeting") {
+    return false;
+  }
+  if (!process_->sendLine(buildZoomEngineStartMediaCommand())) {
+    state_.apply({ZoomEngineEventKind::Error, "error", "", "start_media", process_->lastError()});
+    return false;
+  }
+  mediaStarted_ = true;
+  return true;
 }
 
 void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
