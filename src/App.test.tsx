@@ -152,6 +152,24 @@ describe("App production controls", () => {
     expect(canvasStyle()).toContain("stage.jpg");
   });
 
+  it("applies a program color grade LUT to the program canvas", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const program = screen.getByLabelText("Program preview");
+    const canvasStyle = () => (program.querySelector(".program-canvas") as HTMLElement).getAttribute("style") ?? "";
+    expect(canvasStyle()).toContain("contrast(1.00)");
+
+    await goToTab(user, "Media");
+    const gradePanel = screen.getByLabelText("Program color grade");
+    expect(within(gradePanel).getByText("No grade - source passthrough")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Color LUT"), "punch");
+
+    expect(canvasStyle()).toContain("contrast(1.22)");
+    expect(within(gradePanel).getByText(/^punch - exp/)).toBeInTheDocument();
+  });
+
   it("applies caption style controls to the program caption", async () => {
     const user = userEvent.setup();
     renderApp();

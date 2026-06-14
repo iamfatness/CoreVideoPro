@@ -149,6 +149,16 @@ export type BrandKit = {
   lowerThirdStyle: "solid" | "minimal" | "gradient";
 };
 
+export type ColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
+
+export type ColorGrade = {
+  lut: ColorGradeLut;
+  exposure: number;
+  contrast: number;
+  saturation: number;
+  temperature: number;
+};
+
 export type SourceRoute = {
   id: string;
   mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
@@ -301,6 +311,7 @@ export type ProductionState = {
   captionTranscript: CaptionTranscriptEntry[];
   graphics: GraphicOverlay[];
   brandKit: BrandKit;
+  colorGrade: ColorGrade;
   videoEffects: ParticipantVideoEffect[];
   captions: string;
   participants: Participant[];
@@ -751,6 +762,13 @@ export const initialProduction: ProductionState = {
     backgroundImageUrl: "",
     fontFamily: "Inter",
     lowerThirdStyle: "gradient"
+  },
+  colorGrade: {
+    lut: "none",
+    exposure: 0,
+    contrast: 0,
+    saturation: 0,
+    temperature: 0
   },
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,
