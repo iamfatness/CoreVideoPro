@@ -1467,6 +1467,9 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Transforms" value={`${mediaCoreSnapshot?.participantTransformCount ?? 0}`} />
               <ControlReadout label="Overlays" value={`${mediaCoreSnapshot?.overlayCount ?? 0}`} />
               <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
+              <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />
+              <ControlReadout label="Recorded frames" value={`${mediaCoreSnapshot?.recording?.totalFramesWritten ?? 0}`} />
+              <ControlReadout label="Disk rate" value={mediaCoreSnapshot?.recording ? `${mediaCoreSnapshot.recording.estimatedDiskRateMBps} MB/s` : "0 MB/s"} />
               <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
             </div>
           </section>

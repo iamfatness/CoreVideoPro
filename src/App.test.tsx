@@ -46,6 +46,12 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Frames2");
     expect(nativeCore).toHaveTextContent("Overlays1");
     expect(nativeCore).toHaveTextContent("OutputsIdle");
+    expect(nativeCore).toHaveTextContent("RecordingOff");
+
+    await user.click(screen.getByRole("button", { name: "Record" }));
+    await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingrecording"));
+    expect(nativeCore).toHaveTextContent("Outputsrecording");
+    expect(nativeCore).toHaveTextContent("Disk rate5.55 MB/s");
   });
 
   it("renders AI Studio show notes and highlight suggestions", async () => {

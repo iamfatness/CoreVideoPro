@@ -45,7 +45,15 @@ describe("MediaCoreServiceClient", () => {
         sceneId: "panel",
         routeCount: 2,
         outputs: ["recording", "srt"],
-        isoParticipantIds: ["p1"]
+        isoParticipantIds: ["p1"],
+        recording: {
+          active: true,
+          programPath: "Recordings/CoreVideo Pro/native-core/program-0.mp4",
+          streams: [
+            { kind: "program", framesWritten: 2 },
+            { kind: "iso", participantId: "p1", framesWritten: 0 }
+          ]
+        }
       }
     });
 
@@ -76,7 +84,15 @@ describe("MediaCoreServiceClient", () => {
             frameNumber: 2,
             timestampMs: 33
           }
-        ]
+        ],
+        recording: {
+          elapsedMs: 33,
+          streams: [
+            { kind: "program", framesWritten: 4 },
+            { kind: "iso", participantId: "p1", framesWritten: 0 }
+          ],
+          totalFramesWritten: 4
+        }
       }
     });
   });

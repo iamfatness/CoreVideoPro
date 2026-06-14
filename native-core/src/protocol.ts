@@ -18,6 +18,25 @@ export type MediaCoreFrame = {
   health: MediaCoreFrameHealth;
 };
 
+export type MediaCoreRecordingStream = {
+  kind: "program" | "iso";
+  participantId?: string;
+  path: string;
+  framesWritten: number;
+};
+
+export type MediaCoreRecordingSession = {
+  active: boolean;
+  status: "recording" | "warning";
+  startedAtMs: number;
+  elapsedMs: number;
+  estimatedDiskRateMBps: number;
+  programPath: string;
+  streams: MediaCoreRecordingStream[];
+  totalFramesWritten: number;
+  warning?: string;
+};
+
 export type MediaCoreCommand =
   | {
       type: "load-scene-graph";
@@ -74,6 +93,7 @@ export type MediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: MediaCoreDestination[];
   isoParticipantIds: string[];
+  recording?: MediaCoreRecordingSession;
   lastCommandTypes: string[];
   warnings: string[];
 };

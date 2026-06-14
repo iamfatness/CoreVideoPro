@@ -21,7 +21,8 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
 - Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, recording ISOs, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
 - Renderer-to-media-core sync engine that pushes production state into native media-core snapshots and surfaces synced scene, route, frame, transform, overlay, output, and warning status in the app.
-- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, deterministic fake frame producer, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
+- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, deterministic fake frame producer, recording sink, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
+- Backend recording-session snapshots with program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, and warning state surfaced in the app's Native core readout.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
 - Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
@@ -91,6 +92,7 @@ CoreVideo Pro Desktop Shell
   -> MediaCoreServiceClient
   -> native-core service boundary
   -> deterministic fake frame producer
+  -> recording sink / program + ISO stream counters
   -> Native Media Core
   -> Zoom SDK raw audio/video ingest
   -> GPU compositor / scene graph / overlays / chroma key

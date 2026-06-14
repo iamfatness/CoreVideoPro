@@ -7,6 +7,8 @@ export type {
   MediaCoreFrame,
   MediaCoreFrameHealth,
   MediaCoreFrameKind,
+  MediaCoreRecordingSession,
+  MediaCoreRecordingStream,
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreStateSnapshot

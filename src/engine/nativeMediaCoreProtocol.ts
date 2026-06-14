@@ -67,6 +67,25 @@ export type NativeMediaCoreFrame = {
   health: "live" | "stale" | "dropped" | "low-resolution";
 };
 
+export type NativeMediaCoreRecordingStream = {
+  kind: "program" | "iso";
+  participantId?: string;
+  path: string;
+  framesWritten: number;
+};
+
+export type NativeMediaCoreRecordingSession = {
+  active: boolean;
+  status: "recording" | "warning";
+  startedAtMs: number;
+  elapsedMs: number;
+  estimatedDiskRateMBps: number;
+  programPath: string;
+  streams: NativeMediaCoreRecordingStream[];
+  totalFramesWritten: number;
+  warning?: string;
+};
+
 export type NativeMediaCoreStateSnapshot = {
   sceneId?: string;
   routeCount: number;
@@ -76,6 +95,7 @@ export type NativeMediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   isoParticipantIds: string[];
+  recording?: NativeMediaCoreRecordingSession;
   lastCommandTypes: string[];
   warnings: string[];
 };

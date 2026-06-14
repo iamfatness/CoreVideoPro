@@ -1,5 +1,6 @@
 import type { MediaCoreCommand, MediaCoreRequest, MediaCoreResponse, MediaCoreStateSnapshot } from "./protocol.js";
 import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
+import { RecordingSink } from "./recordingSink.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -13,6 +14,7 @@ export class MediaCoreRuntime {
   private output?: OutputState;
   private lastCommandTypes: string[] = [];
   private readonly frameProducer = new FakeFrameProducer();
+  private readonly recordingSink = new RecordingSink();
   private frames = this.frameProducer.render([], 0);
   private elapsedMs = 0;
 
@@ -49,6 +51,12 @@ export class MediaCoreRuntime {
   apply(commands: MediaCoreCommand[]) {
     const warnings: string[] = [];
     this.lastCommandTypes = commands.map((command) => command.type);
+    const outputCommand = commands.find((command) => command.type === "start-program-output");
+
+    if (!outputCommand) {
+      this.output = undefined;
+      this.recordingSink.stop();
+    }
 
     commands.forEach((command) => {
       if (command.type === "load-scene-graph") {
@@ -80,6 +88,14 @@ export class MediaCoreRuntime {
         if (command.destinations.length === 0) {
           warnings.push("Program output started without destinations.");
         }
+        if (command.destinations.includes("recording")) {
+          const recording = this.recordingSink.sync(command.isoParticipantIds, this.elapsedMs);
+          if (recording?.warning) {
+            warnings.push(recording.warning);
+          }
+        } else {
+          this.recordingSink.stop();
+        }
       }
     });
 
@@ -96,14 +112,16 @@ export class MediaCoreRuntime {
       overlayCount: this.overlays.size,
       outputs: this.output?.destinations ?? [],
       isoParticipantIds: this.output?.isoParticipantIds ?? [],
+      recording: this.recordingSink.snapshot(),
       lastCommandTypes: this.lastCommandTypes,
-      warnings
+      warnings: [...warnings, this.recordingSink.snapshot()?.warning].filter(Boolean) as string[]
     };
   }
 
   private tick(elapsedMs: number) {
     this.elapsedMs = Math.max(0, elapsedMs);
     this.frames = this.frameProducer.render(this.getFrameSources(), this.elapsedMs);
+    this.recordingSink.writeFrames(this.frames, this.elapsedMs);
   }
 
   private getFrameSources(): FakeFrameSource[] {

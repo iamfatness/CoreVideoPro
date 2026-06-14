@@ -65,6 +65,17 @@ describe("MediaCoreRuntime", () => {
         overlayCount: 1,
         outputs: ["recording", "rtmp"],
         isoParticipantIds: ["p1", "p2"],
+        recording: {
+          active: true,
+          status: "recording",
+          programPath: "Recordings/CoreVideo Pro/native-core/program-0.mp4",
+          streams: [
+            { kind: "program", framesWritten: 2 },
+            { kind: "iso", participantId: "p1", framesWritten: 0 },
+            { kind: "iso", participantId: "p2", framesWritten: 1 }
+          ],
+          totalFramesWritten: 3
+        },
         lastCommandTypes: [
           "load-scene-graph",
           "set-participant-transform",
@@ -87,6 +98,7 @@ describe("MediaCoreRuntime", () => {
         frames: [],
         participantTransformCount: 0,
         overlayCount: 0,
+        recording: undefined,
         outputs: []
       }
     });
@@ -128,7 +140,41 @@ describe("MediaCoreRuntime", () => {
             frameNumber: 2,
             timestampMs: 33
           }
-        ]
+        ],
+        recording: {
+          elapsedMs: 33,
+          streams: [
+            { kind: "program", framesWritten: 4 },
+            { kind: "iso", participantId: "p1", framesWritten: 0 },
+            { kind: "iso", participantId: "p2", framesWritten: 2 }
+          ],
+          totalFramesWritten: 6
+        }
+      }
+    });
+  });
+
+  it("clears recording when a sync no longer includes recording output", () => {
+    const runtime = new MediaCoreRuntime();
+    runtime.handle({ id: "sync-1", type: "sync", commands });
+    const response = runtime.handle({
+      id: "sync-2",
+      type: "sync",
+      commands: [
+        {
+          type: "load-scene-graph",
+          sceneId: "interview",
+          routes: [{ routeId: "active", mode: "active-speaker", audioRole: "mix" }]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        outputs: [],
+        isoParticipantIds: [],
+        recording: undefined
       }
     });
   });

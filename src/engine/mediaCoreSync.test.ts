@@ -12,7 +12,7 @@ describe("media core sync engine", () => {
       sceneId: "speaker-slides",
       routeCount: 2,
       frameCount: 2,
-      participantTransformCount: 4,
+      participantTransformCount: 8,
       overlayCount: 1,
       outputs: [],
       isoParticipantIds: [],
@@ -69,6 +69,29 @@ describe("media core sync engine", () => {
       outputs: ["recording"]
     });
     expect(syncMediaCore).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ type: "load-scene-graph" })]), 2400);
+  });
+
+  it("creates recording session metadata when production is recording", async () => {
+    const engine = new InMemoryMediaCoreSyncEngine();
+    const snapshot = await engine.syncProduction({ ...initialProduction, recording: true }, 3000);
+
+    expect(snapshot).toMatchObject({
+      outputs: ["recording"],
+      isoParticipantIds: ["p1", "p2"],
+      recording: {
+        active: true,
+        status: "recording",
+        startedAtMs: 3000,
+        estimatedDiskRateMBps: 5.55,
+        programPath: "Recordings/CoreVideo Pro/native-core/program-3000.mp4",
+        streams: [
+          { kind: "program", framesWritten: 2 },
+          { kind: "iso", participantId: "p1", framesWritten: 0 },
+          { kind: "iso", participantId: "p2", framesWritten: 1 }
+        ],
+        totalFramesWritten: 3
+      }
+    });
   });
 
   it("falls back with a warning when a native host has no media-core bridge", async () => {
