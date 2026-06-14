@@ -194,6 +194,7 @@ export type MediaCoreRecordingStream = {
   participantId?: string;
   path: string;
   status: MediaCoreRecordingWriterStatus;
+  readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
   expectedFrames?: number;
   framesWritten: number;
   missingFrames?: number;

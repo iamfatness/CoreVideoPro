@@ -32,6 +32,14 @@ import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions"
 
 const MAX_EVENT_LOG_LENGTH = 80;
 
+type IsoRecordingReadiness = NonNullable<NativeMediaCoreRecordingStream["readiness"]>;
+
+type IsoRecordingReadinessIssue = {
+  participantId: string;
+  readiness: Exclude<IsoRecordingReadiness, "ready">;
+  warning: string;
+};
+
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
@@ -221,12 +229,13 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       colorGrade: this.colorGrade
     });
     const isoParticipantIds = isoParticipantIdsFromCommands(commands, output?.isoParticipantIds ?? this.recordingTargets.isoParticipantIds);
+    const isoReadinessIssues = buildIsoRecordingReadinessIssues(isoParticipantIds, this.sources);
     const frameSources = buildFrameSourceLayers(renderPlan, this.sources, isoParticipantIds);
     const frames = frameSources.map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
-    const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
+    const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs, isoReadinessIssues);
     const encoderSession = this.encoderSession(output?.destinations ?? [], this.programFrame, recording);
     const outputSenderSession = this.outputSenderSession(output?.destinations ?? [], this.programFrame, elapsedMs);
     this.syncOutputSenderEvents(outputSenderSession.senders, elapsedMs);
@@ -358,7 +367,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     };
   }
 
-  private syncRecordingCommands(commands: NativeMediaCoreCommand[], frames: NativeMediaCoreFrame[], elapsedMs: number) {
+  private syncRecordingCommands(commands: NativeMediaCoreCommand[], frames: NativeMediaCoreFrame[], elapsedMs: number, isoReadinessIssues: IsoRecordingReadinessIssue[] = []) {
     commands.forEach((command) => {
       if (command.type === "set-recording-targets") {
         this.recordingTargets = normalizeTargets(command);
@@ -387,7 +396,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       this.writeRecordingFrames(frames, elapsedMs, this.programFrame);
     }
 
-    return this.snapshotRecording(elapsedMs);
+    return applyIsoRecordingReadiness(this.snapshotRecording(elapsedMs), isoReadinessIssues);
   }
 
   private startRecording(targets: NativeMediaCoreRecordingTargets, elapsedMs: number, sessionId = `rec-${elapsedMs}`) {
@@ -811,7 +820,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
             participantId: stream.participantId,
             status: stream.status === "failed" ? "failed" : stream.status === "warning" ? "warning" : "attached",
             attachedFrameCount: stream.framesWritten,
-            warning: stream.status === "warning" ? recording.warning : undefined
+            warning: stream.status === "warning" ? stream.warning ?? recording.warning : undefined
           });
         });
     }
@@ -999,6 +1008,51 @@ function recordingStreamWarning(stream: NativeMediaCoreRecordingStream) {
   }
 
   return undefined;
+}
+
+function applyIsoRecordingReadiness(recording: NativeMediaCoreRecordingSession | undefined, issues: IsoRecordingReadinessIssue[]) {
+  if (!recording || issues.length === 0 || recording.status === "failed" || recording.status === "stopped") {
+    return recording;
+  }
+
+  const issuesByParticipantId = new Map(issues.map((issue) => [issue.participantId, issue]));
+  let readinessWarning: string | undefined;
+  const streams = recording.streams.map((stream) => {
+    if (stream.kind !== "iso" || !stream.participantId) {
+      return stream;
+    }
+
+    const issue = issuesByParticipantId.get(stream.participantId);
+    if (!issue) {
+      return {
+        ...stream,
+        readiness: "ready" as const
+      };
+    }
+
+    readinessWarning ??= issue.warning;
+    return {
+      ...stream,
+      readiness: issue.readiness,
+      status: "warning" as const,
+      warning: issue.warning
+    };
+  });
+
+  if (!readinessWarning) {
+    return {
+      ...recording,
+      streams
+    };
+  }
+
+  return {
+    ...recording,
+    status: "warning" as const,
+    writerStatus: "warning" as const,
+    warning: readinessWarning,
+    streams
+  };
 }
 
 function encoderForQuality(quality: "standard" | "high" | "archive") {
@@ -1201,6 +1255,39 @@ function buildFrameSourceLayers(
   });
 
   return [...layers, ...isoLayers];
+}
+
+function buildIsoRecordingReadinessIssues(isoParticipantIds: string[], sources: NativeMediaCoreZoomSource[]): IsoRecordingReadinessIssue[] {
+  return isoParticipantIds
+    .map((participantId) => {
+      const source = sources.find((item) => item.participantId === participantId);
+      if (!source) {
+        return {
+          participantId,
+          readiness: "missing" as const,
+          warning: `${participantId} ISO participant is not present in the Zoom roster.`
+        };
+      }
+
+      if (source.health === "video-off") {
+        return {
+          participantId,
+          readiness: "video-off" as const,
+          warning: `${source.displayName} ISO video is off.`
+        };
+      }
+
+      if (!source.hasVideo) {
+        return {
+          participantId,
+          readiness: "unsubscribable" as const,
+          warning: `${source.displayName} ISO video cannot be subscribed by the Zoom SDK.`
+        };
+      }
+
+      return undefined;
+    })
+    .filter((issue): issue is IsoRecordingReadinessIssue => Boolean(issue));
 }
 
 function isoParticipantIdsFromCommands(commands: NativeMediaCoreCommand[], fallbackIds: string[]) {

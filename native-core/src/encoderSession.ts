@@ -37,7 +37,7 @@ export function buildEncoderSession(input: {
           participantId: stream.participantId,
           status: stream.status === "failed" ? "failed" : stream.status === "warning" ? "warning" : "attached",
           attachedFrameCount: stream.framesWritten,
-          warning: stream.status === "warning" ? input.recording?.warning : undefined
+          warning: stream.status === "warning" ? stream.warning ?? input.recording?.warning : undefined
         });
       });
   }

@@ -148,6 +148,7 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
             kind: stream.kind,
             participantId: stream.participantId,
             status: stream.status,
+            readiness: stream.readiness,
             expectedFrames: stream.expectedFrames,
             framesWritten: stream.framesWritten,
             missingFrames: stream.missingFrames,

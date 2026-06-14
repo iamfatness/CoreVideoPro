@@ -516,6 +516,130 @@ describe("media core sync engine", () => {
     });
   });
 
+  it("surfaces selected ISO participants that are not recordable from the Zoom roster", () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const snapshot = engine.runCommands(
+      [
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              role: "Host",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: true,
+              isScreenSharing: false,
+              audioLevel: 64,
+              health: "live"
+            },
+            {
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              role: "Presenter",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 82,
+              health: "video-off"
+            },
+            {
+              sourceId: "participant:p3",
+              participantId: "p3",
+              displayName: "Priya Shah",
+              role: "Panelist",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: false,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 40,
+              health: "live"
+            }
+          ]
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "host",
+          routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+        },
+        { type: "start-program-output", destinations: ["recording"], isoParticipantIds: ["p2", "p3", "p9"] },
+        {
+          type: "start-recording-session",
+          sessionId: "iso-readiness",
+          targetFolder: "Recordings/CoreVideo Pro",
+          filenamePrefix: "ISO_Readiness",
+          format: "mp4",
+          quality: "high",
+          isoParticipantIds: ["p2", "p3", "p9"]
+        }
+      ],
+      5100
+    );
+
+    expect(snapshot).toMatchObject({
+      frameCount: 1,
+      recording: {
+        status: "warning",
+        writerStatus: "warning",
+        warning: "Andre Wallace ISO video is off.",
+        streams: expect.arrayContaining([
+          expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", status: "warning", warning: "Andre Wallace ISO video is off." }),
+          expect.objectContaining({
+            kind: "iso",
+            participantId: "p3",
+            readiness: "unsubscribable",
+            status: "warning",
+            warning: "Priya Shah ISO video cannot be subscribed by the Zoom SDK."
+          }),
+          expect.objectContaining({
+            kind: "iso",
+            participantId: "p9",
+            readiness: "missing",
+            status: "warning",
+            warning: "p9 ISO participant is not present in the Zoom roster."
+          })
+        ])
+      },
+      encoderSession: {
+        status: "warning",
+        targets: expect.arrayContaining([
+          expect.objectContaining({ targetId: "recording:iso:p2", status: "warning", warning: "Andre Wallace ISO video is off." })
+        ])
+      },
+      outputHealth: [expect.objectContaining({ destination: "recording", status: "warning", message: "Andre Wallace ISO video is off." })],
+      operatorActions: expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "recording:iso:p2:check",
+          area: "recording",
+          title: "Check p2 ISO recording",
+          detail: "Andre Wallace ISO video is off."
+        })
+      ]),
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "warning",
+          area: "recording",
+          title: "ISO recording warning",
+          detail: "Andre Wallace ISO video is off."
+        })
+      ]),
+      warnings: expect.arrayContaining(["Andre Wallace ISO video is off."])
+    });
+  });
+
   it("tracks network output sender sessions when streaming is active", async () => {
     const engine = new InMemoryMediaCoreSyncEngine();
     const snapshot = await engine.syncProduction({ ...initialProduction, recording: true, streaming: true }, 4100);

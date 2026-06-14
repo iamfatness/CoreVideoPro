@@ -428,6 +428,7 @@ export type SupportBundleMediaCore = {
       kind: "program" | "iso";
       participantId?: string;
       status: "writing" | "warning" | "stopped" | "failed";
+      readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
       expectedFrames?: number;
       framesWritten: number;
       missingFrames?: number;

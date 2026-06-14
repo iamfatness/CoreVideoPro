@@ -56,6 +56,14 @@ const DEFAULT_COLOR_GRADE: MediaCoreColorGrade = {
 
 const MAX_EVENT_LOG_LENGTH = 80;
 
+type IsoRecordingReadiness = NonNullable<MediaCoreRecordingStream["readiness"]>;
+
+type IsoRecordingReadinessIssue = {
+  participantId: string;
+  readiness: Exclude<IsoRecordingReadiness, "ready">;
+  warning: string;
+};
+
 export class MediaCoreRuntime {
   private mediaSource: MediaFrameSource;
 
@@ -353,7 +361,10 @@ export class MediaCoreRuntime {
   }
 
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
-    const recording = this.recordingSink.snapshot();
+    const recording = applyIsoRecordingReadiness(
+      this.recordingSink.snapshot(),
+      buildIsoRecordingReadinessIssues(this.recordingIsoParticipantIds(), this.sources)
+    );
     const renderPlan = this.renderPlan();
     const compositor = this.compositor.snapshot();
     const encoderSession = this.encoderSession(recording);
@@ -785,6 +796,84 @@ function enrichSourceSnapshotWithZoomIssues(
     issues,
     warnings
   };
+}
+
+function applyIsoRecordingReadiness(recording: MediaCoreStateSnapshot["recording"], issues: IsoRecordingReadinessIssue[]) {
+  if (!recording || issues.length === 0 || recording.status === "failed" || recording.status === "stopped") {
+    return recording;
+  }
+
+  const issuesByParticipantId = new Map(issues.map((issue) => [issue.participantId, issue]));
+  let readinessWarning: string | undefined;
+  const streams = recording.streams.map((stream) => {
+    if (stream.kind !== "iso" || !stream.participantId) {
+      return stream;
+    }
+
+    const issue = issuesByParticipantId.get(stream.participantId);
+    if (!issue) {
+      return {
+        ...stream,
+        readiness: "ready" as const
+      };
+    }
+
+    readinessWarning ??= issue.warning;
+    return {
+      ...stream,
+      readiness: issue.readiness,
+      status: "warning" as const,
+      warning: issue.warning
+    };
+  });
+
+  if (!readinessWarning) {
+    return {
+      ...recording,
+      streams
+    };
+  }
+
+  return {
+    ...recording,
+    status: "warning" as const,
+    writerStatus: "warning" as const,
+    warning: readinessWarning,
+    streams
+  };
+}
+
+function buildIsoRecordingReadinessIssues(isoParticipantIds: string[], sources: MediaCoreZoomSource[]): IsoRecordingReadinessIssue[] {
+  return isoParticipantIds
+    .map((participantId) => {
+      const source = sources.find((item) => item.participantId === participantId);
+      if (!source) {
+        return {
+          participantId,
+          readiness: "missing" as const,
+          warning: `${participantId} ISO participant is not present in the Zoom roster.`
+        };
+      }
+
+      if (source.health === "video-off") {
+        return {
+          participantId,
+          readiness: "video-off" as const,
+          warning: `${source.displayName} ISO video is off.`
+        };
+      }
+
+      if (!source.hasVideo) {
+        return {
+          participantId,
+          readiness: "unsubscribable" as const,
+          warning: `${source.displayName} ISO video cannot be subscribed by the Zoom SDK.`
+        };
+      }
+
+      return undefined;
+    })
+    .filter((issue): issue is IsoRecordingReadinessIssue => Boolean(issue));
 }
 
 function buildZoomSourceHealthIssues(frames: MediaCoreFrame[], sources: MediaCoreZoomSource[]): MediaCoreSourceHealthIssue[] {

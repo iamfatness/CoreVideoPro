@@ -150,6 +150,45 @@ describe("createSupportBundle", () => {
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
   });
 
+  it("includes ISO recording readiness in media-core support diagnostics", async () => {
+    const mediaCore = await new InMemoryMediaCoreSyncEngine().syncProduction(
+      {
+        ...initialProduction,
+        recording: true,
+        participants: initialProduction.participants.map((participant) =>
+          participant.id === "p2" ? { ...participant, health: "video-off" as const, isScreenSharing: false } : participant
+        ),
+        recordingSettings: {
+          ...initialProduction.recordingSettings,
+          isoParticipantIds: ["p2", "p9"]
+        }
+      },
+      5400
+    );
+    const bundle = createSupportBundle(initialProduction, mediaCore);
+
+    expect(bundle.mediaCore?.recording).toMatchObject({
+      status: "warning",
+      writerStatus: "warning",
+      streams: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "iso",
+          participantId: "p2",
+          readiness: "video-off",
+          status: "warning",
+          warning: "Andre Wallace ISO video is off."
+        }),
+        expect.objectContaining({
+          kind: "iso",
+          participantId: "p9",
+          readiness: "missing",
+          status: "warning",
+          warning: "p9 ISO participant is not present in the Zoom roster."
+        })
+      ])
+    });
+  });
+
   it("includes routed Zoom source health issues in media-core diagnostics", () => {
     class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
       runRoutedLowResolutionFeed() {

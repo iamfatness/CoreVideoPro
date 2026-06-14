@@ -247,6 +247,7 @@ export type NativeMediaCoreRecordingStream = {
   participantId?: string;
   path: string;
   status: "writing" | "warning" | "stopped" | "failed";
+  readiness?: "ready" | "missing" | "video-off" | "unsubscribable";
   expectedFrames?: number;
   framesWritten: number;
   missingFrames?: number;
