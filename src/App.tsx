@@ -70,6 +70,7 @@ import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stin
 import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/bandwidthPlanner";
 import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markShowOver } from "./engine/preShowCountdown";
 import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight";
+import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type ClipMarker, type ClipRegion } from "./engine/clipTrimmer";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -209,6 +210,9 @@ export function App({ engines, runtime }: AppProps) {
   const [showClockSegmentElapsed, setShowClockSegmentElapsed] = useState(0);
   const [showClockTotalElapsed, setShowClockTotalElapsed] = useState(0);
   const [preShowSecondsToLive, setPreShowSecondsToLive] = useState(900);
+  const [clipRegion, setClipRegion] = useState<ClipRegion>({ inPointSec: 0, outPointSec: 30, fps: 30 });
+  const [clipMarkers, setClipMarkers] = useState<ClipMarker[]>([]);
+  const clipSourceDurationSec = 60;
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -2676,6 +2680,83 @@ export function App({ engines, runtime }: AppProps) {
                 Add asset
               </button>
             </div>
+          </section>
+
+          <section className="panel" aria-label="Clip trimmer">
+            <div className="section-title">
+              <Clapperboard size={15} />
+              Clip trimmer
+            </div>
+            {(() => {
+              const result = trimClip(clipRegion, clipSourceDurationSec);
+              return (
+                <div className="clip-trim-panel" aria-label="Clip trim controls">
+                  <p className="clip-trim-summary">{summarizeTrim(result, clipRegion.fps)}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="In" value={formatTimecode(result.region.inPointSec, clipRegion.fps)} />
+                    <ControlReadout label="Out" value={formatTimecode(result.region.outPointSec, clipRegion.fps)} />
+                    <ControlReadout label="Duration" value={formatTimecode(result.durationSec, clipRegion.fps)} />
+                    <ControlReadout label="FPS" value={String(clipRegion.fps)} />
+                  </div>
+                  {result.warnings.map((w) => (
+                    <p className="clip-trim-warning" key={w} role="status">{w}</p>
+                  ))}
+                  <div className="clip-trim-bar" aria-label="Trim bar">
+                    <div
+                      className="trim-range"
+                      style={{
+                        left: `${(result.region.inPointSec / clipSourceDurationSec) * 100}%`,
+                        width: `${(result.durationSec / clipSourceDurationSec) * 100}%`,
+                      }}
+                    />
+                    {clipMarkers.map((m) => (
+                      <div
+                        key={m.id}
+                        className="trim-marker"
+                        aria-label={`Marker ${m.label}`}
+                        style={{
+                          left: `${(m.positionSec / clipSourceDurationSec) * 100}%`,
+                          background: m.color,
+                        }}
+                        title={m.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="clip-trim-controls">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "in", deltaSec: -1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      ← In
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "in", deltaSec: 1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      In →
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "out", deltaSec: -1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      ← Out
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipRegion((r) => rippleTrim(r, { edge: "out", deltaSec: 1, sourceDurationSec: clipSourceDurationSec }).region)}
+                    >
+                      Out →
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setClipMarkers((ms) => addMarker(ms, (clipRegion.inPointSec + clipRegion.outPointSec) / 2, "Cue"))}
+                    >
+                      Add marker
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </section>
 
           {selectedParticipant && (

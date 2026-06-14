@@ -3444,3 +3444,36 @@ meter {
 .tally-row.tally-preview .tally-state { color: #22c55e; }
 
 .tally-counts { display: flex; gap: 8px; }
+
+/* Clip trimmer */
+.clip-trim-panel { display: flex; flex-direction: column; gap: 8px; }
+.clip-trim-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+.clip-trim-warning { font-size: 11px; color: #f87171; margin: 0; }
+
+.clip-trim-bar {
+  position: relative;
+  height: 20px;
+  background: #0d1520;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.trim-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #1a4a7a;
+  border-left: 2px solid #60a5fa;
+  border-right: 2px solid #60a5fa;
+}
+
+.trim-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  cursor: pointer;
+}
+
+.clip-trim-controls { display: flex; gap: 4px; flex-wrap: wrap; }
+.clip-trim-controls .ghost-button { font-size: 10px; padding: 3px 6px; }
