@@ -1459,3 +1459,30 @@ describe("tally lights", () => {
     expect(within(panel).getByText("Idle")).toBeInTheDocument();
   });
 });
+
+describe("clip trimmer", () => {
+  it("shows the clip trim panel with In/Out timecode readouts in the Media tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+
+    const panel = screen.getByLabelText("Clip trim controls");
+    expect(within(panel).getByText("In")).toBeInTheDocument();
+    expect(within(panel).getByText("Out")).toBeInTheDocument();
+    expect(within(panel).getByText("Duration")).toBeInTheDocument();
+  });
+
+  it("updates in point when trim In → button is clicked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+
+    const panel = screen.getByLabelText("Clip trim controls");
+    const summaryBefore = within(panel).getByRole("paragraph", { hidden: true })?.textContent ?? panel.querySelector(".clip-trim-summary")?.textContent ?? "";
+    await user.click(within(panel).getByRole("button", { name: /In →/i }));
+    const summaryAfter = panel.querySelector(".clip-trim-summary")?.textContent ?? "";
+    expect(summaryAfter).not.toBe(summaryBefore);
+  });
+});
