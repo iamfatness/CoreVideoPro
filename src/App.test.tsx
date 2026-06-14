@@ -1166,6 +1166,31 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("latency budget", () => {
+  it("shows the latency budget panel in Settings", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Latency budget panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText(/glass-to-glass/i)).toBeInTheDocument();
+  });
+
+  it("shows six stage rows in the latency breakdown", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Latency budget panel");
+    expect(within(panel).getByText(/Zoom capture/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/Encoder buffer/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/Protocol/i)).toBeInTheDocument();
+  });
+});
+
 describe("participant spotlight", () => {
   it("shows the spotlight panel with a summary in the Sources tab", async () => {
     const user = userEvent.setup();
