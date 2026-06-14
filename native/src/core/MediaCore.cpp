@@ -26,6 +26,43 @@ rpc::Json::Array capabilityArray() {
   return result;
 }
 
+rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
+  rpc::Json::Array inputs;
+  for (size_t index = 0; index < device.inputIds.size(); ++index) {
+    inputs.emplace_back(rpc::Json::Object{
+        {"id", device.inputIds[index]},
+        {"label", index < device.inputLabels.size() ? device.inputLabels[index] : device.inputIds[index]},
+        {"hasEmbeddedAudio", index < device.inputHasEmbeddedAudio.size() ? device.inputHasEmbeddedAudio[index] : true},
+    });
+  }
+
+  rpc::Json::Object result{
+      {"id", device.id},
+      {"vendor", device.vendor.empty() ? "blackmagic" : device.vendor},
+      {"name", device.name},
+      {"inputs", inputs},
+      {"selectedInputId", device.selectedInputId},
+      {"resolution", rpc::Json::Object{{"width", device.width}, {"height", device.height}}},
+      {"frameRate", device.frameRate},
+      {"connectionState", device.connectionState},
+      {"signalPresent", device.signalPresent},
+      {"droppedFrames", static_cast<double>(device.droppedFrames)},
+      {"audioSyncOffsetMs", device.audioSyncOffsetMs},
+  };
+  if (!device.warning.empty()) {
+    result.emplace("warning", device.warning);
+  }
+  return result;
+}
+
+rpc::Json::Array captureDeviceArray(const std::vector<modules::CaptureDeviceInfo>& devices) {
+  rpc::Json::Array result;
+  for (const auto& device : devices) {
+    result.emplace_back(captureDeviceJson(device));
+  }
+  return result;
+}
+
 const rpc::Json* findParticipant(const rpc::Json::Array& participants, const std::string& participantId) {
   auto found = std::find_if(participants.begin(), participants.end(), [&](const rpc::Json& participant) {
     return participant.getString("sdkUserId") == participantId;
@@ -112,6 +149,22 @@ rpc::Json MediaCore::health() const {
   };
 }
 
+rpc::Json MediaCore::captureDevices() const {
+  return captureDevicesState();
+}
+
+rpc::Json MediaCore::selectCaptureInput(const std::string& deviceId, const std::string& inputId) {
+  return captureDeviceArray(modules_.captureDevice->selectInput(deviceId, inputId));
+}
+
+rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs) {
+  return captureDeviceArray(modules_.captureDevice->setAudioSyncOffset(deviceId, offsetMs));
+}
+
+rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
+  return captureDeviceArray(modules_.captureDevice->connect(deviceId));
+}
+
 rpc::Json MediaCore::sessionState() const {
   const auto session = modules_.encoder->session();
   rpc::Json::Object state{
@@ -127,6 +180,7 @@ rpc::Json MediaCore::sessionState() const {
       {"active", session.active},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
+      {"captureDevices", captureDevicesState()},
       {"health", health()},
       {"profile", profile()},
   };
@@ -479,6 +533,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
       {"senders", senders},
       {"warnings", stringArray(senderSession.warnings)},
   };
+}
+
+rpc::Json MediaCore::captureDevicesState() const {
+  return captureDeviceArray(modules_.captureDevice->enumerate());
 }
 
 rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {

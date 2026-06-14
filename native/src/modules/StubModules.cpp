@@ -222,11 +222,114 @@ class SyntheticOutputSender final : public IOutputSender {
 class FakeCaptureDevice final : public ICaptureDevice {
  public:
   std::vector<CaptureDeviceInfo> enumerate() const override {
-    return {
-        {"fake-camera-1", "CoreVideo Synthetic Camera", "video"},
-        {"fake-microphone-1", "CoreVideo Synthetic Microphone", "audio"},
-    };
+    return devices_;
   }
+
+  std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
+    for (auto& device : devices_) {
+      if (device.id != deviceId) {
+        continue;
+      }
+      if (std::find(device.inputIds.begin(), device.inputIds.end(), inputId) != device.inputIds.end()) {
+        device.selectedInputId = inputId;
+      }
+    }
+    return enumerate();
+  }
+
+  std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) override {
+    const int clamped = std::max(-500, std::min(500, offsetMs));
+    for (auto& device : devices_) {
+      if (device.id == deviceId) {
+        device.audioSyncOffsetMs = clamped;
+      }
+    }
+    return enumerate();
+  }
+
+  std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
+    for (auto& device : devices_) {
+      if (device.id == deviceId && device.connectionState != "connected") {
+        device.connectionState = "connected";
+        device.signalPresent = true;
+      }
+    }
+    return enumerate();
+  }
+
+ private:
+  std::vector<CaptureDeviceInfo> devices_ = {
+      {"decklink-1",
+       "DeckLink Mini Recorder 4K",
+       "video",
+       "blackmagic",
+       {"sdi-1", "hdmi-1"},
+       {"SDI 1", "HDMI"},
+       {true, true},
+       "sdi-1",
+       1920,
+       1080,
+       60,
+       "connected",
+       true,
+       0,
+       0,
+       ""},
+      {"aja-io-1",
+       "AJA Io 4K Plus",
+       "video",
+       "aja",
+       {"sdi-1", "sdi-2"},
+       {"SDI 1", "SDI 2"},
+       {true, false},
+       "sdi-1",
+       1920,
+       1080,
+       30,
+       "detected",
+       false,
+       0,
+       0,
+       ""},
+  };
+};
+
+class CompositeCaptureDevice final : public ICaptureDevice {
+ public:
+  explicit CompositeCaptureDevice(std::vector<std::unique_ptr<ICaptureDevice>> devices) : devices_(std::move(devices)) {}
+
+  std::vector<CaptureDeviceInfo> enumerate() const override {
+    std::vector<CaptureDeviceInfo> result;
+    for (const auto& device : devices_) {
+      auto next = device->enumerate();
+      result.insert(result.end(), next.begin(), next.end());
+    }
+    return result;
+  }
+
+  std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
+    for (const auto& device : devices_) {
+      (void)device->selectInput(deviceId, inputId);
+    }
+    return enumerate();
+  }
+
+  std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) override {
+    for (const auto& device : devices_) {
+      (void)device->setAudioSyncOffset(deviceId, offsetMs);
+    }
+    return enumerate();
+  }
+
+  std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
+    for (const auto& device : devices_) {
+      (void)device->connect(deviceId);
+    }
+    return enumerate();
+  }
+
+ private:
+  std::vector<std::unique_ptr<ICaptureDevice>> devices_;
 };
 
 }  // namespace
@@ -252,6 +355,16 @@ ModuleSet createDefaultModules() {
   }
   if (auto outputSender = createRtmpOutputSender()) {
     modules.outputSender = std::move(outputSender);
+  }
+  std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
+  if (auto deckLink = createDeckLinkCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(deckLink));
+  }
+  if (auto aja = createAjaCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(aja));
+  }
+  if (!hardwareCaptureDevices.empty()) {
+    modules.captureDevice = std::make_unique<CompositeCaptureDevice>(std::move(hardwareCaptureDevices));
   }
   return modules;
 }

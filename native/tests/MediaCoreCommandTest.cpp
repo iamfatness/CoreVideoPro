@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -238,6 +240,39 @@ TEST(MediaCoreCommand, AppliesOutputSenderFailureAndRecoveryCommands) {
   EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("warning"), "RTMP sender recovered.");
 }
 
+TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
+  corevideo::core::MediaCore mediaCore;
+  const auto devices = mediaCore.captureDevices();
+  ASSERT_TRUE(devices.asArray().size() >= 2);
+  EXPECT_EQ(devices.asArray()[0].getString("vendor"), "blackmagic");
+  EXPECT_EQ(devices.asArray()[0].get("inputs")->asArray().size(), 2);
+  const auto deckLinkId = devices.asArray()[0].getString("id");
+  const auto ajaDevice = std::find_if(devices.asArray().begin(), devices.asArray().end(), [](const corevideo::rpc::Json& device) {
+    return device.getString("vendor") == "aja";
+  });
+  ASSERT_TRUE(ajaDevice != devices.asArray().end());
+  const auto ajaId = ajaDevice->getString("id");
+
+  const auto selected = mediaCore.selectCaptureInput(deckLinkId, "hdmi-1");
+  ASSERT_TRUE(selected.asArray().size() >= 1);
+  EXPECT_EQ(selected.asArray()[0].getString("selectedInputId"), "hdmi-1");
+
+  const auto offset = mediaCore.setCaptureAudioSyncOffset(ajaId, 1200);
+  const auto aja = std::find_if(offset.asArray().begin(), offset.asArray().end(), [&](const corevideo::rpc::Json& device) {
+    return device.getString("id") == ajaId;
+  });
+  ASSERT_TRUE(aja != offset.asArray().end());
+  EXPECT_EQ(aja->get("audioSyncOffsetMs")->asNumber(), 500);
+
+  const auto connected = mediaCore.connectCaptureDevice(ajaId);
+  const auto connectedAja = std::find_if(connected.asArray().begin(), connected.asArray().end(), [&](const corevideo::rpc::Json& device) {
+    return device.getString("id") == ajaId;
+  });
+  ASSERT_TRUE(connectedAja != connected.asArray().end());
+  EXPECT_EQ(connectedAja->getString("connectionState"), "connected");
+  EXPECT_TRUE(connectedAja->get("signalPresent")->asBool());
+}
+
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
 #if COREVIDEO_WITH_D3D11
   auto compositor = corevideo::modules::createD3D11Compositor();
@@ -281,6 +316,28 @@ TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
   EXPECT_EQ(session.senders[0].destination, "rtmp");
 #else
   EXPECT_EQ(corevideo::modules::createRtmpOutputSender(), nullptr);
+#endif
+}
+
+TEST(CaptureDeviceAdapter, FactoriesAreDisabledUnlessHardwareGatesAreEnabled) {
+#if COREVIDEO_WITH_DECKLINK
+  auto deckLink = corevideo::modules::createDeckLinkCaptureDevice();
+  ASSERT_NE(deckLink, nullptr);
+  const auto deckLinkDevices = deckLink->enumerate();
+  ASSERT_FALSE(deckLinkDevices.empty());
+  EXPECT_EQ(deckLinkDevices[0].vendor, "blackmagic");
+#else
+  EXPECT_EQ(corevideo::modules::createDeckLinkCaptureDevice(), nullptr);
+#endif
+
+#if COREVIDEO_WITH_AJA
+  auto aja = corevideo::modules::createAjaCaptureDevice();
+  ASSERT_NE(aja, nullptr);
+  const auto ajaDevices = aja->enumerate();
+  ASSERT_FALSE(ajaDevices.empty());
+  EXPECT_EQ(ajaDevices[0].vendor, "aja");
+#else
+  EXPECT_EQ(corevideo::modules::createAjaCaptureDevice(), nullptr);
 #endif
 }
 

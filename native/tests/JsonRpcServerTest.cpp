@@ -126,3 +126,43 @@ TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
   EXPECT_EQ(zoom->get("recording")->get("evidence")->get("subscribedVideoFeeds")->asNumber(), 1);
   EXPECT_GE(zoom->get("recording")->get("evidence")->get("programFramesWritten")->asNumber(), 1);
 }
+
+TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  const auto listed = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-list-1"},
+      {"type", "list-capture-devices"},
+  });
+  EXPECT_EQ(listed.getString("id"), "capture-list-1");
+  EXPECT_TRUE(listed.get("ok")->asBool());
+  ASSERT_NE(listed.get("devices"), nullptr);
+  EXPECT_GE(listed.get("devices")->asArray().size(), 2);
+  const auto deckLinkId = listed.get("devices")->asArray()[0].getString("id");
+  const auto ajaId = listed.get("devices")->asArray()[1].getString("id");
+
+  const auto selected = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-select-1"},
+      {"type", "select-capture-input"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", deckLinkId}, {"inputId", "hdmi-1"}}},
+  });
+  EXPECT_TRUE(selected.get("ok")->asBool());
+  EXPECT_EQ(selected.get("devices")->asArray()[0].getString("selectedInputId"), "hdmi-1");
+
+  const auto offset = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-offset-1"},
+      {"type", "set-capture-audio-sync-offset"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", deckLinkId}, {"offsetMs", 1200}}},
+  });
+  EXPECT_TRUE(offset.get("ok")->asBool());
+  EXPECT_EQ(offset.get("devices")->asArray()[0].get("audioSyncOffsetMs")->asNumber(), 500);
+
+  const auto connected = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-connect-1"},
+      {"type", "connect-capture-device"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", ajaId}}},
+  });
+  EXPECT_TRUE(connected.get("ok")->asBool());
+  EXPECT_EQ(connected.get("devices")->asArray()[1].getString("connectionState"), "connected");
+}

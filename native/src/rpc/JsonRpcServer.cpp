@@ -73,6 +73,35 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"session", mediaCore_.sessionState()}});
   }
 
+  if (hasType(request, "list-capture-devices")) {
+    return success(id, Json::Object{{"devices", mediaCore_.captureDevices()}});
+  }
+
+  if (hasType(request, "select-capture-input")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "select-capture-input requires a payload.");
+    }
+    return success(id, Json::Object{{"devices", mediaCore_.selectCaptureInput(payload->getString("deviceId"), payload->getString("inputId"))}});
+  }
+
+  if (hasType(request, "set-capture-audio-sync-offset")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "set-capture-audio-sync-offset requires a payload.");
+    }
+    const Json* offset = payload->get("offsetMs");
+    return success(id, Json::Object{{"devices", mediaCore_.setCaptureAudioSyncOffset(payload->getString("deviceId"), offset ? static_cast<int>(offset->asNumber()) : 0)}});
+  }
+
+  if (hasType(request, "connect-capture-device")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "connect-capture-device requires a payload.");
+    }
+    return success(id, Json::Object{{"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
+  }
+
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset")) {
     return success(id, Json::Object{{"state", mediaCore_.applyCommands(commandBatch(request))}});
