@@ -48,6 +48,19 @@ bool hasJoinCredential(const ZoomMeetingSdkJoinRequest& request) {
   return !request.zakToken.empty() || !request.appPrivilegeToken.empty() || !request.joinToken.empty();
 }
 
+std::optional<uint32_t> parseSdkUserId(const std::string& participantId) {
+  try {
+    size_t parsed = 0;
+    const auto userId = std::stoul(participantId, &parsed, 10);
+    if (parsed != participantId.size() || userId == 0) {
+      return std::nullopt;
+    }
+    return static_cast<uint32_t>(userId);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 std::string sdkErrorName(ZOOMSDK::SDKError error) {
   switch (error) {
     case ZOOMSDK::SDKERR_SUCCESS: return "SDKERR_SUCCESS";
@@ -129,6 +142,7 @@ class RawAudioDelegate final : public ZOOMSDK::IZoomSDKAudioRawDataDelegate {
   }
   void onOneWayInterpreterAudioRawDataReceived(AudioRawData*, const zchar_t*) override { ++interpreterPackets_; }
   int64_t packetCount() const { return mixedPackets_ + oneWayPackets_ + sharePackets_ + interpreterPackets_; }
+  int64_t packetCountFor(uint32_t userId) const { return userId == 0 || userId == lastUserId_ ? packetCount() : 0; }
 
  private:
   uint32_t lastUserId_ = 0;
@@ -197,14 +211,27 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     joined_ = false;
     activeSpeakerId_.clear();
     subscriptions_.clear();
+    subscriptionStates_.clear();
+    destroyRenderers();
+    if (audioHelper_) {
+      (void)audioHelper_->unSubscribe();
+      audioHelper_ = nullptr;
+    }
     meetingState_ = "idle";
-    // REQUIRES DEV MACHINE: raw renderer/audio helper unsubscription is added with
-    // the subscription implementation so leave/rejoin cannot duplicate callbacks.
   }
 
   void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) override {
     subscriptions_ = requests;
-    // REQUIRES DEV MACHINE: map stable SDK user IDs to raw video/audio/share subscriptions.
+    subscriptionStates_.clear();
+    destroyRenderers();
+    if (audioHelper_) {
+      (void)audioHelper_->unSubscribe();
+      audioHelper_ = nullptr;
+    }
+
+    for (const auto& request : requests) {
+      subscriptionStates_.push_back(subscribeOne(request));
+    }
   }
 
   std::vector<VideoFrame> pollVideoFrames() override {
@@ -245,9 +272,38 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
     return meetingState_;
   }
+  std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates() const override {
+    auto states = subscriptionStates_;
+    for (auto& state : states) {
+      if (state.status != "subscribed") {
+        continue;
+      }
+
+      if (state.request.kind == "participant-audio") {
+        const auto sdkUserId = parseSdkUserId(state.request.participantId);
+        state.audioPacketsReceived = rawAudioDelegate_ ? rawAudioDelegate_->packetCountFor(sdkUserId.value_or(0)) : 0;
+      } else {
+        const auto renderer = std::find_if(renderers_.begin(), renderers_.end(), [&](const RendererSubscription& candidate) {
+          return candidate.subscriptionId == subscriptionIdFor(state.request);
+        });
+        state.framesReceived = renderer != renderers_.end() && renderer->delegate ? renderer->delegate->framesReceived() : 0;
+      }
+    }
+    return states;
+  }
   std::vector<std::string> warnings() const override { return warnings_; }
 
  private:
+  struct RendererSubscription {
+    std::string subscriptionId;
+    ZOOMSDK::IZoomSDKRenderer* renderer = nullptr;
+    std::unique_ptr<RawVideoDelegate> delegate;
+  };
+
+  static std::string subscriptionIdFor(const ZoomMeetingSdkSubscriptionRequest& request) {
+    return request.kind + ":" + request.participantId + ":" + request.purpose;
+  }
+
   bool runtimeReady() const {
     return config_.appKeyPresent && config_.oauthConfigured && config_.jwtBrokerConfigured &&
            config_.rawVideoEnabled && config_.rawAudioEnabled && config_.rawShareEnabled;
@@ -296,6 +352,111 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     return true;
   }
 
+  bool canSubscribeRawMedia() const {
+    if (meetingEvent_ && meetingEvent_->status() == ZOOMSDK::MEETING_STATUS_INMEETING) {
+      return true;
+    }
+    return meetingState_ == "in-meeting";
+  }
+
+  ZoomMeetingSdkSubscriptionState subscribeOne(const ZoomMeetingSdkSubscriptionRequest& request) {
+    ZoomMeetingSdkSubscriptionState state;
+    state.request = request;
+    if (!canSubscribeRawMedia()) {
+      state.status = "failed";
+      state.lastResultCode = "not-in-meeting";
+      state.warning = "Raw media subscription deferred until Zoom meeting status is in-meeting.";
+      return state;
+    }
+
+    const auto sdkUserId = parseSdkUserId(request.participantId);
+    if (!sdkUserId) {
+      state.status = "failed";
+      state.lastResultCode = "participant-id-not-numeric";
+      state.warning = "Zoom Meeting SDK raw media requires a numeric SDK user ID.";
+      return state;
+    }
+
+    if (request.kind == "participant-audio") {
+      return subscribeAudio(request, *sdkUserId);
+    }
+    if (request.kind == "participant-video" || request.kind == "screen-share") {
+      return subscribeRenderer(request, *sdkUserId);
+    }
+
+    state.status = "failed";
+    state.lastResultCode = "unsupported-kind";
+    state.warning = "Unsupported Zoom raw media subscription kind.";
+    return state;
+  }
+
+  ZoomMeetingSdkSubscriptionState subscribeRenderer(const ZoomMeetingSdkSubscriptionRequest& request, uint32_t sdkUserId) {
+    ZoomMeetingSdkSubscriptionState state;
+    state.request = request;
+    auto delegate = std::make_unique<RawVideoDelegate>();
+    ZOOMSDK::IZoomSDKRenderer* renderer = nullptr;
+    auto error = ZOOMSDK::createRenderer(&renderer, delegate.get());
+    if (error != ZOOMSDK::SDKERR_SUCCESS || !renderer) {
+      state.status = "failed";
+      state.lastResultCode = sdkErrorName(error);
+      state.warning = "Zoom Meeting SDK createRenderer returned " + state.lastResultCode + ".";
+      return state;
+    }
+
+    const auto rawType = request.kind == "screen-share" ? ZOOMSDK::RAW_DATA_TYPE_SHARE : ZOOMSDK::RAW_DATA_TYPE_VIDEO;
+    (void)renderer->setRawDataResolution(request.kind == "screen-share" ? ZOOMSDK::ZoomSDKResolution_1080P : ZOOMSDK::ZoomSDKResolution_720P);
+    error = renderer->subscribe(sdkUserId, rawType);
+    if (error != ZOOMSDK::SDKERR_SUCCESS) {
+      (void)ZOOMSDK::destroyRenderer(renderer);
+      state.status = "failed";
+      state.lastResultCode = sdkErrorName(error);
+      state.warning = "Zoom Meeting SDK renderer subscribe returned " + state.lastResultCode + ".";
+      return state;
+    }
+
+    state.status = "subscribed";
+    state.lastResultCode = "ok";
+    renderers_.push_back({subscriptionIdFor(request), renderer, std::move(delegate)});
+    return state;
+  }
+
+  ZoomMeetingSdkSubscriptionState subscribeAudio(const ZoomMeetingSdkSubscriptionRequest& request, uint32_t) {
+    ZoomMeetingSdkSubscriptionState state;
+    state.request = request;
+    if (!audioHelper_) {
+      audioHelper_ = ZOOMSDK::GetAudioRawdataHelper();
+    }
+    if (!audioHelper_) {
+      state.status = "failed";
+      state.lastResultCode = "audio-helper-unavailable";
+      state.warning = "Zoom Meeting SDK audio raw data helper is unavailable.";
+      return state;
+    }
+
+    auto error = audioHelper_->subscribe(rawAudioDelegate_.get(), false);
+    if (error != ZOOMSDK::SDKERR_SUCCESS) {
+      state.status = "failed";
+      state.lastResultCode = sdkErrorName(error);
+      state.warning = "Zoom Meeting SDK audio subscribe returned " + state.lastResultCode + ".";
+      return state;
+    }
+
+    state.status = "subscribed";
+    state.lastResultCode = "ok";
+    return state;
+  }
+
+  void destroyRenderers() {
+    for (auto& renderer : renderers_) {
+      if (renderer.renderer) {
+        (void)renderer.renderer->unSubscribe();
+        (void)ZOOMSDK::destroyRenderer(renderer.renderer);
+        renderer.renderer = nullptr;
+      }
+    }
+    renderers_.clear();
+  }
+
   ZOOMSDK::SDKError joinWithoutLogin(const ZoomMeetingSdkJoinRequest& request, UINT64 meetingNumber) {
     if (!meetingService_) {
       return ZOOMSDK::SDKERR_UNINITIALIZE;
@@ -331,6 +492,11 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   }
 
   void shutdownSdk() {
+    destroyRenderers();
+    if (audioHelper_) {
+      (void)audioHelper_->unSubscribe();
+      audioHelper_ = nullptr;
+    }
     if (meetingService_) {
       (void)meetingService_->SetEvent(nullptr);
       (void)ZOOMSDK::DestroyMeetingService(meetingService_);
@@ -357,10 +523,13 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::wstring webDomain_;
   std::wstring brandingName_;
   ZOOMSDK::IMeetingService* meetingService_ = nullptr;
+  ZOOMSDK::IZoomSDKAudioRawDataHelper* audioHelper_ = nullptr;
   std::unique_ptr<MeetingServiceEventSink> meetingEvent_;
   std::unique_ptr<RawVideoDelegate> rawVideoDelegate_;
   std::unique_ptr<RawAudioDelegate> rawAudioDelegate_;
+  std::vector<RendererSubscription> renderers_;
   std::vector<ZoomMeetingSdkSubscriptionRequest> subscriptions_;
+  std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates_;
   std::vector<std::string> warnings_;
 };
 

@@ -94,3 +94,34 @@ TEST(ZoomMeetingSdkAdapter, DevGateRejectsMissingJoinCredentials) {
   EXPECT_TRUE(true);
 #endif
 }
+
+TEST(ZoomMeetingSdkAdapter, DevGateTracksDeferredRawSubscriptions) {
+#if COREVIDEO_WITH_ZOOM
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
+      "sdk-root",
+      "7.0.5",
+      "https://zoom.us",
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+  });
+  ASSERT_NE(source, nullptr);
+
+  source->syncSubscriptions({
+      {"12345", "participant-video", "program", 1},
+      {"12345", "participant-audio", "mix", 2},
+  });
+
+  const auto states = source->subscriptionStates();
+  ASSERT_TRUE(states.size() == 2);
+  EXPECT_EQ(states[0].status, "failed");
+  EXPECT_EQ(states[0].lastResultCode, "not-in-meeting");
+  EXPECT_EQ(states[1].status, "failed");
+  EXPECT_EQ(states[1].lastResultCode, "not-in-meeting");
+#else
+  EXPECT_TRUE(true);
+#endif
+}
