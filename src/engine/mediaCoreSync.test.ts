@@ -438,6 +438,7 @@ describe("media core sync engine", () => {
         fps: 60,
         targetBitrateMbps: 8.2
       },
+      frameCount: 3,
       sourceCount: 8,
       resolvedRouteCount: 2,
       renderPlan: {
@@ -448,18 +449,18 @@ describe("media core sync engine", () => {
       },
       recording: {
         active: true,
-        status: "warning",
+        status: "recording",
         startedAtMs: 3000,
-        writerStatus: "warning",
-        warning: "p1 ISO has no clean participant frames.",
+        writerStatus: "writing",
+        warning: undefined,
         estimatedDiskRateMBps: 7.49,
         programPath: "Recordings/CoreVideo Pro/AI_Product_Launch_Webinar-program-3000.mp4",
         streams: [
           { kind: "program", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 },
-          { kind: "iso", participantId: "p1", status: "warning", expectedFrames: 1, framesWritten: 0, missingFrames: 1, warning: "p1 ISO has no clean participant frames." },
+          { kind: "iso", participantId: "p1", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0, warning: undefined },
           { kind: "iso", participantId: "p2", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 }
         ],
-        totalFramesWritten: 2
+        totalFramesWritten: 3
       },
       programFrame: {
         frameNumber: 1,
@@ -477,14 +478,14 @@ describe("media core sync engine", () => {
         programFrameCount: 1
       },
       encoderSession: {
-        status: "warning",
+        status: "encoding",
         lifecycle: {
           status: "encoding",
           lastTransition: "Encoder session started."
         },
         targets: expect.arrayContaining([
           expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
-          expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "warning", warning: "p1 ISO has no clean participant frames." }),
+          expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached", warning: undefined }),
           expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
         ])
       },
@@ -493,23 +494,9 @@ describe("media core sync engine", () => {
         activeSenderCount: 0,
         senders: []
       },
-      outputHealth: [{ destination: "recording", status: "warning", message: "p1 ISO has no clean participant frames." }],
-      operatorActions: expect.arrayContaining([
-        expect.objectContaining({
-          actionId: "recording:iso:p1:check",
-          area: "recording",
-          title: "Check p1 ISO recording"
-        })
-      ]),
-      eventLog: expect.arrayContaining([
-        expect.objectContaining({
-          severity: "warning",
-          area: "recording",
-          title: "ISO recording warning",
-          detail: "p1 ISO has no clean participant frames.",
-          relatedId: "p1"
-        })
-      ]),
+      outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
+      operatorActions: [],
+      eventLog: [],
       diagnostics: {
         generatedAtMs: 3000,
         outputSenderSession: {
@@ -518,7 +505,8 @@ describe("media core sync engine", () => {
         },
         sourceSnapshot: {
           adapterId: "renderer-test-pattern",
-          status: "subscribed"
+          status: "subscribed",
+          subscribedSourceCount: 3
         },
         programTransport: {
           status: "publishing"
@@ -811,13 +799,7 @@ describe("media core sync engine", () => {
         status: "live",
         senders: [{ destination: "rtmp", status: "live", warning: undefined }]
       },
-      operatorActions: expect.arrayContaining([
-        expect.objectContaining({
-          actionId: "recording:iso:p1:check",
-          title: "Check p1 ISO recording",
-          detail: "p1 ISO has no clean participant frames."
-        })
-      ]),
+      operatorActions: [],
       eventLog: expect.arrayContaining([
         expect.objectContaining({
           severity: "info",

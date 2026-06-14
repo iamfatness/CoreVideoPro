@@ -220,9 +220,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       outputProfile: this.outputProfile,
       colorGrade: this.colorGrade
     });
-    const frames = renderPlan.layers
-      .filter((layer) => layer.kind === "participant-video" || layer.kind === "screen-share")
-      .map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
+    const isoParticipantIds = isoParticipantIdsFromCommands(commands, output?.isoParticipantIds ?? this.recordingTargets.isoParticipantIds);
+    const frameSources = buildFrameSourceLayers(renderPlan, this.sources, isoParticipantIds);
+    const frames = frameSources.map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
@@ -1173,6 +1173,46 @@ function findZoomSourceForLayer(sources: NativeMediaCoreZoomSource[], layer: Nat
   }
 
   return undefined;
+}
+
+function buildFrameSourceLayers(
+  renderPlan: NativeMediaCoreRenderPlan,
+  sources: NativeMediaCoreZoomSource[],
+  isoParticipantIds: string[]
+): NativeMediaCoreRenderPlan["layers"] {
+  const layers = renderPlan.layers.filter((layer) => layer.kind === "participant-video" || layer.kind === "screen-share");
+  const seenSourceIds = new Set(layers.map((layer) => layer.sourceId ?? layer.layerId));
+  const isoLayers: NativeMediaCoreRenderPlan["layers"] = [];
+
+  isoParticipantIds.forEach((participantId, index) => {
+    const source = sources.find((item) => item.participantId === participantId && item.hasVideo && item.health !== "video-off");
+    if (!source || seenSourceIds.has(source.sourceId)) {
+      return;
+    }
+
+    seenSourceIds.add(source.sourceId);
+    isoLayers.push({
+      layerId: `recording:iso:${participantId}`,
+      kind: "participant-video",
+      sourceId: source.sourceId,
+      participantId,
+      order: renderPlan.layers.length + index
+    });
+  });
+
+  return [...layers, ...isoLayers];
+}
+
+function isoParticipantIdsFromCommands(commands: NativeMediaCoreCommand[], fallbackIds: string[]) {
+  const commandIds = commands.flatMap((command) => {
+    if (command.type === "start-program-output" || command.type === "set-recording-targets" || command.type === "start-recording-session") {
+      return command.isoParticipantIds ?? [];
+    }
+
+    return [];
+  });
+
+  return [...new Set(commandIds.length > 0 ? commandIds : fallbackIds)].sort();
 }
 
 function buildZoomSourceHealthIssues(frames: NativeMediaCoreFrame[], sources: NativeMediaCoreZoomSource[]): NativeMediaCoreSourceHealthIssue[] {

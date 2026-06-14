@@ -52,7 +52,8 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("RecordingOff");
 
     await user.click(screen.getByRole("button", { name: "Record" }));
-    await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingwarning"));
+    await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingrecording"));
+    expect(nativeCore).toHaveTextContent("Frames3");
     expect(nativeCore).toHaveTextContent("Sources8");
     expect(nativeCore).toHaveTextContent("Resolved routes2");
     expect(nativeCore).toHaveTextContent("Render plan3 layers");
@@ -66,10 +67,10 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Outputsrecording");
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
-    expect(nativeCore).toHaveTextContent("Output healthwarning");
-    expect(nativeCore).toHaveTextContent("ActionCheck encoder session");
-    expect(nativeCore).toHaveTextContent("Events1 - ISO recording warning");
-    expect(nativeCore).toHaveTextContent("Warningsp1 ISO has no clean participant frames.");
+    expect(nativeCore).toHaveTextContent("Output healthlive");
+    expect(nativeCore).toHaveTextContent("ActionNone");
+    expect(nativeCore).toHaveTextContent("EventsNone");
+    expect(nativeCore).toHaveTextContent("WarningsNone");
   });
 
   it("executes media-core recovery actions from Settings", async () => {

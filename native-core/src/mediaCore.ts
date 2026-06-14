@@ -419,7 +419,7 @@ export class MediaCoreRuntime {
   private tick(elapsedMs: number) {
     this.elapsedMs = Math.max(0, elapsedMs);
     const renderPlan = this.renderPlan();
-    const sourceResult = this.mediaSource.render(this.getFrameSources(renderPlan), this.elapsedMs);
+    const sourceResult = this.mediaSource.render(this.getFrameSources(renderPlan, this.recordingIsoParticipantIds()), this.elapsedMs);
     this.frames = sourceResult.frames;
     this.sourceSnapshot = enrichSourceSnapshotWithZoomIssues(sourceResult.snapshot, this.frames, this.sources);
     this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
@@ -694,14 +694,40 @@ export class MediaCoreRuntime {
     };
   }
 
-  private getFrameSources(renderPlan: MediaCoreRenderPlan): MediaCoreFrameSourceRequest[] {
-    return renderPlan.layers
+  private getFrameSources(renderPlan: MediaCoreRenderPlan, isoParticipantIds: string[] = []): MediaCoreFrameSourceRequest[] {
+    const frameSources = renderPlan.layers
       .filter((layer): layer is typeof layer & { kind: "participant-video" | "screen-share" } => layer.kind === "participant-video" || layer.kind === "screen-share")
       .map((layer) => ({
         sourceId: layer.sourceId ?? layer.layerId,
         participantId: layer.participantId,
         kind: layer.kind
       }));
+    const seenSourceIds = new Set(frameSources.map((source) => source.sourceId));
+    const isoSources: MediaCoreFrameSourceRequest[] = [];
+    isoParticipantIds.forEach((participantId) => {
+      const source = this.sources.find((item) => item.participantId === participantId && item.hasVideo && item.health !== "video-off");
+      if (!source || seenSourceIds.has(source.sourceId)) {
+        return;
+      }
+
+      seenSourceIds.add(source.sourceId);
+      isoSources.push({
+        sourceId: source.sourceId,
+        participantId,
+        kind: "participant-video"
+      });
+    });
+
+    return [...frameSources, ...isoSources];
+  }
+
+  private recordingIsoParticipantIds() {
+    const recordingIds = this.recordingSink
+      .snapshot()
+      ?.streams.filter((stream) => stream.kind === "iso" && stream.participantId)
+      .map((stream) => stream.participantId as string);
+
+    return [...new Set(recordingIds && recordingIds.length > 0 ? recordingIds : this.output?.isoParticipantIds ?? [])].sort();
   }
 }
 
