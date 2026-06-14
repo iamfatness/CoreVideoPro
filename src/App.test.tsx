@@ -1431,3 +1431,31 @@ describe("pre-show countdown", () => {
     expect(within(cues).getByText("Go live")).toBeInTheDocument();
   });
 });
+
+describe("tally lights", () => {
+  it("shows the tally panel with participant rows in the Sources tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Tally panel");
+    expect(panel).toBeInTheDocument();
+    const rows = within(panel).getAllByRole("generic", { hidden: false }).filter(
+      (el) => el.getAttribute("aria-label")?.includes("tally")
+    );
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it("shows on-air, in-preview, and idle counts in the tally panel", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Tally panel");
+    expect(within(panel).getByText("On air")).toBeInTheDocument();
+    expect(within(panel).getByText("In preview")).toBeInTheDocument();
+    expect(within(panel).getByText("Idle")).toBeInTheDocument();
+  });
+});

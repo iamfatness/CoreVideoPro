@@ -3409,3 +3409,38 @@ meter {
 
 .pre-show-controls { display: flex; gap: 6px; flex-wrap: wrap; }
 .pre-show-controls .ghost-button { font-size: 10px; padding: 3px 8px; }
+
+/* Tally lights */
+.tally-panel { display: flex; flex-direction: column; gap: 8px; }
+.tally-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+
+.tally-grid { display: flex; flex-direction: column; gap: 4px; }
+
+.tally-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #0d1520;
+  font-size: 11px;
+}
+
+.tally-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tally-row.tally-program { border-left: 2px solid #ef4444; }
+.tally-row.tally-preview { border-left: 2px solid #22c55e; }
+.tally-row.tally-idle { border-left: 2px solid #374151; }
+
+.tally-label { flex: 1; color: #c8d8e8; font-weight: 500; }
+.tally-state { font-size: 9px; text-transform: uppercase; color: #4a6070; font-weight: 600; letter-spacing: 0.05em; }
+
+.tally-row.tally-program .tally-state { color: #ef4444; }
+.tally-row.tally-preview .tally-state { color: #22c55e; }
+
+.tally-counts { display: flex; gap: 8px; }

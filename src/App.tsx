@@ -69,6 +69,7 @@ import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type Protocol
 import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stingerEngine";
 import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/bandwidthPlanner";
 import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markShowOver } from "./engine/preShowCountdown";
+import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -2118,6 +2119,50 @@ export function App({ engines, runtime }: AppProps) {
                         <span className="spotlight-reason">{explainSpotlight(s)}</span>
                       </div>
                     ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Tally lights">
+            <div className="section-title">
+              <Radio size={15} />
+              Tally lights
+            </div>
+            {(() => {
+              const activeScene = production.scenes.find((s: SceneTemplate) => s.id === production.activeSceneId) ?? production.scenes[0];
+              const previewScene = production.scenes.find((s: SceneTemplate) => s.id === production.previewSceneId) ?? activeScene;
+              const programIds = (activeScene?.slots ?? []);
+              const previewIds = (previewScene?.slots ?? []).filter((id) => !programIds.includes(id));
+              const tallySources = visibleParticipants.map((p) => ({ sourceId: p.id, label: p.name }));
+              if (screenShareActive) {
+                tallySources.push({ sourceId: "screen-share", label: "Screen Share" });
+              }
+              const snap = computeTally(tallySources, programIds, previewIds);
+              return (
+                <div className="tally-panel" aria-label="Tally panel">
+                  <p className="tally-summary">{snap.summary}</p>
+                  <div className="tally-grid">
+                    {snap.sources.map((src) => (
+                      <div
+                        key={src.sourceId}
+                        className={`tally-row tally-${src.tally}`}
+                        aria-label={`${src.label} tally`}
+                      >
+                        <span
+                          className="tally-dot"
+                          style={{ background: tallyColorHex(src.tally) }}
+                        />
+                        <span className="tally-label">{src.label}</span>
+                        <span className="tally-state">{src.tally}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="tally-counts">
+                    <ControlReadout label="On air" value={String(filterByTally(snap, "program").length)} />
+                    <ControlReadout label="In preview" value={String(filterByTally(snap, "preview").length)} />
+                    <ControlReadout label="Idle" value={String(filterByTally(snap, "idle").length)} />
                   </div>
                 </div>
               );
