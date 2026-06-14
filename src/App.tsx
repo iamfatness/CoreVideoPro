@@ -78,6 +78,7 @@ import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/netwo
 import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAnimationFrame, dismissAnimation, getAnimationPreset, startAnimation, type AnimationState } from "./engine/graphicAnimator";
 import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, type Poll } from "./engine/pollEngine";
 import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
+import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -236,6 +237,13 @@ export function App({ engines, runtime }: AppProps) {
     s = addCue(s, "qa", "Live Q&A", 900);
     s = addCue(s, "outro", "Wrap-up & Goodbye", 300);
     return s;
+  });
+  const [qaQueue, setQaQueue] = useState<QaQueue>(() => {
+    let q = createQaQueue("Audience Q&A");
+    q = submitQuestion(q, "Priya", "Will the slides be shared afterwards?");
+    q = submitQuestion(q, "Marcus", "How does the auto-framing handle multiple speakers?");
+    q = submitQuestion(q, "Lena", "Can we run this with an external hardware encoder?");
+    return q;
   });
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
@@ -3468,6 +3476,75 @@ export function App({ engines, runtime }: AppProps) {
                     <ControlReadout label="Pending" value={String(sheetSummary.pendingCount)} />
                     <ControlReadout label="Overrun" value={sheetSummary.overrunSec > 0 ? `${Math.round(sheetSummary.overrunSec)}s` : "—"} />
                     <ControlReadout label="Next" value={next?.title ?? "—"} />
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Audience Q&A">
+            <div className="section-title">
+              <Users size={15} />
+              Audience Q&amp;A
+            </div>
+            {(() => {
+              const qaSummary = summarizeQaQueue(qaQueue);
+              const ranked = sortedQuestions(qaQueue, "votes").filter((q) => q.status !== "dismissed" && q.status !== "answered");
+              return (
+                <div className="qa-panel" aria-label="Q&A panel">
+                  <p className="qa-summary">{qaSummary.summary}</p>
+                  <div className="qa-list" aria-label="Q&A questions">
+                    {ranked.map((question) => (
+                      <div key={question.id} className={`qa-row qa-status-${question.status}`}>
+                        <button
+                          className="qa-upvote"
+                          aria-label={`Upvote question from ${question.author}`}
+                          onClick={() => setQaQueue((q) => upvoteQuestion(q, question.id, `op-${Date.now()}`))}
+                        >
+                          <Plus size={11} />
+                          <span className="qa-upvote-count">{upvoteCount(question)}</span>
+                        </button>
+                        <div className="qa-body">
+                          <span className="qa-text">{question.text}</span>
+                          <span className="qa-author">{question.author}</span>
+                        </div>
+                        <span className={`qa-status-badge qa-badge-${question.status}`}>{question.status}</span>
+                        <div className="qa-row-actions">
+                          <button
+                            className="ghost-button"
+                            disabled={question.status !== "pending"}
+                            onClick={() => setQaQueue((q) => approveQuestion(q, question.id))}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="ghost-button"
+                            disabled={question.status !== "approved" && question.status !== "live"}
+                            onClick={() => setQaQueue((q) => goLiveQuestion(q, question.id))}
+                          >
+                            Live
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() => setQaQueue((q) => answerQuestion(q, question.id, Date.now()))}
+                          >
+                            Answered
+                          </button>
+                          <button
+                            className="ghost-button"
+                            onClick={() => setQaQueue((q) => dismissQuestion(q, question.id))}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="qa-stats">
+                    <ControlReadout label="Pending" value={String(qaSummary.pendingCount)} />
+                    <ControlReadout label="Ready" value={String(qaSummary.approvedCount)} />
+                    <ControlReadout label="Answered" value={String(qaSummary.answeredCount)} />
+                    <ControlReadout label="Upvotes" value={String(qaSummary.totalUpvotes)} />
                   </div>
                 </div>
               );
