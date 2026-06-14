@@ -553,6 +553,102 @@ describe("MediaCoreRuntime", () => {
     });
   });
 
+  it("emits Zoom source lifecycle events after the initial roster baseline", () => {
+    const runtime = new MediaCoreRuntime();
+    const initialRoster = [
+      {
+        sourceId: "participant:p1",
+        participantId: "p1",
+        displayName: "Maya Chen",
+        role: "Host",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: true,
+        isScreenSharing: false,
+        audioLevel: 64,
+        health: "live" as const
+      },
+      {
+        sourceId: "participant:p2",
+        participantId: "p2",
+        displayName: "Andre Wallace",
+        role: "Presenter",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: false,
+        isScreenSharing: false,
+        audioLevel: 82,
+        health: "live" as const
+      },
+      {
+        sourceId: "participant:p4",
+        participantId: "p4",
+        displayName: "Noah Kim",
+        role: "Guest",
+        breakoutRoomId: "main",
+        breakoutRoomName: "Main room",
+        hasVideo: true,
+        hasAudio: true,
+        isMuted: false,
+        isActiveSpeaker: false,
+        isScreenSharing: false,
+        audioLevel: 40,
+        health: "live" as const
+      }
+    ];
+
+    const baseline = runtime.handle({ id: "baseline", type: "sync", commands: [{ type: "set-zoom-source-roster", sources: initialRoster }] });
+    const changed = runtime.handle({
+      id: "changed",
+      type: "sync",
+      commands: [
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            { ...initialRoster[0], hasVideo: false, isMuted: true, isActiveSpeaker: false, health: "video-off" as const },
+            { ...initialRoster[1], isActiveSpeaker: true, isScreenSharing: true },
+            {
+              sourceId: "participant:p3",
+              participantId: "p3",
+              displayName: "Priya Shah",
+              role: "Panelist",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 36,
+              health: "live"
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(baseline.ok && baseline.state.eventLog).toEqual([]);
+    expect(changed).toMatchObject({
+      ok: true,
+      state: {
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({ severity: "critical", area: "source", title: "Zoom participant video off", detail: "Maya Chen turned video off.", relatedId: "p1" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant muted", detail: "Maya Chen muted their microphone.", relatedId: "p1" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom screen share started", detail: "Andre Wallace started screen sharing.", relatedId: "p2" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom active speaker changed", detail: "Andre Wallace is now the active speaker.", relatedId: "p2" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant joined", detail: "Priya Shah joined Main room.", relatedId: "p3" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant left", detail: "Noah Kim left Main room.", relatedId: "p4" })
+        ])
+      }
+    });
+  });
+
   it("returns snapshots without requiring a renderer sync", () => {
     const runtime = new MediaCoreRuntime();
 

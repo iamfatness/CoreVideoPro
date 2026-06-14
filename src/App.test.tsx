@@ -456,7 +456,7 @@ describe("App production controls", () => {
     expect(screen.getAllByText("Preview Monitor").length).toBeGreaterThan(0);
 
     await user.keyboard("f");
-    expect(await screen.findByText(/00:08/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/00:08/i)).length).toBeGreaterThan(0);
     await goToTab(user, "Settings");
     expect(screen.getAllByText("Refresh feeds").length).toBeGreaterThan(0);
 
@@ -834,7 +834,7 @@ describe("App production controls", () => {
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: /Refresh feeds/i }));
 
-    expect(await screen.findByText(/00:08/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/00:08/i)).length).toBeGreaterThan(0);
     await goToTab(user, "Audio");
     expect(screen.getByLabelText("Production role")).toHaveValue("Host");
     await goToTab(user, "Studio");
@@ -914,7 +914,7 @@ describe("App production controls", () => {
     expect(screen.getByText(/in meeting - 8 participants/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Refresh feeds/i }));
-    expect(screen.getByText(/00:08/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/00:08/i).length).toBeGreaterThan(0);
   });
 
   it("passes editable Zoom connection details to the capture engine", async () => {

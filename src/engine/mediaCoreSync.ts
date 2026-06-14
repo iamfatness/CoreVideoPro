@@ -40,6 +40,11 @@ type IsoRecordingReadinessIssue = {
   warning: string;
 };
 
+type ZoomSourceLifecycleState = Pick<
+  NativeMediaCoreZoomSource,
+  "participantId" | "displayName" | "breakoutRoomName" | "hasVideo" | "isMuted" | "isActiveSpeaker" | "isScreenSharing" | "health"
+>;
+
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
@@ -85,6 +90,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly activeSourceIssues = new Map<string, NativeMediaCoreSourceHealthIssue>();
   private readonly outputSenderEventStates = new Map<string, { status: NativeMediaCoreOutputSender["status"]; warning?: string }>();
   private readonly recordingStreamWarnings = new Map<string, string>();
+  private readonly zoomSourceLifecycleStates = new Map<string, ZoomSourceLifecycleState>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -145,6 +151,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
     if (sourceRoster) {
       this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
+      this.syncZoomSourceLifecycleEvents(this.sources, elapsedMs);
       this.activeSpeakerId = sourceRoster.sources.find((source) => source.isActiveSpeaker)?.participantId ?? this.activeSpeakerId;
       this.screenShareParticipantId = sourceRoster.sources.find((source) => source.isScreenSharing)?.participantId ?? this.screenShareParticipantId;
     }
@@ -866,6 +873,34 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       });
   }
 
+  private syncZoomSourceLifecycleEvents(sources: NativeMediaCoreZoomSource[], elapsedMs: number) {
+    const nextStates = new Map(sources.map((source) => [source.participantId, zoomSourceLifecycleState(source)]));
+    if (this.zoomSourceLifecycleStates.size === 0) {
+      replaceMap(this.zoomSourceLifecycleStates, nextStates);
+      return;
+    }
+
+    nextStates.forEach((state, participantId) => {
+      const previous = this.zoomSourceLifecycleStates.get(participantId);
+      if (!previous) {
+        this.addEvent("info", "source", "Zoom participant joined", `${state.displayName} joined ${state.breakoutRoomName}.`, undefined, participantId, elapsedMs);
+        return;
+      }
+
+      zoomSourceLifecycleEvents(previous, state).forEach((event) => {
+        this.addEvent(event.severity, "source", event.title, event.detail, undefined, participantId, elapsedMs);
+      });
+    });
+
+    this.zoomSourceLifecycleStates.forEach((state, participantId) => {
+      if (!nextStates.has(participantId)) {
+        this.addEvent("info", "source", "Zoom participant left", `${state.displayName} left ${state.breakoutRoomName}.`, undefined, participantId, elapsedMs);
+      }
+    });
+
+    replaceMap(this.zoomSourceLifecycleStates, nextStates);
+  }
+
   private syncOutputSenderEvents(senders: NativeMediaCoreOutputSender[], elapsedMs: number) {
     senders.forEach((sender) => {
       const previous = this.outputSenderEventStates.get(sender.destination);
@@ -1353,6 +1388,80 @@ function sourceIssueKey(issue: Pick<NativeMediaCoreSourceHealthIssue, "participa
 function sourceIssueRecoveryDetail(issue: NativeMediaCoreSourceHealthIssue) {
   const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
   return `${label} feed recovered.`;
+}
+
+function zoomSourceLifecycleState(source: NativeMediaCoreZoomSource): ZoomSourceLifecycleState {
+  return {
+    participantId: source.participantId,
+    displayName: source.displayName,
+    breakoutRoomName: source.breakoutRoomName,
+    hasVideo: source.hasVideo,
+    isMuted: source.isMuted,
+    isActiveSpeaker: source.isActiveSpeaker,
+    isScreenSharing: source.isScreenSharing,
+    health: source.health
+  };
+}
+
+function replaceMap<TKey, TValue>(target: Map<TKey, TValue>, source: Map<TKey, TValue>) {
+  target.clear();
+  source.forEach((value, key) => target.set(key, value));
+}
+
+function zoomSourceLifecycleEvents(previous: ZoomSourceLifecycleState, current: ZoomSourceLifecycleState) {
+  const events: Array<Pick<NativeMediaCoreEvent, "severity" | "title" | "detail">> = [];
+
+  if (previous.hasVideo && (!current.hasVideo || current.health === "video-off")) {
+    events.push({
+      severity: "critical",
+      title: "Zoom participant video off",
+      detail: `${current.displayName} turned video off.`
+    });
+  } else if ((!previous.hasVideo || previous.health === "video-off") && current.hasVideo && current.health !== "video-off") {
+    events.push({
+      severity: "info",
+      title: "Zoom participant video restored",
+      detail: `${current.displayName} video is available.`
+    });
+  }
+
+  if (!previous.isMuted && current.isMuted) {
+    events.push({
+      severity: "info",
+      title: "Zoom participant muted",
+      detail: `${current.displayName} muted their microphone.`
+    });
+  } else if (previous.isMuted && !current.isMuted) {
+    events.push({
+      severity: "info",
+      title: "Zoom participant unmuted",
+      detail: `${current.displayName} unmuted their microphone.`
+    });
+  }
+
+  if (!previous.isScreenSharing && current.isScreenSharing) {
+    events.push({
+      severity: "info",
+      title: "Zoom screen share started",
+      detail: `${current.displayName} started screen sharing.`
+    });
+  } else if (previous.isScreenSharing && !current.isScreenSharing) {
+    events.push({
+      severity: "info",
+      title: "Zoom screen share stopped",
+      detail: `${current.displayName} stopped screen sharing.`
+    });
+  }
+
+  if (!previous.isActiveSpeaker && current.isActiveSpeaker) {
+    events.push({
+      severity: "info",
+      title: "Zoom active speaker changed",
+      detail: `${current.displayName} is now the active speaker.`
+    });
+  }
+
+  return events;
 }
 
 export class NativeHostMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
