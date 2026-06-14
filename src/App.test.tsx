@@ -1405,3 +1405,29 @@ describe("show clock", () => {
     expect(segs.length).toBeGreaterThan(1);
   });
 });
+
+describe("pre-show countdown", () => {
+  it("shows the T-minus label and phase in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Pre-show countdown panel");
+    const tMinus = within(panel).getByLabelText("T-minus label");
+    expect(tMinus).toBeInTheDocument();
+    expect(tMinus.textContent).toMatch(/^T[+-]/);
+  });
+
+  it("shows all three pre-show cue milestones", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const cues = screen.getByLabelText("Pre-show cues");
+    expect(within(cues).getByText("Lobby opens")).toBeInTheDocument();
+    expect(within(cues).getByText("Hot zone")).toBeInTheDocument();
+    expect(within(cues).getByText("Go live")).toBeInTheDocument();
+  });
+});

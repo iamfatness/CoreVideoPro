@@ -68,6 +68,7 @@ import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCand
 import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type ProtocolLatencyProfile } from "./engine/latencyBudget";
 import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stingerEngine";
 import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/bandwidthPlanner";
+import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markShowOver } from "./engine/preShowCountdown";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -206,6 +207,7 @@ export function App({ engines, runtime }: AppProps) {
   const [showClockSegmentIndex, setShowClockSegmentIndex] = useState(-1);
   const [showClockSegmentElapsed, setShowClockSegmentElapsed] = useState(0);
   const [showClockTotalElapsed, setShowClockTotalElapsed] = useState(0);
+  const [preShowSecondsToLive, setPreShowSecondsToLive] = useState(900);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -2790,6 +2792,79 @@ export function App({ engines, runtime }: AppProps) {
                       }}
                     >
                       Next segment
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Pre-show countdown">
+            <div className="section-title">
+              <Activity size={15} />
+              Pre-show countdown
+            </div>
+            {(() => {
+              const now = 0;
+              const show = {
+                scheduledAtUnixSec: preShowSecondsToLive,
+                lobbyDurationSec: 600,
+                showTitle: production.meetingTitle || "Upcoming Show",
+              };
+              const countdown = computeCountdown(now, show);
+              const cues = buildPreShowCues(now, show);
+              return (
+                <div className="pre-show-panel" aria-label="Pre-show countdown panel">
+                  <div className="pre-show-display">
+                    <span className="pre-show-tminus" aria-label="T-minus label">{formatTMinus(countdown.secondsToLive)}</span>
+                    <span className={`pre-show-phase phase-${countdown.phase}`}>{countdown.phase}</span>
+                  </div>
+                  <p className="pre-show-summary">{countdown.summary}</p>
+                  {countdown.hotWarning && (
+                    <p className="pre-show-warning">{countdown.hotWarning}</p>
+                  )}
+                  <div className="pre-show-cues" aria-label="Pre-show cues">
+                    {cues.map((cue) => (
+                      <div className="pre-show-cue" key={cue.label}>
+                        <span className="cue-label">{cue.label}</span>
+                        <span className="cue-time">{cue.secondsFromNow >= 0 ? `in ${Math.round(cue.secondsFromNow)}s` : `${Math.round(-cue.secondsFromNow)}s ago`}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="pre-show-controls">
+                    <button
+                      className="ghost-button"
+                      onClick={() => setPreShowSecondsToLive((s) => Math.max(0, s - 300))}
+                    >
+                      -5 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setPreShowSecondsToLive((s) => s + 300)}
+                    >
+                      +5 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={countdown.phase === "live"}
+                      onClick={() => {
+                        const liveState = markShowLive(countdown);
+                        void liveState;
+                        setPreShowSecondsToLive(0);
+                      }}
+                    >
+                      Go Live
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={countdown.phase !== "live"}
+                      onClick={() => {
+                        const overState = markShowOver(countdown);
+                        void overState;
+                        setPreShowSecondsToLive(-1);
+                      }}
+                    >
+                      End Show
                     </button>
                   </div>
                 </div>

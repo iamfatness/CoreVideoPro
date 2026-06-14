@@ -3357,3 +3357,55 @@ meter {
 .bandwidth-dest-name { flex: 1; color: #8aa0c0; font-weight: 600; }
 .bandwidth-dest-total { color: #60a5fa; font-family: monospace; }
 .bandwidth-dest-proto { color: #4a6070; font-style: italic; }
+
+/* Pre-show countdown */
+.pre-show-panel { display: flex; flex-direction: column; gap: 8px; }
+
+.pre-show-display {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.pre-show-tminus {
+  font-family: monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: #60a5fa;
+  letter-spacing: 0.05em;
+}
+
+.pre-show-phase {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #1e2a3a;
+  color: #8aa0c0;
+}
+
+.pre-show-phase.phase-hot { background: #7c1d1d; color: #f87171; }
+.pre-show-phase.phase-live { background: #14532d; color: #4ade80; }
+.pre-show-phase.phase-lobby { background: #1a3a5c; color: #60a5fa; }
+.pre-show-phase.phase-post-show { background: #1e1e2a; color: #6b7280; }
+
+.pre-show-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+.pre-show-warning { font-size: 11px; color: #f87171; margin: 0; font-weight: 600; }
+
+.pre-show-cues { display: flex; flex-direction: column; gap: 4px; }
+
+.pre-show-cue {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  padding: 3px 6px;
+  background: #0d1520;
+  border-radius: 3px;
+}
+
+.cue-label { color: #8aa0c0; }
+.cue-time { color: #4a6070; font-family: monospace; }
+
+.pre-show-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.pre-show-controls .ghost-button { font-size: 10px; padding: 3px 8px; }
