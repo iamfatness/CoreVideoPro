@@ -45,6 +45,7 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
+import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
   live: "Live",
@@ -69,9 +70,10 @@ const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]
 
 export type AppProps = {
   engines: EngineBundle;
+  runtime?: RuntimeEnvironment;
 };
 
-export function App({ engines }: AppProps) {
+export function App({ engines, runtime }: AppProps) {
   const [production, setProduction] = useState(initialProduction);
   const [meetingState, setMeetingState] = useState<MeetingState>("in_meeting");
   const [screenShareActive, setScreenShareActive] = useState(true);
@@ -815,6 +817,14 @@ export function App({ engines }: AppProps) {
             <span>{joinStatus}</span>
           </div>
           <div className="topbar-actions">
+            {runtime && (
+              <div className={`runtime-badge runtime-${runtime.status}`} aria-label="Desktop runtime">
+                <strong>{runtime.label}</strong>
+                <span>
+                  {runtime.host} / {runtime.platform}
+                </span>
+              </div>
+            )}
             {meetingState === "in_meeting" ? (
               <button className="ghost-button" onClick={leaveMeeting}>
                 <LogOut size={16} />

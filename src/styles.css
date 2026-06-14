@@ -617,6 +617,40 @@ button:disabled {
   margin-left: 0;
 }
 
+.runtime-badge {
+  display: flex;
+  min-width: 140px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid rgba(189, 207, 196, 0.15);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.runtime-badge strong {
+  color: #f4f8f5;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.runtime-badge span {
+  color: #94a59b;
+  font-size: 11px;
+}
+
+.runtime-ready {
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.runtime-degraded,
+.runtime-mock {
+  border-color: rgba(250, 204, 21, 0.32);
+}
+
+.runtime-unsupported {
+  border-color: rgba(248, 113, 113, 0.44);
+}
+
 .program-frame,
 .preview-frame {
   min-width: 0;

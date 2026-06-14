@@ -4,12 +4,29 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { createMockEngineBundle, type EngineBundle } from "./engine/engineBundle";
 import { mapCaptureSnapshot } from "./engine/captureSnapshotMapper";
+import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
-function renderApp(engines: EngineBundle = createMockEngineBundle()) {
-  return render(<App engines={engines} />);
+const mockRuntime: RuntimeEnvironment = {
+  status: "mock",
+  label: "Mock studio",
+  host: "browser-preview",
+  platform: "web",
+  warnings: ["Running with simulated Zoom and output engines."]
+};
+
+function renderApp(engines: EngineBundle = createMockEngineBundle(), runtime: RuntimeEnvironment = mockRuntime) {
+  return render(<App engines={engines} runtime={runtime} />);
 }
 
 describe("App production controls", () => {
+  it("shows the desktop runtime contract in the operator surface", async () => {
+    renderApp();
+
+    const runtime = screen.getByLabelText("Desktop runtime");
+    expect(within(runtime).getByText("Mock studio")).toBeInTheDocument();
+    expect(within(runtime).getByText("browser-preview / web")).toBeInTheDocument();
+  });
+
   it("runs Magic Scene through the engine and updates status", async () => {
     const user = userEvent.setup();
     renderApp();
