@@ -5,7 +5,7 @@ import {
   type ZoomMediaSpineServiceJoin,
   type ZoomMediaSpineServicePlanOptions
 } from "./zoomMediaSpineServicePlan";
-import { buildZoomMediaSpineSyncPayload, type ZoomMediaSpineSyncOptions } from "./zoomMediaSpineSync";
+import { buildZoomMediaSpineSyncPayload, type ZoomMediaSpineSyncOptions, type ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 import type { ZoomSdkReadinessInput } from "./zoomSdkReadiness";
 
 export type ZoomMediaSpineSessionControllerOptions = {
@@ -107,6 +107,7 @@ export class ZoomMediaSpineSessionController {
     options: ZoomMediaSpineSessionRunOptions & Pick<ZoomMediaSpineServicePlanOptions, "mode" | "join" | "previousRecordingActive">
   ) {
     const payload = buildZoomMediaSpineSyncPayload(state, readinessInput, options.syncOptions);
+    updatePayloadAwareTransport(this.transport, payload, options.elapsedMs);
     const plan = buildZoomMediaSpineServicePlan(payload, readinessInput, {
       mode: options.mode,
       join: options.join,
@@ -126,4 +127,17 @@ export class ZoomMediaSpineSessionController {
 
     this.recordingActive = state.recording;
   }
+}
+
+type PayloadAwareTransport = ZoomMediaSpineServiceTransport & {
+  updatePayload?: (payload: ZoomMediaSpineSyncPayload, elapsedMs: number) => void;
+};
+
+function updatePayloadAwareTransport(
+  transport: ZoomMediaSpineServiceTransport,
+  payload: ZoomMediaSpineSyncPayload,
+  elapsedMs: number
+) {
+  const candidate = transport as PayloadAwareTransport;
+  candidate.updatePayload?.(payload, elapsedMs);
 }
