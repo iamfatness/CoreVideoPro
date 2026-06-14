@@ -385,6 +385,33 @@ TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
 #endif
 }
 
+TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-proof-plan", "d3d11"};
+  const auto session = sender->sync({"rtmp"}, &frame, 33);
+  ASSERT_FALSE(session.senders.empty());
+  ASSERT_FALSE(session.senders[0].sendArtifactPath.empty());
+  EXPECT_TRUE(session.senders[0].sendBytesWritten > 0);
+  ASSERT_TRUE(std::filesystem::exists(session.senders[0].sendArtifactPath));
+
+  std::ifstream input(session.senders[0].sendArtifactPath);
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const auto content = buffer.str();
+  EXPECT_NE(content.find("rtmp-send-proof-start"), std::string::npos);
+  EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
+  input.close();
+  const auto artifactPath = session.senders[0].sendArtifactPath;
+  sender.reset();
+  std::filesystem::remove(artifactPath);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(CaptureDeviceAdapter, FactoriesAreDisabledUnlessHardwareGatesAreEnabled) {
 #if COREVIDEO_WITH_DECKLINK
   auto deckLink = corevideo::modules::createDeckLinkCaptureDevice();

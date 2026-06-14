@@ -74,6 +74,8 @@ struct OutputSender {
   int latencyMs = 2100;
   double bitrateMbps = 6.0;
   std::string warning;
+  std::string sendArtifactPath;
+  int64_t sendBytesWritten = 0;
 };
 
 struct OutputSenderSession {

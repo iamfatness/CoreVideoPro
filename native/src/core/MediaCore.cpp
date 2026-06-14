@@ -557,6 +557,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (!sender.warning.empty()) {
       senderJson.emplace("warning", sender.warning);
     }
+    if (!sender.sendArtifactPath.empty()) {
+      senderJson.emplace("sendArtifactPath", sender.sendArtifactPath);
+      senderJson.emplace("sendBytesWritten", static_cast<double>(sender.sendBytesWritten));
+    }
     senders.emplace_back(std::move(senderJson));
   }
 
