@@ -4,7 +4,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include "../../src/engine-ipc.h"
+#include "engine-ipc.h"
 #if __has_include(<zoom_sdk_raw_data_def.h>)
 #include <zoom_sdk_raw_data_def.h>
 #else

@@ -15,10 +15,10 @@ plugin, built here as `corevideo-zoom-engine`) that:
 
 ## Provenance
 
-Copied verbatim from `iamfatness/corevideo` (the OBS plugin) with **one** change:
-`engine/main.cpp`'s `#include "../../src/engine-ipc.h"` was rewritten to
-`#include "engine-ipc.h"` to match this flattened layout. The engine has no
-`libobs`/Qt/`blog` dependencies, so no other edits were needed.
+Copied verbatim from `iamfatness/corevideo` (the OBS plugin) with only
+include-path rewrites from `../../src/engine-ipc.h` to `engine-ipc.h` so the
+flattened `shared/` header can be used. The engine has no `libobs`/Qt/`blog`
+dependencies, so no other edits were needed.
 
 Source files:
 - `engine/` ← plugin `engine/src/` (`main`, `engine-video`, `engine-audio`,
@@ -45,5 +45,5 @@ helper target or `COREVIDEO_WITH_ZOOM`.
 ## Keeping it in sync
 
 This is a vendored copy, not a submodule. If the plugin engine changes, re-copy
-`engine/src/*` and `src/engine-ipc.h` and re-apply the single include-path edit
+`engine/src/*` and `src/engine-ipc.h` and re-apply the include-path rewrites
 above. Keep this engine OBS-free so it stays portable to this app.

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../src/engine-ipc.h"
+#include "engine-ipc.h"
 
 #include <cstdint>
 #include <memory>

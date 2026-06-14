@@ -12,7 +12,7 @@ option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device ada
 option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored OBS-free Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
-set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ and lib/)")
+set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ or h/, plus lib/)")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,6 +155,13 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   if(NOT ZOOM_SDK_DIR)
     message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR=<path to Zoom SDK>")
   endif()
+  if(EXISTS "${ZOOM_SDK_DIR}/include")
+    set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/include")
+  elseif(EXISTS "${ZOOM_SDK_DIR}/h")
+    set(COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR "${ZOOM_SDK_DIR}/h")
+  else()
+    message(FATAL_ERROR "COREVIDEO_BUILD_ZOOM_ENGINE expected include/ or h/ under ZOOM_SDK_DIR=${ZOOM_SDK_DIR}")
+  endif()
 
   add_executable(corevideo-zoom-engine
     zoom-engine/engine/main.cpp
@@ -165,7 +172,9 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
   target_include_directories(corevideo-zoom-engine PRIVATE
     zoom-engine/engine
     zoom-engine/shared
-    "${ZOOM_SDK_DIR}/include"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/rawdata"
+    "${COREVIDEO_ZOOM_ENGINE_INCLUDE_DIR}/meeting_service_components"
   )
   if(WIN32)
     file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
