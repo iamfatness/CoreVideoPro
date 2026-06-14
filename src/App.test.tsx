@@ -1042,3 +1042,23 @@ describe("WebRTC monitor output", () => {
     expect(screen.getByLabelText("WebRTC (WHIP) stream key")).toBeInTheDocument();
   });
 });
+
+describe("feed health roster", () => {
+  it("shows feed health summary and per-participant badges in the Sources tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+    const roster = screen.getByLabelText("Feed health roster");
+    const summary = within(roster).getByLabelText("Feed health summary");
+
+    // 8 participants seeded; most live, some muted/low-res/video-off
+    expect(summary).toHaveTextContent(/\/8/);
+    expect(summary).toHaveTextContent(/live/i);
+
+    // Spot check: Maya Chen (live/Host) should show "Live" badge
+    expect(within(roster).getByText("Maya Chen")).toBeInTheDocument();
+    // Priya Shah is seeded as low-resolution
+    expect(within(roster).getByText("Priya Shah")).toBeInTheDocument();
+  });
+});

@@ -2781,3 +2781,83 @@ meter {
 .srt-warning {
   color: #f87171;
 }
+
+/* Feed health roster */
+.feed-health-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feed-health-summary {
+  font-size: 13px;
+  color: #c6d4cc;
+  margin: 0;
+}
+
+.feed-health-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.feed-health-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: #0e1812;
+  border-left: 3px solid #2e3e38;
+  font-size: 12px;
+}
+
+.feed-health-row.color-green { border-left-color: #4ade80; }
+.feed-health-row.color-yellow { border-left-color: #fbbf24; }
+.feed-health-row.color-orange { border-left-color: #fb923c; }
+.feed-health-row.color-red { border-left-color: #f87171; }
+.feed-health-row.color-gray { border-left-color: #4b5563; }
+
+.feed-health-name {
+  font-weight: 600;
+  color: #c6d4cc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-health-role {
+  font-size: 11px;
+  color: #5a7a6c;
+}
+
+.feed-health-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #1a2620;
+}
+
+.feed-health-badge.color-green { color: #4ade80; }
+.feed-health-badge.color-yellow { color: #fbbf24; }
+.feed-health-badge.color-orange { color: #fb923c; }
+.feed-health-badge.color-red { color: #f87171; }
+.feed-health-badge.color-gray { color: #9ca3af; }
+
+.feed-health-detail {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #fb923c;
+  padding: 2px 0 0;
+}
+
+.webrtc-latency-class {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.webrtc-latency-class.latency-ultra-low { color: #4ade80; }
+.webrtc-latency-class.latency-low { color: #a3e635; }
+.webrtc-latency-class.latency-standard { color: #fbbf24; }
