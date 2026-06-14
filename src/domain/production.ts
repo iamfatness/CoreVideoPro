@@ -144,6 +144,7 @@ export type BrandKit = {
   brandColor: string;
   accentColor: string;
   backgroundColor: string;
+  backgroundImageUrl: string;
   fontFamily: BrandKitFont;
   lowerThirdStyle: "solid" | "minimal" | "gradient";
 };
@@ -747,6 +748,7 @@ export const initialProduction: ProductionState = {
     brandColor: "#44c1a1",
     accentColor: "#f0a85c",
     backgroundColor: "#0c1118",
+    backgroundImageUrl: "",
     fontFamily: "Inter",
     lowerThirdStyle: "gradient"
   },

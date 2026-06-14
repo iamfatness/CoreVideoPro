@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
-import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
+import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } from "./engine/brandKit";
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
@@ -991,7 +991,10 @@ export function App({ engines, runtime }: AppProps) {
             </div>
 
             <section className="program-frame" aria-label="Program preview">
-              <div className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}>
+              <div
+                className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}
+                style={{ background: programBackgroundStyle(production.brandKit) }}
+              >
                 <ScenePreview
                   activeShareFrame={activeShareFrame}
                   participants={programParticipants}
@@ -1726,6 +1729,16 @@ export function App({ engines, runtime }: AppProps) {
                   onChange={(event) => updateBrandKit({ backgroundColor: event.target.value })}
                   type="color"
                   value={production.brandKit.backgroundColor}
+                />
+              </label>
+              <label className="brand-kit-field brand-kit-field-wide">
+                <span>Background image URL</span>
+                <input
+                  aria-label="Brand background image URL"
+                  onChange={(event) => updateBrandKit({ backgroundImageUrl: event.target.value })}
+                  placeholder="https://…  (blank for branded gradient)"
+                  type="url"
+                  value={production.brandKit.backgroundImageUrl}
                 />
               </label>
               <label className="brand-kit-field">

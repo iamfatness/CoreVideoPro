@@ -136,6 +136,21 @@ describe("App production controls", () => {
     expect(within(program).queryByText("CoreVideo Pro")).not.toBeInTheDocument();
   });
 
+  it("applies a brand background image to the program canvas", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const program = screen.getByLabelText("Program preview");
+    const canvasStyle = () => (program.querySelector(".program-canvas") as HTMLElement).getAttribute("style") ?? "";
+    expect(canvasStyle()).toContain("linear-gradient(135deg");
+    expect(canvasStyle()).not.toContain("url(");
+
+    await goToTab(user, "Overlays");
+    await user.type(screen.getByLabelText("Brand background image URL"), "https://cdn.example.com/stage.jpg");
+
+    expect(canvasStyle()).toContain("stage.jpg");
+  });
+
   it("applies caption style controls to the program caption", async () => {
     const user = userEvent.setup();
     renderApp();

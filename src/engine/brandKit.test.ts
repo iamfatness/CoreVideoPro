@@ -4,8 +4,10 @@ import type { BrandKit } from "../domain/production";
 import {
   applyBrandKitToGraphics,
   isValidHexColor,
+  isValidImageUrl,
   normalizeBrandKit,
   normalizeHexColor,
+  programBackgroundStyle,
   summarizeBrandKit
 } from "./brandKit";
 
@@ -15,6 +17,7 @@ const sampleBrandKit: BrandKit = {
   brandColor: "#1166FF",
   accentColor: "#FFAA22",
   backgroundColor: "#101418",
+  backgroundImageUrl: "",
   fontFamily: "Poppins",
   lowerThirdStyle: "gradient"
 };
@@ -71,5 +74,31 @@ describe("applyBrandKitToGraphics", () => {
 describe("summarizeBrandKit", () => {
   it("describes the kit's font and lower-third style", () => {
     expect(summarizeBrandKit(sampleBrandKit)).toBe("Launch Show - Poppins, gradient lower-thirds");
+  });
+});
+
+describe("isValidImageUrl", () => {
+  it("accepts http(s) urls and rejects everything else", () => {
+    expect(isValidImageUrl("https://cdn.example.com/bg.jpg")).toBe(true);
+    expect(isValidImageUrl("http://example.com/a.png")).toBe(true);
+    expect(isValidImageUrl("  https://example.com/x.png  ")).toBe(true);
+    expect(isValidImageUrl("ftp://example.com/x.png")).toBe(false);
+    expect(isValidImageUrl("not a url")).toBe(false);
+    expect(isValidImageUrl("")).toBe(false);
+  });
+});
+
+describe("programBackgroundStyle", () => {
+  it("layers a valid image under a legibility scrim", () => {
+    const style = programBackgroundStyle({ ...sampleBrandKit, backgroundImageUrl: "https://cdn.example.com/stage.jpg" });
+    expect(style).toContain('url("https://cdn.example.com/stage.jpg")');
+    expect(style).toContain("linear-gradient(rgba(8, 12, 16, 0.55)");
+    expect(style).toContain("cover");
+  });
+
+  it("falls back to a branded gradient without a valid image", () => {
+    const style = programBackgroundStyle({ ...sampleBrandKit, backgroundImageUrl: "nope" });
+    expect(style).toBe("linear-gradient(135deg, #101418, #1166ff)");
+    expect(style).not.toContain("url(");
   });
 });
