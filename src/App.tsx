@@ -65,6 +65,7 @@ import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDi
 import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
 import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summarizeCaptionQuality } from "./engine/captionQuality";
 import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCandidate } from "./engine/participantSpotlight";
+import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type ProtocolLatencyProfile } from "./engine/latencyBudget";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1722,6 +1723,44 @@ export function App({ engines, runtime }: AppProps) {
                         </div>
                       );
                     })}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Latency budget">
+            <div className="section-title">
+              <Activity size={15} />
+              Latency budget
+            </div>
+            {(() => {
+              const armedDestination = destinationStates.find((d) => d.active || d.enabled);
+              const protocol = armedDestination?.protocol ?? "rtmp-hls";
+              const protocolMap: Record<string, ProtocolLatencyProfile> = {
+                RTMP: "rtmp-hls",
+                SRT: "srt",
+                WebRTC: "webrtc-whip",
+                NDI: "ndi",
+              };
+              const latencyProtocol: ProtocolLatencyProfile = protocolMap[protocol] ?? "rtmp-hls";
+              const budget = computeLatencyBudget({
+                protocol: latencyProtocol,
+                outputFps: production.output.fps || 30,
+              });
+              return (
+                <div className="latency-budget-panel" aria-label="Latency budget panel">
+                  <div className={`latency-class-badge class-${budget.latencyClass}`}>
+                    {latencyClassLabel(budget.latencyClass)}
+                  </div>
+                  <p className="latency-summary">{budget.summary}</p>
+                  <div className="latency-stages">
+                    {budget.stages.map((stage) => (
+                      <div key={stage.stage} className="latency-stage-row">
+                        <span className="latency-stage-label">{stage.label}</span>
+                        <span className="latency-stage-value">{formatLatencyMs(stage.estimatedMs)}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               );
