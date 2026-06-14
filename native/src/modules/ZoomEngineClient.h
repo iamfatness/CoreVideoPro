@@ -31,6 +31,15 @@ struct ZoomEngineSubscribeCommand {
   bool audienceAudio = false;
 };
 
+struct ZoomEngineParticipant {
+  std::uint32_t id = 0;
+  std::string displayName;
+  bool hasVideo = false;
+  bool isTalking = false;
+  bool isMuted = false;
+  bool isSharingScreen = false;
+};
+
 enum class ZoomEngineEventKind {
   Unknown,
   Ping,
@@ -60,6 +69,7 @@ struct ZoomEngineEvent {
   std::uint32_t byteLength = 0;
   std::size_t participantCount = 0;
   bool ok = false;
+  std::vector<ZoomEngineParticipant> participants;
 };
 
 struct ZoomEngineRgbaFrame {

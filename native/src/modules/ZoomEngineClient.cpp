@@ -26,6 +26,11 @@ std::uint32_t uintField(const Json& object, const std::string& key) {
   return number > 0 ? static_cast<std::uint32_t>(number) : 0;
 }
 
+bool boolField(const Json& object, const std::string& key) {
+  const Json* value = object.get(key);
+  return value ? value->asBool(false) : false;
+}
+
 std::uint8_t clampByte(int value) {
   return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
 }
@@ -166,6 +171,20 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
 
   if (const Json* participants = parsed->get("participants"); participants && participants->isArray()) {
     event.participantCount = participants->asArray().size();
+    event.participants.reserve(participants->asArray().size());
+    for (const Json& participant : participants->asArray()) {
+      if (!participant.isObject()) {
+        continue;
+      }
+      event.participants.push_back({
+          uintField(participant, "id"),
+          participant.getString("name"),
+          boolField(participant, "has_video"),
+          boolField(participant, "is_talking"),
+          boolField(participant, "is_muted"),
+          boolField(participant, "is_sharing_screen"),
+      });
+    }
   }
 
   return event;
