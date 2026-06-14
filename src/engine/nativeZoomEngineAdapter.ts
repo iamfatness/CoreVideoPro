@@ -39,7 +39,7 @@ export class NativeZoomEngineAdapter implements ZoomCaptureEngine {
       throw new NativeZoomBridgeError(response.error.code, response.error.message);
     }
 
-    if (!("snapshot" in response)) {
+    if (!("snapshot" in response) || !("meetingState" in response.snapshot)) {
       throw new NativeZoomBridgeError("snapshot-failed", "Native Zoom bridge returned a non-snapshot response.");
     }
 
