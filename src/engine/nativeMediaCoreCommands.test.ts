@@ -132,9 +132,16 @@ describe("native media core command builder", () => {
       targetBitrateMbps: 8.2
     });
     expect(commands).toContainEqual({
+      type: "prepare-encoder-session",
+      reason: "Production outputs armed."
+    });
+    expect(commands).toContainEqual({
       type: "start-program-output",
       destinations: ["recording", "rtmp", "ndi"],
       isoParticipantIds: ["p1", "p2"]
+    });
+    expect(commands).toContainEqual({
+      type: "start-encoder-session"
     });
     expect(commands).toContainEqual({
       type: "set-recording-targets",
@@ -152,6 +159,23 @@ describe("native media core command builder", () => {
       format: "mp4",
       quality: "high",
       isoParticipantIds: ["p1", "p2"]
+    });
+  });
+
+  it("stops encoder lifecycle when production outputs are idle", () => {
+    const commands = buildNativeMediaCoreCommands({
+      ...initialProduction,
+      recording: false,
+      streaming: false
+    });
+
+    expect(commands).toContainEqual({
+      type: "stop-encoder-session",
+      reason: "Outputs disabled in production state."
+    });
+    expect(commands).toContainEqual({
+      type: "stop-recording-session",
+      reason: "Recording disabled in production state."
     });
   });
 });

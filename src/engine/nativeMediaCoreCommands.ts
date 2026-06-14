@@ -59,7 +59,11 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
 
   const outputCommand = buildOutputCommand(state);
   if (outputCommand) {
+    commands.push({ type: "prepare-encoder-session", reason: "Production outputs armed." });
     commands.push(outputCommand);
+    commands.push({ type: "start-encoder-session" });
+  } else {
+    commands.push({ type: "stop-encoder-session", reason: "Outputs disabled in production state." });
   }
   commands.push(...buildRecordingCommands(state));
 

@@ -338,7 +338,7 @@ describe("media core sync engine", () => {
         status: "encoding",
         lifecycle: {
           status: "encoding",
-          lastTransition: "Program output encoder session started."
+          lastTransition: "Encoder session started."
         },
         targets: expect.arrayContaining([
           expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
