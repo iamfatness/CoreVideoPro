@@ -5,6 +5,11 @@ export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recordin
 export type MediaCoreFrameKind = "participant-video" | "screen-share";
 
 export type MediaCoreFrameHealth = "live" | "stale" | "dropped" | "low-resolution";
+export type MediaCoreRecordingStatus = "recording" | "warning" | "stopped" | "failed";
+export type MediaCoreRecordingWriterStatus = "writing" | "warning" | "stopped" | "failed";
+export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed";
+export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
+export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 
 export type MediaCoreFrame = {
   sourceId: string;
@@ -22,19 +27,64 @@ export type MediaCoreRecordingStream = {
   kind: "program" | "iso";
   participantId?: string;
   path: string;
+  status: MediaCoreRecordingWriterStatus;
   framesWritten: number;
+  droppedFrames: number;
+  bytesWritten: number;
 };
 
 export type MediaCoreRecordingSession = {
+  sessionId: string;
   active: boolean;
-  status: "recording" | "warning";
+  status: MediaCoreRecordingStatus;
+  writerStatus: MediaCoreRecordingWriterStatus;
   startedAtMs: number;
+  stoppedAtMs?: number;
   elapsedMs: number;
+  targetFolder: string;
+  filenamePrefix: string;
+  format: MediaCoreRecordingFormat;
+  quality: MediaCoreRecordingQuality;
+  encoder: {
+    codec: "h264" | "hevc";
+    hardwareAccelerated: boolean;
+    targetBitrateMbps: number;
+  };
   estimatedDiskRateMBps: number;
   programPath: string;
   streams: MediaCoreRecordingStream[];
   totalFramesWritten: number;
+  totalDroppedFrames: number;
+  totalBytesWritten: number;
   warning?: string;
+  error?: string;
+};
+
+export type MediaCoreRecordingTargets = {
+  targetFolder: string;
+  filenamePrefix: string;
+  format: MediaCoreRecordingFormat;
+  quality: MediaCoreRecordingQuality;
+  isoParticipantIds: string[];
+};
+
+export type MediaCoreOutputHealth = {
+  destination: MediaCoreDestination;
+  status: MediaCoreOutputHealthStatus;
+  message: string;
+  droppedFrames: number;
+};
+
+export type MediaCoreDiagnosticsSnapshot = {
+  generatedAtMs: number;
+  sceneId?: string;
+  routeCount: number;
+  frameCount: number;
+  outputs: MediaCoreDestination[];
+  outputHealth: MediaCoreOutputHealth[];
+  recording?: MediaCoreRecordingSession;
+  warnings: string[];
+  lastCommandTypes: string[];
 };
 
 export type MediaCoreCommand =
@@ -66,6 +116,22 @@ export type MediaCoreCommand =
       type: "start-program-output";
       destinations: MediaCoreDestination[];
       isoParticipantIds: string[];
+    }
+  | ({
+      type: "set-recording-targets";
+    } & MediaCoreRecordingTargets)
+  | ({
+      type: "start-recording-session";
+      sessionId?: string;
+      startedAtMs?: number;
+    } & Partial<MediaCoreRecordingTargets>)
+  | {
+      type: "stop-recording-session";
+      reason?: string;
+    }
+  | {
+      type: "fail-recording-session";
+      message: string;
     };
 
 export type MediaCoreRequest =
@@ -93,7 +159,9 @@ export type MediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: MediaCoreDestination[];
   isoParticipantIds: string[];
+  outputHealth: MediaCoreOutputHealth[];
   recording?: MediaCoreRecordingSession;
+  diagnostics: MediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];
 };

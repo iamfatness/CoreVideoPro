@@ -72,6 +72,19 @@ describe("native media core protocol", () => {
         type: "start-program-output",
         destinations: ["recording", "rtmp", "ndi"],
         isoParticipantIds: ["p1", "p2"]
+      },
+      {
+        type: "set-recording-targets",
+        targetFolder: "Recordings/CoreVideo Pro",
+        filenamePrefix: "launch-show",
+        format: "mp4",
+        quality: "high",
+        isoParticipantIds: ["p1", "p2"]
+      },
+      {
+        type: "start-recording-session",
+        sessionId: "launch-show-p1-p2",
+        isoParticipantIds: ["p1", "p2"]
       }
     ];
 
@@ -79,7 +92,9 @@ describe("native media core protocol", () => {
       "load-scene-graph",
       "set-participant-transform",
       "set-overlay-asset",
-      "start-program-output"
+      "start-program-output",
+      "set-recording-targets",
+      "start-recording-session"
     ]);
   });
 });

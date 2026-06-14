@@ -53,6 +53,22 @@ export type NativeMediaCoreCommand =
       type: "start-program-output";
       destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
       isoParticipantIds: string[];
+    }
+  | ({
+      type: "set-recording-targets";
+    } & NativeMediaCoreRecordingTargets)
+  | ({
+      type: "start-recording-session";
+      sessionId?: string;
+      startedAtMs?: number;
+    } & Partial<NativeMediaCoreRecordingTargets>)
+  | {
+      type: "stop-recording-session";
+      reason?: string;
+    }
+  | {
+      type: "fail-recording-session";
+      message: string;
     };
 
 export type NativeMediaCoreFrame = {
@@ -71,19 +87,64 @@ export type NativeMediaCoreRecordingStream = {
   kind: "program" | "iso";
   participantId?: string;
   path: string;
+  status: "writing" | "warning" | "stopped" | "failed";
   framesWritten: number;
+  droppedFrames: number;
+  bytesWritten: number;
 };
 
 export type NativeMediaCoreRecordingSession = {
+  sessionId: string;
   active: boolean;
-  status: "recording" | "warning";
+  status: "recording" | "warning" | "stopped" | "failed";
+  writerStatus: "writing" | "warning" | "stopped" | "failed";
   startedAtMs: number;
+  stoppedAtMs?: number;
   elapsedMs: number;
+  targetFolder: string;
+  filenamePrefix: string;
+  format: "mp4" | "mov" | "mkv";
+  quality: "standard" | "high" | "archive";
+  encoder: {
+    codec: "h264" | "hevc";
+    hardwareAccelerated: boolean;
+    targetBitrateMbps: number;
+  };
   estimatedDiskRateMBps: number;
   programPath: string;
   streams: NativeMediaCoreRecordingStream[];
   totalFramesWritten: number;
+  totalDroppedFrames: number;
+  totalBytesWritten: number;
   warning?: string;
+  error?: string;
+};
+
+export type NativeMediaCoreRecordingTargets = {
+  targetFolder: string;
+  filenamePrefix: string;
+  format: "mp4" | "mov" | "mkv";
+  quality: "standard" | "high" | "archive";
+  isoParticipantIds: string[];
+};
+
+export type NativeMediaCoreOutputHealth = {
+  destination: "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
+  status: "idle" | "live" | "warning" | "failed";
+  message: string;
+  droppedFrames: number;
+};
+
+export type NativeMediaCoreDiagnosticsSnapshot = {
+  generatedAtMs: number;
+  sceneId?: string;
+  routeCount: number;
+  frameCount: number;
+  outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
+  outputHealth: NativeMediaCoreOutputHealth[];
+  recording?: NativeMediaCoreRecordingSession;
+  warnings: string[];
+  lastCommandTypes: string[];
 };
 
 export type NativeMediaCoreStateSnapshot = {
@@ -95,7 +156,9 @@ export type NativeMediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   isoParticipantIds: string[];
+  outputHealth: NativeMediaCoreOutputHealth[];
   recording?: NativeMediaCoreRecordingSession;
+  diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];
 };

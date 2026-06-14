@@ -28,6 +28,19 @@ const commands: MediaCoreCommand[] = [
     type: "start-program-output",
     destinations: ["recording", "rtmp"],
     isoParticipantIds: ["p1", "p2"]
+  },
+  {
+    type: "set-recording-targets",
+    targetFolder: "Recordings/CoreVideo Pro/native-core",
+    filenamePrefix: "program",
+    format: "mp4",
+    quality: "high",
+    isoParticipantIds: ["p1", "p2"]
+  },
+  {
+    type: "start-recording-session",
+    sessionId: "test-session",
+    isoParticipantIds: ["p1", "p2"]
   }
 ];
 
@@ -39,7 +52,7 @@ describe("MediaCoreRuntime", () => {
     expect(response).toMatchObject({
       id: "sync-1",
       ok: true,
-      appliedCommandCount: 4,
+      appliedCommandCount: 6,
       state: {
         sceneId: "speaker-slides",
         routeCount: 2,
@@ -66,21 +79,26 @@ describe("MediaCoreRuntime", () => {
         outputs: ["recording", "rtmp"],
         isoParticipantIds: ["p1", "p2"],
         recording: {
+          sessionId: "test-session",
           active: true,
           status: "recording",
-          programPath: "Recordings/CoreVideo Pro/native-core/program-0.mp4",
+          writerStatus: "writing",
+          programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
-            { kind: "program", framesWritten: 2 },
-            { kind: "iso", participantId: "p1", framesWritten: 0 },
-            { kind: "iso", participantId: "p2", framesWritten: 1 }
+            { kind: "program", status: "writing", framesWritten: 2 },
+            { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
+            { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
           ],
           totalFramesWritten: 3
         },
+        outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
         lastCommandTypes: [
           "load-scene-graph",
           "set-participant-transform",
           "set-overlay-asset",
-          "start-program-output"
+          "start-program-output",
+          "set-recording-targets",
+          "start-recording-session"
         ]
       }
     });
@@ -99,6 +117,7 @@ describe("MediaCoreRuntime", () => {
         participantTransformCount: 0,
         overlayCount: 0,
         recording: undefined,
+        outputHealth: [],
         outputs: []
       }
     });
@@ -161,11 +180,12 @@ describe("MediaCoreRuntime", () => {
       id: "sync-2",
       type: "sync",
       commands: [
-        {
-          type: "load-scene-graph",
-          sceneId: "interview",
-          routes: [{ routeId: "active", mode: "active-speaker", audioRole: "mix" }]
-        }
+          {
+            type: "load-scene-graph",
+            sceneId: "interview",
+            routes: [{ routeId: "active", mode: "active-speaker", audioRole: "mix" }]
+        },
+        { type: "stop-recording-session", reason: "Recording disabled in production state." }
       ]
     });
 
@@ -174,7 +194,46 @@ describe("MediaCoreRuntime", () => {
       state: {
         outputs: [],
         isoParticipantIds: [],
-        recording: undefined
+        recording: {
+          active: false,
+          status: "stopped",
+          writerStatus: "stopped"
+        },
+        outputHealth: [{ destination: "recording", status: "idle" }]
+      }
+    });
+  });
+
+  it("captures recording writer failures in output health and diagnostics", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "sync-fail",
+      type: "sync",
+      commands: [
+        {
+          type: "start-recording-session",
+          targetFolder: "Recordings/CoreVideo Pro/native-core",
+          filenamePrefix: "failure-test",
+          format: "mp4",
+          quality: "high",
+          isoParticipantIds: ["p1"]
+        },
+        { type: "fail-recording-session", message: "Encoder process exited." }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        recording: {
+          active: false,
+          status: "failed",
+          error: "Encoder process exited."
+        },
+        outputHealth: [{ destination: "recording", status: "failed", message: "Encoder process exited." }],
+        diagnostics: {
+          warnings: ["Encoder process exited."]
+        }
       }
     });
   });

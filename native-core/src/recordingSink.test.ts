@@ -45,11 +45,14 @@ describe("RecordingSink", () => {
       active: true,
       status: "recording",
       startedAtMs: 1000,
-      programPath: "Recordings/CoreVideo Pro/native-core/program-1000.mp4",
+      writerStatus: "writing",
+      targetFolder: "Recordings/CoreVideo Pro/native-core",
+      filenamePrefix: "program",
+      programPath: "Recordings/CoreVideo Pro/native-core/program-program-1000.mp4",
       streams: [
-        { kind: "program", path: "Recordings/CoreVideo Pro/native-core/program-1000.mp4" },
-        { kind: "iso", participantId: "p1", path: "Recordings/CoreVideo Pro/native-core/iso-p1-1000.mp4" },
-        { kind: "iso", participantId: "p2", path: "Recordings/CoreVideo Pro/native-core/iso-p2-1000.mp4" }
+        { kind: "program", status: "writing", path: "Recordings/CoreVideo Pro/native-core/program-program-1000.mp4" },
+        { kind: "iso", participantId: "p1", status: "writing", path: "Recordings/CoreVideo Pro/native-core/program-iso-p1-1000.mp4" },
+        { kind: "iso", participantId: "p2", status: "writing", path: "Recordings/CoreVideo Pro/native-core/program-iso-p2-1000.mp4" }
       ]
     });
   });
@@ -68,11 +71,37 @@ describe("RecordingSink", () => {
     });
   });
 
-  it("clears recording state when stopped", () => {
+  it("keeps stopped session metadata after stop", () => {
     const sink = new RecordingSink();
     sink.sync(["p1"], 0);
     sink.stop();
 
-    expect(sink.snapshot()).toBeUndefined();
+    expect(sink.snapshot()).toMatchObject({
+      active: false,
+      status: "stopped",
+      writerStatus: "stopped",
+      streams: [
+        { kind: "program", status: "stopped" },
+        { kind: "iso", participantId: "p1", status: "stopped" }
+      ]
+    });
+  });
+
+  it("captures failed writer state for diagnostics", () => {
+    const sink = new RecordingSink();
+    sink.start({ isoParticipantIds: ["p1"] }, 10, "show-1");
+    sink.fail("Encoder process exited.", 15);
+
+    expect(sink.snapshot()).toMatchObject({
+      sessionId: "show-1",
+      active: false,
+      status: "failed",
+      writerStatus: "failed",
+      error: "Encoder process exited.",
+      streams: [
+        { kind: "program", status: "failed" },
+        { kind: "iso", participantId: "p1", status: "failed" }
+      ]
+    });
   });
 });

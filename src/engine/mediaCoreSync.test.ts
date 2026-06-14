@@ -44,6 +44,16 @@ describe("media core sync engine", () => {
       overlayCount: 0,
       outputs: ["recording" as const],
       isoParticipantIds: ["p1"],
+      outputHealth: [],
+      diagnostics: {
+        generatedAtMs: 2400,
+        routeCount: 1,
+        frameCount: 1,
+        outputs: ["recording" as const],
+        outputHealth: [],
+        warnings: [],
+        lastCommandTypes: ["load-scene-graph"]
+      },
       lastCommandTypes: ["load-scene-graph"],
       warnings: []
     }));
@@ -82,14 +92,20 @@ describe("media core sync engine", () => {
         active: true,
         status: "recording",
         startedAtMs: 3000,
-        estimatedDiskRateMBps: 5.55,
-        programPath: "Recordings/CoreVideo Pro/native-core/program-3000.mp4",
+        writerStatus: "writing",
+        estimatedDiskRateMBps: 7.49,
+        programPath: "Recordings/CoreVideo Pro/AI_Product_Launch_Webinar-program-3000.mp4",
         streams: [
-          { kind: "program", framesWritten: 2 },
-          { kind: "iso", participantId: "p1", framesWritten: 0 },
-          { kind: "iso", participantId: "p2", framesWritten: 1 }
+          { kind: "program", status: "writing", framesWritten: 2 },
+          { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
+          { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
         ],
         totalFramesWritten: 3
+      },
+      outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
+      diagnostics: {
+        generatedAtMs: 3000,
+        recording: { sessionId: "AI_Product_Launch_Webinar-p1-p2" }
       }
     });
   });

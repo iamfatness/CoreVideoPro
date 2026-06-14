@@ -1,4 +1,12 @@
-import type { MediaCoreCommand, MediaCoreRequest, MediaCoreResponse, MediaCoreStateSnapshot } from "./protocol.js";
+import type {
+  MediaCoreCommand,
+  MediaCoreDestination,
+  MediaCoreDiagnosticsSnapshot,
+  MediaCoreOutputHealth,
+  MediaCoreRequest,
+  MediaCoreResponse,
+  MediaCoreStateSnapshot
+} from "./protocol.js";
 import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
 import { RecordingSink } from "./recordingSink.js";
 
@@ -12,6 +20,7 @@ export class MediaCoreRuntime {
   private readonly transforms = new Map<string, TransformState>();
   private readonly overlays = new Map<string, OverlayState>();
   private output?: OutputState;
+  private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
   private readonly frameProducer = new FakeFrameProducer();
   private readonly recordingSink = new RecordingSink();
@@ -55,7 +64,7 @@ export class MediaCoreRuntime {
 
     if (!outputCommand) {
       this.output = undefined;
-      this.recordingSink.stop();
+      this.outputHealth.clear();
     }
 
     commands.forEach((command) => {
@@ -85,17 +94,55 @@ export class MediaCoreRuntime {
 
       if (command.type === "start-program-output") {
         this.output = command;
+        this.syncOutputHealth(command.destinations);
         if (command.destinations.length === 0) {
           warnings.push("Program output started without destinations.");
         }
-        if (command.destinations.includes("recording")) {
-          const recording = this.recordingSink.sync(command.isoParticipantIds, this.elapsedMs);
-          if (recording?.warning) {
-            warnings.push(recording.warning);
-          }
-        } else {
-          this.recordingSink.stop();
+        return;
+      }
+
+      if (command.type === "set-recording-targets") {
+        const recording = this.recordingSink.setTargets(command);
+        if (recording?.warning) {
+          warnings.push(recording.warning);
         }
+        return;
+      }
+
+      if (command.type === "start-recording-session") {
+        const recording = this.recordingSink.start(command, command.startedAtMs ?? this.elapsedMs, command.sessionId);
+        if (recording?.warning) {
+          warnings.push(recording.warning);
+        }
+        this.outputHealth.set("recording", {
+          destination: "recording",
+          status: recording?.status === "warning" ? "warning" : "live",
+          message: recording?.warning ?? "Recording writer active.",
+          droppedFrames: recording?.totalDroppedFrames ?? 0
+        });
+        return;
+      }
+
+      if (command.type === "stop-recording-session") {
+        const recording = this.recordingSink.stop(this.elapsedMs);
+        this.outputHealth.set("recording", {
+          destination: "recording",
+          status: "idle",
+          message: command.reason ?? "Recording stopped.",
+          droppedFrames: recording?.totalDroppedFrames ?? 0
+        });
+        return;
+      }
+
+      if (command.type === "fail-recording-session") {
+        const recording = this.recordingSink.fail(command.message, this.elapsedMs);
+        warnings.push(command.message);
+        this.outputHealth.set("recording", {
+          destination: "recording",
+          status: "failed",
+          message: command.message,
+          droppedFrames: recording?.totalDroppedFrames ?? 0
+        });
       }
     });
 
@@ -103,6 +150,10 @@ export class MediaCoreRuntime {
   }
 
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
+    const recording = this.recordingSink.snapshot();
+    const outputHealth = this.buildOutputHealth(recording);
+    const allWarnings = [...new Set([...warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+
     return {
       sceneId: this.sceneGraph?.sceneId,
       routeCount: this.sceneGraph?.routes.length ?? 0,
@@ -112,9 +163,11 @@ export class MediaCoreRuntime {
       overlayCount: this.overlays.size,
       outputs: this.output?.destinations ?? [],
       isoParticipantIds: this.output?.isoParticipantIds ?? [],
-      recording: this.recordingSink.snapshot(),
+      outputHealth,
+      recording,
+      diagnostics: this.diagnostics(outputHealth, allWarnings, recording),
       lastCommandTypes: this.lastCommandTypes,
-      warnings: [...warnings, this.recordingSink.snapshot()?.warning].filter(Boolean) as string[]
+      warnings: allWarnings
     };
   }
 
@@ -122,6 +175,51 @@ export class MediaCoreRuntime {
     this.elapsedMs = Math.max(0, elapsedMs);
     this.frames = this.frameProducer.render(this.getFrameSources(), this.elapsedMs);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs);
+  }
+
+  private syncOutputHealth(destinations: MediaCoreDestination[]) {
+    this.outputHealth.clear();
+    destinations.forEach((destination) => {
+      this.outputHealth.set(destination, {
+        destination,
+        status: "live",
+        message: destination === "recording" ? "Recording output armed." : `${destination.toUpperCase()} output active.`,
+        droppedFrames: 0
+      });
+    });
+  }
+
+  private buildOutputHealth(recording: MediaCoreStateSnapshot["recording"]) {
+    const health = new Map(this.outputHealth);
+
+    if (recording) {
+      health.set("recording", {
+        destination: "recording",
+        status: recording.status === "failed" ? "failed" : recording.status === "warning" ? "warning" : recording.active ? "live" : "idle",
+        message: recording.error ?? recording.warning ?? (recording.active ? "Recording writer active." : "Recording stopped."),
+        droppedFrames: recording.totalDroppedFrames
+      });
+    }
+
+    return [...health.values()];
+  }
+
+  private diagnostics(
+    outputHealth: MediaCoreOutputHealth[],
+    warnings: string[],
+    recording: MediaCoreStateSnapshot["recording"]
+  ): MediaCoreDiagnosticsSnapshot {
+    return {
+      generatedAtMs: this.elapsedMs,
+      sceneId: this.sceneGraph?.sceneId,
+      routeCount: this.sceneGraph?.routes.length ?? 0,
+      frameCount: this.frames.length,
+      outputs: this.output?.destinations ?? [],
+      outputHealth,
+      recording,
+      warnings,
+      lastCommandTypes: this.lastCommandTypes
+    };
   }
 
   private getFrameSources(): FakeFrameSource[] {

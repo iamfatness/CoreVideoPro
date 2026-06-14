@@ -34,21 +34,35 @@ describe("MediaCoreServiceClient", () => {
         type: "start-program-output",
         destinations: ["recording", "srt"],
         isoParticipantIds: ["p1"]
+      },
+      {
+        type: "set-recording-targets",
+        targetFolder: "Recordings/CoreVideo Pro/native-core",
+        filenamePrefix: "program",
+        format: "mp4",
+        quality: "high",
+        isoParticipantIds: ["p1"]
+      },
+      {
+        type: "start-recording-session",
+        sessionId: "client-session",
+        isoParticipantIds: ["p1"]
       }
     ];
 
     const sync = await client.sync(commands);
     expect(sync).toMatchObject({
       ok: true,
-      appliedCommandCount: 2,
+      appliedCommandCount: 4,
       state: {
         sceneId: "panel",
         routeCount: 2,
         outputs: ["recording", "srt"],
         isoParticipantIds: ["p1"],
         recording: {
+          sessionId: "client-session",
           active: true,
-          programPath: "Recordings/CoreVideo Pro/native-core/program-0.mp4",
+          programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
             { kind: "program", framesWritten: 2 },
             { kind: "iso", participantId: "p1", framesWritten: 0 }

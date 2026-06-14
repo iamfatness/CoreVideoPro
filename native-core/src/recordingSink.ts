@@ -1,52 +1,117 @@
-import type { MediaCoreFrame, MediaCoreRecordingSession, MediaCoreRecordingStream } from "./protocol.js";
+import type {
+  MediaCoreFrame,
+  MediaCoreRecordingQuality,
+  MediaCoreRecordingSession,
+  MediaCoreRecordingStream,
+  MediaCoreRecordingTargets,
+  MediaCoreRecordingWriterStatus
+} from "./protocol.js";
 
-const BASE_RECORDING_FOLDER = "Recordings/CoreVideo Pro/native-core";
+const DEFAULT_TARGETS: MediaCoreRecordingTargets = {
+  targetFolder: "Recordings/CoreVideo Pro/native-core",
+  filenamePrefix: "program",
+  format: "mp4",
+  quality: "high",
+  isoParticipantIds: []
+};
+
+const BYTES_PER_FRAME: Record<"program" | "iso", number> = {
+  program: 260_000,
+  iso: 140_000
+};
 
 export class RecordingSink {
   private session?: MediaCoreRecordingSession;
+  private targets = DEFAULT_TARGETS;
   private lastElapsedMs = 0;
 
-  sync(isoParticipantIds: string[], elapsedMs: number) {
-    const normalizedIsoIds = [...new Set(isoParticipantIds)].sort();
-
-    if (!this.session || !sameIsoStreams(this.session, normalizedIsoIds)) {
-      this.session = createSession(normalizedIsoIds, elapsedMs);
-    }
-
-    this.lastElapsedMs = elapsedMs;
-    this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
-    this.session.estimatedDiskRateMBps = estimateDiskRate(this.session.streams.length);
-    this.session.status = this.session.streams.length > 5 ? "warning" : "recording";
-    this.session.warning = this.session.status === "warning" ? "High ISO count may exceed disk bandwidth." : undefined;
-
+  setTargets(targets: Partial<MediaCoreRecordingTargets>) {
+    this.targets = normalizeTargets({ ...this.targets, ...targets });
     return this.snapshot();
   }
 
+  start(targets: Partial<MediaCoreRecordingTargets> = {}, elapsedMs = 0, sessionId?: string) {
+    const nextTargets = normalizeTargets({ ...this.targets, ...targets });
+
+    if (!this.session || !this.session.active || !sameTargets(this.session, nextTargets)) {
+      this.session = createSession(nextTargets, elapsedMs, sessionId);
+    }
+
+    this.targets = nextTargets;
+    this.lastElapsedMs = elapsedMs;
+    updateSessionHealth(this.session);
+    return this.snapshot();
+  }
+
+  sync(isoParticipantIds: string[], elapsedMs: number) {
+    return this.start({ isoParticipantIds }, elapsedMs);
+  }
+
   writeFrames(frames: MediaCoreFrame[], elapsedMs: number) {
-    if (!this.session) {
-      return undefined;
+    if (!this.session || !this.session.active) {
+      return this.snapshot();
     }
 
     this.lastElapsedMs = elapsedMs;
     this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
 
     const writableFrames = frames.filter((frame) => frame.health !== "dropped");
-    const program = this.session.streams.find((stream) => stream.kind === "program");
-    if (program) {
-      program.framesWritten += writableFrames.length;
-    }
+    const droppedFrames = frames.length - writableFrames.length;
+    this.session.streams.forEach((stream) => {
+      const matchingFrames =
+        stream.kind === "program" ? writableFrames : writableFrames.filter((frame) => frame.participantId === stream.participantId);
+      const matchingDropped =
+        stream.kind === "program" ? droppedFrames : frames.filter((frame) => frame.health === "dropped" && frame.participantId === stream.participantId).length;
 
-    this.session.streams
-      .filter((stream) => stream.kind === "iso")
-      .forEach((stream) => {
-        stream.framesWritten += writableFrames.filter((frame) => frame.participantId === stream.participantId).length;
-      });
+      stream.framesWritten += matchingFrames.length;
+      stream.droppedFrames += matchingDropped;
+      stream.bytesWritten += matchingFrames.length * BYTES_PER_FRAME[stream.kind];
+    });
 
-    this.session.totalFramesWritten = this.session.streams.reduce((total, stream) => total + stream.framesWritten, 0);
+    updateSessionTotals(this.session);
+    updateSessionHealth(this.session);
     return this.snapshot();
   }
 
-  stop() {
+  stop(elapsedMs = this.lastElapsedMs) {
+    if (!this.session) {
+      return undefined;
+    }
+
+    this.lastElapsedMs = elapsedMs;
+    this.session.active = false;
+    this.session.status = "stopped";
+    this.session.writerStatus = "stopped";
+    this.session.stoppedAtMs = elapsedMs;
+    this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
+    this.session.streams.forEach((stream) => {
+      stream.status = "stopped";
+    });
+
+    return this.snapshot();
+  }
+
+  fail(message: string, elapsedMs = this.lastElapsedMs) {
+    if (!this.session) {
+      this.session = createSession(this.targets, elapsedMs);
+    }
+
+    this.lastElapsedMs = elapsedMs;
+    this.session.active = false;
+    this.session.status = "failed";
+    this.session.writerStatus = "failed";
+    this.session.error = message;
+    this.session.warning = undefined;
+    this.session.stoppedAtMs = elapsedMs;
+    this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
+    this.session.streams.forEach((stream) => {
+      stream.status = "failed";
+    });
+
+    return this.snapshot();
+  }
+
+  clear() {
     this.session = undefined;
   }
 
@@ -58,48 +123,141 @@ export class RecordingSink {
     return {
       ...this.session,
       elapsedMs: Math.max(this.session.elapsedMs, this.lastElapsedMs - this.session.startedAtMs),
-      streams: this.session.streams.map((stream) => ({ ...stream }))
+      streams: this.session.streams.map((stream) => ({ ...stream })),
+      encoder: { ...this.session.encoder }
     };
   }
 }
 
-function createSession(isoParticipantIds: string[], startedAtMs: number): MediaCoreRecordingSession {
-  const programPath = `${BASE_RECORDING_FOLDER}/program-${startedAtMs}.mp4`;
+function createSession(targets: MediaCoreRecordingTargets, startedAtMs: number, sessionId = `rec-${startedAtMs}`): MediaCoreRecordingSession {
+  const programPath = `${targets.targetFolder}/${targets.filenamePrefix}-program-${startedAtMs}.${targets.format}`;
   const streams: MediaCoreRecordingStream[] = [
-    {
-      kind: "program",
-      path: programPath,
-      framesWritten: 0
-    },
-    ...isoParticipantIds.map((participantId) => ({
-      kind: "iso" as const,
-      participantId,
-      path: `${BASE_RECORDING_FOLDER}/iso-${participantId}-${startedAtMs}.mp4`,
-      framesWritten: 0
-    }))
+    createStream("program", programPath),
+    ...targets.isoParticipantIds.map((participantId) =>
+      createStream("iso", `${targets.targetFolder}/${targets.filenamePrefix}-iso-${participantId}-${startedAtMs}.${targets.format}`, participantId)
+    )
   ];
 
-  return {
+  const session: MediaCoreRecordingSession = {
+    sessionId,
     active: true,
-    status: streams.length > 5 ? "warning" : "recording",
+    status: "recording",
+    writerStatus: "writing",
     startedAtMs,
     elapsedMs: 0,
-    estimatedDiskRateMBps: estimateDiskRate(streams.length),
+    targetFolder: targets.targetFolder,
+    filenamePrefix: targets.filenamePrefix,
+    format: targets.format,
+    quality: targets.quality,
+    encoder: encoderForQuality(targets.quality),
+    estimatedDiskRateMBps: estimateDiskRate(streams.length, targets.quality),
     programPath,
     streams,
     totalFramesWritten: 0,
-    warning: streams.length > 5 ? "High ISO count may exceed disk bandwidth." : undefined
+    totalDroppedFrames: 0,
+    totalBytesWritten: 0
+  };
+
+  updateSessionHealth(session);
+  return session;
+}
+
+function createStream(kind: "program" | "iso", path: string, participantId?: string): MediaCoreRecordingStream {
+  return {
+    kind,
+    participantId,
+    path,
+    status: "writing",
+    framesWritten: 0,
+    droppedFrames: 0,
+    bytesWritten: 0
   };
 }
 
-function sameIsoStreams(session: MediaCoreRecordingSession, isoParticipantIds: string[]) {
+function normalizeTargets(targets: MediaCoreRecordingTargets): MediaCoreRecordingTargets {
+  return {
+    targetFolder: targets.targetFolder.trim() || DEFAULT_TARGETS.targetFolder,
+    filenamePrefix: sanitizeFilename(targets.filenamePrefix || DEFAULT_TARGETS.filenamePrefix),
+    format: targets.format,
+    quality: targets.quality,
+    isoParticipantIds: [...new Set(targets.isoParticipantIds)].sort()
+  };
+}
+
+function sanitizeFilename(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_") || DEFAULT_TARGETS.filenamePrefix;
+}
+
+function sameTargets(session: MediaCoreRecordingSession, targets: MediaCoreRecordingTargets) {
   const currentIds = session.streams
     .filter((stream) => stream.kind === "iso")
     .map((stream) => stream.participantId as string)
     .sort();
-  return currentIds.length === isoParticipantIds.length && currentIds.every((id, index) => id === isoParticipantIds[index]);
+
+  return (
+    session.targetFolder === targets.targetFolder &&
+    session.filenamePrefix === sanitizeFilename(targets.filenamePrefix) &&
+    session.format === targets.format &&
+    session.quality === targets.quality &&
+    currentIds.length === targets.isoParticipantIds.length &&
+    currentIds.every((id, index) => id === targets.isoParticipantIds[index])
+  );
 }
 
-function estimateDiskRate(streamCount: number) {
-  return Number((Math.max(1, streamCount) * 1.85).toFixed(2));
+function updateSessionTotals(session: MediaCoreRecordingSession) {
+  session.totalFramesWritten = session.streams.reduce((total, stream) => total + stream.framesWritten, 0);
+  session.totalDroppedFrames = session.streams.reduce((total, stream) => total + stream.droppedFrames, 0);
+  session.totalBytesWritten = session.streams.reduce((total, stream) => total + stream.bytesWritten, 0);
+}
+
+function updateSessionHealth(session: MediaCoreRecordingSession) {
+  if (session.status === "failed" || session.status === "stopped") {
+    return;
+  }
+
+  const warning = recordingWarning(session);
+  const streamStatus: MediaCoreRecordingWriterStatus = warning ? "warning" : "writing";
+  session.warning = warning;
+  session.status = warning ? "warning" : "recording";
+  session.writerStatus = streamStatus;
+  session.streams.forEach((stream) => {
+    stream.status = streamStatus;
+  });
+}
+
+function recordingWarning(session: MediaCoreRecordingSession) {
+  if (!session.targetFolder) {
+    return "Recording target folder is missing.";
+  }
+
+  if (session.streams.length === 0) {
+    return "Recording has no writable streams.";
+  }
+
+  if (session.streams.length > 5) {
+    return "High ISO count may exceed disk bandwidth.";
+  }
+
+  if (session.totalDroppedFrames > 0) {
+    return "Recording writer is skipping dropped frames.";
+  }
+
+  return undefined;
+}
+
+function encoderForQuality(quality: MediaCoreRecordingQuality) {
+  if (quality === "archive") {
+    return { codec: "hevc" as const, hardwareAccelerated: true, targetBitrateMbps: 32 };
+  }
+
+  if (quality === "high") {
+    return { codec: "h264" as const, hardwareAccelerated: true, targetBitrateMbps: 18 };
+  }
+
+  return { codec: "h264" as const, hardwareAccelerated: true, targetBitrateMbps: 10 };
+}
+
+function estimateDiskRate(streamCount: number, quality: MediaCoreRecordingQuality) {
+  const qualityMultiplier = quality === "archive" ? 2.2 : quality === "high" ? 1.35 : 1;
+  return Number((Math.max(1, streamCount) * 1.85 * qualityMultiplier).toFixed(2));
 }

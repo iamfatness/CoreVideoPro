@@ -98,5 +98,22 @@ describe("native media core command builder", () => {
       destinations: ["recording", "rtmp", "ndi"],
       isoParticipantIds: ["p1", "p2"]
     });
+    expect(commands).toContainEqual({
+      type: "set-recording-targets",
+      targetFolder: "Recordings/CoreVideo Pro",
+      filenamePrefix: "AI_Product_Launch_Webinar",
+      format: "mp4",
+      quality: "high",
+      isoParticipantIds: ["p1", "p2"]
+    });
+    expect(commands).toContainEqual({
+      type: "start-recording-session",
+      sessionId: "AI_Product_Launch_Webinar-p1-p2",
+      targetFolder: "Recordings/CoreVideo Pro",
+      filenamePrefix: "AI_Product_Launch_Webinar",
+      format: "mp4",
+      quality: "high",
+      isoParticipantIds: ["p1", "p2"]
+    });
   });
 });

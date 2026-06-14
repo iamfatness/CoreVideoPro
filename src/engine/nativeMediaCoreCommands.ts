@@ -30,6 +30,7 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
   if (outputCommand) {
     commands.push(outputCommand);
   }
+  commands.push(...buildRecordingCommands(state));
 
   return commands;
 }
@@ -137,6 +138,32 @@ function buildOutputCommand(state: ProductionState): NativeMediaCoreCommand | un
     destinations: [...new Set(destinations)],
     isoParticipantIds: state.recording ? state.recordingSettings.isoParticipantIds : []
   };
+}
+
+function buildRecordingCommands(state: ProductionState): NativeMediaCoreCommand[] {
+  if (!state.recording) {
+    return [{ type: "stop-recording-session", reason: "Recording disabled in production state." }];
+  }
+
+  const targets = {
+    targetFolder: state.recordingSettings.folder,
+    filenamePrefix: state.recordingSettings.filenamePrefix,
+    format: state.recordingSettings.format,
+    quality: state.recordingSettings.quality,
+    isoParticipantIds: state.recordingSettings.isoParticipantIds
+  };
+
+  return [
+    {
+      type: "set-recording-targets",
+      ...targets
+    },
+    {
+      type: "start-recording-session",
+      sessionId: `${targets.filenamePrefix}-${targets.isoParticipantIds.join("-") || "program"}`,
+      ...targets
+    }
+  ];
 }
 
 function mapDestinationProtocol(destination: OutputDestination) {

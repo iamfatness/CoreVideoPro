@@ -51,7 +51,8 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: "Record" }));
     await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingrecording"));
     expect(nativeCore).toHaveTextContent("Outputsrecording");
-    expect(nativeCore).toHaveTextContent("Disk rate5.55 MB/s");
+    expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
+    expect(nativeCore).toHaveTextContent("Output healthlive");
   });
 
   it("renders AI Studio show notes and highlight suggestions", async () => {

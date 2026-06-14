@@ -7,9 +7,17 @@ export type {
   MediaCoreFrame,
   MediaCoreFrameHealth,
   MediaCoreFrameKind,
+  MediaCoreOutputHealth,
+  MediaCoreOutputHealthStatus,
+  MediaCoreRecordingFormat,
+  MediaCoreRecordingQuality,
   MediaCoreRecordingSession,
+  MediaCoreRecordingStatus,
   MediaCoreRecordingStream,
+  MediaCoreRecordingTargets,
+  MediaCoreRecordingWriterStatus,
   MediaCoreRequest,
   MediaCoreResponse,
+  MediaCoreDiagnosticsSnapshot,
   MediaCoreStateSnapshot
 } from "./protocol.js";
