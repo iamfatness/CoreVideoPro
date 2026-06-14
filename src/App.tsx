@@ -42,6 +42,8 @@ import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./en
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { getFrameForParticipant } from "./engine/mediaFrames";
+import { summarizeArming } from "./engine/outputArming";
+import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
 import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
@@ -219,7 +221,14 @@ export function App({ engines, runtime }: AppProps) {
   );
   const destinationStates = production.outputDestinations.map((destination) => {
     const sessionState = production.outputSession.destinations.find((item) => item.id === destination.id);
-    return sessionState ?? { ...destination, active: false, health: "idle" as const, bitrateMbps: 0 };
+    // The live destination list is the source of truth for the armed/endpoint
+    // fields the operator edits; the session contributes runtime fields only.
+    return {
+      ...destination,
+      active: sessionState?.active ?? false,
+      health: sessionState?.health ?? ("idle" as const),
+      bitrateMbps: sessionState?.bitrateMbps ?? 0
+    };
   });
 
   useEffect(() => {
@@ -832,6 +841,11 @@ export function App({ engines, runtime }: AppProps) {
   });
 
   const outputProfileBadge = production.outputProfiles.find((profile) => profile.id === production.selectedOutputProfileId);
+  const outputProfileReadout = outputProfileBadge
+    ? computeOutputProfileReadout(outputProfileBadge, production.outputDestinations)
+    : undefined;
+  const armingSummary = summarizeArming(production.outputDestinations);
+  const armingReadinessById = new Map(armingSummary.destinations.map((destination) => [destination.id, destination]));
   const cpuLoad = production.output.encoderLoad;
   const memoryLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.7 + 10));
   const diskLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.4 + 20));
@@ -1247,10 +1261,26 @@ export function App({ engines, runtime }: AppProps) {
               <Radio size={15} />
               Destinations
             </div>
+            <div className="arming-summary" aria-label="Arming readiness">
+              <strong>{armingSummary.summary}</strong>
+              {armingSummary.blockers.length > 0 ? (
+                <ul className="arming-blockers">
+                  {armingSummary.blockers.map((blocker) => (
+                    <li key={blocker}>{blocker}</li>
+                  ))}
+                </ul>
+              ) : (
+                <span>{armingSummary.armedCount > 0 ? "All armed destinations are ready to go live." : "Arm a destination to go live."}</span>
+              )}
+            </div>
             <div className="destination-list">
-              {destinationStates.map((destination) => (
+              {destinationStates.map((destination) => {
+                const readiness = armingReadinessById.get(destination.id);
+                return (
                 <div
-                  className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""}`}
+                  className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""} ${
+                    destination.enabled && readiness && !readiness.ready ? "needs-attention" : ""
+                  }`}
                   key={destination.id}
                 >
                   <button disabled={production.streaming} onClick={() => toggleOutputDestination(destination.id)}>
@@ -1260,7 +1290,13 @@ export function App({ engines, runtime }: AppProps) {
                         {destination.protocol} - {destination.latencyMs} ms
                       </span>
                     </div>
-                    <em>{destination.active ? `${destination.health} ${destination.bitrateMbps} Mbps` : destination.enabled ? "Armed" : "Off"}</em>
+                    <em>
+                      {destination.active
+                        ? `${destination.health} ${destination.bitrateMbps} Mbps`
+                        : destination.enabled
+                          ? readiness?.statusLabel ?? "Armed"
+                          : "Off"}
+                    </em>
                   </button>
                   <div className="destination-settings">
                     <label>
@@ -1285,8 +1321,12 @@ export function App({ engines, runtime }: AppProps) {
                       </label>
                     )}
                   </div>
+                  {destination.enabled && readiness && (
+                    <p className={`destination-readiness ${readiness.ready ? "ready" : "needs-attention"}`}>{readiness.detail}</p>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             <div className="add-destination" aria-label="Add streaming destination">
               <label>
@@ -1322,13 +1362,32 @@ export function App({ engines, runtime }: AppProps) {
                   key={profile.id}
                   onClick={() => selectOutputProfile(profile)}
                 >
-                  <strong>{profile.name}</strong>
+                  <strong>
+                    {profile.name}
+                    {isUltraHdProfile(profile) && <span className="profile-tag">4K</span>}
+                  </strong>
                   <span>
                     {profile.resolution} - {profile.fps}fps - {profile.targetBitrateMbps} Mbps
                   </span>
                 </button>
               ))}
             </div>
+            {outputProfileReadout && (
+              <div className="encoder-readout" aria-label="Encoder headroom">
+                <div className="health-grid">
+                  <ControlReadout label="Encoder headroom" value={`${outputProfileReadout.encoderHeadroomPercent}%`} />
+                  <ControlReadout label="Upload bandwidth" value={`${outputProfileReadout.uploadBandwidthMbps} Mbps`} />
+                  <ControlReadout label="Stream targets" value={`${outputProfileReadout.networkDestinationCount} network`} />
+                </div>
+                {outputProfileReadout.warnings.length > 0 && (
+                  <ul className="encoder-warnings">
+                    {outputProfileReadout.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="panel">
