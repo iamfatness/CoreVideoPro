@@ -70,7 +70,7 @@ if(COREVIDEO_WITH_MF_ENCODER)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfuuid)
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32)
 endif()
 
 if(COREVIDEO_WITH_RTMP_OUTPUT)
