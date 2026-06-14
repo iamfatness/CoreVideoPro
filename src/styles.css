@@ -3326,3 +3326,34 @@ meter {
   gap: 4px;
   margin-top: 4px;
 }
+
+/* Bandwidth plan panel */
+.bandwidth-plan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bandwidth-plan-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.bandwidth-plan-panel.status-caution .bandwidth-plan-summary { color: #fbbf24; }
+.bandwidth-plan-panel.status-overloaded .bandwidth-plan-summary { color: #f87171; }
+.bandwidth-plan-panel.status-safe .bandwidth-plan-summary { color: #4ade80; }
+
+.bandwidth-dest-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 10px;
+  padding: 3px 6px;
+  background: #0d1520;
+  border-radius: 3px;
+}
+
+.bandwidth-dest-name { flex: 1; color: #8aa0c0; font-weight: 600; }
+.bandwidth-dest-total { color: #60a5fa; font-family: monospace; }
+.bandwidth-dest-proto { color: #4a6070; font-style: italic; }

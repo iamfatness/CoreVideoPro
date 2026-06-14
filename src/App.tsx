@@ -67,6 +67,7 @@ import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summariz
 import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCandidate } from "./engine/participantSpotlight";
 import { computeLatencyBudget, formatLatencyMs, latencyClassLabel, type ProtocolLatencyProfile } from "./engine/latencyBudget";
 import { describeStinger, getStingerPreset, stingerPresets } from "./engine/stingerEngine";
+import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/bandwidthPlanner";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1597,6 +1598,51 @@ export function App({ engines, runtime }: AppProps) {
                 Add destination
               </button>
             </div>
+          </section>
+
+          <section className="panel" aria-label="Bandwidth plan">
+            <div className="section-title">
+              <Wifi size={15} />
+              Bandwidth plan
+            </div>
+            {(() => {
+              const activeDests = destinationStates
+                .filter((d) => d.enabled || d.active)
+                .map((d) => ({
+                  id: d.id,
+                  name: d.name,
+                  protocol: d.protocol,
+                  bitrateKbps: production.output.bitrateMbps * 1000,
+                }));
+              const bwPlan = planBandwidth(activeDests, { uplinkCapacityMbps: 50 });
+              const reduction = suggestBitrateReduction(bwPlan);
+              return (
+                <div className={`bandwidth-plan-panel status-${bwPlan.status}`} aria-label="Bandwidth plan panel">
+                  <div className="bandwidth-plan-summary">{bwPlan.summary}</div>
+                  <div className="health-grid">
+                    <ControlReadout label="Total" value={formatKbps(bwPlan.totalKbps)} />
+                    <ControlReadout label="Uplink" value={formatKbps(bwPlan.uplinkCapacityKbps)} />
+                    <ControlReadout label="Usage" value={`${Math.round(bwPlan.usageFraction * 100)}%`} />
+                    <ControlReadout label="Status" value={bwPlan.status} />
+                  </div>
+                  {bwPlan.destinations.map((d) => (
+                    <div key={d.destinationId} className="bandwidth-dest-row">
+                      <span className="bandwidth-dest-name">{d.name}</span>
+                      <span className="bandwidth-dest-total">{formatKbps(d.totalKbps)}</span>
+                      <span className="bandwidth-dest-proto">{d.protocol} +{Math.round((d.overheadKbps / (d.videoBitrateKbps + d.audioBitrateKbps)) * 100)}% overhead</span>
+                    </div>
+                  ))}
+                  {reduction && (
+                    <p className="multitrack-warning" role="status">
+                      Reduce each destination to ~{formatKbps(reduction.targetKbpsPerDestination)} (−{reduction.reductionPct}%) to stay within budget.
+                    </p>
+                  )}
+                  {bwPlan.warnings.filter((w) => !w.includes("Reduce")).map((w) => (
+                    <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel">
