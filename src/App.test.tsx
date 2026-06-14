@@ -18,9 +18,16 @@ function renderApp(engines: EngineBundle = createMockEngineBundle(), runtime: Ru
   return render(<App engines={engines} runtime={runtime} />);
 }
 
+async function goToTab(user: ReturnType<typeof userEvent.setup>, name: RegExp | string) {
+  await user.click(screen.getByRole("button", { name }));
+}
+
 describe("App production controls", () => {
   it("shows the desktop runtime contract in the operator surface", async () => {
+    const user = userEvent.setup();
     renderApp();
+
+    await goToTab(user, "Settings");
 
     const runtime = screen.getByLabelText("Desktop runtime");
     expect(within(runtime).getByText("Mock studio")).toBeInTheDocument();
@@ -32,12 +39,14 @@ describe("App production controls", () => {
     renderApp();
 
     await user.click(screen.getByRole("button", { name: /Magic Scene/i }));
+    await goToTab(user, "Automation");
 
     expect(screen.getByText(/Magic Scene built 5 scenes/i)).toBeInTheDocument();
     expect(screen.getByText(/Priya Shah is low resolution/i)).toBeInTheDocument();
   });
 
   it("hydrates media frame telemetry into the program preview", async () => {
+    const user = userEvent.setup();
     renderApp();
 
     const program = screen.getByLabelText("Program preview");
@@ -49,6 +58,8 @@ describe("App production controls", () => {
     expect(within(program).getAllByText("Andre Wallace").length).toBeGreaterThan(0);
     expect(within(program).getByText(/Lower-third lifted to protect slide captions/i)).toBeInTheDocument();
     expect(within(program).getByText("CoreVideo Pro")).toBeInTheDocument();
+
+    await goToTab(user, "Settings");
     expect(screen.getByText("Caption confidence")).toBeInTheDocument();
     expect(screen.getByText("Overlay guard")).toBeInTheDocument();
     expect(within(program).queryByText("Waiting for frame")).not.toBeInTheDocument();
@@ -63,6 +74,7 @@ describe("App production controls", () => {
     expect(await within(program).findByText("CoreVideo Pro")).toBeInTheDocument();
     expect(within(program).queryByText("Live webinar")).not.toBeInTheDocument();
 
+    await goToTab(user, "Overlays");
     await user.click(screen.getByRole("button", { name: /Live banner/i }));
     expect(within(program).getByText("Live webinar")).toBeInTheDocument();
 
@@ -76,12 +88,15 @@ describe("App production controls", () => {
 
     const program = screen.getByLabelText("Program preview");
 
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Save Show" }));
     expect(await screen.findByText("AI Product Launch Webinar Show saved")).toBeInTheDocument();
 
+    await goToTab(user, "Overlays");
     await user.click(screen.getByRole("button", { name: /Live banner/i }));
     expect(within(program).getByText("Live webinar")).toBeInTheDocument();
 
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: /AI Product Launch Webinar Show/i }));
     await screen.findAllByText("AI Product Launch Webinar Show loaded");
     expect(within(program).queryByText("Live webinar")).not.toBeInTheDocument();
@@ -91,6 +106,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Export Bundle" }));
 
     expect((await screen.findAllByText(/support-ai-product-launch-webinar/i)).length).toBeGreaterThan(0);
@@ -114,8 +130,10 @@ describe("App production controls", () => {
 
     await user.click(within(scenes).getByRole("button", { name: /Interview/i }));
     expect(screen.getByText("Interview queued")).toBeInTheDocument();
+    await goToTab(user, "Automation");
     await user.click(within(screen.getByLabelText("Transition controls")).getByRole("button", { name: "slide" }));
     expect(screen.getByText("slide transition selected")).toBeInTheDocument();
+    await goToTab(user, "Studio");
     await user.click(screen.getByRole("button", { name: "Take" }));
     expect(await screen.findByText("Interview taken with slide")).toBeInTheDocument();
     expect(within(program).getByLabelText("Interview layout")).toBeInTheDocument();
@@ -123,6 +141,7 @@ describe("App production controls", () => {
     await user.click(within(scenes).getByRole("button", { name: /Intro/i }));
     await user.click(screen.getByRole("button", { name: "Take" }));
     expect(within(program).getByLabelText("Intro layout")).toBeInTheDocument();
+    await goToTab(user, "Overlays");
     expect(await screen.findByText("lower left")).toBeInTheDocument();
     expect(await screen.findByText("top")).toBeInTheDocument();
   });
@@ -138,7 +157,6 @@ describe("App production controls", () => {
     await user.keyboard("t");
     expect(await screen.findByText("Interview taken with fade")).toBeInTheDocument();
     expect(within(program).getByLabelText("Interview layout")).toBeInTheDocument();
-    expect(screen.getByText("Command")).toBeInTheDocument();
     expect(screen.getAllByText("Take").length).toBeGreaterThan(0);
 
     await user.keyboard("p");
@@ -147,11 +165,14 @@ describe("App production controls", () => {
 
     await user.keyboard("f");
     expect(await screen.findByText(/00:08/i)).toBeInTheDocument();
+    await goToTab(user, "Settings");
     expect(screen.getAllByText("Refresh feeds").length).toBeGreaterThan(0);
 
     await user.keyboard("m");
+    await goToTab(user, "Automation");
     expect(await screen.findByText(/Magic Scene built 5 scenes/i)).toBeInTheDocument();
 
+    await goToTab(user, "Studio");
     await user.keyboard("r");
     expect(await screen.findByRole("button", { name: "Recording" })).toBeInTheDocument();
 
@@ -246,6 +267,7 @@ describe("App production controls", () => {
     await screen.findByText(/in meeting - 4 participants/i);
     await user.click(screen.getByRole("button", { name: /Set & Forget/i }));
 
+    await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
     for (let index = 0; index < 4 && screen.queryAllByText("Slot 2 screen share is unavailable.").length === 0; index += 1) {
       await user.click(refresh);
@@ -260,6 +282,7 @@ describe("App production controls", () => {
     renderApp();
 
     const program = screen.getByLabelText("Program preview");
+    await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
 
     for (let index = 0; index < 4 && !within(program).queryByLabelText("Smart panel grid"); index += 1) {
@@ -276,6 +299,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Settings");
     expect(await screen.findByText("2 armed")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /NDI Program/i }));
     expect(screen.getByText("3 armed")).toBeInTheDocument();
@@ -297,6 +321,7 @@ describe("App production controls", () => {
     const engines = createMockEngineBundle();
     renderApp(engines);
 
+    await goToTab(user, "Settings");
     fireEvent.change(screen.getByLabelText("Recording folder"), {
       target: { value: "Recordings/Client Shows" }
     });
@@ -328,6 +353,7 @@ describe("App production controls", () => {
     const engines = createMockEngineBundle();
     renderApp(engines);
 
+    await goToTab(user, "Settings");
     fireEvent.change(screen.getByLabelText("Recording filename prefix"), {
       target: { value: "" }
     });
@@ -344,6 +370,7 @@ describe("App production controls", () => {
     const engines = createMockEngineBundle();
     renderApp(engines);
 
+    await goToTab(user, "Settings");
     fireEvent.change(screen.getByLabelText("Custom RTMP endpoint"), {
       target: { value: "rtmp://studio.example.com/live" }
     });
@@ -367,6 +394,7 @@ describe("App production controls", () => {
     const engines = createMockEngineBundle();
     renderApp(engines);
 
+    await goToTab(user, "Settings");
     fireEvent.change(screen.getByLabelText("Custom RTMP stream key"), {
       target: { value: "" }
     });
@@ -382,6 +410,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Settings");
     await user.click(await screen.findByRole("button", { name: /4K 30/i }));
 
     expect(screen.getAllByText(/3840x2160/i).length).toBeGreaterThan(0);
@@ -396,6 +425,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Audio");
     expect(await screen.findByText("Audio status")).toBeInTheDocument();
     expect(screen.getByText("ducking")).toBeInTheDocument();
 
@@ -407,8 +437,10 @@ describe("App production controls", () => {
   });
 
   it("applies manual audio gain from participant controls", async () => {
+    const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Audio");
     fireEvent.change(screen.getByLabelText("Manual audio gain"), {
       target: { value: "4" }
     });
@@ -422,6 +454,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Audio");
     await user.click(screen.getByRole("button", { name: /Noah Kim/i }));
     await user.selectOptions(screen.getByLabelText("Production role"), "Host");
 
@@ -431,20 +464,25 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: /Magic Scene/i }));
 
     expect(await screen.findByText(/Host open with Noah Kim/i)).toBeInTheDocument();
-    expect(within(screen.getByText("Zoom participants").closest("section") as HTMLElement).getByRole("button", { name: /Noah Kim/i })).toHaveTextContent("Host");
+    await goToTab(user, "Studio");
+    expect(within(screen.getByText("Zoom participants").closest("aside") as HTMLElement).getByRole("button", { name: /Noah Kim/i })).toHaveTextContent("Host");
   });
 
   it("preserves producer role overrides across Zoom feed refreshes", async () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Audio");
     await user.click(screen.getByRole("button", { name: /Noah Kim/i }));
     await user.selectOptions(screen.getByLabelText("Production role"), "Host");
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: /Refresh feeds/i }));
 
     expect(await screen.findByText(/00:08/i)).toBeInTheDocument();
+    await goToTab(user, "Audio");
     expect(screen.getByLabelText("Production role")).toHaveValue("Host");
-    expect(within(screen.getByText("Zoom participants").closest("section") as HTMLElement).getByRole("button", { name: /Noah Kim/i })).toHaveTextContent("Host");
+    await goToTab(user, "Studio");
+    expect(within(screen.getByText("Zoom participants").closest("aside") as HTMLElement).getByRole("button", { name: /Noah Kim/i })).toHaveTextContent("Host");
   });
 
   it("applies participant video effects from smart handling controls", async () => {
@@ -453,6 +491,7 @@ describe("App production controls", () => {
 
     const program = screen.getByLabelText("Program preview");
 
+    await goToTab(user, "Media");
     expect(await screen.findByText("Crop mode")).toBeInTheDocument();
     expect(screen.getAllByText("auto").length).toBeGreaterThan(0);
 
@@ -479,7 +518,7 @@ describe("App production controls", () => {
     expect(screen.getAllByText(/Customer panel/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Priya Shah/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Noah Kim/i).length).toBeGreaterThan(0);
-    expect(within(screen.getByText("Zoom participants").closest("section") as HTMLElement).queryByText(/Maya Chen/i)).not.toBeInTheDocument();
+    expect(within(screen.getByText("Zoom participants").closest("aside") as HTMLElement).queryByText(/Maya Chen/i)).not.toBeInTheDocument();
     expect(within(program).queryByText(/Andre Wallace screen share/i)).not.toBeInTheDocument();
 
     await user.click(within(breakouts).getByRole("button", { name: /All rooms/i }));
@@ -490,6 +529,7 @@ describe("App production controls", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Leave" }));
     expect(screen.getByRole("button", { name: "Join Zoom" })).toBeInTheDocument();
     expect(screen.getByText(/idle - 0 participants/i)).toBeInTheDocument();
@@ -519,6 +559,7 @@ describe("App production controls", () => {
 
     renderApp(engines);
 
+    await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Leave" }));
     await user.clear(screen.getByLabelText("Zoom meeting URL or ID"));
     await user.type(screen.getByLabelText("Zoom meeting URL or ID"), "https://zoom.us/j/987654321");
@@ -541,6 +582,7 @@ describe("App production controls", () => {
     await screen.findByText(/in meeting - 4 participants/i);
     await user.click(screen.getByRole("button", { name: /Set & Forget/i }));
 
+    await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
     for (let index = 0; index < 4 && !screen.queryByText(/reserve this region/i); index += 1) {
       await user.click(refresh);
