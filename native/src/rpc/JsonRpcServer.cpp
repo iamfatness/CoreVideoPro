@@ -31,6 +31,7 @@ Json JsonRpcServer::handshake() const {
   return Json::Object{
       {"id", "handshake"},
       {"ok", true},
+      {"type", "handshake"},
       {"profile", mediaCore_.profile()},
   };
 }
@@ -43,7 +44,11 @@ Json JsonRpcServer::handle(const Json& request) {
   }
 
   if (hasType(request, "handshake")) {
-    return success(id, Json::Object{{"profile", mediaCore_.profile()}});
+    return success(id, Json::Object{{"type", "handshake"}, {"profile", mediaCore_.profile()}});
+  }
+
+  if (hasType(request, "ping")) {
+    return success(id, Json::Object{{"type", "ping"}});
   }
 
   if (hasType(request, "zoom-media-spine-sync")) {
