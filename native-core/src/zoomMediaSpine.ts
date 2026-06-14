@@ -1,5 +1,11 @@
 import { RecordingSink } from "./recordingSink.js";
-import type { MediaCoreFrame, MediaCoreProgramFrame, MediaCoreRecordingSession, MediaCoreRecordingTargets } from "./protocol.js";
+import type {
+  MediaCoreFrame,
+  MediaCoreProgramFrame,
+  MediaCoreRecordingSession,
+  MediaCoreRecordingTargets,
+  ZoomMediaSpineSyncPayload
+} from "./protocol.js";
 
 export type ZoomMediaSpineMeetingState = "idle" | "joining" | "in-meeting" | "leaving" | "error";
 export type ZoomMediaSpinePlatform = "macos" | "windows";
@@ -125,6 +131,22 @@ export class ZoomMediaSpineRuntime {
   private elapsedMs = 0;
 
   constructor(private readonly config: ZoomMediaSpineRuntimeConfig) {}
+
+  syncPayload(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): ZoomMediaSpineSnapshot {
+    this.elapsedMs = Math.max(0, elapsedMs);
+    this.meetingState = payload.blocked ? "error" : "in-meeting";
+    this.replaceRoster(payload.participants);
+    this.syncSubscriptions(payload.subscriptions);
+
+    if (payload.recording) {
+      this.startRecording(payload.recording);
+    }
+
+    this.tick(this.elapsedMs);
+    this.events.push("Zoom media spine payload accepted by native-core stub.");
+    this.events.push(payload.summary);
+    return this.snapshot(payload.warnings);
+  }
 
   join(request: ZoomMediaSpineJoinRequest, participants: ZoomMediaSpineParticipant[] = []): ZoomMediaSpineSnapshot {
     const readiness = assessZoomMediaSpineReadiness(this.config);

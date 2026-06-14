@@ -61,3 +61,63 @@ TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {
   EXPECT_TRUE(response->get("ok")->asBool());
   EXPECT_NE(response->get("health"), nullptr);
 }
+
+TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "zoom-spine-1"},
+      {"type", "zoom-media-spine-sync"},
+      {"elapsedMs", 66},
+      {"payload",
+       corevideo::rpc::Json::Object{
+           {"readiness",
+            corevideo::rpc::Json::Object{
+                {"status", "ready"},
+                {"platform", "windows"},
+                {"sdkVersion", "7.0.5"},
+                {"checks", corevideo::rpc::Json::Array{}},
+            }},
+           {"participants",
+            corevideo::rpc::Json::Array{
+                corevideo::rpc::Json::Object{
+                    {"sdkUserId", "sdk-presenter"},
+                    {"displayName", "Andre Wallace"},
+                    {"role", "panelist"},
+                    {"videoOn", true},
+                    {"muted", false},
+                    {"talking", true},
+                    {"sharingScreen", false},
+                    {"audioLevel", 80},
+                    {"networkQuality", "good"},
+                },
+            }},
+           {"subscriptions",
+            corevideo::rpc::Json::Array{
+                corevideo::rpc::Json::Object{{"participantId", "sdk-presenter"}, {"kind", "participant-video"}, {"purpose", "program"}, {"priority", 1}},
+                corevideo::rpc::Json::Object{{"participantId", "sdk-presenter"}, {"kind", "participant-audio"}, {"purpose", "mix"}, {"priority", 2}},
+            }},
+           {"recording",
+            corevideo::rpc::Json::Object{
+                {"targetFolder", "Recordings"},
+                {"filenamePrefix", "zoom-spine"},
+                {"format", "mp4"},
+                {"quality", "high"},
+                {"isoParticipantIds", corevideo::rpc::Json::Array{"sdk-presenter"}},
+            }},
+           {"blocked", false},
+           {"warnings", corevideo::rpc::Json::Array{}},
+           {"summary", "1 Zoom participant, 1 video and 1 audio raw Zoom subscriptions planned."},
+       }},
+  });
+
+  EXPECT_EQ(response.getString("id"), "zoom-spine-1");
+  EXPECT_TRUE(response.get("ok")->asBool());
+  EXPECT_EQ(response.getString("type"), "zoom-media-spine-sync");
+  const auto* zoom = response.get("zoom");
+  ASSERT_NE(zoom, nullptr);
+  EXPECT_EQ(zoom->getString("meetingState"), "in-meeting");
+  EXPECT_EQ(zoom->getString("activeSpeakerId"), "sdk-presenter");
+  EXPECT_EQ(zoom->get("recording")->get("evidence")->get("subscribedVideoFeeds")->asNumber(), 1);
+  EXPECT_GE(zoom->get("recording")->get("evidence")->get("programFramesWritten")->asNumber(), 1);
+}

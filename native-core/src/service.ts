@@ -53,6 +53,22 @@ if (process.argv[1]?.endsWith("service.ts") || process.argv[1]?.endsWith("servic
 }
 
 function handleZoomMediaSpineRequest(request: ZoomMediaSpineServiceRequest): ZoomMediaSpineServiceResponse {
+  if (request.type === "zoom-media-spine-sync") {
+    const runtimeForSync = new ZoomMediaSpineRuntime({
+      platform: request.payload.readiness.platform,
+      sdkRuntimePresent: !request.payload.readiness.checks.some((check) => check.id === "sdk-runtime" && check.status === "blocked"),
+      sdkVersion: request.payload.readiness.sdkVersion,
+      appKeyPresent: !request.payload.readiness.checks.some((check) => check.id === "app-key" && check.status === "blocked"),
+      oauthConfigured: !request.payload.readiness.checks.some((check) => check.id === "oauth" && check.status === "blocked"),
+      jwtBrokerConfigured: !request.payload.readiness.checks.some((check) => check.id === "jwt-broker" && check.status === "blocked"),
+      rawVideoEnabled: !request.payload.readiness.checks.some((check) => check.id === "raw-video" && check.status === "blocked"),
+      rawAudioEnabled: !request.payload.readiness.checks.some((check) => check.id === "raw-audio" && check.status === "blocked"),
+      rawShareEnabled: !request.payload.readiness.checks.some((check) => check.id === "raw-share" && check.status === "blocked")
+    });
+    zoomRuntime = runtimeForSync;
+    return zoomOk(request.id, runtimeForSync.syncPayload(request.payload, request.elapsedMs), request.type);
+  }
+
   if (request.type === "zoom-configure") {
     zoomRuntime = new ZoomMediaSpineRuntime(request.config);
     return {
@@ -109,10 +125,11 @@ function isMediaCoreRequest(request: RawServiceRequest): request is MediaCoreReq
   return request.type === "sync" || request.type === "snapshot" || request.type === "tick";
 }
 
-function zoomOk(id: string, zoom: ReturnType<ZoomMediaSpineRuntime["snapshot"]>): ZoomMediaSpineServiceResponse {
+function zoomOk(id: string, zoom: ReturnType<ZoomMediaSpineRuntime["snapshot"]>, type?: ZoomMediaSpineServiceRequest["type"]): ZoomMediaSpineServiceResponse {
   return {
     id,
     ok: true,
+    type,
     zoom
   };
 }

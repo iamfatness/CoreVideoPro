@@ -175,4 +175,47 @@ describe("ZoomMediaSpineRuntime", () => {
     expect(rejoined.subscriptions).toHaveLength(0);
     expect(rejoined.events).toContain("Left Zoom meeting and cleared raw media subscriptions.");
   });
+
+  it("consumes a ZoomMediaSpineSyncPayload in one native supervisor round trip", () => {
+    const runtime = new ZoomMediaSpineRuntime(readyConfig);
+    const snapshot = runtime.syncPayload(
+      {
+        readiness: {
+          status: "ready",
+          platform: "windows",
+          sdkVersion: "7.0.5",
+          checks: [],
+          blockers: [],
+          warnings: [],
+          summary: "Zoom SDK media path ready on windows."
+        },
+        participants,
+        subscriptions: [
+          { participantId: "sdk-presenter-2", kind: "participant-video", purpose: "program", priority: 1 },
+          { participantId: "sdk-host-1", kind: "participant-audio", purpose: "mix", priority: 2 }
+        ],
+        recording: {
+          targetFolder: "Recordings",
+          filenamePrefix: "zoom-spine",
+          format: "mp4",
+          quality: "high",
+          isoParticipantIds: ["sdk-presenter-2"]
+        },
+        blocked: false,
+        warnings: [],
+        summary: "2 Zoom participants, raw Zoom subscriptions planned."
+      },
+      66
+    );
+
+    expect(snapshot.meetingState).toBe("in-meeting");
+    expect(snapshot.activeSpeakerId).toBe("sdk-presenter-2");
+    expect(snapshot.recording.evidence).toMatchObject({
+      subscribedVideoFeeds: 1,
+      programFramesWritten: 1,
+      isoFramesWritten: 1,
+      audioPacketsObserved: 1
+    });
+    expect(snapshot.events).toContain("Zoom media spine payload accepted by native-core stub.");
+  });
 });

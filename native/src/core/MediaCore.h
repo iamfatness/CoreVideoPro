@@ -14,6 +14,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
   [[nodiscard]] rpc::Json health() const;
+  [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const;
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
 

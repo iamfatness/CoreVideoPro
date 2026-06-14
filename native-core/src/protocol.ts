@@ -1,6 +1,8 @@
 export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
+export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-media-spine-sync"] as const;
+export const zoomMediaSpineSyncTypeNames = ["ZoomMediaSpineSyncPayload", "ZoomMediaSpineNativeSnapshot"] as const;
 
 export type MediaCoreFrameKind = "participant-video" | "screen-share";
 
@@ -239,6 +241,45 @@ export type MediaCoreRecordingTargets = {
   isoParticipantIds: string[];
 };
 
+export type ZoomMediaSpineReadinessReportPayload = {
+  status: "ready" | "warning" | "blocked";
+  platform: "macos" | "windows";
+  sdkVersion: string;
+  checks: Array<{ id: string; status: "ready" | "warning" | "blocked"; label: string; detail: string }>;
+  blockers: string[];
+  warnings: string[];
+  summary: string;
+};
+
+export type ZoomMediaSpineParticipantPayload = {
+  sdkUserId: string;
+  displayName: string;
+  role: "host" | "cohost" | "panelist" | "attendee" | "guest";
+  videoOn: boolean;
+  muted: boolean;
+  talking: boolean;
+  sharingScreen: boolean;
+  audioLevel: number;
+  networkQuality: "good" | "low" | "recovering";
+};
+
+export type ZoomMediaSpineSubscriptionRequestPayload = {
+  participantId: string;
+  kind: "participant-video" | "participant-audio" | "screen-share";
+  purpose: "program" | "iso" | "active-speaker" | "screen-share" | "mix";
+  priority: number;
+};
+
+export type ZoomMediaSpineSyncPayload = {
+  readiness: ZoomMediaSpineReadinessReportPayload;
+  participants: ZoomMediaSpineParticipantPayload[];
+  subscriptions: ZoomMediaSpineSubscriptionRequestPayload[];
+  recording?: MediaCoreRecordingTargets;
+  blocked: boolean;
+  warnings: string[];
+  summary: string;
+};
+
 export type MediaCoreOutputHealth = {
   destination: MediaCoreDestination;
   status: MediaCoreOutputHealthStatus;
@@ -425,6 +466,12 @@ export type MediaCoreRequest =
   | {
       id: string;
       type: "tick";
+      elapsedMs: number;
+    }
+  | {
+      id: string;
+      type: "zoom-media-spine-sync";
+      payload: ZoomMediaSpineSyncPayload;
       elapsedMs: number;
     };
 
