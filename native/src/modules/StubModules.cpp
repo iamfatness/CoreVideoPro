@@ -28,9 +28,10 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
 
 class CpuNoopCompositor final : public ICompositor {
  public:
-  ProgramFrame render(const std::vector<VideoFrame>& frames, int layerCount) override {
+  ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
-    return {1920, 1080, layerCount > 0 ? layerCount : static_cast<int>(frames.size()), frameNumber_};
+    const int layerCount = renderPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(renderPlan.layers.size());
+    return {renderPlan.width, renderPlan.height, layerCount, frameNumber_, renderPlan.renderPlanId, "software"};
   }
 
  private:

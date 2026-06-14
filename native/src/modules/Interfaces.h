@@ -26,6 +26,26 @@ struct ProgramFrame {
   int height = 1080;
   int layerCount = 0;
   int64_t frameNumber = 0;
+  std::string renderPlanId;
+  std::string renderer = "software";
+};
+
+struct CompositorRenderPlanLayer {
+  std::string layerId;
+  std::string kind;
+  std::string sourceId;
+  std::string participantId;
+  int order = 0;
+};
+
+struct CompositorRenderPlan {
+  std::string renderPlanId;
+  std::string sceneId;
+  int width = 1920;
+  int height = 1080;
+  int fps = 30;
+  std::vector<CompositorRenderPlanLayer> layers;
+  std::vector<std::string> warnings;
 };
 
 struct OutputSession {
@@ -51,7 +71,7 @@ class IZoomCaptureSource {
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
-  virtual ProgramFrame render(const std::vector<VideoFrame>& frames, int layerCount) = 0;
+  virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
 };
 
 class IAudioMixer {
@@ -83,5 +103,6 @@ struct ModuleSet {
 };
 
 ModuleSet createStubModules();
+std::unique_ptr<ICompositor> createD3D11Compositor();
 
 }  // namespace corevideo::modules

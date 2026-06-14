@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <utility>
 
 namespace corevideo::core {
 namespace {
@@ -288,7 +289,25 @@ void MediaCore::renderSyntheticTick() {
   auto videoFrames = modules_.zoom->pollVideoFrames();
   auto audioFrames = modules_.zoom->pollAudioFrames();
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  lastProgramFrame_ = modules_.compositor->render(videoFrames, routeCount_ + overlayCount_);
+  modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
+  renderPlan.sceneId = sceneId_;
+  const int plannedLayerCount = routeCount_ + overlayCount_;
+  const int fallbackLayerCount = static_cast<int>(videoFrames.size());
+  const int layerCount = plannedLayerCount > 0 ? plannedLayerCount : fallbackLayerCount;
+  renderPlan.layers.reserve(static_cast<size_t>(layerCount));
+  for (int index = 0; index < layerCount; ++index) {
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = "layer:" + std::to_string(index);
+    layer.kind = index < routeCount_ ? "participant-video" : "overlay";
+    layer.order = index;
+    if (index < static_cast<int>(videoFrames.size())) {
+      layer.participantId = videoFrames[static_cast<size_t>(index)].participantId;
+      layer.sourceId = "zoom:" + layer.participantId;
+    }
+    renderPlan.layers.push_back(std::move(layer));
+  }
+  lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   modules_.encoder->submit(lastProgramFrame_);
 }
 
