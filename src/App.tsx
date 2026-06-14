@@ -43,6 +43,7 @@ import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript
 import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
 import { planMultitrackAudio } from "./engine/multitrackAudio";
+import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { summarizeArming } from "./engine/outputArming";
 import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
@@ -515,18 +516,12 @@ export function App({ engines, runtime }: AppProps) {
   }
 
   function setTransitionStyle(style: TransitionState["style"]) {
-    const durations: Record<TransitionState["style"], number> = {
-      cut: 0,
-      fade: 420,
-      slide: 520
-    };
-
     setProduction((current) => ({
       ...current,
       transition: {
         ...current.transition,
         style,
-        durationMs: durations[style],
+        durationMs: recommendedTransitionDuration(style),
         statusText: `${style} transition selected`
       }
     }));
@@ -1020,6 +1015,17 @@ export function App({ engines, runtime }: AppProps) {
                     <span className="live-dot" />
                     LIVE
                   </div>
+                )}
+                {transitionUsesWipe(production.transition.style) && production.transition.lastTakenSceneId && (
+                  <div
+                    aria-hidden="true"
+                    className={`transition-wipe wipe-${production.transition.style}`}
+                    key={`${production.transition.style}-${production.transition.lastTakenSceneId}`}
+                    style={{
+                      animationDuration: `${production.transition.durationMs}ms`,
+                      "--wipe-accent": production.brandKit.brandColor
+                    } as React.CSSProperties}
+                  />
                 )}
                 <div className={`lower-third lower-third-bar position-${production.captionOverlay.lowerThirdPosition}`}>
                   <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
@@ -2057,7 +2063,7 @@ export function App({ engines, runtime }: AppProps) {
               Transition
             </div>
             <div className="transition-picker" aria-label="Transition controls">
-              {(["cut", "fade", "slide"] as const).map((style) => (
+              {transitionStyles.map((style) => (
                 <button
                   className={production.transition.style === style ? "selected" : ""}
                   key={style}
@@ -2067,6 +2073,7 @@ export function App({ engines, runtime }: AppProps) {
                 </button>
               ))}
             </div>
+            <p className="transition-descriptor">{describeTransition(production.transition.style, production.transition.durationMs).summary}</p>
             <p className="transition-status">{production.transition.statusText}</p>
           </section>
 

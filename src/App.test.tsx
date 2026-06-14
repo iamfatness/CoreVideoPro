@@ -263,6 +263,26 @@ describe("App production controls", () => {
     expect(await screen.findByText("top")).toBeInTheDocument();
   });
 
+  it("selects a stinger transition and plays a branded wipe on take", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const program = screen.getByLabelText("Program preview");
+    const scenes = screen.getByLabelText("Scenes");
+    expect(program.querySelector(".transition-wipe")).toBeNull();
+
+    await user.click(within(scenes).getByRole("button", { name: /Interview/i }));
+    await goToTab(user, "Automation");
+    await user.click(within(screen.getByLabelText("Transition controls")).getByRole("button", { name: "stinger" }));
+    expect(screen.getByText("Stinger - 900ms branded wipe")).toBeInTheDocument();
+
+    await goToTab(user, "Studio");
+    await user.click(screen.getByRole("button", { name: "Take" }));
+
+    expect(await screen.findByText("Interview taken with stinger")).toBeInTheDocument();
+    expect(program.querySelector(".transition-wipe.wipe-stinger")).not.toBeNull();
+  });
+
   it("runs live production commands from keyboard shortcuts", async () => {
     const user = userEvent.setup();
     renderApp();
