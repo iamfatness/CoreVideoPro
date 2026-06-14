@@ -100,7 +100,7 @@ describe("MediaCoreServiceClient", () => {
           active: true,
           programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
-            { kind: "program", framesWritten: 2 },
+            { kind: "program", framesWritten: 1 },
             { kind: "iso", participantId: "p1", framesWritten: 1 }
           ]
         }
@@ -138,10 +138,10 @@ describe("MediaCoreServiceClient", () => {
         recording: {
           elapsedMs: 33,
           streams: [
-            { kind: "program", framesWritten: 4 },
+            { kind: "program", framesWritten: 2 },
             { kind: "iso", participantId: "p1", framesWritten: 2 }
           ],
-          totalFramesWritten: 6
+          totalFramesWritten: 4
         }
       }
     });

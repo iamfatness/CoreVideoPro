@@ -1,5 +1,6 @@
 import type {
   MediaCoreFrame,
+  MediaCoreProgramFrame,
   MediaCoreRecordingQuality,
   MediaCoreRecordingSession,
   MediaCoreRecordingStream,
@@ -47,7 +48,7 @@ export class RecordingSink {
     return this.start({ isoParticipantIds }, elapsedMs);
   }
 
-  writeFrames(frames: MediaCoreFrame[], elapsedMs: number) {
+  writeFrames(frames: MediaCoreFrame[], elapsedMs: number, programFrame?: MediaCoreProgramFrame) {
     if (!this.session || !this.session.active) {
       return this.snapshot();
     }
@@ -56,20 +57,19 @@ export class RecordingSink {
     this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
 
     const writableFrames = frames.filter((frame) => frame.health !== "dropped");
-    const droppedFrames = frames.length - writableFrames.length;
     this.session.streams.forEach((stream) => {
+      const programWritableFrameCount = programFrame && programFrame.health !== "dropped" ? 1 : 0;
+      const programDroppedFrameCount = programFrame?.health === "dropped" ? 1 : 0;
       const matchingFrames =
-        stream.kind === "program"
-          ? writableFrames
-          : writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId);
+        stream.kind === "program" ? programWritableFrameCount : writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
       const matchingDropped =
         stream.kind === "program"
-          ? droppedFrames
+          ? programDroppedFrameCount
           : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
 
-      stream.framesWritten += matchingFrames.length;
+      stream.framesWritten += matchingFrames;
       stream.droppedFrames += matchingDropped;
-      stream.bytesWritten += matchingFrames.length * BYTES_PER_FRAME[stream.kind];
+      stream.bytesWritten += matchingFrames * BYTES_PER_FRAME[stream.kind];
     });
 
     updateSessionTotals(this.session);

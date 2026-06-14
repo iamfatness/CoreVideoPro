@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RecordingSink } from "./recordingSink.js";
-import type { MediaCoreFrame } from "./protocol.js";
+import type { MediaCoreFrame, MediaCoreProgramFrame } from "./protocol.js";
 
 const frames: MediaCoreFrame[] = [
   {
@@ -37,6 +37,19 @@ const frames: MediaCoreFrame[] = [
   }
 ];
 
+const programFrame: MediaCoreProgramFrame = {
+  frameNumber: 1,
+  timestampMs: 33,
+  renderPlanId: "rp-test",
+  sceneId: "speaker-slides",
+  width: 1920,
+  height: 1080,
+  fps: 60,
+  layerCount: 3,
+  colorGrade: { lut: "none", exposure: 0, contrast: 0, saturation: 0, temperature: 0 },
+  health: "live"
+};
+
 describe("RecordingSink", () => {
   it("creates program and ISO recording paths", () => {
     const sink = new RecordingSink();
@@ -61,13 +74,13 @@ describe("RecordingSink", () => {
     const sink = new RecordingSink();
     sink.sync(["p1"], 0);
 
-    expect(sink.writeFrames(frames, 33)).toMatchObject({
+    expect(sink.writeFrames(frames, 33, programFrame)).toMatchObject({
       elapsedMs: 33,
       streams: [
-        { kind: "program", framesWritten: 3 },
+        { kind: "program", framesWritten: 1 },
         { kind: "iso", participantId: "p1", framesWritten: 1 }
       ],
-      totalFramesWritten: 4
+      totalFramesWritten: 2
     });
   });
 

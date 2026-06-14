@@ -164,11 +164,32 @@ describe("MediaCoreRuntime", () => {
           writerStatus: "writing",
           programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
-            { kind: "program", status: "writing", framesWritten: 2 },
+            { kind: "program", status: "writing", framesWritten: 1 },
             { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
             { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
           ],
-          totalFramesWritten: 3
+          totalFramesWritten: 2
+        },
+        programFrame: {
+          frameNumber: 1,
+          renderPlanId: expect.stringMatching(/^rp-/),
+          health: "live",
+          layerCount: 3
+        },
+        programFrameCount: 1,
+        compositor: {
+          status: "live",
+          programFrameCount: 1,
+          lastReconfigureReason: expect.stringContaining("Initial render plan")
+        },
+        encoderSession: {
+          status: "encoding",
+          targets: expect.arrayContaining([
+            expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
+            expect.objectContaining({ targetId: "rtmp:program", streamKind: "program", status: "attached" }),
+            expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached" }),
+            expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
+          ])
         },
         outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
         lastCommandTypes: [
@@ -247,11 +268,11 @@ describe("MediaCoreRuntime", () => {
         recording: {
           elapsedMs: 33,
           streams: [
-            { kind: "program", framesWritten: 4 },
+            { kind: "program", framesWritten: 2 },
             { kind: "iso", participantId: "p1", framesWritten: 0 },
             { kind: "iso", participantId: "p2", framesWritten: 2 }
           ],
-          totalFramesWritten: 6
+          totalFramesWritten: 4
         }
       }
     });

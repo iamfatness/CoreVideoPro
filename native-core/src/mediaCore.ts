@@ -3,8 +3,10 @@ import type {
   MediaCoreColorGrade,
   MediaCoreDestination,
   MediaCoreDiagnosticsSnapshot,
+  MediaCoreEncoderSession,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
+  MediaCoreProgramFrame,
   MediaCoreRenderPlan,
   MediaCoreRequest,
   MediaCoreResponse,
@@ -14,6 +16,8 @@ import type {
 import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
 import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
+import { ProgramCompositor } from "./compositor.js";
+import { buildEncoderSession } from "./encoderSession.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -50,8 +54,10 @@ export class MediaCoreRuntime {
   private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
   private readonly frameProducer = new FakeFrameProducer();
+  private readonly compositor = new ProgramCompositor();
   private readonly recordingSink = new RecordingSink();
   private frames = this.frameProducer.render([], 0);
+  private programFrame?: MediaCoreProgramFrame;
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -217,15 +223,22 @@ export class MediaCoreRuntime {
 
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
     const recording = this.recordingSink.snapshot();
-    const outputHealth = this.buildOutputHealth(recording);
     const renderPlan = this.renderPlan();
-    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+    const compositor = this.compositor.snapshot();
+    const encoderSession = this.encoderSession(recording);
+    const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession);
+    const allWarnings = [
+      ...new Set([...warnings, ...renderPlan.warnings, ...encoderSession.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])
+    ];
 
     return {
       sceneId: this.sceneGraph?.sceneId,
       routeCount: this.sceneGraph?.routes.length ?? 0,
       frameCount: this.frames.length,
       frames: this.frames,
+      programFrame: this.programFrame,
+      programFrameCount: compositor.programFrameCount,
+      compositor,
       participantTransformCount: this.transforms.size,
       overlayCount: this.overlays.size,
       outputs: this.output?.destinations ?? [],
@@ -235,8 +248,9 @@ export class MediaCoreRuntime {
       sourceCount: this.sources.length,
       resolvedRouteCount: renderPlan.resolvedRouteCount,
       renderPlan,
+      encoderSession,
       recording,
-      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan),
+      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
     };
@@ -244,8 +258,10 @@ export class MediaCoreRuntime {
 
   private tick(elapsedMs: number) {
     this.elapsedMs = Math.max(0, elapsedMs);
-    this.frames = this.frameProducer.render(this.getFrameSources(), this.elapsedMs);
-    this.recordingSink.writeFrames(this.frames, this.elapsedMs);
+    const renderPlan = this.renderPlan();
+    this.frames = this.frameProducer.render(this.getFrameSources(renderPlan), this.elapsedMs);
+    this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
+    this.recordingSink.writeFrames(this.frames, this.elapsedMs, this.programFrame);
   }
 
   private renderPlan() {
@@ -275,14 +291,31 @@ export class MediaCoreRuntime {
     });
   }
 
-  private buildOutputHealth(recording: MediaCoreStateSnapshot["recording"]) {
+  private buildOutputHealth(recording: MediaCoreStateSnapshot["recording"], programFrame: MediaCoreProgramFrame | undefined, encoderSession: MediaCoreEncoderSession) {
     const health = new Map(this.outputHealth);
+
+    if (programFrame?.health === "degraded") {
+      health.forEach((value, destination) => {
+        health.set(destination, {
+          ...value,
+          status: value.status === "failed" ? "failed" : "warning",
+          message: programFrame.warning ?? "Program frame is degraded."
+        });
+      });
+    }
 
     if (recording) {
       health.set("recording", {
         destination: "recording",
-        status: recording.status === "failed" ? "failed" : recording.status === "warning" ? "warning" : recording.active ? "live" : "idle",
-        message: recording.error ?? recording.warning ?? (recording.active ? "Recording writer active." : "Recording stopped."),
+        status:
+          recording.status === "failed" || encoderSession.status === "failed"
+            ? "failed"
+            : recording.status === "warning" || encoderSession.status === "warning" || programFrame?.health === "degraded"
+              ? "warning"
+              : recording.active
+                ? "live"
+                : "idle",
+        message: recording.error ?? recording.warning ?? encoderSession.warnings[0] ?? (recording.active ? "Recording writer active." : "Recording stopped."),
         droppedFrames: recording.totalDroppedFrames
       });
     }
@@ -294,7 +327,9 @@ export class MediaCoreRuntime {
     outputHealth: MediaCoreOutputHealth[],
     warnings: string[],
     recording: MediaCoreStateSnapshot["recording"],
-    renderPlan: MediaCoreRenderPlan
+    renderPlan: MediaCoreRenderPlan,
+    compositor: MediaCoreStateSnapshot["compositor"],
+    encoderSession: MediaCoreEncoderSession
   ): MediaCoreDiagnosticsSnapshot {
     return {
       generatedAtMs: this.elapsedMs,
@@ -305,14 +340,26 @@ export class MediaCoreRuntime {
       outputProfile: this.outputProfile,
       outputHealth,
       renderPlan,
+      compositor,
+      programFrame: this.programFrame,
+      programFrameCount: compositor.programFrameCount,
+      encoderSession,
       recording,
       warnings,
       lastCommandTypes: this.lastCommandTypes
     };
   }
 
-  private getFrameSources(): FakeFrameSource[] {
-    return this.renderPlan().layers
+  private encoderSession(recording: MediaCoreStateSnapshot["recording"]) {
+    return buildEncoderSession({
+      outputs: this.output?.destinations ?? [],
+      programFrame: this.programFrame,
+      recording
+    });
+  }
+
+  private getFrameSources(renderPlan: MediaCoreRenderPlan): FakeFrameSource[] {
+    return renderPlan.layers
       .filter((layer): layer is typeof layer & { kind: "participant-video" | "screen-share" } => layer.kind === "participant-video" || layer.kind === "screen-share")
       .map((layer) => ({
         sourceId: layer.sourceId ?? layer.layerId,

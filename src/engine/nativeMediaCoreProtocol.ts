@@ -101,6 +101,30 @@ export type NativeMediaCoreFrame = {
   health: "live" | "stale" | "dropped" | "low-resolution";
 };
 
+export type NativeMediaCoreProgramFrame = {
+  frameNumber: number;
+  timestampMs: number;
+  renderPlanId: string;
+  sceneId?: string;
+  width: number;
+  height: number;
+  fps: number;
+  layerCount: number;
+  colorGrade: NativeMediaCoreColorGrade;
+  health: "live" | "degraded" | "dropped";
+  warning?: string;
+};
+
+export type NativeMediaCoreCompositorState = {
+  status: "idle" | "live" | "degraded" | "failed";
+  renderPlanId?: string;
+  programFrameCount: number;
+  droppedFrameCount: number;
+  degradedFrameCount: number;
+  lastReconfigureReason?: string;
+  lastFrame?: NativeMediaCoreProgramFrame;
+};
+
 export type NativeMediaCoreZoomSource = {
   sourceId: string;
   participantId: string;
@@ -202,6 +226,7 @@ export type NativeMediaCoreOutputProfile = {
 };
 
 export type NativeMediaCoreRenderPlan = {
+  renderPlanId: string;
   sceneId?: string;
   outputProfile: NativeMediaCoreOutputProfile;
   colorGrade: NativeMediaCoreColorGrade;
@@ -209,6 +234,24 @@ export type NativeMediaCoreRenderPlan = {
   resolvedRouteCount: number;
   layers: NativeMediaCoreRenderPlanLayer[];
   routes: NativeMediaCoreResolvedRoute[];
+  warnings: string[];
+};
+
+export type NativeMediaCoreEncoderTarget = {
+  targetId: string;
+  destination: "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
+  streamKind: "program" | "iso";
+  participantId?: string;
+  status: "idle" | "attached" | "warning" | "failed";
+  attachedFrameCount: number;
+  warning?: string;
+};
+
+export type NativeMediaCoreEncoderSession = {
+  status: "idle" | "encoding" | "warning" | "failed";
+  renderPlanId?: string;
+  programFrameCount: number;
+  targets: NativeMediaCoreEncoderTarget[];
   warnings: string[];
 };
 
@@ -224,10 +267,14 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   sceneId?: string;
   routeCount: number;
   frameCount: number;
+  programFrameCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
   renderPlan: NativeMediaCoreRenderPlan;
+  compositor: NativeMediaCoreCompositorState;
+  programFrame?: NativeMediaCoreProgramFrame;
+  encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
   warnings: string[];
   lastCommandTypes: string[];
@@ -238,6 +285,9 @@ export type NativeMediaCoreStateSnapshot = {
   routeCount: number;
   frameCount: number;
   frames: NativeMediaCoreFrame[];
+  programFrame?: NativeMediaCoreProgramFrame;
+  programFrameCount: number;
+  compositor: NativeMediaCoreCompositorState;
   participantTransformCount: number;
   overlayCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
@@ -247,6 +297,7 @@ export type NativeMediaCoreStateSnapshot = {
   sourceCount: number;
   resolvedRouteCount: number;
   renderPlan: NativeMediaCoreRenderPlan;
+  encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];

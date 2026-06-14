@@ -5,10 +5,14 @@ export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recordin
 export type MediaCoreFrameKind = "participant-video" | "screen-share";
 
 export type MediaCoreFrameHealth = "live" | "stale" | "dropped" | "low-resolution";
+export type MediaCoreProgramFrameHealth = "live" | "degraded" | "dropped";
+export type MediaCoreCompositorHealth = "idle" | "live" | "degraded" | "failed";
 export type MediaCoreZoomSourceHealth = "live" | "low-resolution" | "recovering" | "video-off";
 export type MediaCoreRecordingStatus = "recording" | "warning" | "stopped" | "failed";
 export type MediaCoreRecordingWriterStatus = "writing" | "warning" | "stopped" | "failed";
 export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed";
+export type MediaCoreEncoderTargetStatus = "idle" | "attached" | "warning" | "failed";
+export type MediaCoreEncoderSessionStatus = "idle" | "encoding" | "warning" | "failed";
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 export type MediaCoreColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
@@ -69,6 +73,7 @@ export type MediaCoreRenderPlanLayer = {
 };
 
 export type MediaCoreRenderPlan = {
+  renderPlanId: string;
   sceneId?: string;
   outputProfile: MediaCoreOutputProfile;
   colorGrade: MediaCoreColorGrade;
@@ -76,6 +81,48 @@ export type MediaCoreRenderPlan = {
   resolvedRouteCount: number;
   layers: MediaCoreRenderPlanLayer[];
   routes: MediaCoreResolvedRoute[];
+  warnings: string[];
+};
+
+export type MediaCoreProgramFrame = {
+  frameNumber: number;
+  timestampMs: number;
+  renderPlanId: string;
+  sceneId?: string;
+  width: number;
+  height: number;
+  fps: number;
+  layerCount: number;
+  colorGrade: MediaCoreColorGrade;
+  health: MediaCoreProgramFrameHealth;
+  warning?: string;
+};
+
+export type MediaCoreCompositorState = {
+  status: MediaCoreCompositorHealth;
+  renderPlanId?: string;
+  programFrameCount: number;
+  droppedFrameCount: number;
+  degradedFrameCount: number;
+  lastReconfigureReason?: string;
+  lastFrame?: MediaCoreProgramFrame;
+};
+
+export type MediaCoreEncoderTarget = {
+  targetId: string;
+  destination: MediaCoreDestination;
+  streamKind: "program" | "iso";
+  participantId?: string;
+  status: MediaCoreEncoderTargetStatus;
+  attachedFrameCount: number;
+  warning?: string;
+};
+
+export type MediaCoreEncoderSession = {
+  status: MediaCoreEncoderSessionStatus;
+  renderPlanId?: string;
+  programFrameCount: number;
+  targets: MediaCoreEncoderTarget[];
   warnings: string[];
 };
 
@@ -148,10 +195,14 @@ export type MediaCoreDiagnosticsSnapshot = {
   sceneId?: string;
   routeCount: number;
   frameCount: number;
+  programFrameCount: number;
   outputs: MediaCoreDestination[];
   outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
   renderPlan: MediaCoreRenderPlan;
+  compositor: MediaCoreCompositorState;
+  programFrame?: MediaCoreProgramFrame;
+  encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
   warnings: string[];
   lastCommandTypes: string[];
@@ -243,6 +294,9 @@ export type MediaCoreStateSnapshot = {
   routeCount: number;
   frameCount: number;
   frames: MediaCoreFrame[];
+  programFrame?: MediaCoreProgramFrame;
+  programFrameCount: number;
+  compositor: MediaCoreCompositorState;
   participantTransformCount: number;
   overlayCount: number;
   outputs: MediaCoreDestination[];
@@ -252,6 +306,7 @@ export type MediaCoreStateSnapshot = {
   sourceCount: number;
   resolvedRouteCount: number;
   renderPlan: MediaCoreRenderPlan;
+  encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
   diagnostics: MediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];

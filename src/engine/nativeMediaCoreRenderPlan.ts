@@ -64,7 +64,7 @@ export function buildNativeMediaCoreRenderPlan(input: {
     position: overlay.position
   }));
 
-  return {
+  return withRenderPlanId({
     sceneId: input.sceneGraph?.sceneId,
     outputProfile: input.outputProfile,
     colorGrade: input.colorGrade,
@@ -73,7 +73,47 @@ export function buildNativeMediaCoreRenderPlan(input: {
     layers: [...videoLayers, ...overlayLayers],
     routes,
     warnings: [...new Set(warnings)]
+  });
+}
+
+function withRenderPlanId(renderPlan: Omit<NativeMediaCoreRenderPlan, "renderPlanId">): NativeMediaCoreRenderPlan {
+  const stableInput = JSON.stringify({
+    sceneId: renderPlan.sceneId,
+    outputProfile: renderPlan.outputProfile,
+    colorGrade: renderPlan.colorGrade,
+    routes: renderPlan.routes.map((route) => ({
+      routeId: route.routeId,
+      mode: route.mode,
+      audioRole: route.audioRole,
+      sourceId: route.sourceId,
+      participantId: route.participantId,
+      kind: route.kind,
+      status: route.status
+    })),
+    layers: renderPlan.layers.map((layer) => ({
+      layerId: layer.layerId,
+      kind: layer.kind,
+      sourceId: layer.sourceId,
+      participantId: layer.participantId,
+      overlayId: layer.overlayId,
+      position: layer.position,
+      order: layer.order
+    }))
+  });
+
+  return {
+    ...renderPlan,
+    renderPlanId: `rp-${stableHash(stableInput)}`
   };
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function resolveRoute(

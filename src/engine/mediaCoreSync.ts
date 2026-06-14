@@ -4,9 +4,13 @@ import type { NativeHostBridge } from "./nativeHostBridge";
 import type {
   NativeMediaCoreColorGrade,
   NativeMediaCoreCommand,
+  NativeMediaCoreCompositorState,
+  NativeMediaCoreEncoderSession,
+  NativeMediaCoreEncoderTarget,
   NativeMediaCoreFrame,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
+  NativeMediaCoreProgramFrame,
   NativeMediaCoreRenderPlan,
   NativeMediaCoreRecordingSession,
   NativeMediaCoreRecordingTargets,
@@ -21,6 +25,12 @@ export interface MediaCoreSyncEngine {
 
 export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly frameNumbers = new Map<string, number>();
+  private programFrameNumber = 0;
+  private compositorRenderPlanId?: string;
+  private compositorDroppedFrameCount = 0;
+  private compositorDegradedFrameCount = 0;
+  private lastReconfigureReason?: string;
+  private programFrame?: NativeMediaCoreProgramFrame;
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -97,15 +107,21 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const frames = renderPlan.layers
       .filter((layer) => layer.kind === "participant-video" || layer.kind === "screen-share")
       .map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
+    this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
-    const outputHealth = this.outputHealth(output?.destinations ?? [], recording);
-    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
+    const encoderSession = this.encoderSession(output?.destinations ?? [], this.programFrame, recording);
+    const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession);
+    const compositor = this.compositorSnapshot();
+    const allWarnings = [...new Set([...warnings, ...renderPlan.warnings, ...encoderSession.warnings, recording?.warning, recording?.error].filter(Boolean) as string[])];
 
     return {
       sceneId: sceneGraph?.sceneId,
       routeCount: sceneGraph?.routes.length ?? 0,
       frameCount: frames.length,
       frames,
+      programFrame: this.programFrame,
+      programFrameCount: compositor.programFrameCount,
+      compositor,
       participantTransformCount: transforms.length,
       overlayCount: overlays.length,
       outputs: output?.destinations ?? [],
@@ -115,16 +131,21 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       sourceCount: this.sources.length,
       resolvedRouteCount: renderPlan.resolvedRouteCount,
       renderPlan,
+      encoderSession,
       recording,
       diagnostics: {
         generatedAtMs: elapsedMs,
         sceneId: sceneGraph?.sceneId,
         routeCount: sceneGraph?.routes.length ?? 0,
         frameCount: frames.length,
+        programFrameCount: compositor.programFrameCount,
         outputs: output?.destinations ?? [],
         outputProfile: this.outputProfile,
         outputHealth,
         renderPlan,
+        compositor,
+        programFrame: this.programFrame,
+        encoderSession,
         recording,
         warnings: allWarnings,
         lastCommandTypes: commands.map((command) => command.type)
@@ -174,7 +195,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     });
 
     if (this.recording?.active) {
-      this.writeRecordingFrames(frames, elapsedMs);
+      this.writeRecordingFrames(frames, elapsedMs, this.programFrame);
     }
 
     return this.snapshotRecording(elapsedMs);
@@ -212,7 +233,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
 
   }
 
-  private writeRecordingFrames(frames: NativeMediaCoreFrame[], elapsedMs: number) {
+  private writeRecordingFrames(frames: NativeMediaCoreFrame[], elapsedMs: number, programFrame?: NativeMediaCoreProgramFrame) {
     if (!this.recording || !this.recording.active) {
       return;
     }
@@ -222,12 +243,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     this.recording.streams.forEach((stream) => {
       const droppedFrames =
         stream.kind === "program"
-          ? frames.length - writableFrames.length
+          ? programFrame?.health === "dropped"
+            ? 1
+            : 0
           : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
       if (stream.kind === "program") {
-        stream.framesWritten += writableFrames.length;
+        const programFrames = programFrame && programFrame.health !== "dropped" ? 1 : 0;
+        stream.framesWritten += programFrames;
         stream.droppedFrames += droppedFrames;
-        stream.bytesWritten += writableFrames.length * 260_000;
+        stream.bytesWritten += programFrames * 260_000;
       } else {
         const isoFrames = writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
         stream.framesWritten += isoFrames;
@@ -294,7 +318,12 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     };
   }
 
-  private outputHealth(destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">, recording?: NativeMediaCoreRecordingSession) {
+  private outputHealth(
+    destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">,
+    recording: NativeMediaCoreRecordingSession | undefined,
+    programFrame: NativeMediaCoreProgramFrame | undefined,
+    encoderSession: NativeMediaCoreEncoderSession
+  ) {
     const health = destinations.map(
       (destination): NativeMediaCoreOutputHealth => ({
         destination,
@@ -311,8 +340,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       const index = health.findIndex((item) => item.destination === "recording");
       const recordingHealth: NativeMediaCoreOutputHealth = {
         destination: "recording",
-        status: recording.status === "failed" ? "failed" : recording.status === "warning" ? "warning" : recording.active ? "live" : "idle",
-        message: recording.error ?? recording.warning ?? (recording.active ? "Recording writer active." : "Recording stopped."),
+        status:
+          recording.status === "failed" || encoderSession.status === "failed"
+            ? "failed"
+            : recording.status === "warning" || encoderSession.status === "warning" || programFrame?.health === "degraded"
+              ? "warning"
+              : recording.active
+                ? "live"
+                : "idle",
+        message: recording.error ?? recording.warning ?? encoderSession.warnings[0] ?? (recording.active ? "Recording writer active." : "Recording stopped."),
         droppedFrames: recording.totalDroppedFrames
       };
 
@@ -323,7 +359,114 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       }
     }
 
+    if (programFrame?.health === "degraded") {
+      return health.map((item) => ({
+        ...item,
+        status: item.status === "failed" ? item.status : ("warning" as const),
+        message: programFrame.warning ?? "Program frame is degraded."
+      }));
+    }
+
     return health;
+  }
+
+  private composeProgramFrame(renderPlan: NativeMediaCoreRenderPlan, elapsedMs: number) {
+    if (!renderPlan.sceneId) {
+      this.programFrame = undefined;
+      return undefined;
+    }
+
+    if (this.compositorRenderPlanId !== renderPlan.renderPlanId) {
+      this.lastReconfigureReason = this.compositorRenderPlanId
+        ? `Render plan changed from ${this.compositorRenderPlanId} to ${renderPlan.renderPlanId}.`
+        : `Initial render plan ${renderPlan.renderPlanId}.`;
+      this.compositorRenderPlanId = renderPlan.renderPlanId;
+    }
+
+    this.programFrameNumber += 1;
+    const hasMissingRoutes = renderPlan.routes.some((route) => route.status === "missing");
+    const health = this.programFrameNumber % 120 === 0 ? "dropped" : hasMissingRoutes || renderPlan.warnings.length > 0 ? "degraded" : "live";
+    if (health === "dropped") {
+      this.compositorDroppedFrameCount += 1;
+    }
+    if (health === "degraded") {
+      this.compositorDegradedFrameCount += 1;
+    }
+
+    return {
+      frameNumber: this.programFrameNumber,
+      timestampMs: elapsedMs,
+      renderPlanId: renderPlan.renderPlanId,
+      sceneId: renderPlan.sceneId,
+      width: renderPlan.outputProfile.width,
+      height: renderPlan.outputProfile.height,
+      fps: renderPlan.outputProfile.fps,
+      layerCount: renderPlan.layers.length,
+      colorGrade: renderPlan.colorGrade,
+      health,
+      warning: health === "degraded" ? renderPlan.warnings[0] ?? "Program frame degraded by incomplete render plan." : undefined
+    } satisfies NativeMediaCoreProgramFrame;
+  }
+
+  private compositorSnapshot(): NativeMediaCoreCompositorState {
+    return {
+      status: this.programFrame ? (this.programFrame.health === "dropped" ? "degraded" : this.programFrame.health) : "idle",
+      renderPlanId: this.compositorRenderPlanId,
+      programFrameCount: this.programFrameNumber,
+      droppedFrameCount: this.compositorDroppedFrameCount,
+      degradedFrameCount: this.compositorDegradedFrameCount,
+      lastReconfigureReason: this.lastReconfigureReason,
+      lastFrame: this.programFrame ? { ...this.programFrame, colorGrade: { ...this.programFrame.colorGrade } } : undefined
+    };
+  }
+
+  private encoderSession(
+    outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">,
+    programFrame?: NativeMediaCoreProgramFrame,
+    recording?: NativeMediaCoreRecordingSession
+  ): NativeMediaCoreEncoderSession {
+    const targets: NativeMediaCoreEncoderTarget[] = outputs.map((destination) => ({
+      targetId: `${destination}:program`,
+      destination,
+      streamKind: "program" as const,
+      status: !programFrame ? ("idle" as const) : programFrame.health === "live" ? ("attached" as const) : ("warning" as const),
+      attachedFrameCount: programFrame && programFrame.health !== "dropped" ? 1 : 0,
+      warning: !programFrame
+        ? `${destination} has no program frame to encode.`
+        : programFrame.health === "dropped"
+          ? `${destination} skipped a dropped program frame.`
+          : programFrame.health === "degraded"
+            ? `${destination} is encoding a degraded program frame.`
+            : undefined
+    }));
+
+    if (recording?.active) {
+      recording.streams
+        .filter((stream) => stream.kind === "iso")
+        .forEach((stream) => {
+          targets.push({
+            targetId: `recording:iso:${stream.participantId}`,
+            destination: "recording",
+            streamKind: "iso" as const,
+            participantId: stream.participantId,
+            status: stream.status === "failed" ? "failed" : stream.status === "warning" ? "warning" : "attached",
+            attachedFrameCount: stream.framesWritten,
+            warning: stream.status === "warning" ? recording.warning : undefined
+          });
+        });
+    }
+
+    const warnings = targets.map((target) => target.warning).filter(Boolean) as string[];
+    const hasFailure = targets.some((target) => target.status === "failed");
+    const hasWarning = targets.some((target) => target.status === "warning");
+
+    return {
+      status: hasFailure ? "failed" : hasWarning ? "warning" : targets.length > 0 ? "encoding" : "idle",
+      renderPlanId: programFrame?.renderPlanId,
+      programFrameCount: programFrame && programFrame.health !== "dropped" ? 1 : 0,
+      targets,
+      warnings: [...new Set(warnings)]
+    };
   }
 }
 

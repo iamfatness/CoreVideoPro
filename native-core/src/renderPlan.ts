@@ -7,6 +7,7 @@ import type {
   MediaCoreZoomSource
 } from "./protocol.js";
 import type { MediaCoreCommand } from "./protocol.js";
+import { withRenderPlanId } from "./compositor.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type OverlayState = Extract<MediaCoreCommand, { type: "set-overlay-asset" }>;
@@ -66,7 +67,7 @@ export function buildRenderPlan(input: {
     position: overlay.position
   }));
 
-  return {
+  return withRenderPlanId({
     sceneId: input.sceneGraph?.sceneId,
     outputProfile: input.outputProfile,
     colorGrade: input.colorGrade,
@@ -75,7 +76,7 @@ export function buildRenderPlan(input: {
     layers: [...videoLayers, ...overlayLayers],
     routes,
     warnings: [...new Set(warnings)]
-  };
+  });
 }
 
 function resolveRoute(

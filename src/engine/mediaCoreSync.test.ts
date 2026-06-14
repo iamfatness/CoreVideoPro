@@ -66,9 +66,23 @@ describe("media core sync engine", () => {
         targetBitrateMbps: 8.2
       },
       outputHealth: [],
+      programFrameCount: 0,
+      compositor: {
+        status: "idle" as const,
+        programFrameCount: 0,
+        droppedFrameCount: 0,
+        degradedFrameCount: 0
+      },
+      encoderSession: {
+        status: "idle" as const,
+        programFrameCount: 0,
+        targets: [],
+        warnings: []
+      },
       sourceCount: 0,
       resolvedRouteCount: 0,
       renderPlan: {
+        renderPlanId: "rp-test",
         outputProfile: {
           profileId: "1080p60",
           resolution: "1920x1080",
@@ -99,6 +113,7 @@ describe("media core sync engine", () => {
         },
         outputHealth: [],
         renderPlan: {
+          renderPlanId: "rp-test",
           outputProfile: {
             profileId: "1080p60",
             resolution: "1920x1080",
@@ -112,6 +127,19 @@ describe("media core sync engine", () => {
           resolvedRouteCount: 0,
           layers: [],
           routes: [],
+          warnings: []
+        },
+        programFrameCount: 0,
+        compositor: {
+          status: "idle" as const,
+          programFrameCount: 0,
+          droppedFrameCount: 0,
+          degradedFrameCount: 0
+        },
+        encoderSession: {
+          status: "idle" as const,
+          programFrameCount: 0,
+          targets: [],
           warnings: []
         },
         warnings: [],
@@ -175,11 +203,30 @@ describe("media core sync engine", () => {
         estimatedDiskRateMBps: 7.49,
         programPath: "Recordings/CoreVideo Pro/AI_Product_Launch_Webinar-program-3000.mp4",
         streams: [
-          { kind: "program", status: "writing", framesWritten: 2 },
+          { kind: "program", status: "writing", framesWritten: 1 },
           { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
           { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
         ],
-        totalFramesWritten: 3
+        totalFramesWritten: 2
+      },
+      programFrame: {
+        frameNumber: 1,
+        renderPlanId: expect.stringMatching(/^rp-/),
+        health: "live",
+        layerCount: 3
+      },
+      programFrameCount: 1,
+      compositor: {
+        status: "live",
+        programFrameCount: 1
+      },
+      encoderSession: {
+        status: "encoding",
+        targets: expect.arrayContaining([
+          expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
+          expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached" }),
+          expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
+        ])
       },
       outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
       diagnostics: {
