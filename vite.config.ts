@@ -11,6 +11,6 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
-    exclude: ["**/node_modules/**", "**/dist/**", "native-core/**"]
+    exclude: ["**/node_modules/**", "**/dist/**", "native-core/**", "tests/e2e/**"]
   }
 });

@@ -33,7 +33,25 @@ export type CoreResponse =
   | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
   | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-failed" | "zoom-spine-failed"; message: string } };
 
+type ZoomVideoFrameWire = {
+  participantId: string;
+  width: number;
+  height: number;
+  frameId: number;
+  rgba: number[] | Uint8ClampedArray;
+};
+
 export type CoreEvent = { type: "zoom-video-frame"; frame: ZoomVideoFrame };
+
+export function normalizeZoomVideoFrameWire(wire: ZoomVideoFrameWire): ZoomVideoFrame {
+  return {
+    participantId: wire.participantId,
+    width: wire.width,
+    height: wire.height,
+    frameId: wire.frameId,
+    rgba: wire.rgba instanceof Uint8ClampedArray ? wire.rgba : new Uint8ClampedArray(wire.rgba)
+  };
+}
 
 /** Parse a single stdio line into a CoreResponse, or null when unparseable. */
 export function parseCoreResponse(line: string): CoreResponse | null {
@@ -56,8 +74,24 @@ export function parseCoreEvent(line: string): CoreEvent | null {
     return null;
   }
   try {
-    const value = JSON.parse(trimmed) as CoreEvent;
-    return value?.type === "zoom-video-frame" && value.frame ? value : null;
+    const value = JSON.parse(trimmed) as { type?: string; frame?: ZoomVideoFrameWire };
+    if (value?.type !== "zoom-video-frame" || !value.frame) {
+      return null;
+    }
+    const { participantId, width, height, frameId, rgba } = value.frame;
+    if (
+      typeof participantId !== "string" ||
+      typeof width !== "number" ||
+      typeof height !== "number" ||
+      typeof frameId !== "number" ||
+      !Array.isArray(rgba)
+    ) {
+      return null;
+    }
+    return {
+      type: "zoom-video-frame",
+      frame: normalizeZoomVideoFrameWire(value.frame)
+    };
   } catch {
     return null;
   }

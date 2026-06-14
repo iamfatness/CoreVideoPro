@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { initialProduction, type Participant, type ProductionState } from "../domain/production";
-import { assessZoomSdkReadiness, buildZoomRawMediaSubscriptionPlan } from "./zoomSdkReadiness";
+import { assessZoomSdkReadiness, buildZoomRawMediaSubscriptionPlan, shouldBlockZoomJoin } from "./zoomSdkReadiness";
+import type { RuntimeEnvironment } from "./runtimeEnvironment";
 
 describe("assessZoomSdkReadiness", () => {
   it("marks the Zoom SDK media path ready when runtime, auth, and raw media are configured", () => {
@@ -57,6 +58,46 @@ describe("assessZoomSdkReadiness", () => {
 
     expect(report.status).toBe("warning");
     expect(report.warnings).toEqual(["SDK version is unknown; include it in support bundles before beta."]);
+  });
+});
+
+describe("shouldBlockZoomJoin", () => {
+  const blockedReadiness = assessZoomSdkReadiness({
+    platform: "windows",
+    sdkRuntimePresent: false,
+    appKeyPresent: false,
+    oauthConfigured: false,
+    jwtBrokerConfigured: false,
+    rawVideoEnabled: false,
+    rawAudioEnabled: false,
+    rawShareEnabled: false
+  });
+
+  const mockRuntime: RuntimeEnvironment = {
+    status: "mock",
+    label: "Mock studio",
+    host: "browser-preview",
+    platform: "web",
+    warnings: [],
+    capabilities: []
+  };
+
+  const nativeRuntime: RuntimeEnvironment = {
+    status: "ready",
+    label: "Native media ready",
+    host: "electron",
+    platform: "win32",
+    warnings: [],
+    capabilities: ["zoom-raw-video"]
+  };
+
+  it("does not block simulated joins in mock runtime", () => {
+    expect(shouldBlockZoomJoin(mockRuntime, blockedReadiness)).toBe(false);
+    expect(shouldBlockZoomJoin(undefined, blockedReadiness)).toBe(false);
+  });
+
+  it("blocks native joins when SDK readiness is blocked", () => {
+    expect(shouldBlockZoomJoin(nativeRuntime, blockedReadiness)).toBe(true);
   });
 });
 
