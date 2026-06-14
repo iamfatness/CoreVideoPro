@@ -39,6 +39,35 @@ export type Participant = {
   health: FeedHealth;
 };
 
+export type CaptureDeviceVendor = "blackmagic" | "aja";
+
+export type CaptureDeviceConnectionState =
+  | "disconnected"
+  | "detected"
+  | "connected"
+  | "format-mismatch"
+  | "error";
+
+export type CaptureDeviceInput = {
+  id: string;
+  label: string;
+  hasEmbeddedAudio: boolean;
+};
+
+export type CaptureDeviceState = {
+  id: string;
+  vendor: CaptureDeviceVendor;
+  name: string;
+  inputs: CaptureDeviceInput[];
+  selectedInputId: string;
+  resolution: { width: number; height: number };
+  frameRate: number;
+  connectionState: CaptureDeviceConnectionState;
+  signalPresent: boolean;
+  droppedFrames: number;
+  audioSyncOffsetMs: number;
+};
+
 export type ParticipantVideoEffect = {
   participantId: string;
   cropMode: "auto" | "manual";
@@ -202,6 +231,7 @@ export type ProductionState = {
   mediaFrames: MediaFrameState[];
   scenes: SceneTemplate[];
   output: OutputHealth;
+  captureDevices: CaptureDeviceState[];
 };
 
 export type ShowPreset = {
@@ -580,5 +610,6 @@ export const initialProduction: ProductionState = {
     droppedFrames: 0,
     encoderLoad: 42,
     network: "excellent"
-  }
+  },
+  captureDevices: []
 };

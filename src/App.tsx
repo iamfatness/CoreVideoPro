@@ -5,6 +5,7 @@ import {
   Captions,
   CircleDot,
   Clapperboard,
+  Cable,
   LayoutTemplate,
   LogIn,
   LogOut,
@@ -162,11 +163,26 @@ export function App({ engines, runtime }: AppProps) {
         setPresetSummaries(presets);
       }
     });
+    engines.captureDevices.listDevices().then((captureDevices) => {
+      if (mounted) {
+        setProduction((current) => ({ ...current, captureDevices }));
+      }
+    });
 
     return () => {
       mounted = false;
     };
   }, []);
+
+  async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
+    const captureDevices = await engines.captureDevices.selectInput(deviceId, inputId);
+    setProduction((current) => ({ ...current, captureDevices }));
+  }
+
+  async function setCaptureDeviceAudioSyncOffset(deviceId: string, offsetMs: number) {
+    const captureDevices = await engines.captureDevices.setAudioSyncOffset(deviceId, offsetMs);
+    setProduction((current) => ({ ...current, captureDevices }));
+  }
 
   async function applySnapshot(snapshot: ZoomSessionSnapshot) {
     const participants = applyParticipantRoleOverrides(snapshot.participants, participantRoleOverrides);
@@ -778,6 +794,53 @@ export function App({ engines, runtime }: AppProps) {
               <em>{supportBundle.warnings.length} warnings</em>
             </div>
           )}
+        </section>
+
+        <section className="rail-section" aria-label="Capture devices">
+          <div className="section-title">
+            <Cable size={15} />
+            Capture Devices
+          </div>
+          {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
+          {production.captureDevices.map((device) => (
+            <div className="capture-device" key={device.id}>
+              <div className="capture-device-header">
+                <strong>{device.name}</strong>
+                <span className={`capture-device-status capture-device-status-${device.connectionState}`}>
+                  {device.connectionState.replace("-", " ")}
+                </span>
+              </div>
+              <p className="preset-status">
+                {device.resolution.width}x{device.resolution.height} - {device.frameRate}fps -{" "}
+                {device.signalPresent ? "Signal present" : "No signal"}
+              </p>
+              <label className="capture-device-field">
+                Input
+                <select
+                  aria-label={`${device.name} input`}
+                  onChange={(event) => selectCaptureDeviceInput(device.id, event.target.value)}
+                  value={device.selectedInputId}
+                >
+                  {device.inputs.map((input) => (
+                    <option key={input.id} value={input.id}>
+                      {input.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="capture-device-field">
+                A/V sync offset (ms)
+                <input
+                  aria-label={`${device.name} audio sync offset`}
+                  max={500}
+                  min={-500}
+                  onChange={(event) => setCaptureDeviceAudioSyncOffset(device.id, Number(event.target.value))}
+                  type="number"
+                  value={device.audioSyncOffsetMs}
+                />
+              </label>
+            </div>
+          ))}
         </section>
       </aside>
 

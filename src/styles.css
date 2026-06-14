@@ -260,6 +260,58 @@ button:disabled {
   font-weight: 800;
 }
 
+.capture-device {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  border: 1px solid rgba(189, 207, 196, 0.1);
+  border-radius: 8px;
+  background: rgba(4, 11, 12, 0.48);
+  padding: 10px;
+}
+
+.capture-device-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #f7fbf8;
+}
+
+.capture-device-status {
+  font-size: 11px;
+  text-transform: capitalize;
+  color: #94a59b;
+}
+
+.capture-device-status-connected {
+  color: #7fd9a0;
+}
+
+.capture-device-status-format-mismatch,
+.capture-device-status-error {
+  color: #f0a85c;
+}
+
+.capture-device-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #94a59b;
+}
+
+.capture-device-field select,
+.capture-device-field input {
+  background: rgba(4, 11, 12, 0.6);
+  border: 1px solid rgba(189, 207, 196, 0.15);
+  border-radius: 6px;
+  color: #f7fbf8;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
 .preset-list strong,
 .profile-list strong,
 .breakout-list strong {
