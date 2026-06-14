@@ -8,6 +8,7 @@ import type {
   SupportBundleMediaCore
 } from "../domain/production";
 import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import { buildRecordingManifest } from "./recordingManifest";
 
 const MOCK_FREE_DISK_BYTES = 86 * 1024 * 1024 * 1024;
 
@@ -80,12 +81,13 @@ export function createSupportBundle(state: ProductionState, mediaCore?: NativeMe
       sdkSubscribeErrors: 0
     },
     isoCapacity,
-    mediaCore: mediaCore ? summarizeMediaCore(mediaCore) : undefined,
+    mediaCore: mediaCore ? summarizeMediaCore(mediaCore, state) : undefined,
     warnings
   };
 }
 
-function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBundleMediaCore {
+function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: ProductionState): SupportBundleMediaCore {
+  const recordingManifest = state ? buildRecordingManifest(state, snapshot) : undefined;
   return {
     sceneId: snapshot.sceneId,
     renderPlanId: snapshot.renderPlan.renderPlanId,
@@ -156,6 +158,26 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
             bytesWritten: stream.bytesWritten,
             warning: stream.warning
           }))
+        }
+      : undefined,
+    recordingManifest: recordingManifest
+      ? {
+          manifestId: recordingManifest.manifestId,
+          sessionId: recordingManifest.sessionId,
+          status: recordingManifest.status,
+          active: recordingManifest.active,
+          sceneId: recordingManifest.sceneId,
+          targetFolder: recordingManifest.targetFolder,
+          filenamePrefix: recordingManifest.filenamePrefix,
+          format: recordingManifest.format,
+          quality: recordingManifest.quality,
+          outputProfile: recordingManifest.outputProfile,
+          trackCount: recordingManifest.tracks.length,
+          isoTrackCount: recordingManifest.tracks.filter((track) => track.kind === "iso").length,
+          estimatedTotalMbps: recordingManifest.isoPlan.estimatedTotalMbps,
+          estimatedFileSizeGbPerHour: recordingManifest.isoPlan.estimatedFileSizeGbPerHour,
+          totals: recordingManifest.totals,
+          warnings: recordingManifest.warnings
         }
       : undefined,
     operatorActions: snapshot.operatorActions.map((action) => ({

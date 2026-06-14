@@ -440,6 +440,35 @@ export type SupportBundleMediaCore = {
       warning?: string;
     }>;
   };
+  recordingManifest?: {
+    manifestId: string;
+    sessionId?: string;
+    status: "idle" | "recording" | "warning" | "stopped" | "failed";
+    active: boolean;
+    sceneId?: string;
+    targetFolder: string;
+    filenamePrefix: string;
+    format: string;
+    quality: string;
+    outputProfile: {
+      profileId: string;
+      resolution: string;
+      fps: number;
+      targetBitrateMbps: number;
+    };
+    trackCount: number;
+    isoTrackCount: number;
+    estimatedTotalMbps: number;
+    estimatedFileSizeGbPerHour: number;
+    totals: {
+      framesWritten: number;
+      droppedFrames: number;
+      missingFrames: number;
+      bytesWritten: number;
+      estimatedDiskRateMBps?: number;
+    };
+    warnings: string[];
+  };
   operatorActions: Array<{
     actionId: string;
     severity: "info" | "warning" | "critical";

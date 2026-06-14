@@ -187,6 +187,16 @@ describe("createSupportBundle", () => {
         })
       ])
     });
+    expect(bundle.mediaCore?.recordingManifest).toMatchObject({
+      status: "warning",
+      active: true,
+      trackCount: 3,
+      isoTrackCount: 2,
+      totals: {
+        missingFrames: expect.any(Number)
+      },
+      warnings: expect.arrayContaining(["Andre Wallace ISO video is off."])
+    });
   });
 
   it("includes routed Zoom source health issues in media-core diagnostics", () => {
