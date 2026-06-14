@@ -76,6 +76,7 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
+import type { NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
@@ -162,6 +163,7 @@ export function App({ engines, runtime }: AppProps) {
   const [supportBundleStatus, setSupportBundleStatus] = useState("Support bundle ready");
   const [supportBundle, setSupportBundle] = useState<SupportBundle | undefined>();
   const [aiStudio, setAiStudio] = useState<AiStudioState>();
+  const [mediaCoreSnapshot, setMediaCoreSnapshot] = useState<NativeMediaCoreStateSnapshot>();
   const [showPreviewMonitor, setShowPreviewMonitor] = useState(false);
   const [commandStatus, setCommandStatus] = useState("Ready");
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
@@ -285,6 +287,32 @@ export function App({ engines, runtime }: AppProps) {
     production.previewSceneId,
     production.recording,
     production.scenes
+  ]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    engines.mediaCore.syncProduction(production, elapsedSeconds * 1000).then((snapshot) => {
+      if (mounted) {
+        setMediaCoreSnapshot(snapshot);
+      }
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    elapsedSeconds,
+    engines.mediaCore,
+    production.activeSceneId,
+    production.graphics,
+    production.outputDestinations,
+    production.participants,
+    production.recording,
+    production.recordingSettings.isoParticipantIds,
+    production.scenes,
+    production.streaming,
+    production.videoEffects
   ]);
 
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
@@ -1424,6 +1452,22 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Captions" value="Adaptive realtime" />
               <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
               <ControlReadout label="Preflight" value={outputPreflightStatus} />
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Gauge size={15} />
+              Native core
+            </div>
+            <div className="health-grid" aria-label="Native core sync">
+              <ControlReadout label="Synced scene" value={mediaCoreSnapshot?.sceneId ?? "Pending"} />
+              <ControlReadout label="Routes" value={`${mediaCoreSnapshot?.routeCount ?? 0}`} />
+              <ControlReadout label="Frames" value={`${mediaCoreSnapshot?.frameCount ?? 0}`} />
+              <ControlReadout label="Transforms" value={`${mediaCoreSnapshot?.participantTransformCount ?? 0}`} />
+              <ControlReadout label="Overlays" value={`${mediaCoreSnapshot?.overlayCount ?? 0}`} />
+              <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
+              <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
             </div>
           </section>
 

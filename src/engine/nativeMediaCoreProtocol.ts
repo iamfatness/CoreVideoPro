@@ -55,6 +55,31 @@ export type NativeMediaCoreCommand =
       isoParticipantIds: string[];
     };
 
+export type NativeMediaCoreFrame = {
+  sourceId: string;
+  participantId?: string;
+  kind: "participant-video" | "screen-share";
+  frameNumber: number;
+  timestampMs: number;
+  width: number;
+  height: number;
+  fps: number;
+  health: "live" | "stale" | "dropped" | "low-resolution";
+};
+
+export type NativeMediaCoreStateSnapshot = {
+  sceneId?: string;
+  routeCount: number;
+  frameCount: number;
+  frames: NativeMediaCoreFrame[];
+  participantTransformCount: number;
+  overlayCount: number;
+  outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
+  isoParticipantIds: string[];
+  lastCommandTypes: string[];
+  warnings: string[];
+};
+
 export type NativeMediaCoreValidation = {
   ready: boolean;
   missingCapabilities: NativeMediaCoreCapability[];

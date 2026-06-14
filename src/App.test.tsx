@@ -34,6 +34,20 @@ describe("App production controls", () => {
     expect(within(runtime).getByText("browser-preview / web")).toBeInTheDocument();
   });
 
+  it("shows native core sync status from production state", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const nativeCore = await screen.findByLabelText("Native core sync");
+    expect(nativeCore).toHaveTextContent("Synced scenespeaker-slides");
+    expect(nativeCore).toHaveTextContent("Routes2");
+    expect(nativeCore).toHaveTextContent("Frames2");
+    expect(nativeCore).toHaveTextContent("Overlays1");
+    expect(nativeCore).toHaveTextContent("OutputsIdle");
+  });
+
   it("renders AI Studio show notes and highlight suggestions", async () => {
     const user = userEvent.setup();
     renderApp();

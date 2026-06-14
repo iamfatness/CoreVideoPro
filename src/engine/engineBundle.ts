@@ -5,6 +5,7 @@ import type {
   CaptionOverlayEngine,
   CaptureDeviceEngine,
   DiagnosticsEngine,
+  MediaCoreSyncEngine,
   OutputEngine,
   PresetEngine,
   ZoomCaptureEngine
@@ -18,8 +19,10 @@ import type { NativeZoomTransport } from "./nativeBridgeProtocol";
 import { SimulatedAudioMixEngine } from "./audioMix";
 import { SimulatedCaptionOverlayEngine } from "./captionOverlay";
 import { RuleBasedAiStudioEngine } from "./aiStudio";
+import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import { InMemoryPresetEngine } from "./presets";
 import { InMemoryDiagnosticsEngine } from "./supportBundle";
+import type { NativeHostBridge } from "./nativeHostBridge";
 
 export type EngineBundle = {
   zoom: ZoomCaptureEngine;
@@ -31,6 +34,7 @@ export type EngineBundle = {
   presets: PresetEngine;
   diagnostics: DiagnosticsEngine;
   captureDevices: CaptureDeviceEngine;
+  mediaCore: MediaCoreSyncEngine;
 };
 
 export function createMockEngineBundle(): EngineBundle {
@@ -43,11 +47,12 @@ export function createMockEngineBundle(): EngineBundle {
     captions: new SimulatedCaptionOverlayEngine(),
     presets: new InMemoryPresetEngine(),
     diagnostics: new InMemoryDiagnosticsEngine(),
-    captureDevices: new MockCaptureDeviceEngine()
+    captureDevices: new MockCaptureDeviceEngine(),
+    mediaCore: new InMemoryMediaCoreSyncEngine()
   };
 }
 
-export function createNativeZoomEngineBundle(transport: NativeZoomTransport): EngineBundle {
+export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bridge?: NativeHostBridge): EngineBundle {
   return {
     zoom: new NativeZoomEngineAdapter(transport),
     ai: new RuleBasedAiProductionEngine(),
@@ -57,6 +62,7 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport): En
     captions: new SimulatedCaptionOverlayEngine(),
     presets: new InMemoryPresetEngine(),
     diagnostics: new InMemoryDiagnosticsEngine(),
-    captureDevices: new NativeCaptureDeviceEngineAdapter(transport)
+    captureDevices: new NativeCaptureDeviceEngineAdapter(transport),
+    mediaCore: bridge ? new NativeHostMediaCoreSyncEngine(bridge) : new InMemoryMediaCoreSyncEngine()
   };
 }

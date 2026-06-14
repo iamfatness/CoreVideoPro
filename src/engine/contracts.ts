@@ -17,6 +17,7 @@ import type {
   ShowPreset,
   SupportBundle
 } from "../domain/production";
+import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 export type MeetingState = "idle" | "joining" | "in_meeting" | "reconnecting" | "error";
 
@@ -89,6 +90,10 @@ export interface CaptionOverlayEngine {
 
 export interface AiStudioEngine {
   generate(state: ProductionState): Promise<AiStudioState>;
+}
+
+export interface MediaCoreSyncEngine {
+  syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
 }
 
 export interface PresetEngine {
