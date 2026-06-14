@@ -35,6 +35,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
 import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { getFrameForParticipant } from "./engine/mediaFrames";
@@ -170,6 +171,10 @@ export function App({ engines, runtime }: AppProps) {
   const selectedVideoEffect = useMemo(
     () => getVideoEffect(production.videoEffects, selectedParticipantId),
     [production.videoEffects, selectedParticipantId]
+  );
+  const selectedAutoCrop = useMemo(
+    () => (selectedParticipant ? computeAutoCrop(selectedParticipant) : undefined),
+    [selectedParticipant]
   );
   const breakoutRooms = useMemo(() => getBreakoutRooms(production.participants), [production.participants]);
   const visibleParticipants = useMemo(
@@ -1704,6 +1709,20 @@ export function App({ engines, runtime }: AppProps) {
               </div>
               <h2>{selectedParticipant.name}</h2>
               <p>{selectedParticipant.title}</p>
+              {selectedAutoCrop && (
+                <div className="auto-crop-panel" aria-label="Face-aware auto-crop">
+                  <p className="brand-kit-summary">{describeFraming(selectedAutoCrop)}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="Auto framing" value={selectedAutoCrop.framingLabel} />
+                    <ControlReadout label="Recommended zoom" value={`${selectedAutoCrop.zoom.toFixed(2)}x`} />
+                    <ControlReadout label="Headroom" value={`${selectedAutoCrop.headroomPercent}%`} />
+                    <ControlReadout label="Feed quality" value={selectedAutoCrop.quality} />
+                  </div>
+                  {selectedAutoCrop.warning && (
+                    <p className="auto-crop-warning" role="status">{selectedAutoCrop.warning}</p>
+                  )}
+                </div>
+              )}
               <ControlReadout label="Smart crop" value={`${selectedParticipant.cropConfidence}% confidence`} />
               <ControlReadout label="Crop mode" value={selectedVideoEffect.cropMode} />
               <ControlReadout label="Manual zoom" value={`${selectedVideoEffect.manualZoom.toFixed(2)}x`} />
