@@ -340,14 +340,14 @@ describe("App production controls", () => {
   it("warns when a scene expects screen share but no share is available", async () => {
     const user = userEvent.setup();
     renderApp();
-    await screen.findByText(/in meeting - 4 participants/i);
+    await screen.findByText(/in meeting - 8 participants/i);
     await user.click(screen.getByRole("button", { name: /Set & Forget/i }));
 
     await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
     for (let index = 0; index < 4 && screen.queryAllByText("Slot 2 screen share is unavailable.").length === 0; index += 1) {
       await user.click(refresh);
-      await waitFor(() => expect(screen.getByText(/in meeting - 4 participants/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/in meeting - 8 participants/i)).toBeInTheDocument());
     }
 
     expect(screen.getAllByText("Slot 2 screen share is unavailable.").length).toBeGreaterThan(0);
@@ -645,7 +645,7 @@ describe("App production controls", () => {
 
     await user.click(screen.getByRole("button", { name: "Join Zoom" }));
     expect(screen.getByRole("button", { name: "Leave" })).toBeInTheDocument();
-    expect(screen.getByText(/in meeting - 4 participants/i)).toBeInTheDocument();
+    expect(screen.getByText(/in meeting - 8 participants/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Refresh feeds/i }));
     expect(screen.getByText(/00:08/i)).toBeInTheDocument();
@@ -688,14 +688,14 @@ describe("App production controls", () => {
   it("shows the screen-share fallback when sharing stops", async () => {
     const user = userEvent.setup();
     renderApp();
-    await screen.findByText(/in meeting - 4 participants/i);
+    await screen.findByText(/in meeting - 8 participants/i);
     await user.click(screen.getByRole("button", { name: /Set & Forget/i }));
 
     await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
     for (let index = 0; index < 4 && !screen.queryByText(/reserve this region/i); index += 1) {
       await user.click(refresh);
-      await waitFor(() => expect(screen.getByText(/in meeting - 4 participants/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/in meeting - 8 participants/i)).toBeInTheDocument());
     }
 
     expect(screen.getAllByText(/No screen share/i).length).toBeGreaterThanOrEqual(2);
