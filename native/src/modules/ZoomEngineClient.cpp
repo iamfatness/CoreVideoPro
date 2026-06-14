@@ -1,0 +1,163 @@
+#include "modules/ZoomEngineClient.h"
+
+#include "rpc/Json.h"
+
+#include "engine-ipc.h"
+
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
+namespace corevideo::modules {
+namespace {
+
+using corevideo::rpc::Json;
+
+std::uint32_t uintField(const Json& object, const std::string& key) {
+  const Json* value = object.get(key);
+  if (!value || !value->isNumber()) {
+    return 0;
+  }
+  const auto number = value->asNumber();
+  return number > 0 ? static_cast<std::uint32_t>(number) : 0;
+}
+
+std::string commandLine(Json::Object object) {
+  return Json(std::move(object)).stringify();
+}
+
+ZoomEngineEventKind kindForCommand(const std::string& command) {
+  if (command == "ping") return ZoomEngineEventKind::Ping;
+  if (command == IPC_EVT_READY) return ZoomEngineEventKind::Ready;
+  if (command == IPC_EVT_AUTH_OK) return ZoomEngineEventKind::AuthOk;
+  if (command == IPC_EVT_AUTH_FAIL) return ZoomEngineEventKind::AuthFail;
+  if (command == IPC_EVT_JOINED) return ZoomEngineEventKind::Joined;
+  if (command == IPC_EVT_LEFT) return ZoomEngineEventKind::Left;
+  if (command == "participants") return ZoomEngineEventKind::Participants;
+  if (command == "active_speaker") return ZoomEngineEventKind::ActiveSpeaker;
+  if (command == IPC_EVT_FRAME) return ZoomEngineEventKind::Frame;
+  if (command == IPC_EVT_AUDIO) return ZoomEngineEventKind::Audio;
+  if (command == "debug") return ZoomEngineEventKind::Debug;
+  if (command == IPC_EVT_ERROR) return ZoomEngineEventKind::Error;
+  return ZoomEngineEventKind::Unknown;
+}
+
+}  // namespace
+
+std::string buildZoomEngineInitCommand(const ZoomEngineInitCommand& command) {
+  Json::Object object{{"cmd", IPC_CMD_INIT}};
+  if (!command.jwt.empty()) {
+    object.emplace("jwt", command.jwt);
+  }
+  if (!command.publicAppKey.empty()) {
+    object.emplace("public_app_key", command.publicAppKey);
+  }
+  return commandLine(std::move(object));
+}
+
+std::string buildZoomEngineJoinCommand(const ZoomEngineJoinCommand& command) {
+  Json::Object object{
+      {"cmd", IPC_CMD_JOIN},
+      {"meeting_id", command.meetingId},
+      {"display_name", command.displayName.empty() ? "CoreVideo Pro" : command.displayName},
+  };
+  if (!command.passcode.empty()) object.emplace("passcode", command.passcode);
+  if (!command.onBehalfToken.empty()) object.emplace("on_behalf_token", command.onBehalfToken);
+  if (!command.userZak.empty()) object.emplace("user_zak", command.userZak);
+  if (!command.appPrivilegeToken.empty()) object.emplace("app_privilege_token", command.appPrivilegeToken);
+  return commandLine(std::move(object));
+}
+
+std::string buildZoomEngineLeaveCommand() {
+  return commandLine({{"cmd", IPC_CMD_LEAVE}});
+}
+
+std::string buildZoomEngineStartMediaCommand() {
+  return commandLine({{"cmd", IPC_CMD_START_MEDIA}});
+}
+
+std::string buildZoomEngineStopMediaCommand() {
+  return commandLine({{"cmd", IPC_CMD_STOP_MEDIA}});
+}
+
+std::string buildZoomEngineQuitCommand() {
+  return commandLine({{"cmd", IPC_CMD_QUIT}});
+}
+
+std::string buildZoomEngineSubscribeCommand(const ZoomEngineSubscribeCommand& command) {
+  Json::Object object{
+      {"cmd", IPC_CMD_SUBSCRIBE},
+      {"source_uuid", command.sourceUuid},
+      {"participant_id", static_cast<double>(command.participantId)},
+      {"resolution", static_cast<double>(std::min<std::uint32_t>(command.resolution, 2))},
+  };
+  if (!command.mode.empty()) object.emplace("mode", command.mode);
+  if (command.isolateAudio) object.emplace("isolate_audio", true);
+  if (command.audienceAudio) object.emplace("audience_audio", true);
+  return commandLine(std::move(object));
+}
+
+std::string buildZoomEngineSubscribeAudioCommand(const ZoomEngineSubscribeCommand& command) {
+  Json::Object object{
+      {"cmd", IPC_CMD_SUBSCRIBE_AUDIO},
+      {"source_uuid", command.sourceUuid},
+      {"participant_id", static_cast<double>(command.participantId)},
+  };
+  if (command.isolateAudio) object.emplace("isolate_audio", true);
+  if (command.audienceAudio) object.emplace("audience_audio", true);
+  return commandLine(std::move(object));
+}
+
+std::string buildZoomEngineUnsubscribeCommand(const std::string& sourceUuid) {
+  return commandLine({{"cmd", IPC_CMD_UNSUBSCRIBE}, {"source_uuid", sourceUuid}});
+}
+
+std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
+  std::string error;
+  auto parsed = Json::parse(line, &error);
+  if (!parsed || !parsed->isObject()) {
+    return std::nullopt;
+  }
+
+  ZoomEngineEvent event;
+  event.command = parsed->getString("cmd");
+  event.kind = kindForCommand(event.command);
+  event.sourceUuid = parsed->getString("source_uuid");
+  event.stage = parsed->getString("stage");
+  event.message = parsed->getString("msg", parsed->getString("message"));
+  event.participantId = uintField(*parsed, "participant_id");
+  event.activeSpeakerId = uintField(*parsed, "active_speaker_id");
+  if (event.activeSpeakerId == 0) {
+    event.activeSpeakerId = uintField(*parsed, "active");
+  }
+  event.width = uintField(*parsed, "w");
+  event.height = uintField(*parsed, "h");
+  event.byteLength = uintField(*parsed, "byte_len");
+  event.ok = event.kind != ZoomEngineEventKind::Unknown && event.kind != ZoomEngineEventKind::AuthFail &&
+             event.kind != ZoomEngineEventKind::Error;
+
+  if (const Json* participants = parsed->get("participants"); participants && participants->isArray()) {
+    event.participantCount = participants->asArray().size();
+  }
+
+  return event;
+}
+
+std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid) {
+  return std::string(IPC_SHM_PREFIX) + sourceUuid;
+}
+
+std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid) {
+  return std::string(IPC_SHM_PREFIX) + sourceUuid + "_audio";
+}
+
+std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t height) {
+  const std::size_t yLength = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  return sizeof(ShmFrameHeader) + yLength + yLength / 4 + yLength / 4;
+}
+
+std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength) {
+  return sizeof(ShmAudioHeader) + static_cast<std::size_t>(byteLength);
+}
+
+}  // namespace corevideo::modules

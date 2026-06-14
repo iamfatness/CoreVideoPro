@@ -29,12 +29,14 @@ add_library(corevideo_native
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
   src/modules/StubModules.cpp
+  src/modules/ZoomEngineClient.cpp
   src/modules/ZoomMeetingSdkAdapter.cpp
   src/rpc/Json.cpp
   src/rpc/JsonRpcServer.cpp
 )
 
 target_include_directories(corevideo_native PUBLIC src)
+target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
 target_compile_definitions(corevideo_native
   PUBLIC
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
@@ -188,6 +190,7 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/ZoomEngineClientTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
   target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_REPO_ROOT="${CMAKE_SOURCE_DIR}/..")
