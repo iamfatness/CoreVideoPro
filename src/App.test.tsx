@@ -82,6 +82,25 @@ describe("App production controls", () => {
     expect(within(program).getByText("Submit questions in chat")).toBeInTheDocument();
   });
 
+  it("edits the brand kit and applies it to the brand bug graphic", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const program = screen.getByLabelText("Program preview");
+    expect(await within(program).findByText("CoreVideo Pro")).toBeInTheDocument();
+
+    await goToTab(user, "Overlays");
+
+    const logoInput = screen.getByLabelText("Brand logo text");
+    await user.clear(logoInput);
+    await user.type(logoInput, "Acme Live");
+
+    await user.click(screen.getByRole("button", { name: /Apply brand kit to graphics/i }));
+
+    expect(within(program).getByText("Acme Live")).toBeInTheDocument();
+    expect(within(program).queryByText("CoreVideo Pro")).not.toBeInTheDocument();
+  });
+
   it("saves and reloads a show preset", async () => {
     const user = userEvent.setup();
     renderApp();
