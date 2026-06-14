@@ -1503,6 +1503,57 @@ meter {
   grid-column: 1 / -1;
 }
 
+.control-surface-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.control-key {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  border: 1px solid rgba(189, 207, 196, 0.16);
+  border-radius: 10px;
+  background: rgba(4, 11, 12, 0.6);
+  color: #e8f2ec;
+  padding: 12px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.control-key:hover:not(:disabled) {
+  border-color: rgba(61, 220, 151, 0.4);
+}
+
+.control-key strong {
+  font-size: 13px;
+}
+
+.control-key em {
+  color: #94a59b;
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.control-key.active {
+  border-color: transparent;
+  background: rgba(61, 220, 151, 0.16);
+  color: #8fdcc8;
+}
+
+.control-key.active em {
+  color: #8fdcc8;
+}
+
+.control-key:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .media-bin-groups {
   display: grid;
   gap: 12px;

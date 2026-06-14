@@ -42,6 +42,7 @@ import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./en
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
+import { controlButtonStatus, controlSurface, summarizeControlSurface, type ControlAction } from "./engine/controlSurface";
 import { addMediaAsset, groupMediaBin, mediaAssetKinds, removeMediaAsset, summarizeMediaBin } from "./engine/mediaBin";
 import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
@@ -555,6 +556,29 @@ export function App({ engines, runtime }: AppProps) {
             : `Set & Forget enabled: ${current.autoProduction.reason}`
       }
     }));
+  }
+
+  function triggerControlAction(action: ControlAction) {
+    switch (action) {
+      case "take":
+        void runCommand("t");
+        break;
+      case "preview":
+        void runCommand("p");
+        break;
+      case "magic-scene":
+        void runMagicScene();
+        break;
+      case "set-and-forget":
+        toggleAutomation();
+        break;
+      case "record":
+        void toggleRecording();
+        break;
+      case "stream":
+        void toggleStreaming();
+        break;
+    }
   }
 
   async function toggleRecording() {
@@ -2166,6 +2190,36 @@ export function App({ engines, runtime }: AppProps) {
             <p className="auto-director-status">
               Auto: {production.autoProduction.action} {production.autoProduction.confidence}% - {production.autoProduction.reason}
             </p>
+          </section>
+
+          <section className="panel" aria-label="Control surface">
+            <div className="section-title">
+              <Settings2 size={15} />
+              Control surface
+            </div>
+            <p className="brand-kit-summary">{summarizeControlSurface()}</p>
+            <div className="control-surface-grid">
+              {controlSurface.map((button) => {
+                const status = controlButtonStatus(button.action, {
+                  recording: production.recording,
+                  streaming: production.streaming,
+                  automation: production.mode === "set-and-forget",
+                  inMeeting: meetingState === "in_meeting"
+                });
+                return (
+                  <button
+                    aria-label={`Control ${button.label}`}
+                    className={`control-key ${status.active ? "active" : ""}`}
+                    disabled={status.disabled}
+                    key={button.id}
+                    onClick={() => triggerControlAction(button.action)}
+                  >
+                    <strong>{button.label}</strong>
+                    <em>{status.stateLabel}</em>
+                  </button>
+                );
+              })}
+            </div>
           </section>
 
           <section className="panel">
