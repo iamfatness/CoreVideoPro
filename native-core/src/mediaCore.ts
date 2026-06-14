@@ -24,6 +24,7 @@ import { buildRenderPlan } from "./renderPlan.js";
 import { ProgramCompositor } from "./compositor.js";
 import { buildEncoderSession } from "./encoderSession.js";
 import { OutputSenderSessionModel } from "./outputSenderSession.js";
+import { buildOperatorActions } from "./operatorActions.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -327,6 +328,15 @@ export class MediaCoreRuntime {
     const encoderSession = this.encoderSession(recording);
     const outputSenderSession = this.outputSenderSession();
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
+    const operatorActions = buildOperatorActions({
+      sourceSnapshot: this.sourceSnapshot,
+      renderPlan,
+      programFrame: this.programFrame,
+      programTransport: this.programTransport,
+      encoderSession,
+      outputSenderSession,
+      recording
+    });
     const allWarnings = [
       ...new Set([
         ...warnings,
@@ -361,7 +371,8 @@ export class MediaCoreRuntime {
       renderPlan,
       encoderSession,
       recording,
-      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession, outputSenderSession),
+      operatorActions,
+      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession, outputSenderSession, operatorActions),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
     };
@@ -478,7 +489,8 @@ export class MediaCoreRuntime {
     renderPlan: MediaCoreRenderPlan,
     compositor: MediaCoreStateSnapshot["compositor"],
     encoderSession: MediaCoreEncoderSession,
-    outputSenderSession: MediaCoreOutputSenderSession
+    outputSenderSession: MediaCoreOutputSenderSession,
+    operatorActions: MediaCoreStateSnapshot["operatorActions"]
   ): MediaCoreDiagnosticsSnapshot {
     return {
       generatedAtMs: this.elapsedMs,
@@ -497,6 +509,7 @@ export class MediaCoreRuntime {
       programTransport: this.programTransport,
       encoderSession,
       recording,
+      operatorActions,
       warnings,
       lastCommandTypes: this.lastCommandTypes
     };

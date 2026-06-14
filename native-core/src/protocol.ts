@@ -21,6 +21,8 @@ export type MediaCoreOutputSenderStatus = "idle" | "starting" | "live" | "warnin
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 export type MediaCoreColorGradeLut = "none" | "neutral" | "warm-film" | "cool-broadcast" | "punch";
+export type MediaCoreOperatorActionSeverity = "info" | "warning" | "critical";
+export type MediaCoreOperatorActionArea = "source" | "routing" | "program" | "recording" | "sender" | "encoder";
 
 export type MediaCoreOutputProfile = {
   profileId: string;
@@ -248,6 +250,16 @@ export type MediaCoreOutputSenderSession = {
   warnings: string[];
 };
 
+export type MediaCoreOperatorAction = {
+  actionId: string;
+  severity: MediaCoreOperatorActionSeverity;
+  area: MediaCoreOperatorActionArea;
+  title: string;
+  detail: string;
+  command?: string;
+  relatedId?: string;
+};
+
 export type MediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;
@@ -265,6 +277,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   programTransport: MediaCoreProgramFrameTransport;
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
+  operatorActions: MediaCoreOperatorAction[];
   warnings: string[];
   lastCommandTypes: string[];
 };
@@ -408,6 +421,7 @@ export type MediaCoreStateSnapshot = {
   renderPlan: MediaCoreRenderPlan;
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
+  operatorActions: MediaCoreOperatorAction[];
   diagnostics: MediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];

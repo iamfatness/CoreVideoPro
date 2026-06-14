@@ -353,6 +353,16 @@ export type NativeMediaCoreOutputSenderSession = {
   warnings: string[];
 };
 
+export type NativeMediaCoreOperatorAction = {
+  actionId: string;
+  severity: "info" | "warning" | "critical";
+  area: "source" | "routing" | "program" | "recording" | "sender" | "encoder";
+  title: string;
+  detail: string;
+  command?: string;
+  relatedId?: string;
+};
+
 export type NativeMediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;
@@ -370,6 +380,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   programTransport: NativeMediaCoreProgramFrameTransport;
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
+  operatorActions: NativeMediaCoreOperatorAction[];
   warnings: string[];
   lastCommandTypes: string[];
 };
@@ -396,6 +407,7 @@ export type NativeMediaCoreStateSnapshot = {
   renderPlan: NativeMediaCoreRenderPlan;
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
+  operatorActions: NativeMediaCoreOperatorAction[];
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];

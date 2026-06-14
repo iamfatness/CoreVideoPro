@@ -103,6 +103,7 @@ describe("media core sync engine", () => {
         senders: [],
         warnings: []
       },
+      operatorActions: [],
       programFrameCount: 0,
       programTransport: {
         transportId: "in-process-preview" as const,
@@ -214,6 +215,7 @@ describe("media core sync engine", () => {
           },
           warnings: []
         },
+        operatorActions: [],
         warnings: [],
         lastCommandTypes: ["load-scene-graph"]
       },
@@ -476,6 +478,20 @@ describe("media core sync engine", () => {
         status: "failed",
         error: "Recording writer crashed."
       },
+      operatorActions: [
+        {
+          actionId: "recording:recover",
+          severity: "critical",
+          title: "Recover recording writer",
+          command: "recover-recording-session"
+        },
+        {
+          actionId: "sender:rtmp:recover",
+          severity: "critical",
+          title: "Recover RTMP sender",
+          command: "recover-output-sender:rtmp"
+        }
+      ],
       outputHealth: expect.arrayContaining([
         expect.objectContaining({ destination: "rtmp", status: "failed", message: "RTMP connection refused." }),
         expect.objectContaining({ destination: "recording", status: "failed", message: "Recording writer crashed." })
@@ -502,6 +518,7 @@ describe("media core sync engine", () => {
         writerStatus: "writing",
         error: undefined
       },
+      operatorActions: [],
       outputHealth: expect.arrayContaining([
         expect.objectContaining({ destination: "rtmp", status: "live" }),
         expect.objectContaining({ destination: "recording", status: "live" })
@@ -536,6 +553,13 @@ describe("media core sync engine", () => {
           }
         ]
       },
+      operatorActions: expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "routing:speaker-slides-1:resolve",
+          severity: "warning",
+          title: "Resolve missing route speaker-slides-1"
+        })
+      ]),
       warnings: ["Screen share route requested but no active screen share source is available."]
     });
   });

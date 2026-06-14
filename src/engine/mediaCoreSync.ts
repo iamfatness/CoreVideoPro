@@ -24,6 +24,7 @@ import type {
   NativeMediaCoreZoomSource
 } from "./nativeMediaCoreProtocol";
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
+import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions";
 
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
@@ -206,6 +207,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const outputSenderSession = this.outputSenderSession(output?.destinations ?? [], this.programFrame, elapsedMs);
     const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession, outputSenderSession);
     const compositor = this.compositorSnapshot();
+    const operatorActions = buildNativeMediaCoreOperatorActions({
+      sourceSnapshot: this.sourceSnapshot,
+      renderPlan,
+      programFrame: this.programFrame,
+      programTransport: this.programTransport,
+      encoderSession,
+      outputSenderSession,
+      recording
+    });
     const allWarnings = [
       ...new Set([
         ...warnings,
@@ -240,6 +250,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       renderPlan,
       encoderSession,
       recording,
+      operatorActions,
       diagnostics: {
         generatedAtMs: elapsedMs,
         sceneId: sceneGraph?.sceneId,
@@ -257,6 +268,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         programTransport: this.programTransport,
         encoderSession,
         recording,
+        operatorActions,
         warnings: allWarnings,
         lastCommandTypes: commands.map((command) => command.type)
       },

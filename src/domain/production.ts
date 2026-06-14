@@ -410,6 +410,15 @@ export type SupportBundleMediaCore = {
     totalDroppedFrames: number;
     estimatedDiskRateMBps: number;
   };
+  operatorActions: Array<{
+    actionId: string;
+    severity: "info" | "warning" | "critical";
+    area: "source" | "routing" | "program" | "recording" | "sender" | "encoder";
+    title: string;
+    detail: string;
+    command?: string;
+    relatedId?: string;
+  }>;
   warnings: string[];
 };
 

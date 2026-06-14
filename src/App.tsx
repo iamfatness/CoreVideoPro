@@ -1678,6 +1678,7 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Recorded frames" value={`${mediaCoreSnapshot?.recording?.totalFramesWritten ?? 0}`} />
               <ControlReadout label="Disk rate" value={mediaCoreSnapshot?.recording ? `${mediaCoreSnapshot.recording.estimatedDiskRateMBps} MB/s` : "0 MB/s"} />
               <ControlReadout label="Output health" value={mediaCoreSnapshot?.outputHealth[0]?.status ?? "Idle"} />
+              <ControlReadout label="Action" value={mediaCoreSnapshot?.operatorActions[0]?.title ?? "None"} />
               <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
             </div>
           </section>

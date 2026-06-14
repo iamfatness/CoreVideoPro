@@ -111,9 +111,75 @@ describe("createSupportBundle", () => {
         writerStatus: "writing",
         totalFramesWritten: 2,
         estimatedDiskRateMBps: 7.49
-      }
+      },
+      operatorActions: []
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
+  });
+
+  it("includes media-core operator actions for support triage", async () => {
+    class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
+      runFailure() {
+        return this.snapshot(
+          [
+            {
+              type: "set-zoom-source-roster",
+              sources: [
+                {
+                  sourceId: "participant:p1",
+                  participantId: "p1",
+                  displayName: "Maya Chen",
+                  role: "Host",
+                  breakoutRoomId: "main",
+                  breakoutRoomName: "Main room",
+                  hasVideo: true,
+                  hasAudio: true,
+                  isMuted: false,
+                  isActiveSpeaker: true,
+                  isScreenSharing: false,
+                  audioLevel: 64,
+                  health: "live"
+                }
+              ]
+            },
+            {
+              type: "load-scene-graph",
+              sceneId: "host",
+              routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+            },
+            { type: "start-program-output", destinations: ["recording", "rtmp"], isoParticipantIds: ["p1"] },
+            {
+              type: "start-recording-session",
+              sessionId: "support-recover-test",
+              targetFolder: "Recordings/CoreVideo Pro",
+              filenamePrefix: "Support_Recover_Test",
+              format: "mp4",
+              quality: "high",
+              isoParticipantIds: ["p1"]
+            },
+            { type: "fail-output-sender", destination: "rtmp", message: "RTMP connection refused." },
+            { type: "fail-recording-session", message: "Recording writer crashed." }
+          ],
+          6200
+        );
+      }
+    }
+
+    const mediaCore = new TestMediaCoreSyncEngine().runFailure();
+    const bundle = createSupportBundle(initialProduction, mediaCore);
+
+    expect(bundle.mediaCore?.operatorActions).toEqual([
+      expect.objectContaining({
+        actionId: "recording:recover",
+        severity: "critical",
+        command: "recover-recording-session"
+      }),
+      expect.objectContaining({
+        actionId: "sender:rtmp:recover",
+        severity: "critical",
+        command: "recover-output-sender:rtmp"
+      })
+    ]);
   });
 });

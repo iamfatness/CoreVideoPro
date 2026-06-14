@@ -64,6 +64,7 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
     expect(nativeCore).toHaveTextContent("Output healthlive");
+    expect(nativeCore).toHaveTextContent("ActionNone");
   });
 
   it("renders AI Studio show notes and highlight suggestions", async () => {

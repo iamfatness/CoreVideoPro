@@ -133,6 +133,15 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
           estimatedDiskRateMBps: snapshot.recording.estimatedDiskRateMBps
         }
       : undefined,
+    operatorActions: snapshot.operatorActions.map((action) => ({
+      actionId: action.actionId,
+      severity: action.severity,
+      area: action.area,
+      title: action.title,
+      detail: action.detail,
+      command: action.command,
+      relatedId: action.relatedId
+    })),
     warnings: snapshot.warnings
   };
 }
