@@ -91,6 +91,7 @@ export class MediaCoreRuntime {
   };
   private readonly eventLog: MediaCoreEvent[] = [];
   private readonly seenEventKeys = new Set<string>();
+  private readonly activeSourceIssues = new Map<string, MediaCoreSourceHealthIssue>();
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -375,7 +376,7 @@ export class MediaCoreRuntime {
       ].filter(Boolean) as string[])
     ];
     const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
-    this.addSourceIssueEvents(this.sourceSnapshot.issues ?? []);
+    this.syncSourceIssueEvents(this.sourceSnapshot.issues ?? []);
     this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)));
 
     return {
@@ -550,10 +551,18 @@ export class MediaCoreRuntime {
     warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning));
   }
 
-  private addSourceIssueEvents(issues: MediaCoreSourceHealthIssue[]) {
+  private syncSourceIssueEvents(issues: MediaCoreSourceHealthIssue[]) {
+    const currentKeys = new Set(issues.map(sourceIssueKey));
     issues.forEach((issue) => {
+      this.activeSourceIssues.set(sourceIssueKey(issue), issue);
       this.addEvent(issue.severity, "source", sourceIssueTitle(issue), issue.detail, undefined, issue.participantId ?? issue.sourceId);
     });
+    [...this.activeSourceIssues.entries()]
+      .filter(([key]) => !currentKeys.has(key))
+      .forEach(([key, issue]) => {
+        this.activeSourceIssues.delete(key);
+        this.addEvent("info", "source", "Zoom feed recovered", sourceIssueRecoveryDetail(issue), undefined, issue.participantId ?? issue.sourceId);
+      });
   }
 
   private warn(
@@ -749,6 +758,15 @@ function sourceIssueTitle(issue: MediaCoreSourceHealthIssue) {
   }
 
   return "Zoom feed quality warning";
+}
+
+function sourceIssueKey(issue: Pick<MediaCoreSourceHealthIssue, "participantId" | "sourceId">) {
+  return issue.participantId ?? issue.sourceId;
+}
+
+function sourceIssueRecoveryDetail(issue: MediaCoreSourceHealthIssue) {
+  const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
+  return `${label} feed recovered.`;
 }
 
 function clampRange(value: number, min: number, max: number) {

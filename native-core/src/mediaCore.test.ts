@@ -349,6 +349,71 @@ describe("MediaCoreRuntime", () => {
         ]
       }
     });
+
+    const recovered = runtime.handle({
+      id: "sync-source-health-recovered",
+      type: "sync",
+      commands: [
+        {
+          type: "set-zoom-source-roster",
+          sources: [
+            {
+              sourceId: "participant:p1",
+              participantId: "p1",
+              displayName: "Maya Chen",
+              role: "Host",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 64,
+              health: "live"
+            },
+            {
+              sourceId: "participant:p2",
+              participantId: "p2",
+              displayName: "Andre Wallace",
+              role: "Presenter",
+              breakoutRoomId: "main",
+              breakoutRoomName: "Main room",
+              hasVideo: true,
+              hasAudio: true,
+              isMuted: false,
+              isActiveSpeaker: false,
+              isScreenSharing: false,
+              audioLevel: 82,
+              health: "low-resolution"
+            }
+          ]
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "single",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p1", audioRole: "mix" }]
+        }
+      ]
+    });
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      state: {
+        sourceSnapshot: {
+          issues: []
+        },
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "info",
+            area: "source",
+            title: "Zoom feed recovered",
+            detail: "Maya Chen feed recovered.",
+            relatedId: "p1"
+          })
+        ])
+      }
+    });
   });
 
   it("returns snapshots without requiring a renderer sync", () => {

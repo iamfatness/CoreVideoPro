@@ -162,6 +162,34 @@ describe("media core sync engine", () => {
         })
       ])
     );
+
+    const recovered = engine.runCommands(
+      [
+        {
+          type: "set-zoom-source-roster",
+          sources: roster.map((source) => (source.participantId === "p1" ? { ...source, health: "live" as const } : source))
+        },
+        {
+          type: "load-scene-graph",
+          sceneId: "single",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p1", audioRole: "mix" }]
+        }
+      ],
+      2000
+    );
+
+    expect(recovered.sourceSnapshot.issues).toEqual([]);
+    expect(recovered.eventLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "info",
+          area: "source",
+          title: "Zoom feed recovered",
+          detail: "Maya Chen feed recovered.",
+          relatedId: "p1"
+        })
+      ])
+    );
   });
 
   it("forwards sync commands to a native host bridge when available", async () => {

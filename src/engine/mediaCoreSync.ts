@@ -73,6 +73,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly outputSenders = new Map<"rtmp" | "ndi" | "srt" | "webrtc", NativeMediaCoreOutputSender>();
   private readonly eventLog: NativeMediaCoreEvent[] = [];
   private readonly seenEventKeys = new Set<string>();
+  private readonly activeSourceIssues = new Map<string, NativeMediaCoreSourceHealthIssue>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -248,7 +249,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       ].filter(Boolean) as string[])
     ];
     const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
-    this.addSourceIssueEvents(this.sourceSnapshot.issues ?? [], elapsedMs);
+    this.syncSourceIssueEvents(this.sourceSnapshot.issues ?? [], elapsedMs);
     this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)), elapsedMs);
 
     return {
@@ -814,10 +815,18 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     warnings.forEach((warning) => this.addEvent("warning", "system", "Media core warning", warning, undefined, undefined, elapsedMs));
   }
 
-  private addSourceIssueEvents(issues: NativeMediaCoreSourceHealthIssue[], elapsedMs: number) {
+  private syncSourceIssueEvents(issues: NativeMediaCoreSourceHealthIssue[], elapsedMs: number) {
+    const currentKeys = new Set(issues.map(sourceIssueKey));
     issues.forEach((issue) => {
+      this.activeSourceIssues.set(sourceIssueKey(issue), issue);
       this.addEvent(issue.severity, "source", sourceIssueTitle(issue), issue.detail, undefined, issue.participantId ?? issue.sourceId, elapsedMs);
     });
+    [...this.activeSourceIssues.entries()]
+      .filter(([key]) => !currentKeys.has(key))
+      .forEach(([key, issue]) => {
+        this.activeSourceIssues.delete(key);
+        this.addEvent("info", "source", "Zoom feed recovered", sourceIssueRecoveryDetail(issue), undefined, issue.participantId ?? issue.sourceId, elapsedMs);
+      });
   }
 
   private addEvent(
@@ -1057,6 +1066,15 @@ function sourceIssueTitle(issue: NativeMediaCoreSourceHealthIssue) {
   }
 
   return "Zoom feed quality warning";
+}
+
+function sourceIssueKey(issue: Pick<NativeMediaCoreSourceHealthIssue, "participantId" | "sourceId">) {
+  return issue.participantId ?? issue.sourceId;
+}
+
+function sourceIssueRecoveryDetail(issue: NativeMediaCoreSourceHealthIssue) {
+  const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
+  return `${label} feed recovered.`;
 }
 
 export class NativeHostMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
