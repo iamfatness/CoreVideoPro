@@ -32,9 +32,15 @@ Requires the Zoom Meeting SDK. Excluded from the default in-container stub build
 ```
 cmake -S native -B native/build \
   -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON \
+  -DCOREVIDEO_BUILD_ZOOM_ENGINE=ON \
   -DZOOM_SDK_DIR=/path/to/zoom-sdk
 cmake --build native/build --target corevideo-zoom-engine
 ```
+
+`COREVIDEO_BUILD_ZOOM_ENGINE` is intentionally separate from the other native
+dev-adapter gates. Media Foundation, RTMP, D3D11, DeckLink, and AJA builds must
+still configure without a Zoom SDK unless they explicitly enable either this
+helper target or `COREVIDEO_WITH_ZOOM`.
 
 ## Keeping it in sync
 
