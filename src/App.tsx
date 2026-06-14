@@ -54,6 +54,7 @@ import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPrefli
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
 import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
 import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engine/streamHealth";
+import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engine/srtOutput";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1443,6 +1444,23 @@ export function App({ engines, runtime }: AppProps) {
                   {destination.enabled && readiness && (
                     <p className={`destination-readiness ${readiness.ready ? "ready" : "needs-attention"}`}>{readiness.detail}</p>
                   )}
+                  {destination.protocol === "SRT" && destination.endpoint && (() => {
+                    const srt = parseSrtUrl(destination.endpoint);
+                    if (!srt.valid) return null;
+                    const params = srt.params!;
+                    const recommended = recommendSrtLatency(destination.latencyMs);
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} SRT detail`}>
+                        <span>{describeSrtConnection(params)}</span>
+                        {recommended !== params.latencyMs && (
+                          <span className="srt-latency-hint">Recommended latency: {recommended} ms (2.5× RTT)</span>
+                        )}
+                        {srt.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
                 );
               })}
