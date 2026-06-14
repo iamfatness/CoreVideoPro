@@ -24,6 +24,7 @@ struct ZoomMeetingSdkSubscriptionRequest {
 struct ZoomMeetingSdkRuntimeConfig {
   std::string sdkRoot;
   std::string sdkVersion = "unknown";
+  std::string webDomain = "https://zoom.us";
   bool appKeyPresent = false;
   bool oauthConfigured = false;
   bool jwtBrokerConfigured = false;
@@ -39,6 +40,7 @@ class IZoomMeetingSdkCaptureSource : public IZoomCaptureSource {
   virtual void leave() = 0;
   virtual void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) = 0;
   virtual std::string activeSpeakerId() const = 0;
+  virtual std::string meetingState() const = 0;
   virtual std::vector<std::string> warnings() const = 0;
 };
 
