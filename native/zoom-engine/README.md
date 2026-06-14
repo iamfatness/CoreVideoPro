@@ -42,6 +42,23 @@ dev-adapter gates. Media Foundation, RTMP, D3D11, DeckLink, and AJA builds must
 still configure without a Zoom SDK unless they explicitly enable either this
 helper target or `COREVIDEO_WITH_ZOOM`.
 
+## Dev runtime wiring
+
+The Electron app uses the Node stub by default. To exercise the native media
+core and have that core supervise the vendored Zoom engine, set both layers:
+
+```
+COREVIDEO_MEDIA_CORE_COMMAND=...\native\build\corevideo-native.exe
+COREVIDEO_ZOOM_ENGINE_PATH=...\native\build-zoom-engine\corevideo-zoom-engine.exe
+COREVIDEO_ZOOM_PUBLIC_APP_KEY=...
+```
+
+Use `COREVIDEO_ZOOM_SDK_JWT` instead of `COREVIDEO_ZOOM_PUBLIC_APP_KEY` when
+testing the JWT auth path. Optional join tokens are read from
+`COREVIDEO_ZOOM_ON_BEHALF_TOKEN`, `COREVIDEO_ZOOM_USER_ZAK`, and
+`COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN`. These values are only sent to the helper
+process; do not commit or log them.
+
 ## Keeping it in sync
 
 This is a vendored copy, not a submodule. If the plugin engine changes, re-copy

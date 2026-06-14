@@ -1,8 +1,10 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,7 +24,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
   [[nodiscard]] rpc::Json leaveZoom();
   [[nodiscard]] rpc::Json zoomSnapshot();
-  [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const;
+  [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
 
@@ -74,6 +76,7 @@ class MediaCore {
   int64_t recordingDroppedFrames_ = 0;
   std::string recordingError_;
   std::string recordingWarning_;
+  std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
   bool zoomJoined_ = false;
   int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
