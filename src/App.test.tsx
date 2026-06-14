@@ -1538,3 +1538,32 @@ describe("speaker timer", () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 });
+
+describe("output watermark", () => {
+  it("shows the watermark panel with mode selector in the Overlays tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Watermark panel");
+    expect(within(panel).getByLabelText("Watermark mode")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Watermark text")).toBeInTheDocument();
+  });
+
+  it("shows classification banner when enabled and mode is live with text", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Watermark panel");
+    // Enable live mode
+    await user.selectOptions(within(panel).getByLabelText("Watermark mode"), "live");
+    await user.type(within(panel).getByLabelText("Watermark text"), "DRAFT");
+    // Enable classification
+    await user.click(within(panel).getByLabelText("Show classification banner"));
+
+    expect(within(panel).getAllByLabelText("Classification banner").length).toBeGreaterThanOrEqual(1);
+  });
+});
