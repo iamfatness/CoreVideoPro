@@ -27,6 +27,8 @@ add_library(corevideo_native
   src/modules/ZoomMeetingSdkAdapter.cpp
   src/rpc/Json.cpp
   src/rpc/JsonRpcServer.cpp
+  src/zoom/I420Convert.cpp
+  src/zoom/ShmFrameReader.cpp
 )
 
 target_include_directories(corevideo_native PUBLIC src)
@@ -161,6 +163,7 @@ if(BUILD_TESTING)
     tests/ContractParityTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/ZoomFrameReaderTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
   target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_REPO_ROOT="${CMAKE_SOURCE_DIR}/..")

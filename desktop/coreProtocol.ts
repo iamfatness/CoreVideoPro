@@ -26,6 +26,59 @@ export type CoreResponse =
   | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
   | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-spine-failed"; message: string } };
 
+/**
+ * Unsolicited messages pushed from the core to the supervisor (no request `id`).
+ * Live per-participant video frames stream this way: the core emits one event
+ * per decoded thumbnail; the supervisor decodes `rgbaBase64` and forwards it to
+ * the renderer's `onZoomVideoFrame`. RGBA is `width * height * 4` bytes,
+ * base64-encoded so it survives the line-delimited JSON transport.
+ */
+export type CoreEvent = {
+  type: "zoom-video-frame";
+  participantId: string;
+  width: number;
+  height: number;
+  frameId: number;
+  rgbaBase64: string;
+};
+
+/**
+ * Parse a single stdio line into an unsolicited CoreEvent, or null when it is
+ * not one. Events are distinguished from responses by having no `id` and a known
+ * event `type`, so callers can try `parseCoreResponse` first and fall back here.
+ */
+export function parseCoreEvent(line: string): CoreEvent | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(trimmed) as Partial<CoreEvent> & { id?: unknown };
+    if (value?.id !== undefined || value?.type !== "zoom-video-frame") {
+      return null;
+    }
+    if (
+      typeof value.participantId !== "string" ||
+      typeof value.width !== "number" ||
+      typeof value.height !== "number" ||
+      typeof value.frameId !== "number" ||
+      typeof value.rgbaBase64 !== "string"
+    ) {
+      return null;
+    }
+    return {
+      type: "zoom-video-frame",
+      participantId: value.participantId,
+      width: value.width,
+      height: value.height,
+      frameId: value.frameId,
+      rgbaBase64: value.rgbaBase64
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Parse a single stdio line into a CoreResponse, or null when unparseable. */
 export function parseCoreResponse(line: string): CoreResponse | null {
   const trimmed = line.trim();
