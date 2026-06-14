@@ -1014,3 +1014,28 @@ describe("SRT output engine", () => {
     expect(detail).toHaveTextContent(/Recommended latency/i);
   });
 });
+
+describe("WebRTC monitor output", () => {
+  it("lists the WebRTC WHIP preset in the streaming preset selector", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const select = screen.getByRole("combobox", { name: "Streaming preset" });
+    expect(within(select as HTMLElement).getByRole("option", { name: "WebRTC (WHIP)" })).toBeInTheDocument();
+  });
+
+  it("adds a WebRTC destination from the WHIP preset", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Streaming preset" }), "webrtc-whip");
+    await user.click(screen.getByRole("button", { name: /Add destination/i }));
+
+    expect(screen.getByLabelText("WebRTC (WHIP) endpoint")).toBeInTheDocument();
+    expect(screen.getByLabelText("WebRTC (WHIP) stream key")).toBeInTheDocument();
+  });
+});

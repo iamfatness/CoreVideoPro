@@ -46,6 +46,15 @@ export const streamingPresets: StreamingPreset[] = [
     latencyMs: 2000,
     requiresStreamKey: true,
     helpText: "Enter the ingest URL and stream key from your provider."
+  },
+  {
+    id: "webrtc-whip",
+    name: "WebRTC (WHIP)",
+    protocol: "WebRTC",
+    endpoint: "https://",
+    latencyMs: 200,
+    requiresStreamKey: true,
+    helpText: "Enter your WHIP ingest URL for sub-500 ms glass-to-glass program monitoring."
   }
 ];
 
