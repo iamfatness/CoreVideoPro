@@ -28,6 +28,8 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
 
 class CpuNoopCompositor final : public ICompositor {
  public:
+  std::string rendererName() const override { return "software"; }
+
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
     const int layerCount = renderPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(renderPlan.layers.size());
@@ -89,6 +91,14 @@ ModuleSet createStubModules() {
   modules.mixer = std::make_unique<PassthroughAudioMixer>();
   modules.encoder = std::make_unique<CountingEncoderSink>();
   modules.captureDevice = std::make_unique<FakeCaptureDevice>();
+  return modules;
+}
+
+ModuleSet createDefaultModules() {
+  auto modules = createStubModules();
+  if (auto compositor = createD3D11Compositor()) {
+    modules.compositor = std::move(compositor);
+  }
   return modules;
 }
 

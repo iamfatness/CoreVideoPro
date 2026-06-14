@@ -60,6 +60,8 @@ class D3D11Compositor final : public ICompositor {
   D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context)
       : device_(std::move(device)), context_(std::move(context)) {}
 
+  std::string rendererName() const override { return "d3d11"; }
+
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
     if (context_) {

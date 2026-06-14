@@ -9,7 +9,7 @@ namespace corevideo::core {
 
 class MediaCore {
  public:
-  explicit MediaCore(modules::ModuleSet modules = modules::createStubModules());
+  explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
 
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;

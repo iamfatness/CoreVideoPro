@@ -46,14 +46,35 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   corevideo::core::MediaCore mediaCore;
   const auto profile = mediaCore.profile();
 
+#if COREVIDEO_WITH_D3D11
+  EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core");
+  EXPECT_EQ(profile.getString("renderer"), "d3d11");
+#else
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core Stub");
   EXPECT_EQ(profile.getString("renderer"), "software");
+#endif
   EXPECT_EQ(profile.getString("maxProgramResolution"), "1920x1080");
   EXPECT_EQ(profile.get("maxProgramFps")->asNumber(), 30);
   EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 6);
   EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 2);
   ASSERT_NE(profile.get("capabilities"), nullptr);
   EXPECT_GE(profile.get("capabilities")->asArray().size(), 11);
+}
+
+TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+  EXPECT_TRUE(state.get("active")->asBool());
+  const auto health = mediaCore.health();
+#if COREVIDEO_WITH_D3D11
+  EXPECT_EQ(health.getString("renderer"), "d3d11");
+#else
+  EXPECT_EQ(health.getString("renderer"), "software");
+#endif
 }
 
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
