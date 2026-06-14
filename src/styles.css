@@ -1058,6 +1058,21 @@ button:disabled {
   padding: 12px;
 }
 
+.video-tile-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Keep tile labels above the live video canvas. */
+.video-tile > :not(.video-tile-canvas) {
+  position: relative;
+  z-index: 1;
+}
+
 .video-tile.tile-large,
 .video-tile.tile-grid,
 .video-tile.tile-hero {

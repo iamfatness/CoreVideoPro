@@ -10,6 +10,7 @@ import {
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
+import type { ZoomVideoFrame } from "./zoomVideoFrames";
 
 export type NativeHostBridge = {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
@@ -19,6 +20,13 @@ export type NativeHostBridge = {
   syncMediaCore?(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine?(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
   getMediaCoreHealth?(): Promise<MediaCoreHealth>;
+  /**
+   * Subscribe to the live per-participant RGBA video frame stream pushed from the
+   * native Zoom capture engine. Returns an unsubscribe function. Absent on hosts
+   * without the engine (e.g. the in-container mock), in which case tiles fall
+   * back to the simulated frame placeholder.
+   */
+  onZoomVideoFrame?(listener: (frame: ZoomVideoFrame) => void): () => void;
 };
 
 declare global {

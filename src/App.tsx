@@ -48,6 +48,7 @@ import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
 import { describeVirtualCamera } from "./engine/virtualCamera";
 import { getFrameForParticipant } from "./engine/mediaFrames";
+import { ParticipantVideoCanvas } from "./ParticipantVideoCanvas";
 import { summarizeArming } from "./engine/outputArming";
 import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
@@ -4698,6 +4699,7 @@ function ParticipantTile({
       className={`video-tile tile-${index + 1} tile-${variant} health-${frame?.health ?? "recovering"}`}
       style={frame ? { "--tile-accent": frame.dominantColor } as React.CSSProperties : undefined}
     >
+      <ParticipantVideoCanvas participantId={participant.id} />
       <div className="avatar">{initials}</div>
       <span>{participant.name}</span>
       <small>{frameLabel}</small>
