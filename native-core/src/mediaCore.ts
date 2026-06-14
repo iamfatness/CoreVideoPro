@@ -16,6 +16,7 @@ import type {
   MediaCoreOutputSenderSession,
   MediaCoreProgramFrame,
   MediaCoreProgramFrameTransport,
+  MediaCoreRecordingStream,
   MediaCoreRenderPlan,
   MediaCoreRequest,
   MediaCoreResponse,
@@ -94,6 +95,7 @@ export class MediaCoreRuntime {
   private readonly seenEventKeys = new Set<string>();
   private readonly activeSourceIssues = new Map<string, MediaCoreSourceHealthIssue>();
   private readonly outputSenderEventStates = new Map<string, { status: MediaCoreOutputSender["status"]; warning?: string }>();
+  private readonly recordingStreamWarnings = new Map<string, string>();
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -380,7 +382,9 @@ export class MediaCoreRuntime {
     ];
     const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
     this.syncSourceIssueEvents(this.sourceSnapshot.issues ?? []);
-    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)));
+    const recordingStreamWarningDetails = new Set((recording?.streams ?? []).map((stream) => stream.warning).filter(Boolean) as string[]);
+    this.syncRecordingStreamEvents(recording?.streams ?? []);
+    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning) && !recordingStreamWarningDetails.has(warning)));
 
     return {
       sceneId: this.sceneGraph?.sceneId,
@@ -579,6 +583,31 @@ export class MediaCoreRuntime {
       const event = outputSenderTransitionEvent(sender, previous?.status, this.outputProfile);
       this.addEvent(event.severity, "sender", event.title, event.detail, undefined, sender.senderId);
     });
+  }
+
+  private syncRecordingStreamEvents(streams: MediaCoreRecordingStream[]) {
+    const currentWarningKeys = new Set<string>();
+    streams.forEach((stream) => {
+      const key = recordingStreamKey(stream);
+      if (!stream.warning) {
+        return;
+      }
+
+      currentWarningKeys.add(key);
+      if (this.recordingStreamWarnings.get(key) === stream.warning) {
+        return;
+      }
+
+      this.recordingStreamWarnings.set(key, stream.warning);
+      this.addEvent("warning", "recording", recordingStreamWarningTitle(stream), stream.warning, undefined, stream.participantId ?? stream.kind);
+    });
+
+    [...this.recordingStreamWarnings.entries()]
+      .filter(([key]) => !currentWarningKeys.has(key))
+      .forEach(([key, warning]) => {
+        this.recordingStreamWarnings.delete(key);
+        this.addEvent("info", "recording", "Recording stream recovered", recordingStreamRecoveryDetail(key, warning), undefined, key);
+      });
   }
 
   private warn(
@@ -783,6 +812,19 @@ function sourceIssueKey(issue: Pick<MediaCoreSourceHealthIssue, "participantId" 
 function sourceIssueRecoveryDetail(issue: MediaCoreSourceHealthIssue) {
   const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
   return `${label} feed recovered.`;
+}
+
+function recordingStreamKey(stream: Pick<MediaCoreRecordingStream, "kind" | "participantId">) {
+  return stream.kind === "program" ? "program" : `iso:${stream.participantId ?? "unknown"}`;
+}
+
+function recordingStreamWarningTitle(stream: Pick<MediaCoreRecordingStream, "kind">) {
+  return stream.kind === "program" ? "Program recording warning" : "ISO recording warning";
+}
+
+function recordingStreamRecoveryDetail(key: string, warning: string) {
+  const label = key.startsWith("iso:") ? `${key.slice(4)} ISO` : "Program recording";
+  return `${label} recovered after warning: ${warning}`;
 }
 
 function outputSenderTransitionEvent(

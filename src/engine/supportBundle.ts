@@ -143,7 +143,18 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
           writerStatus: snapshot.recording.writerStatus,
           totalFramesWritten: snapshot.recording.totalFramesWritten,
           totalDroppedFrames: snapshot.recording.totalDroppedFrames,
-          estimatedDiskRateMBps: snapshot.recording.estimatedDiskRateMBps
+          estimatedDiskRateMBps: snapshot.recording.estimatedDiskRateMBps,
+          streams: snapshot.recording.streams.map((stream) => ({
+            kind: stream.kind,
+            participantId: stream.participantId,
+            status: stream.status,
+            expectedFrames: stream.expectedFrames,
+            framesWritten: stream.framesWritten,
+            missingFrames: stream.missingFrames,
+            droppedFrames: stream.droppedFrames,
+            bytesWritten: stream.bytesWritten,
+            warning: stream.warning
+          }))
         }
       : undefined,
     operatorActions: snapshot.operatorActions.map((action) => ({

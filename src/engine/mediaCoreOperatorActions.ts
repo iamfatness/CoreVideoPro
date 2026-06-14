@@ -65,14 +65,30 @@ export function buildNativeMediaCoreOperatorActions(input: NativeMediaCoreOperat
       relatedId: input.recording.sessionId
     });
   } else if (input.recording?.status === "warning" || input.recording?.writerStatus === "warning") {
-    actions.push({
-      actionId: "recording:check",
-      severity: "warning",
-      area: "recording",
-      title: "Check recording writer",
-      detail: input.recording.warning ?? "Recording writer is warning.",
-      relatedId: input.recording.sessionId
-    });
+    const streamWarnings = input.recording.streams.filter((stream) => stream.warning);
+    if (streamWarnings.length > 0) {
+      streamWarnings.forEach((stream) => {
+        const label = stream.kind === "program" ? "program" : `${stream.participantId ?? "unknown"} ISO`;
+        const streamId = stream.kind === "program" ? "program" : `iso:${stream.participantId ?? "unknown"}`;
+        actions.push({
+          actionId: `recording:${streamId}:check`,
+          severity: "warning",
+          area: "recording",
+          title: `Check ${label} recording`,
+          detail: stream.warning ?? "Recording stream is warning.",
+          relatedId: stream.participantId ?? input.recording?.sessionId
+        });
+      });
+    } else {
+      actions.push({
+        actionId: "recording:check",
+        severity: "warning",
+        area: "recording",
+        title: "Check recording writer",
+        detail: input.recording.warning ?? "Recording writer is warning.",
+        relatedId: input.recording.sessionId
+      });
+    }
   }
 
   const sourceIssues = input.sourceSnapshot.issues ?? [];

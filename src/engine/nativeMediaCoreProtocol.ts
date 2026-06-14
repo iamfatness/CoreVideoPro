@@ -247,9 +247,13 @@ export type NativeMediaCoreRecordingStream = {
   participantId?: string;
   path: string;
   status: "writing" | "warning" | "stopped" | "failed";
+  expectedFrames?: number;
   framesWritten: number;
+  missingFrames?: number;
   droppedFrames: number;
   bytesWritten: number;
+  lastFrameTimestampMs?: number;
+  warning?: string;
 };
 
 export type NativeMediaCoreRecordingSession = {

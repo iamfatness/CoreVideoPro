@@ -21,6 +21,7 @@ import type {
   NativeMediaCoreProgramFrameTransport,
   NativeMediaCoreRenderPlan,
   NativeMediaCoreRecordingSession,
+  NativeMediaCoreRecordingStream,
   NativeMediaCoreRecordingTargets,
   NativeMediaCoreStateSnapshot,
   NativeMediaCoreSourceHealthIssue,
@@ -75,6 +76,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly seenEventKeys = new Set<string>();
   private readonly activeSourceIssues = new Map<string, NativeMediaCoreSourceHealthIssue>();
   private readonly outputSenderEventStates = new Map<string, { status: NativeMediaCoreOutputSender["status"]; warning?: string }>();
+  private readonly recordingStreamWarnings = new Map<string, string>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -252,7 +254,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     ];
     const sourceIssueDetails = new Set((this.sourceSnapshot.issues ?? []).map((issue) => issue.detail));
     this.syncSourceIssueEvents(this.sourceSnapshot.issues ?? [], elapsedMs);
-    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning)), elapsedMs);
+    const recordingStreamWarningDetails = new Set((recording?.streams ?? []).map((stream) => stream.warning).filter(Boolean) as string[]);
+    this.syncRecordingStreamEvents(recording?.streams ?? [], elapsedMs);
+    this.addWarningsAsEvents(allWarnings.filter((warning) => !sourceIssueDetails.has(warning) && !recordingStreamWarningDetails.has(warning)), elapsedMs);
 
     return {
       sceneId: sceneGraph?.sceneId,
@@ -426,33 +430,55 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     this.recording.elapsedMs = Math.max(0, elapsedMs - this.recording.startedAtMs);
     const writableFrames = frames.filter((frame) => frame.health !== "dropped");
     this.recording.streams.forEach((stream) => {
+      const expectedFrames = stream.kind === "program" ? (programFrame ? 1 : 0) : 1;
       const droppedFrames =
         stream.kind === "program"
           ? programFrame?.health === "dropped"
             ? 1
             : 0
           : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
+      const writtenFrames =
+        stream.kind === "program"
+          ? programFrame && programFrame.health !== "dropped"
+            ? 1
+            : 0
+          : writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
+      const missingFrames = Math.max(0, expectedFrames - writtenFrames - droppedFrames);
+
+      stream.expectedFrames = (stream.expectedFrames ?? 0) + expectedFrames;
+      stream.missingFrames = (stream.missingFrames ?? 0) + missingFrames;
       if (stream.kind === "program") {
-        const programFrames = programFrame && programFrame.health !== "dropped" ? 1 : 0;
-        stream.framesWritten += programFrames;
+        stream.framesWritten += writtenFrames;
         stream.droppedFrames += droppedFrames;
-        stream.bytesWritten += programFrames * 260_000;
+        stream.bytesWritten += writtenFrames * 260_000;
       } else {
-        const isoFrames = writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
-        stream.framesWritten += isoFrames;
+        stream.framesWritten += writtenFrames;
         stream.droppedFrames += droppedFrames;
-        stream.bytesWritten += isoFrames * 140_000;
+        stream.bytesWritten += writtenFrames * 140_000;
       }
+      stream.lastFrameTimestampMs = writtenFrames > 0 ? elapsedMs : stream.lastFrameTimestampMs;
+      stream.warning = recordingStreamWarning(stream);
+      stream.status = stream.warning ? "warning" : "writing";
     });
     this.recording.totalFramesWritten = this.recording.streams.reduce((total, stream) => total + stream.framesWritten, 0);
     this.recording.totalDroppedFrames = this.recording.streams.reduce((total, stream) => total + stream.droppedFrames, 0);
     this.recording.totalBytesWritten = this.recording.streams.reduce((total, stream) => total + stream.bytesWritten, 0);
-    if (this.recording.totalDroppedFrames > 0) {
+    const streamWarning = this.recording.streams.map(recordingStreamWarning).find(Boolean);
+    if (this.recording.totalDroppedFrames > 0 || streamWarning) {
       this.recording.status = "warning";
       this.recording.writerStatus = "warning";
-      this.recording.warning = "Recording writer is skipping dropped frames.";
+      this.recording.warning = this.recording.totalDroppedFrames > 0 ? "Recording writer is skipping dropped frames." : streamWarning;
       this.recording.streams.forEach((stream) => {
-        stream.status = "warning";
+        stream.warning = recordingStreamWarning(stream);
+        stream.status = stream.warning ? "warning" : "writing";
+      });
+    } else {
+      this.recording.status = "recording";
+      this.recording.writerStatus = "writing";
+      this.recording.warning = undefined;
+      this.recording.streams.forEach((stream) => {
+        stream.warning = undefined;
+        stream.status = "writing";
       });
     }
   }
@@ -844,6 +870,31 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     });
   }
 
+  private syncRecordingStreamEvents(streams: NativeMediaCoreRecordingStream[], elapsedMs: number) {
+    const currentWarningKeys = new Set<string>();
+    streams.forEach((stream) => {
+      const key = recordingStreamKey(stream);
+      if (!stream.warning) {
+        return;
+      }
+
+      currentWarningKeys.add(key);
+      if (this.recordingStreamWarnings.get(key) === stream.warning) {
+        return;
+      }
+
+      this.recordingStreamWarnings.set(key, stream.warning);
+      this.addEvent("warning", "recording", recordingStreamWarningTitle(stream), stream.warning, undefined, stream.participantId ?? stream.kind, elapsedMs);
+    });
+
+    [...this.recordingStreamWarnings.entries()]
+      .filter(([key]) => !currentWarningKeys.has(key))
+      .forEach(([key, warning]) => {
+        this.recordingStreamWarnings.delete(key);
+        this.addEvent("info", "recording", "Recording stream recovered", recordingStreamRecoveryDetail(key, warning), undefined, key, elapsedMs);
+      });
+  }
+
   private addEvent(
     severity: NativeMediaCoreEvent["severity"],
     area: NativeMediaCoreEvent["area"],
@@ -930,10 +981,24 @@ function createRecordingStream(kind: "program" | "iso", path: string, participan
     participantId,
     path,
     status: "writing" as const,
+    expectedFrames: 0,
     framesWritten: 0,
+    missingFrames: 0,
     droppedFrames: 0,
     bytesWritten: 0
   };
+}
+
+function recordingStreamWarning(stream: NativeMediaCoreRecordingStream) {
+  if (stream.kind === "iso" && (stream.missingFrames ?? 0) > 0) {
+    return `${stream.participantId ?? "Unknown participant"} ISO has no clean participant frames.`;
+  }
+
+  if (stream.droppedFrames > 0) {
+    return stream.kind === "program" ? "Program recording is skipping dropped frames." : `${stream.participantId ?? "Unknown participant"} ISO is skipping dropped frames.`;
+  }
+
+  return undefined;
 }
 
 function encoderForQuality(quality: "standard" | "high" | "archive") {
@@ -1025,6 +1090,19 @@ function senderLatency(destination: "rtmp" | "ndi" | "srt" | "webrtc") {
 function senderBitrate(destination: "rtmp" | "ndi" | "srt" | "webrtc", outputProfile: NativeMediaCoreOutputProfile) {
   const multiplier = destination === "ndi" ? 1.6 : destination === "webrtc" ? 0.8 : 1;
   return Number((outputProfile.targetBitrateMbps * multiplier).toFixed(1));
+}
+
+function recordingStreamKey(stream: Pick<NativeMediaCoreRecordingStream, "kind" | "participantId">) {
+  return stream.kind === "program" ? "program" : `iso:${stream.participantId ?? "unknown"}`;
+}
+
+function recordingStreamWarningTitle(stream: Pick<NativeMediaCoreRecordingStream, "kind">) {
+  return stream.kind === "program" ? "Program recording warning" : "ISO recording warning";
+}
+
+function recordingStreamRecoveryDetail(key: string, warning: string) {
+  const label = key.startsWith("iso:") ? `${key.slice(4)} ISO` : "Program recording";
+  return `${label} recovered after warning: ${warning}`;
 }
 
 function outputSenderTransitionEvent(

@@ -168,13 +168,14 @@ describe("MediaCoreRuntime", () => {
         recording: {
           sessionId: "test-session",
           active: true,
-          status: "recording",
-          writerStatus: "writing",
+          status: "warning",
+          writerStatus: "warning",
+          warning: "p1 ISO has no clean participant frames.",
           programPath: "Recordings/CoreVideo Pro/native-core/program-program-0.mp4",
           streams: [
-            { kind: "program", status: "writing", framesWritten: 1 },
-            { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
-            { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
+            { kind: "program", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 },
+            { kind: "iso", participantId: "p1", status: "warning", expectedFrames: 1, framesWritten: 0, missingFrames: 1, warning: "p1 ISO has no clean participant frames." },
+            { kind: "iso", participantId: "p2", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 }
           ],
           totalFramesWritten: 2
         },
@@ -197,7 +198,7 @@ describe("MediaCoreRuntime", () => {
           lastReconfigureReason: expect.stringContaining("Initial render plan")
         },
         encoderSession: {
-          status: "encoding",
+          status: "warning",
           lifecycle: {
             status: "encoding",
             lastTransition: "Program output encoder session started."
@@ -205,7 +206,7 @@ describe("MediaCoreRuntime", () => {
           targets: expect.arrayContaining([
             expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
             expect.objectContaining({ targetId: "rtmp:program", streamKind: "program", status: "attached" }),
-            expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached" }),
+            expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "warning", warning: "p1 ISO has no clean participant frames." }),
             expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
           ])
         },
@@ -223,7 +224,23 @@ describe("MediaCoreRuntime", () => {
             }
           ]
         },
-        outputHealth: expect.arrayContaining([{ destination: "recording", status: "live", message: "Recording writer active.", droppedFrames: 0 }]),
+        outputHealth: expect.arrayContaining([{ destination: "recording", status: "warning", message: "p1 ISO has no clean participant frames.", droppedFrames: 0 }]),
+        operatorActions: expect.arrayContaining([
+          expect.objectContaining({
+            actionId: "recording:iso:p1:check",
+            area: "recording",
+            title: "Check p1 ISO recording"
+          })
+        ]),
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "warning",
+            area: "recording",
+            title: "ISO recording warning",
+            detail: "p1 ISO has no clean participant frames.",
+            relatedId: "p1"
+          })
+        ]),
         diagnostics: {
           outputSenderSession: {
             status: "live",
@@ -622,7 +639,7 @@ describe("MediaCoreRuntime", () => {
       ok: true,
       state: {
         encoderSession: {
-          status: "idle",
+          status: "warning",
           lifecycle: {
             status: "stopped",
             lastTransition: "Operator stopped encoder during rehearsal."
@@ -641,7 +658,7 @@ describe("MediaCoreRuntime", () => {
           expect.objectContaining({
             destination: "recording",
             status: "warning",
-            message: "Operator stopped encoder during rehearsal."
+            message: "p1 ISO has no clean participant frames."
           })
         ])
       );
@@ -800,11 +817,17 @@ describe("MediaCoreRuntime", () => {
         },
         recording: {
           active: true,
-          status: "recording",
-          writerStatus: "writing",
+          status: "warning",
+          writerStatus: "warning",
           error: undefined
         },
-        operatorActions: [],
+        operatorActions: expect.arrayContaining([
+          expect.objectContaining({
+            actionId: "recording:iso:p1:check",
+            title: "Check p1 ISO recording",
+            detail: "p1 ISO has no clean participant frames."
+          })
+        ]),
         eventLog: expect.arrayContaining([
           expect.objectContaining({
             severity: "info",
@@ -825,7 +848,7 @@ describe("MediaCoreRuntime", () => {
         ]),
         outputHealth: expect.arrayContaining([
           expect.objectContaining({ destination: "rtmp", status: "live" }),
-          expect.objectContaining({ destination: "recording", status: "live" })
+          expect.objectContaining({ destination: "recording", status: "warning", message: "p1 ISO has no clean participant frames." })
         ])
       }
     });

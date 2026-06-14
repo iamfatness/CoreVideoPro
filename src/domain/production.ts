@@ -424,6 +424,17 @@ export type SupportBundleMediaCore = {
     totalFramesWritten: number;
     totalDroppedFrames: number;
     estimatedDiskRateMBps: number;
+    streams: Array<{
+      kind: "program" | "iso";
+      participantId?: string;
+      status: "writing" | "warning" | "stopped" | "failed";
+      expectedFrames?: number;
+      framesWritten: number;
+      missingFrames?: number;
+      droppedFrames: number;
+      bytesWritten: number;
+      warning?: string;
+    }>;
   };
   operatorActions: Array<{
     actionId: string;

@@ -448,15 +448,16 @@ describe("media core sync engine", () => {
       },
       recording: {
         active: true,
-        status: "recording",
+        status: "warning",
         startedAtMs: 3000,
-        writerStatus: "writing",
+        writerStatus: "warning",
+        warning: "p1 ISO has no clean participant frames.",
         estimatedDiskRateMBps: 7.49,
         programPath: "Recordings/CoreVideo Pro/AI_Product_Launch_Webinar-program-3000.mp4",
         streams: [
-          { kind: "program", status: "writing", framesWritten: 1 },
-          { kind: "iso", participantId: "p1", status: "writing", framesWritten: 0 },
-          { kind: "iso", participantId: "p2", status: "writing", framesWritten: 1 }
+          { kind: "program", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 },
+          { kind: "iso", participantId: "p1", status: "warning", expectedFrames: 1, framesWritten: 0, missingFrames: 1, warning: "p1 ISO has no clean participant frames." },
+          { kind: "iso", participantId: "p2", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 }
         ],
         totalFramesWritten: 2
       },
@@ -476,14 +477,14 @@ describe("media core sync engine", () => {
         programFrameCount: 1
       },
       encoderSession: {
-        status: "encoding",
+        status: "warning",
         lifecycle: {
           status: "encoding",
           lastTransition: "Encoder session started."
         },
         targets: expect.arrayContaining([
           expect.objectContaining({ targetId: "recording:program", streamKind: "program", status: "attached" }),
-          expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "attached" }),
+          expect.objectContaining({ targetId: "recording:iso:p1", streamKind: "iso", status: "warning", warning: "p1 ISO has no clean participant frames." }),
           expect.objectContaining({ targetId: "recording:iso:p2", streamKind: "iso", status: "attached" })
         ])
       },
@@ -492,7 +493,23 @@ describe("media core sync engine", () => {
         activeSenderCount: 0,
         senders: []
       },
-      outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
+      outputHealth: [{ destination: "recording", status: "warning", message: "p1 ISO has no clean participant frames." }],
+      operatorActions: expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "recording:iso:p1:check",
+          area: "recording",
+          title: "Check p1 ISO recording"
+        })
+      ]),
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "warning",
+          area: "recording",
+          title: "ISO recording warning",
+          detail: "p1 ISO has no clean participant frames.",
+          relatedId: "p1"
+        })
+      ]),
       diagnostics: {
         generatedAtMs: 3000,
         outputSenderSession: {
@@ -794,7 +811,13 @@ describe("media core sync engine", () => {
         status: "live",
         senders: [{ destination: "rtmp", status: "live", warning: undefined }]
       },
-      operatorActions: [],
+      operatorActions: expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "recording:iso:p1:check",
+          title: "Check p1 ISO recording",
+          detail: "p1 ISO has no clean participant frames."
+        })
+      ]),
       eventLog: expect.arrayContaining([
         expect.objectContaining({
           severity: "info",

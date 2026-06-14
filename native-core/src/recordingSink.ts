@@ -60,16 +60,21 @@ export class RecordingSink {
     this.session.streams.forEach((stream) => {
       const programWritableFrameCount = programFrame && programFrame.health !== "dropped" ? 1 : 0;
       const programDroppedFrameCount = programFrame?.health === "dropped" ? 1 : 0;
+      const expectedFrames = stream.kind === "program" ? (programFrame ? 1 : 0) : 1;
       const matchingFrames =
         stream.kind === "program" ? programWritableFrameCount : writableFrames.filter((frame) => frame.kind === "participant-video" && frame.participantId === stream.participantId).length;
       const matchingDropped =
         stream.kind === "program"
           ? programDroppedFrameCount
           : frames.filter((frame) => frame.kind === "participant-video" && frame.health === "dropped" && frame.participantId === stream.participantId).length;
+      const missingFrames = Math.max(0, expectedFrames - matchingFrames - matchingDropped);
 
+      stream.expectedFrames = (stream.expectedFrames ?? 0) + expectedFrames;
       stream.framesWritten += matchingFrames;
+      stream.missingFrames = (stream.missingFrames ?? 0) + missingFrames;
       stream.droppedFrames += matchingDropped;
       stream.bytesWritten += matchingFrames * BYTES_PER_FRAME[stream.kind];
+      stream.lastFrameTimestampMs = matchingFrames > 0 ? elapsedMs : stream.lastFrameTimestampMs;
     });
 
     updateSessionTotals(this.session);
@@ -193,7 +198,9 @@ function createStream(kind: "program" | "iso", path: string, participantId?: str
     participantId,
     path,
     status: "writing",
+    expectedFrames: 0,
     framesWritten: 0,
+    missingFrames: 0,
     droppedFrames: 0,
     bytesWritten: 0
   };
@@ -246,7 +253,8 @@ function updateSessionHealth(session: MediaCoreRecordingSession) {
   session.status = warning ? "warning" : "recording";
   session.writerStatus = streamStatus;
   session.streams.forEach((stream) => {
-    stream.status = streamStatus;
+    stream.warning = streamWarningFor(stream);
+    stream.status = stream.warning ? "warning" : "writing";
   });
 }
 
@@ -265,6 +273,23 @@ function recordingWarning(session: MediaCoreRecordingSession) {
 
   if (session.totalDroppedFrames > 0) {
     return "Recording writer is skipping dropped frames.";
+  }
+
+  const streamWarning = session.streams.map(streamWarningFor).find(Boolean);
+  if (streamWarning) {
+    return streamWarning;
+  }
+
+  return undefined;
+}
+
+function streamWarningFor(stream: MediaCoreRecordingStream) {
+  if (stream.kind === "iso" && (stream.missingFrames ?? 0) > 0) {
+    return `${stream.participantId ?? "Unknown participant"} ISO has no clean participant frames.`;
+  }
+
+  if (stream.droppedFrames > 0) {
+    return stream.kind === "program" ? "Program recording is skipping dropped frames." : `${stream.participantId ?? "Unknown participant"} ISO is skipping dropped frames.`;
   }
 
   return undefined;

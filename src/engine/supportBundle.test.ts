@@ -97,7 +97,7 @@ describe("createSupportBundle", () => {
         latencyMs: 0
       },
       encoder: {
-        status: "encoding",
+        status: "warning",
         lifecycle: "encoding",
         targetCount: 4
       },
@@ -119,12 +119,30 @@ describe("createSupportBundle", () => {
         ]
       },
       recording: {
-        status: "recording",
-        writerStatus: "writing",
+        status: "warning",
+        writerStatus: "warning",
         totalFramesWritten: 2,
-        estimatedDiskRateMBps: 7.49
+        estimatedDiskRateMBps: 7.49,
+        streams: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "iso",
+            participantId: "p1",
+            status: "warning",
+            expectedFrames: 1,
+            framesWritten: 0,
+            missingFrames: 1,
+            warning: "p1 ISO has no clean participant frames."
+          })
+        ])
       },
-      operatorActions: [],
+      operatorActions: expect.arrayContaining([
+        expect.objectContaining({
+          actionId: "recording:iso:p1:check",
+          area: "recording",
+          title: "Check p1 ISO recording",
+          detail: "p1 ISO has no clean participant frames."
+        })
+      ]),
       eventLog: [
         expect.objectContaining({
           severity: "info",
@@ -132,6 +150,13 @@ describe("createSupportBundle", () => {
           title: "RTMP sender live",
           detail: "RTMP sender live at 1920x1080 60fps; 8.2 Mbps target.",
           relatedId: "rtmp:program"
+        }),
+        expect.objectContaining({
+          severity: "warning",
+          area: "recording",
+          title: "ISO recording warning",
+          detail: "p1 ISO has no clean participant frames.",
+          relatedId: "p1"
         })
       ]
     });

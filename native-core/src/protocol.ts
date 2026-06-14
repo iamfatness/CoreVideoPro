@@ -194,9 +194,13 @@ export type MediaCoreRecordingStream = {
   participantId?: string;
   path: string;
   status: MediaCoreRecordingWriterStatus;
+  expectedFrames?: number;
   framesWritten: number;
+  missingFrames?: number;
   droppedFrames: number;
   bytesWritten: number;
+  lastFrameTimestampMs?: number;
+  warning?: string;
 };
 
 export type MediaCoreRecordingSession = {
