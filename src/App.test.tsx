@@ -1166,6 +1166,31 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("bandwidth planner", () => {
+  it("shows the bandwidth plan panel in Settings", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Bandwidth plan panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText(/Total/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/Usage/i)).toBeInTheDocument();
+  });
+
+  it("shows OK or caution status based on active destinations", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    const panel = screen.getByLabelText("Bandwidth plan panel");
+    // Status should be one of the valid values
+    expect(within(panel).getByText(/^safe$|^caution$|^overloaded$|No destinations/i)).toBeInTheDocument();
+  });
+});
+
 describe("stinger presets", () => {
   it("shows the stinger presets panel in the Automation tab", async () => {
     const user = userEvent.setup();
