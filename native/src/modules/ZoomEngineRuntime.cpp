@@ -144,7 +144,6 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    (void)ensureMediaStartedLocked();
     ZoomEngineJoinCommand command;
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
@@ -284,6 +283,9 @@ void ZoomEngineRuntime::readerLoop() {
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
   std::lock_guard<std::mutex> lock(mutex_);
   state_.apply(event);
+  if (event.kind == ZoomEngineEventKind::Joined) {
+    (void)ensureMediaStartedLocked();
+  }
   if (event.kind == ZoomEngineEventKind::Frame) {
     enqueueFrameEventLocked(event);
   }
