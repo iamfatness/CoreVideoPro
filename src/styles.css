@@ -1636,6 +1636,43 @@ meter {
   align-items: center;
 }
 
+.transcript-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transcript-entry {
+  border: 1px solid rgba(189, 207, 196, 0.12);
+  border-radius: 8px;
+  background: rgba(18, 23, 21, 0.6);
+  padding: 8px 10px;
+}
+
+.transcript-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.transcript-meta strong {
+  color: #8fdcc8;
+  font-size: 12px;
+}
+
+.transcript-meta span {
+  color: #94a59b;
+  font-size: 11px;
+}
+
+.transcript-entry p {
+  margin: 0;
+  color: #ecf5ef;
+  font-size: 12px;
+}
+
 .add-destination {
   display: grid;
   gap: 8px;
