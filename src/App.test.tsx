@@ -951,3 +951,19 @@ describe("stream health panel", () => {
     expect(within(panel).getAllByText(/\/100/).length).toBeGreaterThan(0);
   });
 });
+
+describe("SRT output engine", () => {
+  it("shows SRT connection detail and latency hint when SRT destination is armed", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    await user.click(screen.getByRole("button", { name: /SRT Backup/i }));
+
+    const detail = await screen.findByLabelText("SRT Backup SRT detail");
+    expect(detail).toHaveTextContent(/backup\.example\.com:9000/);
+    expect(detail).toHaveTextContent(/caller/);
+    // Recommended latency should differ from the parsed URL latency (120ms vs 1050ms)
+    expect(detail).toHaveTextContent(/Recommended latency/i);
+  });
+});

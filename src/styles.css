@@ -2706,3 +2706,23 @@ meter {
 .stream-health-warnings li {
   margin-bottom: 2px;
 }
+
+/* SRT destination detail */
+.srt-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #7a9e8c;
+  background: #080f0d;
+  border-top: 1px solid #1e2e28;
+}
+
+.srt-latency-hint {
+  color: #fbbf24;
+}
+
+.srt-warning {
+  color: #f87171;
+}
