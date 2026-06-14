@@ -61,7 +61,7 @@ import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type F
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
-import { assessZoomSdkReadiness, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
+import { assessZoomSdkReadiness, shouldBlockZoomJoin, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
 import { inspectZoomWindowsSdkPackage, type ZoomWindowsSdkPackageReport } from "./engine/zoomWindowsSdkPackage";
 import { parseZoomMeetingJoinInput } from "./engine/zoomMeetingInput";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
@@ -469,6 +469,7 @@ export function App({ engines, runtime }: AppProps) {
   const liveRuntime = nativeBridgeForRuntime && runtime
     ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
     : runtime;
+  const joinBlockedBySdk = shouldBlockZoomJoin(liveRuntime, sdkReadiness);
 
   // When capabilities is non-empty (native mode), gates are active; empty = mock/allow-all.
   const runtimeCaps = liveRuntime?.capabilities ?? [];
@@ -1446,8 +1447,8 @@ export function App({ engines, runtime }: AppProps) {
               ) : (
                 <button
                   className="ghost-button"
-                  disabled={sdkReadiness.status === "blocked"}
-                  title={sdkReadiness.status === "blocked" ? sdkReadiness.blockers[0] : undefined}
+                  disabled={joinBlockedBySdk}
+                  title={joinBlockedBySdk ? sdkReadiness.blockers[0] : undefined}
                   onClick={joinMeeting}
                 >
                   <LogIn size={16} />

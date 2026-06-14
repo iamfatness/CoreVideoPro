@@ -937,10 +937,12 @@ describe("App production controls", () => {
 
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Leave" }));
-    await user.clear(screen.getByLabelText("Zoom meeting URL or ID"));
-    await user.type(screen.getByLabelText("Zoom meeting URL or ID"), "https://zoom.us/j/987654321");
-    await user.clear(screen.getByLabelText("Producer display name"));
-    await user.type(screen.getByLabelText("Producer display name"), "Guest Producer");
+    fireEvent.change(screen.getByLabelText("Zoom meeting URL or ID"), {
+      target: { value: "https://zoom.us/j/987654321" }
+    });
+    fireEvent.change(screen.getByLabelText("Producer display name"), {
+      target: { value: "Guest Producer" }
+    });
     await user.click(screen.getByLabelText("Webinar"));
     await user.click(screen.getByRole("button", { name: "Join Zoom" }));
 
@@ -1802,15 +1804,32 @@ describe("Zoom SDK pre-flight", () => {
     expect(panel).toBeInTheDocument();
   });
 
-  it("Join Zoom button is disabled when SDK is blocked", async () => {
+  it("Join Zoom button is disabled when SDK is blocked in native runtime", async () => {
     const user = userEvent.setup();
-    renderApp();
-    // Leave the meeting so the Join Zoom button is visible.
+    const nativeRuntime: RuntimeEnvironment = {
+      status: "ready",
+      label: "Native media ready",
+      host: "electron",
+      platform: "win32",
+      warnings: [],
+      capabilities: ["zoom-raw-video"]
+    };
+    renderApp(createMockEngineBundle(), nativeRuntime);
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Leave" }));
-    // The default sdkReadinessInput has sdkRuntimePresent: false → "blocked".
     const joinBtn = screen.getByRole("button", { name: /Join Zoom/i });
     expect(joinBtn).toBeDisabled();
+  });
+
+  it("allows simulated Zoom join in mock runtime when SDK readiness is blocked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+    await goToTab(user, "Settings");
+    await user.click(screen.getByRole("button", { name: "Leave" }));
+    const joinBtn = screen.getByRole("button", { name: /Join Zoom/i });
+    expect(joinBtn).not.toBeDisabled();
+    await user.click(joinBtn);
+    expect(screen.getByText(/in meeting - 8 participants/i)).toBeInTheDocument();
   });
 });
 

@@ -19,6 +19,8 @@ describe("coreProtocol", () => {
     expect(event?.type).toBe("zoom-video-frame");
     expect(event?.frame.participantId).toBe("42");
     expect(event?.frame.frameId).toBe(7);
+    expect(event?.frame.rgba).toBeInstanceOf(Uint8ClampedArray);
+    expect([...event!.frame.rgba]).toEqual([255, 255, 255, 255, 0, 0, 0, 255]);
     expect(parseCoreResponse(JSON.stringify(event))).toBeNull();
     expect(parseCoreEvent(JSON.stringify({ id: "core-1", ok: true, type: "ping" }))).toBeNull();
   });
