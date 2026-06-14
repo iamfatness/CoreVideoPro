@@ -58,6 +58,7 @@ import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engin
 import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutput";
 import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type FeedHealthSignal } from "./engine/feedHealth";
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
+import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1504,6 +1505,26 @@ export function App({ engines, runtime }: AppProps) {
                           {monitor.latencyLabel} · up to {monitor.maxViewers} viewers
                         </span>
                         {webrtc.warnings.map((w) => (
+                          <span key={w} className="srt-warning">{w}</span>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {destination.protocol === "NDI" && destination.endpoint && (() => {
+                    const ndi = parseNdiSourceName(destination.endpoint);
+                    const bandwidth = estimateNdiBandwidth(
+                      outputProfileBadge?.resolution ?? production.output.resolution,
+                      outputProfileBadge?.fps ?? production.output.fps
+                    );
+                    return (
+                      <div className="srt-detail" aria-label={`${destination.name} NDI detail`}>
+                        {ndi.valid && ndi.sourceName && (
+                          <span>{describeNdiSource(ndi.sourceName)}</span>
+                        )}
+                        <span className={bandwidth.bandwidthWarning ? "srt-latency-hint" : ""}>
+                          {bandwidth.summary}
+                        </span>
+                        {ndi.warnings.map((w) => (
                           <span key={w} className="srt-warning">{w}</span>
                         ))}
                       </div>

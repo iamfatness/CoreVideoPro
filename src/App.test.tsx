@@ -1147,3 +1147,19 @@ describe("disk space monitor", () => {
     expect(disk).toHaveTextContent(/free/i);
   });
 });
+
+describe("NDI output engine", () => {
+  it("shows NDI source detail and bandwidth when the NDI destination is armed", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+
+    // Arm the NDI Program destination
+    await user.click(screen.getByRole("button", { name: /NDI Program/i }));
+
+    const detail = await screen.findByLabelText("NDI Program NDI detail");
+    expect(detail).toHaveTextContent(/local network/i);
+    expect(detail).toHaveTextContent(/Mbps/i);
+  });
+});
