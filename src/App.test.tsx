@@ -101,6 +101,21 @@ describe("App production controls", () => {
     expect(within(program).queryByText("CoreVideo Pro")).not.toBeInTheDocument();
   });
 
+  it("applies caption style controls to the program caption", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const program = screen.getByLabelText("Program preview");
+    const captionSpan = () => program.querySelector(".caption-strip-text span") as HTMLElement;
+    const original = captionSpan().textContent ?? "";
+    expect(original).not.toBe(original.toUpperCase());
+
+    await goToTab(user, "Overlays");
+    await user.click(screen.getByLabelText("Uppercase captions"));
+
+    expect(captionSpan().textContent).toBe(original.toUpperCase());
+  });
+
   it("saves and reloads a show preset", async () => {
     const user = userEvent.setup();
     renderApp();
