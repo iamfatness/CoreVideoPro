@@ -117,6 +117,15 @@ export type CaptionOverlayState = {
   adaptiveSummary: string;
 };
 
+export type CaptionTranscriptEntry = {
+  id: string;
+  speakerName: string;
+  role: string;
+  text: string;
+  confidence: number;
+  atSeconds: number;
+};
+
 export type GraphicOverlay = {
   id: string;
   name: string;
@@ -246,6 +255,7 @@ export type ProductionState = {
   audioMix: AudioMixState;
   captionOverlay: CaptionOverlayState;
   captionStyle: CaptionStyle;
+  captionTranscript: CaptionTranscriptEntry[];
   graphics: GraphicOverlay[];
   brandKit: BrandKit;
   videoEffects: ParticipantVideoEffect[];
@@ -578,6 +588,24 @@ export const initialProduction: ProductionState = {
     backgroundOpacity: 70,
     uppercase: false
   },
+  captionTranscript: [
+    {
+      id: "cc-1",
+      speakerName: "Maya Chen",
+      role: "Host",
+      text: "Welcome to the AI Product Launch Webinar.",
+      confidence: 96,
+      atSeconds: 4
+    },
+    {
+      id: "cc-2",
+      speakerName: "Andre Wallace",
+      role: "Presenter",
+      text: "Let me share the roadmap slides now.",
+      confidence: 93,
+      atSeconds: 12
+    }
+  ],
   graphics: [
     {
       id: "brand-bug",

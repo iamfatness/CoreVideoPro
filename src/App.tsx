@@ -38,6 +38,7 @@ import { useEffect, useMemo, useState } from "react";
 import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
 import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
+import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
@@ -286,6 +287,10 @@ export function App({ engines, runtime }: AppProps) {
       audioMix,
       autoProduction,
       captionOverlay,
+      captionTranscript: appendCaptionEntry(
+        current.captionTranscript,
+        attributeCaption(captionOverlay, participants, snapshot.elapsedSeconds)
+      ),
       captions: snapshot.caption,
       selectedBreakoutRoomId:
         current.selectedBreakoutRoomId === "all" ||
@@ -1644,6 +1649,24 @@ export function App({ engines, runtime }: AppProps) {
                   type="checkbox"
                 />
               </label>
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Speaker captions">
+            <div className="section-title">
+              <Captions size={15} />
+              Speaker captions
+            </div>
+            <div className="transcript-list">
+              {production.captionTranscript.map((entry) => (
+                <div className="transcript-entry" key={entry.id}>
+                  <div className="transcript-meta">
+                    <strong>{entry.speakerName}</strong>
+                    <span>{entry.role} - {entry.confidence}%</span>
+                  </div>
+                  <p>{entry.text}</p>
+                </div>
+              ))}
             </div>
           </section>
         </div>

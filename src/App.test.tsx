@@ -116,6 +116,19 @@ describe("App production controls", () => {
     expect(captionSpan().textContent).toBe(original.toUpperCase());
   });
 
+  it("shows per-speaker caption attribution in the transcript", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+    const transcript = screen.getByLabelText("Speaker captions");
+
+    expect(within(transcript).getByText("Welcome to the AI Product Launch Webinar.")).toBeInTheDocument();
+    expect(within(transcript).getByText("Maya Chen")).toBeInTheDocument();
+    expect(within(transcript).getByText(/Host - 96%/)).toBeInTheDocument();
+    expect(within(transcript).getAllByText("Andre Wallace").length).toBeGreaterThan(0);
+  });
+
   it("saves and reloads a show preset", async () => {
     const user = userEvent.setup();
     renderApp();
@@ -691,7 +704,7 @@ describe("App production controls", () => {
     renderApp(engines);
 
     expect((await screen.findAllByText(/Injected Speaker/i)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Injected caption from native bridge/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Injected caption from native bridge/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/No screen share/i).length).toBeGreaterThan(0);
   });
 });
