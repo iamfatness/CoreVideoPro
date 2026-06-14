@@ -46,6 +46,17 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"profile", mediaCore_.profile()}});
   }
 
+  if (hasType(request, "zoom-media-spine-sync")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "Zoom media spine sync request must include payload.");
+    }
+    return success(id, Json::Object{
+                           {"type", "zoom-media-spine-sync"},
+                           {"zoom", mediaCore_.syncZoomMediaSpine(*payload, request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0)},
+                       });
+  }
+
   if (hasType(request, "native-media-core-sync") || request.get("commands")) {
     return success(id, Json::Object{{"state", mediaCore_.applyCommands(commandBatch(request))}});
   }

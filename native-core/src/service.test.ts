@@ -181,6 +181,72 @@ describe("native-core service", () => {
     });
   });
 
+  it("handles the single-shot zoom-media-spine-sync supervisor request", () => {
+    const response = handleLine(
+      JSON.stringify({
+        id: "zoom-spine-sync-1",
+        type: "zoom-media-spine-sync",
+        elapsedMs: 66,
+        payload: {
+          readiness: {
+            status: "ready",
+            platform: "windows",
+            sdkVersion: "7.0.5",
+            checks: [],
+            blockers: [],
+            warnings: [],
+            summary: "Zoom SDK media path ready on windows."
+          },
+          participants: [
+            {
+              sdkUserId: "sdk-presenter",
+              displayName: "Andre Wallace",
+              role: "panelist",
+              videoOn: true,
+              muted: false,
+              talking: true,
+              sharingScreen: false,
+              audioLevel: 82,
+              networkQuality: "good"
+            }
+          ],
+          subscriptions: [
+            { participantId: "sdk-presenter", kind: "participant-video", purpose: "program", priority: 1 },
+            { participantId: "sdk-presenter", kind: "participant-audio", purpose: "mix", priority: 2 }
+          ],
+          recording: {
+            targetFolder: "Recordings",
+            filenamePrefix: "zoom-spine",
+            format: "mp4",
+            quality: "high",
+            isoParticipantIds: ["sdk-presenter"]
+          },
+          blocked: false,
+          warnings: [],
+          summary: "1 Zoom participant, 1 video and 1 audio raw Zoom subscriptions planned."
+        }
+      })
+    );
+
+    expect(response).toMatchObject({
+      id: "zoom-spine-sync-1",
+      ok: true,
+      type: "zoom-media-spine-sync",
+      zoom: {
+        meetingState: "in-meeting",
+        activeSpeakerId: "sdk-presenter",
+        recording: {
+          evidence: {
+            subscribedVideoFeeds: 1,
+            programFramesWritten: 1,
+            isoFramesWritten: 1,
+            audioPacketsObserved: 1
+          }
+        }
+      }
+    });
+  });
+
   it("rejects unsupported request types", () => {
     const response = handleLine(JSON.stringify({ id: "bad-type", type: "unsupported" }));
 

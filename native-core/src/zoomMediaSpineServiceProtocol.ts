@@ -5,9 +5,15 @@ import type {
   ZoomMediaSpineSnapshot,
   ZoomMediaSpineSubscriptionRequest
 } from "./zoomMediaSpine.js";
-import type { MediaCoreRecordingTargets } from "./protocol.js";
+import type { MediaCoreRecordingTargets, ZoomMediaSpineSyncPayload } from "./protocol.js";
 
 export type ZoomMediaSpineServiceRequest =
+  | {
+      id: string;
+      type: "zoom-media-spine-sync";
+      payload: ZoomMediaSpineSyncPayload;
+      elapsedMs: number;
+    }
   | {
       id: string;
       type: "zoom-configure";
@@ -56,6 +62,7 @@ export type ZoomMediaSpineServiceResponse =
   | {
       id: string;
       ok: true;
+      type?: ZoomMediaSpineServiceRequest["type"];
       zoom: ZoomMediaSpineSnapshot;
     }
   | {

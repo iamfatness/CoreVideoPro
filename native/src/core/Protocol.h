@@ -56,4 +56,13 @@ inline constexpr std::array<std::string_view, 10> kNativeBridgeCommandTypes = {
     "get-output-session",
 };
 
+inline constexpr std::array<std::string_view, 1> kCoreRequestTypes = {
+    "zoom-media-spine-sync",
+};
+
+inline constexpr std::array<std::string_view, 2> kZoomMediaSpineSyncTypeNames = {
+    "ZoomMediaSpineSyncPayload",
+    "ZoomMediaSpineNativeSnapshot",
+};
+
 }  // namespace corevideo::core
