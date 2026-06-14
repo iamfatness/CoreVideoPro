@@ -1759,3 +1759,33 @@ describe("lower thirds", () => {
     expect(within(panel).getByRole("button", { name: /Take Down/i })).not.toBeDisabled();
   });
 });
+
+describe("news ticker", () => {
+  it("shows the ticker panel with seeded items in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("News ticker");
+    expect(panel).toBeInTheDocument();
+    const list = within(panel).getByLabelText("Ticker items");
+    expect(list).toBeInTheDocument();
+    expect(within(list).getAllByRole("button", { name: /Remove ticker item/i }).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("adds a new item via the text input and Add button", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("News ticker");
+    const input = within(panel).getByLabelText("New ticker text");
+    fireEvent.change(input, { target: { value: "Special update" } });
+    await user.click(within(panel).getByRole("button", { name: /^Add$/i }));
+
+    const list = within(panel).getByLabelText("Ticker items");
+    expect(within(list).getByText("Special update")).toBeInTheDocument();
+  });
+});
