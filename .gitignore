@@ -7,3 +7,5 @@ native/build*/
 .claude/worktrees/
 test-results/
 playwright-report/
+scripts/sprint1-local.ps1
+.env.local

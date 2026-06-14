@@ -23,6 +23,8 @@ export type MediaCoreSupervisorOptions = {
   /** Args. Defaults to running the bundled Node stub via type-stripping. */
   args?: string[];
   cwd?: string;
+  /** Extra env vars merged into the child process (after the host process env). */
+  env?: NodeJS.ProcessEnv;
   requestTimeoutMs?: number;
   /** Max automatic restarts after unexpected exits before giving up. */
   maxRestarts?: number;
@@ -49,6 +51,7 @@ export class MediaCoreSupervisor {
   private readonly command: string;
   private readonly args: string[];
   private readonly cwd?: string;
+  private readonly childEnv: NodeJS.ProcessEnv;
   private readonly requestTimeoutMs: number;
   private readonly maxRestarts: number;
   private nextId = 1;
@@ -62,6 +65,7 @@ export class MediaCoreSupervisor {
     this.command = options.command ?? process.execPath;
     this.args = options.args ?? [STUB_PATH];
     this.cwd = options.cwd;
+    this.childEnv = { ...process.env, ...options.env };
     this.requestTimeoutMs = options.requestTimeoutMs ?? 4000;
     this.maxRestarts = options.maxRestarts ?? 5;
   }
@@ -176,7 +180,7 @@ export class MediaCoreSupervisor {
   }
 
   private spawnChild(): void {
-    const child = spawn(this.command, this.args, { cwd: this.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(this.command, this.args, { cwd: this.cwd, env: this.childEnv, stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     this.lines = createInterface({ input: child.stdout });
     this.lines.on("line", (line: string) => this.onLine(line));

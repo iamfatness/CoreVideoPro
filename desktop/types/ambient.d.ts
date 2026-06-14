@@ -14,11 +14,17 @@ declare const window: {
   coreVideoNative?: import("../../src/engine/nativeHostBridge").NativeHostBridge;
 };
 
+type NodeJS_ProcessEnv = Record<string, string | undefined>;
+
+declare namespace NodeJS {
+  type ProcessEnv = NodeJS_ProcessEnv;
+}
+
 declare const process: {
   execPath: string;
   platform: string;
   argv: string[];
-  env: Record<string, string | undefined>;
+  env: NodeJS_ProcessEnv;
   exit(code?: number): never;
   stdin: NodeJS_ReadableStream;
   stdout: NodeJS_WritableStream;
@@ -56,7 +62,7 @@ declare module "node:child_process" {
   export function spawn(
     command: string,
     args: string[],
-    options: { cwd?: string; stdio?: Array<"pipe"> }
+    options: { cwd?: string; env?: Record<string, string | undefined>; stdio?: Array<"pipe"> }
   ): ChildProcessWithoutNullStreams;
 }
 

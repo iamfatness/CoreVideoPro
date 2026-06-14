@@ -1,6 +1,7 @@
 import type { MediaCoreSupervisorOptions } from "./mediaCoreClient.ts";
+import { zoomMeetingSdkChildProcessEnv } from "../src/config/zoomMeetingSdk.ts";
 
-export function mediaCoreSupervisorOptionsFromEnv(env: NodeJS.ProcessEnv): Pick<MediaCoreSupervisorOptions, "command" | "args" | "cwd"> {
+export function mediaCoreSupervisorOptionsFromEnv(env: NodeJS.ProcessEnv): Pick<MediaCoreSupervisorOptions, "command" | "args" | "cwd" | "env"> {
   const command = env.COREVIDEO_MEDIA_CORE_COMMAND?.trim();
   if (!command) {
     return {};
@@ -9,8 +10,13 @@ export function mediaCoreSupervisorOptionsFromEnv(env: NodeJS.ProcessEnv): Pick<
   return {
     command,
     args: parseArgs(env.COREVIDEO_MEDIA_CORE_ARGS),
-    cwd: env.COREVIDEO_MEDIA_CORE_CWD?.trim() || undefined
+    cwd: env.COREVIDEO_MEDIA_CORE_CWD?.trim() || undefined,
+    env: zoomMeetingSdkChildProcessEnv(env)
   };
+}
+
+export function mediaCoreSupervisorEnvFromProcess(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return zoomMeetingSdkChildProcessEnv(env);
 }
 
 function parseArgs(value: string | undefined): string[] {

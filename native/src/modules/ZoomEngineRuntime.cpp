@@ -1,5 +1,6 @@
 #include "modules/ZoomEngineRuntime.h"
 
+#include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
 
 #include <algorithm>
@@ -67,6 +68,9 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
   config.executablePath = envString("COREVIDEO_ZOOM_ENGINE_PATH");
   config.sdkJwt = envString("COREVIDEO_ZOOM_SDK_JWT");
   config.publicAppKey = envString("COREVIDEO_ZOOM_PUBLIC_APP_KEY");
+  if (config.publicAppKey.empty()) {
+    config.publicAppKey = config::kEmbeddedZoomPublicAppKey;
+  }
   config.passcode = envString("COREVIDEO_ZOOM_MEETING_PASSCODE");
   config.onBehalfToken = envString("COREVIDEO_ZOOM_ON_BEHALF_TOKEN");
   config.userZak = envString("COREVIDEO_ZOOM_USER_ZAK");

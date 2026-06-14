@@ -117,6 +117,7 @@ import {
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
 import type { MediaCoreHealth, NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
+import { createEmbeddedZoomSdkReadinessInput } from "./config/zoomMeetingSdk";
 import { describeRuntimeEnvironment } from "./engine/runtimeEnvironment";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
@@ -203,17 +204,7 @@ export function App({ engines, runtime }: AppProps) {
     displayName: "CoreVideo Producer",
     webinar: true
   });
-  const [sdkReadinessInput] = useState<ZoomSdkReadinessInput>({
-    platform: "windows",
-    sdkRuntimePresent: false,
-    sdkVersion: undefined,
-    appKeyPresent: false,
-    oauthConfigured: false,
-    jwtBrokerConfigured: false,
-    rawVideoEnabled: false,
-    rawAudioEnabled: false,
-    rawShareEnabled: false
-  });
+  const [sdkReadinessInput] = useState<ZoomSdkReadinessInput>(() => createEmbeddedZoomSdkReadinessInput());
   const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
   const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
     sdkReadinessInput.platform === "windows"
