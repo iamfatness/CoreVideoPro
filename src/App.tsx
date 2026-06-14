@@ -75,6 +75,7 @@ import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeCh
 import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, snapshotTotals, speakerSharePct } from "./engine/speakerTimer";
 import { buildWatermarkSpec, classificationColor, confidentialityLevels, createWatermark, updateWatermark, validateWatermark, watermarkPositions, type WatermarkConfig } from "./engine/outputWatermark";
 import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/networkDiagnostics";
+import { advanceAnimation, animationPresets, animationTotalDurationMs, computeAnimationFrame, dismissAnimation, getAnimationPreset, startAnimation, type AnimationState } from "./engine/graphicAnimator";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -220,6 +221,8 @@ export function App({ engines, runtime }: AppProps) {
   const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
   const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
+  const [selectedAnimPresetId, setSelectedAnimPresetId] = useState(animationPresets[0].id);
+  const [animState, setAnimState] = useState<AnimationState | null>(null);
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -2563,6 +2566,79 @@ export function App({ engines, runtime }: AppProps) {
                   {qualityReport.warnings.map((w) => (
                     <p className="multitrack-warning" role="status" key={w}>{w}</p>
                   ))}
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Graphic animator">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Graphic animator
+            </div>
+            {(() => {
+              const preset = getAnimationPreset(selectedAnimPresetId) ?? animationPresets[0];
+              const simState = animState ?? { preset, phase: "idle" as const, phaseElapsedMs: 0, totalElapsedMs: 0 };
+              // Simulate 500ms advance for preview when running
+              const previewState = simState.phase !== "idle" && simState.phase !== "done"
+                ? advanceAnimation(simState, 0)
+                : simState;
+              const frame = computeAnimationFrame(previewState);
+              return (
+                <div className="anim-panel" aria-label="Animator panel">
+                  <label className="role-control">
+                    <span>Preset</span>
+                    <select
+                      aria-label="Animation preset"
+                      value={selectedAnimPresetId}
+                      onChange={(e) => {
+                        setSelectedAnimPresetId(e.target.value);
+                        setAnimState(null);
+                      }}
+                    >
+                      {animationPresets.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="health-grid">
+                    <ControlReadout label="Phase" value={previewState.phase} />
+                    <ControlReadout label="Opacity" value={`${Math.round(frame.opacity * 100)}%`} />
+                    <ControlReadout label="Duration" value={`${animationTotalDurationMs(preset)}ms`} />
+                    <ControlReadout label="Easing" value={preset.easing} />
+                  </div>
+                  <div className="anim-preview-track">
+                    <div
+                      className="anim-preview-indicator"
+                      style={{
+                        left: `${Math.min(100, (previewState.totalElapsedMs / animationTotalDurationMs(preset)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="anim-controls">
+                    <button
+                      className="ghost-button"
+                      aria-label="Play animation"
+                      disabled={previewState.phase !== "idle" && previewState.phase !== "done"}
+                      onClick={() => setAnimState(startAnimation(preset))}
+                    >
+                      Play
+                    </button>
+                    <button
+                      className="ghost-button"
+                      aria-label="Dismiss animation"
+                      disabled={previewState.phase === "idle" || previewState.phase === "done" || previewState.phase === "outro"}
+                      onClick={() => setAnimState((s) => s ? dismissAnimation(s) : s)}
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => setAnimState(null)}
+                    >
+                      Reset
+                    </button>
+                  </div>
                 </div>
               );
             })()}
