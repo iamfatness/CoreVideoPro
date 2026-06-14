@@ -2977,3 +2977,96 @@ meter {
 .disk-space-status.level-full .disk-space-warning {
   color: #f87171;
 }
+
+/* Show clock panel */
+.show-clock-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.show-clock-display {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #080f0d;
+  border-radius: 6px;
+  border: 1px solid #1e2e28;
+}
+
+.show-clock-elapsed {
+  font-size: 28px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #c6d4cc;
+  letter-spacing: -1px;
+}
+
+.show-clock-remaining {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #4ade80;
+}
+
+.show-clock-remaining.over {
+  color: #f87171;
+}
+
+.show-clock-total {
+  font-size: 11px;
+  color: #5a7a6c;
+  margin-left: auto;
+}
+
+.show-clock-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.show-clock-seg {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: #0e1812;
+  border: 1px solid #1e2e28;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s;
+}
+
+.show-clock-seg:hover { background: #131f1a; }
+.show-clock-seg.status-running { border-color: #4ade80; background: #0a1a0f; }
+.show-clock-seg.status-over { border-color: #f87171; background: #1a0a0a; }
+.show-clock-seg.status-done { opacity: 0.5; }
+.show-clock-seg.status-upcoming { opacity: 0.75; }
+
+.show-clock-seg strong {
+  font-size: 12px;
+  color: #c6d4cc;
+}
+
+.show-clock-seg span {
+  font-size: 11px;
+  color: #7a9e8c;
+  font-variant-numeric: tabular-nums;
+}
+
+.seg-status.status-running { color: #4ade80; font-weight: 700; }
+.seg-status.status-over { color: #f87171; font-weight: 700; }
+
+.show-clock-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.show-clock-controls .ghost-button {
+  flex: 1;
+  font-size: 12px;
+}

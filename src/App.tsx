@@ -59,6 +59,7 @@ import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutpu
 import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type FeedHealthSignal } from "./engine/feedHealth";
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
+import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -194,6 +195,9 @@ export function App({ engines, runtime }: AppProps) {
   const [mediaAssetKind, setMediaAssetKind] = useState<MediaAssetKind>(mediaAssetKinds[0]);
   const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
   const [expandedParticipantId, setExpandedParticipantId] = useState<string | null>(null);
+  const [showClockSegmentIndex, setShowClockSegmentIndex] = useState(-1);
+  const [showClockSegmentElapsed, setShowClockSegmentElapsed] = useState(0);
+  const [showClockTotalElapsed, setShowClockTotalElapsed] = useState(0);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -2437,6 +2441,77 @@ export function App({ engines, runtime }: AppProps) {
             <p className="auto-director-status">
               Auto: {production.autoProduction.action} {production.autoProduction.confidence}% - {production.autoProduction.reason}
             </p>
+          </section>
+
+          <section className="panel" aria-label="Show clock">
+            <div className="section-title">
+              <Activity size={15} />
+              Show clock
+            </div>
+            {(() => {
+              const sceneNames = production.scenes.map((s: SceneTemplate) => s.name);
+              const rundown = buildRundownFromScenes(sceneNames, Math.ceil(sceneNames.length * 8));
+              const clock = computeShowClock(rundown, showClockSegmentIndex, showClockSegmentElapsed, showClockTotalElapsed);
+              return (
+                <div className="show-clock-panel">
+                  <div className="show-clock-display" aria-label="Show clock display">
+                    <span className="show-clock-elapsed">{clock.elapsedLabel}</span>
+                    <span className={`show-clock-remaining ${clock.showOver ? "over" : ""}`}>
+                      {clock.remainingLabel}
+                    </span>
+                    <span className="show-clock-total">{formatClock(clock.totalPlannedSeconds)} planned</span>
+                  </div>
+                  <div className="show-clock-segments">
+                    {clock.segments.map((seg, i) => (
+                      <button
+                        key={seg.segmentId}
+                        className={`show-clock-seg status-${seg.status}`}
+                        onClick={() => {
+                          setShowClockSegmentIndex(i);
+                          setShowClockSegmentElapsed(0);
+                        }}
+                        aria-label={`${seg.name} segment`}
+                      >
+                        <strong>{seg.name}</strong>
+                        <span>{formatClock(seg.plannedSeconds)}</span>
+                        <span className={`seg-status status-${seg.status}`}>{seg.status}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="show-clock-controls">
+                    <button
+                      className="ghost-button"
+                      disabled={showClockSegmentIndex < 0}
+                      onClick={() => setShowClockSegmentElapsed((s) => s + 60)}
+                    >
+                      +1 min
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => {
+                        setShowClockSegmentIndex(-1);
+                        setShowClockSegmentElapsed(0);
+                        setShowClockTotalElapsed(0);
+                      }}
+                    >
+                      Reset
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={showClockSegmentIndex >= rundown.length - 1}
+                      onClick={() => {
+                        const next = showClockSegmentIndex + 1;
+                        setShowClockSegmentIndex(next);
+                        setShowClockSegmentElapsed(0);
+                        setShowClockTotalElapsed((t) => t + (rundown[showClockSegmentIndex]?.plannedSeconds ?? 0));
+                      }}
+                    >
+                      Next segment
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </section>
 
           <section className="panel" aria-label="Control surface">

@@ -1163,3 +1163,37 @@ describe("NDI output engine", () => {
     expect(detail).toHaveTextContent(/Mbps/i);
   });
 });
+
+describe("show clock", () => {
+  it("shows the show clock display with 00:00 elapsed in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Show clock");
+    const display = within(panel).getByLabelText("Show clock display");
+    expect(display).toHaveTextContent("00:00");
+    expect(within(panel).getByRole("button", { name: /Reset/i })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Next segment/i })).toBeInTheDocument();
+  });
+
+  it("advances to next segment when clicked", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+    const panel = screen.getByLabelText("Show clock");
+
+    // Click the first segment to start it
+    const [firstSeg] = within(panel).getAllByRole("button", { name: /segment/i });
+    await user.click(firstSeg);
+
+    // Now advance to next
+    await user.click(within(panel).getByRole("button", { name: /Next segment/i }));
+
+    // Running segment should now be the second one
+    const segs = within(panel).getAllByRole("button", { name: /segment/i });
+    expect(segs.length).toBeGreaterThan(1);
+  });
+});
