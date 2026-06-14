@@ -42,6 +42,7 @@ import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./en
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
+import { addMediaAsset, groupMediaBin, mediaAssetKinds, removeMediaAsset, summarizeMediaBin } from "./engine/mediaBin";
 import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
 import { describeVirtualCamera } from "./engine/virtualCamera";
@@ -63,6 +64,7 @@ import {
   type CaptionFontSize,
   type CaptionStyle,
   type GraphicOverlay,
+  type MediaAssetKind,
   type MediaFrameState,
   type OutputDestination,
   type OutputHealth,
@@ -174,6 +176,7 @@ export function App({ engines, runtime }: AppProps) {
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
   const [activeTab, setActiveTab] = useState<TabId>("studio");
   const [selectedStreamingPresetId, setSelectedStreamingPresetId] = useState(streamingPresets[0].id);
+  const [mediaAssetKind, setMediaAssetKind] = useState<MediaAssetKind>(mediaAssetKinds[0]);
   const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
   const [expandedParticipantId, setExpandedParticipantId] = useState<string | null>(null);
   const selectedParticipant = useMemo(
@@ -707,6 +710,20 @@ export function App({ engines, runtime }: AppProps) {
     setProduction((current) => ({
       ...current,
       virtualCamera: { ...current.virtualCamera, ...update }
+    }));
+  }
+
+  function addBinAsset() {
+    setProduction((current) => ({
+      ...current,
+      mediaBin: addMediaAsset(current.mediaBin, mediaAssetKind)
+    }));
+  }
+
+  function removeBinAsset(assetId: string) {
+    setProduction((current) => ({
+      ...current,
+      mediaBin: removeMediaAsset(current.mediaBin, assetId)
     }));
   }
 
@@ -2044,6 +2061,52 @@ export function App({ engines, runtime }: AppProps) {
                 <em>{production.colorGrade[axis] > 0 ? `+${production.colorGrade[axis]}` : production.colorGrade[axis]}</em>
               </label>
             ))}
+          </section>
+
+          <section className="panel" aria-label="Media bin">
+            <div className="section-title">
+              <Save size={15} />
+              Media bin
+            </div>
+            <p className="brand-kit-summary">{summarizeMediaBin(production.mediaBin)}</p>
+            <div className="media-bin-groups">
+              {groupMediaBin(production.mediaBin).map((group) => (
+                <div className="media-bin-group" key={group.kind}>
+                  <span className="media-bin-kind">{group.label}</span>
+                  {group.assets.map((asset) => (
+                    <div className="media-bin-asset" key={asset.id}>
+                      <strong>{asset.name}</strong>
+                      {asset.durationMs !== undefined && <em>{Math.round(asset.durationMs / 100) / 10}s</em>}
+                      <button
+                        className="icon-button"
+                        aria-label={`Remove ${asset.name}`}
+                        onClick={() => removeBinAsset(asset.id)}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="add-destination" aria-label="Add media asset">
+              <label>
+                <span>Asset type</span>
+                <select
+                  aria-label="Media asset type"
+                  onChange={(event) => setMediaAssetKind(event.target.value as MediaAssetKind)}
+                  value={mediaAssetKind}
+                >
+                  {mediaAssetKinds.map((kind) => (
+                    <option key={kind} value={kind}>{kind}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="ghost-button wide" onClick={addBinAsset}>
+                <Plus size={16} />
+                Add asset
+              </button>
+            </div>
           </section>
 
           {selectedParticipant && (
