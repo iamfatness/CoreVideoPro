@@ -6,29 +6,38 @@
 
 Tagline: **Pro Zoom productions in minutes, not hours.**
 
-Positioning: **CoreVideo Pro is a cross-platform, Zoom-native live production studio that turns remote participants into polished streams, webinars, interviews, and recordings with AI-assisted layouts, captions, lower-thirds, audio cleanup, and pro output built in.**
+Positioning: **CoreVideo Pro is a cross-platform, Zoom-native live production studio that turns remote participants and local pro cameras into polished streams, webinars, interviews, and recordings with AI-assisted layouts, captions, lower-thirds, audio cleanup, and pro output built in.**
 
-CoreVideo Pro competes directly with MimoLive, Ecamm, and vMix, but its wedge is narrower and stronger: it is the fastest way to create a professional show from Zoom participants without screen-capture hacks, complex switcher setup, or manual scene building.
+CoreVideo Pro competes directly with MimoLive, Ecamm, and vMix, but its wedge is narrower and stronger: it is the fastest way to create a professional show from Zoom participants - optionally mixed with local Blackmagic/AJA capture sources - without screen-capture hacks, complex switcher setup, or manual scene building.
+
+Ruthless simplicity is a product requirement, not a phase-1 compromise: every feature must earn its place in the UI by reducing operator effort, not adding configuration surface.
 
 ## Product Thesis
 
-Remote production is still too technical. vMix is powerful but intimidating. Ecamm is friendly but less flexible and Mac-focused. MimoLive is capable but more traditional than AI-native. CoreVideo Pro should win by making Zoom production feel automatic while preserving real production depth.
+Remote production is still too technical. vMix is powerful but intimidating, with a dense multi-window UI built for full-time switchers. Ecamm is friendly but less flexible, Mac-only, and treats Zoom as one input among many rather than the core workflow. MimoLive is capable and pro-grade (layers, NDI, PTZ, ISO recording, remote surfaces) but that depth comes at the cost of a steep learning curve and traditional, non-AI-native production thinking.
+
+CoreVideo Pro's bet: most Zoom-based shows (webinars, interviews, panels, podcasts) need 80% of MimoLive's output quality with 20% of its complexity, plus AI automation MimoLive doesn't attempt. We deliberately do not chase MimoLive's full layer-compositing depth, NDI ecosystem, PTZ camera control, multi-track ISO recording, or remote producer surfaces in the MVP - those are Phase 2+ if validated by demand. Instead we win on:
+
+1. The cleanest Zoom-native multi-participant capture and metadata pipeline in the category.
+2. AI auto-production (speaker detection, layout switching, lower-thirds, captions) that runs the show with minimal operator input.
+3. A hybrid model where one or two local Blackmagic/AJA capture devices slot in as first-class sources alongside Zoom feeds - useful for a host's pro camera/mic chain - without requiring a full hardware switcher workflow.
 
 The product promise:
 
-> Join Zoom, click Magic Scene, review the auto-built show, then stream or record.
+> Join Zoom (and plug in a camera if you have one), click Magic Scene, review the auto-built show, then stream or record.
 
 CoreVideo Pro is not an OBS companion and has no OBS dependency. It owns the full production stack:
 
 - Zoom-native capture.
+- Local Blackmagic/AJA capture device sources.
 - Participant metadata.
 - Scene layout.
 - AI auto-production.
 - GPU compositing.
-- Audio processing.
+- Audio processing (Zoom + local sources).
 - Captions and overlays.
 - Streaming and recording.
-- NDI, SRT, WebRTC, and RTMP output.
+- RTMP output in MVP; NDI, SRT, and WebRTC as roadmap output options.
 
 ## Game-Changing Differentiators
 
@@ -125,6 +134,21 @@ CoreVideo Pro must output like professional software:
 - WebRTC output for low-latency remote monitoring or contribution in Phase 2.
 - Hardware-accelerated encode and render from day one.
 
+### 7. Hybrid Local Capture: Blackmagic and AJA Devices
+
+CoreVideo Pro treats one or two local capture devices as first-class sources that mix directly with Zoom participant feeds in the same scene graph - no separate switcher, no NDI bridge, no virtual camera round-trip required.
+
+Core capabilities:
+
+- Auto-detect connected Blackmagic DeckLink/UltraStudio and AJA Io/Kona devices on app launch and hot-plug.
+- Per-device input selection (SDI/HDMI, resolution, frame rate, color space) with sensible auto-detected defaults.
+- Local capture sources appear in the same source list as Zoom participants and can fill any template slot (host cam, cutaway, B-roll).
+- Per-source audio: embedded SDI/HDMI audio or a separate audio device, routed into the same audio mixer as Zoom participant audio.
+- Low end-to-end latency (target sub-100ms capture-to-preview) with a manual A/V sync offset control to align local camera audio/video against Zoom audio.
+- Source health: signal-present, format mismatch, dropped-frame, and device-disconnected states surfaced like Zoom feed health.
+
+Explicitly out of scope for MVP (MimoLive-style depth we are not chasing yet): multi-camera PTZ control, NDI source/output, simultaneous multi-device ISO recording, and remote producer/contribution surfaces. A single local capture source (most commonly the host's camera) covers the dominant "Zoom-plus-host-cam" use case; multi-device support is a Phase 2 expansion once core demand is validated.
+
 ## Target Users
 
 Primary:
@@ -146,150 +170,111 @@ Secondary:
 
 ## Prioritized MVP Feature List: 8-12 Weeks
 
-### P0: Zoom-Native Capture
+The MVP is ordered to de-risk the hardest integration first (Zoom SDK), then layer automation, layouts, branding, audio, output, and finally polish the UI down to something genuinely minimalist. Local capture device support rides alongside Zoom capture as a parallel-but-secondary P0 track once the Zoom pipeline is stable.
+
+### P0-1: Zoom SDK Clean Integration + Metadata
 
 - Join Zoom by URL, meeting ID, or scheduled meeting.
 - OAuth/sign-in flow appropriate for Zoom Meeting SDK requirements.
-- Clean participant video for up to 6 participants.
+- Clean participant video for up to 6 participants, no window-capture hacks.
 - Clean participant audio where SDK entitlement permits.
 - Active screen-share capture.
-- Participant metadata roster.
-- Active speaker detection.
-- Feed health tracking:
-  - waiting.
-  - live.
-  - stale.
-  - low resolution.
-  - muted.
-  - video off.
-  - disconnected.
-  - recovering.
+- Participant metadata roster: display name, role (host/co-host/panelist/guest/presenter), mute state, video state, talking state.
+- Feed health tracking: waiting, live, stale, low resolution, muted, video off, disconnected, recovering.
 - Automatic reconnect and recovery.
+- Dedicated SDK process/thread for crash isolation from the renderer.
 
-### P0: Magic Scene
+### P0-2: Active Speaker Detection + Automatic Layout Switching
 
-- One-click scene generation.
-- Auto-select templates from participant count and roles.
-- Auto-fill participant slots.
-- Auto-add screen share when present.
-- Auto-add lower-thirds.
-- Auto-apply brand kit.
-- Auto-generate intro, main, screen-share, panel, and closing scenes.
-- Regenerate scene set without destroying manual edits unless confirmed.
+- Real-time active speaker detection from Zoom metadata plus local audio levels, with debounce and hold timing.
+- Automatic layout switching when the active speaker changes, screen share starts/stops, or participant count changes.
+- Speaker hold/sensitivity controls to avoid rapid cuts.
+- Manual take/release override that always wins over automation, with one-click "return to auto."
+- Role priority for automated decisions: host preferred for intros/outros, presenter preferred during screen share, active speaker preferred during discussion.
+- This is the "Set & Forget" mode: once enabled, the show runs itself.
 
-### P0: AI Auto-Production
+### P0-3: Core Layouts (Grid, Speaker Focus, Picture-in-Picture)
 
-- Set & Forget mode.
-- Active speaker focus.
-- Auto layout changes when screen share starts/stops.
-- Auto lower-third reveal for newly featured speakers.
-- Speaker hold/sensitivity controls.
-- Manual take/release override.
-- Role priority:
-  - host preferred for intros/outros.
-  - presenter preferred during screen share.
-  - active speaker preferred during discussion.
+- Grid layout: even tiling for 2-6 participants, auto-reflow as participants join/leave.
+- Speaker focus layout: one large active-speaker tile plus a thumbnail strip of other participants.
+- Picture-in-picture layout: primary source (screen share or speaker) with a small inset for a second source (host cam or local capture device).
+- Layouts are the rendering primitives that templates and Magic Scene compose from - keep this set small and orthogonal.
+- Smooth cut/fade transitions between layouts.
 
-### P0: Smart Participant Handling
+### P0-4: Dynamic Lower Thirds from Zoom Data
 
-- Face-aware auto-crop.
-- Centering and headroom adjustment.
-- Per-person audio leveling.
-- Noise suppression toggle.
+- Auto-generate lower-thirds from Zoom participant display name and role with zero manual entry.
+- Manual name/title override per participant for cases where Zoom display names aren't presentation-ready.
+- Auto-reveal lower-third when a participant first becomes featured (active speaker focus or PIP).
+- Auto-hide on a timer or when the participant is no longer featured.
+- Adaptive placement to avoid covering captions or other overlays.
+- Brand-styled template (logo, color, font) applied automatically.
+
+### P0-5: 3-5 Professional Templates with One-Click Apply
+
+MVP template set (deliberately small - "3-5", not 12):
+
+- Solo speaker / presenter.
+- Two-person interview (side-by-side or speaker-focus + PIP).
+- Podcast/panel grid (3-6 participants).
+- Screen share + presenter (host plus slides).
+- Webinar intro/outro (branded title card with lower-thirds for hosts).
+
+Each template is a one-click apply: selecting it maps current participants into slots by role/active-speaker rules, applies the brand kit, and adds the appropriate lower-thirds - this is the "Magic Scene" workflow, scoped to a small, polished template set rather than a sprawling library.
+
+### P0-6: Local Capture Devices - Blackmagic and AJA
+
+- Auto-detect connected Blackmagic DeckLink/UltraStudio and AJA Io/Kona devices on launch and hot-plug.
+- Per-device input selection (SDI/HDMI port, resolution, frame rate, color space) with auto-detected defaults.
+- Local capture source appears in the same source list as Zoom participants and can fill any layout/template slot.
+- Source health: signal-present, format mismatch, dropped-frame, device-disconnected.
+- Manual A/V sync offset to align local camera audio against Zoom audio.
+- MVP target: reliable support for one local capture device (the common "Zoom plus host cam" case); a second simultaneous device is a stretch goal, not a blocker.
+
+### P0-7: Per-Participant Audio Mixing + Basic Noise Suppression
+
+- Per-participant (Zoom and local capture) gain control.
+- Auto leveling so participants sound balanced without manual mixing.
+- Basic noise suppression toggle per source.
 - Per-person mute/solo.
-- Video-off placeholder.
-- Low-quality feed warning.
-- Manual crop override.
+- Master output meter with limiter and clipping warning.
+- Audio sync offset for local capture sources.
 
-### P0: Scene Builder
+### P0-8: Recording + Streaming (YouTube, RTMP)
 
-- Preview/program canvas.
-- Drag-and-drop sources.
-- Resize, crop, position, and layer.
-- Snap alignment.
-- Scene list.
-- Scene duplicate.
-- Scene transitions:
-  - cut.
-  - fade.
-  - push.
-- Template slots:
-  - fixed participant.
-  - active speaker.
-  - role-based participant.
-  - screen share.
-  - gallery.
+- Local MP4 recording, 1080p, 30/60fps where hardware permits.
+- RTMP streaming with a YouTube preset (pre-filled ingest URL, stream key field) and a generic custom RTMP preset.
+- Hardware H.264 encoding: Windows (NVENC, Quick Sync, AMF), macOS (VideoToolbox).
+- Output health: bitrate, dropped frames, encoder load, network warning, disk-space warning.
+- Start/stop record and stream from one primary control, with clear armed/live state.
 
-### P0: Template Library
+### P0-9: Minimalist Drag-and-Drop UI
 
-MVP templates:
-
-- Solo speaker.
-- Two-person interview.
-- Two-person picture-in-picture.
-- Three-person feature.
-- Four-person grid.
-- Six-person panel.
-- Active speaker plus gallery.
-- Host plus screen share.
-- Presenter plus slides.
-- Podcast duo.
-- Webinar intro.
-- Webinar outro.
-
-### P0: Graphics, Lower-Thirds, and Captions
-
-- Logo upload.
-- Brand color.
-- Background image.
-- Lower-third templates.
-- Auto lower-thirds from Zoom names.
-- Manual name/title override.
-- Text overlays.
-- Image overlays.
-- Countdown timer.
-- Real-time program captions.
-- Caption style controls.
-- Adaptive placement to avoid lower-third/caption collisions.
-
-### P0: Audio Mixer
-
-- Per-participant gain.
-- Auto leveling.
-- Noise suppression.
-- Mute/solo.
-- Master meter.
-- Output limiter.
-- Clipping warning.
-- Audio sync offset.
-
-### P0: Output
-
-- Local MP4 recording.
-- RTMP streaming.
-- YouTube preset.
-- Twitch preset.
-- Custom RTMP preset.
-- 1080p output.
-- 30/60 fps options where hardware permits.
-- Hardware H.264 encoding:
-  - Windows: NVENC, Intel Quick Sync, AMD AMF.
-  - macOS: VideoToolbox.
-- Output health:
-  - bitrate.
-  - dropped frames.
-  - encoder load.
-  - network warning.
-  - disk-space warning.
+- Single main window: program/preview canvas, source list (Zoom participants + local capture), template picker, and record/stream controls - no multi-window switcher complexity.
+- Drag sources onto layout slots; drag to reorder/replace.
+- One-click Magic Scene / template apply, one-click Set & Forget toggle, one-click record/stream.
+- Real-time captions and lower-thirds rendered directly in the canvas with adaptive placement to avoid collisions.
+- Every advanced control (manual crop, gain, sync offset) lives in a collapsible per-source panel - hidden by default, available in one click.
 
 ### P1 During MVP If Time Allows
 
-- NDI program output.
-- SRT output.
-- ISO recording for participant feeds.
-- Virtual camera output.
+- Smart participant handling depth: face-aware auto-crop, centering/headroom adjustment, low-quality feed warning, manual crop override.
+- Real-time AI captions with caption style controls.
+- Brand kit manager (logo upload, brand color, background).
+- Twitch preset and additional custom RTMP presets.
+- Second local capture device support.
 - Per-speaker caption attribution.
+
+### Phase 2+ (Not in MVP, MimoLive-style depth deferred intentionally)
+
+- NDI input/output.
+- SRT output.
+- WebRTC monitoring/contribution output.
+- PTZ camera control.
+- Multi-device ISO recording.
+- Remote producer/contribution surfaces.
 - Stream Deck/Companion control API.
+- Virtual camera output.
 
 ## Recommended Tech Stack
 
@@ -334,6 +319,16 @@ Architectural constraint: Electron, Tauri, React, or any web renderer may host t
 - OAuth/PKCE for account authorization.
 - Entitlement checks at startup.
 - Dedicated SDK engine process for crash isolation.
+
+### Local Capture Layer: Blackmagic and AJA
+
+- **Blackmagic DeckLink SDK** for DeckLink/UltraStudio device enumeration, format detection, and frame callbacks on both Windows and macOS.
+- **AJA NTV2 SDK (AJA Software Development Kit)** for Io/Kona device support, mirroring the same enumeration/format/frame-callback model.
+- A thin "capture device" abstraction in the native media core normalizes both SDKs to a common frame + audio buffer interface, so the compositor and audio mixer don't need to know which vendor is in use.
+- Capture runs in the same native media core process as the GPU compositor (not a separate IPC hop) to keep capture-to-preview latency low; device enumeration/hot-plug events are pushed to the renderer over the typed IPC bridge.
+- Format negotiation: auto-detect input signal format/resolution/frame rate on connect; surface a manual override in the UI for edge cases (e.g., odd frame rates, color space mismatches).
+- Frame timestamps from capture hardware feed the same A/V sync pipeline used for Zoom audio, enabling the manual sync-offset control.
+- Both SDKs are free to integrate (no royalty), but require their own redistributable drivers (Desktop Video for Blackmagic, AJA drivers) - document as a one-time host setup step, not an in-app download.
 
 ### AI Layer
 
@@ -388,21 +383,25 @@ Suggested stack:
 flowchart LR
     Zoom["Zoom Meeting"]
     ZoomEngine["Zoom Capture Engine"]
+    CaptureDevices["Blackmagic / AJA Capture Devices"]
+    CaptureEngine["Local Capture Engine"]
     Bus["Shared Media Bus"]
     Metadata["Participant Metadata"]
     AI["AI Production Layer"]
-    Scene["Scene Graph + Template Engine"]
+    Scene["Scene Graph + Layout/Template Engine"]
     Caption["Caption Engine"]
     GPU["GPU Compositor"]
     Audio["Audio Mixer + DSP"]
     Encoder["Encoder / Recorder"]
-    Outputs["RTMP / NDI / SRT / WebRTC / File"]
+    Outputs["RTMP / File (MVP); NDI / SRT / WebRTC (Phase 2)"]
     UI["CoreVideo Pro UI"]
     Project["Projects / Templates / Brand Kits"]
     Health["Diagnostics + Recovery"]
 
     Zoom --> ZoomEngine
+    CaptureDevices --> CaptureEngine
     ZoomEngine --> Bus
+    CaptureEngine --> Bus
     ZoomEngine --> Metadata
     Bus --> Scene
     Bus --> Audio
@@ -421,6 +420,7 @@ flowchart LR
     Audio --> Encoder
     Encoder --> Outputs
     ZoomEngine --> Health
+    CaptureEngine --> Health
     Encoder --> Health
     Health --> UI
 ```
@@ -570,10 +570,12 @@ Template selection considers:
 | Smart participant framing | Core feature | Manual/advanced | Limited | Manual/advanced |
 | Per-person audio leveling | Core feature | Advanced/manual | Good/basic | Advanced/manual |
 | Real-time AI captions/overlays | Core feature | External/manual | Limited | External/manual |
-| Pro scene depth | Strong | Excellent | Medium | Strong |
+| Pro scene depth | Focused, not exhaustive | Excellent | Medium | Excellent |
+| Hybrid local capture (Blackmagic/AJA) as first-class source | MVP, plug-and-play | Yes, advanced config | No | Yes, advanced config |
 | Cross-platform Mac + Windows | Yes | Windows-first | Mac-focused | Mac-focused |
-| NDI/SRT/WebRTC | Native roadmap | Strong | Limited/good depending output | Strong NDI |
-| Best for Zoom-based remote shows | Yes | Powerful but complex | Easy but less flexible | Capable but less AI-native |
+| NDI/PTZ/ISO recording/remote surfaces | Phase 2+, deferred | Strong | Limited | Strong |
+| Output protocols at MVP | RTMP + local file | RTMP/NDI/SRT/etc. | RTMP + local file | RTMP/NDI/etc. |
+| Best for Zoom-based remote shows | Yes | Powerful but complex | Easy but less flexible | Capable but less AI-native and more complex |
 
 ## How CoreVideo Pro Wins
 
@@ -593,10 +595,10 @@ Against Ecamm:
 
 Against MimoLive:
 
-- More modern AI-native workflow.
-- Faster show creation.
-- Magic Scene makes the first polished output nearly instant.
-- More focused on Zoom participant production as the killer feature.
+- More modern AI-native workflow with Set & Forget automation MimoLive doesn't offer.
+- Faster show creation - Magic Scene makes the first polished output nearly instant, versus MimoLive's layer/document setup.
+- More focused on Zoom participant production as the killer feature, with Blackmagic/AJA capture as a clean secondary source rather than a fully separate switcher workflow.
+- Deliberately simpler: we do not match MimoLive's layer-compositing depth, NDI ecosystem, PTZ control, ISO recording, or remote surfaces in MVP, trading that depth for a dramatically lower learning curve. Customers who need that depth are better served by MimoLive; customers who want a fast, automated Zoom-based show are better served by CoreVideo Pro.
 
 ## Roadmap
 
@@ -606,36 +608,45 @@ Against MimoLive:
 - Validate participant count and bandwidth limits.
 - Validate macOS and Windows hardware encode paths.
 - Validate caption latency and cost.
-- Validate NDI/SRT/WebRTC implementation choices.
+- Validate Blackmagic DeckLink SDK and AJA NTV2 SDK integration on both platforms with one representative device each.
+- Validate NDI/SRT/WebRTC implementation choices (Phase 2 only - not blocking MVP).
 
 ### Phase 1: MVP
 
-- Zoom-native capture.
-- Magic Scene.
+- Zoom-native capture + metadata.
+- Active speaker detection and automatic layout switching (Set & Forget).
+- Core layouts: grid, speaker focus, picture-in-picture.
+- Dynamic lower-thirds from Zoom data.
+- 3-5 one-click professional templates (Magic Scene).
+- One local Blackmagic or AJA capture device as a first-class source.
+- Per-participant audio mixing with basic noise suppression.
 - 1080p local recording.
-- RTMP streaming.
-- AI Auto-Production basics.
-- Smart framing.
-- Lower-thirds.
-- Captions.
-- Audio leveling/noise suppression.
-- Template system.
-- Diagnostics.
+- RTMP streaming with YouTube preset.
+- Minimalist drag-and-drop single-window UI.
+- Diagnostics/support bundle.
 
 ### Phase 2: Pro Expansion
 
+- Real-time AI captions with style controls.
+- Brand kit manager (logo, color, background).
 - 4K output.
+- Second local capture device, simultaneous Blackmagic + AJA.
 - NDI output.
 - SRT output.
 - WebRTC monitor output.
 - ISO recording.
 - Multitrack audio.
 - Virtual camera.
-- Advanced graphics.
-- Stingers.
-- LUTs.
-- Media bins.
+- Advanced graphics, stingers, LUTs, media bins.
 - Stream Deck and Companion integrations.
+
+### Phase 3: Pro Surfaces (Validate Before Building)
+
+- PTZ camera control.
+- Remote producer/contribution surfaces.
+- Full layer-compositing depth comparable to MimoLive.
+
+Only pursue Phase 3 items if MVP/Phase 2 usage data shows demand - these are the areas where matching MimoLive's complexity would undermine the "ruthless simplicity" positioning unless customers are explicitly asking for them.
 
 ### Phase 3: AI Studio
 
