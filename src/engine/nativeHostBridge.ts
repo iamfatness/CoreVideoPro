@@ -1,5 +1,7 @@
 import type { NativeBridgeCommand, NativeBridgeResponse, NativeZoomTransport } from "./nativeBridgeProtocol";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 
 export type NativeHostBridge = {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
@@ -7,6 +9,7 @@ export type NativeHostBridge = {
   host: "native-shell" | "tauri" | "electron" | "test-host" | string;
   mediaCoreProfile?: NativeMediaCoreProfile;
   syncMediaCore?(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+  syncZoomMediaSpine?(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
 };
 
 declare global {
