@@ -7,7 +7,7 @@ import {
   isMediaCoreSnapshotResponse,
   nextBridgeCommandId
 } from "./nativeBridgeProtocol";
-import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 
@@ -18,6 +18,7 @@ export type NativeHostBridge = {
   mediaCoreProfile?: NativeMediaCoreProfile;
   syncMediaCore?(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine?(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
+  getMediaCoreHealth?(): Promise<MediaCoreHealth>;
 };
 
 declare global {
@@ -112,6 +113,28 @@ export async function syncZoomMediaSpineThroughBridge(
 export function attachBridgeZoomMediaSpineSync(bridge: NativeHostBridge): NativeHostBridge {
   if (!bridge.syncZoomMediaSpine) {
     bridge.syncZoomMediaSpine = (payload, elapsedMs) => syncZoomMediaSpineThroughBridge(bridge, payload, elapsedMs);
+  }
+  return bridge;
+}
+
+/**
+ * Ensure a bridge exposes `getMediaCoreHealth`, backed by the unified `request`
+ * RPC. Returns synthetic zero-health when the core is unreachable.
+ */
+export function attachBridgeMediaCoreHealth(bridge: NativeHostBridge): NativeHostBridge {
+  if (!bridge.getMediaCoreHealth) {
+    bridge.getMediaCoreHealth = async (): Promise<MediaCoreHealth> => {
+      try {
+        const id = nextBridgeCommandId("media-core-health");
+        const response = await bridge.request({ id, type: "get-media-core-health" });
+        if (response.ok && "health" in response) {
+          return response.health as MediaCoreHealth;
+        }
+      } catch {
+        // Bridge unavailable — return a safe default.
+      }
+      return { restartCount: 0, recovering: false, stopped: false };
+    };
   }
   return bridge;
 }

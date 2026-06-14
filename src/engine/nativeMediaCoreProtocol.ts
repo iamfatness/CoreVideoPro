@@ -461,6 +461,12 @@ export const requiredMvpMediaCoreCapabilities: NativeMediaCoreCapability[] = [
   "rtmp-output"
 ];
 
+export type MediaCoreHealth = {
+  restartCount: number;
+  recovering: boolean;
+  stopped: boolean;
+};
+
 export function validateNativeMediaCoreProfile(profile: NativeMediaCoreProfile): NativeMediaCoreValidation {
   const missingCapabilities = requiredMvpMediaCoreCapabilities.filter((capability) => !profile.capabilities.includes(capability));
   const warnings: string[] = [];

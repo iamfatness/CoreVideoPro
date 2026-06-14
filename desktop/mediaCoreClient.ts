@@ -8,7 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
@@ -49,6 +49,8 @@ export class MediaCoreSupervisor {
   private nextId = 1;
   private restarts = 0;
   private stopped = false;
+  private recovering = false;
+  private syncInFlight = false;
   private profile: NativeMediaCoreProfile | undefined;
 
   constructor(private readonly options: MediaCoreSupervisorOptions = {}) {
@@ -79,9 +81,14 @@ export class MediaCoreSupervisor {
     return this.profile;
   }
 
+  getHealth(): MediaCoreHealth {
+    return { restartCount: this.restarts, recovering: this.recovering, stopped: this.stopped };
+  }
+
   async handshake(): Promise<NativeMediaCoreProfile | undefined> {
     const response = await this.send({ id: this.createId(), type: "handshake" });
     if (response.ok && response.type === "handshake") {
+      this.recovering = false;
       this.profile = response.profile;
       this.options.onProfile?.(response.profile);
       return response.profile;
@@ -95,12 +102,20 @@ export class MediaCoreSupervisor {
   }
 
   async syncMediaCore(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
-    const response = await this.send({ id: this.createId(), type: "media-core-sync", commands, elapsedMs });
-    if (response.ok && response.type === "media-core-sync") {
-      return response.snapshot;
+    if (this.syncInFlight) {
+      throw new Error("media-core sync in flight; skipped for backpressure");
     }
-    const message = response.ok ? "Unexpected response type." : response.error.message;
-    throw new Error(`media-core sync failed: ${message}`);
+    this.syncInFlight = true;
+    try {
+      const response = await this.send({ id: this.createId(), type: "media-core-sync", commands, elapsedMs });
+      if (response.ok && response.type === "media-core-sync") {
+        return response.snapshot;
+      }
+      const message = response.ok ? "Unexpected response type." : response.error.message;
+      throw new Error(`media-core sync failed: ${message}`);
+    } finally {
+      this.syncInFlight = false;
+    }
   }
 
   async syncZoomMediaSpine(spinePayload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot> {
@@ -162,6 +177,7 @@ export class MediaCoreSupervisor {
 
     // Crash isolation: an unexpected exit never takes the host down; we restart.
     this.restarts += 1;
+    this.recovering = true;
     this.options.onCrash?.({ code, restartCount: this.restarts });
     if (this.restarts > this.maxRestarts) {
       this.child = undefined;

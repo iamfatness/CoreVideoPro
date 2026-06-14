@@ -1,5 +1,5 @@
 import type { NativeHostBridge } from "./nativeHostBridge";
-import type { NativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
 import { validateNativeMediaCoreProfile } from "./nativeMediaCoreProtocol";
 
 export type RuntimeEnvironmentStatus = "mock" | "ready" | "degraded" | "unsupported";
@@ -14,7 +14,8 @@ export type RuntimeEnvironment = {
 
 export function describeRuntimeEnvironment(
   bridge: NativeHostBridge | undefined,
-  profile?: NativeMediaCoreProfile
+  profile?: NativeMediaCoreProfile,
+  health?: MediaCoreHealth
 ): RuntimeEnvironment {
   if (!bridge) {
     return {
@@ -23,6 +24,17 @@ export function describeRuntimeEnvironment(
       host: "browser-preview",
       platform: "web",
       warnings: ["Running with simulated Zoom and output engines."]
+    };
+  }
+
+  if (health?.recovering) {
+    const restarts = health.restartCount;
+    return {
+      status: "degraded",
+      label: `Media core recovering (${restarts} restart${restarts === 1 ? "" : "s"})`,
+      host: bridge.host,
+      platform: bridge.platform,
+      warnings: ["The media core child process crashed and is restarting automatically."]
     };
   }
 

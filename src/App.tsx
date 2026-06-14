@@ -114,7 +114,8 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
-import type { NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreEvent, NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
+import { describeRuntimeEnvironment } from "./engine/runtimeEnvironment";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
@@ -301,6 +302,7 @@ export function App({ engines, runtime }: AppProps) {
     { rttMs: 61, packetLossPct: 0.2, jitterMs: 6, timestampMs: Date.now() - 2000 },
     { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
   ]);
+  const [mediaCoreHealth, setMediaCoreHealth] = useState<MediaCoreHealth | undefined>(undefined);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -436,6 +438,11 @@ export function App({ engines, runtime }: AppProps) {
       void engines.spineController.syncProduction(production, sdkReadinessInput, { elapsedMs: elapsedSeconds * 1000 });
     }
 
+    const nativeBridge = (window as { coreVideoNative?: { getMediaCoreHealth?(): Promise<MediaCoreHealth> } }).coreVideoNative;
+    if (nativeBridge?.getMediaCoreHealth) {
+      void nativeBridge.getMediaCoreHealth().then((h) => { if (mounted) setMediaCoreHealth(h); }).catch(() => {});
+    }
+
     return () => {
       mounted = false;
     };
@@ -455,6 +462,11 @@ export function App({ engines, runtime }: AppProps) {
     production.videoEffects,
     sdkReadinessInput
   ]);
+
+  const nativeBridgeForRuntime = (window as { coreVideoNative?: import("./engine/nativeHostBridge").NativeHostBridge }).coreVideoNative;
+  const liveRuntime = nativeBridgeForRuntime && runtime
+    ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
+    : runtime;
 
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
     const captureDevices = await engines.captureDevices.selectInput(deviceId, inputId);
@@ -1406,11 +1418,11 @@ export function App({ engines, runtime }: AppProps) {
               {formatElapsed(elapsedSeconds)}
             </p>
             <div className="settings-actions">
-              {runtime && (
-                <div className={`runtime-badge runtime-${runtime.status}`} aria-label="Desktop runtime">
-                  <strong>{runtime.label}</strong>
+              {liveRuntime && (
+                <div className={`runtime-badge runtime-${liveRuntime.status}`} aria-label="Desktop runtime">
+                  <strong>{liveRuntime.label}</strong>
                   <span>
-                    {runtime.host} / {runtime.platform}
+                    {liveRuntime.host} / {liveRuntime.platform}
                   </span>
                 </div>
               )}

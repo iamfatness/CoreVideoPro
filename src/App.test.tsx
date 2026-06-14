@@ -1812,3 +1812,22 @@ describe("Zoom SDK pre-flight", () => {
     expect(joinBtn).toBeDisabled();
   });
 });
+
+describe("supervisor health recovery", () => {
+  it("describeRuntimeEnvironment returns degraded when health shows core is recovering", async () => {
+    const { describeRuntimeEnvironment } = await import("./engine/runtimeEnvironment");
+    const mockBridge = {
+      host: "electron" as const,
+      platform: "win32" as const,
+      request: async () => ({ id: "x", ok: false as const, error: { code: "protocol-error" as const, message: "stub" } })
+    };
+    const runtime = describeRuntimeEnvironment(
+      mockBridge,
+      undefined,
+      { restartCount: 2, recovering: true, stopped: false }
+    );
+    expect(runtime.status).toBe("degraded");
+    expect(runtime.label).toMatch(/recovering/i);
+    expect(runtime.warnings[0]).toMatch(/crashed/i);
+  });
+});

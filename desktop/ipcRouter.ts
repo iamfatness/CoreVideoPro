@@ -14,7 +14,7 @@ import type {
   NativeCaptionCueState,
   NativeCaptionTrackState
 } from "../src/engine/nativeBridgeProtocol";
-import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
@@ -25,6 +25,7 @@ export type MediaCoreBackend = {
   handshake(): Promise<NativeMediaCoreProfile | undefined>;
   syncMediaCore(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
+  getHealth(): MediaCoreHealth;
 };
 
 export type IpcRouterOptions = {
@@ -181,6 +182,10 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
           const snapshot = await mediaCore.syncMediaCore(command.payload.commands, command.payload.elapsedMs);
           return { id, ok: true, snapshot };
         }
+
+        // ----- Media core health (handled at router layer) -----
+        case "get-media-core-health":
+          return { id, ok: true, health: mediaCore.getHealth() };
 
         // ----- Zoom media spine (delegated to the supervised child process) -----
         case "zoom-media-spine-sync": {

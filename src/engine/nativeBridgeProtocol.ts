@@ -152,6 +152,12 @@ export type NativeZoomMediaSpineBridgeCommand = {
   };
 };
 
+/** Health query — handled at the IPC router layer, not forwarded to the native core. */
+export type NativeGetMediaCoreHealthCommand = {
+  id: string;
+  type: "get-media-core-health";
+};
+
 /** Caption track commands. Stub-backed in the desktop IPC router for now. */
 export type NativeCaptionCommand =
   | {
@@ -182,7 +188,8 @@ export type NativeBridgeCommand =
   | NativeMediaCoreBridgeCommand
   | NativeZoomMediaSpineBridgeCommand
   | NativeAudioCommand
-  | NativeCaptionCommand;
+  | NativeCaptionCommand
+  | NativeGetMediaCoreHealthCommand;
 
 export type NativeZoomResponse =
   | {
@@ -282,6 +289,18 @@ export type NativeZoomMediaSpineResponse =
       };
     };
 
+export type NativeMediaCoreHealthResponse =
+  | {
+      id: string;
+      ok: true;
+      health: import("./nativeMediaCoreProtocol").MediaCoreHealth;
+    }
+  | {
+      id: string;
+      ok: false;
+      error: { code: "native-unavailable" | "protocol-error"; message: string };
+    };
+
 export type NativeAudioBusState = {
   busId: string;
   label: string;
@@ -339,7 +358,8 @@ export type NativeBridgeResponse =
   | NativeMediaCoreBridgeResponse
   | NativeZoomMediaSpineResponse
   | NativeAudioResponse
-  | NativeCaptionResponse;
+  | NativeCaptionResponse
+  | NativeMediaCoreHealthResponse;
 
 export interface NativeZoomTransport {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
