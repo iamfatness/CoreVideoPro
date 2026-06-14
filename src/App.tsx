@@ -81,6 +81,7 @@ import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipC
 import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
 import { advanceScroll, createTeleprompter, formatReadTime, jumpToLine, pauseScroll, resetScroll, setSpeed, startScroll, teleprompterView, type TeleprompterState } from "./engine/teleprompter";
 import { addPlate, createDeck, queuedPlates, requeuePlate, showNext, showPlate, summarizeDeck, takeDown, toneLabel, type LowerThirdDeck } from "./engine/lowerThird";
+import { addTickerItem, advanceTicker, clearTicker, createTicker, currentTickerItem, pauseTicker, priorityLabel, removeTickerItem, setTickerLoop, setTickerSpeed, startTicker, stopTicker, summarizeTicker, type TickerItemPriority, type TickerState } from "./engine/newsTicker";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -265,6 +266,16 @@ export function App({ engines, runtime }: AppProps) {
     d = addPlate(d, "Sofia Marchetti", "Special Guest", "Marchetti Studios", "guest");
     return d;
   });
+  const [ticker, setTicker] = useState<TickerState>(() => {
+    let t = createTicker();
+    t = addTickerItem(t, "Welcome to the show — streaming live now", "normal", "LIVE");
+    t = addTickerItem(t, "Submit your questions using the Q&A panel", "normal", "INFO");
+    t = addTickerItem(t, "Today's keynote begins in 5 minutes", "breaking", "ALERT");
+    return t;
+  });
+  const [newTickerText, setNewTickerText] = useState("");
+  const [newTickerPriority, setNewTickerPriority] = useState<TickerItemPriority>("normal");
+  const [newTickerTag, setNewTickerTag] = useState("");
   const [networkSamples] = useState<NetworkSample[]>([
     { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
     { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
@@ -3711,6 +3722,119 @@ export function App({ engines, runtime }: AppProps) {
                 </div>
               );
             })()}
+          </section>
+
+          <section className="panel" aria-label="News ticker">
+            <div className="section-title">
+              <Activity size={15} />
+              News ticker
+            </div>
+            <p className="brand-kit-summary">{summarizeTicker(ticker)}</p>
+            <div className="ticker-controls">
+              <button
+                className={`ghost-button ${ticker.running ? "active" : ""}`}
+                onClick={() => setTicker((t) => (t.running ? pauseTicker(t) : startTicker(t)))}
+              >
+                {ticker.running ? "Pause" : "Start"}
+              </button>
+              <button className="ghost-button" onClick={() => setTicker(stopTicker)}>
+                Stop
+              </button>
+              <button className="ghost-button" onClick={() => setTicker(advanceTicker)}>
+                Next
+              </button>
+              <button className="ghost-button" onClick={() => setTicker(clearTicker)}>
+                Clear
+              </button>
+            </div>
+            <div className="ticker-speed-row">
+              <label className="ticker-speed-label">Speed</label>
+              <input
+                aria-label="Ticker speed"
+                className="ticker-speed-input"
+                max={4}
+                min={0.25}
+                step={0.25}
+                type="range"
+                value={ticker.speedMultiplier}
+                onChange={(e) => setTicker((t) => setTickerSpeed(t, Number(e.target.value)))}
+              />
+              <span className="ticker-speed-value">{ticker.speedMultiplier.toFixed(2)}×</span>
+              <label className="ticker-loop-label">
+                <input
+                  checked={ticker.loop}
+                  type="checkbox"
+                  onChange={(e) => setTicker((t) => setTickerLoop(t, e.target.checked))}
+                />{" "}
+                Loop
+              </label>
+            </div>
+            {ticker.items.length > 0 && (
+              <div className="ticker-list" aria-label="Ticker items">
+                {ticker.items.map((item, index) => (
+                  <div
+                    key={item.id}
+                    className={`ticker-item priority-${item.priority}${index === ticker.currentIndex && ticker.running ? " ticker-item-active" : ""}`}
+                    aria-label={`Ticker item ${item.text.slice(0, 30)}`}
+                  >
+                    <span className="ticker-item-badge">{priorityLabel(item.priority)}</span>
+                    {item.tag && <span className="ticker-item-tag">{item.tag}</span>}
+                    <span className="ticker-item-text">{item.text}</span>
+                    <button
+                      aria-label={`Remove ticker item ${item.text.slice(0, 20)}`}
+                      className="ticker-item-remove"
+                      onClick={() => setTicker((t) => removeTickerItem(t, item.id))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="ticker-add-row">
+              <input
+                aria-label="New ticker text"
+                className="ticker-add-input"
+                placeholder="Headline text…"
+                value={newTickerText}
+                onChange={(e) => setNewTickerText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newTickerText.trim()) {
+                    setTicker((t) => addTickerItem(t, newTickerText, newTickerPriority, newTickerTag || undefined));
+                    setNewTickerText("");
+                    setNewTickerTag("");
+                  }
+                }}
+              />
+              <select
+                aria-label="Ticker priority"
+                className="ticker-priority-select"
+                value={newTickerPriority}
+                onChange={(e) => setNewTickerPriority(e.target.value as TickerItemPriority)}
+              >
+                <option value="normal">News</option>
+                <option value="breaking">Breaking</option>
+                <option value="sponsored">Sponsored</option>
+              </select>
+              <input
+                aria-label="Ticker tag"
+                className="ticker-tag-input"
+                placeholder="TAG"
+                value={newTickerTag}
+                onChange={(e) => setNewTickerTag(e.target.value)}
+              />
+              <button
+                className="ghost-button"
+                disabled={!newTickerText.trim()}
+                onClick={() => {
+                  setTicker((t) => addTickerItem(t, newTickerText, newTickerPriority, newTickerTag || undefined));
+                  setNewTickerText("");
+                  setNewTickerTag("");
+                }}
+              >
+                Add
+              </button>
+            </div>
           </section>
 
           <section className="panel" aria-label="Control surface">
