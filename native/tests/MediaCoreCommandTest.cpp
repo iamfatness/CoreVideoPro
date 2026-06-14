@@ -346,27 +346,33 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
 #endif
 }
 
-TEST(HardwareEncoderAdapter, MediaFoundationWritesRecordingProofArtifactWhenRecordingIsArmed) {
+TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArmed) {
 #if COREVIDEO_WITH_MF_ENCODER
   auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
   ASSERT_NE(encoder, nullptr);
   const auto started = encoder->start({"recording"}, {"participant-1"});
   ASSERT_FALSE(started.recordingArtifactPath.empty());
+  EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
 
-  encoder->submit({1920, 1080, 2, 42, "proof-plan", "d3d11"});
+  encoder->submit({1920, 1080, 2, 42, "mp4-plan", "d3d11"});
+  encoder->submit({1920, 1080, 2, 43, "mp4-plan", "d3d11"});
+  encoder->submit({1920, 1080, 2, 44, "mp4-plan", "d3d11"});
   const auto session = encoder->session();
   EXPECT_TRUE(session.recordingBytesWritten > 0);
-  ASSERT_TRUE(std::filesystem::exists(session.recordingArtifactPath));
-
-  std::ifstream input(session.recordingArtifactPath);
-  std::ostringstream buffer;
-  buffer << input.rdbuf();
-  const auto content = buffer.str();
-  EXPECT_NE(content.find("recording-proof-start"), std::string::npos);
-  EXPECT_NE(content.find("\"frameNumber\":42"), std::string::npos);
-  input.close();
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  const auto artifactPath = session.recordingArtifactPath;
   encoder.reset();
-  std::filesystem::remove(session.recordingArtifactPath);
+
+  ASSERT_TRUE(std::filesystem::exists(artifactPath));
+  EXPECT_TRUE(std::filesystem::file_size(artifactPath) > 1024u);
+
+  std::ifstream input(artifactPath, std::ios::binary);
+  std::string header(32, '\0');
+  input.read(header.data(), static_cast<std::streamsize>(header.size()));
+  header.resize(static_cast<size_t>(input.gcount()));
+  EXPECT_NE(header.find("ftyp"), std::string::npos);
+  input.close();
+  std::filesystem::remove(artifactPath);
 #else
   EXPECT_TRUE(true);
 #endif
