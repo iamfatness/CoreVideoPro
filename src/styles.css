@@ -2937,3 +2937,43 @@ meter {
 .webrtc-latency-class.latency-ultra-low { color: #4ade80; }
 .webrtc-latency-class.latency-low { color: #a3e635; }
 .webrtc-latency-class.latency-standard { color: #fbbf24; }
+
+/* Disk space status */
+.disk-space-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #0b1512;
+  border: 1px solid #1e2e28;
+  font-size: 12px;
+  color: #7a9e8c;
+  margin-top: 8px;
+}
+
+.disk-space-status.level-ok { border-color: #2e3e38; }
+.disk-space-status.level-low { border-color: #7c5c00; background: #1a1300; }
+.disk-space-status.level-critical { border-color: #7c1f1f; background: #1a0a0a; }
+.disk-space-status.level-full { border-color: #7c0000; background: #200000; }
+
+.disk-space-summary {
+  font-weight: 600;
+  color: #c6d4cc;
+}
+
+.disk-space-status.level-low .disk-space-summary { color: #fbbf24; }
+.disk-space-status.level-critical .disk-space-summary { color: #f87171; }
+.disk-space-status.level-full .disk-space-summary { color: #f87171; }
+
+.disk-space-warning {
+  width: 100%;
+  font-size: 11px;
+  color: #fbbf24;
+}
+
+.disk-space-status.level-critical .disk-space-warning,
+.disk-space-status.level-full .disk-space-warning {
+  color: #f87171;
+}

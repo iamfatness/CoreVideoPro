@@ -215,6 +215,8 @@ export type OutputHealth = {
   droppedFrames: number;
   encoderLoad: number;
   network: "excellent" | "good" | "warning";
+  /** Available disk space on the recording volume in GB */
+  availableDiskGb: number;
 };
 
 export type OutputProfile = {
@@ -713,7 +715,8 @@ export const initialProduction: ProductionState = {
       bitrateMbps: 0,
       droppedFrames: 0,
       encoderLoad: 18,
-      network: "good"
+      network: "good",
+      availableDiskGb: 247.3
     },
     statusText: "Outputs idle"
   },
@@ -896,7 +899,8 @@ export const initialProduction: ProductionState = {
     bitrateMbps: 8.2,
     droppedFrames: 0,
     encoderLoad: 42,
-    network: "excellent"
+    network: "excellent",
+    availableDiskGb: 247.3
   },
   captureDevices: []
 };

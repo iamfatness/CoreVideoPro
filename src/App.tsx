@@ -57,6 +57,7 @@ import { aggregateStreamHealth, formatBitrate, scoreStreamHealth } from "./engin
 import { describeSrtConnection, parseSrtUrl, recommendSrtLatency } from "./engine/srtOutput";
 import { describeWebRtcMonitor, parseWebRtcEndpoint } from "./engine/webrtcOutput";
 import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type FeedHealthSignal } from "./engine/feedHealth";
+import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1390,6 +1391,20 @@ export function App({ engines, runtime }: AppProps) {
                   <p className="multitrack-warning" role="status" key={warning}>{warning}</p>
                 ))}
               </div>
+              {(() => {
+                const videoRateMbps = outputProfileBadge?.targetBitrateMbps ?? production.output.bitrateMbps;
+                const diskRateMBps = multitrackPlan.estimatedDiskRateMBps + videoRateMbps / 8;
+                const disk = evaluateDiskSpace(production.output.availableDiskGb, diskRateMBps);
+                return (
+                  <div className={`disk-space-status level-${disk.level}`} aria-label="Disk space status">
+                    <HardDrive size={13} />
+                    <span className="disk-space-summary">{diskSpaceSummary(disk)}</span>
+                    {disk.warnings.map((w) => (
+                      <span key={w} className="disk-space-warning">{w}</span>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </section>
 

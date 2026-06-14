@@ -1133,3 +1133,17 @@ describe("feed health roster", () => {
     expect(within(roster).getByText("Priya Shah")).toBeInTheDocument();
   });
 });
+
+describe("disk space monitor", () => {
+  it("shows disk space status in the recording section", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const disk = screen.getByLabelText("Disk space status");
+    expect(disk).toHaveTextContent(/GB/i);
+    // Seeded with 247.3 GB — should show ok status
+    expect(disk).toHaveTextContent(/247/);
+    expect(disk).toHaveTextContent(/free/i);
+  });
+});
