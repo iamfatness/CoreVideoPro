@@ -138,6 +138,43 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+# ---------------------------------------------------------------------------
+# Vendored Zoom capture engine (proven, OBS-free) from the CoreVideo plugin.
+# Built only on a dev machine that has the Zoom Meeting SDK; excluded from the
+# default in-container stub build so `-DCOREVIDEO_STUB=ON` stays green.
+# See native/zoom-engine/README.md for provenance and sync instructions.
+# ---------------------------------------------------------------------------
+if(COREVIDEO_ENABLE_DEV_ADAPTERS)
+  set(ZOOM_SDK_DIR "" CACHE PATH "Path to the Zoom Meeting SDK (contains include/ and lib/)")
+  if(NOT ZOOM_SDK_DIR)
+    message(FATAL_ERROR "COREVIDEO_ENABLE_DEV_ADAPTERS=ON requires -DZOOM_SDK_DIR=<path to Zoom SDK>")
+  endif()
+
+  add_executable(corevideo-zoom-engine
+    zoom-engine/engine/main.cpp
+    zoom-engine/engine/engine-video.cpp
+    zoom-engine/engine/engine-audio.cpp
+    zoom-engine/engine/engine-share.cpp
+  )
+  target_include_directories(corevideo-zoom-engine PRIVATE
+    zoom-engine/engine
+    zoom-engine/shared
+    "${ZOOM_SDK_DIR}/include"
+  )
+  if(WIN32)
+    file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
+    target_link_libraries(corevideo-zoom-engine PRIVATE
+      ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
+  elseif(APPLE)
+    target_link_libraries(corevideo-zoom-engine PRIVATE
+      "-F${ZOOM_SDK_DIR}/lib" "-framework ZoomSDK"
+      "-framework CoreFoundation" "-framework Foundation")
+  else()
+    target_link_libraries(corevideo-zoom-engine PRIVATE
+      "${ZOOM_SDK_DIR}/lib/libsdk.so" rt)
+  endif()
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   find_package(GTest QUIET)
