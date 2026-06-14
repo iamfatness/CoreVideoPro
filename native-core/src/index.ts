@@ -4,7 +4,23 @@ export { OutputSenderSessionModel } from "./outputSenderSession.js";
 export { buildOperatorActions } from "./operatorActions.js";
 export { MediaCoreServiceClient } from "./client.js";
 export { handleLine } from "./service.js";
+export { ZoomMediaSpineRuntime, assessZoomMediaSpineReadiness } from "./zoomMediaSpine.js";
 export type { MediaCoreFrameSourceRequest, MediaCoreFrameSourceResult, MediaFrameSource } from "./mediaSource.js";
+export type {
+  ZoomMediaSpineJoinRequest,
+  ZoomMediaSpineMediaKind,
+  ZoomMediaSpineMeetingState,
+  ZoomMediaSpineParticipant,
+  ZoomMediaSpinePlatform,
+  ZoomMediaSpineReadinessReport,
+  ZoomMediaSpineRecordingProof,
+  ZoomMediaSpineRuntimeConfig,
+  ZoomMediaSpineSnapshot,
+  ZoomMediaSpineSubscription,
+  ZoomMediaSpineSubscriptionPurpose,
+  ZoomMediaSpineSubscriptionRequest,
+  ZoomMediaSpineSubscriptionStatus
+} from "./zoomMediaSpine.js";
 export type {
   MediaCoreCommand,
   MediaCoreColorGrade,
