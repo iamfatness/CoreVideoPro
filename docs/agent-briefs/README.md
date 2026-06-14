@@ -7,6 +7,11 @@ context and architecture seam, then dispatch each agent with its brief.
 > **Demo-driven roadmap:** for the sprint-by-sprint path to the first live demo
 > (weekly sprints, a demo every Friday), open
 > [`../roadmap/index.html`](../roadmap/index.html) in a browser.
+>
+> **Decision — Zoom capture path:** the vendored, proven engine
+> (`native/zoom-engine/`) is the active capture path; Codex's
+> `ZoomMeetingSdkAdapter` is parked. See
+> [`06-decision-zoom-capture-path.md`](06-decision-zoom-capture-path.md).
 
 - `00-native-build-plan.md` — the overall work plan, environment constraints,
   track split, coordination rules, and integration gate.
