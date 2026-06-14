@@ -27,6 +27,8 @@ class MediaCore {
   void prepareEncoderSession(const rpc::Json& command);
   void startEncoderSession(const rpc::Json& command);
   void stopEncoderSession(const rpc::Json& command);
+  void failOutputSender(const rpc::Json& command);
+  void recoverOutputSender(const rpc::Json& command);
   void setRecordingTargets(const rpc::Json& command);
   void startRecordingSession(const rpc::Json& command);
   void stopRecordingSession(const rpc::Json& command);
@@ -34,6 +36,7 @@ class MediaCore {
   void recoverRecordingSession(const rpc::Json& command);
   void renderSyntheticTick();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
+  [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
 
   modules::ModuleSet modules_;
