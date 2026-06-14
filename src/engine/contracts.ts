@@ -2,6 +2,7 @@ import type {
   AudioMixState,
   AutoProductionState,
   CaptionOverlayState,
+  CaptureDeviceState,
   MediaFrameState,
   OutputDestination,
   OutputHealth,
@@ -93,4 +94,10 @@ export interface PresetEngine {
 
 export interface DiagnosticsEngine {
   createSupportBundle(state: ProductionState): Promise<SupportBundle>;
+}
+
+export interface CaptureDeviceEngine {
+  listDevices(): Promise<CaptureDeviceState[]>;
+  selectInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]>;
+  setAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]>;
 }

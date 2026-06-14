@@ -2,11 +2,13 @@ import type {
   AiProductionEngine,
   AudioMixEngine,
   CaptionOverlayEngine,
+  CaptureDeviceEngine,
   DiagnosticsEngine,
   OutputEngine,
   PresetEngine,
   ZoomCaptureEngine
 } from "./contracts";
+import { MockCaptureDeviceEngine } from "./captureDevices";
 import { MockOutputEngine, MockZoomCaptureEngine, RuleBasedAiProductionEngine } from "./mockEngines";
 import { NativeOutputEngineAdapter } from "./nativeOutputEngineAdapter";
 import { NativeZoomEngineAdapter } from "./nativeZoomEngineAdapter";
@@ -24,6 +26,7 @@ export type EngineBundle = {
   captions: CaptionOverlayEngine;
   presets: PresetEngine;
   diagnostics: DiagnosticsEngine;
+  captureDevices: CaptureDeviceEngine;
 };
 
 export function createMockEngineBundle(): EngineBundle {
@@ -34,7 +37,8 @@ export function createMockEngineBundle(): EngineBundle {
     audio: new SimulatedAudioMixEngine(),
     captions: new SimulatedCaptionOverlayEngine(),
     presets: new InMemoryPresetEngine(),
-    diagnostics: new InMemoryDiagnosticsEngine()
+    diagnostics: new InMemoryDiagnosticsEngine(),
+    captureDevices: new MockCaptureDeviceEngine()
   };
 }
 
@@ -46,6 +50,7 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport): En
     audio: new SimulatedAudioMixEngine(),
     captions: new SimulatedCaptionOverlayEngine(),
     presets: new InMemoryPresetEngine(),
-    diagnostics: new InMemoryDiagnosticsEngine()
+    diagnostics: new InMemoryDiagnosticsEngine(),
+    captureDevices: new MockCaptureDeviceEngine()
   };
 }
