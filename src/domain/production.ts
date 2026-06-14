@@ -408,9 +408,14 @@ export type SupportBundleMediaCore = {
     destinations: Array<{
       destination: "rtmp" | "ndi" | "srt" | "webrtc";
       status: "idle" | "starting" | "live" | "warning" | "stopped" | "failed";
+      startedAtMs?: number;
+      stoppedAtMs?: number;
+      lastFrameNumber?: number;
       framesSent: number;
       retryCount: number;
+      latencyMs: number;
       bitrateMbps: number;
+      warning?: string;
     }>;
   };
   recording?: {

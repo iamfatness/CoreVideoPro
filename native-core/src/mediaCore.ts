@@ -12,6 +12,7 @@ import type {
   MediaCoreFrameSourceSnapshot,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
+  MediaCoreOutputSender,
   MediaCoreOutputSenderSession,
   MediaCoreProgramFrame,
   MediaCoreProgramFrameTransport,
@@ -92,6 +93,7 @@ export class MediaCoreRuntime {
   private readonly eventLog: MediaCoreEvent[] = [];
   private readonly seenEventKeys = new Set<string>();
   private readonly activeSourceIssues = new Map<string, MediaCoreSourceHealthIssue>();
+  private readonly outputSenderEventStates = new Map<string, { status: MediaCoreOutputSender["status"]; warning?: string }>();
   private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
@@ -354,6 +356,7 @@ export class MediaCoreRuntime {
     const compositor = this.compositor.snapshot();
     const encoderSession = this.encoderSession(recording);
     const outputSenderSession = this.outputSenderSession();
+    this.syncOutputSenderEvents(outputSenderSession.senders);
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
     const operatorActions = buildOperatorActions({
       sourceSnapshot: this.sourceSnapshot,
@@ -565,6 +568,19 @@ export class MediaCoreRuntime {
       });
   }
 
+  private syncOutputSenderEvents(senders: MediaCoreOutputSender[]) {
+    senders.forEach((sender) => {
+      const previous = this.outputSenderEventStates.get(sender.destination);
+      if (previous?.status === sender.status && previous?.warning === sender.warning) {
+        return;
+      }
+
+      this.outputSenderEventStates.set(sender.destination, { status: sender.status, warning: sender.warning });
+      const event = outputSenderTransitionEvent(sender, previous?.status, this.outputProfile);
+      this.addEvent(event.severity, "sender", event.title, event.detail, undefined, sender.senderId);
+    });
+  }
+
   private warn(
     warnings: string[],
     area: MediaCoreEventArea,
@@ -767,6 +783,64 @@ function sourceIssueKey(issue: Pick<MediaCoreSourceHealthIssue, "participantId" 
 function sourceIssueRecoveryDetail(issue: MediaCoreSourceHealthIssue) {
   const label = issue.displayName ?? issue.participantId ?? issue.sourceId;
   return `${label} feed recovered.`;
+}
+
+function outputSenderTransitionEvent(
+  sender: MediaCoreOutputSender,
+  previousStatus: MediaCoreOutputSender["status"] | undefined,
+  outputProfile: MediaCoreOutputProfile
+): Pick<MediaCoreEvent, "severity" | "title" | "detail"> {
+  const label = sender.destination.toUpperCase();
+
+  if (sender.status === "failed") {
+    return {
+      severity: "critical",
+      title: `${label} sender failed`,
+      detail: sender.warning ?? `${label} sender failed.`
+    };
+  }
+
+  if (sender.status === "warning") {
+    return {
+      severity: "warning",
+      title: `${label} sender warning`,
+      detail: sender.warning ?? `${label} sender is degraded.`
+    };
+  }
+
+  if (sender.status === "stopped") {
+    return {
+      severity: "info",
+      title: `${label} sender stopped`,
+      detail: `${label} sender stopped after ${sender.framesSent} frame${sender.framesSent === 1 ? "" : "s"}.`
+    };
+  }
+
+  if (sender.status === "starting") {
+    return {
+      severity: "info",
+      title: `${label} sender starting`,
+      detail: sender.warning ?? `${label} sender is starting.`
+    };
+  }
+
+  if (previousStatus && previousStatus !== "live") {
+    return {
+      severity: "info",
+      title: `${label} sender recovered`,
+      detail: `${label} sender recovered at ${formatOutputProfileLabel(outputProfile)}.`
+    };
+  }
+
+  return {
+    severity: "info",
+    title: `${label} sender live`,
+    detail: `${label} sender live at ${formatOutputProfileLabel(outputProfile)}; ${sender.bitrateMbps} Mbps target.`
+  };
+}
+
+function formatOutputProfileLabel(outputProfile: MediaCoreOutputProfile) {
+  return `${outputProfile.resolution} ${outputProfile.fps}fps`;
 }
 
 function clampRange(value: number, min: number, max: number) {

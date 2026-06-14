@@ -813,6 +813,12 @@ describe("MediaCoreRuntime", () => {
           }),
           expect.objectContaining({
             severity: "info",
+            area: "sender",
+            title: "RTMP sender recovered",
+            detail: "RTMP sender recovered at 1920x1080 60fps."
+          }),
+          expect.objectContaining({
+            severity: "info",
             area: "recording",
             title: "Recording writer recovery requested"
           })
@@ -820,6 +826,73 @@ describe("MediaCoreRuntime", () => {
         outputHealth: expect.arrayContaining([
           expect.objectContaining({ destination: "rtmp", status: "live" }),
           expect.objectContaining({ destination: "recording", status: "live" })
+        ])
+      }
+    });
+  });
+
+  it("records sender warning and stopped transitions for output routing", () => {
+    const runtime = new MediaCoreRuntime();
+    const warning = runtime.handle({
+      id: "sender-warning",
+      type: "sync",
+      commands: [
+        { type: "set-zoom-source-roster", sources: [] },
+        {
+          type: "load-scene-graph",
+          sceneId: "missing-guest",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p9", audioRole: "mix" }]
+        },
+        { type: "start-program-output", destinations: ["srt"], isoParticipantIds: [] }
+      ]
+    });
+
+    expect(warning).toMatchObject({
+      ok: true,
+      state: {
+        outputSenderSession: {
+          status: "warning",
+          senders: [{ destination: "srt", status: "warning", warning: "SRT sender is publishing degraded program frames." }]
+        },
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "warning",
+            area: "sender",
+            title: "SRT sender warning",
+            detail: "SRT sender is publishing degraded program frames.",
+            relatedId: "srt:program"
+          })
+        ])
+      }
+    });
+
+    const stopped = runtime.handle({
+      id: "sender-stopped",
+      type: "sync",
+      commands: [
+        { type: "set-zoom-source-roster", sources: [] },
+        {
+          type: "load-scene-graph",
+          sceneId: "missing-guest",
+          routes: [{ routeId: "guest", mode: "fixed", participantId: "p9", audioRole: "mix" }]
+        }
+      ]
+    });
+
+    expect(stopped).toMatchObject({
+      ok: true,
+      state: {
+        outputSenderSession: {
+          senders: [{ destination: "srt", status: "stopped", stoppedAtMs: 0 }]
+        },
+        eventLog: expect.arrayContaining([
+          expect.objectContaining({
+            severity: "info",
+            area: "sender",
+            title: "SRT sender stopped",
+            detail: "SRT sender stopped after 1 frame.",
+            relatedId: "srt:program"
+          })
         ])
       }
     });

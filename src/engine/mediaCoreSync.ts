@@ -74,6 +74,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly eventLog: NativeMediaCoreEvent[] = [];
   private readonly seenEventKeys = new Set<string>();
   private readonly activeSourceIssues = new Map<string, NativeMediaCoreSourceHealthIssue>();
+  private readonly outputSenderEventStates = new Map<string, { status: NativeMediaCoreOutputSender["status"]; warning?: string }>();
   private sources: NativeMediaCoreZoomSource[] = [];
   private activeSpeakerId?: string;
   private screenShareParticipantId?: string;
@@ -226,6 +227,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
     const encoderSession = this.encoderSession(output?.destinations ?? [], this.programFrame, recording);
     const outputSenderSession = this.outputSenderSession(output?.destinations ?? [], this.programFrame, elapsedMs);
+    this.syncOutputSenderEvents(outputSenderSession.senders, elapsedMs);
     const outputHealth = this.outputHealth(output?.destinations ?? [], recording, this.programFrame, encoderSession, outputSenderSession);
     const compositor = this.compositorSnapshot();
     const operatorActions = buildNativeMediaCoreOperatorActions({
@@ -829,6 +831,19 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       });
   }
 
+  private syncOutputSenderEvents(senders: NativeMediaCoreOutputSender[], elapsedMs: number) {
+    senders.forEach((sender) => {
+      const previous = this.outputSenderEventStates.get(sender.destination);
+      if (previous?.status === sender.status && previous.warning === sender.warning) {
+        return;
+      }
+
+      this.outputSenderEventStates.set(sender.destination, { status: sender.status, warning: sender.warning });
+      const event = outputSenderTransitionEvent(sender, previous?.status, this.outputProfile);
+      this.addEvent(event.severity, "sender", event.title, event.detail, undefined, sender.senderId, elapsedMs);
+    });
+  }
+
   private addEvent(
     severity: NativeMediaCoreEvent["severity"],
     area: NativeMediaCoreEvent["area"],
@@ -1010,6 +1025,64 @@ function senderLatency(destination: "rtmp" | "ndi" | "srt" | "webrtc") {
 function senderBitrate(destination: "rtmp" | "ndi" | "srt" | "webrtc", outputProfile: NativeMediaCoreOutputProfile) {
   const multiplier = destination === "ndi" ? 1.6 : destination === "webrtc" ? 0.8 : 1;
   return Number((outputProfile.targetBitrateMbps * multiplier).toFixed(1));
+}
+
+function outputSenderTransitionEvent(
+  sender: NativeMediaCoreOutputSender,
+  previousStatus: NativeMediaCoreOutputSender["status"] | undefined,
+  outputProfile: NativeMediaCoreOutputProfile
+): Pick<NativeMediaCoreEvent, "severity" | "title" | "detail"> {
+  const label = sender.destination.toUpperCase();
+
+  if (sender.status === "failed") {
+    return {
+      severity: "critical",
+      title: `${label} sender failed`,
+      detail: sender.warning ?? `${label} sender failed.`
+    };
+  }
+
+  if (sender.status === "warning") {
+    return {
+      severity: "warning",
+      title: `${label} sender warning`,
+      detail: sender.warning ?? `${label} sender is degraded.`
+    };
+  }
+
+  if (sender.status === "stopped") {
+    return {
+      severity: "info",
+      title: `${label} sender stopped`,
+      detail: `${label} sender stopped after ${sender.framesSent} frame${sender.framesSent === 1 ? "" : "s"}.`
+    };
+  }
+
+  if (sender.status === "starting") {
+    return {
+      severity: "info",
+      title: `${label} sender starting`,
+      detail: sender.warning ?? `${label} sender is starting.`
+    };
+  }
+
+  if (previousStatus && previousStatus !== "live") {
+    return {
+      severity: "info",
+      title: `${label} sender recovered`,
+      detail: `${label} sender recovered at ${formatOutputProfileLabel(outputProfile)}.`
+    };
+  }
+
+  return {
+    severity: "info",
+    title: `${label} sender live`,
+    detail: `${label} sender live at ${formatOutputProfileLabel(outputProfile)}; ${sender.bitrateMbps} Mbps target.`
+  };
+}
+
+function formatOutputProfileLabel(outputProfile: NativeMediaCoreOutputProfile) {
+  return `${outputProfile.resolution} ${outputProfile.fps}fps`;
 }
 
 function findZoomSourceForLayer(sources: NativeMediaCoreZoomSource[], layer: NativeMediaCoreRenderPlan["layers"][number]) {

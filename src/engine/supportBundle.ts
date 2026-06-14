@@ -127,9 +127,14 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBund
       destinations: snapshot.outputSenderSession.senders.map((sender) => ({
         destination: sender.destination,
         status: sender.status,
+        startedAtMs: sender.startedAtMs,
+        stoppedAtMs: sender.stoppedAtMs,
+        lastFrameNumber: sender.lastFrameNumber,
         framesSent: sender.framesSent,
         retryCount: sender.retryCount,
-        bitrateMbps: sender.bitrateMbps
+        latencyMs: sender.latencyMs,
+        bitrateMbps: sender.bitrateMbps,
+        warning: sender.warning
       }))
     },
     recording: snapshot.recording

@@ -104,7 +104,19 @@ describe("createSupportBundle", () => {
       senders: {
         status: "live",
         activeSenderCount: 1,
-        destinations: [{ destination: "rtmp", status: "live", framesSent: 1, retryCount: 0, bitrateMbps: 8.2 }]
+        destinations: [
+          {
+            destination: "rtmp",
+            status: "live",
+            startedAtMs: 5000,
+            lastFrameNumber: 1,
+            framesSent: 1,
+            retryCount: 0,
+            latencyMs: 2100,
+            bitrateMbps: 8.2,
+            warning: undefined
+          }
+        ]
       },
       recording: {
         status: "recording",
@@ -113,7 +125,15 @@ describe("createSupportBundle", () => {
         estimatedDiskRateMBps: 7.49
       },
       operatorActions: [],
-      eventLog: []
+      eventLog: [
+        expect.objectContaining({
+          severity: "info",
+          area: "sender",
+          title: "RTMP sender live",
+          detail: "RTMP sender live at 1920x1080 60fps; 8.2 Mbps target.",
+          relatedId: "rtmp:program"
+        })
+      ]
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
