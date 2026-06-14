@@ -3596,3 +3596,27 @@ meter {
   border-left: 2px solid #1a4a7a;
   border-radius: 0 3px 3px 0;
 }
+
+/* Graphic animator */
+.anim-panel { display: flex; flex-direction: column; gap: 8px; }
+
+.anim-preview-track {
+  position: relative;
+  height: 6px;
+  background: #0d1520;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.anim-preview-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: #60a5fa;
+  border-radius: 2px;
+  transition: left 0.1s;
+}
+
+.anim-controls { display: flex; gap: 6px; }
+.anim-controls .ghost-button { font-size: 10px; padding: 3px 8px; }

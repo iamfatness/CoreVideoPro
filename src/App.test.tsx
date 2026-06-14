@@ -1592,3 +1592,27 @@ describe("network diagnostics", () => {
     expect(within(panel).getByText("Loss")).toBeInTheDocument();
   });
 });
+
+describe("graphic animator", () => {
+  it("shows the animator panel with preset selector in the Overlays tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Animator panel");
+    expect(within(panel).getByLabelText("Animation preset")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Play/i })).toBeInTheDocument();
+  });
+
+  it("shows phase and opacity readouts", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Overlays");
+
+    const panel = screen.getByLabelText("Animator panel");
+    expect(within(panel).getByText("Phase")).toBeInTheDocument();
+    expect(within(panel).getByText("Opacity")).toBeInTheDocument();
+  });
+});
