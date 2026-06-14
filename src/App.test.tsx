@@ -14,7 +14,8 @@ const mockRuntime: RuntimeEnvironment = {
   label: "Mock studio",
   host: "browser-preview",
   platform: "web",
-  warnings: ["Running with simulated Zoom and output engines."]
+  warnings: ["Running with simulated Zoom and output engines."],
+  capabilities: []
 };
 
 function renderApp(engines: EngineBundle = createMockEngineBundle(), runtime: RuntimeEnvironment = mockRuntime) {
@@ -1829,5 +1830,49 @@ describe("supervisor health recovery", () => {
     expect(runtime.status).toBe("degraded");
     expect(runtime.label).toMatch(/recovering/i);
     expect(runtime.warnings[0]).toMatch(/crashed/i);
+  });
+});
+
+describe("A4 capability-gated outputs", () => {
+  it("disables SRT arming when srt-output is absent from capabilities", async () => {
+    const user = userEvent.setup();
+    // Runtime with NDI/WebRTC but NOT srt-output — matches the gate test scenario.
+    const capRuntime: RuntimeEnvironment = {
+      ...mockRuntime,
+      status: "ready",
+      label: "Native media ready",
+      capabilities: ["ndi-output", "webrtc-output", "rtmp-output", "program-recording", "iso-recording",
+        "zoom-raw-video", "zoom-raw-audio", "gpu-compositor", "scene-graph-rendering",
+        "dynamic-overlays", "chroma-key", "smart-framing", "audio-mixer"]
+    };
+    renderApp(createMockEngineBundle(), capRuntime);
+
+    await goToTab(user, "Settings");
+    // NDI arming button should be enabled (capability present).
+    const ndiBtn = screen.getByRole("button", { name: /NDI Program/i });
+    expect(ndiBtn).not.toBeDisabled();
+    // SRT arming button should be disabled (capability absent).
+    const srtBtn = screen.getByRole("button", { name: /SRT Backup/i });
+    expect(srtBtn).toBeDisabled();
+  });
+
+  it("shows virtual camera section in mock mode (capabilities empty = allow-all)", async () => {
+    const user = userEvent.setup();
+    renderApp(); // mock mode: capabilities = []
+    await goToTab(user, "Settings");
+    expect(screen.getByLabelText("Virtual camera")).toBeInTheDocument();
+  });
+
+  it("hides virtual camera section when virtual-camera capability is absent", async () => {
+    const user = userEvent.setup();
+    const capRuntime: RuntimeEnvironment = {
+      ...mockRuntime,
+      status: "ready",
+      label: "Native media ready",
+      capabilities: ["rtmp-output", "ndi-output"] // no virtual-camera
+    };
+    renderApp(createMockEngineBundle(), capRuntime);
+    await goToTab(user, "Settings");
+    expect(screen.queryByLabelText("Virtual camera")).not.toBeInTheDocument();
   });
 });

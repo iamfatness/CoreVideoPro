@@ -12,7 +12,8 @@ export type NativeMediaCoreCapability =
   | "rtmp-output"
   | "ndi-output"
   | "srt-output"
-  | "webrtc-output";
+  | "webrtc-output"
+  | "virtual-camera";
 
 export type NativeMediaCoreProfile = {
   name: string;

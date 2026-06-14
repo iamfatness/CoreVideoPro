@@ -468,6 +468,11 @@ export function App({ engines, runtime }: AppProps) {
     ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
     : runtime;
 
+  // When capabilities is non-empty (native mode), gates are active; empty = mock/allow-all.
+  const runtimeCaps = liveRuntime?.capabilities ?? [];
+  const hasCapability = (cap: import("./engine/nativeMediaCoreProtocol").NativeMediaCoreCapability) =>
+    runtimeCaps.length === 0 || runtimeCaps.includes(cap);
+
   async function selectCaptureDeviceInput(deviceId: string, inputId: string) {
     const captureDevices = await engines.captureDevices.selectInput(deviceId, inputId);
     setProduction((current) => ({ ...current, captureDevices }));
@@ -1639,14 +1644,19 @@ export function App({ engines, runtime }: AppProps) {
             <div className="destination-list">
               {destinationStates.map((destination) => {
                 const readiness = armingReadinessById.get(destination.id);
+                const destCapabilityMap: Record<string, import("./engine/nativeMediaCoreProtocol").NativeMediaCoreCapability> = {
+                  NDI: "ndi-output", SRT: "srt-output", WebRTC: "webrtc-output"
+                };
+                const destCapability = destCapabilityMap[destination.protocol];
+                const capabilityBlocked = destCapability ? !hasCapability(destCapability) : false;
                 return (
                 <div
                   className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""} ${
                     destination.enabled && readiness && !readiness.ready ? "needs-attention" : ""
-                  }`}
+                  } ${capabilityBlocked ? "capability-blocked" : ""}`}
                   key={destination.id}
                 >
-                  <button disabled={production.streaming} onClick={() => toggleOutputDestination(destination.id)}>
+                  <button disabled={production.streaming || capabilityBlocked} onClick={() => toggleOutputDestination(destination.id)}>
                     <div>
                       <strong>{destination.name}</strong>
                       <span>
@@ -2013,6 +2023,7 @@ export function App({ engines, runtime }: AppProps) {
             })()}
           </section>
 
+          {hasCapability("virtual-camera") && (
           <section className="panel" aria-label="Virtual camera">
             <div className="section-title">
               <Video size={15} />
@@ -2046,6 +2057,7 @@ export function App({ engines, runtime }: AppProps) {
               {production.virtualCamera.enabled ? "Stop virtual camera" : "Start virtual camera"}
             </button>
           </section>
+          )}
 
           <section className="panel">
             <div className="section-title">

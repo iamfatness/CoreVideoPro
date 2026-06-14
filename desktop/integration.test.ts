@@ -146,9 +146,9 @@ describe("desktop integration gate", () => {
     expect(baseHealth.recovering).toBe(false);
     expect(baseHealth.restartCount).toBe(0);
 
-    // Crash the core; supervisor restarts it.
+    // Crash the core; supervisor restarts it (give exit handler time to fire).
     await active!.forceCrash();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const crashHealth = await bridge.getMediaCoreHealth!();
     expect(crashHealth.restartCount).toBeGreaterThan(0);
