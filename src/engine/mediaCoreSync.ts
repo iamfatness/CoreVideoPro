@@ -5,6 +5,7 @@ import type {
   NativeMediaCoreCommand,
   NativeMediaCoreFrame,
   NativeMediaCoreOutputHealth,
+  NativeMediaCoreOutputProfile,
   NativeMediaCoreRecordingSession,
   NativeMediaCoreRecordingTargets,
   NativeMediaCoreStateSnapshot
@@ -16,6 +17,14 @@ export interface MediaCoreSyncEngine {
 
 export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   private readonly frameNumbers = new Map<string, number>();
+  private outputProfile: NativeMediaCoreOutputProfile = {
+    profileId: "1080p60",
+    resolution: "1920x1080",
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    targetBitrateMbps: 8
+  };
   private recording?: NativeMediaCoreRecordingSession;
   private recordingTargets: NativeMediaCoreRecordingTargets = {
     targetFolder: "Recordings/CoreVideo Pro/native-core",
@@ -32,8 +41,12 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   protected snapshot(commands: NativeMediaCoreCommand[], elapsedMs: number, warnings: string[] = []): NativeMediaCoreStateSnapshot {
     const sceneGraph = commands.find((command) => command.type === "load-scene-graph");
     const output = commands.find((command) => command.type === "start-program-output");
+    const outputProfile = commands.find((command) => command.type === "set-output-profile");
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
+    if (outputProfile) {
+      this.outputProfile = normalizeOutputProfile(outputProfile);
+    }
     const frames = sceneGraph?.routes.map((route, index) => this.frameFromRoute(route, index, elapsedMs)).filter(Boolean) as NativeMediaCoreFrame[] | undefined;
     const recording = this.syncRecordingCommands(commands, frames ?? [], elapsedMs);
     const outputHealth = this.outputHealth(output?.destinations ?? [], recording);
@@ -48,6 +61,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       overlayCount: overlays.length,
       outputs: output?.destinations ?? [],
       isoParticipantIds: output?.isoParticipantIds ?? [],
+      outputProfile: this.outputProfile,
       outputHealth,
       recording,
       diagnostics: {
@@ -56,6 +70,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         routeCount: sceneGraph?.routes.length ?? 0,
         frameCount: frames?.length ?? 0,
         outputs: output?.destinations ?? [],
+        outputProfile: this.outputProfile,
         outputHealth,
         recording,
         warnings: allWarnings,
@@ -237,7 +252,10 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       (destination): NativeMediaCoreOutputHealth => ({
         destination,
         status: "live",
-        message: destination === "recording" ? "Recording output armed." : `${destination.toUpperCase()} output active.`,
+        message:
+          destination === "recording"
+            ? `Recording output armed at ${this.outputProfile.resolution}${this.outputProfile.fps}.`
+            : `${destination.toUpperCase()} output active at ${this.outputProfile.resolution}${this.outputProfile.fps}.`,
         droppedFrames: 0
       })
     );
@@ -275,6 +293,20 @@ function sameTargets(recording: NativeMediaCoreRecordingSession, targets: Native
     currentIds.length === targets.isoParticipantIds.length &&
     currentIds.every((id, index) => id === targets.isoParticipantIds[index])
   );
+}
+
+function normalizeOutputProfile(profile: NativeMediaCoreOutputProfile): NativeMediaCoreOutputProfile {
+  const [parsedWidth, parsedHeight] = profile.resolution.split("x").map((part) => Number(part));
+  const width = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : profile.width;
+  const height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : profile.height;
+
+  return {
+    ...profile,
+    width,
+    height,
+    fps: Math.max(1, profile.fps),
+    targetBitrateMbps: Math.max(0, profile.targetBitrateMbps)
+  };
 }
 
 function normalizeTargets(targets: NativeMediaCoreRecordingTargets): NativeMediaCoreRecordingTargets {

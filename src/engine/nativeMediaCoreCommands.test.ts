@@ -94,6 +94,15 @@ describe("native media core command builder", () => {
       position: "bottom-right"
     });
     expect(commands).toContainEqual({
+      type: "set-output-profile",
+      profileId: "1080p60",
+      resolution: "1920x1080",
+      width: 1920,
+      height: 1080,
+      fps: 60,
+      targetBitrateMbps: 8.2
+    });
+    expect(commands).toContainEqual({
       type: "start-program-output",
       destinations: ["recording", "rtmp", "ndi"],
       isoParticipantIds: ["p1", "p2"]

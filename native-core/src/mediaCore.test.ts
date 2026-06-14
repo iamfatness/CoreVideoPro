@@ -25,6 +25,15 @@ const commands: MediaCoreCommand[] = [
     position: "top-right"
   },
   {
+    type: "set-output-profile",
+    profileId: "1080p60",
+    resolution: "1920x1080",
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    targetBitrateMbps: 8.2
+  },
+  {
     type: "start-program-output",
     destinations: ["recording", "rtmp"],
     isoParticipantIds: ["p1", "p2"]
@@ -52,7 +61,7 @@ describe("MediaCoreRuntime", () => {
     expect(response).toMatchObject({
       id: "sync-1",
       ok: true,
-      appliedCommandCount: 6,
+      appliedCommandCount: 7,
       state: {
         sceneId: "speaker-slides",
         routeCount: 2,
@@ -77,6 +86,14 @@ describe("MediaCoreRuntime", () => {
         participantTransformCount: 1,
         overlayCount: 1,
         outputs: ["recording", "rtmp"],
+        outputProfile: {
+          profileId: "1080p60",
+          resolution: "1920x1080",
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          targetBitrateMbps: 8.2
+        },
         isoParticipantIds: ["p1", "p2"],
         recording: {
           sessionId: "test-session",
@@ -96,6 +113,7 @@ describe("MediaCoreRuntime", () => {
           "load-scene-graph",
           "set-participant-transform",
           "set-overlay-asset",
+          "set-output-profile",
           "start-program-output",
           "set-recording-targets",
           "start-recording-session"

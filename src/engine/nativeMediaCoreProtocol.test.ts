@@ -69,6 +69,15 @@ describe("native media core protocol", () => {
         position: "lower-third"
       },
       {
+        type: "set-output-profile",
+        profileId: "1080p60",
+        resolution: "1920x1080",
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        targetBitrateMbps: 8.2
+      },
+      {
         type: "start-program-output",
         destinations: ["recording", "rtmp", "ndi"],
         isoParticipantIds: ["p1", "p2"]
@@ -92,6 +101,7 @@ describe("native media core protocol", () => {
       "load-scene-graph",
       "set-participant-transform",
       "set-overlay-asset",
+      "set-output-profile",
       "start-program-output",
       "set-recording-targets",
       "start-recording-session"

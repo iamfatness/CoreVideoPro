@@ -23,7 +23,8 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
       }))
     },
     ...state.videoEffects.map(buildTransformCommand),
-    ...state.graphics.filter((graphic) => graphic.enabled).map(buildOverlayCommand)
+    ...state.graphics.filter((graphic) => graphic.enabled).map(buildOverlayCommand),
+    buildOutputProfileCommand(state)
   ];
 
   const outputCommand = buildOutputCommand(state);
@@ -120,6 +121,21 @@ function buildOverlayCommand(graphic: GraphicOverlay): NativeMediaCoreCommand {
     overlayId: graphic.id,
     text: graphic.text,
     position: graphic.position
+  };
+}
+
+function buildOutputProfileCommand(state: ProductionState): NativeMediaCoreCommand {
+  const profile = state.outputProfiles.find((candidate) => candidate.id === state.selectedOutputProfileId) ?? state.outputProfiles[0];
+  const [width, height] = profile.resolution.split("x").map((part) => Number(part));
+
+  return {
+    type: "set-output-profile",
+    profileId: profile.id,
+    resolution: profile.resolution,
+    width,
+    height,
+    fps: profile.fps,
+    targetBitrateMbps: profile.targetBitrateMbps
   };
 }
 

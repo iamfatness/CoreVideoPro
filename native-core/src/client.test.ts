@@ -31,6 +31,15 @@ describe("MediaCoreServiceClient", () => {
         ]
       },
       {
+        type: "set-output-profile",
+        profileId: "1080p30",
+        resolution: "1920x1080",
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        targetBitrateMbps: 6
+      },
+      {
         type: "start-program-output",
         destinations: ["recording", "srt"],
         isoParticipantIds: ["p1"]
@@ -53,10 +62,15 @@ describe("MediaCoreServiceClient", () => {
     const sync = await client.sync(commands);
     expect(sync).toMatchObject({
       ok: true,
-      appliedCommandCount: 4,
+      appliedCommandCount: 5,
       state: {
         sceneId: "panel",
         routeCount: 2,
+        outputProfile: {
+          profileId: "1080p30",
+          fps: 30,
+          targetBitrateMbps: 6
+        },
         outputs: ["recording", "srt"],
         isoParticipantIds: ["p1"],
         recording: {

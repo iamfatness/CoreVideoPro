@@ -11,6 +11,15 @@ export type MediaCoreOutputHealthStatus = "idle" | "live" | "warning" | "failed"
 export type MediaCoreRecordingFormat = "mp4" | "mov" | "mkv";
 export type MediaCoreRecordingQuality = "standard" | "high" | "archive";
 
+export type MediaCoreOutputProfile = {
+  profileId: string;
+  resolution: string;
+  width: number;
+  height: number;
+  fps: number;
+  targetBitrateMbps: number;
+};
+
 export type MediaCoreFrame = {
   sourceId: string;
   participantId?: string;
@@ -81,6 +90,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   routeCount: number;
   frameCount: number;
   outputs: MediaCoreDestination[];
+  outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
   recording?: MediaCoreRecordingSession;
   warnings: string[];
@@ -112,6 +122,9 @@ export type MediaCoreCommand =
       imageUri?: string;
       position: "top-right" | "bottom-right" | "center" | "lower-third";
     }
+  | ({
+      type: "set-output-profile";
+    } & MediaCoreOutputProfile)
   | {
       type: "start-program-output";
       destinations: MediaCoreDestination[];
@@ -159,6 +172,7 @@ export type MediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: MediaCoreDestination[];
   isoParticipantIds: string[];
+  outputProfile: MediaCoreOutputProfile;
   outputHealth: MediaCoreOutputHealth[];
   recording?: MediaCoreRecordingSession;
   diagnostics: MediaCoreDiagnosticsSnapshot;

@@ -19,11 +19,12 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native Zoom bridge adapter shell with typed command/response protocol for a future SDK process or desktop IPC transport.
 - Shell-agnostic native host bridge bootstrap: the renderer uses a preload/native bridge when present and falls back to mock engines only for local development.
 - Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
-- Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, explicit recording targets/session lifecycle, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
+- Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, selected output profile, explicit recording targets/session lifecycle, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
 - Renderer-to-media-core sync engine that pushes production state into native media-core snapshots and surfaces synced scene, route, frame, transform, overlay, output health, recording health, and warning status in the app.
 - `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, deterministic fake frame producer, recording writer lifecycle model, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
 - Backend recording-session snapshots with session IDs, target folders, encoder intent, program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, byte counters, stopped/failed writer states, and warning state surfaced in the app's Native core readout.
 - Native media-core diagnostic snapshots with scene/output state, recording health, warnings, and command history for future support-bundle export.
+- Native output profile snapshots for shared recording/RTMP/NDI/SRT/WebRTC resolution, FPS, and target bitrate decisions before real sender implementations land.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
 - Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
@@ -94,6 +95,7 @@ CoreVideo Pro Desktop Shell
   -> native-core service boundary
   -> deterministic fake frame producer
   -> recording writer lifecycle / program + ISO stream counters
+  -> output profile model
   -> output health and diagnostics snapshots
   -> Native Media Core
   -> Zoom SDK raw audio/video ingest

@@ -3,6 +3,7 @@ import type {
   MediaCoreDestination,
   MediaCoreDiagnosticsSnapshot,
   MediaCoreOutputHealth,
+  MediaCoreOutputProfile,
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreStateSnapshot
@@ -15,11 +16,21 @@ type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transfo
 type OverlayState = Extract<MediaCoreCommand, { type: "set-overlay-asset" }>;
 type OutputState = Extract<MediaCoreCommand, { type: "start-program-output" }>;
 
+const DEFAULT_OUTPUT_PROFILE: MediaCoreOutputProfile = {
+  profileId: "1080p60",
+  resolution: "1920x1080",
+  width: 1920,
+  height: 1080,
+  fps: 60,
+  targetBitrateMbps: 8
+};
+
 export class MediaCoreRuntime {
   private sceneGraph?: SceneGraphState;
   private readonly transforms = new Map<string, TransformState>();
   private readonly overlays = new Map<string, OverlayState>();
   private output?: OutputState;
+  private outputProfile = DEFAULT_OUTPUT_PROFILE;
   private outputHealth = new Map<MediaCoreDestination, MediaCoreOutputHealth>();
   private lastCommandTypes: string[] = [];
   private readonly frameProducer = new FakeFrameProducer();
@@ -88,6 +99,14 @@ export class MediaCoreRuntime {
         this.overlays.set(command.overlayId, command);
         if (!command.text && !command.imageUri) {
           warnings.push(`${command.overlayId} overlay has no text or image asset.`);
+        }
+        return;
+      }
+
+      if (command.type === "set-output-profile") {
+        this.outputProfile = normalizeOutputProfile(command);
+        if (this.outputProfile.width > 1920 || this.outputProfile.height > 1080) {
+          warnings.push(`${this.outputProfile.resolution} output profile requires 4K-capable GPU encoding.`);
         }
         return;
       }
@@ -163,6 +182,7 @@ export class MediaCoreRuntime {
       overlayCount: this.overlays.size,
       outputs: this.output?.destinations ?? [],
       isoParticipantIds: this.output?.isoParticipantIds ?? [],
+      outputProfile: this.outputProfile,
       outputHealth,
       recording,
       diagnostics: this.diagnostics(outputHealth, allWarnings, recording),
@@ -183,7 +203,10 @@ export class MediaCoreRuntime {
       this.outputHealth.set(destination, {
         destination,
         status: "live",
-        message: destination === "recording" ? "Recording output armed." : `${destination.toUpperCase()} output active.`,
+        message:
+          destination === "recording"
+            ? `Recording output armed at ${this.outputProfile.resolution}${this.outputProfile.fps}.`
+            : `${destination.toUpperCase()} output active at ${this.outputProfile.resolution}${this.outputProfile.fps}.`,
         droppedFrames: 0
       });
     });
@@ -215,6 +238,7 @@ export class MediaCoreRuntime {
       routeCount: this.sceneGraph?.routes.length ?? 0,
       frameCount: this.frames.length,
       outputs: this.output?.destinations ?? [],
+      outputProfile: this.outputProfile,
       outputHealth,
       recording,
       warnings,
@@ -255,6 +279,20 @@ export class MediaCoreRuntime {
       })
       .filter(Boolean) as FakeFrameSource[];
   }
+}
+
+function normalizeOutputProfile(profile: MediaCoreOutputProfile): MediaCoreOutputProfile {
+  const [parsedWidth, parsedHeight] = profile.resolution.split("x").map((part) => Number(part));
+  const width = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : profile.width;
+  const height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : profile.height;
+
+  return {
+    ...profile,
+    width,
+    height,
+    fps: Math.max(1, profile.fps),
+    targetBitrateMbps: Math.max(0, profile.targetBitrateMbps)
+  };
 }
 
 function normalizeTransform(command: TransformState): TransformState {

@@ -44,12 +44,28 @@ describe("media core sync engine", () => {
       overlayCount: 0,
       outputs: ["recording" as const],
       isoParticipantIds: ["p1"],
+      outputProfile: {
+        profileId: "1080p60",
+        resolution: "1920x1080",
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        targetBitrateMbps: 8.2
+      },
       outputHealth: [],
       diagnostics: {
         generatedAtMs: 2400,
         routeCount: 1,
         frameCount: 1,
         outputs: ["recording" as const],
+        outputProfile: {
+          profileId: "1080p60",
+          resolution: "1920x1080",
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          targetBitrateMbps: 8.2
+        },
         outputHealth: [],
         warnings: [],
         lastCommandTypes: ["load-scene-graph"]
@@ -88,6 +104,14 @@ describe("media core sync engine", () => {
     expect(snapshot).toMatchObject({
       outputs: ["recording"],
       isoParticipantIds: ["p1", "p2"],
+      outputProfile: {
+        profileId: "1080p60",
+        resolution: "1920x1080",
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        targetBitrateMbps: 8.2
+      },
       recording: {
         active: true,
         status: "recording",

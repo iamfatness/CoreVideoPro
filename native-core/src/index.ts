@@ -9,6 +9,7 @@ export type {
   MediaCoreFrameKind,
   MediaCoreOutputHealth,
   MediaCoreOutputHealthStatus,
+  MediaCoreOutputProfile,
   MediaCoreRecordingFormat,
   MediaCoreRecordingQuality,
   MediaCoreRecordingSession,

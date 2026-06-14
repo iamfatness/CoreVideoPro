@@ -49,6 +49,9 @@ export type NativeMediaCoreCommand =
       imageUri?: string;
       position: "top-right" | "bottom-right" | "center" | "lower-third";
     }
+  | ({
+      type: "set-output-profile";
+    } & NativeMediaCoreOutputProfile)
   | {
       type: "start-program-output";
       destinations: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
@@ -128,6 +131,15 @@ export type NativeMediaCoreRecordingTargets = {
   isoParticipantIds: string[];
 };
 
+export type NativeMediaCoreOutputProfile = {
+  profileId: string;
+  resolution: string;
+  width: number;
+  height: number;
+  fps: number;
+  targetBitrateMbps: number;
+};
+
 export type NativeMediaCoreOutputHealth = {
   destination: "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
   status: "idle" | "live" | "warning" | "failed";
@@ -141,6 +153,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   routeCount: number;
   frameCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
+  outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
   recording?: NativeMediaCoreRecordingSession;
   warnings: string[];
@@ -156,6 +169,7 @@ export type NativeMediaCoreStateSnapshot = {
   overlayCount: number;
   outputs: Array<"rtmp" | "ndi" | "srt" | "webrtc" | "recording">;
   isoParticipantIds: string[];
+  outputProfile: NativeMediaCoreOutputProfile;
   outputHealth: NativeMediaCoreOutputHealth[];
   recording?: NativeMediaCoreRecordingSession;
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
