@@ -11,7 +11,15 @@ namespace corevideo::modules {
 struct ZoomMeetingSdkJoinRequest {
   std::string meetingNumber;
   std::string displayName;
+  std::string passcode;
+  std::string zakToken;
+  std::string appPrivilegeToken;
+  std::string joinToken;
+  std::string webinarToken;
+  std::string customerKey;
   bool passcodePresent = false;
+  bool startVideoOff = true;
+  bool startAudioMuted = false;
 };
 
 struct ZoomMeetingSdkSubscriptionRequest {

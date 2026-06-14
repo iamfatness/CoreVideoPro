@@ -18,6 +18,7 @@ endforeach()
 add_library(corevideo_native
   src/core/MediaCore.cpp
   src/modules/StubModules.cpp
+  src/modules/ZoomMeetingSdkAdapter.cpp
   src/rpc/Json.cpp
   src/rpc/JsonRpcServer.cpp
 )
@@ -62,9 +63,12 @@ if(COREVIDEO_WITH_ZOOM)
     endif()
   endforeach()
 
-  target_sources(corevideo_native PRIVATE src/modules/ZoomMeetingSdkAdapter.cpp)
   target_include_directories(corevideo_native PRIVATE "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}")
   target_link_libraries(corevideo_native PRIVATE "${COREVIDEO_ZOOM_SDK_LIBRARY}")
+  if(MSVC)
+    target_link_options(corevideo_native PUBLIC "/DELAYLOAD:sdk.dll")
+    target_link_libraries(corevideo_native PUBLIC delayimp)
+  endif()
   target_compile_definitions(corevideo_native PUBLIC COREVIDEO_ZOOM_SDK_ROOT="${COREVIDEO_ZOOM_SDK_ROOT}")
 endif()
 
@@ -93,5 +97,8 @@ if(BUILD_TESTING)
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests.exe")
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")
+  endif()
+  if(COREVIDEO_WITH_ZOOM)
+    set_tests_properties(corevideo-native-tests PROPERTIES ENVIRONMENT "PATH=${COREVIDEO_ZOOM_SDK_ROOT}/bin;$ENV{PATH}")
   endif()
 endif()
