@@ -41,6 +41,7 @@ import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./en
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
+import { addDestinationFromPreset, streamingPresets } from "./engine/streamingPresets";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -158,6 +159,7 @@ export function App({ engines, runtime }: AppProps) {
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
   const [activeTab, setActiveTab] = useState<TabId>("studio");
+  const [selectedStreamingPresetId, setSelectedStreamingPresetId] = useState(streamingPresets[0].id);
   const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
   const [expandedParticipantId, setExpandedParticipantId] = useState<string | null>(null);
   const selectedParticipant = useMemo(
@@ -569,6 +571,17 @@ export function App({ engines, runtime }: AppProps) {
       outputDestinations: current.outputDestinations.map((destination) =>
         destination.id === destinationId ? { ...destination, ...update } : destination
       )
+    }));
+  }
+
+  function addStreamingDestination() {
+    if (production.streaming) {
+      return;
+    }
+
+    setProduction((current) => ({
+      ...current,
+      outputDestinations: addDestinationFromPreset(selectedStreamingPresetId, current.outputDestinations)
     }));
   }
 
@@ -1233,6 +1246,25 @@ export function App({ engines, runtime }: AppProps) {
                   </div>
                 </div>
               ))}
+            </div>
+            <div className="add-destination" aria-label="Add streaming destination">
+              <label>
+                <span>Streaming preset</span>
+                <select
+                  aria-label="Streaming preset"
+                  disabled={production.streaming}
+                  onChange={(event) => setSelectedStreamingPresetId(event.target.value)}
+                  value={selectedStreamingPresetId}
+                >
+                  {streamingPresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>{preset.name}</option>
+                  ))}
+                </select>
+              </label>
+              <button className="ghost-button wide" disabled={production.streaming} onClick={addStreamingDestination}>
+                <Plus size={16} />
+                Add destination
+              </button>
             </div>
           </section>
 

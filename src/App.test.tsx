@@ -423,6 +423,20 @@ describe("App production controls", () => {
     expect(screen.getByText(/Streaming to 2 destinations/i)).toBeInTheDocument();
   });
 
+  it("adds a Twitch destination from the streaming presets", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    expect(screen.queryByLabelText("Twitch endpoint")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Streaming preset"), "twitch");
+    await user.click(screen.getByRole("button", { name: /Add destination/i }));
+
+    expect(screen.getByLabelText("Twitch endpoint")).toHaveValue("rtmp://live.twitch.tv/app");
+    expect(screen.getByLabelText("Twitch stream key")).toBeInTheDocument();
+  });
+
   it("blocks streaming when output preflight fails", async () => {
     const user = userEvent.setup();
     const engines = createMockEngineBundle();
