@@ -19,6 +19,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native Zoom bridge adapter shell with typed command/response protocol for a future SDK process or desktop IPC transport.
 - Shell-agnostic native host bridge bootstrap: the renderer uses a preload/native bridge when present and falls back to mock engines only for local development.
 - Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
+- Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, recording ISOs, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
 - Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
@@ -54,6 +55,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Multi-destination and recording preflight tests for arming targets, output readiness, live target health, aggregate bitrate, and network warning behavior.
 - ISO recording tests for selected participant feeds, output-session status, native bridge payloads, support-bundle runway, and UI controls.
 - Native host and media-core protocol tests proving the UI shell is not the real-time video engine.
+- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to Electron, OBS, or browser capture APIs.
 - Diagnostics tests for support bundle redaction, low-quality feed guidance, duplicate assignments, missing screen share, and UI export flow.
 - Scene-layout tests proving template selection changes the rendered program preview.
 - Audio-mix tests for smart leveling, producer mute/gain overrides, and UI control behavior.
@@ -83,6 +85,7 @@ CoreVideo Pro Desktop Shell
   -> PresetEngine
   -> OutputEngine
   -> NativeOutputEngineAdapter
+  -> NativeMediaCoreCommands
   -> Native Media Core
   -> Zoom SDK raw audio/video ingest
   -> GPU compositor / scene graph / overlays / chroma key
