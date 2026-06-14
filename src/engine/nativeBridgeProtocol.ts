@@ -8,6 +8,11 @@ import type {
 } from "../domain/production";
 import type { ZoomJoinRequest } from "./contracts";
 import type { RawCaptureSnapshot } from "./captureSnapshotMapper";
+import type {
+  NativeMediaCoreCommand,
+  NativeMediaCoreProfile,
+  NativeMediaCoreStateSnapshot
+} from "./nativeMediaCoreProtocol";
 
 export type NativeZoomCommand =
   | {
@@ -88,7 +93,79 @@ export type NativeCaptureDeviceCommand =
       };
     };
 
-export type NativeBridgeCommand = NativeZoomCommand | NativeOutputCommand | NativeCaptureDeviceCommand;
+/**
+ * Media-core RPC carried over the unified bridge. Closes the dangling seam:
+ * `buildNativeMediaCoreCommands()` ships a batch of {@link NativeMediaCoreCommand}s
+ * with the elapsed clock; the core announces capabilities via the handshake.
+ * Track B (native core) mirrors these command shapes.
+ */
+export type NativeMediaCoreBridgeCommand =
+  | {
+      id: string;
+      type: "media-core-handshake";
+    }
+  | {
+      id: string;
+      type: "media-core-sync";
+      payload: {
+        commands: NativeMediaCoreCommand[];
+        elapsedMs: number;
+      };
+    };
+
+/** Audio bus control commands. Stub-backed in the desktop IPC router for now. */
+export type NativeAudioCommand =
+  | {
+      id: string;
+      type: "get-audio-mix";
+    }
+  | {
+      id: string;
+      type: "set-audio-bus-gain";
+      payload: {
+        busId: string;
+        gainDb: number;
+      };
+    }
+  | {
+      id: string;
+      type: "set-audio-bus-mute";
+      payload: {
+        busId: string;
+        muted: boolean;
+      };
+    };
+
+/** Caption track commands. Stub-backed in the desktop IPC router for now. */
+export type NativeCaptionCommand =
+  | {
+      id: string;
+      type: "get-caption-track";
+    }
+  | {
+      id: string;
+      type: "set-caption-enabled";
+      payload: {
+        enabled: boolean;
+      };
+    }
+  | {
+      id: string;
+      type: "push-caption-cue";
+      payload: {
+        text: string;
+        speaker?: string;
+        atMs: number;
+      };
+    };
+
+export type NativeBridgeCommand =
+  | NativeZoomCommand
+  | NativeOutputCommand
+  | NativeCaptureDeviceCommand
+  | NativeMediaCoreBridgeCommand
+  | NativeAudioCommand
+  | NativeCaptionCommand;
 
 export type NativeZoomResponse =
   | {
@@ -153,7 +230,83 @@ export type NativeCaptureDeviceResponse =
       };
     };
 
-export type NativeBridgeResponse = NativeZoomResponse | NativeOutputResponse | NativeCaptureDeviceResponse;
+export type NativeMediaCoreBridgeResponse =
+  | {
+      id: string;
+      ok: true;
+      profile: NativeMediaCoreProfile;
+    }
+  | {
+      id: string;
+      ok: true;
+      snapshot: NativeMediaCoreStateSnapshot;
+    }
+  | {
+      id: string;
+      ok: false;
+      error: {
+        code: "native-unavailable" | "media-core-failed" | "media-core-unreachable" | "protocol-error";
+        message: string;
+      };
+    };
+
+export type NativeAudioBusState = {
+  busId: string;
+  label: string;
+  gainDb: number;
+  muted: boolean;
+  peakDb: number;
+};
+
+export type NativeAudioResponse =
+  | {
+      id: string;
+      ok: true;
+      buses: NativeAudioBusState[];
+    }
+  | {
+      id: string;
+      ok: false;
+      error: {
+        code: "native-unavailable" | "audio-failed" | "protocol-error";
+        message: string;
+      };
+    };
+
+export type NativeCaptionCueState = {
+  id: string;
+  text: string;
+  speaker?: string;
+  atMs: number;
+};
+
+export type NativeCaptionTrackState = {
+  enabled: boolean;
+  cues: NativeCaptionCueState[];
+};
+
+export type NativeCaptionResponse =
+  | {
+      id: string;
+      ok: true;
+      track: NativeCaptionTrackState;
+    }
+  | {
+      id: string;
+      ok: false;
+      error: {
+        code: "native-unavailable" | "caption-failed" | "protocol-error";
+        message: string;
+      };
+    };
+
+export type NativeBridgeResponse =
+  | NativeZoomResponse
+  | NativeOutputResponse
+  | NativeCaptureDeviceResponse
+  | NativeMediaCoreBridgeResponse
+  | NativeAudioResponse
+  | NativeCaptionResponse;
 
 export interface NativeZoomTransport {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
@@ -171,4 +324,42 @@ export class NativeZoomBridgeError extends Error {
     super(message);
     this.name = "NativeZoomBridgeError";
   }
+}
+
+let _bridgeCommandCounter = 0;
+
+/** Allocate a unique correlation id for a bridge command. */
+export function nextBridgeCommandId(prefix = "bridge"): string {
+  _bridgeCommandCounter += 1;
+  return `${prefix}-${_bridgeCommandCounter}`;
+}
+
+/** Build a media-core sync command carrying a batch of media-core commands. */
+export function createMediaCoreSyncCommand(
+  commands: NativeMediaCoreCommand[],
+  elapsedMs: number,
+  id: string = nextBridgeCommandId("media-core-sync")
+): Extract<NativeMediaCoreBridgeCommand, { type: "media-core-sync" }> {
+  return { id, type: "media-core-sync", payload: { commands, elapsedMs } };
+}
+
+/** Build a media-core handshake command that asks the core to announce its profile. */
+export function createMediaCoreHandshakeCommand(
+  id: string = nextBridgeCommandId("media-core-handshake")
+): Extract<NativeMediaCoreBridgeCommand, { type: "media-core-handshake" }> {
+  return { id, type: "media-core-handshake" };
+}
+
+/** True when a response carries a media-core state snapshot. */
+export function isMediaCoreSnapshotResponse(
+  response: NativeBridgeResponse
+): response is Extract<NativeMediaCoreBridgeResponse, { snapshot: NativeMediaCoreStateSnapshot }> {
+  return response.ok === true && "snapshot" in response;
+}
+
+/** True when a response carries a media-core profile (handshake result). */
+export function isMediaCoreProfileResponse(
+  response: NativeBridgeResponse
+): response is Extract<NativeMediaCoreBridgeResponse, { profile: NativeMediaCoreProfile }> {
+  return response.ok === true && "profile" in response;
 }

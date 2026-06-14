@@ -1,0 +1,25 @@
+# electron-builder packaging config for the CoreVideo Pro desktop shell.
+# Packaging is a dev-machine concern; CI validates the shell logic headlessly.
+appId: pro.corevideo.desktop
+productName: CoreVideo Pro
+directories:
+  output: artifacts/desktop
+  buildResources: desktop/build
+# The Electron main entry. Modern Electron (Node >= 22) runs the TypeScript
+# entry directly via type-stripping; otherwise build to JS first.
+files:
+  - dist/**/*
+  - desktop/**/*.ts
+  - desktop/**/*.cjs
+  - "!desktop/**/*.test.ts"
+  - package.json
+extraMetadata:
+  main: desktop/main.ts
+win:
+  target: nsis
+mac:
+  target: dmg
+  category: public.app-category.video
+linux:
+  target: AppImage
+  category: AudioVideo
