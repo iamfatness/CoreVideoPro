@@ -1444,6 +1444,10 @@ meter {
   gap: 6px;
 }
 
+.brand-kit-field-wide {
+  grid-column: 1 / -1;
+}
+
 .brand-kit-field span {
   color: #94a59b;
   font-size: 12px;
