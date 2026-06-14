@@ -36,4 +36,14 @@ describe("MockCaptureDeviceEngine", () => {
     const clamped = await engine.setAudioSyncOffset("aja-io-1", 9000);
     expect(clamped.find((device) => device.id === "aja-io-1")?.audioSyncOffsetMs).toBe(500);
   });
+
+  it("brings a detected second device online as a live source", async () => {
+    const engine = new MockCaptureDeviceEngine();
+
+    const devices = await engine.connectDevice("aja-io-1");
+    const aja = devices.find((device) => device.id === "aja-io-1");
+
+    expect(aja?.connectionState).toBe("connected");
+    expect(aja?.signalPresent).toBe(true);
+  });
 });

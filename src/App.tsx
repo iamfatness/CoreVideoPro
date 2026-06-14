@@ -39,6 +39,7 @@ import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
 import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
+import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
@@ -179,6 +180,7 @@ export function App({ engines, runtime }: AppProps) {
     () => (selectedParticipant ? computeAutoCrop(selectedParticipant) : undefined),
     [selectedParticipant]
   );
+  const captureFleet = useMemo(() => summarizeCaptureFleet(production.captureDevices), [production.captureDevices]);
   const breakoutRooms = useMemo(() => getBreakoutRooms(production.participants), [production.participants]);
   const visibleParticipants = useMemo(
     () =>
@@ -253,6 +255,11 @@ export function App({ engines, runtime }: AppProps) {
 
   async function setCaptureDeviceAudioSyncOffset(deviceId: string, offsetMs: number) {
     const captureDevices = await engines.captureDevices.setAudioSyncOffset(deviceId, offsetMs);
+    setProduction((current) => ({ ...current, captureDevices }));
+  }
+
+  async function connectCaptureDevice(deviceId: string) {
+    const captureDevices = await engines.captureDevices.connectDevice(deviceId);
     setProduction((current) => ({ ...current, captureDevices }));
   }
 
@@ -1443,6 +1450,15 @@ export function App({ engines, runtime }: AppProps) {
               Capture Devices
             </div>
             {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
+            {production.captureDevices.length > 0 && (
+              <div className="capture-fleet" aria-label="Capture fleet">
+                <p className="capture-fleet-summary">{captureFleet.summary}</p>
+                {captureFleet.dualCapture && <span className="capture-fleet-badge">Dual capture live</span>}
+                {captureFleet.warnings.map((warning) => (
+                  <p className="capture-fleet-warning" role="status" key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
             {production.captureDevices.map((device) => (
               <div className="capture-device" key={device.id}>
                 <div className="capture-device-header">
@@ -1455,6 +1471,12 @@ export function App({ engines, runtime }: AppProps) {
                   {device.resolution.width}x{device.resolution.height} - {device.frameRate}fps -{" "}
                   {device.signalPresent ? "Signal present" : "No signal"}
                 </p>
+                {device.connectionState !== "connected" && (
+                  <button className="ghost-button wide" onClick={() => connectCaptureDevice(device.id)}>
+                    <Cable size={16} />
+                    Bring online as program source
+                  </button>
+                )}
                 <label className="capture-device-field">
                   Input
                   <select

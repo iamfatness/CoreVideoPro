@@ -100,4 +100,5 @@ export interface CaptureDeviceEngine {
   listDevices(): Promise<CaptureDeviceState[]>;
   selectInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]>;
   setAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]>;
+  connectDevice(deviceId: string): Promise<CaptureDeviceState[]>;
 }

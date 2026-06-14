@@ -707,4 +707,19 @@ describe("App production controls", () => {
     expect(screen.getAllByText(/Injected caption from native bridge/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/No screen share/i).length).toBeGreaterThan(0);
   });
+
+  it("brings a second capture device online for dual capture", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+    const fleet = await screen.findByLabelText("Capture fleet");
+    expect(within(fleet).getByText(/1 live \/ 1 connected/)).toBeInTheDocument();
+    expect(within(fleet).queryByText("Dual capture live")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Bring online as program source/i }));
+
+    expect(within(fleet).getByText(/2 live \/ 2 connected/)).toBeInTheDocument();
+    expect(within(fleet).getByText("Dual capture live")).toBeInTheDocument();
+  });
 });
