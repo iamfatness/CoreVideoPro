@@ -13,12 +13,19 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createIpcRouter } from "./ipcRouter.ts";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
+import { mediaCoreSupervisorOptionsFromEnv } from "./mediaCoreRuntime.ts";
 import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const supervisor = new MediaCoreSupervisor({
+  ...mediaCoreSupervisorOptionsFromEnv(process.env),
   onCrash: (info) => console.warn(`[media-core] crashed (code ${info.code}); restart #${info.restartCount}`),
-  onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`)
+  onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`),
+  onZoomVideoFrame: (frame) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send("corevideo:zoom-video-frame", frame);
+    }
+  }
 });
 const route = createIpcRouter({ mediaCore: supervisor });
 

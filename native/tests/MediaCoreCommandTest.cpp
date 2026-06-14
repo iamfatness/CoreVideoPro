@@ -5,6 +5,21 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace {
+
+bool jsonArrayContains(const corevideo::rpc::Json& array, const std::string& value) {
+  return std::any_of(array.asArray().begin(), array.asArray().end(), [&](const corevideo::rpc::Json& entry) {
+    return entry.isString() && entry.asString() == value;
+  });
+}
+
+}  // namespace
+
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -59,7 +74,34 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 6);
   EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 2);
   ASSERT_NE(profile.get("capabilities"), nullptr);
-  EXPECT_GE(profile.get("capabilities")->asArray().size(), 11);
+  const auto& capabilities = *profile.get("capabilities");
+  EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
+#if COREVIDEO_WITH_D3D11
+  EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "smart-framing"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "gpu-compositor"));
+#endif
+#if COREVIDEO_WITH_ZOOM
+  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-video"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-audio"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "zoom-raw-video"));
+#endif
+#if COREVIDEO_WITH_MF_ENCODER
+  EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
+#endif
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  EXPECT_TRUE(jsonArrayContains(capabilities, "rtmp-output"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "rtmp-output"));
+#endif
 }
 
 TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
@@ -238,6 +280,39 @@ TEST(MediaCoreCommand, AppliesOutputSenderFailureAndRecoveryCommands) {
   EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("warning"), "RTMP sender recovered.");
 }
 
+TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
+  corevideo::core::MediaCore mediaCore;
+  const auto devices = mediaCore.captureDevices();
+  ASSERT_TRUE(devices.asArray().size() >= 2);
+  EXPECT_EQ(devices.asArray()[0].getString("vendor"), "blackmagic");
+  EXPECT_EQ(devices.asArray()[0].get("inputs")->asArray().size(), 2);
+  const auto deckLinkId = devices.asArray()[0].getString("id");
+  const auto ajaDevice = std::find_if(devices.asArray().begin(), devices.asArray().end(), [](const corevideo::rpc::Json& device) {
+    return device.getString("vendor") == "aja";
+  });
+  ASSERT_TRUE(ajaDevice != devices.asArray().end());
+  const auto ajaId = ajaDevice->getString("id");
+
+  const auto selected = mediaCore.selectCaptureInput(deckLinkId, "hdmi-1");
+  ASSERT_TRUE(selected.asArray().size() >= 1);
+  EXPECT_EQ(selected.asArray()[0].getString("selectedInputId"), "hdmi-1");
+
+  const auto offset = mediaCore.setCaptureAudioSyncOffset(ajaId, 1200);
+  const auto aja = std::find_if(offset.asArray().begin(), offset.asArray().end(), [&](const corevideo::rpc::Json& device) {
+    return device.getString("id") == ajaId;
+  });
+  ASSERT_TRUE(aja != offset.asArray().end());
+  EXPECT_EQ(aja->get("audioSyncOffsetMs")->asNumber(), 500);
+
+  const auto connected = mediaCore.connectCaptureDevice(ajaId);
+  const auto connectedAja = std::find_if(connected.asArray().begin(), connected.asArray().end(), [&](const corevideo::rpc::Json& device) {
+    return device.getString("id") == ajaId;
+  });
+  ASSERT_TRUE(connectedAja != connected.asArray().end());
+  EXPECT_EQ(connectedAja->getString("connectionState"), "connected");
+  EXPECT_TRUE(connectedAja->get("signalPresent")->asBool());
+}
+
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
 #if COREVIDEO_WITH_D3D11
   auto compositor = corevideo::modules::createD3D11Compositor();
@@ -271,6 +346,38 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
 #endif
 }
 
+TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArmed) {
+#if COREVIDEO_WITH_MF_ENCODER
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+  const auto started = encoder->start({"recording"}, {"participant-1"});
+  ASSERT_FALSE(started.recordingArtifactPath.empty());
+  EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
+
+  encoder->submit({1920, 1080, 2, 42, "mp4-plan", "d3d11"});
+  encoder->submit({1920, 1080, 2, 43, "mp4-plan", "d3d11"});
+  encoder->submit({1920, 1080, 2, 44, "mp4-plan", "d3d11"});
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingBytesWritten > 0);
+  EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
+  const auto artifactPath = session.recordingArtifactPath;
+  encoder.reset();
+
+  ASSERT_TRUE(std::filesystem::exists(artifactPath));
+  EXPECT_TRUE(std::filesystem::file_size(artifactPath) > 1024u);
+
+  std::ifstream input(artifactPath, std::ios::binary);
+  std::string header(32, '\0');
+  input.read(header.data(), static_cast<std::streamsize>(header.size()));
+  header.resize(static_cast<size_t>(input.gcount()));
+  EXPECT_NE(header.find("ftyp"), std::string::npos);
+  input.close();
+  std::filesystem::remove(artifactPath);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   auto sender = corevideo::modules::createRtmpOutputSender();
@@ -281,6 +388,55 @@ TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
   EXPECT_EQ(session.senders[0].destination, "rtmp");
 #else
   EXPECT_EQ(corevideo::modules::createRtmpOutputSender(), nullptr);
+#endif
+}
+
+TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-proof-plan", "d3d11"};
+  const auto session = sender->sync({"rtmp"}, &frame, 33);
+  ASSERT_FALSE(session.senders.empty());
+  ASSERT_FALSE(session.senders[0].sendArtifactPath.empty());
+  EXPECT_TRUE(session.senders[0].sendBytesWritten > 0);
+  ASSERT_TRUE(std::filesystem::exists(session.senders[0].sendArtifactPath));
+
+  std::ifstream input(session.senders[0].sendArtifactPath);
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const auto content = buffer.str();
+  EXPECT_NE(content.find("rtmp-send-proof-start"), std::string::npos);
+  EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
+  input.close();
+  const auto artifactPath = session.senders[0].sendArtifactPath;
+  sender.reset();
+  std::filesystem::remove(artifactPath);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+TEST(CaptureDeviceAdapter, FactoriesAreDisabledUnlessHardwareGatesAreEnabled) {
+#if COREVIDEO_WITH_DECKLINK
+  auto deckLink = corevideo::modules::createDeckLinkCaptureDevice();
+  ASSERT_NE(deckLink, nullptr);
+  const auto deckLinkDevices = deckLink->enumerate();
+  ASSERT_FALSE(deckLinkDevices.empty());
+  EXPECT_EQ(deckLinkDevices[0].vendor, "blackmagic");
+#else
+  EXPECT_EQ(corevideo::modules::createDeckLinkCaptureDevice(), nullptr);
+#endif
+
+#if COREVIDEO_WITH_AJA
+  auto aja = corevideo::modules::createAjaCaptureDevice();
+  ASSERT_NE(aja, nullptr);
+  const auto ajaDevices = aja->enumerate();
+  ASSERT_FALSE(ajaDevices.empty());
+  EXPECT_EQ(ajaDevices[0].vendor, "aja");
+#else
+  EXPECT_EQ(corevideo::modules::createAjaCaptureDevice(), nullptr);
 #endif
 }
 

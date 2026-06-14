@@ -10,6 +10,7 @@ import type { NativeBridgeCommand, NativeBridgeResponse } from "../src/engine/na
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 
 const mediaCoreProfile = (ipcRenderer.sendSync("corevideo:handshake") as NativeMediaCoreProfile | null) ?? undefined;
 
@@ -50,6 +51,17 @@ async function getMediaCoreHealth(): Promise<MediaCoreHealth> {
   return { restartCount: 0, recovering: false, stopped: false };
 }
 
+function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
+  const channelListener = (_event: Electron.IpcRendererEvent, frame: ZoomVideoFrame) => {
+    listener({
+      ...frame,
+      rgba: new Uint8ClampedArray(frame.rgba)
+    });
+  };
+  ipcRenderer.on("corevideo:zoom-video-frame", channelListener);
+  return () => ipcRenderer.off("corevideo:zoom-video-frame", channelListener);
+}
+
 contextBridge.exposeInMainWorld("coreVideoNative", {
   host: "electron",
   platform: process.platform,
@@ -57,5 +69,6 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   request,
   syncMediaCore,
   syncZoomMediaSpine,
-  getMediaCoreHealth
+  getMediaCoreHealth,
+  onZoomVideoFrame
 });

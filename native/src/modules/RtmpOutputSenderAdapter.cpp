@@ -1,7 +1,11 @@
 #include "modules/Interfaces.h"
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
 #if defined(_WIN32)
@@ -54,14 +58,17 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     ensureSender(elapsedMs);
+    openSendProofIfNeeded();
     if (!runtimeAvailable_) {
       sender_.status = "warning";
       sender_.warning = "RTMP sender requires libavformat runtime on the dev machine.";
+      appendSendProof(nullptr, "runtime-missing");
       return snapshot();
     }
     if (!frame || frame->frameNumber == 0) {
       sender_.status = "starting";
       sender_.warning = "RTMP sender is waiting for a program frame.";
+      appendSendProof(frame, "waiting-for-frame");
       return snapshot();
     }
 
@@ -69,6 +76,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.warning.clear();
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
+    appendSendProof(frame, "sent");
     return snapshot();
   }
 
@@ -112,6 +120,42 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.bitrateMbps = 6.0;
   }
 
+  void openSendProofIfNeeded() {
+    if (sendProof_.is_open() || !sender_.sendArtifactPath.empty()) {
+      return;
+    }
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto path = std::filesystem::temp_directory_path() / ("corevideo-rtmp-send-proof-" + std::to_string(now) + ".jsonl");
+    sendProof_.open(path, std::ios::out | std::ios::trunc);
+    if (!sendProof_) {
+      sender_.warning = "RTMP send proof file could not be opened.";
+      return;
+    }
+    sender_.sendArtifactPath = path.string();
+    writeLine("{\"type\":\"rtmp-send-proof-start\",\"runtimeAvailable\":" + std::string(runtimeAvailable_ ? "true" : "false") + "}");
+  }
+
+  void appendSendProof(const ProgramFrame* frame, const std::string& status) {
+    if (!sendProof_.is_open()) {
+      return;
+    }
+    std::string line = "{\"type\":\"rtmp-send-attempt\",\"status\":\"" + status + "\"";
+    if (frame) {
+      line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
+              ",\"width\":" + std::to_string(frame->width) +
+              ",\"height\":" + std::to_string(frame->height) +
+              ",\"renderPlanId\":\"" + frame->renderPlanId + "\"";
+    }
+    line += "}";
+    writeLine(line);
+  }
+
+  void writeLine(const std::string& line) {
+    sendProof_ << line << '\n';
+    sendProof_.flush();
+    sender_.sendBytesWritten += static_cast<int64_t>(line.size() + 1);
+  }
+
   OutputSenderSession snapshot() const {
     OutputSenderSession session;
     if (!sender_.senderId.empty()) {
@@ -129,6 +173,7 @@ class RtmpOutputSender final : public IOutputSender {
 
   bool runtimeAvailable_ = false;
   OutputSender sender_;
+  std::ofstream sendProof_;
 };
 #endif
 

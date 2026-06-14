@@ -53,7 +53,7 @@ inline constexpr std::array<std::string_view, 14> kNativeMediaCoreCommandTypes =
     "recover-recording-session",
 };
 
-inline constexpr std::array<std::string_view, 10> kNativeBridgeCommandTypes = {
+inline constexpr std::array<std::string_view, 14> kNativeBridgeCommandTypes = {
     "join",
     "leave",
     "snapshot",
@@ -64,9 +64,16 @@ inline constexpr std::array<std::string_view, 10> kNativeBridgeCommandTypes = {
     "stop-stream",
     "get-output-health",
     "get-output-session",
+    "list-capture-devices",
+    "select-capture-input",
+    "set-capture-audio-sync-offset",
+    "connect-capture-device",
 };
 
-inline constexpr std::array<std::string_view, 1> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 4> kCoreRequestTypes = {
+    "zoom-join",
+    "zoom-leave",
+    "zoom-snapshot",
     "zoom-media-spine-sync",
 };
 

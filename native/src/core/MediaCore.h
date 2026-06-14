@@ -1,8 +1,10 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,7 +17,15 @@ class MediaCore {
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
   [[nodiscard]] rpc::Json health() const;
-  [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const;
+  [[nodiscard]] rpc::Json captureDevices() const;
+  [[nodiscard]] rpc::Json selectCaptureInput(const std::string& deviceId, const std::string& inputId);
+  [[nodiscard]] rpc::Json setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs);
+  [[nodiscard]] rpc::Json connectCaptureDevice(const std::string& deviceId);
+  [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
+  [[nodiscard]] rpc::Json leaveZoom();
+  [[nodiscard]] rpc::Json zoomSnapshot();
+  [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
+  [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
 
@@ -37,6 +47,7 @@ class MediaCore {
   void renderSyntheticTick();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
+  [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
 
   modules::ModuleSet modules_;
@@ -66,6 +77,10 @@ class MediaCore {
   int64_t recordingDroppedFrames_ = 0;
   std::string recordingError_;
   std::string recordingWarning_;
+  std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
+  bool zoomJoined_ = false;
+  int zoomSnapshotTick_ = 0;
+  std::string zoomDisplayName_ = "Guest Producer";
 };
 
 }  // namespace corevideo::core

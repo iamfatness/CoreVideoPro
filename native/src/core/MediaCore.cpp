@@ -18,10 +18,68 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
-rpc::Json::Array capabilityArray() {
+rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
   rpc::Json::Array result;
-  for (auto capability : kNativeMediaCoreCapabilities) {
-    result.emplace_back(std::string(capability));
+  result.emplace_back("audio-mixer");
+  result.emplace_back("scene-graph-rendering");
+  result.emplace_back("dynamic-overlays");
+
+  if (renderer != "software") {
+    result.emplace_back("gpu-compositor");
+    result.emplace_back("chroma-key");
+    result.emplace_back("smart-framing");
+  }
+
+#if COREVIDEO_WITH_ZOOM
+  result.emplace_back("zoom-raw-video");
+  result.emplace_back("zoom-raw-audio");
+#endif
+
+  if (encoderSession.hardwareAccelerated) {
+    result.emplace_back("program-recording");
+    result.emplace_back("iso-recording");
+  }
+
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  result.emplace_back("rtmp-output");
+#endif
+
+  return result;
+}
+
+rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
+  rpc::Json::Array inputs;
+  for (size_t index = 0; index < device.inputIds.size(); ++index) {
+    inputs.emplace_back(rpc::Json::Object{
+        {"id", device.inputIds[index]},
+        {"label", index < device.inputLabels.size() ? device.inputLabels[index] : device.inputIds[index]},
+        {"hasEmbeddedAudio", index < device.inputHasEmbeddedAudio.size() ? device.inputHasEmbeddedAudio[index] : true},
+    });
+  }
+
+  rpc::Json::Object result{
+      {"id", device.id},
+      {"vendor", device.vendor.empty() ? "blackmagic" : device.vendor},
+      {"name", device.name},
+      {"inputs", inputs},
+      {"selectedInputId", device.selectedInputId},
+      {"resolution", rpc::Json::Object{{"width", device.width}, {"height", device.height}}},
+      {"frameRate", device.frameRate},
+      {"connectionState", device.connectionState},
+      {"signalPresent", device.signalPresent},
+      {"droppedFrames", static_cast<double>(device.droppedFrames)},
+      {"audioSyncOffsetMs", device.audioSyncOffsetMs},
+  };
+  if (!device.warning.empty()) {
+    result.emplace("warning", device.warning);
+  }
+  return result;
+}
+
+rpc::Json::Array captureDeviceArray(const std::vector<modules::CaptureDeviceInfo>& devices) {
+  rpc::Json::Array result;
+  for (const auto& device : devices) {
+    result.emplace_back(captureDeviceJson(device));
   }
   return result;
 }
@@ -79,19 +137,21 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 }  // namespace
 
-MediaCore::MediaCore(modules::ModuleSet modules) : modules_(std::move(modules)) {}
+MediaCore::MediaCore(modules::ModuleSet modules)
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
+  const auto encoderSession = modules_.encoder->session();
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
-      {"encoder", modules_.encoder->session().encoderName},
+      {"encoder", encoderSession.encoderName},
       {"maxProgramResolution", "1920x1080"},
       {"maxProgramFps", 30},
       {"maxParticipantFeeds", 6},
       {"maxIsoRecordings", 2},
-      {"capabilities", capabilityArray()},
+      {"capabilities", capabilityArray(renderer, encoderSession)},
   };
 }
 
@@ -104,11 +164,98 @@ rpc::Json MediaCore::health() const {
       {"codec", session.codec},
       {"targetBitrateMbps", session.targetBitrateMbps},
       {"hardwareEncoder", session.hardwareAccelerated},
+      {"recordingArtifactPath", session.recordingArtifactPath},
+      {"recordingBytesWritten", static_cast<double>(session.recordingBytesWritten)},
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
       {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
       {"messages", rpc::Json::Array{"COREVIDEO_STUB synthetic media path active"}},
+  };
+}
+
+rpc::Json MediaCore::captureDevices() const {
+  return captureDevicesState();
+}
+
+rpc::Json MediaCore::selectCaptureInput(const std::string& deviceId, const std::string& inputId) {
+  return captureDeviceArray(modules_.captureDevice->selectInput(deviceId, inputId));
+}
+
+rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs) {
+  return captureDeviceArray(modules_.captureDevice->setAudioSyncOffset(deviceId, offsetMs));
+}
+
+rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
+  return captureDeviceArray(modules_.captureDevice->connect(deviceId));
+}
+
+rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->join(payload);
+  }
+
+  zoomJoined_ = true;
+  const std::string displayName = payload.getString("displayName", zoomDisplayName_);
+  if (!displayName.empty()) {
+    zoomDisplayName_ = displayName;
+  }
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::leaveZoom() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->leave();
+  }
+
+  zoomJoined_ = false;
+  ++zoomSnapshotTick_;
+  return zoomSnapshot();
+}
+
+rpc::Json MediaCore::zoomSnapshot() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->snapshot();
+  }
+
+  ++zoomSnapshotTick_;
+  if (!zoomJoined_) {
+    return rpc::Json::Object{
+        {"meetingState", "idle"},
+        {"participants", rpc::Json::Array{}},
+        {"tick", zoomSnapshotTick_},
+    };
+  }
+
+  return rpc::Json::Object{
+      {"meetingState", "in_meeting"},
+      {"activeSpeakerId", "operator-1"},
+      {"caption", ""},
+      {"tick", zoomSnapshotTick_},
+      {"participants",
+       rpc::Json::Array{
+           rpc::Json::Object{
+               {"userId", "operator-1"},
+               {"displayName", zoomDisplayName_},
+               {"role", "Host"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", true},
+               {"audioLevel", 76},
+               {"networkQuality", "good"},
+           },
+           rpc::Json::Object{
+               {"userId", "guest-1"},
+               {"displayName", "Guest 1"},
+               {"role", "Guest"},
+               {"videoOn", true},
+               {"muted", false},
+               {"talking", false},
+               {"audioLevel", 22},
+               {"networkQuality", "good"},
+           },
+       }},
   };
 }
 
@@ -127,6 +274,7 @@ rpc::Json MediaCore::sessionState() const {
       {"active", session.active},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
+      {"captureDevices", captureDevicesState()},
       {"health", health()},
       {"profile", profile()},
   };
@@ -137,7 +285,11 @@ rpc::Json MediaCore::sessionState() const {
   return state;
 }
 
-rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const {
+rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
+  }
+
   const rpc::Json* participantsNode = payload.get("participants");
   const rpc::Json* subscriptionsNode = payload.get("subscriptions");
   const auto& participants = participantsNode && participantsNode->isArray() ? participantsNode->asArray() : rpc::Json::Array{};
@@ -258,6 +410,13 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     snapshot.emplace("screenShareParticipantId", screenShare->getString("sdkUserId"));
   }
   return snapshot;
+}
+
+std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    return zoomEngineRuntime_->drainFrameEvents();
+  }
+  return {};
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands) {
@@ -435,14 +594,23 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   }
 
   const bool warning = session.active && encoderLifecycleStatus_ != "encoding";
-  return rpc::Json::Object{
-      {"status", warning ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
+  rpc::Json::Array warnings = warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{};
+  if (!session.recordingWarning.empty()) {
+    warnings.emplace_back(session.recordingWarning);
+  }
+  rpc::Json::Object encoderState{
+      {"status", warning || !session.recordingWarning.empty() ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"targets", targets},
       {"lifecycle", lifecycle},
-      {"warnings", warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{}},
+      {"warnings", warnings},
   };
+  if (!session.recordingArtifactPath.empty()) {
+    encoderState.emplace("recordingArtifactPath", session.recordingArtifactPath);
+    encoderState.emplace("recordingBytesWritten", static_cast<double>(session.recordingBytesWritten));
+  }
+  return encoderState;
 }
 
 rpc::Json MediaCore::outputSenderSessionState() const {
@@ -470,6 +638,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (!sender.warning.empty()) {
       senderJson.emplace("warning", sender.warning);
     }
+    if (!sender.sendArtifactPath.empty()) {
+      senderJson.emplace("sendArtifactPath", sender.sendArtifactPath);
+      senderJson.emplace("sendBytesWritten", static_cast<double>(sender.sendBytesWritten));
+    }
     senders.emplace_back(std::move(senderJson));
   }
 
@@ -479,6 +651,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
       {"senders", senders},
       {"warnings", stringArray(senderSession.warnings)},
   };
+}
+
+rpc::Json MediaCore::captureDevicesState() const {
+  return captureDeviceArray(modules_.captureDevice->enumerate());
 }
 
 rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
@@ -533,8 +709,11 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"streams", streams},
       {"totalFramesWritten", static_cast<double>(recordingProgramFramesWritten_ + recordingIsoFramesWritten_)},
       {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
-      {"totalBytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000)},
+      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000))},
   };
+  if (!session.recordingArtifactPath.empty()) {
+    recording.emplace("artifactPath", session.recordingArtifactPath);
+  }
   if (!recordingError_.empty()) {
     recording.emplace("error", recordingError_);
   }

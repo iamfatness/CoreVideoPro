@@ -119,10 +119,93 @@ TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
   EXPECT_EQ(response.getString("id"), "zoom-spine-1");
   EXPECT_TRUE(response.get("ok")->asBool());
   EXPECT_EQ(response.getString("type"), "zoom-media-spine-sync");
-  const auto* zoom = response.get("zoom");
-  ASSERT_NE(zoom, nullptr);
-  EXPECT_EQ(zoom->getString("meetingState"), "in-meeting");
-  EXPECT_EQ(zoom->getString("activeSpeakerId"), "sdk-presenter");
-  EXPECT_EQ(zoom->get("recording")->get("evidence")->get("subscribedVideoFeeds")->asNumber(), 1);
-  EXPECT_GE(zoom->get("recording")->get("evidence")->get("programFramesWritten")->asNumber(), 1);
+  const auto* spineSnapshot = response.get("spineSnapshot");
+  ASSERT_NE(spineSnapshot, nullptr);
+  EXPECT_EQ(spineSnapshot->getString("meetingState"), "in-meeting");
+  EXPECT_EQ(spineSnapshot->getString("activeSpeakerId"), "sdk-presenter");
+  EXPECT_EQ(spineSnapshot->get("recording")->get("evidence")->get("subscribedVideoFeeds")->asNumber(), 1);
+  EXPECT_GE(spineSnapshot->get("recording")->get("evidence")->get("programFramesWritten")->asNumber(), 1);
+}
+
+TEST(JsonRpcServer, HandlesZoomLifecycleRequests) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  const auto joined = server.handle(corevideo::rpc::Json::Object{
+      {"id", "zoom-join-1"},
+      {"type", "zoom-join"},
+      {"payload",
+       corevideo::rpc::Json::Object{
+           {"meetingUrl", "https://zoom.us/j/123456789"},
+           {"displayName", "Operator"},
+           {"webinar", false},
+       }},
+  });
+  EXPECT_EQ(joined.getString("id"), "zoom-join-1");
+  EXPECT_TRUE(joined.get("ok")->asBool());
+  EXPECT_EQ(joined.getString("type"), "zoom-join");
+  ASSERT_NE(joined.get("snapshot"), nullptr);
+  EXPECT_EQ(joined.get("snapshot")->getString("meetingState"), "in_meeting");
+  EXPECT_EQ(joined.get("snapshot")->getString("activeSpeakerId"), "operator-1");
+  ASSERT_TRUE(joined.get("snapshot")->get("participants")->asArray().size() >= 2);
+  EXPECT_EQ(joined.get("snapshot")->get("participants")->asArray()[0].getString("displayName"), "Operator");
+
+  const auto snapshot = server.handle(corevideo::rpc::Json::Object{
+      {"id", "zoom-snapshot-1"},
+      {"type", "zoom-snapshot"},
+  });
+  EXPECT_EQ(snapshot.getString("id"), "zoom-snapshot-1");
+  EXPECT_TRUE(snapshot.get("ok")->asBool());
+  EXPECT_EQ(snapshot.getString("type"), "zoom-snapshot");
+  EXPECT_EQ(snapshot.get("snapshot")->getString("meetingState"), "in_meeting");
+
+  const auto left = server.handle(corevideo::rpc::Json::Object{
+      {"id", "zoom-leave-1"},
+      {"type", "zoom-leave"},
+  });
+  EXPECT_EQ(left.getString("id"), "zoom-leave-1");
+  EXPECT_TRUE(left.get("ok")->asBool());
+  EXPECT_EQ(left.getString("type"), "zoom-leave");
+  EXPECT_EQ(left.get("snapshot")->getString("meetingState"), "idle");
+  EXPECT_TRUE(left.get("snapshot")->get("participants")->asArray().empty());
+}
+
+TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  const auto listed = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-list-1"},
+      {"type", "list-capture-devices"},
+  });
+  EXPECT_EQ(listed.getString("id"), "capture-list-1");
+  EXPECT_TRUE(listed.get("ok")->asBool());
+  ASSERT_NE(listed.get("devices"), nullptr);
+  EXPECT_GE(listed.get("devices")->asArray().size(), 2);
+  const auto deckLinkId = listed.get("devices")->asArray()[0].getString("id");
+  const auto ajaId = listed.get("devices")->asArray()[1].getString("id");
+
+  const auto selected = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-select-1"},
+      {"type", "select-capture-input"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", deckLinkId}, {"inputId", "hdmi-1"}}},
+  });
+  EXPECT_TRUE(selected.get("ok")->asBool());
+  EXPECT_EQ(selected.get("devices")->asArray()[0].getString("selectedInputId"), "hdmi-1");
+
+  const auto offset = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-offset-1"},
+      {"type", "set-capture-audio-sync-offset"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", deckLinkId}, {"offsetMs", 1200}}},
+  });
+  EXPECT_TRUE(offset.get("ok")->asBool());
+  EXPECT_EQ(offset.get("devices")->asArray()[0].get("audioSyncOffsetMs")->asNumber(), 500);
+
+  const auto connected = server.handle(corevideo::rpc::Json::Object{
+      {"id", "capture-connect-1"},
+      {"type", "connect-capture-device"},
+      {"payload", corevideo::rpc::Json::Object{{"deviceId", ajaId}}},
+  });
+  EXPECT_TRUE(connected.get("ok")->asBool());
+  EXPECT_EQ(connected.get("devices")->asArray()[1].getString("connectionState"), "connected");
 }

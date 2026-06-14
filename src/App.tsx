@@ -61,8 +61,9 @@ import { evaluateFeedHealth, feedHealthBadgeColor, summarizeRosterHealth, type F
 import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
-import { assessZoomSdkReadiness, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
+import { assessZoomSdkReadiness, shouldBlockZoomJoin, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
 import { inspectZoomWindowsSdkPackage, type ZoomWindowsSdkPackageReport } from "./engine/zoomWindowsSdkPackage";
+import { parseZoomMeetingJoinInput } from "./engine/zoomMeetingInput";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
 import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
@@ -468,6 +469,7 @@ export function App({ engines, runtime }: AppProps) {
   const liveRuntime = nativeBridgeForRuntime && runtime
     ? describeRuntimeEnvironment(nativeBridgeForRuntime, nativeBridgeForRuntime.mediaCoreProfile, mediaCoreHealth)
     : runtime;
+  const joinBlockedBySdk = shouldBlockZoomJoin(liveRuntime, sdkReadiness);
 
   // When capabilities is non-empty (native mode), gates are active; empty = mock/allow-all.
   const runtimeCaps = liveRuntime?.capabilities ?? [];
@@ -562,6 +564,11 @@ export function App({ engines, runtime }: AppProps) {
       setJoinStatus("Enter a Zoom meeting URL or ID");
       return;
     }
+    const joinIdentity = parseZoomMeetingJoinInput(request.meetingUrl);
+    if (!joinIdentity) {
+      setJoinStatus("Enter a valid Zoom meeting URL or numeric meeting ID");
+      return;
+    }
 
     setJoinStatus("Joining Zoom...");
 
@@ -570,7 +577,7 @@ export function App({ engines, runtime }: AppProps) {
       await applySnapshot(snapshot);
       void engines.spineController.joinProduction(production, sdkReadinessInput, {
         elapsedMs: elapsedSeconds * 1000,
-        join: { meetingNumber: request.meetingUrl, displayName: request.displayName }
+        join: { meetingNumber: joinIdentity.meetingNumber, displayName: request.displayName, passcodePresent: Boolean(joinIdentity.passcode) }
       });
       setJoinStatus(`Joined as ${request.displayName}`);
     } catch (error) {
@@ -1440,8 +1447,8 @@ export function App({ engines, runtime }: AppProps) {
               ) : (
                 <button
                   className="ghost-button"
-                  disabled={sdkReadiness.status === "blocked"}
-                  title={sdkReadiness.status === "blocked" ? sdkReadiness.blockers[0] : undefined}
+                  disabled={joinBlockedBySdk}
+                  title={joinBlockedBySdk ? sdkReadiness.blockers[0] : undefined}
                   onClick={joinMeeting}
                 >
                   <LogIn size={16} />

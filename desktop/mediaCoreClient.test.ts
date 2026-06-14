@@ -35,10 +35,74 @@ describe("MediaCoreSupervisor", () => {
     expect(snapshot.programFrame?.health).toBe("live");
   });
 
+  it("round-trips Zoom join, snapshot, and leave through the supervised core", async () => {
+    const supervisor = makeSupervisor();
+    await supervisor.start();
+
+    const joined = await supervisor.joinZoom({ meetingUrl: "https://zoom.us/j/123", displayName: "Operator", webinar: false });
+    expect(joined.meetingState).toBe("in_meeting");
+    expect(joined.participants[0]?.displayName).toBe("Operator");
+
+    const snapshot = await supervisor.getZoomSnapshot();
+    expect(snapshot.meetingState).toBe("in_meeting");
+
+    const left = await supervisor.leaveZoom();
+    expect(left.meetingState).toBe("idle");
+    expect(left.participants).toHaveLength(0);
+  });
+
   it("answers pings", async () => {
     const supervisor = makeSupervisor();
     await supervisor.start();
     expect(await supervisor.ping()).toBe(true);
+  });
+
+  it("dispatches unsolicited Zoom video frame events", async () => {
+    const frames: unknown[] = [];
+    const script = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on("line", (line) => {
+        const request = JSON.parse(line);
+        if (request.type === "handshake") {
+          console.log(JSON.stringify({
+            id: request.id,
+            ok: true,
+            type: "handshake",
+            profile: {
+              name: "test",
+              renderer: "software",
+              maxProgramResolution: "1920x1080",
+              maxProgramFps: 30,
+              maxParticipantFeeds: 6,
+              maxIsoRecordings: 2,
+              capabilities: []
+            }
+          }));
+          console.log(JSON.stringify({
+            type: "zoom-video-frame",
+            frame: {
+              participantId: "42",
+              width: 2,
+              height: 1,
+              frameId: 9,
+              rgba: [255, 255, 255, 255, 0, 0, 0, 255]
+            }
+          }));
+        }
+      });
+    `;
+    const supervisor = makeSupervisor({
+      command: process.execPath,
+      args: ["-e", script],
+      onZoomVideoFrame: (frame: unknown) => frames.push(frame)
+    });
+
+    await supervisor.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ participantId: "42", frameId: 9 });
   });
 
   it("isolates a crash, restarts, and keeps serving requests", async () => {

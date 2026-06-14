@@ -3,7 +3,7 @@
 // The Zoom SDK fires auth, meeting, participant, video, and audio callbacks on
 // its own internal threads concurrently with the main IPC read loop.  All of
 // them write to the same e2p fd — serialise those writes here.
-#include "../../src/engine-ipc.h"
+#include "engine-ipc.h"
 #include <mutex>
 #include <string>
 

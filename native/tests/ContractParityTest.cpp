@@ -90,8 +90,12 @@ TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContract
   EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_D3D11"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_MF_ENCODER"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_RTMP_OUTPUT"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_DECKLINK"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_AJA"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_BUILD_ZOOM_ENGINE"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_ENABLE_DEV_ADAPTERS"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_ZOOM_SDK_ROOT"), std::string::npos);
+  EXPECT_NE(cmakeSource.find("COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR"), std::string::npos);
   EXPECT_NE(adapterHeader.find("IZoomMeetingSdkCaptureSource"), std::string::npos);
   EXPECT_NE(adapterHeader.find("IZoomCaptureSource"), std::string::npos);
 

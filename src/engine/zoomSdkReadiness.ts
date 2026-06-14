@@ -1,4 +1,5 @@
 import type { Participant, ProductionState, SceneTemplate } from "../domain/production";
+import type { RuntimeEnvironment } from "./runtimeEnvironment";
 
 export type ZoomSdkRuntimePlatform = "macos" | "windows";
 
@@ -62,6 +63,17 @@ export type ZoomRawMediaSubscriptionOptions = {
 };
 
 const DEFAULT_MAX_VIDEO_SUBSCRIPTIONS = 8;
+
+export function shouldBlockZoomJoin(
+  runtime: RuntimeEnvironment | undefined,
+  readiness: ZoomSdkReadinessReport
+): boolean {
+  // Mock studio uses simulated Zoom; SDK pre-flight is informational only.
+  if (!runtime || runtime.status === "mock") {
+    return false;
+  }
+  return readiness.status === "blocked";
+}
 
 export function assessZoomSdkReadiness(input: ZoomSdkReadinessInput): ZoomSdkReadinessReport {
   const checks: ZoomSdkReadinessCheck[] = [
