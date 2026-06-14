@@ -12,16 +12,19 @@ namespace {
 
 class MediaFoundationEncoderSink final : public IEncoderSink {
  public:
+  MediaFoundationEncoderSink() {
+    session_.encoderName = "media-foundation";
+    session_.codec = "h264";
+    session_.targetBitrateMbps = 18;
+    session_.hardwareAccelerated = true;
+  }
+
   ~MediaFoundationEncoderSink() override { MFShutdown(); }
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     session_.active = true;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds;
-    session_.encoderName = "media-foundation";
-    session_.codec = "h264";
-    session_.targetBitrateMbps = 18;
-    session_.hardwareAccelerated = true;
     return session_;
   }
 

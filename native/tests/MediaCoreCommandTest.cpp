@@ -7,6 +7,16 @@
 
 #include <algorithm>
 
+namespace {
+
+bool jsonArrayContains(const corevideo::rpc::Json& array, const std::string& value) {
+  return std::any_of(array.asArray().begin(), array.asArray().end(), [&](const corevideo::rpc::Json& entry) {
+    return entry.isString() && entry.asString() == value;
+  });
+}
+
+}  // namespace
+
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -61,7 +71,34 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 6);
   EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 2);
   ASSERT_NE(profile.get("capabilities"), nullptr);
-  EXPECT_GE(profile.get("capabilities")->asArray().size(), 11);
+  const auto& capabilities = *profile.get("capabilities");
+  EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
+#if COREVIDEO_WITH_D3D11
+  EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "smart-framing"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "gpu-compositor"));
+#endif
+#if COREVIDEO_WITH_ZOOM
+  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-video"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-audio"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "zoom-raw-video"));
+#endif
+#if COREVIDEO_WITH_MF_ENCODER
+  EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
+  EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
+#endif
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  EXPECT_TRUE(jsonArrayContains(capabilities, "rtmp-output"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "rtmp-output"));
+#endif
 }
 
 TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
