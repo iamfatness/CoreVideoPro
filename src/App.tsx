@@ -2,22 +2,37 @@ import {
   Activity,
   AudioLines,
   Bot,
+  Cable,
   Captions,
   CircleDot,
   Clapperboard,
-  Cable,
+  Expand,
+  Gauge,
+  HardDrive,
   LayoutTemplate,
   LogIn,
   LogOut,
+  Maximize2,
   Mic,
+  MicOff,
+  Minus,
   MonitorUp,
+  MoreHorizontal,
   Palette,
+  Plus,
   Radio,
   RefreshCw,
   Save,
+  Search,
+  Settings2,
+  Shield,
   Sparkles,
+  Square,
   Users,
-  Video
+  Video,
+  Volume2,
+  Wifi,
+  X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { getFrameForParticipant } from "./engine/mediaFrames";
@@ -69,6 +84,43 @@ type CommandKey = keyof typeof commandLabels;
 const participantRoles: ParticipantRole[] = ["Host", "Presenter", "Panelist", "Guest"];
 const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]);
 
+const tabs = [
+  { id: "studio", label: "Studio", icon: Clapperboard },
+  { id: "settings", label: "Settings", icon: Settings2 },
+  { id: "sources", label: "Sources", icon: Cable },
+  { id: "overlays", label: "Overlays", icon: Palette },
+  { id: "audio", label: "Audio", icon: AudioLines },
+  { id: "media", label: "Media", icon: Video },
+  { id: "automation", label: "Automation", icon: Bot }
+] as const;
+
+type TabId = (typeof tabs)[number]["id"];
+
+const roleBadgeLabels: Record<ParticipantRole, string> = {
+  Host: "HOST",
+  Presenter: "SPEAKER",
+  Panelist: "PANELIST",
+  Guest: "ATTENDEE"
+};
+
+const sceneDurations: Record<SceneTemplate["layout"], string> = {
+  "host-focus": "8s",
+  "two-up": "12s",
+  "speaker-slides": "12s",
+  "smart-grid": "8s",
+  outro: "4s"
+};
+
+const avatarPalette = ["#44c1a1", "#7fd9a0", "#f0a85c", "#5b9bd5", "#c792ea", "#ef4f4f"];
+
+function avatarColorFor(participantId: string) {
+  let hash = 0;
+  for (let index = 0; index < participantId.length; index += 1) {
+    hash = (hash * 31 + participantId.charCodeAt(index)) % avatarPalette.length;
+  }
+  return avatarPalette[Math.abs(hash)];
+}
+
 export type AppProps = {
   engines: EngineBundle;
   runtime?: RuntimeEnvironment;
@@ -95,6 +147,9 @@ export function App({ engines, runtime }: AppProps) {
   const [commandStatus, setCommandStatus] = useState("Ready");
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
+  const [activeTab, setActiveTab] = useState<TabId>("studio");
+  const [safeAreasEnabled, setSafeAreasEnabled] = useState(false);
+  const [expandedParticipantId, setExpandedParticipantId] = useState<string | null>(null);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -687,9 +742,15 @@ export function App({ engines, runtime }: AppProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
+  const outputProfileBadge = production.outputProfiles.find((profile) => profile.id === production.selectedOutputProfileId);
+  const cpuLoad = production.output.encoderLoad;
+  const memoryLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.7 + 10));
+  const diskLoad = Math.min(100, Math.round(production.output.encoderLoad * 0.4 + 20));
+  const masterLevel = production.audioMix.masterLevel;
+
   return (
-    <main className="app-shell">
-      <aside className="scene-rail" aria-label="Scenes">
+    <div className="app-shell">
+      <header className="topbar">
         <div className="brand">
           <div className="brand-mark">CV</div>
           <div>
@@ -698,687 +759,1049 @@ export function App({ engines, runtime }: AppProps) {
           </div>
         </div>
 
-        <section className="rail-section">
-          <div className="section-title">
-            <Clapperboard size={15} />
-            Scenes
-          </div>
-          <div className="scene-list">
-            {production.scenes.map((scene) => (
+        <nav className="topbar-nav" aria-label="Primary navigation">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
               <button
-                className={`scene-item ${scene.id === production.activeSceneId ? "program" : ""} ${scene.id === production.previewSceneId ? "selected" : ""}`}
-                key={scene.id}
-                onClick={() => selectScene(scene)}
+                className={`topbar-nav-item ${activeTab === tab.id ? "active" : ""}`}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
               >
-                <span>{scene.name}</span>
-                <small>{scene.automation}</small>
-                <em>{scene.id === production.activeSceneId ? "Program" : scene.id === production.previewSceneId ? "Preview" : ""}</em>
+                <Icon size={15} />
+                {tab.label}
               </button>
-            ))}
-          </div>
-        </section>
+            );
+          })}
+        </nav>
 
-        <section className="rail-section">
-          <div className="section-title">
-            <Clapperboard size={15} />
-            Transition
+        <div className="topbar-right">
+          <div className={`connection-pill ${meetingState === "in_meeting" ? "connected" : ""}`}>
+            <span className="connection-dot" />
+            {meetingState === "in_meeting" ? "Zoom Connected" : "Zoom Offline"}
           </div>
-          <div className="transition-picker" aria-label="Transition controls">
-            {(["cut", "fade", "slide"] as const).map((style) => (
+          <Wifi size={16} className="decorative-icon" aria-hidden="true" />
+          <button className="window-icon" type="button" aria-hidden="true" tabIndex={-1}>
+            <Minus size={14} />
+          </button>
+          <button className="window-icon" type="button" aria-hidden="true" tabIndex={-1}>
+            <Square size={12} />
+          </button>
+          <button className="window-icon" type="button" aria-hidden="true" tabIndex={-1}>
+            <X size={14} />
+          </button>
+        </div>
+      </header>
+
+      <div aria-label="Studio tab" className={`tab-content ${activeTab === "studio" ? "active" : ""}`} hidden={activeTab !== "studio"}>
+        <div className="studio-grid">
+          <aside className="scene-column" aria-label="Scenes">
+            <div className="column-header">
+              <span>Scenes</span>
+              <button className="icon-button" onClick={() => undefined} aria-label="Add scene">
+                <Plus size={14} />
+              </button>
+            </div>
+            <div className="scene-list">
+              {production.scenes.map((scene) => {
+                const SceneIcon = sceneLayoutIcon(scene.layout);
+                return (
+                  <button
+                    className={`scene-item ${scene.id === production.activeSceneId ? "program" : ""} ${scene.id === production.previewSceneId ? "selected" : ""}`}
+                    key={scene.id}
+                    onClick={() => selectScene(scene)}
+                  >
+                    <SceneIcon size={16} />
+                    <span>{scene.name}</span>
+                    <small>{scene.automation}</small>
+                    <div className="scene-item-footer">
+                      <em className="scene-duration">{sceneDurations[scene.layout]}</em>
+                      <em className="scene-status">{scene.id === production.activeSceneId ? "Program" : scene.id === production.previewSceneId ? "Preview" : ""}</em>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <button className="ghost-button wide" onClick={() => undefined}>
+              <Activity size={16} />
+              Reorder Scenes
+            </button>
+          </aside>
+
+          <section className="program-column">
+            <div className="program-toolbar">
+              <span className="program-label">PROGRAM</span>
+              <span className="badge">{outputProfileBadge?.resolution ?? production.output.resolution}{outputProfileBadge ? outputProfileBadge.fps : production.output.fps}</span>
+              <span className="badge">16:9</span>
+              <div className="program-toolbar-actions">
+                <button
+                  className={`ghost-button small ${safeAreasEnabled ? "selected" : ""}`}
+                  onClick={() => setSafeAreasEnabled((current) => !current)}
+                >
+                  <Shield size={14} />
+                  Safe Areas
+                </button>
+                <button
+                  className={`ghost-button small ${showPreviewMonitor ? "selected" : ""}`}
+                  onClick={() => {
+                    setCommandStatus(commandLabels.p);
+                    setShowPreviewMonitor((current) => !current);
+                  }}
+                >
+                  <Maximize2 size={14} />
+                  Preview Monitor
+                </button>
+              </div>
+            </div>
+
+            <section className="program-frame" aria-label="Program preview">
+              <div className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}>
+                <ScenePreview
+                  activeShareFrame={activeShareFrame}
+                  participants={programParticipants}
+                  scene={activeScene}
+                  frames={production.mediaFrames}
+                  videoEffects={production.videoEffects}
+                />
+                {(production.recording || production.streaming) && (
+                  <div className="live-badge">
+                    <span className="live-dot" />
+                    LIVE
+                  </div>
+                )}
+                <div className={`lower-third position-${production.captionOverlay.lowerThirdPosition}`}>
+                  <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
+                  <span>{selectedParticipant?.title ?? "Zoom-native production"}</span>
+                </div>
+                {production.captionOverlay.warnings.length > 0 && (
+                  <div className="overlay-warning">{production.captionOverlay.warnings[0]}</div>
+                )}
+                {production.graphics.filter((graphic) => graphic.enabled).map((graphic) => (
+                  <ProgramGraphic key={graphic.id} graphic={graphic} />
+                ))}
+              </div>
+              <div className="caption-strip-row">
+                <span className="cc-badge">
+                  <Captions size={14} />
+                  CC
+                </span>
+                <div className="caption-strip-text">
+                  <strong>{production.captionOverlay.speakerName}</strong>
+                  <span>{production.captionOverlay.text}</span>
+                </div>
+              </div>
+            </section>
+
+            {showPreviewMonitor && (
+              <section className="preview-frame" aria-label="Preview monitor">
+                <div className="program-header preview-header">
+                  <span className="preview-dot" />
+                  Preview
+                  <strong>{previewScene.name}</strong>
+                  <small>{production.transition.style} {production.transition.durationMs}ms</small>
+                </div>
+                <div className={`program-canvas preview-canvas layout-${previewScene.layout}`}>
+                  <ScenePreview
+                    activeShareFrame={activeShareFrame}
+                    participants={previewSceneParticipants}
+                    scene={previewScene}
+                    frames={production.mediaFrames}
+                    videoEffects={production.videoEffects}
+                  />
+                </div>
+              </section>
+            )}
+          </section>
+
+          <aside className="participants-column" aria-label="Participants and source controls">
+            <div className="column-header">
+              <span>Participants ({visibleParticipants.length})</span>
+              <div className="column-header-actions">
+                <Search size={14} className="decorative-icon" aria-hidden="true" />
+                <MoreHorizontal size={14} className="decorative-icon" aria-hidden="true" />
+              </div>
+            </div>
+
+            <div className="breakout-list" aria-label="Breakout rooms">
               <button
-                className={production.transition.style === style ? "selected" : ""}
-                key={style}
-                onClick={() => setTransitionStyle(style)}
+                className={production.selectedBreakoutRoomId === "all" ? "selected" : ""}
+                onClick={() => selectBreakoutRoom("all")}
               >
-                {style}
+                <strong>All rooms</strong>
+                <span>{production.participants.length} participants</span>
               </button>
-            ))}
-          </div>
-          <p className="transition-status">{production.transition.statusText}</p>
-        </section>
-
-        <section className="rail-section template-box">
-          <div className="section-title">
-            <LayoutTemplate size={15} />
-            Template intelligence
-          </div>
-          <p>{production.magicSceneStatus}</p>
-          <p className="auto-director-status">
-            Auto: {production.autoProduction.action} {production.autoProduction.confidence}% - {production.autoProduction.reason}
-          </p>
-          <button className="primary-action" onClick={runMagicScene} disabled={meetingState !== "in_meeting"}>
-            <Sparkles size={16} />
-            Magic Scene
-          </button>
-        </section>
-
-        <section className="rail-section">
-          <div className="section-title">
-            <Save size={15} />
-            Presets
-          </div>
-          <button className="primary-action" onClick={savePreset}>
-            <Save size={16} />
-            Save Show
-          </button>
-          <p className="preset-status">{presetStatus}</p>
-          {presetSummaries.length > 0 && (
-            <div className="preset-list">
-              {presetSummaries.map((preset) => (
-                <button key={preset.id} onClick={() => loadPreset(preset.id)}>
-                  <strong>{preset.name}</strong>
-                  <span>
-                    {preset.sceneCount} scenes - {preset.armedDestinationCount} destinations - {preset.enabledGraphicCount} graphics
-                  </span>
+              {breakoutRooms.map((room) => (
+                <button
+                  className={production.selectedBreakoutRoomId === room.id ? "selected" : ""}
+                  key={room.id}
+                  onClick={() => selectBreakoutRoom(room.id)}
+                >
+                  <strong>{room.name}</strong>
+                  <span>{room.participantCount} participants</span>
                 </button>
               ))}
             </div>
-          )}
-        </section>
 
-        <section className="rail-section">
-          <div className="section-title">
-            <Activity size={15} />
-            Diagnostics
-          </div>
-          <button className="primary-action" onClick={exportSupportBundle}>
-            <Save size={16} />
-            Export Bundle
-          </button>
-          <p className="preset-status">{supportBundleStatus}</p>
-          {supportBundle && (
-            <div className="diagnostics-summary" aria-label="Support bundle summary">
-              <strong>{supportBundle.triageLines[0]}</strong>
-              <span>{supportBundle.triageLines[3]}</span>
-              <span>{supportBundle.triageLines[5]}</span>
-              <em>{supportBundle.warnings.length} warnings</em>
+            <h2 className="visually-hidden">Zoom participants</h2>
+            <div className="participant-list">
+              {visibleParticipants.map((participant) => {
+                const mix = production.audioMix.participants.find((item) => item.participantId === participant.id);
+                const muted = mix?.muted ?? participant.isMuted;
+                const level = mix?.outputLevel ?? participant.audioLevel;
+                const initials = participant.name.split(" ").map((part) => part[0]).join("");
+                const isExpanded = expandedParticipantId === participant.id;
+
+                return (
+                  <div
+                    className={`participant-card ${participant.id === selectedParticipantId ? "selected" : ""} ${participant.isActiveSpeaker ? "talking" : ""}`}
+                    key={participant.id}
+                  >
+                    <button
+                      className="participant-row"
+                      onClick={() => setSelectedParticipantId(participant.id)}
+                    >
+                      <div className="avatar" style={{ "--avatar-accent": avatarColorFor(participant.id) } as React.CSSProperties}>
+                        {initials}
+                      </div>
+                      <div className="participant-main">
+                        <strong>{participant.name}</strong>
+                        <span>
+                          {participant.role} - {participant.breakoutRoomName} - {healthLabels[participant.health]}
+                        </span>
+                        {participant.isActiveSpeaker && <em className="talking-indicator">Talking</em>}
+                      </div>
+                      <span className={`role-badge role-${participant.role.toLowerCase()}`}>{roleBadgeLabels[participant.role]}</span>
+                      {muted ? <MicOff size={16} className="mic-icon muted" /> : <Mic size={16} className="mic-icon unmuted" />}
+                      <meter min={0} max={100} value={level} />
+                      <span
+                        className="icon-button expand-toggle"
+                        role="button"
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setExpandedParticipantId((current) => (current === participant.id ? null : participant.id));
+                        }}
+                      >
+                        <Expand size={14} />
+                      </span>
+                    </button>
+                    {isExpanded && participant.id === selectedParticipantId && selectedParticipant && (
+                      <SmartHandlingPanel
+                        production={production}
+                        selectedAudioMix={selectedAudioMix}
+                        selectedParticipant={selectedParticipant}
+                        selectedVideoEffect={selectedVideoEffect}
+                        setSelectedParticipantGain={setSelectedParticipantGain}
+                        setSelectedParticipantRole={setSelectedParticipantRole}
+                        toggleSelectedChromaKey={toggleSelectedChromaKey}
+                        toggleSelectedCropMode={toggleSelectedCropMode}
+                        toggleSelectedParticipantMute={toggleSelectedParticipantMute}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          )}
-        </section>
 
-        <section className="rail-section" aria-label="Capture devices">
-          <div className="section-title">
-            <Cable size={15} />
-            Capture Devices
-          </div>
-          {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
-          {production.captureDevices.map((device) => (
-            <div className="capture-device" key={device.id}>
-              <div className="capture-device-header">
-                <strong>{device.name}</strong>
-                <span className={`capture-device-status capture-device-status-${device.connectionState}`}>
-                  {device.connectionState.replace("-", " ")}
-                </span>
-              </div>
-              <p className="preset-status">
-                {device.resolution.width}x{device.resolution.height} - {device.frameRate}fps -{" "}
-                {device.signalPresent ? "Signal present" : "No signal"}
-              </p>
-              <label className="capture-device-field">
-                Input
-                <select
-                  aria-label={`${device.name} input`}
-                  onChange={(event) => selectCaptureDeviceInput(device.id, event.target.value)}
-                  value={device.selectedInputId}
-                >
-                  {device.inputs.map((input) => (
-                    <option key={input.id} value={input.id}>
-                      {input.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="capture-device-field">
-                A/V sync offset (ms)
+            <div className="participants-footer">
+              <button className="ghost-button wide" onClick={() => undefined}>
+                <Plus size={16} />
+                Add Participant
+              </button>
+              <button className="icon-button" aria-label="More participant actions" onClick={() => undefined}>
+                <MoreHorizontal size={16} />
+              </button>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <div aria-label="Settings tab" className={`tab-content ${activeTab === "settings" ? "active" : ""}`} hidden={activeTab !== "settings"}>
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="section-title">
+              <Activity size={15} />
+              Zoom connection
+            </div>
+            <div className="zoom-connect" aria-label="Zoom connection">
+              <input
+                aria-label="Zoom meeting URL or ID"
+                disabled={meetingState === "in_meeting"}
+                onChange={(event) => setJoinRequest((current) => ({ ...current, meetingUrl: event.target.value }))}
+                value={joinRequest.meetingUrl}
+              />
+              <input
+                aria-label="Producer display name"
+                disabled={meetingState === "in_meeting"}
+                onChange={(event) => setJoinRequest((current) => ({ ...current, displayName: event.target.value }))}
+                value={joinRequest.displayName}
+              />
+              <label className="webinar-toggle">
                 <input
-                  aria-label={`${device.name} audio sync offset`}
-                  max={500}
-                  min={-500}
-                  onChange={(event) => setCaptureDeviceAudioSyncOffset(device.id, Number(event.target.value))}
-                  type="number"
-                  value={device.audioSyncOffsetMs}
+                  checked={joinRequest.webinar}
+                  disabled={meetingState === "in_meeting"}
+                  onChange={(event) => setJoinRequest((current) => ({ ...current, webinar: event.target.checked }))}
+                  type="checkbox"
                 />
+                Webinar
               </label>
+              <span>{joinStatus}</span>
             </div>
-          ))}
-        </section>
-      </aside>
-
-      <section className="stage-column">
-        <header className="topbar">
-          <div>
-            <h1>{production.meetingTitle}</h1>
-            <p>
+            <p className="topbar-status-line">
               {meetingState.replace("_", " ")} - {production.participants.length} participants -{" "}
               {production.selectedBreakoutRoomId === "all" ? "All rooms" : breakoutRooms.find((room) => room.id === production.selectedBreakoutRoomId)?.name} -{" "}
               {screenShareActive ? "Screen share active" : "No screen share"} - Captions on - {production.output.resolution} {production.output.fps}fps -{" "}
               {formatElapsed(elapsedSeconds)}
             </p>
-          </div>
-          <div className="zoom-connect" aria-label="Zoom connection">
-            <input
-              aria-label="Zoom meeting URL or ID"
-              disabled={meetingState === "in_meeting"}
-              onChange={(event) => setJoinRequest((current) => ({ ...current, meetingUrl: event.target.value }))}
-              value={joinRequest.meetingUrl}
-            />
-            <input
-              aria-label="Producer display name"
-              disabled={meetingState === "in_meeting"}
-              onChange={(event) => setJoinRequest((current) => ({ ...current, displayName: event.target.value }))}
-              value={joinRequest.displayName}
-            />
-            <label className="webinar-toggle">
-              <input
-                checked={joinRequest.webinar}
-                disabled={meetingState === "in_meeting"}
-                onChange={(event) => setJoinRequest((current) => ({ ...current, webinar: event.target.checked }))}
-                type="checkbox"
-              />
-              Webinar
-            </label>
-            <span>{joinStatus}</span>
-          </div>
-          <div className="topbar-actions">
-            {runtime && (
-              <div className={`runtime-badge runtime-${runtime.status}`} aria-label="Desktop runtime">
-                <strong>{runtime.label}</strong>
-                <span>
-                  {runtime.host} / {runtime.platform}
-                </span>
-              </div>
-            )}
-            {meetingState === "in_meeting" ? (
-              <button className="ghost-button" onClick={leaveMeeting}>
-                <LogOut size={16} />
-                Leave
-              </button>
-            ) : (
-              <button className="ghost-button" onClick={joinMeeting}>
-                <LogIn size={16} />
-                Join Zoom
-              </button>
-            )}
-            <button className="ghost-button" onClick={refreshFeeds} disabled={meetingState !== "in_meeting"}>
-              <RefreshCw size={16} />
-              Refresh feeds
-            </button>
-            <button className="ghost-button" onClick={toggleAutomation}>
-              <Bot size={16} />
-              {production.mode === "set-and-forget" ? "Set & Forget" : "Manual"}
-            </button>
-            <button
-              className={`ghost-button ${showPreviewMonitor ? "selected" : ""}`}
-              onClick={() => {
-                setCommandStatus(commandLabels.p);
-                setShowPreviewMonitor((current) => !current);
-              }}
-            >
-              <MonitorUp size={16} />
-              Preview Monitor
-            </button>
-            <button className="take-button" onClick={() => runCommand("t")}>Take</button>
-          </div>
-        </header>
-
-        <section className="program-frame" aria-label="Program preview">
-          <div className="program-header">
-            <span className="live-dot" />
-            Program
-            <strong>{production.output.resolution}</strong>
-            <small>{activeScene.name}</small>
-          </div>
-          <div className={`program-canvas layout-${activeScene.layout}`}>
-            <ScenePreview
-              activeShareFrame={activeShareFrame}
-              participants={programParticipants}
-              scene={activeScene}
-              frames={production.mediaFrames}
-              videoEffects={production.videoEffects}
-            />
-            <div className={`lower-third position-${production.captionOverlay.lowerThirdPosition}`}>
-              <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
-              <span>{selectedParticipant?.title ?? "Zoom-native production"}</span>
-            </div>
-            <div className={`caption-strip position-${production.captionOverlay.captionPosition}`}>
-              <Captions size={15} />
-              <div>
-                <strong>{production.captionOverlay.speakerName}</strong>
-                <span>{production.captionOverlay.text}</span>
-              </div>
-            </div>
-            {production.captionOverlay.warnings.length > 0 && (
-              <div className="overlay-warning">{production.captionOverlay.warnings[0]}</div>
-            )}
-            {production.graphics.filter((graphic) => graphic.enabled).map((graphic) => (
-              <ProgramGraphic key={graphic.id} graphic={graphic} />
-            ))}
-          </div>
-        </section>
-
-        {showPreviewMonitor && (
-          <section className="preview-frame" aria-label="Preview monitor">
-            <div className="program-header preview-header">
-              <span className="preview-dot" />
-              Preview
-              <strong>{previewScene.name}</strong>
-              <small>{production.transition.style} {production.transition.durationMs}ms</small>
-            </div>
-            <div className={`program-canvas preview-canvas layout-${previewScene.layout}`}>
-              <ScenePreview
-                activeShareFrame={activeShareFrame}
-                participants={previewSceneParticipants}
-                scene={previewScene}
-                frames={production.mediaFrames}
-                videoEffects={production.videoEffects}
-              />
-            </div>
-          </section>
-        )}
-
-        <section className="control-strip" aria-label="Production controls">
-          <button className={`record-button ${production.recording ? "active" : ""}`} onClick={toggleRecording}>
-            <CircleDot size={16} />
-            {production.recording ? "Recording" : "Record"}
-          </button>
-          <button className={`stream-button ${production.streaming ? "active" : ""}`} onClick={toggleStreaming}>
-            <Radio size={16} />
-            {production.streaming ? "Streaming" : "Stream"}
-          </button>
-          <StatusMetric icon={<MonitorUp size={16} />} label="Bitrate" value={`${production.output.bitrateMbps} Mbps`} />
-          <StatusMetric icon={<Activity size={16} />} label="Dropped" value={`${production.output.droppedFrames}`} />
-          <StatusMetric icon={<Video size={16} />} label="Encoder" value={`${production.output.encoderLoad}%`} />
-          <StatusMetric icon={<Clapperboard size={16} />} label="Preview" value={previewScene.name} />
-          <StatusMetric icon={<Clapperboard size={16} />} label="Transition" value={`${production.transition.style} ${production.transition.durationMs}ms`} />
-          <StatusMetric icon={<Bot size={16} />} label="Command" value={commandStatus} />
-          <StatusMetric icon={<CircleDot size={16} />} label="Output" value={production.outputSession.statusText} />
-          <div className="master-meter">
-            <AudioLines size={16} />
-            <div>
-              <span>Master</span>
-              <meter min={0} max={100} value={production.audioMix.masterLevel} />
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <aside className="inspector" aria-label="Participants and source controls">
-        <section className="panel">
-          <div className="section-title">
-            <Users size={15} />
-            Breakouts
-          </div>
-          <div className="breakout-list" aria-label="Breakout rooms">
-            <button
-              className={production.selectedBreakoutRoomId === "all" ? "selected" : ""}
-              onClick={() => selectBreakoutRoom("all")}
-            >
-              <strong>All rooms</strong>
-              <span>{production.participants.length} participants</span>
-            </button>
-            {breakoutRooms.map((room) => (
-              <button
-                className={production.selectedBreakoutRoomId === room.id ? "selected" : ""}
-                key={room.id}
-                onClick={() => selectBreakoutRoom(room.id)}
-              >
-                <strong>{room.name}</strong>
-                <span>{room.participantCount} participants</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="section-title">
-            <Video size={15} />
-            Zoom participants
-          </div>
-          <div className="participant-list">
-            {visibleParticipants.map((participant) => (
-              <button
-                className={`participant-row ${participant.id === selectedParticipantId ? "selected" : ""}`}
-                key={participant.id}
-                onClick={() => setSelectedParticipantId(participant.id)}
-              >
-                <div className="participant-main">
-                  <strong>{participant.name}</strong>
+            <div className="settings-actions">
+              {runtime && (
+                <div className={`runtime-badge runtime-${runtime.status}`} aria-label="Desktop runtime">
+                  <strong>{runtime.label}</strong>
                   <span>
-                    {participant.role} - {participant.breakoutRoomName} - {healthLabels[participant.health]}
+                    {runtime.host} / {runtime.platform}
                   </span>
                 </div>
-                <meter
-                  min={0}
-                  max={100}
-                  value={production.audioMix.participants.find((mix) => mix.participantId === participant.id)?.outputLevel ?? participant.audioLevel}
-                />
+              )}
+              {meetingState === "in_meeting" ? (
+                <button className="ghost-button" onClick={leaveMeeting}>
+                  <LogOut size={16} />
+                  Leave
+                </button>
+              ) : (
+                <button className="ghost-button" onClick={joinMeeting}>
+                  <LogIn size={16} />
+                  Join Zoom
+                </button>
+              )}
+              <button className="ghost-button" onClick={refreshFeeds} disabled={meetingState !== "in_meeting"}>
+                <RefreshCw size={16} />
+                Refresh feeds
               </button>
-            ))}
-          </div>
-        </section>
-
-        {selectedParticipant && (
-          <section className="panel detail-panel">
-            <div className="section-title">
-              <Sparkles size={15} />
-              Smart handling
             </div>
-            <h2>{selectedParticipant.name}</h2>
-            <p>{selectedParticipant.title}</p>
-            <label className="role-control">
-              <span>Production role</span>
-              <select
-                aria-label="Production role"
-                onChange={(event) => setSelectedParticipantRole(event.target.value as ParticipantRole)}
-                value={selectedParticipant.role}
-              >
-                {participantRoles.map((role) => (
-                  <option key={role} value={role}>
-                    {role}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <ControlReadout label="Smart crop" value={`${selectedParticipant.cropConfidence}% confidence`} />
-            <ControlReadout label="Crop mode" value={selectedVideoEffect.cropMode} />
-            <ControlReadout label="Manual zoom" value={`${selectedVideoEffect.manualZoom.toFixed(2)}x`} />
-            <ControlReadout label="Chroma key" value={selectedVideoEffect.chromaKeyEnabled ? `${selectedVideoEffect.chromaKeyColor} on` : "Off"} />
-            <ControlReadout label="Spill suppression" value={`${selectedVideoEffect.spillSuppression}%`} />
-            <ControlReadout
-              label="Audio gain"
-              value={`${(selectedAudioMix?.gainDb ?? selectedParticipant.gainDb) > 0 ? "+" : ""}${selectedAudioMix?.gainDb ?? selectedParticipant.gainDb} dB`}
-            />
-            <label className="gain-control">
-              <span>Manual gain</span>
-              <input
-                aria-label="Manual audio gain"
-                max={12}
-                min={-12}
-                onChange={(event) => setSelectedParticipantGain(Number(event.target.value))}
-                step={1}
-                type="range"
-                value={selectedAudioMix?.manualGainDb ?? 0}
-              />
-              <em>{selectedAudioMix?.manualGainDb ? `${selectedAudioMix.manualGainDb > 0 ? "+" : ""}${selectedAudioMix.manualGainDb} dB` : "Auto"}</em>
-            </label>
-            <ControlReadout label="Audio status" value={selectedAudioMix?.status ?? "balanced"} />
-            <ControlReadout label="Noise suppression" value={selectedAudioMix?.noiseSuppression ? "On" : "Off"} />
-            <ControlReadout label="Lower-third" value={production.captionOverlay.lowerThirdPosition.replace("-", " ")} />
-            <ControlReadout label="Captions" value={production.captionOverlay.captionPosition} />
-            <button className="ghost-button wide" onClick={toggleSelectedParticipantMute}>
-              <Mic size={16} />
-              {selectedAudioMix?.muted ? "Unmute in mix" : "Mute in mix"}
-            </button>
-            <button className="ghost-button wide" onClick={toggleSelectedCropMode}>
-              <Video size={16} />
-              {selectedVideoEffect.cropMode === "auto" ? "Manual crop" : "Auto crop"}
-            </button>
-            <button className="ghost-button wide" onClick={toggleSelectedChromaKey}>
-              <Sparkles size={16} />
-              {selectedVideoEffect.chromaKeyEnabled ? "Disable chroma" : "Enable chroma"}
-            </button>
           </section>
-        )}
 
-        <section className="panel">
-          <div className="section-title">
-            <Activity size={15} />
-            Output health
-          </div>
-          <div className="health-grid">
-            <ControlReadout label="Output profile" value={production.outputProfiles.find((profile) => profile.id === production.selectedOutputProfileId)?.name ?? "Custom"} />
-            <ControlReadout label="Network" value={production.output.network} />
-            <ControlReadout label="Frame rate" value={`${production.output.fps} fps`} />
-            <ControlReadout label="Audio mix" value={production.audioMix.summary} />
-            <ControlReadout label="Loudness" value={`${production.audioMix.loudnessLufs} LUFS`} />
-            <ControlReadout label="Caption confidence" value={`${production.captionOverlay.confidence}%`} />
-            <ControlReadout label="Caption latency" value={`${production.captionOverlay.latencyMs} ms`} />
-            <ControlReadout label="Overlay guard" value={production.captionOverlay.adaptiveSummary} />
-            <ControlReadout label="Route health" value={previewRouteWarnings[0] ?? "Ready"} />
-            <ControlReadout label="Auto director" value={`${production.autoProduction.action} ${production.autoProduction.confidence}%`} />
-            <ControlReadout label="Output time" value={formatElapsed(production.outputSession.elapsedSeconds)} />
-            <ControlReadout label="Recording file" value={production.outputSession.recordingFile ?? "Not recording"} />
-            <ControlReadout label="Recording quality" value={production.recordingSettings.quality} />
-            <ControlReadout label="Record preflight" value={recordingPreflightStatus} />
-            <ControlReadout label="Support bundle" value={supportBundleStatus} />
-            <ControlReadout
-              label="Stream targets"
-              value={production.outputSession.activeDestinationIds.length > 0 ? production.outputSession.activeDestinationIds.join(", ") : "Not streaming"}
-            />
-            <ControlReadout label="Captions" value="Adaptive realtime" />
-            <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
-            <ControlReadout label="Preflight" value={outputPreflightStatus} />
-          </div>
-        </section>
+          <section className="panel">
+            <div className="section-title">
+              <CircleDot size={15} />
+              Recording
+            </div>
+            <div className="recording-settings" aria-label="Recording settings">
+              <label>
+                <span>Folder</span>
+                <input
+                  aria-label="Recording folder"
+                  disabled={production.recording}
+                  onChange={(event) => updateRecordingSettings({ folder: event.target.value })}
+                  value={production.recordingSettings.folder}
+                />
+              </label>
+              <label>
+                <span>Filename</span>
+                <input
+                  aria-label="Recording filename prefix"
+                  disabled={production.recording}
+                  onChange={(event) => updateRecordingSettings({ filenamePrefix: event.target.value })}
+                  value={production.recordingSettings.filenamePrefix}
+                />
+              </label>
+              <label>
+                <span>Format</span>
+                <select
+                  aria-label="Recording format"
+                  disabled={production.recording}
+                  onChange={(event) => updateRecordingSettings({ format: event.target.value as RecordingSettings["format"] })}
+                  value={production.recordingSettings.format}
+                >
+                  <option value="mp4">MP4</option>
+                  <option value="mov">MOV</option>
+                  <option value="mkv">MKV</option>
+                </select>
+              </label>
+              <label>
+                <span>Quality</span>
+                <select
+                  aria-label="Recording quality"
+                  disabled={production.recording}
+                  onChange={(event) => updateRecordingSettings({ quality: event.target.value as RecordingSettings["quality"] })}
+                  value={production.recordingSettings.quality}
+                >
+                  <option value="standard">Standard</option>
+                  <option value="high">High</option>
+                  <option value="archive">Archive</option>
+                </select>
+              </label>
+              <div className="iso-selector" aria-label="ISO recording feeds">
+                <span>ISO feeds</span>
+                {production.participants.map((participant) => (
+                  <label key={participant.id}>
+                    <input
+                      aria-label={`${participant.name} ISO recording`}
+                      checked={production.recordingSettings.isoParticipantIds.includes(participant.id)}
+                      disabled={production.recording || participant.health === "video-off"}
+                      onChange={() => toggleIsoRecording(participant.id)}
+                      type="checkbox"
+                    />
+                    <strong>{participant.name}</strong>
+                    <em>{participant.role}</em>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </section>
 
-        <section className="panel">
-          <div className="section-title">
-            <MonitorUp size={15} />
-            Output profile
-          </div>
-          <div className="profile-list" aria-label="Output profiles">
-            {production.outputProfiles.map((profile) => (
-              <button
-                className={production.selectedOutputProfileId === profile.id ? "selected" : ""}
-                disabled={production.recording || production.streaming}
-                key={profile.id}
-                onClick={() => selectOutputProfile(profile)}
-              >
-                <strong>{profile.name}</strong>
-                <span>
-                  {profile.resolution} - {profile.fps}fps - {profile.targetBitrateMbps} Mbps
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
+          <section className="panel">
+            <div className="section-title">
+              <Radio size={15} />
+              Destinations
+            </div>
+            <div className="destination-list">
+              {destinationStates.map((destination) => (
+                <div
+                  className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""}`}
+                  key={destination.id}
+                >
+                  <button disabled={production.streaming} onClick={() => toggleOutputDestination(destination.id)}>
+                    <div>
+                      <strong>{destination.name}</strong>
+                      <span>
+                        {destination.protocol} - {destination.latencyMs} ms
+                      </span>
+                    </div>
+                    <em>{destination.active ? `${destination.health} ${destination.bitrateMbps} Mbps` : destination.enabled ? "Armed" : "Off"}</em>
+                  </button>
+                  <div className="destination-settings">
+                    <label>
+                      <span>{destination.protocol === "NDI" ? "Source name" : "Endpoint"}</span>
+                      <input
+                        aria-label={`${destination.name} endpoint`}
+                        disabled={production.streaming}
+                        onChange={(event) => updateOutputDestination(destination.id, { endpoint: event.target.value })}
+                        value={destination.endpoint}
+                      />
+                    </label>
+                    {destination.protocol !== "NDI" && (
+                      <label>
+                        <span>{destination.protocol === "SRT" ? "Passphrase" : "Stream key"}</span>
+                        <input
+                          aria-label={`${destination.name} stream key`}
+                          disabled={production.streaming}
+                          onChange={(event) => updateOutputDestination(destination.id, { streamKey: event.target.value })}
+                          type="password"
+                          value={destination.streamKey ?? ""}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
 
-        <section className="panel">
-          <div className="section-title">
-            <LayoutTemplate size={15} />
-            Scene slots
-          </div>
-          <div className="slot-editor" aria-label="Scene slot assignments">
-            <strong>{previewScene.name}</strong>
-            <span>{previewSceneParticipants.map((participant) => participant.name).join(" + ") || "No participants assigned"}</span>
-            {previewRouteWarnings.length > 0 && (
-              <div className="route-warnings" aria-label="Route warnings">
-                {previewRouteWarnings.slice(0, 3).map((warning) => (
-                  <span key={warning}>{warning}</span>
+          <section className="panel">
+            <div className="section-title">
+              <MonitorUp size={15} />
+              Output profile
+            </div>
+            <div className="profile-list" aria-label="Output profiles">
+              {production.outputProfiles.map((profile) => (
+                <button
+                  className={production.selectedOutputProfileId === profile.id ? "selected" : ""}
+                  disabled={production.recording || production.streaming}
+                  key={profile.id}
+                  onClick={() => selectOutputProfile(profile)}
+                >
+                  <strong>{profile.name}</strong>
+                  <span>
+                    {profile.resolution} - {profile.fps}fps - {profile.targetBitrateMbps} Mbps
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Activity size={15} />
+              Output health
+            </div>
+            <div className="health-grid">
+              <ControlReadout label="Output profile" value={outputProfileBadge?.name ?? "Custom"} />
+              <ControlReadout label="Network" value={production.output.network} />
+              <ControlReadout label="Frame rate" value={`${production.output.fps} fps`} />
+              <ControlReadout label="Audio mix" value={production.audioMix.summary} />
+              <ControlReadout label="Loudness" value={`${production.audioMix.loudnessLufs} LUFS`} />
+              <ControlReadout label="Caption confidence" value={`${production.captionOverlay.confidence}%`} />
+              <ControlReadout label="Caption latency" value={`${production.captionOverlay.latencyMs} ms`} />
+              <ControlReadout label="Overlay guard" value={production.captionOverlay.adaptiveSummary} />
+              <ControlReadout label="Route health" value={previewRouteWarnings[0] ?? "Ready"} />
+              <ControlReadout label="Auto director" value={`${production.autoProduction.action} ${production.autoProduction.confidence}%`} />
+              <ControlReadout label="Output time" value={formatElapsed(production.outputSession.elapsedSeconds)} />
+              <ControlReadout label="Recording file" value={production.outputSession.recordingFile ? "Active" : "Not recording"} />
+              <ControlReadout label="Recording quality" value={production.recordingSettings.quality} />
+              <ControlReadout label="Record preflight" value={recordingPreflightStatus} />
+              <ControlReadout label="Support bundle" value={supportBundleStatus} />
+              <ControlReadout
+                label="Stream targets"
+                value={production.outputSession.activeDestinationIds.length > 0 ? production.outputSession.activeDestinationIds.join(", ") : "Not streaming"}
+              />
+              <ControlReadout label="Captions" value="Adaptive realtime" />
+              <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
+              <ControlReadout label="Preflight" value={outputPreflightStatus} />
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Save size={15} />
+              Presets
+            </div>
+            <button className="primary-action" onClick={savePreset}>
+              <Save size={16} />
+              Save Show
+            </button>
+            <p className="preset-status">{presetStatus}</p>
+            {presetSummaries.length > 0 && (
+              <div className="preset-list">
+                {presetSummaries.map((preset) => (
+                  <button key={preset.id} onClick={() => loadPreset(preset.id)}>
+                    <strong>{preset.name}</strong>
+                    <span>
+                      {preset.sceneCount} scenes - {preset.armedDestinationCount} destinations - {preset.enabledGraphicCount} graphics
+                    </span>
+                  </button>
                 ))}
               </div>
             )}
-            {getRouteDefaults(previewScene, visibleParticipants).map((route, index) => (
-              <div className="route-editor" key={`${previewScene.id}-${index}`}>
-                <label>
-                  <span>Slot {index + 1}</span>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Activity size={15} />
+              Diagnostics
+            </div>
+            <button className="primary-action" onClick={exportSupportBundle}>
+              <Save size={16} />
+              Export Bundle
+            </button>
+            <p className="preset-status">{supportBundleStatus}</p>
+            {supportBundle && (
+              <div className="diagnostics-summary" aria-label="Support bundle summary">
+                <strong>{supportBundle.triageLines[0]}</strong>
+                <span>{supportBundle.triageLines[3]}</span>
+                <span>{supportBundle.triageLines[5]}</span>
+                <em>{supportBundle.warnings.length} warnings</em>
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+
+      <div aria-label="Sources tab" className={`tab-content ${activeTab === "sources" ? "active" : ""}`} hidden={activeTab !== "sources"}>
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="section-title">
+              <LayoutTemplate size={15} />
+              Scene slots
+            </div>
+            <div className="slot-editor" aria-label="Scene slot assignments">
+              <strong>{previewScene.name}</strong>
+              <span>{previewSceneParticipants.map((participant) => participant.name).join(" + ") || "No participants assigned"}</span>
+              {previewRouteWarnings.length > 0 && (
+                <div className="route-warnings" aria-label="Route warnings">
+                  {previewRouteWarnings.slice(0, 3).map((warning) => (
+                    <span key={warning}>{warning}</span>
+                  ))}
+                </div>
+              )}
+              {getRouteDefaults(previewScene, visibleParticipants).map((route, index) => (
+                <div className="route-editor" key={`${previewScene.id}-${index}`}>
+                  <label>
+                    <span>Slot {index + 1}</span>
+                    <select
+                      aria-label={`Slot ${index + 1} route mode`}
+                      onChange={(event) => updatePreviewSceneRoute(index, { mode: event.target.value as SourceRoute["mode"] })}
+                      value={route.mode}
+                    >
+                      <option value="fixed">Fixed participant</option>
+                      <option value="active-speaker">Active speaker</option>
+                      <option value="spotlight">Spotlight</option>
+                      <option value="screen-share">Screen share</option>
+                      <option value="none">None</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Source</span>
+                    <select
+                      aria-label={`Slot ${index + 1} participant`}
+                      disabled={route.mode !== "fixed" && route.mode !== "spotlight"}
+                      onChange={(event) => assignPreviewSceneSlot(index, event.target.value)}
+                      value={route.participantId ?? visibleParticipants[0]?.id ?? ""}
+                    >
+                      {visibleParticipants.map((participant) => (
+                        <option key={participant.id} value={participant.id}>
+                          {participant.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Audio</span>
+                    <select
+                      aria-label={`Slot ${index + 1} audio role`}
+                      onChange={(event) => updatePreviewSceneRoute(index, { audioRole: event.target.value as SourceRoute["audioRole"] })}
+                      value={route.audioRole}
+                    >
+                      <option value="mix">Mix</option>
+                      <option value="isolated">Isolated</option>
+                      <option value="audience">Audience</option>
+                    </select>
+                  </label>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel" aria-label="Capture devices">
+            <div className="section-title">
+              <Cable size={15} />
+              Capture Devices
+            </div>
+            {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
+            {production.captureDevices.map((device) => (
+              <div className="capture-device" key={device.id}>
+                <div className="capture-device-header">
+                  <strong>{device.name}</strong>
+                  <span className={`capture-device-status capture-device-status-${device.connectionState}`}>
+                    {device.connectionState.replace("-", " ")}
+                  </span>
+                </div>
+                <p className="preset-status">
+                  {device.resolution.width}x{device.resolution.height} - {device.frameRate}fps -{" "}
+                  {device.signalPresent ? "Signal present" : "No signal"}
+                </p>
+                <label className="capture-device-field">
+                  Input
                   <select
-                    aria-label={`Slot ${index + 1} route mode`}
-                    onChange={(event) => updatePreviewSceneRoute(index, { mode: event.target.value as SourceRoute["mode"] })}
-                    value={route.mode}
+                    aria-label={`${device.name} input`}
+                    onChange={(event) => selectCaptureDeviceInput(device.id, event.target.value)}
+                    value={device.selectedInputId}
                   >
-                    <option value="fixed">Fixed participant</option>
-                    <option value="active-speaker">Active speaker</option>
-                    <option value="spotlight">Spotlight</option>
-                    <option value="screen-share">Screen share</option>
-                    <option value="none">None</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Source</span>
-                  <select
-                    aria-label={`Slot ${index + 1} participant`}
-                    disabled={route.mode !== "fixed" && route.mode !== "spotlight"}
-                    onChange={(event) => assignPreviewSceneSlot(index, event.target.value)}
-                    value={route.participantId ?? visibleParticipants[0]?.id ?? ""}
-                  >
-                    {visibleParticipants.map((participant) => (
-                      <option key={participant.id} value={participant.id}>
-                        {participant.name}
+                    {device.inputs.map((input) => (
+                      <option key={input.id} value={input.id}>
+                        {input.label}
                       </option>
                     ))}
                   </select>
                 </label>
-                <label>
-                  <span>Audio</span>
-                  <select
-                    aria-label={`Slot ${index + 1} audio role`}
-                    onChange={(event) => updatePreviewSceneRoute(index, { audioRole: event.target.value as SourceRoute["audioRole"] })}
-                    value={route.audioRole}
-                  >
-                    <option value="mix">Mix</option>
-                    <option value="isolated">Isolated</option>
-                    <option value="audience">Audience</option>
-                  </select>
+                <label className="capture-device-field">
+                  A/V sync offset (ms)
+                  <input
+                    aria-label={`${device.name} audio sync offset`}
+                    max={500}
+                    min={-500}
+                    onChange={(event) => setCaptureDeviceAudioSyncOffset(device.id, Number(event.target.value))}
+                    type="number"
+                    value={device.audioSyncOffsetMs}
+                  />
                 </label>
               </div>
             ))}
-          </div>
-        </section>
+          </section>
+        </div>
+      </div>
 
-        <section className="panel">
-          <div className="section-title">
-            <CircleDot size={15} />
-            Recording
-          </div>
-          <div className="recording-settings" aria-label="Recording settings">
-            <label>
-              <span>Folder</span>
-              <input
-                aria-label="Recording folder"
-                disabled={production.recording}
-                onChange={(event) => updateRecordingSettings({ folder: event.target.value })}
-                value={production.recordingSettings.folder}
-              />
-            </label>
-            <label>
-              <span>Filename</span>
-              <input
-                aria-label="Recording filename prefix"
-                disabled={production.recording}
-                onChange={(event) => updateRecordingSettings({ filenamePrefix: event.target.value })}
-                value={production.recordingSettings.filenamePrefix}
-              />
-            </label>
-            <label>
-              <span>Format</span>
-              <select
-                aria-label="Recording format"
-                disabled={production.recording}
-                onChange={(event) => updateRecordingSettings({ format: event.target.value as RecordingSettings["format"] })}
-                value={production.recordingSettings.format}
-              >
-                <option value="mp4">MP4</option>
-                <option value="mov">MOV</option>
-                <option value="mkv">MKV</option>
-              </select>
-            </label>
-            <label>
-              <span>Quality</span>
-              <select
-                aria-label="Recording quality"
-                disabled={production.recording}
-                onChange={(event) => updateRecordingSettings({ quality: event.target.value as RecordingSettings["quality"] })}
-                value={production.recordingSettings.quality}
-              >
-                <option value="standard">Standard</option>
-                <option value="high">High</option>
-                <option value="archive">Archive</option>
-              </select>
-            </label>
-            <div className="iso-selector" aria-label="ISO recording feeds">
-              <span>ISO feeds</span>
-              {production.participants.map((participant) => (
-                <label key={participant.id}>
-                  <input
-                    aria-label={`${participant.name} ISO recording`}
-                    checked={production.recordingSettings.isoParticipantIds.includes(participant.id)}
-                    disabled={production.recording || participant.health === "video-off"}
-                    onChange={() => toggleIsoRecording(participant.id)}
-                    type="checkbox"
-                  />
-                  <strong>{participant.name}</strong>
-                  <em>{participant.role}</em>
-                </label>
-              ))}
+      <div aria-label="Overlays tab" className={`tab-content ${activeTab === "overlays" ? "active" : ""}`} hidden={activeTab !== "overlays"}>
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="section-title">
+              <Palette size={15} />
+              Graphics
             </div>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="section-title">
-            <Radio size={15} />
-            Destinations
-          </div>
-          <div className="destination-list">
-            {destinationStates.map((destination) => (
-              <div
-                className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""}`}
-                key={destination.id}
-              >
-                <button disabled={production.streaming} onClick={() => toggleOutputDestination(destination.id)}>
+            <div className="graphics-list">
+              {production.graphics.map((graphic) => (
+                <button
+                  className={`graphic-row ${graphic.enabled ? "enabled" : ""}`}
+                  key={graphic.id}
+                  onClick={() => toggleGraphic(graphic.id)}
+                >
+                  <i style={{ "--graphic-accent": graphic.accent } as React.CSSProperties} />
                   <div>
-                    <strong>{destination.name}</strong>
+                    <strong>{graphic.name}</strong>
                     <span>
-                      {destination.protocol} - {destination.latencyMs} ms
+                      {graphic.kind} - {graphic.position.replace("-", " ")}
                     </span>
                   </div>
-                  <em>{destination.active ? `${destination.health} ${destination.bitrateMbps} Mbps` : destination.enabled ? "Armed" : "Off"}</em>
+                  <em>{graphic.enabled ? "On" : "Off"}</em>
                 </button>
-                <div className="destination-settings">
-                  <label>
-                    <span>{destination.protocol === "NDI" ? "Source name" : "Endpoint"}</span>
-                    <input
-                      aria-label={`${destination.name} endpoint`}
-                      disabled={production.streaming}
-                      onChange={(event) => updateOutputDestination(destination.id, { endpoint: event.target.value })}
-                      value={destination.endpoint}
-                    />
-                  </label>
-                  {destination.protocol !== "NDI" && (
-                    <label>
-                      <span>{destination.protocol === "SRT" ? "Passphrase" : "Stream key"}</span>
-                      <input
-                        aria-label={`${destination.name} stream key`}
-                        disabled={production.streaming}
-                        onChange={(event) => updateOutputDestination(destination.id, { streamKey: event.target.value })}
-                        type="password"
-                        value={destination.streamKey ?? ""}
-                      />
-                    </label>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
 
-        <section className="panel">
-          <div className="section-title">
-            <Palette size={15} />
-            Graphics
-          </div>
-          <div className="graphics-list">
-            {production.graphics.map((graphic) => (
-              <button
-                className={`graphic-row ${graphic.enabled ? "enabled" : ""}`}
-                key={graphic.id}
-                onClick={() => toggleGraphic(graphic.id)}
-              >
-                <i style={{ "--graphic-accent": graphic.accent } as React.CSSProperties} />
-                <div>
-                  <strong>{graphic.name}</strong>
-                  <span>
-                    {graphic.kind} - {graphic.position.replace("-", " ")}
-                  </span>
-                </div>
-                <em>{graphic.enabled ? "On" : "Off"}</em>
+          <section className="panel">
+            <div className="section-title">
+              <Captions size={15} />
+              Lower-third &amp; captions
+            </div>
+            <div className="health-grid">
+              <ControlReadout label="Lower-third" value={production.captionOverlay.lowerThirdPosition.replace("-", " ")} />
+              <ControlReadout label="Captions" value={production.captionOverlay.captionPosition} />
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div aria-label="Audio tab" className={`tab-content ${activeTab === "audio" ? "active" : ""}`} hidden={activeTab !== "audio"}>
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="section-title">
+              <AudioLines size={15} />
+              Audio mix
+            </div>
+            <div className="health-grid">
+              <ControlReadout label="Loudness" value={`${production.audioMix.loudnessLufs} LUFS`} />
+              <ControlReadout label="Limiter" value={production.audioMix.limiterActive ? "Active" : "Idle"} />
+            </div>
+            <div className="participant-list">
+              {visibleParticipants.map((participant) => (
+                <button
+                  className={`participant-row ${participant.id === selectedParticipantId ? "selected" : ""}`}
+                  key={participant.id}
+                  onClick={() => setSelectedParticipantId(participant.id)}
+                >
+                  <div className="participant-main">
+                    <strong>{participant.name}</strong>
+                    <span>
+                      {participant.role} - {participant.breakoutRoomName} - {healthLabels[participant.health]}
+                    </span>
+                  </div>
+                  <meter
+                    min={0}
+                    max={100}
+                    value={production.audioMix.participants.find((mix) => mix.participantId === participant.id)?.outputLevel ?? participant.audioLevel}
+                  />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {selectedParticipant && (
+            <section className="panel detail-panel">
+              <div className="section-title">
+                <Sparkles size={15} />
+                Smart handling - audio
+              </div>
+              <h2>{selectedParticipant.name}</h2>
+              <p>{selectedParticipant.title}</p>
+              <label className="role-control">
+                <span>Production role</span>
+                <select
+                  aria-label="Production role"
+                  onChange={(event) => setSelectedParticipantRole(event.target.value as ParticipantRole)}
+                  value={selectedParticipant.role}
+                >
+                  {participantRoles.map((role) => (
+                    <option key={role} value={role}>{role}</option>
+                  ))}
+                </select>
+              </label>
+              <ControlReadout
+                label="Audio gain"
+                value={`${(selectedAudioMix?.gainDb ?? selectedParticipant.gainDb) > 0 ? "+" : ""}${selectedAudioMix?.gainDb ?? selectedParticipant.gainDb} dB`}
+              />
+              <label className="gain-control">
+                <span>Manual gain</span>
+                <input
+                  aria-label="Manual audio gain"
+                  max={12}
+                  min={-12}
+                  onChange={(event) => setSelectedParticipantGain(Number(event.target.value))}
+                  step={1}
+                  type="range"
+                  value={selectedAudioMix?.manualGainDb ?? 0}
+                />
+                <em>{selectedAudioMix?.manualGainDb ? `${selectedAudioMix.manualGainDb > 0 ? "+" : ""}${selectedAudioMix.manualGainDb} dB` : "Auto"}</em>
+              </label>
+              <ControlReadout label="Audio status" value={selectedAudioMix?.status ?? "balanced"} />
+              <ControlReadout label="Noise suppression" value={selectedAudioMix?.noiseSuppression ? "On" : "Off"} />
+              <button className="ghost-button wide" onClick={toggleSelectedParticipantMute}>
+                <Mic size={16} />
+                {selectedAudioMix?.muted ? "Unmute in mix" : "Mute in mix"}
               </button>
-            ))}
+            </section>
+          )}
+        </div>
+      </div>
+
+      <div aria-label="Media tab" className={`tab-content ${activeTab === "media" ? "active" : ""}`} hidden={activeTab !== "media"}>
+        <div className="tab-panel">
+          {selectedParticipant && (
+            <section className="panel detail-panel">
+              <div className="section-title">
+                <Video size={15} />
+                Smart handling - media
+              </div>
+              <h2>{selectedParticipant.name}</h2>
+              <p>{selectedParticipant.title}</p>
+              <ControlReadout label="Smart crop" value={`${selectedParticipant.cropConfidence}% confidence`} />
+              <ControlReadout label="Crop mode" value={selectedVideoEffect.cropMode} />
+              <ControlReadout label="Manual zoom" value={`${selectedVideoEffect.manualZoom.toFixed(2)}x`} />
+              <ControlReadout label="Chroma key" value={selectedVideoEffect.chromaKeyEnabled ? `${selectedVideoEffect.chromaKeyColor} on` : "Off"} />
+              <ControlReadout label="Spill suppression" value={`${selectedVideoEffect.spillSuppression}%`} />
+              <button className="ghost-button wide" onClick={toggleSelectedCropMode}>
+                <Video size={16} />
+                {selectedVideoEffect.cropMode === "auto" ? "Manual crop" : "Auto crop"}
+              </button>
+              <button className="ghost-button wide" onClick={toggleSelectedChromaKey}>
+                <Sparkles size={16} />
+                {selectedVideoEffect.chromaKeyEnabled ? "Disable chroma" : "Enable chroma"}
+              </button>
+            </section>
+          )}
+        </div>
+      </div>
+
+      <div aria-label="Automation tab" className={`tab-content ${activeTab === "automation" ? "active" : ""}`} hidden={activeTab !== "automation"}>
+        <div className="tab-panel">
+          <section className="panel">
+            <div className="section-title">
+              <Bot size={15} />
+              Set &amp; Forget
+            </div>
+            <button className="ghost-button wide" onClick={toggleAutomation}>
+              <Bot size={16} />
+              {production.mode === "set-and-forget" ? "Automation enabled" : "Automation disabled"}
+            </button>
+            <p className="auto-director-status">
+              Auto: {production.autoProduction.action} {production.autoProduction.confidence}% - {production.autoProduction.reason}
+            </p>
+          </section>
+
+          <section className="panel">
+            <div className="section-title">
+              <Clapperboard size={15} />
+              Transition
+            </div>
+            <div className="transition-picker" aria-label="Transition controls">
+              {(["cut", "fade", "slide"] as const).map((style) => (
+                <button
+                  className={production.transition.style === style ? "selected" : ""}
+                  key={style}
+                  onClick={() => setTransitionStyle(style)}
+                >
+                  {style}
+                </button>
+              ))}
+            </div>
+            <p className="transition-status">{production.transition.statusText}</p>
+          </section>
+
+          <section className="panel template-box">
+            <div className="section-title">
+              <LayoutTemplate size={15} />
+              Template intelligence
+            </div>
+            <p>{production.magicSceneStatus}</p>
+            <button className="primary-action" onClick={runMagicScene} disabled={meetingState !== "in_meeting"}>
+              <Sparkles size={16} />
+              Magic Scene
+            </button>
+          </section>
+        </div>
+      </div>
+
+      <footer className="bottom-bar">
+        <div className="bottom-bar-cluster bottom-bar-left">
+          <button className="primary-action magic-scene-button" onClick={runMagicScene} disabled={meetingState !== "in_meeting"}>
+            <Sparkles size={18} />
+            <span>
+              <strong>Magic Scene</strong>
+              <small>AI auto-direct</small>
+            </span>
+          </button>
+          <button className={`ghost-button automation-toggle ${production.mode === "set-and-forget" ? "selected" : ""}`} onClick={toggleAutomation}>
+            <Settings2 size={18} />
+            <span>
+              <strong>Set &amp; Forget</strong>
+              <small>Automation {production.mode === "set-and-forget" ? "On" : "Off"}</small>
+            </span>
+            <span className={`toggle-switch ${production.mode === "set-and-forget" ? "on" : ""}`} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="bottom-bar-cluster bottom-bar-center">
+          <p className="output-status-text">{production.outputSession.statusText}</p>
+          <button className="transport-button take-button" onClick={() => runCommand("t")}>
+            Take
+            <span className="caret" aria-hidden="true" />
+          </button>
+          <button className={`transport-button record-button ${production.recording ? "active" : ""}`} onClick={toggleRecording}>
+            {production.recording ? <span className="live-dot" /> : <CircleDot size={16} />}
+            {production.recording ? "Recording" : "Record"}
+            <span className="caret" aria-hidden="true" />
+          </button>
+          <button className={`transport-button stream-button ${production.streaming ? "active" : ""}`} onClick={toggleStreaming}>
+            <Radio size={16} />
+            {production.streaming ? "Streaming" : "Stream"}
+            <span className="caret" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="bottom-bar-cluster bottom-bar-right">
+          <div className="outputs-status">
+            <span className="connection-dot" />
+            OUTPUTS
           </div>
-        </section>
-      </aside>
-    </main>
+          <StatusMetric icon={<MonitorUp size={16} />} label="Program" value={`${production.output.resolution} - ${healthLabels.live}`} />
+          <StatusMetric icon={<Radio size={16} />} label="Stream" value={production.streaming ? `${production.output.bitrateMbps} Mbps` : "Idle"} />
+          <StatusMetric icon={<CircleDot size={16} />} label="Record" value={production.outputSession.recordingFile ?? "Not recording"} />
+          <div className="mini-stats">
+            <MiniStat icon={<Gauge size={14} />} label="CPU" value={cpuLoad} />
+            <MiniStat icon={<Activity size={14} />} label="Memory" value={memoryLoad} />
+            <MiniStat icon={<HardDrive size={14} />} label="Disk" value={diskLoad} />
+            <StatusMetric icon={<Activity size={16} />} label="Drops" value={`${production.output.droppedFrames}`} />
+            <StatusMetric icon={<Clapperboard size={16} />} label="Live" value={formatElapsed(production.outputSession.elapsedSeconds)} />
+          </div>
+          <div className="master-audio">
+            <div className="master-audio-header">
+              <Volume2 size={14} />
+              MASTER AUDIO
+              <span className="lufs-readout">{production.audioMix.loudnessLufs} LUFS</span>
+              <Settings2 size={14} className="decorative-icon" aria-hidden="true" />
+            </div>
+            <div className="master-meter" aria-label="Master audio levels">
+              <div className="meter-bar">
+                <span className="meter-fill" style={{ width: `${masterLevel}%` }} />
+              </div>
+              <div className="meter-bar">
+                <span className="meter-fill" style={{ width: `${Math.max(0, masterLevel - 4)}%` }} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
+
+      <div className="visually-hidden" aria-hidden="true">
+        Command: {commandStatus}
+      </div>
+    </div>
+  );
+}
+
+function SmartHandlingPanel({
+  production,
+  selectedAudioMix,
+  selectedParticipant,
+  selectedVideoEffect,
+  setSelectedParticipantGain,
+  setSelectedParticipantRole,
+  toggleSelectedChromaKey,
+  toggleSelectedCropMode,
+  toggleSelectedParticipantMute
+}: {
+  production: ProductionState;
+  selectedAudioMix?: ProductionState["audioMix"]["participants"][number];
+  selectedParticipant: Participant;
+  selectedVideoEffect: ParticipantVideoEffect;
+  setSelectedParticipantGain: (gainDb: number) => void;
+  setSelectedParticipantRole: (role: ParticipantRole) => void;
+  toggleSelectedChromaKey: () => void;
+  toggleSelectedCropMode: () => void;
+  toggleSelectedParticipantMute: () => void;
+}) {
+  return (
+    <section className="panel detail-panel expanded-handling">
+      <div className="section-title">
+        <Sparkles size={15} />
+        Smart handling
+      </div>
+      <h2>{selectedParticipant.name}</h2>
+      <p>{selectedParticipant.title}</p>
+      <label className="role-control">
+        <span>Production role</span>
+        <select
+          aria-label="Production role"
+          onChange={(event) => setSelectedParticipantRole(event.target.value as ParticipantRole)}
+          value={selectedParticipant.role}
+        >
+          {participantRoles.map((role) => (
+            <option key={role} value={role}>
+              {role}
+            </option>
+          ))}
+        </select>
+      </label>
+      <ControlReadout label="Smart crop" value={`${selectedParticipant.cropConfidence}% confidence`} />
+      <ControlReadout label="Crop mode" value={selectedVideoEffect.cropMode} />
+      <ControlReadout label="Manual zoom" value={`${selectedVideoEffect.manualZoom.toFixed(2)}x`} />
+      <ControlReadout label="Chroma key" value={selectedVideoEffect.chromaKeyEnabled ? `${selectedVideoEffect.chromaKeyColor} on` : "Off"} />
+      <ControlReadout label="Spill suppression" value={`${selectedVideoEffect.spillSuppression}%`} />
+      <ControlReadout
+        label="Audio gain"
+        value={`${(selectedAudioMix?.gainDb ?? selectedParticipant.gainDb) > 0 ? "+" : ""}${selectedAudioMix?.gainDb ?? selectedParticipant.gainDb} dB`}
+      />
+      <label className="gain-control">
+        <span>Manual gain</span>
+        <input
+          aria-label="Manual audio gain"
+          max={12}
+          min={-12}
+          onChange={(event) => setSelectedParticipantGain(Number(event.target.value))}
+          step={1}
+          type="range"
+          value={selectedAudioMix?.manualGainDb ?? 0}
+        />
+        <em>{selectedAudioMix?.manualGainDb ? `${selectedAudioMix.manualGainDb > 0 ? "+" : ""}${selectedAudioMix.manualGainDb} dB` : "Auto"}</em>
+      </label>
+      <ControlReadout label="Audio status" value={selectedAudioMix?.status ?? "balanced"} />
+      <ControlReadout label="Noise suppression" value={selectedAudioMix?.noiseSuppression ? "On" : "Off"} />
+      <ControlReadout label="Lower-third" value={production.captionOverlay.lowerThirdPosition.replace("-", " ")} />
+      <ControlReadout label="Captions" value={production.captionOverlay.captionPosition} />
+      <button className="ghost-button wide" onClick={toggleSelectedParticipantMute}>
+        <Mic size={16} />
+        {selectedAudioMix?.muted ? "Unmute in mix" : "Mute in mix"}
+      </button>
+      <button className="ghost-button wide" onClick={toggleSelectedCropMode}>
+        <Video size={16} />
+        {selectedVideoEffect.cropMode === "auto" ? "Manual crop" : "Auto crop"}
+      </button>
+      <button className="ghost-button wide" onClick={toggleSelectedChromaKey}>
+        <Sparkles size={16} />
+        {selectedVideoEffect.chromaKeyEnabled ? "Disable chroma" : "Enable chroma"}
+      </button>
+    </section>
+  );
+}
+
+function sceneLayoutIcon(layout: SceneTemplate["layout"]) {
+  switch (layout) {
+    case "host-focus":
+      return Users;
+    case "two-up":
+      return Video;
+    case "speaker-slides":
+      return MonitorUp;
+    case "smart-grid":
+      return LayoutTemplate;
+    case "outro":
+      return Clapperboard;
+    default:
+      return Clapperboard;
+  }
+}
+
+function MiniStat({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+  return (
+    <div className="mini-stat">
+      <div className="mini-stat-label">
+        {icon}
+        <span>{label}</span>
+        <strong>{value}%</strong>
+      </div>
+      <div className="mini-stat-bar">
+        <span className="mini-stat-fill" style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
+      </div>
+    </div>
   );
 }
 
