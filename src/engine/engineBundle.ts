@@ -10,6 +10,7 @@ import type {
 } from "./contracts";
 import { MockCaptureDeviceEngine } from "./captureDevices";
 import { MockOutputEngine, MockZoomCaptureEngine, RuleBasedAiProductionEngine } from "./mockEngines";
+import { NativeCaptureDeviceEngineAdapter } from "./nativeCaptureDeviceEngineAdapter";
 import { NativeOutputEngineAdapter } from "./nativeOutputEngineAdapter";
 import { NativeZoomEngineAdapter } from "./nativeZoomEngineAdapter";
 import type { NativeZoomTransport } from "./nativeBridgeProtocol";
@@ -51,6 +52,6 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport): En
     captions: new SimulatedCaptionOverlayEngine(),
     presets: new InMemoryPresetEngine(),
     diagnostics: new InMemoryDiagnosticsEngine(),
-    captureDevices: new MockCaptureDeviceEngine()
+    captureDevices: new NativeCaptureDeviceEngineAdapter(transport)
   };
 }
