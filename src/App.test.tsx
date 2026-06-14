@@ -1166,6 +1166,31 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("stinger presets", () => {
+  it("shows the stinger presets panel in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Stinger list");
+    expect(panel).toBeInTheDocument();
+    // Should show at least 4 built-in presets
+    const rows = within(panel).getAllByText(/\d+ms total/i);
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("lists Brand Wipe and Logo Reveal presets", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    expect(screen.getByLabelText("Stinger Brand Wipe")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stinger Logo Reveal")).toBeInTheDocument();
+  });
+});
+
 describe("latency budget", () => {
   it("shows the latency budget panel in Settings", async () => {
     const user = userEvent.setup();

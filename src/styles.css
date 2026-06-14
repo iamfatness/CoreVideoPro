@@ -3286,3 +3286,43 @@ meter {
 
 .latency-stage-label { color: #8aa0b0; }
 .latency-stage-value { color: #60a5fa; font-family: monospace; }
+
+/* Stinger preset panel */
+.stinger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stinger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #0e1420;
+  border: 1px solid #1a2a40;
+}
+
+.stinger-row.active {
+  border-color: #a78bfa;
+  background: #12103a;
+}
+
+.stinger-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.stinger-desc {
+  font-size: 10px;
+  color: #5a5070;
+}
+
+.stinger-active-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 4px;
+}
