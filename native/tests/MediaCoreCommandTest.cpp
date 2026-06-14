@@ -126,6 +126,27 @@ TEST(ZoomMeetingSdkAdapter, DevGateTracksDeferredRawSubscriptions) {
 #endif
 }
 
+TEST(ZoomMeetingSdkAdapter, DevGateReturnsEmptyRosterBeforeSdkJoin) {
+#if COREVIDEO_WITH_ZOOM
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
+      "sdk-root",
+      "7.0.5",
+      "https://zoom.us",
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+  });
+  ASSERT_NE(source, nullptr);
+
+  EXPECT_TRUE(source->participants().empty());
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions) {
 #if COREVIDEO_WITH_ZOOM
   auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
