@@ -6,6 +6,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -340,6 +343,32 @@ TEST(HardwareEncoderAdapter, FactoryIsDisabledUnlessMediaFoundationGateIsEnabled
   EXPECT_EQ(encoder->session().encodedFrameCount, 1);
 #else
   EXPECT_EQ(corevideo::modules::createMediaFoundationEncoderSink(), nullptr);
+#endif
+}
+
+TEST(HardwareEncoderAdapter, MediaFoundationWritesRecordingProofArtifactWhenRecordingIsArmed) {
+#if COREVIDEO_WITH_MF_ENCODER
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+  const auto started = encoder->start({"recording"}, {"participant-1"});
+  ASSERT_FALSE(started.recordingArtifactPath.empty());
+
+  encoder->submit({1920, 1080, 2, 42, "proof-plan", "d3d11"});
+  const auto session = encoder->session();
+  EXPECT_TRUE(session.recordingBytesWritten > 0);
+  ASSERT_TRUE(std::filesystem::exists(session.recordingArtifactPath));
+
+  std::ifstream input(session.recordingArtifactPath);
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const auto content = buffer.str();
+  EXPECT_NE(content.find("recording-proof-start"), std::string::npos);
+  EXPECT_NE(content.find("\"frameNumber\":42"), std::string::npos);
+  input.close();
+  encoder.reset();
+  std::filesystem::remove(session.recordingArtifactPath);
+#else
+  EXPECT_TRUE(true);
 #endif
 }
 
