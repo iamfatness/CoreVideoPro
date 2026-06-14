@@ -6,6 +6,7 @@ option(COREVIDEO_STUB "Build portable stub media-core modules" ON)
 option(COREVIDEO_ENABLE_DEV_ADAPTERS "Build SDK/GPU/hardware adapters that require a dev machine" OFF)
 option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Windows SDK root." OFF)
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_MF_ENCODER "Build the Windows Media Foundation hardware encoder adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,6 +20,7 @@ endforeach()
 add_library(corevideo_native
   src/core/MediaCore.cpp
   src/modules/D3D11CompositorAdapter.cpp
+  src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/StubModules.cpp
   src/modules/ZoomMeetingSdkAdapter.cpp
   src/rpc/Json.cpp
@@ -31,6 +33,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
     COREVIDEO_WITH_ZOOM=$<BOOL:${COREVIDEO_WITH_ZOOM}>
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
+    COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
 )
 
 if(COREVIDEO_ENABLE_DEV_ADAPTERS)
@@ -47,6 +50,17 @@ if(COREVIDEO_WITH_D3D11)
   endif()
 
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi)
+endif()
+
+if(COREVIDEO_WITH_MF_ENCODER)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT WIN32)
+    message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
+  endif()
+
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfuuid)
 endif()
 
 if(COREVIDEO_WITH_ZOOM)
