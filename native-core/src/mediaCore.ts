@@ -1,4 +1,5 @@
 import type { MediaCoreCommand, MediaCoreRequest, MediaCoreResponse, MediaCoreStateSnapshot } from "./protocol.js";
+import { FakeFrameProducer, type FakeFrameSource } from "./fakeFrameProducer.js";
 
 type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
@@ -11,6 +12,9 @@ export class MediaCoreRuntime {
   private readonly overlays = new Map<string, OverlayState>();
   private output?: OutputState;
   private lastCommandTypes: string[] = [];
+  private readonly frameProducer = new FakeFrameProducer();
+  private frames = this.frameProducer.render([], 0);
+  private elapsedMs = 0;
 
   handle(request: MediaCoreRequest): MediaCoreResponse {
     if (request.type === "snapshot") {
@@ -21,7 +25,18 @@ export class MediaCoreRuntime {
       };
     }
 
+    if (request.type === "tick") {
+      this.tick(request.elapsedMs);
+      return {
+        id: request.id,
+        ok: true,
+        appliedCommandCount: 0,
+        state: this.snapshot()
+      };
+    }
+
     const warnings = this.apply(request.commands);
+    this.tick(this.elapsedMs);
 
     return {
       id: request.id,
@@ -75,6 +90,8 @@ export class MediaCoreRuntime {
     return {
       sceneId: this.sceneGraph?.sceneId,
       routeCount: this.sceneGraph?.routes.length ?? 0,
+      frameCount: this.frames.length,
+      frames: this.frames,
       participantTransformCount: this.transforms.size,
       overlayCount: this.overlays.size,
       outputs: this.output?.destinations ?? [],
@@ -82,6 +99,45 @@ export class MediaCoreRuntime {
       lastCommandTypes: this.lastCommandTypes,
       warnings
     };
+  }
+
+  private tick(elapsedMs: number) {
+    this.elapsedMs = Math.max(0, elapsedMs);
+    this.frames = this.frameProducer.render(this.getFrameSources(), this.elapsedMs);
+  }
+
+  private getFrameSources(): FakeFrameSource[] {
+    if (!this.sceneGraph) {
+      return [];
+    }
+
+    return this.sceneGraph.routes
+      .map((route): FakeFrameSource | undefined => {
+        if (route.mode === "screen-share") {
+          return {
+            sourceId: `screen-share:${route.routeId}`,
+            kind: "screen-share"
+          };
+        }
+
+        if (route.participantId) {
+          return {
+            sourceId: `participant:${route.participantId}`,
+            participantId: route.participantId,
+            kind: "participant-video"
+          };
+        }
+
+        if (route.mode === "active-speaker") {
+          return {
+            sourceId: `active-speaker:${route.routeId}`,
+            kind: "participant-video"
+          };
+        }
+
+        return undefined;
+      })
+      .filter(Boolean) as FakeFrameSource[];
   }
 }
 

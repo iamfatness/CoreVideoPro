@@ -37,4 +37,30 @@ describe("native-core service", () => {
       }
     });
   });
+
+  it("handles tick requests from a JSON line", () => {
+    handleLine(
+      JSON.stringify({
+        id: "line-2",
+        type: "sync",
+        commands: [
+          {
+            type: "load-scene-graph",
+            sceneId: "panel",
+            routes: [{ routeId: "active", mode: "active-speaker", audioRole: "mix" }]
+          }
+        ]
+      })
+    );
+    const response = handleLine(JSON.stringify({ id: "tick-1", type: "tick", elapsedMs: 100 }));
+
+    expect(response).toMatchObject({
+      id: "tick-1",
+      ok: true,
+      appliedCommandCount: 0,
+      state: {
+        frameCount: 1
+      }
+    });
+  });
 });

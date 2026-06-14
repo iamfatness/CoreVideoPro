@@ -49,6 +49,10 @@ export class MediaCoreServiceClient {
     return this.send({ id: this.createRequestId(), type: "snapshot" });
   }
 
+  tick(elapsedMs: number) {
+    return this.send({ id: this.createRequestId(), type: "tick", elapsedMs });
+  }
+
   close() {
     this.lines.close();
     this.process.stdin.end();

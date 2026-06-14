@@ -4,6 +4,9 @@ export { handleLine } from "./service.js";
 export type {
   MediaCoreCommand,
   MediaCoreDestination,
+  MediaCoreFrame,
+  MediaCoreFrameHealth,
+  MediaCoreFrameKind,
   MediaCoreRequest,
   MediaCoreResponse,
   MediaCoreStateSnapshot

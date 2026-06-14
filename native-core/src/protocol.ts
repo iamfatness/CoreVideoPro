@@ -2,6 +2,22 @@ export type MediaCoreRouteMode = "fixed" | "active-speaker" | "spotlight" | "scr
 export type MediaCoreAudioRole = "mix" | "isolated" | "audience";
 export type MediaCoreDestination = "rtmp" | "ndi" | "srt" | "webrtc" | "recording";
 
+export type MediaCoreFrameKind = "participant-video" | "screen-share";
+
+export type MediaCoreFrameHealth = "live" | "stale" | "dropped" | "low-resolution";
+
+export type MediaCoreFrame = {
+  sourceId: string;
+  participantId?: string;
+  kind: MediaCoreFrameKind;
+  frameNumber: number;
+  timestampMs: number;
+  width: number;
+  height: number;
+  fps: number;
+  health: MediaCoreFrameHealth;
+};
+
 export type MediaCoreCommand =
   | {
       type: "load-scene-graph";
@@ -42,11 +58,18 @@ export type MediaCoreRequest =
   | {
       id: string;
       type: "snapshot";
+    }
+  | {
+      id: string;
+      type: "tick";
+      elapsedMs: number;
     };
 
 export type MediaCoreStateSnapshot = {
   sceneId?: string;
   routeCount: number;
+  frameCount: number;
+  frames: MediaCoreFrame[];
   participantTransformCount: number;
   overlayCount: number;
   outputs: MediaCoreDestination[];

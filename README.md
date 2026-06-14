@@ -20,7 +20,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Shell-agnostic native host bridge bootstrap: the renderer uses a preload/native bridge when present and falls back to mock engines only for local development.
 - Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
 - Native media-core command builder that serializes the active scene graph, Zoom participant routes, participant transforms, enabled graphics, recording ISOs, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
-- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, and tests for applying scene graph, transform, overlay, recording, ISO, and output commands.
+- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, deterministic fake frame producer, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
 - Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
@@ -89,6 +89,7 @@ CoreVideo Pro Desktop Shell
   -> NativeMediaCoreCommands
   -> MediaCoreServiceClient
   -> native-core service boundary
+  -> deterministic fake frame producer
   -> Native Media Core
   -> Zoom SDK raw audio/video ingest
   -> GPU compositor / scene graph / overlays / chroma key

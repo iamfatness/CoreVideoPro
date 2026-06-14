@@ -58,5 +58,26 @@ describe("MediaCoreServiceClient", () => {
         outputs: ["recording", "srt"]
       }
     });
+
+    const tick = await client.tick(33);
+    expect(tick).toMatchObject({
+      ok: true,
+      appliedCommandCount: 0,
+      state: {
+        frameCount: 2,
+        frames: [
+          {
+            sourceId: "active-speaker:active",
+            frameNumber: 2,
+            timestampMs: 33
+          },
+          {
+            sourceId: "screen-share:screen",
+            frameNumber: 2,
+            timestampMs: 33
+          }
+        ]
+      }
+    });
   });
 });

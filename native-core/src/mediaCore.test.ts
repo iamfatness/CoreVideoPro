@@ -43,6 +43,24 @@ describe("MediaCoreRuntime", () => {
       state: {
         sceneId: "speaker-slides",
         routeCount: 2,
+        frameCount: 2,
+        frames: [
+          {
+            sourceId: "participant:p2",
+            participantId: "p2",
+            kind: "participant-video",
+            frameNumber: 1,
+            width: 1280,
+            height: 720
+          },
+          {
+            sourceId: "screen-share:slides",
+            kind: "screen-share",
+            frameNumber: 1,
+            width: 1920,
+            height: 1080
+          }
+        ],
         participantTransformCount: 1,
         overlayCount: 1,
         outputs: ["recording", "rtmp"],
@@ -65,6 +83,8 @@ describe("MediaCoreRuntime", () => {
       ok: true,
       state: {
         routeCount: 0,
+        frameCount: 0,
+        frames: [],
         participantTransformCount: 0,
         overlayCount: 0,
         outputs: []
@@ -84,5 +104,32 @@ describe("MediaCoreRuntime", () => {
     if (response.ok) {
       expect(response.state.warnings).toContain("Program output started without destinations.");
     }
+  });
+
+  it("advances fake backend frames with tick requests", () => {
+    const runtime = new MediaCoreRuntime();
+    runtime.handle({ id: "sync-1", type: "sync", commands });
+    const response = runtime.handle({ id: "tick-1", type: "tick", elapsedMs: 33 });
+
+    expect(response).toMatchObject({
+      id: "tick-1",
+      ok: true,
+      appliedCommandCount: 0,
+      state: {
+        frameCount: 2,
+        frames: [
+          {
+            sourceId: "participant:p2",
+            frameNumber: 2,
+            timestampMs: 33
+          },
+          {
+            sourceId: "screen-share:slides",
+            frameNumber: 2,
+            timestampMs: 33
+          }
+        ]
+      }
+    });
   });
 });

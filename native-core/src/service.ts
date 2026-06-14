@@ -9,12 +9,20 @@ export function handleLine(line: string): MediaCoreResponse {
   try {
     const request = JSON.parse(line) as MediaCoreRequest;
 
-    if (!request || typeof request.id !== "string" || (request.type !== "sync" && request.type !== "snapshot")) {
+    if (
+      !request ||
+      typeof request.id !== "string" ||
+      (request.type !== "sync" && request.type !== "snapshot" && request.type !== "tick")
+    ) {
       return invalidResponse("unknown", "Request must include id and type.");
     }
 
     if (request.type === "sync" && !Array.isArray(request.commands)) {
       return invalidResponse(request.id, "Sync request must include commands.");
+    }
+
+    if (request.type === "tick" && typeof request.elapsedMs !== "number") {
+      return invalidResponse(request.id, "Tick request must include elapsedMs.");
     }
 
     return runtime.handle(request);
