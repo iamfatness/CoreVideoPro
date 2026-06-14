@@ -1,6 +1,6 @@
 # CoreVideo Pro
 
-CoreVideo Pro is a standalone cross-platform desktop production app for building polished live and recorded shows directly from Zoom participants. This repository currently contains the first MVP execution slice: a desktop-ready production-console renderer, typed product state, and engine contracts for the native Zoom capture, AI production, and output layers.
+CoreVideo Pro is a standalone cross-platform desktop production app for producing high-quality online conversations and building polished live and recorded shows directly from Zoom participants. This repository currently contains the first MVP execution slice: a desktop-ready production-console renderer, typed product state, and engine contracts for the native Zoom capture, AI production, and output layers.
 
 This is not intended to ship as a browser-hosted SPA. The React/Vite surface is the desktop operator renderer that should run inside a native Mac/Windows shell, with media capture, compositing, recording, streaming, diagnostics, and packaging handled by native desktop processes behind typed IPC contracts.
 
