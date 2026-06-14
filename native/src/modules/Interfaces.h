@@ -57,6 +57,9 @@ struct OutputSession {
   std::string codec = "h264";
   int targetBitrateMbps = 10;
   bool hardwareAccelerated = false;
+  std::string recordingArtifactPath;
+  int64_t recordingBytesWritten = 0;
+  std::string recordingWarning;
 };
 
 struct OutputSender {

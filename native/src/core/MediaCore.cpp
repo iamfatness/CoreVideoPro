@@ -163,6 +163,8 @@ rpc::Json MediaCore::health() const {
       {"codec", session.codec},
       {"targetBitrateMbps", session.targetBitrateMbps},
       {"hardwareEncoder", session.hardwareAccelerated},
+      {"recordingArtifactPath", session.recordingArtifactPath},
+      {"recordingBytesWritten", static_cast<double>(session.recordingBytesWritten)},
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
@@ -511,14 +513,23 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   }
 
   const bool warning = session.active && encoderLifecycleStatus_ != "encoding";
-  return rpc::Json::Object{
-      {"status", warning ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
+  rpc::Json::Array warnings = warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{};
+  if (!session.recordingWarning.empty()) {
+    warnings.emplace_back(session.recordingWarning);
+  }
+  rpc::Json::Object encoderState{
+      {"status", warning || !session.recordingWarning.empty() ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"targets", targets},
       {"lifecycle", lifecycle},
-      {"warnings", warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{}},
+      {"warnings", warnings},
   };
+  if (!session.recordingArtifactPath.empty()) {
+    encoderState.emplace("recordingArtifactPath", session.recordingArtifactPath);
+    encoderState.emplace("recordingBytesWritten", static_cast<double>(session.recordingBytesWritten));
+  }
+  return encoderState;
 }
 
 rpc::Json MediaCore::outputSenderSessionState() const {
@@ -613,8 +624,11 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"streams", streams},
       {"totalFramesWritten", static_cast<double>(recordingProgramFramesWritten_ + recordingIsoFramesWritten_)},
       {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
-      {"totalBytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000)},
+      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000))},
   };
+  if (!session.recordingArtifactPath.empty()) {
+    recording.emplace("artifactPath", session.recordingArtifactPath);
+  }
   if (!recordingError_.empty()) {
     recording.emplace("error", recordingError_);
   }
