@@ -1486,3 +1486,29 @@ describe("clip trimmer", () => {
     expect(summaryAfter).not.toBe(summaryBefore);
   });
 });
+
+describe("chapter markers", () => {
+  it("shows the chapter panel with summary and mark button in the Media tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+
+    const panel = screen.getByLabelText("Chapter panel");
+    expect(within(panel).getByText("No chapters")).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Mark chapter now/i })).toBeInTheDocument();
+  });
+
+  it("adds a chapter when the mark button is clicked and shows export format selector", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+
+    const panel = screen.getByLabelText("Chapter panel");
+    await user.click(within(panel).getByRole("button", { name: /Mark chapter now/i }));
+
+    expect(within(panel).queryByText("No chapters")).not.toBeInTheDocument();
+    expect(within(panel).getByLabelText("Chapter export format")).toBeInTheDocument();
+  });
+});

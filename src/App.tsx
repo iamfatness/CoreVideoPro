@@ -71,6 +71,7 @@ import { formatKbps, planBandwidth, suggestBitrateReduction } from "./engine/ban
 import { buildPreShowCues, computeCountdown, formatTMinus, markShowLive, markShowOver } from "./engine/preShowCountdown";
 import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight";
 import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type ClipMarker, type ClipRegion } from "./engine/clipTrimmer";
+import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeChapters, validateChapters, type ChapterList } from "./engine/chapterMarker";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -213,6 +214,8 @@ export function App({ engines, runtime }: AppProps) {
   const [clipRegion, setClipRegion] = useState<ClipRegion>({ inPointSec: 0, outPointSec: 30, fps: 30 });
   const [clipMarkers, setClipMarkers] = useState<ClipMarker[]>([]);
   const clipSourceDurationSec = 60;
+  const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
+  const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -2754,6 +2757,66 @@ export function App({ engines, runtime }: AppProps) {
                       Add marker
                     </button>
                   </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Chapter markers">
+            <div className="section-title">
+              <FileText size={15} />
+              Chapter markers
+            </div>
+            {(() => {
+              const warnings = validateChapters(chapterList, "youtube");
+              const nowChapter = activeChapterAt(chapterList, elapsedSeconds);
+              const exported = chapterList.markers.length > 0 ? exportChapters(chapterList, chapterExportFormat) : "";
+              return (
+                <div className="chapter-panel" aria-label="Chapter panel">
+                  <p className="chapter-summary">{summarizeChapters(chapterList)}</p>
+                  {nowChapter && (
+                    <p className="chapter-active">Now: <strong>{nowChapter.title}</strong></p>
+                  )}
+                  <div className="chapter-list">
+                    {chapterList.markers.map((m) => (
+                      <div key={m.id} className="chapter-row" aria-label={`Chapter ${m.title}`}>
+                        <span className="chapter-time">{m.startSec === 0 ? "00:00" : `${Math.floor(m.startSec / 60).toString().padStart(2, "0")}:${(Math.floor(m.startSec) % 60).toString().padStart(2, "0")}`}</span>
+                        <span className="chapter-title">{m.title}</span>
+                        <button
+                          className="icon-button"
+                          aria-label={`Remove chapter ${m.title}`}
+                          onClick={() => setChapterList((cl) => removeChapter(cl, m.id))}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {warnings.map((w) => (
+                    <p className="chapter-warning" key={w} role="status">{w}</p>
+                  ))}
+                  <button
+                    className="ghost-button wide"
+                    onClick={() => setChapterList((cl) => addChapter(cl, Math.floor(elapsedSeconds), `Chapter ${cl.markers.length + 1}`))}
+                  >
+                    <Plus size={14} />
+                    Mark chapter now ({Math.floor(elapsedSeconds)}s)
+                  </button>
+                  {chapterList.markers.length > 0 && (
+                    <div className="chapter-export">
+                      <select
+                        aria-label="Chapter export format"
+                        value={chapterExportFormat}
+                        onChange={(e) => setChapterExportFormat(e.target.value as typeof chapterExportFormat)}
+                      >
+                        <option value="youtube">YouTube</option>
+                        <option value="vtt">WebVTT</option>
+                        <option value="text">Text</option>
+                        <option value="json">JSON</option>
+                      </select>
+                      <pre className="chapter-export-preview" aria-label="Chapter export preview">{exported}</pre>
+                    </div>
+                  )}
                 </div>
               );
             })()}
