@@ -3557,3 +3557,19 @@ meter {
 .speaker-alert { font-size: 11px; margin: 0; }
 .speaker-alert-warning { color: #fbbf24; }
 .speaker-alert-over-time { color: #f87171; }
+
+/* Output watermark */
+.watermark-panel { display: flex; flex-direction: column; gap: 8px; }
+.watermark-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+.watermark-issue { font-size: 11px; color: #fbbf24; margin: 0; }
+
+.watermark-classification {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  background: #0d1520;
+  border-radius: 3px;
+  text-align: center;
+}

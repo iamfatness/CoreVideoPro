@@ -73,6 +73,7 @@ import { computeTally, tallyColorHex, filterByTally } from "./engine/tallyLight"
 import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type ClipMarker, type ClipRegion } from "./engine/clipTrimmer";
 import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeChapters, validateChapters, type ChapterList } from "./engine/chapterMarker";
 import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, snapshotTotals, speakerSharePct } from "./engine/speakerTimer";
+import { buildWatermarkSpec, classificationColor, confidentialityLevels, createWatermark, updateWatermark, validateWatermark, watermarkPositions, type WatermarkConfig } from "./engine/outputWatermark";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -217,6 +218,7 @@ export function App({ engines, runtime }: AppProps) {
   const clipSourceDurationSec = 60;
   const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
   const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
+  const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -2518,6 +2520,102 @@ export function App({ engines, runtime }: AppProps) {
                   </div>
                   {qualityReport.warnings.map((w) => (
                     <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                  ))}
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Output watermark">
+            <div className="section-title">
+              <Shield size={15} />
+              Output watermark
+            </div>
+            {(() => {
+              const spec = buildWatermarkSpec(watermarkConfig);
+              const issues = validateWatermark(watermarkConfig);
+              return (
+                <div className="watermark-panel" aria-label="Watermark panel">
+                  <p className="watermark-summary">{spec.summary}</p>
+                  <label className="role-control">
+                    <span>Mode</span>
+                    <select
+                      aria-label="Watermark mode"
+                      value={watermarkConfig.mode}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { mode: e.target.value as WatermarkConfig["mode"] }))}
+                    >
+                      <option value="disabled">Disabled</option>
+                      <option value="live">Live overlay</option>
+                      <option value="burn-in">Burn-in</option>
+                    </select>
+                  </label>
+                  <label className="role-control">
+                    <span>Text</span>
+                    <input
+                      aria-label="Watermark text"
+                      value={watermarkConfig.text}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { text: e.target.value }))}
+                      placeholder="e.g. DRAFT, © 2025"
+                    />
+                  </label>
+                  <label className="role-control">
+                    <span>Position</span>
+                    <select
+                      aria-label="Watermark position"
+                      value={watermarkConfig.position}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { position: e.target.value as WatermarkConfig["position"] }))}
+                    >
+                      {watermarkPositions.map((pos) => (
+                        <option key={pos} value={pos}>{pos}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="gain-control">
+                    <span>Opacity</span>
+                    <input
+                      aria-label="Watermark opacity"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={watermarkConfig.opacityPct}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { opacityPct: Number(e.target.value) }))}
+                    />
+                    <em>{watermarkConfig.opacityPct}%</em>
+                  </label>
+                  <label className="webinar-toggle">
+                    <input
+                      type="checkbox"
+                      aria-label="Show classification banner"
+                      checked={watermarkConfig.showClassification}
+                      onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { showClassification: e.target.checked }))}
+                    />
+                    Classification banner
+                  </label>
+                  {watermarkConfig.showClassification && (
+                    <label className="role-control">
+                      <span>Level</span>
+                      <select
+                        aria-label="Classification level"
+                        value={watermarkConfig.classification}
+                        onChange={(e) => setWatermarkConfig((c) => updateWatermark(c, { classification: e.target.value as WatermarkConfig["classification"] }))}
+                      >
+                        {confidentialityLevels.map((level) => (
+                          <option key={level} value={level}>{level}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {spec.classificationBanner && (
+                    <div
+                      className="watermark-classification"
+                      style={{ color: classificationColor(watermarkConfig.classification) }}
+                      aria-label="Classification banner"
+                    >
+                      {spec.classificationBanner}
+                    </div>
+                  )}
+                  {issues.map((issue) => (
+                    <p key={issue} className="watermark-issue" role="status">{issue}</p>
                   ))}
                 </div>
               );
