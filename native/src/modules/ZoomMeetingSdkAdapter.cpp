@@ -18,7 +18,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -27,6 +29,23 @@ namespace {
 
 std::wstring widenAscii(const std::string& value) {
   return std::wstring(value.begin(), value.end());
+}
+
+std::optional<UINT64> parseMeetingNumber(const std::string& value) {
+  try {
+    size_t parsed = 0;
+    const auto meetingNumber = std::stoull(value, &parsed, 10);
+    if (parsed != value.size() || meetingNumber == 0) {
+      return std::nullopt;
+    }
+    return static_cast<UINT64>(meetingNumber);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+bool hasJoinCredential(const ZoomMeetingSdkJoinRequest& request) {
+  return !request.zakToken.empty() || !request.appPrivilegeToken.empty() || !request.joinToken.empty();
 }
 
 std::string sdkErrorName(ZOOMSDK::SDKError error) {
@@ -129,9 +148,23 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   bool join(const ZoomMeetingSdkJoinRequest& request) override {
     meetingNumber_ = request.meetingNumber;
     displayName_ = request.displayName;
+    joinReturnCode_.clear();
     if (!runtimeReady()) {
       warnings_.push_back("Zoom Meeting SDK adapter is not ready; check runtime/auth/raw media readiness before joining.");
       meetingState_ = "error";
+      return false;
+    }
+
+    const auto meetingNumber = parseMeetingNumber(request.meetingNumber);
+    if (!meetingNumber) {
+      warnings_.push_back("Zoom Meeting SDK join request has an invalid meeting number.");
+      meetingState_ = "error";
+      return false;
+    }
+
+    if (!hasJoinCredential(request)) {
+      warnings_.push_back("Zoom Meeting SDK join credentials are missing; not calling Join.");
+      meetingState_ = "join-ready";
       return false;
     }
 
@@ -140,14 +173,17 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       return false;
     }
 
-    // REQUIRES DEV MACHINE: authentication and SDK JWT/ZAK handoff land before calling
-    // IMeetingService::Join. For now the adapter owns initialized SDK state and service
-    // callbacks, then advertises a join-pending state instead of silently faking a meeting.
-    joined_ = false;
-    meetingState_ = "join-ready";
-    if (request.passcodePresent) {
-      warnings_.push_back("Join request includes a passcode; passcode redacted until auth/join wiring is implemented.");
+    const auto joinResult = joinWithoutLogin(request, *meetingNumber);
+    joinReturnCode_ = sdkErrorName(joinResult);
+    if (joinResult != ZOOMSDK::SDKERR_SUCCESS) {
+      warnings_.push_back("Zoom Meeting SDK Join returned " + joinReturnCode_ + ".");
+      meetingState_ = "error";
+      joined_ = false;
+      return false;
     }
+
+    meetingState_ = "joining";
+    joined_ = true;
     return true;
   }
 
@@ -201,11 +237,11 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
 
   std::string activeSpeakerId() const override { return activeSpeakerId_; }
   std::string meetingState() const override {
-    if (meetingState_ == "join-ready") {
-      return meetingState_;
-    }
     if (meetingEvent_) {
-      return meetingStatusName(meetingEvent_->status());
+      const auto sdkStatus = meetingEvent_->status();
+      if (sdkStatus != ZOOMSDK::MEETING_STATUS_IDLE) {
+        return meetingStatusName(sdkStatus);
+      }
     }
     return meetingState_;
   }
@@ -260,6 +296,40 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     return true;
   }
 
+  ZOOMSDK::SDKError joinWithoutLogin(const ZoomMeetingSdkJoinRequest& request, UINT64 meetingNumber) {
+    if (!meetingService_) {
+      return ZOOMSDK::SDKERR_UNINITIALIZE;
+    }
+
+    const std::wstring displayName = widenAscii(request.displayName.empty() ? "CoreVideo Pro" : request.displayName);
+    const std::wstring passcode = widenAscii(request.passcode);
+    const std::wstring zakToken = widenAscii(request.zakToken);
+    const std::wstring appPrivilegeToken = widenAscii(request.appPrivilegeToken);
+    const std::wstring joinToken = widenAscii(request.joinToken);
+    const std::wstring webinarToken = widenAscii(request.webinarToken);
+    const std::wstring customerKey = widenAscii(request.customerKey);
+
+    ZOOMSDK::JoinParam joinParam;
+    joinParam.userType = ZOOMSDK::SDK_UT_WITHOUT_LOGIN;
+    auto& withoutLogin = joinParam.param.withoutloginuserJoin;
+    withoutLogin.meetingNumber = meetingNumber;
+    withoutLogin.userName = displayName.c_str();
+    withoutLogin.psw = passcode.empty() ? nullptr : passcode.c_str();
+    withoutLogin.userZAK = zakToken.empty() ? nullptr : zakToken.c_str();
+    withoutLogin.app_privilege_token = appPrivilegeToken.empty() ? nullptr : appPrivilegeToken.c_str();
+    withoutLogin.join_token = joinToken.empty() ? nullptr : joinToken.c_str();
+    withoutLogin.webinarToken = webinarToken.empty() ? nullptr : webinarToken.c_str();
+    withoutLogin.customer_key = customerKey.empty() ? nullptr : customerKey.c_str();
+    withoutLogin.isVideoOff = request.startVideoOff;
+    withoutLogin.isAudioOff = request.startAudioMuted;
+    withoutLogin.isMyVoiceInMix = true;
+    withoutLogin.isAudioRawDataStereo = false;
+    withoutLogin.eAudioRawdataSamplingRate = ZOOMSDK::AudioRawdataSamplingRate_48K;
+    withoutLogin.eVideoRawdataColorspace = ZOOMSDK::VideoRawdataColorspace_BT709_F;
+
+    return meetingService_->Join(joinParam);
+  }
+
   void shutdownSdk() {
     if (meetingService_) {
       (void)meetingService_->SetEvent(nullptr);
@@ -283,6 +353,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::string displayName_;
   std::string activeSpeakerId_;
   std::string meetingState_ = "idle";
+  std::string joinReturnCode_;
   std::wstring webDomain_;
   std::wstring brandingName_;
   ZOOMSDK::IMeetingService* meetingService_ = nullptr;

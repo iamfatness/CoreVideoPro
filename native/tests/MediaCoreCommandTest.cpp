@@ -1,4 +1,5 @@
 #include "core/MediaCore.h"
+#include "modules/ZoomMeetingSdkAdapter.h"
 #include "rpc/Json.h"
 
 #include <gtest/gtest.h>
@@ -53,4 +54,43 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 2);
   ASSERT_NE(profile.get("capabilities"), nullptr);
   EXPECT_GE(profile.get("capabilities")->asArray().size(), 11);
+}
+
+TEST(ZoomMeetingSdkAdapter, FactoryIsDisabledInPortableStubBuild) {
+#if COREVIDEO_WITH_ZOOM
+  EXPECT_TRUE(true);
+#else
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({});
+  EXPECT_EQ(source, nullptr);
+#endif
+}
+
+TEST(ZoomMeetingSdkAdapter, DevGateRejectsMissingJoinCredentials) {
+#if COREVIDEO_WITH_ZOOM
+  auto source = corevideo::modules::createZoomMeetingSdkCaptureSource({
+      "sdk-root",
+      "7.0.5",
+      "https://zoom.us",
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+  });
+  ASSERT_NE(source, nullptr);
+
+  const bool joined = source->join({
+      "123456789",
+      "CoreVideo Producer",
+  });
+
+  EXPECT_FALSE(joined);
+  EXPECT_EQ(source->meetingState(), "join-ready");
+  EXPECT_FALSE(source->warnings().empty());
+  source->leave();
+  EXPECT_EQ(source->meetingState(), "idle");
+#else
+  EXPECT_TRUE(true);
+#endif
 }
