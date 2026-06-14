@@ -106,6 +106,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const prepareEncoder = commands.find((command) => command.type === "prepare-encoder-session");
     const startEncoder = commands.find((command) => command.type === "start-encoder-session");
     const stopEncoder = commands.find((command) => command.type === "stop-encoder-session");
+    const failedSender = commands.find((command) => command.type === "fail-output-sender");
+    const recoveredSender = commands.find((command) => command.type === "recover-output-sender");
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
     if (sourceRoster) {
@@ -177,6 +179,12 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         stoppedAtMs: stopEncoder.stoppedAtMs ?? elapsedMs,
         lastTransition: stopEncoder.reason ?? "Encoder session stopped."
       };
+    }
+    if (failedSender) {
+      this.failOutputSender(failedSender.destination, failedSender.message, failedSender.failedAtMs ?? elapsedMs);
+    }
+    if (recoveredSender) {
+      this.recoverOutputSender(recoveredSender.destination, recoveredSender.recoveredAtMs ?? elapsedMs, recoveredSender.reason);
     }
     const renderPlan = buildNativeMediaCoreRenderPlan({
       sceneGraph,
@@ -320,6 +328,10 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       if (command.type === "fail-recording-session") {
         this.failRecording(command.message, elapsedMs);
       }
+
+      if (command.type === "recover-recording-session") {
+        this.recoverRecording(command.recoveredAtMs ?? elapsedMs);
+      }
     });
 
     if (this.recording?.active) {
@@ -433,6 +445,25 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     }
   }
 
+  private recoverRecording(elapsedMs: number) {
+    if (!this.recording) {
+      this.startRecording(this.recordingTargets, elapsedMs);
+    }
+
+    if (this.recording) {
+      this.recording.active = true;
+      this.recording.status = "recording";
+      this.recording.writerStatus = "writing";
+      this.recording.error = undefined;
+      this.recording.warning = undefined;
+      this.recording.stoppedAtMs = undefined;
+      this.recording.elapsedMs = Math.max(0, elapsedMs - this.recording.startedAtMs);
+      this.recording.streams.forEach((stream) => {
+        stream.status = "writing";
+      });
+    }
+  }
+
   private snapshotRecording(elapsedMs: number) {
     if (!this.recording) {
       return undefined;
@@ -515,18 +546,18 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     outputSenderSession.senders
       .filter((sender) => encoderSession.lifecycle.status === "encoding" && sender.status !== "stopped" && sender.status !== "idle")
       .forEach((sender) => {
-      const index = health.findIndex((item) => item.destination === sender.destination);
-      const senderHealth: NativeMediaCoreOutputHealth = {
-        destination: sender.destination,
-        status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
-        message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
-        droppedFrames: 0
-      };
-      if (index >= 0) {
-        health[index] = senderHealth;
-      } else {
-        health.push(senderHealth);
-      }
+        const index = health.findIndex((item) => item.destination === sender.destination);
+        const senderHealth: NativeMediaCoreOutputHealth = {
+          destination: sender.destination,
+          status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
+          message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
+          droppedFrames: 0
+        };
+        if (index >= 0) {
+          health[index] = senderHealth;
+        } else {
+          health.push(senderHealth);
+        }
       });
 
     return health;
@@ -563,6 +594,40 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       senders,
       warnings
     };
+  }
+
+  private failOutputSender(destination: "rtmp" | "ndi" | "srt" | "webrtc", message: string, elapsedMs: number) {
+    const existing = this.outputSenders.get(destination);
+    this.outputSenders.set(destination, {
+      senderId: existing?.senderId ?? `${destination}:program`,
+      destination,
+      status: "failed",
+      startedAtMs: existing?.startedAtMs,
+      stoppedAtMs: elapsedMs,
+      lastFrameNumber: existing?.lastFrameNumber,
+      framesSent: existing?.framesSent ?? 0,
+      retryCount: (existing?.retryCount ?? 0) + 1,
+      latencyMs: existing?.latencyMs ?? senderLatency(destination),
+      bitrateMbps: existing?.bitrateMbps ?? 0,
+      warning: message
+    });
+  }
+
+  private recoverOutputSender(destination: "rtmp" | "ndi" | "srt" | "webrtc", elapsedMs: number, reason = `${destination.toUpperCase()} sender recovered.`) {
+    const existing = this.outputSenders.get(destination);
+    this.outputSenders.set(destination, {
+      senderId: existing?.senderId ?? `${destination}:program`,
+      destination,
+      status: "starting",
+      startedAtMs: elapsedMs,
+      stoppedAtMs: undefined,
+      lastFrameNumber: existing?.lastFrameNumber,
+      framesSent: existing?.framesSent ?? 0,
+      retryCount: existing?.retryCount ?? 0,
+      latencyMs: existing?.latencyMs ?? senderLatency(destination),
+      bitrateMbps: existing?.bitrateMbps ?? 0,
+      warning: reason
+    });
   }
 
   private composeProgramFrame(renderPlan: NativeMediaCoreRenderPlan, elapsedMs: number) {
@@ -794,6 +859,17 @@ function nextOutputSender(
     latencyMs: senderLatency(destination),
     bitrateMbps: senderBitrate(destination, outputProfile)
   };
+
+  if (existing?.status === "failed") {
+    return {
+      ...base,
+      status: "failed",
+      stoppedAtMs: existing.stoppedAtMs,
+      lastFrameNumber: existing.lastFrameNumber,
+      retryCount: existing.retryCount,
+      warning: existing.warning
+    };
+  }
 
   if (!programFrame) {
     return {

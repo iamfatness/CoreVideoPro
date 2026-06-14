@@ -115,6 +115,27 @@ export class RecordingSink {
     return this.snapshot();
   }
 
+  recover(elapsedMs = this.lastElapsedMs) {
+    if (!this.session) {
+      return this.start(this.targets, elapsedMs);
+    }
+
+    this.lastElapsedMs = elapsedMs;
+    this.session.active = true;
+    this.session.status = "recording";
+    this.session.writerStatus = "writing";
+    this.session.error = undefined;
+    this.session.warning = undefined;
+    this.session.stoppedAtMs = undefined;
+    this.session.elapsedMs = Math.max(0, elapsedMs - this.session.startedAtMs);
+    this.session.streams.forEach((stream) => {
+      stream.status = "writing";
+    });
+    updateSessionHealth(this.session);
+
+    return this.snapshot();
+  }
+
   clear() {
     this.session = undefined;
   }

@@ -13,6 +13,42 @@ const NETWORK_DESTINATIONS = new Set<MediaCoreDestination>(["rtmp", "ndi", "srt"
 export class OutputSenderSessionModel {
   private readonly senders = new Map<NetworkDestination, MediaCoreOutputSender>();
 
+  fail(destination: NetworkDestination, message: string, elapsedMs: number) {
+    const existing = this.senders.get(destination);
+    this.senders.set(destination, {
+      senderId: existing?.senderId ?? `${destination}:program`,
+      destination,
+      status: "failed",
+      startedAtMs: existing?.startedAtMs,
+      stoppedAtMs: elapsedMs,
+      lastFrameNumber: existing?.lastFrameNumber,
+      framesSent: existing?.framesSent ?? 0,
+      retryCount: (existing?.retryCount ?? 0) + 1,
+      latencyMs: existing?.latencyMs ?? latencyFor(destination),
+      bitrateMbps: existing?.bitrateMbps ?? 0,
+      warning: message
+    });
+    return this.snapshot();
+  }
+
+  recover(destination: NetworkDestination, elapsedMs: number, reason = `${destination.toUpperCase()} sender recovered.`) {
+    const existing = this.senders.get(destination);
+    this.senders.set(destination, {
+      senderId: existing?.senderId ?? `${destination}:program`,
+      destination,
+      status: "starting",
+      startedAtMs: elapsedMs,
+      stoppedAtMs: undefined,
+      lastFrameNumber: existing?.lastFrameNumber,
+      framesSent: existing?.framesSent ?? 0,
+      retryCount: existing?.retryCount ?? 0,
+      latencyMs: existing?.latencyMs ?? latencyFor(destination),
+      bitrateMbps: existing?.bitrateMbps ?? 0,
+      warning: reason
+    });
+    return this.snapshot();
+  }
+
   sync(destinations: MediaCoreDestination[], programFrame: MediaCoreProgramFrame | undefined, outputProfile: MediaCoreOutputProfile, elapsedMs: number) {
     const activeDestinations = destinations.filter((destination): destination is NetworkDestination => NETWORK_DESTINATIONS.has(destination));
     const activeSet = new Set(activeDestinations);
@@ -70,6 +106,17 @@ export class OutputSenderSessionModel {
       retryCount: existing?.retryCount ?? 0,
       framesSent: existing?.framesSent ?? 0
     };
+
+    if (existing?.status === "failed") {
+      return {
+        ...base,
+        status: "failed",
+        stoppedAtMs: existing.stoppedAtMs,
+        lastFrameNumber: existing.lastFrameNumber,
+        retryCount: existing.retryCount,
+        warning: existing.warning
+      };
+    }
 
     if (!programFrame) {
       return {

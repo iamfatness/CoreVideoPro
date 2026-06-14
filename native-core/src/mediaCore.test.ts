@@ -563,6 +563,71 @@ describe("MediaCoreRuntime", () => {
     });
   });
 
+  it("recovers failed recording writers and failed output senders through commands", () => {
+    const runtime = new MediaCoreRuntime();
+    runtime.handle({ id: "sync-1", type: "sync", commands });
+
+    const failed = runtime.handle({
+      id: "fail-runtime",
+      type: "sync",
+      commands: [
+        { type: "start-program-output", destinations: ["recording", "rtmp"], isoParticipantIds: ["p1", "p2"] },
+        { type: "fail-output-sender", destination: "rtmp", message: "RTMP connection refused." },
+        { type: "fail-recording-session", message: "Recording writer crashed." }
+      ]
+    });
+
+    expect(failed).toMatchObject({
+      ok: true,
+      state: {
+        outputSenderSession: {
+          status: "failed",
+          senders: [{ destination: "rtmp", status: "failed", warning: "RTMP connection refused." }]
+        },
+        recording: {
+          active: false,
+          status: "failed",
+          error: "Recording writer crashed."
+        },
+        outputHealth: expect.arrayContaining([
+          expect.objectContaining({ destination: "rtmp", status: "failed", message: "RTMP connection refused." }),
+          expect.objectContaining({ destination: "recording", status: "failed", message: "Recording writer crashed." })
+        ]),
+        warnings: expect.arrayContaining(["RTMP connection refused.", "Recording writer crashed."])
+      }
+    });
+
+    const recovered = runtime.handle({
+      id: "recover-runtime",
+      type: "sync",
+      commands: [
+        { type: "start-program-output", destinations: ["recording", "rtmp"], isoParticipantIds: ["p1", "p2"] },
+        { type: "recover-output-sender", destination: "rtmp", reason: "RTMP sender recovered after reconnect." },
+        { type: "recover-recording-session", reason: "Recording writer recovered." }
+      ]
+    });
+
+    expect(recovered).toMatchObject({
+      ok: true,
+      state: {
+        outputSenderSession: {
+          status: "live",
+          senders: [{ destination: "rtmp", status: "live", warning: undefined }]
+        },
+        recording: {
+          active: true,
+          status: "recording",
+          writerStatus: "writing",
+          error: undefined
+        },
+        outputHealth: expect.arrayContaining([
+          expect.objectContaining({ destination: "rtmp", status: "live" }),
+          expect.objectContaining({ destination: "recording", status: "live" })
+        ])
+      }
+    });
+  });
+
   it("resolves active speaker and screen share routes from the Zoom source roster", () => {
     const runtime = new MediaCoreRuntime();
     const response = runtime.handle({

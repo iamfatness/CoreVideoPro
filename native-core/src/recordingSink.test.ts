@@ -117,4 +117,24 @@ describe("RecordingSink", () => {
       ]
     });
   });
+
+  it("recovers a failed writer without losing written frame counters", () => {
+    const sink = new RecordingSink();
+    sink.start({ isoParticipantIds: ["p1"] }, 10, "show-1");
+    sink.writeFrames(frames, 33, programFrame);
+    sink.fail("Encoder process exited.", 40);
+
+    expect(sink.recover(50)).toMatchObject({
+      sessionId: "show-1",
+      active: true,
+      status: "recording",
+      writerStatus: "writing",
+      error: undefined,
+      totalFramesWritten: 2,
+      streams: [
+        { kind: "program", status: "writing", framesWritten: 1 },
+        { kind: "iso", participantId: "p1", status: "writing", framesWritten: 1 }
+      ]
+    });
+  });
 });

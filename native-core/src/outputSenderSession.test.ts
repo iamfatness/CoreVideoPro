@@ -70,4 +70,34 @@ describe("OutputSenderSessionModel", () => {
       senders: [{ destination: "srt", status: "warning", framesSent: 1, retryCount: 1, warning: "SRT sender skipped a dropped program frame." }]
     });
   });
+
+  it("keeps failed senders failed until explicitly recovered", () => {
+    const model = new OutputSenderSessionModel();
+    model.sync(["rtmp"], programFrame, outputProfile, 1000);
+
+    const failed = model.fail("rtmp", "RTMP connection refused.", 1100);
+
+    expect(failed).toMatchObject({
+      status: "failed",
+      activeSenderCount: 0,
+      senders: [{ destination: "rtmp", status: "failed", retryCount: 1, warning: "RTMP connection refused." }],
+      warnings: ["RTMP connection refused."]
+    });
+
+    const stillFailed = model.sync(["rtmp"], { ...programFrame, frameNumber: 2 }, outputProfile, 1200);
+
+    expect(stillFailed).toMatchObject({
+      status: "failed",
+      senders: [{ destination: "rtmp", status: "failed", framesSent: 1, warning: "RTMP connection refused." }]
+    });
+
+    model.recover("rtmp", 1300, "RTMP sender recovered after reconnect.");
+    const recovered = model.sync(["rtmp"], { ...programFrame, frameNumber: 3 }, outputProfile, 1316);
+
+    expect(recovered).toMatchObject({
+      status: "live",
+      activeSenderCount: 1,
+      senders: [{ destination: "rtmp", status: "live", startedAtMs: 1300, framesSent: 2, retryCount: 1, warning: undefined }]
+    });
+  });
 });

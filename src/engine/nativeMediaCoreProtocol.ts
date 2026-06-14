@@ -91,6 +91,18 @@ export type NativeMediaCoreCommand =
       stoppedAtMs?: number;
       reason?: string;
     }
+  | {
+      type: "fail-output-sender";
+      destination: "rtmp" | "ndi" | "srt" | "webrtc";
+      message: string;
+      failedAtMs?: number;
+    }
+  | {
+      type: "recover-output-sender";
+      destination: "rtmp" | "ndi" | "srt" | "webrtc";
+      recoveredAtMs?: number;
+      reason?: string;
+    }
   | ({
       type: "set-recording-targets";
     } & NativeMediaCoreRecordingTargets)
@@ -106,6 +118,11 @@ export type NativeMediaCoreCommand =
   | {
       type: "fail-recording-session";
       message: string;
+    }
+  | {
+      type: "recover-recording-session";
+      recoveredAtMs?: number;
+      reason?: string;
     };
 
 export type NativeMediaCoreFrame = {

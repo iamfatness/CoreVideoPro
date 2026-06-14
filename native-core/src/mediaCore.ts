@@ -250,6 +250,17 @@ export class MediaCoreRuntime {
         return;
       }
 
+      if (command.type === "fail-output-sender") {
+        this.outputSenderSessionModel.fail(command.destination, command.message, command.failedAtMs ?? this.elapsedMs);
+        warnings.push(command.message);
+        return;
+      }
+
+      if (command.type === "recover-output-sender") {
+        this.outputSenderSessionModel.recover(command.destination, command.recoveredAtMs ?? this.elapsedMs, command.reason);
+        return;
+      }
+
       if (command.type === "set-recording-targets") {
         const recording = this.recordingSink.setTargets(command);
         if (recording?.warning) {
@@ -290,6 +301,17 @@ export class MediaCoreRuntime {
           destination: "recording",
           status: "failed",
           message: command.message,
+          droppedFrames: recording?.totalDroppedFrames ?? 0
+        });
+        return;
+      }
+
+      if (command.type === "recover-recording-session") {
+        const recording = this.recordingSink.recover(command.recoveredAtMs ?? this.elapsedMs);
+        this.outputHealth.set("recording", {
+          destination: "recording",
+          status: recording?.status === "warning" ? "warning" : "live",
+          message: command.reason ?? recording?.warning ?? "Recording writer recovered.",
           droppedFrames: recording?.totalDroppedFrames ?? 0
         });
       }
@@ -414,12 +436,12 @@ export class MediaCoreRuntime {
     outputSenderSession.senders
       .filter((sender) => encoderSession.lifecycle.status === "encoding" && sender.status !== "stopped" && sender.status !== "idle")
       .forEach((sender) => {
-      health.set(sender.destination, {
-        destination: sender.destination,
-        status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
-        message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
-        droppedFrames: 0
-      });
+        health.set(sender.destination, {
+          destination: sender.destination,
+          status: sender.status === "failed" ? "failed" : sender.status === "warning" || sender.status === "starting" ? "warning" : sender.status === "live" ? "live" : "idle",
+          message: sender.warning ?? `${sender.destination.toUpperCase()} sender ${sender.status}.`,
+          droppedFrames: 0
+        });
       });
 
     if (recording) {

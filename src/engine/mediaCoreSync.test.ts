@@ -417,6 +417,98 @@ describe("media core sync engine", () => {
     });
   });
 
+  it("recovers failed sender and recording states through fallback media-core commands", () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const baseCommands: NativeMediaCoreCommand[] = [
+      {
+        type: "set-zoom-source-roster",
+        sources: [
+          {
+            sourceId: "participant:p1",
+            participantId: "p1",
+            displayName: "Maya Chen",
+            role: "Host",
+            breakoutRoomId: "main",
+            breakoutRoomName: "Main room",
+            hasVideo: true,
+            hasAudio: true,
+            isMuted: false,
+            isActiveSpeaker: true,
+            isScreenSharing: false,
+            audioLevel: 64,
+            health: "live"
+          }
+        ]
+      },
+      {
+        type: "load-scene-graph",
+        sceneId: "host",
+        routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+      },
+      { type: "start-program-output", destinations: ["recording", "rtmp"], isoParticipantIds: ["p1"] }
+    ];
+
+    const failed = engine.runCommands(
+      [
+        ...baseCommands,
+        {
+          type: "start-recording-session",
+          sessionId: "recover-test",
+          targetFolder: "Recordings/CoreVideo Pro",
+          filenamePrefix: "Recover_Test",
+          format: "mp4",
+          quality: "high",
+          isoParticipantIds: ["p1"]
+        },
+        { type: "fail-output-sender", destination: "rtmp", message: "RTMP connection refused." },
+        { type: "fail-recording-session", message: "Recording writer crashed." }
+      ],
+      5000
+    );
+
+    expect(failed).toMatchObject({
+      outputSenderSession: {
+        status: "failed",
+        senders: [{ destination: "rtmp", status: "failed", warning: "RTMP connection refused." }]
+      },
+      recording: {
+        active: false,
+        status: "failed",
+        error: "Recording writer crashed."
+      },
+      outputHealth: expect.arrayContaining([
+        expect.objectContaining({ destination: "rtmp", status: "failed", message: "RTMP connection refused." }),
+        expect.objectContaining({ destination: "recording", status: "failed", message: "Recording writer crashed." })
+      ])
+    });
+
+    const recovered = engine.runCommands(
+      [
+        ...baseCommands,
+        { type: "recover-output-sender", destination: "rtmp", reason: "RTMP sender recovered after reconnect." },
+        { type: "recover-recording-session", reason: "Recording writer recovered." }
+      ],
+      5033
+    );
+
+    expect(recovered).toMatchObject({
+      outputSenderSession: {
+        status: "live",
+        senders: [{ destination: "rtmp", status: "live", warning: undefined }]
+      },
+      recording: {
+        active: true,
+        status: "recording",
+        writerStatus: "writing",
+        error: undefined
+      },
+      outputHealth: expect.arrayContaining([
+        expect.objectContaining({ destination: "rtmp", status: "live" }),
+        expect.objectContaining({ destination: "recording", status: "live" })
+      ])
+    });
+  });
+
   it("surfaces render plan warnings when a scene asks for unavailable screen share", async () => {
     const engine = new InMemoryMediaCoreSyncEngine();
     const snapshot = await engine.syncProduction(

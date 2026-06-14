@@ -336,6 +336,18 @@ export type MediaCoreCommand =
       stoppedAtMs?: number;
       reason?: string;
     }
+  | {
+      type: "fail-output-sender";
+      destination: Exclude<MediaCoreDestination, "recording">;
+      message: string;
+      failedAtMs?: number;
+    }
+  | {
+      type: "recover-output-sender";
+      destination: Exclude<MediaCoreDestination, "recording">;
+      recoveredAtMs?: number;
+      reason?: string;
+    }
   | ({
       type: "set-recording-targets";
     } & MediaCoreRecordingTargets)
@@ -351,6 +363,11 @@ export type MediaCoreCommand =
   | {
       type: "fail-recording-session";
       message: string;
+    }
+  | {
+      type: "recover-recording-session";
+      recoveredAtMs?: number;
+      reason?: string;
     };
 
 export type MediaCoreRequest =
