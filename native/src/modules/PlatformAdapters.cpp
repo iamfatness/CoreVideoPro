@@ -4,8 +4,10 @@
 
 namespace corevideo::modules {
 
-// REQUIRES DEV MACHINE: Zoom Meeting SDK adapter owns clean participant audio/video
-// subscription, metadata, active-speaker events, and meeting lifecycle.
+// REQUIRES DEV MACHINE: Zoom Meeting SDK adapter is compiled only with
+// COREVIDEO_ENABLE_DEV_ADAPTERS=ON and COREVIDEO_WITH_ZOOM=ON. It owns clean
+// participant audio/video subscription, metadata, active-speaker events, and
+// meeting lifecycle behind IZoomCaptureSource.
 
 // REQUIRES DEV MACHINE: Blackmagic DeckLink adapter exposes SDI capture/output behind
 // ICaptureDevice/IEncoderSink once DeckLink SDK headers and hardware are installed.

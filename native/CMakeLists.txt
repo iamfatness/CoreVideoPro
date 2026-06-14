@@ -4,6 +4,8 @@ project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
 option(COREVIDEO_STUB "Build portable stub media-core modules" ON)
 option(COREVIDEO_ENABLE_DEV_ADAPTERS "Build SDK/GPU/hardware adapters that require a dev machine" OFF)
+option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Windows SDK root." OFF)
+set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,11 +26,46 @@ target_include_directories(corevideo_native PUBLIC src)
 target_compile_definitions(corevideo_native
   PUBLIC
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
+    COREVIDEO_WITH_ZOOM=$<BOOL:${COREVIDEO_WITH_ZOOM}>
 )
 
 if(COREVIDEO_ENABLE_DEV_ADAPTERS)
   target_sources(corevideo_native PRIVATE src/modules/PlatformAdapters.cpp)
   target_compile_definitions(corevideo_native PUBLIC COREVIDEO_ENABLE_DEV_ADAPTERS=1)
+endif()
+
+if(COREVIDEO_WITH_ZOOM)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_ZOOM requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT WIN32)
+    message(FATAL_ERROR "COREVIDEO_WITH_ZOOM currently supports the Windows Meeting SDK adapter only.")
+  endif()
+  if(NOT COREVIDEO_ZOOM_SDK_ROOT)
+    message(FATAL_ERROR "COREVIDEO_WITH_ZOOM requires -DCOREVIDEO_ZOOM_SDK_ROOT=<zoom-sdk-windows-*/x64>.")
+  endif()
+
+  set(COREVIDEO_ZOOM_SDK_INCLUDE_DIR "${COREVIDEO_ZOOM_SDK_ROOT}/h")
+  set(COREVIDEO_ZOOM_SDK_LIBRARY "${COREVIDEO_ZOOM_SDK_ROOT}/lib/sdk.lib")
+  set(COREVIDEO_ZOOM_SDK_RUNTIME "${COREVIDEO_ZOOM_SDK_ROOT}/bin/sdk.dll")
+
+  foreach(required_path
+      "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}/zoom_sdk.h"
+      "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}/meeting_service_interface.h"
+      "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}/rawdata/zoom_rawdata_api.h"
+      "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}/rawdata/rawdata_renderer_interface.h"
+      "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}/rawdata/rawdata_audio_helper_interface.h"
+      "${COREVIDEO_ZOOM_SDK_LIBRARY}"
+      "${COREVIDEO_ZOOM_SDK_RUNTIME}")
+    if(NOT EXISTS "${required_path}")
+      message(FATAL_ERROR "COREVIDEO_WITH_ZOOM missing required Zoom SDK file: ${required_path}")
+    endif()
+  endforeach()
+
+  target_sources(corevideo_native PRIVATE src/modules/ZoomMeetingSdkAdapter.cpp)
+  target_include_directories(corevideo_native PRIVATE "${COREVIDEO_ZOOM_SDK_INCLUDE_DIR}")
+  target_link_libraries(corevideo_native PRIVATE "${COREVIDEO_ZOOM_SDK_LIBRARY}")
+  target_compile_definitions(corevideo_native PUBLIC COREVIDEO_ZOOM_SDK_ROOT="${COREVIDEO_ZOOM_SDK_ROOT}")
 endif()
 
 add_executable(corevideo-native src/main.cpp)
