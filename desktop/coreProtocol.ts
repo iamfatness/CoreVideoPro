@@ -7,11 +7,15 @@
  * the IPC router translates bridge commands into these core requests.
  */
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
+import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 
 export type CoreRequest =
   | { id: string; type: "handshake" }
   | { id: string; type: "ping" }
   | { id: string; type: "media-core-sync"; commands: NativeMediaCoreCommand[]; elapsedMs: number }
+  /** Zoom media spine sync: forward the typed payload to the core. Track B mirrors this. */
+  | { id: string; type: "zoom-media-spine-sync"; spinePayload: ZoomMediaSpineSyncPayload; elapsedMs: number }
   /** Test-only hook: makes the stub exit non-zero to exercise crash isolation. */
   | { id: string; type: "__crash" };
 
@@ -19,7 +23,8 @@ export type CoreResponse =
   | { id: string; ok: true; type: "handshake"; profile: NativeMediaCoreProfile }
   | { id: string; ok: true; type: "ping" }
   | { id: string; ok: true; type: "media-core-sync"; snapshot: NativeMediaCoreStateSnapshot }
-  | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed"; message: string } };
+  | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
+  | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-spine-failed"; message: string } };
 
 /** Parse a single stdio line into a CoreResponse, or null when unparseable. */
 export function parseCoreResponse(line: string): CoreResponse | null {

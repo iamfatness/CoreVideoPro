@@ -13,6 +13,8 @@ import type {
   NativeMediaCoreProfile,
   NativeMediaCoreStateSnapshot
 } from "./nativeMediaCoreProtocol";
+import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
+import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 
 export type NativeZoomCommand =
   | {
@@ -136,6 +138,20 @@ export type NativeAudioCommand =
       };
     };
 
+/**
+ * Zoom media spine sync carried over the unified bridge. Forwards the typed
+ * `ZoomMediaSpineSyncPayload` to the supervised media-core child process and
+ * returns a `ZoomMediaSpineNativeSnapshot`. Track B mirrors this command shape.
+ */
+export type NativeZoomMediaSpineBridgeCommand = {
+  id: string;
+  type: "zoom-media-spine-sync";
+  payload: {
+    spinePayload: ZoomMediaSpineSyncPayload;
+    elapsedMs: number;
+  };
+};
+
 /** Caption track commands. Stub-backed in the desktop IPC router for now. */
 export type NativeCaptionCommand =
   | {
@@ -164,6 +180,7 @@ export type NativeBridgeCommand =
   | NativeOutputCommand
   | NativeCaptureDeviceCommand
   | NativeMediaCoreBridgeCommand
+  | NativeZoomMediaSpineBridgeCommand
   | NativeAudioCommand
   | NativeCaptionCommand;
 
@@ -250,6 +267,21 @@ export type NativeMediaCoreBridgeResponse =
       };
     };
 
+export type NativeZoomMediaSpineResponse =
+  | {
+      id: string;
+      ok: true;
+      spineSnapshot: ZoomMediaSpineNativeSnapshot;
+    }
+  | {
+      id: string;
+      ok: false;
+      error: {
+        code: "native-unavailable" | "zoom-spine-failed" | "media-core-unreachable" | "protocol-error";
+        message: string;
+      };
+    };
+
 export type NativeAudioBusState = {
   busId: string;
   label: string;
@@ -305,6 +337,7 @@ export type NativeBridgeResponse =
   | NativeOutputResponse
   | NativeCaptureDeviceResponse
   | NativeMediaCoreBridgeResponse
+  | NativeZoomMediaSpineResponse
   | NativeAudioResponse
   | NativeCaptionResponse;
 
