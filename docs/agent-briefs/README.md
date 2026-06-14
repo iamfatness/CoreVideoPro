@@ -12,6 +12,9 @@ context and architecture seam, then dispatch each agent with its brief.
 > (`native/zoom-engine/`) is the active capture path; Codex's
 > `ZoomMeetingSdkAdapter` is parked. See
 > [`06-decision-zoom-capture-path.md`](06-decision-zoom-capture-path.md).
+>
+> **Sprint 1 goal (active):** self-driving "join Zoom & see live feeds" objective
+> for Codex — [`07-sprint-1-goal.md`](07-sprint-1-goal.md).
 
 - `00-native-build-plan.md` — the overall work plan, environment constraints,
   track split, coordination rules, and integration gate.
