@@ -33,7 +33,9 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
     case ZoomEngineEventKind::AuthFail:
     case ZoomEngineEventKind::Error:
       meetingState_ = "error";
-      warnings_.emplace_back(event.message.empty() ? "Zoom engine reported an error." : event.message);
+      warnings_.emplace_back(!event.message.empty() ? event.message
+                             : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
+                                                    : "Zoom engine reported an error.");
       break;
     case ZoomEngineEventKind::Participants:
       participants_.clear();

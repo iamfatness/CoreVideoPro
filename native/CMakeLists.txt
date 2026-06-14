@@ -183,6 +183,12 @@ if(COREVIDEO_BUILD_ZOOM_ENGINE)
     file(GLOB ZOOM_SDK_LIBRARY "${ZOOM_SDK_DIR}/lib/*.lib")
     target_link_libraries(corevideo-zoom-engine PRIVATE
       ws2_32 crypt32 winhttp shlwapi ${ZOOM_SDK_LIBRARY})
+    if(EXISTS "${ZOOM_SDK_DIR}/bin")
+      add_custom_command(TARGET corevideo-zoom-engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${ZOOM_SDK_DIR}/bin"
+          "$<TARGET_FILE_DIR:corevideo-zoom-engine>")
+    endif()
   elseif(APPLE)
     target_link_libraries(corevideo-zoom-engine PRIVATE
       "-F${ZOOM_SDK_DIR}/lib" "-framework ZoomSDK"

@@ -6,6 +6,7 @@
 #include "engine-ipc.h"
 
 #include <chrono>
+#include <filesystem>
 #include <thread>
 #include <utility>
 
@@ -91,6 +92,7 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
   startupInfo.cb = sizeof(startupInfo);
   PROCESS_INFORMATION processInfo{};
   std::string commandLine = "\"" + options.executablePath + "\"";
+  const std::string workingDirectory = std::filesystem::path(options.executablePath).parent_path().string();
   const BOOL created = CreateProcessA(
       options.executablePath.c_str(),
       commandLine.data(),
@@ -99,7 +101,7 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
       FALSE,
       CREATE_NO_WINDOW,
       nullptr,
-      nullptr,
+      workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
       &startupInfo,
       &processInfo);
   if (!created) {
