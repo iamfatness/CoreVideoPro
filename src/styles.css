@@ -3118,3 +3118,39 @@ meter {
 
 .loudness-panel.level-clipping { border-color: #7c1f1f; }
 .loudness-panel.level-too-loud { border-color: #7c5c00; }
+
+/* ISO recording plan panel */
+.iso-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #0f1a14;
+  border-radius: 6px;
+  border: 1px solid #1e3a28;
+  margin-top: 6px;
+}
+
+.iso-plan-summary {
+  font-size: 11px;
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.iso-track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.iso-track {
+  font-size: 10px;
+  font-family: monospace;
+  color: #8aa89a;
+  padding: 1px 4px;
+  background: #152018;
+  border-radius: 3px;
+}
+
+.iso-track-program-mix { color: #60a5fa; }
+.iso-track-screen-share { color: #a78bfa; }

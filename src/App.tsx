@@ -61,6 +61,7 @@ import { diskSpaceSummary, evaluateDiskSpace } from "./engine/diskSpace";
 import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./engine/ndiOutput";
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
+import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1384,6 +1385,39 @@ export function App({ engines, runtime }: AppProps) {
                   </label>
                 ))}
               </div>
+              {(() => {
+                const isoParticipants = production.participants
+                  .filter((p) => production.recordingSettings.isoParticipantIds.includes(p.id))
+                  .map((p) => ({ id: p.id, name: p.name }));
+                const isoPlan = planIsoRecording(isoParticipants, {
+                  includeProgramMix: true,
+                  sessionName: production.recordingSettings.filenamePrefix || "session",
+                });
+                const diskErrors = validateIsoAgainstDisk(
+                  isoPlan,
+                  production.output.availableDiskGb,
+                  60
+                );
+                return (
+                  <div className="iso-plan" aria-label="ISO recording plan">
+                    <span className="iso-plan-summary">{summarizeIsoPlan(isoPlan)}</span>
+                    {isoPlan.valid && (
+                      <div className="iso-track-list">
+                        {isoPlan.tracks.map((track) => (
+                          <span className={`iso-track iso-track-${track.source}`} key={track.trackIndex}>
+                            {isoOutputPath(isoPlan.outputFolder, track.label, track.trackIndex)
+                              .split("/")
+                              .pop()}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {[...isoPlan.warnings, ...diskErrors].map((w) => (
+                      <p className="multitrack-warning" role="status" key={w}>{w}</p>
+                    ))}
+                  </div>
+                );
+              })()}
               <div className="multitrack-plan" aria-label="Multitrack audio plan">
                 <span className="multitrack-summary">{multitrackPlan.summary}</span>
                 <div className="multitrack-tracks">
