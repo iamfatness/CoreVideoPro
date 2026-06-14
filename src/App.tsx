@@ -41,6 +41,7 @@ import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } fr
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
+import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { summarizeArming } from "./engine/outputArming";
 import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
@@ -189,6 +190,10 @@ export function App({ engines, runtime }: AppProps) {
     [selectedParticipant]
   );
   const captureFleet = useMemo(() => summarizeCaptureFleet(production.captureDevices), [production.captureDevices]);
+  const multitrackPlan = useMemo(
+    () => planMultitrackAudio(production.participants, production.recordingSettings.isoParticipantIds),
+    [production.participants, production.recordingSettings.isoParticipantIds]
+  );
   const breakoutRooms = useMemo(() => getBreakoutRooms(production.participants), [production.participants]);
   const visibleParticipants = useMemo(
     () =>
@@ -1288,6 +1293,19 @@ export function App({ engines, runtime }: AppProps) {
                     <strong>{participant.name}</strong>
                     <em>{participant.role}</em>
                   </label>
+                ))}
+              </div>
+              <div className="multitrack-plan" aria-label="Multitrack audio plan">
+                <span className="multitrack-summary">{multitrackPlan.summary}</span>
+                <div className="multitrack-tracks">
+                  {multitrackPlan.tracks.map((track) => (
+                    <span className={`multitrack-track track-${track.kind} ${track.muted ? "muted" : ""}`} key={track.id}>
+                      {track.label} - {track.channels === 2 ? "stereo" : "mono"}
+                    </span>
+                  ))}
+                </div>
+                {multitrackPlan.warnings.map((warning) => (
+                  <p className="multitrack-warning" role="status" key={warning}>{warning}</p>
                 ))}
               </div>
             </div>
