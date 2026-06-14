@@ -64,6 +64,7 @@ import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } fr
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
 import { decideAutoSwitch, recommendScene, summarizeSceneIntelligence, type SceneLayout } from "./engine/sceneIntelligence";
 import { computeCaptionQuality, decideCaptionVisibility, detectDeadAir, summarizeCaptionQuality } from "./engine/captionQuality";
+import { explainSpotlight, selectSpotlight, spotlightSummary, type SpotlightCandidate } from "./engine/participantSpotlight";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -1993,6 +1994,42 @@ export function App({ engines, runtime }: AppProps) {
                         </div>
                       );
                     })}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Participant spotlight">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Participant spotlight
+            </div>
+            {(() => {
+              const roleWeights: Record<string, number> = {
+                Host: 4, Presenter: 3, Guest: 2, Panelist: 1,
+              };
+              const candidates: SpotlightCandidate[] = visibleParticipants.map((p) => ({
+                id: p.id,
+                name: p.name,
+                isActiveSpeaker: p.isActiveSpeaker,
+                hasVideo: p.health !== "video-off",
+                roleWeight: roleWeights[p.role] ?? 1,
+                secondsSinceLastSpoke: p.isActiveSpeaker ? 0 : 45,
+                totalSpeakingSeconds: p.audioLevel * 2,
+              }));
+              const decision = selectSpotlight(candidates, { pickSecondary: true });
+              return (
+                <div className="spotlight-panel" aria-label="Spotlight decision">
+                  <div className="spotlight-summary">{spotlightSummary(decision)}</div>
+                  <div className="spotlight-list">
+                    {decision.scores.filter((s) => s.score > 0).map((s) => (
+                      <div key={s.participantId} className={`spotlight-row ${s.participantId === decision.primaryId ? "primary" : s.participantId === decision.secondaryId ? "secondary" : ""}`}>
+                        <span className="spotlight-name">{s.name}</span>
+                        <span className="spotlight-score">{s.score} pts</span>
+                        <span className="spotlight-reason">{explainSpotlight(s)}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               );

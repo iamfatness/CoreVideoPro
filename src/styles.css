@@ -3200,3 +3200,43 @@ meter {
 .caption-quality-panel.tier-good .caption-quality-summary { color: #86efac; }
 .caption-quality-panel.tier-degraded .caption-quality-summary { color: #fbbf24; }
 .caption-quality-panel.tier-poor .caption-quality-summary { color: #f87171; }
+
+/* Participant spotlight panel */
+.spotlight-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spotlight-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a78bfa;
+  padding: 5px 8px;
+  background: #120f1f;
+  border-radius: 5px;
+  border: 1px solid #2d1f5e;
+}
+
+.spotlight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.spotlight-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: #0e0e18;
+}
+
+.spotlight-row.primary { border-left: 2px solid #a78bfa; }
+.spotlight-row.secondary { border-left: 2px solid #6b5a9a; }
+
+.spotlight-name { flex: 1; font-weight: 600; color: #c4b5fd; }
+.spotlight-score { color: #7c6fcd; font-size: 10px; }
+.spotlight-reason { color: #5a5070; font-size: 10px; font-style: italic; }

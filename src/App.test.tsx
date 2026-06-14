@@ -1166,6 +1166,30 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("participant spotlight", () => {
+  it("shows the spotlight panel with a summary in the Sources tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Spotlight decision");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByText(/Auto:|Pinned:/i)).toBeInTheDocument();
+  });
+
+  it("lists eligible participants with scores", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Sources");
+
+    const panel = screen.getByLabelText("Spotlight decision");
+    const rows = within(panel).getAllByText(/pts/i);
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("caption quality", () => {
   it("shows the caption quality panel in the Overlays tab", async () => {
     const user = userEvent.setup();
