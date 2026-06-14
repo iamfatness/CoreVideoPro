@@ -810,7 +810,7 @@ export function App({ engines, runtime }: AppProps) {
   }
 
   async function exportSupportBundle() {
-    const bundle = await engines.diagnostics.createSupportBundle(production);
+    const bundle = await engines.diagnostics.createSupportBundle(production, mediaCoreSnapshot);
     setSupportBundle(bundle);
     setSupportBundleStatus(`${bundle.id} exported`);
   }

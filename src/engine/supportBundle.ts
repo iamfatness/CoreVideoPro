@@ -4,18 +4,20 @@ import type {
   Participant,
   ProductionState,
   SceneTemplate,
-  SupportBundle
+  SupportBundle,
+  SupportBundleMediaCore
 } from "../domain/production";
+import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 const MOCK_FREE_DISK_BYTES = 86 * 1024 * 1024 * 1024;
 
 export class InMemoryDiagnosticsEngine {
-  async createSupportBundle(state: ProductionState): Promise<SupportBundle> {
-    return createSupportBundle(state);
+  async createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle> {
+    return createSupportBundle(state, mediaCore);
   }
 }
 
-export function createSupportBundle(state: ProductionState): SupportBundle {
+export function createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): SupportBundle {
   const createdAt = new Date().toISOString();
   const duplicateAssignments = countDuplicateAssignments(state.scenes);
   const unavailableScreenShare = countUnavailableScreenShare(state);
@@ -78,7 +80,60 @@ export function createSupportBundle(state: ProductionState): SupportBundle {
       sdkSubscribeErrors: 0
     },
     isoCapacity,
+    mediaCore: mediaCore ? summarizeMediaCore(mediaCore) : undefined,
     warnings
+  };
+}
+
+function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot): SupportBundleMediaCore {
+  return {
+    sceneId: snapshot.sceneId,
+    renderPlanId: snapshot.renderPlan.renderPlanId,
+    source: {
+      adapterId: snapshot.sourceSnapshot.adapterId,
+      kind: snapshot.sourceSnapshot.kind,
+      status: snapshot.sourceSnapshot.status,
+      subscribedSourceCount: snapshot.sourceSnapshot.subscribedSourceCount,
+      droppedFrameCount: snapshot.sourceSnapshot.droppedFrameCount,
+      lowResolutionFrameCount: snapshot.sourceSnapshot.lowResolutionFrameCount
+    },
+    compositor: {
+      status: snapshot.compositor.status,
+      programFrameCount: snapshot.compositor.programFrameCount,
+      droppedFrameCount: snapshot.compositor.droppedFrameCount,
+      degradedFrameCount: snapshot.compositor.degradedFrameCount
+    },
+    transport: {
+      status: snapshot.programTransport.status,
+      frameNumber: snapshot.programTransport.frameNumber,
+      latencyMs: snapshot.programTransport.latencyMs
+    },
+    encoder: {
+      status: snapshot.encoderSession.status,
+      lifecycle: snapshot.encoderSession.lifecycle.status,
+      targetCount: snapshot.encoderSession.targets.length
+    },
+    senders: {
+      status: snapshot.outputSenderSession.status,
+      activeSenderCount: snapshot.outputSenderSession.activeSenderCount,
+      destinations: snapshot.outputSenderSession.senders.map((sender) => ({
+        destination: sender.destination,
+        status: sender.status,
+        framesSent: sender.framesSent,
+        retryCount: sender.retryCount,
+        bitrateMbps: sender.bitrateMbps
+      }))
+    },
+    recording: snapshot.recording
+      ? {
+          status: snapshot.recording.status,
+          writerStatus: snapshot.recording.writerStatus,
+          totalFramesWritten: snapshot.recording.totalFramesWritten,
+          totalDroppedFrames: snapshot.recording.totalDroppedFrames,
+          estimatedDiskRateMBps: snapshot.recording.estimatedDiskRateMBps
+        }
+      : undefined,
+    warnings: snapshot.warnings
   };
 }
 

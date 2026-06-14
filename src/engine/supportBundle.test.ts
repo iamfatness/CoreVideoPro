@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialProduction } from "../domain/production";
+import { InMemoryMediaCoreSyncEngine } from "./mediaCoreSync";
 import { createSupportBundle } from "./supportBundle";
 
 describe("createSupportBundle", () => {
@@ -64,5 +65,55 @@ describe("createSupportBundle", () => {
     expect(bundle.actionCounts.unavailableScreenShare).toBe(1);
     expect(bundle.warnings).toContain("1 duplicate scene assignment detected.");
     expect(bundle.warnings).toContain("Program scene expects screen share, but no participant is sharing.");
+  });
+
+  it("includes sanitized media-core runtime diagnostics when provided", async () => {
+    const mediaCore = await new InMemoryMediaCoreSyncEngine().syncProduction(
+      {
+        ...initialProduction,
+        recording: true,
+        streaming: true
+      },
+      5000
+    );
+    const bundle = createSupportBundle(initialProduction, mediaCore);
+
+    expect(bundle.mediaCore).toMatchObject({
+      sceneId: "speaker-slides",
+      renderPlanId: expect.stringMatching(/^rp-/),
+      source: {
+        adapterId: "renderer-test-pattern",
+        kind: "test-pattern",
+        status: "subscribed",
+        subscribedSourceCount: 2
+      },
+      compositor: {
+        status: "live",
+        programFrameCount: 1
+      },
+      transport: {
+        status: "publishing",
+        frameNumber: 1,
+        latencyMs: 0
+      },
+      encoder: {
+        status: "encoding",
+        lifecycle: "encoding",
+        targetCount: 4
+      },
+      senders: {
+        status: "live",
+        activeSenderCount: 1,
+        destinations: [{ destination: "rtmp", status: "live", framesSent: 1, retryCount: 0, bitrateMbps: 8.2 }]
+      },
+      recording: {
+        status: "recording",
+        writerStatus: "writing",
+        totalFramesWritten: 2,
+        estimatedDiskRateMBps: 7.49
+      }
+    });
+    expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
+    expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
   });
 });

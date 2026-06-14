@@ -38,7 +38,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Output profile controls for 1080p/4K and 30/60fps with bitrate and encoder-health simulation.
 - Multi-destination output model for RTMP, NDI, and SRT targets with editable endpoint/key settings, armed/live state, latency, bitrate, and per-destination health.
 - Output preflight checks that block streaming when armed destinations are missing required endpoints, stream keys, or protocol-compatible URLs.
-- Diagnostics support bundle engine with redacted output secrets, human triage lines, output health, participant feed guidance, and ISO runway estimates.
+- Diagnostics support bundle engine with redacted output secrets, human triage lines, output health, participant feed guidance, ISO runway estimates, and sanitized native media-core runtime summaries.
 - Smart audio mix engine for per-participant gain, mute state, noise suppression, limiter status, master level, and loudness summary.
 - Manual per-participant audio gain trim layered on top of smart leveling for fast producer correction.
 - Adaptive caption and overlay engine with speaker attribution, confidence, latency, lower-third placement, and collision warnings.

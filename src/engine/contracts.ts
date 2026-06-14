@@ -103,7 +103,7 @@ export interface PresetEngine {
 }
 
 export interface DiagnosticsEngine {
-  createSupportBundle(state: ProductionState): Promise<SupportBundle>;
+  createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle>;
 }
 
 export interface CaptureDeviceEngine {

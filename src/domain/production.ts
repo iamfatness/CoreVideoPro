@@ -365,6 +365,54 @@ export type PresetSummary = {
   enabledGraphicCount: number;
 };
 
+export type SupportBundleMediaCore = {
+  sceneId?: string;
+  renderPlanId?: string;
+  source: {
+    adapterId: string;
+    kind: "zoom-sdk" | "local-camera" | "test-pattern";
+    status: "idle" | "subscribed" | "degraded" | "failed";
+    subscribedSourceCount: number;
+    droppedFrameCount: number;
+    lowResolutionFrameCount: number;
+  };
+  compositor: {
+    status: "idle" | "live" | "degraded" | "failed";
+    programFrameCount: number;
+    droppedFrameCount: number;
+    degradedFrameCount: number;
+  };
+  transport: {
+    status: "idle" | "publishing" | "degraded";
+    frameNumber?: number;
+    latencyMs: number;
+  };
+  encoder: {
+    status: "idle" | "encoding" | "warning" | "failed";
+    lifecycle: "idle" | "prepared" | "encoding" | "stopped" | "failed";
+    targetCount: number;
+  };
+  senders: {
+    status: "idle" | "live" | "warning" | "failed";
+    activeSenderCount: number;
+    destinations: Array<{
+      destination: "rtmp" | "ndi" | "srt" | "webrtc";
+      status: "idle" | "starting" | "live" | "warning" | "stopped" | "failed";
+      framesSent: number;
+      retryCount: number;
+      bitrateMbps: number;
+    }>;
+  };
+  recording?: {
+    status: "recording" | "warning" | "stopped" | "failed";
+    writerStatus: "writing" | "warning" | "stopped" | "failed";
+    totalFramesWritten: number;
+    totalDroppedFrames: number;
+    estimatedDiskRateMBps: number;
+  };
+  warnings: string[];
+};
+
 export type SupportBundle = {
   id: string;
   createdAt: string;
@@ -425,6 +473,7 @@ export type SupportBundle = {
     recordingRunwayMinutes: number;
     warning?: string;
   };
+  mediaCore?: SupportBundleMediaCore;
   warnings: string[];
 };
 
