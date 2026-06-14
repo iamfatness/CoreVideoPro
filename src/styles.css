@@ -3573,3 +3573,26 @@ meter {
   border-radius: 3px;
   text-align: center;
 }
+
+/* Network diagnostics */
+.network-diag-panel { display: flex; flex-direction: column; gap: 8px; }
+.network-diag-summary { font-size: 11px; color: #8aa0c0; margin: 0; }
+
+.network-diag-panel.quality-excellent .network-diag-summary { color: #4ade80; }
+.network-diag-panel.quality-good .network-diag-summary { color: #60a5fa; }
+.network-diag-panel.quality-fair .network-diag-summary { color: #fbbf24; }
+.network-diag-panel.quality-poor .network-diag-summary { color: #f87171; }
+.network-diag-panel.quality-critical .network-diag-summary { color: #dc2626; }
+
+.network-diag-issue { font-size: 11px; color: #f87171; margin: 0; }
+
+.network-diag-suggestions { display: flex; flex-direction: column; gap: 4px; }
+.network-diag-suggestion {
+  font-size: 10px;
+  color: #8aa0c0;
+  margin: 0;
+  padding: 3px 6px;
+  background: #0d1520;
+  border-left: 2px solid #1a4a7a;
+  border-radius: 0 3px 3px 0;
+}

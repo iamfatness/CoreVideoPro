@@ -74,6 +74,7 @@ import { addMarker, formatTimecode, rippleTrim, summarizeTrim, trimClip, type Cl
 import { addChapter, activeChapterAt, exportChapters, removeChapter, summarizeChapters, validateChapters, type ChapterList } from "./engine/chapterMarker";
 import { buildSpeakerReport, createSpeakerTimer, formatSec, setActiveSpeaker, snapshotTotals, speakerSharePct } from "./engine/speakerTimer";
 import { buildWatermarkSpec, classificationColor, confidentialityLevels, createWatermark, updateWatermark, validateWatermark, watermarkPositions, type WatermarkConfig } from "./engine/outputWatermark";
+import { diagnoseNetwork, trimSamples, type NetworkSample } from "./engine/networkDiagnostics";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
   getBreakoutRooms,
@@ -219,6 +220,13 @@ export function App({ engines, runtime }: AppProps) {
   const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
   const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
+  const [networkSamples] = useState<NetworkSample[]>([
+    { rttMs: 45, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 5000 },
+    { rttMs: 52, packetLossPct: 0.1, jitterMs: 4, timestampMs: Date.now() - 4000 },
+    { rttMs: 38, packetLossPct: 0, jitterMs: 2, timestampMs: Date.now() - 3000 },
+    { rttMs: 61, packetLossPct: 0.2, jitterMs: 6, timestampMs: Date.now() - 2000 },
+    { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
+  ]);
   const selectedParticipant = useMemo(
     () => production.participants.find((participant) => participant.id === selectedParticipantId),
     [production.participants, selectedParticipantId]
@@ -1822,6 +1830,40 @@ export function App({ engines, runtime }: AppProps) {
                       </div>
                     ))}
                   </div>
+                </div>
+              );
+            })()}
+          </section>
+
+          <section className="panel" aria-label="Network diagnostics">
+            <div className="section-title">
+              <Wifi size={15} />
+              Network diagnostics
+            </div>
+            {(() => {
+              const samples = trimSamples(networkSamples, 60);
+              const report = diagnoseNetwork(samples);
+              return (
+                <div className={`network-diag-panel quality-${report.quality}`} aria-label="Network diagnostics panel">
+                  <p className="network-diag-summary">{report.summary}</p>
+                  <div className="health-grid">
+                    <ControlReadout label="Quality" value={report.quality} />
+                    <ControlReadout label="Score" value={`${report.qualityScore}/100`} />
+                    <ControlReadout label="Avg RTT" value={`${report.stats.avgRttMs}ms`} />
+                    <ControlReadout label="Max RTT" value={`${report.stats.maxRttMs}ms`} />
+                    <ControlReadout label="Jitter" value={`${report.stats.avgJitterMs}ms`} />
+                    <ControlReadout label="Loss" value={`${report.stats.avgPacketLossPct}%`} />
+                  </div>
+                  {report.issues.map((issue) => (
+                    <p key={issue} className="network-diag-issue" role="status">{issue}</p>
+                  ))}
+                  {report.suggestions.length > 0 && (
+                    <div className="network-diag-suggestions">
+                      {report.suggestions.map((s) => (
+                        <p key={s} className="network-diag-suggestion">{s}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })()}
