@@ -539,6 +539,25 @@ describe("App production controls", () => {
     expect(within(program).getByText("Chroma key")).toBeInTheDocument();
   });
 
+  it("shows face-aware auto-crop framing and warns on low-quality feeds", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+    const panel = await screen.findByLabelText("Face-aware auto-crop");
+    expect(within(panel).getByText("Auto framing")).toBeInTheDocument();
+    expect(within(panel).getByText("good")).toBeInTheDocument();
+    expect(within(panel).queryByRole("status")).not.toBeInTheDocument();
+
+    await goToTab(user, "Audio");
+    await user.click(screen.getByRole("button", { name: /Priya Shah/i }));
+    await goToTab(user, "Media");
+
+    const lowQualityPanel = screen.getByLabelText("Face-aware auto-crop");
+    expect(within(lowQualityPanel).getByText("low")).toBeInTheDocument();
+    expect(within(lowQualityPanel).getByRole("status")).toHaveTextContent(/Low-quality feed for Priya Shah/i);
+  });
+
   it("filters Zoom participants by breakout room", async () => {
     const user = userEvent.setup();
     renderApp();

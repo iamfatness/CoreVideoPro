@@ -1636,6 +1636,22 @@ meter {
   align-items: center;
 }
 
+.auto-crop-panel {
+  margin-bottom: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(189, 207, 196, 0.09);
+}
+
+.auto-crop-warning {
+  margin: 10px 0 0;
+  border: 1px solid rgba(240, 168, 92, 0.36);
+  border-radius: 8px;
+  background: rgba(28, 18, 8, 0.6);
+  color: #ffd39b;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
 .caption-uppercase-field input[type="checkbox"] {
   width: 18px;
   height: 18px;
