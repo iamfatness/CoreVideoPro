@@ -38,6 +38,17 @@ struct ZoomMeetingSdkSubscriptionState {
   std::string warning;
 };
 
+struct ZoomMeetingSdkParticipant {
+  std::string sdkUserId;
+  std::string displayName;
+  std::string role = "attendee";
+  bool videoOn = false;
+  bool muted = true;
+  bool talking = false;
+  bool hasCamera = false;
+  int audioLevel = 0;
+};
+
 struct ZoomMeetingSdkRuntimeConfig {
   std::string sdkRoot;
   std::string sdkVersion = "unknown";
@@ -58,6 +69,7 @@ class IZoomMeetingSdkCaptureSource : public IZoomCaptureSource {
   virtual void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) = 0;
   virtual std::string activeSpeakerId() const = 0;
   virtual std::string meetingState() const = 0;
+  virtual std::vector<ZoomMeetingSdkParticipant> participants() const = 0;
   virtual std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates() const = 0;
   virtual std::vector<std::string> warnings() const = 0;
 };

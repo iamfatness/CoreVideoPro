@@ -13,6 +13,8 @@
 #include <rawdata/rawdata_audio_helper_interface.h>
 #include <rawdata/rawdata_renderer_interface.h>
 #include <rawdata/zoom_rawdata_api.h>
+#include <meeting_service_components/meeting_audio_interface.h>
+#include <meeting_service_components/meeting_participants_ctrl_interface.h>
 #include <meeting_service_components/meeting_video_interface.h>
 #include <meeting_service_interface.h>
 #include <zoom_sdk.h>
@@ -31,6 +33,19 @@ namespace {
 
 std::wstring widenAscii(const std::string& value) {
   return std::wstring(value.begin(), value.end());
+}
+
+std::string narrowZchar(const zchar_t* value) {
+  if (!value) {
+    return {};
+  }
+
+  std::string result;
+  for (auto cursor = value; *cursor; ++cursor) {
+    const auto code = static_cast<unsigned int>(*cursor);
+    result.push_back(code <= 0x7F ? static_cast<char>(code) : '?');
+  }
+  return result;
 }
 
 std::optional<UINT64> parseMeetingNumber(const std::string& value) {
@@ -93,6 +108,21 @@ std::string meetingStatusName(ZOOMSDK::MeetingStatus status) {
     case ZOOMSDK::MEETING_STATUS_FAILED: return "error";
     default: return "status-" + std::to_string(static_cast<int>(status));
   }
+}
+
+std::string userRoleName(ZOOMSDK::UserRole role) {
+  switch (role) {
+    case ZOOMSDK::USERROLE_HOST: return "host";
+    case ZOOMSDK::USERROLE_COHOST: return "cohost";
+    case ZOOMSDK::USERROLE_PANELIST: return "panelist";
+    case ZOOMSDK::USERROLE_ATTENDEE: return "attendee";
+    case ZOOMSDK::USERROLE_BREAKOUTROOM_MODERATOR: return "host";
+    default: return "attendee";
+  }
+}
+
+int clampAudioLevel(int level) {
+  return std::max(0, std::min(100, level));
 }
 
 class MeetingServiceEventSink final : public ZOOMSDK::IMeetingServiceEvent {
@@ -332,6 +362,44 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
     return meetingState_;
   }
+
+  std::vector<ZoomMeetingSdkParticipant> participants() const override {
+    if (!participantsController_) {
+      return {};
+    }
+
+    auto* participantIds = participantsController_->GetParticipantsList();
+    if (!participantIds) {
+      return {};
+    }
+
+    std::vector<ZoomMeetingSdkParticipant> roster;
+    const int count = std::max(0, participantIds->GetCount());
+    roster.reserve(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+      const auto userId = participantIds->GetItem(index);
+      auto* user = participantsController_->GetUserByUserID(userId);
+      if (!user) {
+        continue;
+      }
+
+      ZoomMeetingSdkParticipant participant;
+      participant.sdkUserId = std::to_string(user->GetUserID());
+      participant.displayName = narrowZchar(user->GetUserName());
+      if (participant.displayName.empty()) {
+        participant.displayName = "Zoom User " + participant.sdkUserId;
+      }
+      participant.role = userRoleName(user->GetUserRole());
+      participant.videoOn = user->IsVideoOn();
+      participant.muted = user->IsAudioMuted();
+      participant.talking = user->IsTalking();
+      participant.hasCamera = user->HasCamera();
+      participant.audioLevel = clampAudioLevel(user->GetAudioVoiceLevel());
+      roster.push_back(std::move(participant));
+    }
+    return roster;
+  }
+
   std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates() const override {
     auto states = subscriptionStates_;
     for (auto& state : states) {
@@ -417,6 +485,11 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
 
     rawVideoDelegate_ = std::make_unique<RawVideoDelegate>();
     rawAudioDelegate_ = std::make_unique<RawAudioDelegate>();
+    participantsController_ = meetingService_->GetMeetingParticipantsController();
+    if (!participantsController_) {
+      warnings_.push_back("Zoom Meeting SDK participants controller is unavailable; roster will remain empty.");
+    }
+
     videoController_ = meetingService_->GetMeetingVideoController();
     if (videoController_) {
       videoEvent_ = std::make_unique<MeetingVideoEventSink>();
@@ -582,6 +655,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
         (void)videoController_->SetEvent(nullptr);
         videoController_ = nullptr;
       }
+      participantsController_ = nullptr;
       (void)meetingService_->SetEvent(nullptr);
       (void)ZOOMSDK::DestroyMeetingService(meetingService_);
       meetingService_ = nullptr;
@@ -608,6 +682,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::wstring webDomain_;
   std::wstring brandingName_;
   ZOOMSDK::IMeetingService* meetingService_ = nullptr;
+  ZOOMSDK::IMeetingParticipantsController* participantsController_ = nullptr;
   ZOOMSDK::IMeetingVideoController* videoController_ = nullptr;
   ZOOMSDK::IZoomSDKAudioRawDataHelper* audioHelper_ = nullptr;
   std::unique_ptr<MeetingServiceEventSink> meetingEvent_;
