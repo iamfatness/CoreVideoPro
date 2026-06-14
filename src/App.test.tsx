@@ -88,6 +88,28 @@ describe("App production controls", () => {
     expect(screen.getByText(/Priya Shah is low resolution/i)).toBeInTheDocument();
   });
 
+  it("drives production from the Stream Deck control surface", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+    const surface = screen.getByLabelText("Control surface");
+    expect(within(surface).getByText("6 buttons mapped - Stream Deck / Companion ready")).toBeInTheDocument();
+
+    // Set & Forget starts on (seed mode is set-and-forget); the key reflects the flip.
+    const autoKey = () => within(surface).getByRole("button", { name: "Control Set & Forget" });
+    expect(within(autoKey()).getByText("On")).toBeInTheDocument();
+    await user.click(autoKey());
+    expect(within(autoKey()).getByText("Off")).toBeInTheDocument();
+
+    // Record toggles the program to live.
+    const recordKey = () => within(surface).getByRole("button", { name: "Control Record" });
+    expect(within(recordKey()).getByText("Armed")).toBeInTheDocument();
+    await user.click(recordKey());
+    await waitFor(() => expect(within(recordKey()).getByText("Live")).toBeInTheDocument());
+    expect(recordKey().className).toContain("active");
+  });
+
   it("hydrates media frame telemetry into the program preview", async () => {
     const user = userEvent.setup();
     renderApp();
