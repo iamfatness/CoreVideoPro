@@ -84,6 +84,19 @@ struct CaptureDeviceInfo {
   std::string id;
   std::string name;
   std::string kind;
+  std::string vendor;
+  std::vector<std::string> inputIds;
+  std::vector<std::string> inputLabels;
+  std::vector<bool> inputHasEmbeddedAudio;
+  std::string selectedInputId;
+  int width = 1920;
+  int height = 1080;
+  int frameRate = 30;
+  std::string connectionState = "detected";
+  bool signalPresent = false;
+  int64_t droppedFrames = 0;
+  int audioSyncOffsetMs = 0;
+  std::string warning;
 };
 
 class IZoomCaptureSource {
@@ -127,6 +140,9 @@ class ICaptureDevice {
  public:
   virtual ~ICaptureDevice() = default;
   virtual std::vector<CaptureDeviceInfo> enumerate() const = 0;
+  virtual std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) = 0;
+  virtual std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) = 0;
+  virtual std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) = 0;
 };
 
 struct ModuleSet {
@@ -143,5 +159,7 @@ ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
+std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
+std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 
 }  // namespace corevideo::modules

@@ -15,6 +15,10 @@ class MediaCore {
   [[nodiscard]] rpc::Json profile() const;
   [[nodiscard]] rpc::Json sessionState() const;
   [[nodiscard]] rpc::Json health() const;
+  [[nodiscard]] rpc::Json captureDevices() const;
+  [[nodiscard]] rpc::Json selectCaptureInput(const std::string& deviceId, const std::string& inputId);
+  [[nodiscard]] rpc::Json setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs);
+  [[nodiscard]] rpc::Json connectCaptureDevice(const std::string& deviceId);
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) const;
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
@@ -37,6 +41,7 @@ class MediaCore {
   void renderSyntheticTick();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
+  [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
 
   modules::ModuleSet modules_;
