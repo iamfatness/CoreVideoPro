@@ -56,6 +56,24 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_GE(profile.get("capabilities")->asArray().size(), 11);
 }
 
+TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
+#if COREVIDEO_WITH_D3D11
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "test-plan";
+  renderPlan.sceneId = "interview";
+  renderPlan.layers.push_back({"speaker", "participant-video", "zoom:123", "123", 0});
+
+  const auto frame = compositor->render(renderPlan, {{"123", 1280, 720, 16}});
+  EXPECT_EQ(frame.renderer, "d3d11");
+  EXPECT_EQ(frame.renderPlanId, "test-plan");
+  EXPECT_EQ(frame.layerCount, 1);
+#else
+  EXPECT_EQ(corevideo::modules::createD3D11Compositor(), nullptr);
+#endif
+}
+
 TEST(ZoomMeetingSdkAdapter, FactoryIsDisabledInPortableStubBuild) {
 #if COREVIDEO_WITH_ZOOM
   EXPECT_TRUE(true);
