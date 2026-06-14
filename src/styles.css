@@ -3178,3 +3178,25 @@ meter {
   margin: 0;
   font-style: italic;
 }
+
+/* Caption quality panel */
+.caption-quality-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #0d1a1f;
+  border-radius: 6px;
+  border: 1px solid #1a3040;
+}
+
+.caption-quality-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.caption-quality-panel.tier-excellent .caption-quality-summary { color: #4ade80; }
+.caption-quality-panel.tier-good .caption-quality-summary { color: #86efac; }
+.caption-quality-panel.tier-degraded .caption-quality-summary { color: #fbbf24; }
+.caption-quality-panel.tier-poor .caption-quality-summary { color: #f87171; }
