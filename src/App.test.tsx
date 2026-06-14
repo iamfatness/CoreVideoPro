@@ -488,6 +488,24 @@ describe("App production controls", () => {
     expect(within(vcam).getByText("1920x1080 60fps mirrored")).toBeInTheDocument();
   });
 
+  it("adds and removes assets in the media bin", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Media");
+    const bin = screen.getByLabelText("Media bin");
+    expect(within(bin).getByText("3 assets - 1 stinger, 1 lower-third, 1 audio bed")).toBeInTheDocument();
+
+    await user.selectOptions(within(bin).getByLabelText("Media asset type"), "slate");
+    await user.click(within(bin).getByRole("button", { name: /Add asset/i }));
+    expect(within(bin).getByText("Slate 1")).toBeInTheDocument();
+    expect(within(bin).getByText("4 assets - 1 stinger, 1 lower-third, 1 audio bed, 1 slate")).toBeInTheDocument();
+
+    await user.click(within(bin).getByRole("button", { name: "Remove Brand stinger" }));
+    expect(within(bin).queryByText("Brand stinger")).not.toBeInTheDocument();
+    expect(within(bin).getByText("3 assets - 1 lower-third, 1 audio bed, 1 slate")).toBeInTheDocument();
+  });
+
   it("uses editable recording settings when recording starts", async () => {
     const user = userEvent.setup();
     const engines = createMockEngineBundle();

@@ -165,6 +165,15 @@ export type VirtualCameraState = {
   mirrored: boolean;
 };
 
+export type MediaAssetKind = "stinger" | "lower-third" | "audio-bed" | "slate";
+
+export type MediaAsset = {
+  id: string;
+  name: string;
+  kind: MediaAssetKind;
+  durationMs?: number;
+};
+
 export type SourceRoute = {
   id: string;
   mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
@@ -319,6 +328,7 @@ export type ProductionState = {
   brandKit: BrandKit;
   colorGrade: ColorGrade;
   virtualCamera: VirtualCameraState;
+  mediaBin: MediaAsset[];
   videoEffects: ParticipantVideoEffect[];
   captions: string;
   participants: Participant[];
@@ -782,6 +792,11 @@ export const initialProduction: ProductionState = {
     deviceName: "CoreVideo Pro Camera",
     mirrored: false
   },
+  mediaBin: [
+    { id: "stinger-1", name: "Brand stinger", kind: "stinger", durationMs: 900 },
+    { id: "lower-third-1", name: "Host lower-third", kind: "lower-third" },
+    { id: "audio-bed-1", name: "Intro bed", kind: "audio-bed", durationMs: 30000 }
+  ],
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,
     cropMode: "auto",
