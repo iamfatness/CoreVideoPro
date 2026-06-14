@@ -2612,3 +2612,97 @@ meter {
     flex-wrap: wrap;
   }
 }
+
+/* Stream Health Panel */
+.stream-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stream-health-aggregate {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #2e3e38;
+  background: #111a17;
+}
+
+.stream-health-aggregate strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.stream-health-aggregate span {
+  font-size: 12px;
+  color: #7a9e8c;
+}
+
+.stream-health-aggregate.grade-excellent strong { color: #4ade80; }
+.stream-health-aggregate.grade-good strong { color: #a3e635; }
+.stream-health-aggregate.grade-degraded strong { color: #fbbf24; }
+.stream-health-aggregate.grade-critical strong { color: #f87171; }
+
+.stream-health-destinations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stream-health-dest {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-left: 3px solid #2e3e38;
+  background: #0e1812;
+}
+
+.stream-health-dest.grade-excellent { border-left-color: #4ade80; }
+.stream-health-dest.grade-good { border-left-color: #a3e635; }
+.stream-health-dest.grade-degraded { border-left-color: #fbbf24; }
+.stream-health-dest.grade-critical { border-left-color: #f87171; }
+
+.stream-health-dest-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.stream-health-dest-header strong {
+  font-size: 13px;
+  color: #c6d4cc;
+}
+
+.health-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #1a2620;
+}
+
+.health-badge.grade-excellent { color: #4ade80; }
+.health-badge.grade-good { color: #a3e635; }
+.health-badge.grade-degraded { color: #fbbf24; }
+.health-badge.grade-critical { color: #f87171; }
+
+.stream-health-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+  font-size: 11px;
+  color: #7a9e8c;
+}
+
+.stream-health-warnings {
+  margin: 6px 0 0;
+  padding: 0 0 0 14px;
+  font-size: 11px;
+  color: #fbbf24;
+}
+
+.stream-health-warnings li {
+  margin-bottom: 2px;
+}

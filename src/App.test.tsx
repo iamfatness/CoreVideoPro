@@ -926,3 +926,27 @@ describe("App production controls", () => {
     expect(within(headroom).getByText(/only 0% encoder headroom/i)).toBeInTheDocument();
   });
 });
+
+describe("stream health panel", () => {
+  it("shows idle message when no destinations are active", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const panel = screen.getByLabelText("Stream health");
+    expect(within(panel).getByText(/No active destinations/i)).toBeInTheDocument();
+  });
+
+  it("shows per-destination scores and aggregate after stream starts", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(screen.getByRole("button", { name: "Stream" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Streaming" })).toBeInTheDocument());
+
+    await goToTab(user, "Settings");
+    const panel = screen.getByLabelText("Stream health");
+    expect(within(panel).getByText(/Avg score:/i)).toBeInTheDocument();
+    expect(within(panel).getAllByText(/\/100/).length).toBeGreaterThan(0);
+  });
+});
