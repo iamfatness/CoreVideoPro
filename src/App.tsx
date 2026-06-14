@@ -35,6 +35,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { applyBrandKitToGraphics, summarizeBrandKit } from "./engine/brandKit";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
 import { applyShowPreset as applyShowPresetState } from "./engine/presets";
@@ -44,6 +45,8 @@ import {
   initialProduction,
   sortParticipantsForProduction,
   type AutoProductionState,
+  type BrandKit,
+  type BrandKitFont,
   type GraphicOverlay,
   type MediaFrameState,
   type OutputDestination,
@@ -83,6 +86,8 @@ type CommandKey = keyof typeof commandLabels;
 
 const participantRoles: ParticipantRole[] = ["Host", "Presenter", "Panelist", "Guest"];
 const exclusiveParticipantRoles = new Set<ParticipantRole>(["Host", "Presenter"]);
+const brandKitFonts: BrandKitFont[] = ["Inter", "Poppins", "Roboto", "Georgia"];
+const lowerThirdStyles: BrandKit["lowerThirdStyle"][] = ["solid", "minimal", "gradient"];
 
 const tabs = [
   { id: "studio", label: "Studio", icon: Clapperboard },
@@ -564,6 +569,20 @@ export function App({ engines, runtime }: AppProps) {
       graphics: current.graphics.map((graphic) =>
         graphic.id === graphicId ? { ...graphic, enabled: !graphic.enabled } : graphic
       )
+    }));
+  }
+
+  function updateBrandKit(update: Partial<ProductionState["brandKit"]>) {
+    setProduction((current) => ({
+      ...current,
+      brandKit: { ...current.brandKit, ...update }
+    }));
+  }
+
+  function applyBrandKit() {
+    setProduction((current) => ({
+      ...current,
+      graphics: applyBrandKitToGraphics(current.graphics, current.brandKit)
     }));
   }
 
@@ -1436,6 +1455,89 @@ export function App({ engines, runtime }: AppProps) {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="panel" aria-label="Brand kit">
+            <div className="section-title">
+              <Sparkles size={15} />
+              Brand kit
+            </div>
+            <p className="brand-kit-summary">{summarizeBrandKit(production.brandKit)}</p>
+            <div className="brand-kit-form">
+              <label className="brand-kit-field">
+                <span>Kit name</span>
+                <input
+                  aria-label="Brand kit name"
+                  onChange={(event) => updateBrandKit({ name: event.target.value })}
+                  type="text"
+                  value={production.brandKit.name}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Logo text</span>
+                <input
+                  aria-label="Brand logo text"
+                  onChange={(event) => updateBrandKit({ logoText: event.target.value })}
+                  type="text"
+                  value={production.brandKit.logoText}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Brand color</span>
+                <input
+                  aria-label="Brand color"
+                  onChange={(event) => updateBrandKit({ brandColor: event.target.value })}
+                  type="color"
+                  value={production.brandKit.brandColor}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Accent color</span>
+                <input
+                  aria-label="Accent color"
+                  onChange={(event) => updateBrandKit({ accentColor: event.target.value })}
+                  type="color"
+                  value={production.brandKit.accentColor}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Background</span>
+                <input
+                  aria-label="Brand background color"
+                  onChange={(event) => updateBrandKit({ backgroundColor: event.target.value })}
+                  type="color"
+                  value={production.brandKit.backgroundColor}
+                />
+              </label>
+              <label className="brand-kit-field">
+                <span>Font</span>
+                <select
+                  aria-label="Brand font"
+                  onChange={(event) => updateBrandKit({ fontFamily: event.target.value as BrandKitFont })}
+                  value={production.brandKit.fontFamily}
+                >
+                  {brandKitFonts.map((font) => (
+                    <option key={font} value={font}>{font}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="brand-kit-field">
+                <span>Lower-third style</span>
+                <select
+                  aria-label="Lower-third style"
+                  onChange={(event) => updateBrandKit({ lowerThirdStyle: event.target.value as BrandKit["lowerThirdStyle"] })}
+                  value={production.brandKit.lowerThirdStyle}
+                >
+                  {lowerThirdStyles.map((style) => (
+                    <option key={style} value={style}>{style}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <button className="ghost-button wide" onClick={applyBrandKit}>
+              <Palette size={16} />
+              Apply brand kit to graphics
+            </button>
           </section>
 
           <section className="panel">

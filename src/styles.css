@@ -1262,6 +1262,46 @@ meter {
   text-align: right;
 }
 
+.brand-kit-summary {
+  margin: 0 0 12px;
+  color: #8fdcc8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.brand-kit-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.brand-kit-field {
+  display: grid;
+  gap: 6px;
+}
+
+.brand-kit-field span {
+  color: #94a59b;
+  font-size: 12px;
+}
+
+.brand-kit-field input,
+.brand-kit-field select {
+  width: 100%;
+  border: 1px solid rgba(189, 207, 196, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 11, 12, 0.76);
+  color: #f7fbf8;
+  padding: 8px 10px;
+}
+
+.brand-kit-field input[type="color"] {
+  height: 38px;
+  padding: 4px;
+  cursor: pointer;
+}
+
 .health-grid {
   display: grid;
   gap: 2px;

@@ -118,6 +118,18 @@ export type GraphicOverlay = {
   enabled: boolean;
 };
 
+export type BrandKitFont = "Inter" | "Poppins" | "Roboto" | "Georgia";
+
+export type BrandKit = {
+  name: string;
+  logoText: string;
+  brandColor: string;
+  accentColor: string;
+  backgroundColor: string;
+  fontFamily: BrandKitFont;
+  lowerThirdStyle: "solid" | "minimal" | "gradient";
+};
+
 export type SourceRoute = {
   id: string;
   mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
@@ -225,6 +237,7 @@ export type ProductionState = {
   audioMix: AudioMixState;
   captionOverlay: CaptionOverlayState;
   graphics: GraphicOverlay[];
+  brandKit: BrandKit;
   videoEffects: ParticipantVideoEffect[];
   captions: string;
   participants: Participant[];
@@ -578,6 +591,15 @@ export const initialProduction: ProductionState = {
       enabled: false
     }
   ],
+  brandKit: {
+    name: "CoreVideo Pro House",
+    logoText: "CoreVideo Pro",
+    brandColor: "#44c1a1",
+    accentColor: "#f0a85c",
+    backgroundColor: "#0c1118",
+    fontFamily: "Inter",
+    lowerThirdStyle: "gradient"
+  },
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,
     cropMode: "auto",
