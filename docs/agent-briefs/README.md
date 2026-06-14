@@ -26,6 +26,7 @@ existing seams, not new scaffolding:
   existing `native/` interfaces (Zoom SDK, GPU compositor, hardware encoder +
   recording, output senders, capture devices), gated by
   `COREVIDEO_ENABLE_DEV_ADAPTERS` so the default in-container build stays green.
+- `05-dispatch-prompts.md` — ready-to-paste kickoff prompts for each agent.
 
 ## Ground rules for both agents
 
