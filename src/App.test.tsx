@@ -1616,3 +1616,33 @@ describe("graphic animator", () => {
     expect(within(panel).getByText("Opacity")).toBeInTheDocument();
   });
 });
+
+describe("poll engine", () => {
+  it("shows the audience poll panel with Open Poll button in the Automation tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Poll panel");
+    expect(panel).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Open Poll/i })).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Poll options")).toBeInTheDocument();
+  });
+
+  it("transitions poll to open and shows Sim Vote button enabled", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Automation");
+
+    const panel = screen.getByLabelText("Poll panel");
+    const openBtn = within(panel).getByRole("button", { name: /Open Poll/i });
+    expect(openBtn).not.toBeDisabled();
+
+    await user.click(openBtn);
+
+    expect(within(panel).getAllByText("open").length).toBeGreaterThanOrEqual(1);
+    expect(within(panel).getByRole("button", { name: /Sim Vote/i })).not.toBeDisabled();
+  });
+});
