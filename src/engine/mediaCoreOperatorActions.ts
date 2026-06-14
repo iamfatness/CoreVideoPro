@@ -139,7 +139,7 @@ export function buildNativeMediaCoreOperatorActions(input: NativeMediaCoreOperat
       detail: input.encoderSession.warnings[0] ?? input.encoderSession.lifecycle.lastTransition,
       relatedId: input.encoderSession.renderPlanId
     });
-  } else if (input.encoderSession.status === "warning" || input.encoderSession.lifecycle.status === "stopped") {
+  } else if (input.encoderSession.status === "warning" || (input.encoderSession.lifecycle.status === "stopped" && input.encoderSession.targets.length > 0)) {
     actions.push({
       actionId: "encoder:check",
       severity: "warning",

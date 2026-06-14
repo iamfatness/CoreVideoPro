@@ -17,7 +17,7 @@ import type {
   ShowPreset,
   SupportBundle
 } from "../domain/production";
-import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import type { NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 export type MeetingState = "idle" | "joining" | "in_meeting" | "reconnecting" | "error";
 
@@ -94,6 +94,7 @@ export interface AiStudioEngine {
 
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+  executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
 }
 
 export interface PresetEngine {

@@ -85,7 +85,7 @@ import {
 } from "./domain/production";
 import type { MeetingState, ZoomSessionSnapshot } from "./engine/contracts";
 import type { EngineBundle } from "./engine/engineBundle";
-import type { NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
+import type { NativeMediaCoreOperatorAction, NativeMediaCoreStateSnapshot } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const healthLabels: Record<Participant["health"], string> = {
@@ -814,6 +814,12 @@ export function App({ engines, runtime }: AppProps) {
     const bundle = await engines.diagnostics.createSupportBundle(production, mediaCoreSnapshot);
     setSupportBundle(bundle);
     setSupportBundleStatus(`${bundle.id} exported`);
+  }
+
+  async function executeMediaCoreAction(action: NativeMediaCoreOperatorAction) {
+    const snapshot = await engines.mediaCore.executeOperatorAction(production, action, elapsedSeconds * 1000);
+    setMediaCoreSnapshot(snapshot);
+    setSupportBundleStatus(`${action.title} executed`);
   }
 
   async function toggleSelectedParticipantMute() {
@@ -1681,6 +1687,24 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Action" value={mediaCoreSnapshot?.operatorActions[0]?.title ?? "None"} />
               <ControlReadout label="Warnings" value={mediaCoreSnapshot?.warnings[0] ?? "None"} />
             </div>
+            {mediaCoreSnapshot?.operatorActions.length ? (
+              <div className="operator-action-list" aria-label="Media core actions">
+                {mediaCoreSnapshot.operatorActions.map((action) => (
+                  <button
+                    className={`operator-action operator-action-${action.severity}`}
+                    disabled={!action.command}
+                    key={action.actionId}
+                    onClick={() => void executeMediaCoreAction(action)}
+                  >
+                    <RefreshCw size={15} />
+                    <span>
+                      <strong>{action.title}</strong>
+                      <em>{action.detail}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </section>
 
           <section className="panel">

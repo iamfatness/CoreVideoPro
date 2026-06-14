@@ -526,6 +526,61 @@ describe("media core sync engine", () => {
     });
   });
 
+  it("executes recoverable operator actions with production context", async () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const baseCommands: NativeMediaCoreCommand[] = [
+      {
+        type: "set-zoom-source-roster",
+        sources: [
+          {
+            sourceId: "participant:p1",
+            participantId: "p1",
+            displayName: "Maya Chen",
+            role: "Host",
+            breakoutRoomId: "main",
+            breakoutRoomName: "Main room",
+            hasVideo: true,
+            hasAudio: true,
+            isMuted: false,
+            isActiveSpeaker: true,
+            isScreenSharing: false,
+            audioLevel: 64,
+            health: "live"
+          }
+        ]
+      },
+      {
+        type: "load-scene-graph",
+        sceneId: "host",
+        routes: [{ routeId: "host", mode: "fixed", participantId: "p1", audioRole: "isolated" }]
+      },
+      { type: "start-program-output", destinations: ["recording", "rtmp"], isoParticipantIds: ["p1"] }
+    ];
+    const failed = engine.runCommands(
+      [...baseCommands, { type: "fail-output-sender", destination: "rtmp", message: "RTMP connection refused." }],
+      7000
+    );
+
+    const recovered = await engine.executeOperatorAction(
+      {
+        ...initialProduction,
+        recording: true,
+        streaming: true
+      },
+      failed.operatorActions.find((action) => action.actionId === "sender:rtmp:recover")!,
+      7033
+    );
+
+    expect(recovered).toMatchObject({
+      outputSenderSession: {
+        status: "live",
+        senders: [{ destination: "rtmp", status: "live", warning: undefined }]
+      },
+      operatorActions: [],
+      lastCommandTypes: expect.arrayContaining(["recover-output-sender"])
+    });
+  });
+
   it("surfaces render plan warnings when a scene asks for unavailable screen share", async () => {
     const engine = new InMemoryMediaCoreSyncEngine();
     const snapshot = await engine.syncProduction(

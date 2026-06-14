@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { createMockEngineBundle, type EngineBundle } from "./engine/engineBundle";
 import { mapCaptureSnapshot } from "./engine/captureSnapshotMapper";
+import { InMemoryMediaCoreSyncEngine } from "./engine/mediaCoreSync";
+import type { ProductionState } from "./domain/production";
+import type { NativeMediaCoreOperatorAction } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
 
 const mockRuntime: RuntimeEnvironment = {
@@ -65,6 +68,49 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
     expect(nativeCore).toHaveTextContent("Output healthlive");
     expect(nativeCore).toHaveTextContent("ActionNone");
+  });
+
+  it("executes media-core recovery actions from Settings", async () => {
+    const user = userEvent.setup();
+    const action: NativeMediaCoreOperatorAction = {
+      actionId: "sender:rtmp:recover",
+      severity: "critical",
+      area: "sender",
+      title: "Recover RTMP sender",
+      detail: "RTMP connection refused.",
+      command: "recover-output-sender:rtmp",
+      relatedId: "rtmp:program"
+    };
+    class ActionMediaCoreEngine extends InMemoryMediaCoreSyncEngine {
+      override async syncProduction(state: ProductionState, elapsedMs: number) {
+        const snapshot = await super.syncProduction(state, elapsedMs);
+        return {
+          ...snapshot,
+          operatorActions: [action],
+          diagnostics: {
+            ...snapshot.diagnostics,
+            operatorActions: [action]
+          }
+        };
+      }
+    }
+    const mediaCore = new ActionMediaCoreEngine();
+    const executeOperatorAction = vi.spyOn(mediaCore, "executeOperatorAction");
+    const engines: EngineBundle = {
+      ...createMockEngineBundle(),
+      mediaCore
+    };
+    renderApp(engines);
+
+    await goToTab(user, "Settings");
+    const nativeCore = await screen.findByLabelText("Native core sync");
+    expect(screen.getByRole("button", { name: /Recover RTMP sender/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Recover RTMP sender/i }));
+
+    await waitFor(() => expect(executeOperatorAction).toHaveBeenCalledWith(expect.any(Object), action, expect.any(Number)));
+    await waitFor(() => expect(nativeCore).toHaveTextContent("ActionNone"));
+    expect(screen.getAllByText("Recover RTMP sender executed").length).toBeGreaterThan(0);
   });
 
   it("renders AI Studio show notes and highlight suggestions", async () => {

@@ -11,6 +11,7 @@ import type {
   NativeMediaCoreFrame,
   NativeMediaCoreFrameSourceSnapshot,
   NativeMediaCoreMediaSourceKind,
+  NativeMediaCoreOperatorAction,
   NativeMediaCoreOutputHealth,
   NativeMediaCoreOutputProfile,
   NativeMediaCoreOutputSender,
@@ -28,6 +29,7 @@ import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions"
 
 export interface MediaCoreSyncEngine {
   syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
+  executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
 }
 
 export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
@@ -92,7 +94,18 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   };
 
   async syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
-    return this.snapshot(buildNativeMediaCoreCommands(state), elapsedMs);
+    return this.syncCommands(buildNativeMediaCoreCommands(state), elapsedMs);
+  }
+
+  async executeOperatorAction(state: ProductionState, action: NativeMediaCoreOperatorAction, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
+    const command = mediaCoreCommandFromOperatorAction(action, elapsedMs);
+    const commands = command ? [...buildNativeMediaCoreCommands(state), command] : buildNativeMediaCoreCommands(state);
+
+    return this.syncCommands(commands, elapsedMs);
+  }
+
+  protected async syncCommands(commands: NativeMediaCoreCommand[], elapsedMs: number, warnings: string[] = []): Promise<NativeMediaCoreStateSnapshot> {
+    return this.snapshot(commands, elapsedMs, warnings);
   }
 
   protected snapshot(commands: NativeMediaCoreCommand[], elapsedMs: number, warnings: string[] = []): NativeMediaCoreStateSnapshot {
@@ -933,13 +946,38 @@ export class NativeHostMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
     super();
   }
 
-  override async syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
-    const commands = buildNativeMediaCoreCommands(state);
-
+  protected override async syncCommands(commands: NativeMediaCoreCommand[], elapsedMs: number, warnings: string[] = []): Promise<NativeMediaCoreStateSnapshot> {
     if (!this.bridge.syncMediaCore) {
-      return this.snapshot(commands, elapsedMs, ["Native host has no media-core sync bridge; using renderer-side simulation."]);
+      return this.snapshot(commands, elapsedMs, [...warnings, "Native host has no media-core sync bridge; using renderer-side simulation."]);
     }
 
     return this.bridge.syncMediaCore(commands, elapsedMs);
   }
+}
+
+function mediaCoreCommandFromOperatorAction(action: NativeMediaCoreOperatorAction, elapsedMs: number): NativeMediaCoreCommand | undefined {
+  if (!action.command) {
+    return undefined;
+  }
+
+  if (action.command === "recover-recording-session") {
+    return {
+      type: "recover-recording-session",
+      recoveredAtMs: elapsedMs,
+      reason: "Recording writer recovered from operator action."
+    };
+  }
+
+  const senderMatch = /^recover-output-sender:(rtmp|ndi|srt|webrtc)$/.exec(action.command);
+  if (senderMatch) {
+    const destination = senderMatch[1] as "rtmp" | "ndi" | "srt" | "webrtc";
+    return {
+      type: "recover-output-sender",
+      destination,
+      recoveredAtMs: elapsedMs,
+      reason: `${destination.toUpperCase()} sender recovered from operator action.`
+    };
+  }
+
+  return undefined;
 }
