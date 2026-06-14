@@ -472,6 +472,22 @@ describe("App production controls", () => {
     expect(within(plan).getByRole("status")).toHaveTextContent(/Michael Thompson's ISO track will be silent while muted/);
   });
 
+  it("publishes the program through the virtual camera output", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Settings");
+    const vcam = screen.getByLabelText("Virtual camera");
+    expect(within(vcam).getByText("Virtual camera offline")).toBeInTheDocument();
+
+    await user.click(within(vcam).getByRole("button", { name: /Start virtual camera/i }));
+    expect(within(vcam).getByText("Publishing program to CoreVideo Pro Camera")).toBeInTheDocument();
+    expect(within(vcam).getByText("1920x1080 60fps")).toBeInTheDocument();
+
+    await user.click(within(vcam).getByLabelText("Mirror virtual camera"));
+    expect(within(vcam).getByText("1920x1080 60fps mirrored")).toBeInTheDocument();
+  });
+
   it("uses editable recording settings when recording starts", async () => {
     const user = userEvent.setup();
     const engines = createMockEngineBundle();

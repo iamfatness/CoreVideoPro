@@ -159,6 +159,12 @@ export type ColorGrade = {
   temperature: number;
 };
 
+export type VirtualCameraState = {
+  enabled: boolean;
+  deviceName: string;
+  mirrored: boolean;
+};
+
 export type SourceRoute = {
   id: string;
   mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
@@ -312,6 +318,7 @@ export type ProductionState = {
   graphics: GraphicOverlay[];
   brandKit: BrandKit;
   colorGrade: ColorGrade;
+  virtualCamera: VirtualCameraState;
   videoEffects: ParticipantVideoEffect[];
   captions: string;
   participants: Participant[];
@@ -769,6 +776,11 @@ export const initialProduction: ProductionState = {
     contrast: 0,
     saturation: 0,
     temperature: 0
+  },
+  virtualCamera: {
+    enabled: false,
+    deviceName: "CoreVideo Pro Camera",
+    mirrored: false
   },
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,

@@ -44,6 +44,7 @@ import { summarizeCaptureFleet } from "./engine/captureFleet";
 import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
 import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
+import { describeVirtualCamera } from "./engine/virtualCamera";
 import { getFrameForParticipant } from "./engine/mediaFrames";
 import { summarizeArming } from "./engine/outputArming";
 import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
@@ -699,6 +700,13 @@ export function App({ engines, runtime }: AppProps) {
     setProduction((current) => ({
       ...current,
       colorGrade: { ...current.colorGrade, ...update }
+    }));
+  }
+
+  function updateVirtualCamera(update: Partial<ProductionState["virtualCamera"]>) {
+    setProduction((current) => ({
+      ...current,
+      virtualCamera: { ...current.virtualCamera, ...update }
     }));
   }
 
@@ -1488,6 +1496,40 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Destination" value={`${getEnabledDestinations(production.outputDestinations).length} armed`} />
               <ControlReadout label="Preflight" value={outputPreflightStatus} />
             </div>
+          </section>
+
+          <section className="panel" aria-label="Virtual camera">
+            <div className="section-title">
+              <Video size={15} />
+              Virtual camera
+            </div>
+            <p className="brand-kit-summary">{describeVirtualCamera(production.virtualCamera, production.output).label}</p>
+            <label className="brand-kit-field">
+              <span>Device name</span>
+              <input
+                aria-label="Virtual camera device name"
+                onChange={(event) => updateVirtualCamera({ deviceName: event.target.value })}
+                type="text"
+                value={production.virtualCamera.deviceName}
+              />
+            </label>
+            <ControlReadout label="Published format" value={describeVirtualCamera(production.virtualCamera, production.output).outputFormat} />
+            <label className="caption-uppercase-field brand-kit-field">
+              <span>Mirror output</span>
+              <input
+                aria-label="Mirror virtual camera"
+                checked={production.virtualCamera.mirrored}
+                onChange={(event) => updateVirtualCamera({ mirrored: event.target.checked })}
+                type="checkbox"
+              />
+            </label>
+            <button
+              className={`ghost-button wide ${production.virtualCamera.enabled ? "selected" : ""}`}
+              onClick={() => updateVirtualCamera({ enabled: !production.virtualCamera.enabled })}
+            >
+              <Video size={16} />
+              {production.virtualCamera.enabled ? "Stop virtual camera" : "Start virtual camera"}
+            </button>
           </section>
 
           <section className="panel">
