@@ -1165,6 +1165,34 @@ describe("NDI output engine", () => {
   });
 });
 
+describe("loudness normalisation", () => {
+  it("shows the loudness panel with reading and target in the Audio tab", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Audio");
+
+    const panel = screen.getByLabelText("Loudness normalisation");
+    const status = within(panel).getByLabelText("Loudness status");
+    expect(status).toBeInTheDocument();
+    // Shows LUFS reading and target
+    expect(within(status).getAllByText(/LUFS/i).length).toBeGreaterThanOrEqual(1);
+    expect(within(status).getByText(/target -\d+\.\d+ LUFS/i)).toBeInTheDocument();
+  });
+
+  it("shows the loudness target selector with at least 4 options", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await goToTab(user, "Audio");
+
+    const panel = screen.getByLabelText("Loudness normalisation");
+    const select = within(panel).getByRole("combobox", { name: /Loudness target/i });
+    expect(select).toBeInTheDocument();
+    expect(select.querySelectorAll("option").length).toBeGreaterThanOrEqual(4);
+  });
+});
+
 describe("show clock", () => {
   it("shows the show clock display with 00:00 elapsed in the Automation tab", async () => {
     const user = userEvent.setup();
