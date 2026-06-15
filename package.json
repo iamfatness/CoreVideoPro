@@ -48,7 +48,6 @@
   },
   "optionalDependencies": {
     "@emnapi/core": "1.11.1",
-    "@emnapi/runtime": "1.11.1",
-    "electron-updater": "^6.8.9"
+    "@emnapi/runtime": "1.11.1"
   }
 }
