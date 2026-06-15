@@ -14,9 +14,12 @@
 
 const ROUTE_PREFIX = "/pro/demo";
 
+// script-src / connect-src allow Cloudflare Web Analytics, which the platform
+// auto-injects at the edge (beacon from static.cloudflareinsights.com, reporting
+// to cloudflareinsights.com). Everything else stays locked to 'self'.
 const SECURITY_HEADERS = {
   "content-security-policy":
-    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; font-src 'self' data:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   "referrer-policy": "strict-origin-when-cross-origin",
   "x-content-type-options": "nosniff",
   "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
