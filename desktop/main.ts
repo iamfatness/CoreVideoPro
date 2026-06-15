@@ -64,6 +64,7 @@ async function createWindow(): Promise<void> {
   const window = new BrowserWindow({
     width: 1480,
     height: 900,
+    title: "CoreVideo Pro",
     backgroundColor: "#0a0f16",
     webPreferences: {
       preload: resolvePreloadPath(),

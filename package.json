@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:desktop": "tsc -p desktop/tsconfig.json",
     "desktop": "node desktop/scripts/launch.mjs",
+    "dev:desktop": "powershell -ExecutionPolicy Bypass -File scripts/desktop-dev.ps1",
     "pack:desktop": "node desktop/scripts/package.mjs",
     "test:e2e": "playwright test tests/e2e/smoke.test.ts"
   },

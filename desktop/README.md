@@ -55,7 +55,7 @@ Electron is intentionally **not** a default dependency (keeps CI light). Install
 it on demand, then launch:
 
 ```
-npm install --no-save electron@latest electron-builder@latest
+npm install --no-save electron@latest tsx
 npm run desktop          # builds the renderer, then starts Electron
 ```
 
@@ -65,6 +65,10 @@ For a live renderer with HMR, point at the dev server instead of a build:
 npm run dev              # in one terminal (Vite on 127.0.0.1:5173)
 COREVIDEO_RENDERER_URL=http://127.0.0.1:5173 npm run desktop
 ```
+
+On Windows, if Vite prints a different port (e.g. `5174`), match it in
+`COREVIDEO_RENDERER_URL`. `launch.mjs` bundles `preload.cjs` automatically and
+loads the Electron main process through `tsx`.
 
 ## Checks
 
