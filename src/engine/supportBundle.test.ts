@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { initialProduction } from "../domain/production";
 import { InMemoryMediaCoreSyncEngine } from "./mediaCoreSync";
-import { createSupportBundle } from "./supportBundle";
+import { createSupportBundle, prepareSupportBundleForUpload } from "./supportBundle";
 
 describe("createSupportBundle", () => {
+  it("anonymizes participant names for telemetry upload", () => {
+    const bundle = prepareSupportBundleForUpload(createSupportBundle(initialProduction));
+    expect(bundle.participants.every((participant) => participant.name.startsWith("participant-"))).toBe(true);
+    expect(bundle.participants.find((participant) => participant.id === "p1")?.name).toBe("participant-p1");
+  });
+
   it("builds human triage lines and machine-readable production diagnostics", () => {
     const bundle = createSupportBundle(initialProduction);
 

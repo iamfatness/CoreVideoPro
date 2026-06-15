@@ -13,6 +13,8 @@ import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineN
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 import type { AppUpdateSnapshot } from "./appUpdate.ts";
+import type { TelemetryConsentState } from "./telemetryConsent.ts";
+import type { TelemetryEvent } from "./telemetryClient.ts";
 
 const mediaCoreProfile = (ipcRenderer.sendSync("corevideo:handshake") as NativeMediaCoreProfile | null) ?? undefined;
 
@@ -122,6 +124,31 @@ function onAppUpdateStatus(listener: (status: AppUpdateSnapshot) => void): () =>
   return () => ipcRenderer.off("corevideo:app-update-status", channelListener);
 }
 
+async function getTelemetryConsent(): Promise<TelemetryConsentState> {
+  return (await ipcRenderer.invoke("corevideo:get-telemetry-consent")) as TelemetryConsentState;
+}
+
+async function setTelemetryConsent(analyticsEnabled: boolean): Promise<TelemetryConsentState> {
+  return (await ipcRenderer.invoke("corevideo:set-telemetry-consent", analyticsEnabled)) as TelemetryConsentState;
+}
+
+async function recordTelemetryEvent(event: TelemetryEvent): Promise<void> {
+  await ipcRenderer.invoke("corevideo:record-telemetry-event", event);
+}
+
+function reportRendererError(message: string, source?: string): void {
+  void ipcRenderer.invoke("corevideo:renderer-error", { message, source });
+}
+
+window.addEventListener("error", (event) => {
+  reportRendererError(event.message, event.filename);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+  reportRendererError(reason, "unhandledrejection");
+});
+
 function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
   const channelListener = (...args: unknown[]) => {
     const frame = args[1] as ZoomVideoFrame;
@@ -153,5 +180,8 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   checkForAppUpdates,
   downloadAppUpdate,
   installAppUpdate,
-  onAppUpdateStatus
+  onAppUpdateStatus,
+  getTelemetryConsent,
+  setTelemetryConsent,
+  recordTelemetryEvent
 });
