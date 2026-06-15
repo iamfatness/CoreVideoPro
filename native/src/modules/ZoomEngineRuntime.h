@@ -1,5 +1,6 @@
 #pragma once
 
+#include "modules/Interfaces.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
@@ -26,6 +27,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
+  [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs);
 
  private:
   struct Config {

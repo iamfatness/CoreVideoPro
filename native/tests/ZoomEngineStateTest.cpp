@@ -67,6 +67,17 @@ TEST(ZoomEngineRuntimeState, TracksFrameAudioAndErrorEvidence) {
   EXPECT_EQ(snapshot.warnings[0], "raw_data_unavailable");
 }
 
+TEST(ZoomEngineRuntimeState, ExposesCompositorVideoFramesFromSubscriptionStats) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"src-1","participant_id":42,"width":1280,"height":720})"));
+  const auto frames = state.pollCompositorVideoFrames(99);
+  ASSERT_TRUE(frames.size() == 1u);
+  EXPECT_EQ(frames[0].participantId, "42");
+  EXPECT_EQ(frames[0].width, 1280);
+  EXPECT_EQ(frames[0].height, 720);
+  EXPECT_EQ(frames[0].timestampMs, 99);
+}
+
 TEST(ZoomEngineRuntimeState, ClearsRosterAndSubscriptionsOnLeave) {
   corevideo::modules::ZoomEngineRuntimeState state;
 

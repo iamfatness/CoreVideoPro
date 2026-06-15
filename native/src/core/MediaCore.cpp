@@ -272,6 +272,9 @@ rpc::Json MediaCore::sessionState() const {
       {"codec", session.codec},
       {"hardwareEncoder", session.hardwareAccelerated},
       {"active", session.active},
+      {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
+      {"renderPlanId", lastProgramFrame_.renderPlanId},
+      {"compositorRenderer", lastProgramFrame_.renderer},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
       {"captureDevices", captureDevicesState()},
@@ -725,6 +728,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
 void MediaCore::renderSyntheticTick() {
   auto videoFrames = modules_.zoom->pollVideoFrames();
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 33);
+    if (!engineFrames.empty()) {
+      videoFrames = engineFrames;
+    }
+  }
   auto audioFrames = modules_.zoom->pollAudioFrames();
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
   modules::CompositorRenderPlan renderPlan;

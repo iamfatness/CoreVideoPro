@@ -250,6 +250,11 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   return spineSnapshotLocked(payload, elapsedMs);
 }
 
+std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t timestampMs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return state_.pollCompositorVideoFrames(timestampMs);
+}
+
 std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
   std::lock_guard<std::mutex> lock(mutex_);
   auto events = std::move(pendingFrameEvents_);

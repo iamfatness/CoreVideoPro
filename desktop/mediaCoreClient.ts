@@ -16,6 +16,7 @@ import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync
 import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
 import { parseCoreEvent, parseCoreResponse } from "./coreProtocol.ts";
+import { isNativeMediaCoreWireState, mapNativeWireStateToSnapshot } from "./nativeMediaCoreStateMapper.ts";
 
 export type MediaCoreSupervisorOptions = {
   /** Executable to spawn. Defaults to the current Node binary. */
@@ -61,6 +62,7 @@ export class MediaCoreSupervisor {
   private syncInFlight = false;
   private profile: NativeMediaCoreProfile | undefined;
   private frameDrainTimer: ReturnType<typeof setInterval> | undefined;
+  private syncFrameNumber = 0;
 
   constructor(private readonly options: MediaCoreSupervisorOptions = {}) {
     this.command = options.command ?? process.execPath;
@@ -119,11 +121,26 @@ export class MediaCoreSupervisor {
     this.syncInFlight = true;
     try {
       const response = await this.send({ id: this.createId(), type: "media-core-sync", commands, elapsedMs });
-      if (response.ok && response.type === "media-core-sync") {
+      if (!response.ok) {
+        throw new Error(`media-core sync failed: ${response.error.message}`);
+      }
+
+      if (response.type === "media-core-sync" && "snapshot" in response && !isNativeMediaCoreWireState(response.snapshot)) {
         return response.snapshot;
       }
-      const message = response.ok ? "Unexpected response type." : response.error.message;
-      throw new Error(`media-core sync failed: ${message}`);
+
+      const wire =
+        response.type === "media-core-sync" && "snapshot" in response
+          ? response.snapshot
+          : "state" in response
+            ? response.state
+            : undefined;
+      if (isNativeMediaCoreWireState(wire)) {
+        this.syncFrameNumber += 1;
+        return mapNativeWireStateToSnapshot(commands, elapsedMs, this.syncFrameNumber, wire);
+      }
+
+      throw new Error("media-core sync failed: Unexpected response type.");
     } finally {
       this.syncInFlight = false;
     }
