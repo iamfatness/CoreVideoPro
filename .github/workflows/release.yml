@@ -12,21 +12,57 @@ on:
           - all
           - win
           - mac
+      publish:
+        description: Upload installers to GitHub Releases (requires tag version in package.json)
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  validate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches package.json version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "package.json version ($VERSION) must match tag ($TAG)"
+            exit 1
+          fi
+      - name: Extract release notes
+        id: notes
+        run: |
+          BODY=$(node scripts/release-notes.mjs "${GITHUB_REF_NAME}")
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
   pack-windows:
+    needs: [validate]
     if: >-
-      github.event_name == 'push' ||
+      always() &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
+      (github.event_name == 'push' ||
       github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == 'win'
+      github.event.inputs.platform == 'win')
     runs-on: windows-latest
+    env:
+      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,16 +71,18 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install packaging deps
-        run: npm install --no-save electron@latest electron-builder@latest
+        run: npm install --no-save electron@latest electron-builder@latest electron-updater@latest
       - name: Download Electron binary
         run: node node_modules/electron/install.js
       - name: Package Windows installer
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           COREVIDEO_PACK_TARGET: --win
         run: npm run pack:desktop
       - name: Upload Windows artifacts
+        if: env.COREVIDEO_PUBLISH == 'never'
         uses: actions/upload-artifact@v4
         with:
           name: corevideo-desktop-win
@@ -52,11 +90,16 @@ jobs:
           if-no-files-found: error
 
   pack-macos:
+    needs: [validate]
     if: >-
-      github.event_name == 'push' ||
+      always() &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
+      (github.event_name == 'push' ||
       github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == 'mac'
+      github.event.inputs.platform == 'mac')
     runs-on: macos-latest
+    env:
+      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,11 +108,12 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install packaging deps
-        run: npm install --no-save electron@latest electron-builder@latest
+        run: npm install --no-save electron@latest electron-builder@latest electron-updater@latest
       - name: Download Electron binary
         run: node node_modules/electron/install.js
       - name: Package macOS disk image
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -78,6 +122,7 @@ jobs:
           COREVIDEO_PACK_TARGET: --mac
         run: npm run pack:desktop
       - name: Upload macOS artifacts
+        if: env.COREVIDEO_PUBLISH == 'never'
         uses: actions/upload-artifact@v4
         with:
           name: corevideo-desktop-mac

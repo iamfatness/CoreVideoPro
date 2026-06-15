@@ -48,7 +48,7 @@ if (!electronBuilder) {
       "electron-builder is not installed.",
       "Install packaging deps once:",
       "",
-      "  npm install --no-save electron@latest electron-builder@latest",
+      "  npm install --no-save electron@latest electron-builder@latest electron-updater@latest",
       "",
       "Then re-run: npm run pack:desktop"
     ].join("\n")
@@ -61,6 +61,9 @@ run("node", ["desktop/scripts/generate-icons.mjs"]);
 
 console.info("[pack] building renderer…");
 run("npm", ["run", "build"]);
+
+console.info("[pack] installing electron-updater for packaged auto-update…");
+run("npm", ["install", "--no-save", "electron-updater@6.8.9"]);
 
 console.info("[pack] bundling Electron entries…");
 ensurePreloadBundle();
@@ -80,9 +83,15 @@ if (existsSync(nativeSource)) {
 }
 
 const target = process.env.COREVIDEO_PACK_TARGET?.trim();
-const builderArgs = ["--config", "desktop/electron-builder.yml", "--publish", "never"];
+const publish = process.env.COREVIDEO_PUBLISH?.trim() || "never";
+const builderArgs = ["--config", "desktop/electron-builder.yml", "--publish", publish];
 if (target) {
   builderArgs.push(target);
+}
+
+if (publish !== "never" && !process.env.GH_TOKEN?.trim()) {
+  console.error("[pack] COREVIDEO_PUBLISH requires GH_TOKEN (GitHub Releases upload).");
+  process.exit(1);
 }
 
 const signingConfigured = Boolean(process.env.CSC_LINK?.trim());

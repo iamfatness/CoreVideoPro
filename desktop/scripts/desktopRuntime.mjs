@@ -58,7 +58,7 @@ export function ensurePackagedMainBundle(root = repoRoot) {
     bundle: true,
     platform: "node",
     format: "esm",
-    external: ["electron"]
+    external: ["electron", "electron-updater"]
   });
   return mainPackaged;
 }
@@ -75,7 +75,7 @@ export function ensureE2eMainBundle(root = repoRoot) {
     bundle: true,
     platform: "node",
     format: "esm",
-    external: ["electron"]
+    external: ["electron", "electron-updater"]
   });
   return mainE2e;
 }

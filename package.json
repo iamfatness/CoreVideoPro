@@ -23,6 +23,8 @@
     "dev:desktop": "powershell -ExecutionPolicy Bypass -File scripts/desktop-dev.ps1",
     "pack:desktop": "node desktop/scripts/package.mjs",
     "generate:icons": "node desktop/scripts/generate-icons.mjs",
+    "bump:version": "node scripts/bump-version.mjs",
+    "release:notes": "node scripts/release-notes.mjs",
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "test:e2e": "node scripts/e2e-smoke.mjs"
   },

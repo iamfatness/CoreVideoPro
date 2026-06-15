@@ -25,6 +25,11 @@ extraResources:
       - "**/*"
 extraMetadata:
   main: desktop/main-packaged.mjs
+publish:
+  provider: github
+  owner: iamfatness
+  repo: CoreVideoPro
+  releaseType: release
 win:
   target: nsis
   icon: desktop/build/icon.ico
@@ -47,6 +52,7 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  differentialPackage: true
   installerIcon: desktop/build/icon.ico
   uninstallerIcon: desktop/build/icon.ico
   installerHeaderIcon: desktop/build/icon.ico
