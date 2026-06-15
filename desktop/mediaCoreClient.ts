@@ -60,6 +60,7 @@ export class MediaCoreSupervisor {
   private recovering = false;
   private syncInFlight = false;
   private profile: NativeMediaCoreProfile | undefined;
+  private frameDrainTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly options: MediaCoreSupervisorOptions = {}) {
     this.command = options.command ?? process.execPath;
@@ -75,6 +76,7 @@ export class MediaCoreSupervisor {
     this.stopped = false;
     this.spawnChild();
     this.profile = await this.handshake();
+    this.startFrameDrain();
     return this.profile;
   }
 
@@ -174,9 +176,27 @@ export class MediaCoreSupervisor {
 
   stop(): void {
     this.stopped = true;
+    this.stopFrameDrain();
     this.teardownChild(new Error("Supervisor stopped."));
     this.child?.kill();
     this.child = undefined;
+  }
+
+  private startFrameDrain(): void {
+    this.stopFrameDrain();
+    this.frameDrainTimer = setInterval(() => {
+      if (!this.running) {
+        return;
+      }
+      void this.ping().catch(() => undefined);
+    }, 66);
+  }
+
+  private stopFrameDrain(): void {
+    if (this.frameDrainTimer) {
+      clearInterval(this.frameDrainTimer);
+      this.frameDrainTimer = undefined;
+    }
   }
 
   private spawnChild(): void {

@@ -1804,7 +1804,7 @@ describe("Zoom SDK pre-flight", () => {
     expect(panel).toBeInTheDocument();
   });
 
-  it("Join Zoom button is disabled when SDK is blocked in native runtime", async () => {
+  it("allows Zoom join when native media runtime is ready (vendored engine path)", async () => {
     const user = userEvent.setup();
     const nativeRuntime: RuntimeEnvironment = {
       status: "ready",
@@ -1818,7 +1818,7 @@ describe("Zoom SDK pre-flight", () => {
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Leave" }));
     const joinBtn = screen.getByRole("button", { name: /Join Zoom/i });
-    expect(joinBtn).toBeDisabled();
+    expect(joinBtn).not.toBeDisabled();
   });
 
   it("allows simulated Zoom join in mock runtime when SDK readiness is blocked", async () => {

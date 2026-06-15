@@ -49,6 +49,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json rawCaptureSnapshotLocked();
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
+  bool ensureMediaStartedLocked();
 
   Config config_;
   std::unique_ptr<ZoomEngineProcessClient> process_;
@@ -57,6 +58,7 @@ class ZoomEngineRuntime {
   std::thread reader_;
   bool readerRunning_ = false;
   bool initialized_ = false;
+  bool mediaStarted_ = false;
   int fallbackTick_ = 0;
   std::vector<rpc::Json> pendingFrameEvents_;
 };

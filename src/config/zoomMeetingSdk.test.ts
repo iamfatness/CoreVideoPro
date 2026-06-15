@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ZOOM_MEETING_SDK_PUBLIC_APP_KEY,
   createEmbeddedZoomSdkReadinessInput,
+  deriveZoomSdkReadinessInputForRuntime,
   zoomMeetingSdkAppKeyPresent,
   zoomMeetingSdkChildProcessEnv
 } from "./zoomMeetingSdk";
@@ -24,5 +25,19 @@ describe("zoomMeetingSdk", () => {
 
   it("marks app-key readiness from the embedded config", () => {
     expect(createEmbeddedZoomSdkReadinessInput().appKeyPresent).toBe(true);
+  });
+
+  it("enables vendored-engine readiness when native media is ready", () => {
+    const input = deriveZoomSdkReadinessInputForRuntime({
+      status: "ready",
+      label: "Native media ready",
+      host: "electron",
+      platform: "win32",
+      warnings: [],
+      capabilities: ["audio-mixer"]
+    });
+    expect(input.sdkRuntimePresent).toBe(true);
+    expect(input.rawVideoEnabled).toBe(true);
+    expect(input.oauthConfigured).toBe(true);
   });
 });
