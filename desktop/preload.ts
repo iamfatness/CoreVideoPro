@@ -13,6 +13,8 @@ import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineN
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
 import type { AppUpdateSnapshot } from "./appUpdate.ts";
+import type { CaptionBrokerCue, CaptionBrokerSession } from "./captionBrokerTypes.ts";
+import type { LicenseEntitlements } from "./licenseTypes.ts";
 import type { TelemetryConsentState } from "./telemetryConsent.ts";
 import type { TelemetryEvent } from "./telemetryClient.ts";
 
@@ -149,6 +151,69 @@ window.addEventListener("unhandledrejection", (event) => {
   reportRendererError(reason, "unhandledrejection");
 });
 
+async function getLicenseEntitlements(): Promise<LicenseEntitlements> {
+  return (await ipcRenderer.invoke("corevideo:license-get-entitlements")) as LicenseEntitlements;
+}
+
+async function startLicenseTrial(email?: string): Promise<{ ok: boolean; licenseKey?: string; entitlements?: LicenseEntitlements; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:license-start-trial", email)) as {
+    ok: boolean;
+    licenseKey?: string;
+    entitlements?: LicenseEntitlements;
+    message?: string;
+  };
+}
+
+async function activateLicense(licenseKey: string, email?: string): Promise<{ ok: boolean; activated?: boolean; entitlements?: LicenseEntitlements; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:license-activate", { licenseKey, email })) as {
+    ok: boolean;
+    activated?: boolean;
+    entitlements?: LicenseEntitlements;
+    message?: string;
+  };
+}
+
+async function createLicenseCheckout(tier: "creator" | "pro" | "team", email?: string, successUrl?: string): Promise<{ ok: boolean; checkoutUrl?: string; sessionId?: string; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:license-checkout", { tier, email, successUrl })) as {
+    ok: boolean;
+    checkoutUrl?: string;
+    sessionId?: string;
+    message?: string;
+  };
+}
+
+async function startCaptionBrokerSession(productionSessionId?: string, language?: string): Promise<{ ok: boolean; session?: CaptionBrokerSession; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:caption-broker-start", { productionSessionId, language })) as {
+    ok: boolean;
+    session?: CaptionBrokerSession;
+    message?: string;
+  };
+}
+
+async function pushCaptionBrokerChunk(payload: {
+  brokerSessionId?: string;
+  atMs: number;
+  speakerId?: string;
+  speakerName?: string;
+  audioLevel?: number;
+  audioBase64?: string;
+}): Promise<{ ok: boolean; latencyMs?: number; cues?: CaptionBrokerCue[]; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:caption-broker-push-chunk", payload)) as {
+    ok: boolean;
+    latencyMs?: number;
+    cues?: CaptionBrokerCue[];
+    message?: string;
+  };
+}
+
+async function endCaptionBrokerSession(brokerSessionId?: string): Promise<{ ok: boolean; ended?: boolean; message?: string }> {
+  return (await ipcRenderer.invoke("corevideo:caption-broker-end", brokerSessionId)) as {
+    ok: boolean;
+    ended?: boolean;
+    message?: string;
+  };
+}
+
 function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
   const channelListener = (...args: unknown[]) => {
     const frame = args[1] as ZoomVideoFrame;
@@ -183,5 +248,12 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   onAppUpdateStatus,
   getTelemetryConsent,
   setTelemetryConsent,
-  recordTelemetryEvent
+  recordTelemetryEvent,
+  getLicenseEntitlements,
+  startLicenseTrial,
+  activateLicense,
+  createLicenseCheckout,
+  startCaptionBrokerSession,
+  pushCaptionBrokerChunk,
+  endCaptionBrokerSession
 });

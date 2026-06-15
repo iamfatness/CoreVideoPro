@@ -18,6 +18,8 @@ import { createIpcRouter } from "./ipcRouter.ts";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
 import { mediaCoreSupervisorOptionsForApp } from "./packagedRuntime.ts";
 import { createPackagedAppUpdateService } from "./appUpdateMain.ts";
+import { createCaptionBrokerService } from "./captionBrokerMain.ts";
+import { createLicenseService } from "./licenseMain.ts";
 import { createTelemetryService } from "./telemetryMain.ts";
 import { createDesktopZoomOAuthService } from "./zoomOAuthFactory.ts";
 import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
@@ -149,6 +151,8 @@ app.whenReady().then(async () => {
   }
 
   telemetryRef.service = await createTelemetryService();
+  await createLicenseService();
+  createCaptionBrokerService();
   setupCrashReporting({
     windows: () => BrowserWindow.getAllWindows(),
     telemetry: telemetryRef.service.client,
