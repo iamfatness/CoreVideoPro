@@ -8,7 +8,7 @@ namespace {
 corevideo::modules::ZoomEngineEvent eventFrom(const std::string& line) {
   auto event = corevideo::modules::parseZoomEngineEvent(line);
   EXPECT_TRUE(event.has_value());
-  return event.value_or({});
+  return event.value_or(corevideo::modules::ZoomEngineEvent{});
 }
 
 }  // namespace
