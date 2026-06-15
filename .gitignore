@@ -3,6 +3,7 @@ dist/
 desktop/preload.cjs
 artifacts/
 native/build*/
+native/build-ci/
 *.tsbuildinfo
 .DS_Store
 .claude/worktrees/
