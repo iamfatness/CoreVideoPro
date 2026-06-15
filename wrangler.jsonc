@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "corevideo-pro-demo",
+  "main": "site-worker.js",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "corevideo.iamfatness.us/pro/demo",
+      "zone_name": "iamfatness.us"
+    },
+    {
+      "pattern": "corevideo.iamfatness.us/pro/demo/*",
+      "zone_name": "iamfatness.us"
+    }
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist"
+  }
+}
