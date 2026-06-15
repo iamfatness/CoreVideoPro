@@ -45,6 +45,24 @@ export function ensurePreloadBundle(root = repoRoot) {
 }
 
 /** Bundled ESM entry for Playwright Electron (tsx `--import` is unreliable under Playwright's loader). */
+/** Bundled ESM entry for packaged Electron builds (asar-safe, no tsx loader). */
+export function ensurePackagedMainBundle(root = repoRoot) {
+  const mainTs = join(desktopDir, "main.ts");
+  const mainPackaged = join(desktopDir, "main-packaged.mjs");
+  if (!existsSync(mainTs)) {
+    return mainPackaged;
+  }
+  buildSync({
+    entryPoints: [mainTs],
+    outfile: mainPackaged,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    external: ["electron"]
+  });
+  return mainPackaged;
+}
+
 export function ensureE2eMainBundle(root = repoRoot) {
   const mainTs = join(desktopDir, "main.ts");
   const mainE2e = join(desktopDir, "main-e2e.mjs");

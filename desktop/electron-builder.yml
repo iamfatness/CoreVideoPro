@@ -1,21 +1,22 @@
 # electron-builder packaging config for the CoreVideo Pro desktop shell.
-# Packaging is a dev-machine concern; CI validates the shell logic headlessly.
 #
-# Code signing (opt-in via env):
+# Code signing + notarization are opt-in via CI secrets / local env:
 #   Windows: CSC_LINK, CSC_KEY_PASSWORD
 #   macOS:   CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 appId: pro.corevideo.desktop
 productName: CoreVideo Pro
+copyright: Copyright © CoreVideo Pro
 directories:
   output: artifacts/desktop
   buildResources: desktop/build
-# The Electron main entry. Modern Electron (Node >= 22) runs the TypeScript
-# entry directly via type-stripping; otherwise build to JS first.
+icon: desktop/build/icon.png
 files:
   - dist/**/*
   - desktop/**/*.ts
   - desktop/**/*.cjs
+  - desktop/main-packaged.mjs
   - "!desktop/**/*.test.ts"
+  - "!desktop/main-e2e.mjs"
   - package.json
 extraResources:
   - from: desktop/build/native
@@ -23,21 +24,33 @@ extraResources:
     filter:
       - "**/*"
 extraMetadata:
-  main: desktop/main.ts
+  main: desktop/main-packaged.mjs
 win:
   target: nsis
+  icon: desktop/build/icon.ico
   artifactName: "${productName}-${version}-win-${arch}.${ext}"
 mac:
   target: dmg
+  icon: desktop/build/icon.png
   category: public.app-category.video
   artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   hardenedRuntime: true
   gatekeeperAssess: false
+  entitlements: desktop/build/entitlements.mac.plist
+  entitlementsInherit: desktop/build/entitlements.mac.plist
 linux:
   target: AppImage
   category: AudioVideo
+  icon: desktop/build/icon.png
   artifactName: "${productName}-${version}-linux-${arch}.${ext}"
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  installerIcon: desktop/build/icon.ico
+  uninstallerIcon: desktop/build/icon.ico
+  installerHeaderIcon: desktop/build/icon.ico
+  shortcutName: CoreVideo Pro
+dmg:
+  title: "${productName} ${version}"
+  icon: desktop/build/icon.png

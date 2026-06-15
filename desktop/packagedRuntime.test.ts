@@ -42,4 +42,12 @@ describe("packagedRuntime", () => {
     expect(options.command).toBe(binaryPath);
     expect(options.args).toEqual(["--stub"]);
   });
+
+  it("enables Electron-as-Node for stub-only packaged builds", () => {
+    tempDir = mkdtempSync(join(tmpdir(), "corevideo-stub-"));
+    const options = mediaCoreSupervisorOptionsForApp({}, tempDir, "darwin", true);
+
+    expect(options.command).toBeUndefined();
+    expect(options.env).toMatchObject({ ELECTRON_RUN_AS_NODE: "1" });
+  });
 });
