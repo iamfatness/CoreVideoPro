@@ -496,13 +496,29 @@ export type SupportBundleMediaCore = {
   warnings: string[];
 };
 
+export type SupportBundleCrashEvent = {
+  at: string;
+  exitCode: number | null;
+  restartCount: number;
+};
+
+export type SupportBundleRuntime = {
+  status: string;
+  label: string;
+  host: string;
+  platform: string;
+  restartCount: number;
+  recovering: boolean;
+  warnings: string[];
+};
+
 export type SupportBundle = {
   id: string;
   createdAt: string;
   app: {
     name: string;
     version: string;
-    platform: "mock-desktop";
+    platform: string;
   };
   summaryText: string;
   triageLines: string[];
@@ -557,6 +573,10 @@ export type SupportBundle = {
     warning?: string;
   };
   mediaCore?: SupportBundleMediaCore;
+  runtime?: SupportBundleRuntime;
+  crashRecovery?: {
+    events: SupportBundleCrashEvent[];
+  };
   warnings: string[];
 };
 

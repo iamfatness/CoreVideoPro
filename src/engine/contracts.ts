@@ -108,8 +108,20 @@ export interface PresetEngine {
   listPresets(): Promise<PresetSummary[]>;
 }
 
+export type SupportBundleContext = {
+  platform?: string;
+  version?: string;
+  runtime?: import("../domain/production").SupportBundleRuntime;
+  crashEvents?: import("../domain/production").SupportBundleCrashEvent[];
+  freeDiskBytes?: number;
+};
+
 export interface DiagnosticsEngine {
-  createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle>;
+  createSupportBundle(
+    state: ProductionState,
+    mediaCore?: NativeMediaCoreStateSnapshot,
+    context?: SupportBundleContext
+  ): Promise<SupportBundle>;
 }
 
 export interface CaptureDeviceEngine {

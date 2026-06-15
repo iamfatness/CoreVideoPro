@@ -19,6 +19,9 @@ import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, N
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { SupportBundle } from "../src/domain/production.ts";
+import type { CrashRecoveryEvent } from "./crashRecoveryLog.ts";
+import { writeSupportBundleExport } from "./diagnosticsExport.ts";
 import type { ZoomOAuthService } from "./zoomOAuthService.ts";
 
 /** The slice of the supervisor the router depends on (eases testing). */
@@ -38,6 +41,8 @@ export type IpcRouterOptions = {
   zoomOAuth?: ZoomOAuthService;
   output?: MockOutputEngine;
   captureDevices?: MockCaptureDeviceEngine;
+  diagnosticsDirectory?: string;
+  readCrashEvents?: () => Promise<CrashRecoveryEvent[]>;
 };
 
 export type IpcRouter = (command: NativeBridgeCommand) => Promise<NativeBridgeResponse>;
@@ -111,7 +116,7 @@ async function joinPayloadWithOAuth(
 }
 
 export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
-  const { mediaCore, zoomOAuth } = options;
+  const { mediaCore, zoomOAuth, diagnosticsDirectory, readCrashEvents } = options;
   const output = options.output ?? new MockOutputEngine();
   const captureDevices = options.captureDevices ?? new MockCaptureDeviceEngine();
   const audio = new AudioStub();
@@ -197,6 +202,16 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
         case "get-media-core-health":
           return { id, ok: true, health: mediaCore.getHealth() };
 
+        case "export-support-bundle": {
+          if (!diagnosticsDirectory) {
+            return { id, ok: false, error: { code: "native-unavailable", message: "Diagnostics export is only available in the Electron shell." } };
+          }
+          const crashEvents = readCrashEvents ? await readCrashEvents() : [];
+          const bundle = mergeCrashEventsIntoBundle(command.payload.bundle, crashEvents);
+          const exported = await writeSupportBundleExport(diagnosticsDirectory, bundle);
+          return { id, ok: true, export: exported };
+        }
+
         // ----- Zoom media spine (delegated to the supervised child process) -----
         case "zoom-media-spine-sync": {
           const spineSnapshot = await mediaCore.syncZoomMediaSpine(command.payload.spinePayload, command.payload.elapsedMs);
@@ -243,5 +258,15 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
       }
       return { id, ok: false, error: { code: "protocol-error", message } };
     }
+  };
+}
+
+function mergeCrashEventsIntoBundle(bundle: SupportBundle, crashEvents: CrashRecoveryEvent[]): SupportBundle {
+  if (!crashEvents.length) {
+    return bundle;
+  }
+  return {
+    ...bundle,
+    crashRecovery: { events: crashEvents }
   };
 }

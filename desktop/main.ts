@@ -9,19 +9,34 @@
  * integration gate. Launch with `npm run desktop`.
  */
 import { app, BrowserWindow, ipcMain } from "electron";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { appendCrashRecoveryEvent, readCrashRecoveryEvents } from "./crashRecoveryLog.ts";
 import { createIpcRouter } from "./ipcRouter.ts";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
-import { mediaCoreSupervisorOptionsFromEnv } from "./mediaCoreRuntime.ts";
+import { mediaCoreSupervisorOptionsForApp } from "./packagedRuntime.ts";
 import { createDesktopZoomOAuthService } from "./zoomOAuthFactory.ts";
 import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = dirname(here);
 const zoomOAuth = createDesktopZoomOAuthService();
+const crashLogPath = join(app.getPath("userData"), "crash-recovery.json");
+const diagnosticsDirectory = join(app.getPath("userData"), "diagnostics");
 const supervisor = new MediaCoreSupervisor({
-  ...mediaCoreSupervisorOptionsFromEnv(process.env),
-  onCrash: (info) => console.warn(`[media-core] crashed (code ${info.code}); restart #${info.restartCount}`),
+  ...mediaCoreSupervisorOptionsForApp(process.env, process.resourcesPath, process.platform, app.isPackaged),
+  onCrash: (info) => {
+    console.warn(`[media-core] crashed (code ${info.code}); restart #${info.restartCount}`);
+    void appendCrashRecoveryEvent(crashLogPath, {
+      at: new Date().toISOString(),
+      exitCode: info.code,
+      restartCount: info.restartCount
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Failed to persist crash recovery log.";
+      console.warn(`[media-core] ${message}`);
+    });
+  },
   onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`),
   onZoomVideoFrame: (frame) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -29,11 +44,21 @@ const supervisor = new MediaCoreSupervisor({
     }
   }
 });
-const route = createIpcRouter({ mediaCore: supervisor, zoomOAuth });
+const route = createIpcRouter({
+  mediaCore: supervisor,
+  zoomOAuth,
+  diagnosticsDirectory,
+  readCrashEvents: () => readCrashRecoveryEvents(crashLogPath)
+});
 
 const RENDERER_DEV_URL = process.env.COREVIDEO_RENDERER_URL ?? "http://127.0.0.1:5173";
-const RENDERER_FILE = join(here, "..", "dist", "index.html");
+const RENDERER_FILE = join(repoRoot, "dist", "index.html");
 const OAUTH_PROTOCOL = "corevideopro";
+
+function resolvePreloadPath(): string {
+  const candidates = [join(here, "preload.cjs"), join(here, "preload.ts")];
+  return candidates.find((candidate) => existsSync(candidate)) ?? join(here, "preload.ts");
+}
 
 async function createWindow(): Promise<void> {
   const window = new BrowserWindow({
@@ -41,7 +66,7 @@ async function createWindow(): Promise<void> {
     height: 900,
     backgroundColor: "#0a0f16",
     webPreferences: {
-      preload: join(here, "preload.cjs"),
+      preload: resolvePreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
