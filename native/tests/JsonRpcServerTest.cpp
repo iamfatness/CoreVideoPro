@@ -28,6 +28,30 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
 #endif
 }
 
+TEST(JsonRpcServer, HandlesMediaCoreSyncRequestEnvelope) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "core-sync-1"},
+      {"type", "media-core-sync"},
+      {"elapsedMs", 66},
+      {"commands",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"type", "start-program-output"},
+               {"destinations", corevideo::rpc::Json::Array{"recording"}},
+               {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+           },
+       }},
+  });
+
+  EXPECT_EQ(response.getString("id"), "core-sync-1");
+  EXPECT_TRUE(response.get("ok")->asBool());
+  EXPECT_EQ(response.getString("type"), "media-core-sync");
+  ASSERT_NE(response.get("snapshot"), nullptr);
+  EXPECT_TRUE(response.get("snapshot")->get("active")->asBool());
+}
+
 TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {
   corevideo::core::MediaCore mediaCore;
   corevideo::rpc::JsonRpcServer server(mediaCore);
@@ -40,8 +64,8 @@ TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {
 
   EXPECT_EQ(response.getString("id"), "agent-a-1");
   EXPECT_TRUE(response.get("ok")->asBool());
-  ASSERT_NE(response.get("state"), nullptr);
-  const auto* health = response.get("state")->get("health");
+  ASSERT_NE(response.get("snapshot"), nullptr);
+  const auto* health = response.get("snapshot")->get("health");
   ASSERT_NE(health, nullptr);
   EXPECT_EQ(health->getString("status"), "live");
   EXPECT_GE(health->get("encodedFrameCount")->asNumber(), 1);

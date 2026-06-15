@@ -1,4 +1,4 @@
-# Build CoreVideo Pro native binaries for Sprint 1 (Zoom engine + media core).
+# Build CoreVideo Pro native binaries for Sprint 1–3 (Zoom engine + output adapters).
 # Requires: Visual Studio 2022+ with C++ tools, CMake, Zoom Meeting SDK x64.
 param(
   [string]$ZoomSdkDir = $(if ($env:ZOOM_SDK_DIR) { $env:ZOOM_SDK_DIR } else { "C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64" }),
@@ -20,6 +20,9 @@ $cmakeArgs = @(
   "-B", $BuildDir,
   "-DCOREVIDEO_STUB=OFF",
   "-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON",
+  "-DCOREVIDEO_WITH_D3D11=ON",
+  "-DCOREVIDEO_WITH_MF_ENCODER=ON",
+  "-DCOREVIDEO_WITH_RTMP_OUTPUT=ON",
   "-DCOREVIDEO_BUILD_ZOOM_ENGINE=ON",
   "-DZOOM_SDK_DIR=$ZoomSdkDir"
 )
@@ -38,4 +41,5 @@ Write-Host "Built:" -ForegroundColor Green
 Write-Host "  $BuildDir\corevideo-zoom-engine.exe"
 Write-Host "  $BuildDir\corevideo-native.exe"
 Write-Host ""
-Write-Host "Next: .\scripts\sprint1-dev.ps1"
+Write-Host "Output adapters: D3D11 compositor, Media Foundation MP4, RTMP send-proof"
+Write-Host "Next: .\scripts\sprint1-dev.ps1  (or .\scripts\sprint3-dev.ps1)"

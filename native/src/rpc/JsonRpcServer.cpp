@@ -92,8 +92,11 @@ Json JsonRpcServer::handle(const Json& request) {
                        });
   }
 
-  if (hasType(request, "native-media-core-sync") || request.get("commands")) {
-    return success(id, Json::Object{{"state", mediaCore_.applyCommands(commandBatch(request))}});
+  if (hasType(request, "media-core-sync") || hasType(request, "native-media-core-sync") || request.get("commands")) {
+    return success(id, Json::Object{
+                           {"type", hasType(request, "media-core-sync") ? "media-core-sync" : "native-media-core-sync"},
+                           {"snapshot", mediaCore_.applyCommands(commandBatch(request))},
+                       });
   }
 
   if (hasType(request, "snapshot")) {
@@ -139,7 +142,7 @@ Json JsonRpcServer::handle(const Json& request) {
 
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset")) {
-    return success(id, Json::Object{{"state", mediaCore_.applyCommands(commandBatch(request))}});
+    return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }
 
   return failure(id, "protocol-error", "Unsupported native media-core command: " + type);
