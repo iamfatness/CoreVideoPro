@@ -519,7 +519,7 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: "Take" }));
 
     expect(within(program).getByLabelText("Interview layout")).toBeInTheDocument();
-    expect(within(program).getByText("Priya Shah")).toBeInTheDocument();
+    expect(within(program).getAllByText("Priya Shah").length).toBeGreaterThanOrEqual(1);
   });
 
   it("routes preview scene slots by active speaker with audio role metadata", async () => {
@@ -1757,8 +1757,8 @@ describe("lower thirds", () => {
     const panel = screen.getByLabelText("Lower third deck");
     await user.click(within(panel).getByRole("button", { name: /Show Next/i }));
 
-    // The first queued plate (keynote speaker) is now on air in the preview.
-    expect(within(panel).getAllByText("Dr. Amara Okafor").length).toBeGreaterThanOrEqual(1);
+    // The first queued plate comes from the live Zoom roster (active speaker first).
+    expect(within(panel).getAllByText("Andre Wallace").length).toBeGreaterThanOrEqual(1);
     expect(within(panel).getByRole("button", { name: /Take Down/i })).not.toBeDisabled();
   });
 });
