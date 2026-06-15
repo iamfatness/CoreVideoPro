@@ -44,8 +44,13 @@ class MediaCore {
   void stopRecordingSession(const rpc::Json& command);
   void failRecordingSession(const rpc::Json& command);
   void recoverRecordingSession(const rpc::Json& command);
+  void syncParticipantAudioMix(const rpc::Json& command);
+  void pushCaptionCue(const rpc::Json& command);
+  void setCaptionEnabled(const rpc::Json& command);
   void renderSyntheticTick();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
+  [[nodiscard]] rpc::Json audioMixSessionState() const;
+  [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
@@ -81,6 +86,21 @@ class MediaCore {
   bool zoomJoined_ = false;
   int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
+  struct ParticipantAudioChannelInput {
+    std::string participantId;
+    int inputLevel = 0;
+    bool muted = false;
+    bool noiseSuppression = false;
+    double manualGainDb = 0;
+    bool hasManualGain = false;
+  };
+  std::vector<ParticipantAudioChannelInput> audioChannels_;
+  bool captionEnabled_ = true;
+  std::string captionText_;
+  std::string captionSpeaker_;
+  double captionAtMs_ = 0;
+  int captionConfidence_ = 0;
+  std::vector<std::string> captionWarnings_;
 };
 
 }  // namespace corevideo::core

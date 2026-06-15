@@ -346,6 +346,8 @@ export type MediaCoreDiagnosticsSnapshot = {
   programTransport: MediaCoreProgramFrameTransport;
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
+  audioMixSession: MediaCoreAudioMixSession;
+  captionTrack: MediaCoreCaptionTrack;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   warnings: string[];
@@ -451,7 +453,65 @@ export type MediaCoreCommand =
       type: "recover-recording-session";
       recoveredAtMs?: number;
       reason?: string;
+    }
+  | {
+      type: "sync-participant-audio-mix";
+      channels: Array<{
+        participantId: string;
+        inputLevel: number;
+        muted: boolean;
+        noiseSuppression: boolean;
+        manualGainDb?: number;
+      }>;
+    }
+  | {
+      type: "push-caption-cue";
+      text: string;
+      speaker?: string;
+      atMs: number;
+    }
+  | {
+      type: "set-caption-enabled";
+      enabled: boolean;
     };
+
+export type MediaCoreParticipantAudioChannel = {
+  participantId: string;
+  inputLevel: number;
+  outputLevel: number;
+  gainDb: number;
+  manualGainDb?: number;
+  noiseSuppression: boolean;
+  limiterActive: boolean;
+  muted: boolean;
+  status: "balanced" | "boosting" | "ducking" | "muted";
+};
+
+export type MediaCoreAudioMixSession = {
+  status: "idle" | "live" | "warning";
+  masterLevel: number;
+  loudnessLufs: number;
+  limiterActive: boolean;
+  mixedFrameCount: number;
+  participants: MediaCoreParticipantAudioChannel[];
+  summary: string;
+  warnings: string[];
+};
+
+export type MediaCoreCaptionCue = {
+  text: string;
+  speaker?: string;
+  atMs: number;
+  confidence: number;
+};
+
+export type MediaCoreCaptionTrack = {
+  enabled: boolean;
+  status: "idle" | "live" | "warning";
+  currentCue?: MediaCoreCaptionCue;
+  latencyMs: number;
+  warnings: string[];
+};
 
 export type MediaCoreRequest =
   | {
@@ -497,6 +557,8 @@ export type MediaCoreStateSnapshot = {
   renderPlan: MediaCoreRenderPlan;
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
+  audioMixSession: MediaCoreAudioMixSession;
+  captionTrack: MediaCoreCaptionTrack;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   diagnostics: MediaCoreDiagnosticsSnapshot;

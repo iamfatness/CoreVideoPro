@@ -7,6 +7,7 @@ import {
   type NativeHostBridge
 } from "./nativeHostBridge";
 import type { NativeBridgeCommand, NativeBridgeResponse } from "./nativeBridgeProtocol";
+import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
 import type { NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 const profile: NativeMediaCoreProfile = {
@@ -66,6 +67,8 @@ function fakeSnapshot(): NativeMediaCoreStateSnapshot {
     resolvedRouteCount: 0,
     renderPlan,
     encoderSession,
+    audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+    captionTrack: IDLE_NATIVE_CAPTION_TRACK,
     operatorActions: [],
     eventLog: [],
     diagnostics: {
@@ -82,6 +85,8 @@ function fakeSnapshot(): NativeMediaCoreStateSnapshot {
       compositor,
       programTransport,
       encoderSession,
+      audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+      captionTrack: IDLE_NATIVE_CAPTION_TRACK,
       operatorActions: [],
       eventLog: [],
       warnings: [],

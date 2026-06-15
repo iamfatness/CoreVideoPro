@@ -54,7 +54,9 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
       type: "set-color-grade",
       ...state.colorGrade
     },
-    buildOutputProfileCommand(state)
+    buildOutputProfileCommand(state),
+    buildAudioMixCommand(state),
+    ...buildCaptionCommands(state)
   ];
 
   const outputCommand = buildOutputCommand(state);
@@ -218,6 +220,38 @@ function buildRecordingCommands(state: ProductionState): NativeMediaCoreCommand[
 
 function mapDestinationProtocol(destination: OutputDestination) {
   return destination.protocol.toLowerCase() as "rtmp" | "ndi" | "srt" | "webrtc";
+}
+
+function buildAudioMixCommand(state: ProductionState): NativeMediaCoreCommand {
+  const mixByParticipant = new Map(state.audioMix.participants.map((mix) => [mix.participantId, mix]));
+
+  return {
+    type: "sync-participant-audio-mix",
+    channels: state.participants.map((participant) => {
+      const mix = mixByParticipant.get(participant.id);
+      return {
+        participantId: participant.id,
+        inputLevel: mix?.inputLevel ?? participant.audioLevel,
+        muted: mix?.muted ?? participant.isMuted,
+        noiseSuppression: mix?.noiseSuppression ?? false,
+        manualGainDb: mix?.manualGainDb
+      };
+    })
+  };
+}
+
+function buildCaptionCommands(state: ProductionState): NativeMediaCoreCommand[] {
+  const commands: NativeMediaCoreCommand[] = [{ type: "set-caption-enabled", enabled: true }];
+  const text = state.captionOverlay.text.trim();
+  if (text) {
+    commands.push({
+      type: "push-caption-cue",
+      text,
+      speaker: state.captionOverlay.speakerName,
+      atMs: 0
+    });
+  }
+  return commands;
 }
 
 function getSceneSlotCount(scene: SceneTemplate, participants: Participant[]) {

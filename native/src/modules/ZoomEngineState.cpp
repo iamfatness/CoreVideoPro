@@ -110,6 +110,17 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   return snapshot;
 }
 
+std::vector<AudioFrame> ZoomEngineRuntimeState::pollCompositorAudioFrames(int64_t timestampMs) const {
+  std::vector<AudioFrame> frames;
+  for (const auto& [_, stats] : subscriptionStats_) {
+    if (stats.kind != "participant-audio" || stats.audioPacketsReceived <= 0 || stats.participantId.empty()) {
+      continue;
+    }
+    frames.push_back({stats.participantId, 48000, 1, timestampMs});
+  }
+  return frames;
+}
+
 std::vector<VideoFrame> ZoomEngineRuntimeState::pollCompositorVideoFrames(int64_t timestampMs) const {
   std::vector<VideoFrame> frames;
   for (const auto& [_, stats] : subscriptionStats_) {

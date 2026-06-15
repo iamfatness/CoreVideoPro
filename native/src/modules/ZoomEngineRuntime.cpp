@@ -255,6 +255,11 @@ std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t tim
   return state_.pollCompositorVideoFrames(timestampMs);
 }
 
+std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t timestampMs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return state_.pollCompositorAudioFrames(timestampMs);
+}
+
 std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
   std::lock_guard<std::mutex> lock(mutex_);
   auto events = std::move(pendingFrameEvents_);

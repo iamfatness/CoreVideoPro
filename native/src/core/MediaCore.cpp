@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace corevideo::core {
@@ -280,6 +281,8 @@ rpc::Json MediaCore::sessionState() const {
       {"captureDevices", captureDevicesState()},
       {"health", health()},
       {"profile", profile()},
+      {"audioMixSession", audioMixSessionState()},
+      {"captionTrack", captionTrackState()},
   };
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
@@ -460,6 +463,12 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     failRecordingSession(command);
   } else if (type == "recover-recording-session") {
     recoverRecordingSession(command);
+  } else if (type == "sync-participant-audio-mix") {
+    syncParticipantAudioMix(command);
+  } else if (type == "push-caption-cue") {
+    pushCaptionCue(command);
+  } else if (type == "set-caption-enabled") {
+    setCaptionEnabled(command);
   }
   return sessionState();
 }
@@ -556,6 +565,200 @@ void MediaCore::recoverRecordingSession(const rpc::Json& command) {
   recordingWriterStatus_ = recordingWarning_.empty() ? "writing" : "warning";
   recordingError_.clear();
   recordingWarning_ = command.getString("reason", recordingWarning_);
+}
+
+void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
+  audioChannels_.clear();
+  const rpc::Json* channels = command.get("channels");
+  if (!channels || !channels->isArray()) {
+    return;
+  }
+  for (const auto& channel : channels->asArray()) {
+    ParticipantAudioChannelInput input;
+    input.participantId = channel.getString("participantId");
+    input.inputLevel = static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0);
+    input.muted = channel.get("muted") && channel.get("muted")->asBool();
+    input.noiseSuppression = channel.get("noiseSuppression") && channel.get("noiseSuppression")->asBool();
+    if (const rpc::Json* manualGain = channel.get("manualGainDb")) {
+      input.manualGainDb = manualGain->asNumber();
+      input.hasManualGain = true;
+    }
+    if (!input.participantId.empty()) {
+      audioChannels_.push_back(std::move(input));
+    }
+  }
+  renderSyntheticTick();
+}
+
+void MediaCore::pushCaptionCue(const rpc::Json& command) {
+  captionWarnings_.clear();
+  const std::string text = command.getString("text");
+  if (text.empty()) {
+    captionWarnings_.push_back("Caption cue ignored because text was empty.");
+    return;
+  }
+  captionText_ = text;
+  captionSpeaker_ = command.getString("speaker");
+  captionAtMs_ = command.get("atMs") ? command.get("atMs")->asNumber() : 0;
+  captionConfidence_ = std::max(82, 97 - static_cast<int>(text.size() / 28));
+  if (text.size() > 96) {
+    captionWarnings_.push_back("Caption line is long; compact mode enabled.");
+  }
+}
+
+void MediaCore::setCaptionEnabled(const rpc::Json& command) {
+  captionEnabled_ = !(command.get("enabled") && !command.get("enabled")->asBool());
+  captionWarnings_.clear();
+  if (!captionEnabled_) {
+    captionWarnings_.push_back("Caption track disabled.");
+  }
+}
+
+namespace {
+
+int clampInt(int value, int minValue, int maxValue) {
+  return std::max(minValue, std::min(maxValue, value));
+}
+
+double clampDouble(double value, double minValue, double maxValue) {
+  return std::max(minValue, std::min(maxValue, value));
+}
+
+int calculateSmartGainDb(int inputLevel) {
+  const int delta = 68 - inputLevel;
+  if (delta > 28) return 6;
+  if (delta > 14) return 3;
+  if (delta < -12) return -4;
+  if (delta < -4) return -2;
+  return 0;
+}
+
+std::string audioStatusFor(bool muted, int gainDb) {
+  if (muted) return "muted";
+  if (gainDb > 0) return "boosting";
+  if (gainDb < 0) return "ducking";
+  return "balanced";
+}
+
+}  // namespace
+
+rpc::Json MediaCore::audioMixSessionState() const {
+  if (audioChannels_.empty()) {
+    return rpc::Json::Object{
+        {"status", "idle"},
+        {"masterLevel", 0},
+        {"loudnessLufs", -60},
+        {"limiterActive", false},
+        {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
+        {"participants", rpc::Json::Array{}},
+        {"summary", "Audio mix idle."},
+        {"warnings", rpc::Json::Array{}},
+    };
+  }
+
+  rpc::Json::Array participants;
+  rpc::Json::Array warnings;
+  int masterTotal = 0;
+  int audibleCount = 0;
+  bool limiterActive = false;
+  int boostingCount = 0;
+  int duckingCount = 0;
+  int mutedCount = 0;
+  int manualCount = 0;
+
+  for (const auto& channel : audioChannels_) {
+    const int smartGainDb = calculateSmartGainDb(channel.inputLevel);
+    const int gainDb = channel.muted ? -60 : static_cast<int>(clampDouble(smartGainDb + (channel.hasManualGain ? channel.manualGainDb : 0), -12, 12));
+    const bool noiseSuppression = channel.noiseSuppression || channel.inputLevel < 35;
+    const int outputLevel = channel.muted ? 0 : clampInt(channel.inputLevel + gainDb * 4, 0, 100);
+    limiterActive = limiterActive || outputLevel >= 88;
+    if (!channel.muted) {
+      masterTotal += outputLevel;
+      ++audibleCount;
+    }
+    if (gainDb > 0 && !channel.muted) ++boostingCount;
+    if (gainDb < 0 && !channel.muted) ++duckingCount;
+    if (channel.muted) ++mutedCount;
+    if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
+    if (noiseSuppression && channel.inputLevel < 35) {
+      warnings.emplace_back("Noise suppression active on low-level sources.");
+    }
+
+    rpc::Json::Object participant{
+        {"participantId", channel.participantId},
+        {"inputLevel", channel.inputLevel},
+        {"outputLevel", outputLevel},
+        {"gainDb", gainDb},
+        {"noiseSuppression", noiseSuppression},
+        {"limiterActive", outputLevel >= 88},
+        {"muted", channel.muted},
+        {"status", audioStatusFor(channel.muted, gainDb)},
+    };
+    if (channel.hasManualGain) {
+      participant.emplace("manualGainDb", channel.manualGainDb);
+    }
+    participants.emplace_back(std::move(participant));
+  }
+
+  const int masterLevel = audibleCount > 0 ? clampInt((masterTotal / audibleCount) + 8, 0, 100) : 0;
+  limiterActive = limiterActive || masterLevel >= 88;
+  std::ostringstream summary;
+  if (boostingCount > 0) summary << boostingCount << " boosted";
+  if (duckingCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << duckingCount << " ducked";
+  if (mutedCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << mutedCount << " muted";
+  if (manualCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << manualCount << " manual";
+  const std::string summaryText = summary.tellp() > 0 ? summary.str() + " in program mix" : "Program mix balanced";
+
+  return rpc::Json::Object{
+      {"status", warnings.empty() ? "live" : "warning"},
+      {"masterLevel", masterLevel},
+      {"loudnessLufs", limiterActive ? -14 : -16},
+      {"limiterActive", limiterActive},
+      {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
+      {"participants", participants},
+      {"summary", summaryText},
+      {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::captionTrackState() const {
+  rpc::Json::Array warnings;
+  for (const auto& warning : captionWarnings_) {
+    warnings.emplace_back(warning);
+  }
+  if (!captionEnabled_) {
+    return rpc::Json::Object{
+        {"enabled", false},
+        {"status", "idle"},
+        {"latencyMs", 0},
+        {"warnings", warnings},
+    };
+  }
+  if (captionText_.empty()) {
+    return rpc::Json::Object{
+        {"enabled", true},
+        {"status", "idle"},
+        {"latencyMs", 180},
+        {"warnings", warnings},
+    };
+  }
+
+  rpc::Json::Object cue{
+      {"text", captionText_},
+      {"atMs", captionAtMs_},
+      {"confidence", static_cast<double>(captionConfidence_)},
+  };
+  if (!captionSpeaker_.empty()) {
+    cue.emplace("speaker", captionSpeaker_);
+  }
+
+  return rpc::Json::Object{
+      {"enabled", true},
+      {"status", warnings.empty() ? "live" : "warning"},
+      {"currentCue", cue},
+      {"latencyMs", 180},
+      {"warnings", warnings},
+  };
 }
 
 rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) const {
@@ -735,6 +938,12 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   auto audioFrames = modules_.zoom->pollAudioFrames();
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
+    if (!engineAudioFrames.empty()) {
+      audioFrames = engineAudioFrames;
+    }
+  }
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
   modules::CompositorRenderPlan renderPlan;
   renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);

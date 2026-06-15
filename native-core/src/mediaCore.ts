@@ -25,6 +25,8 @@ import type {
   MediaCoreZoomSource
 } from "./protocol.js";
 import { TestPatternMediaSource, createMediaFrameSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
+import { AudioMixSessionModel } from "./audioMixSession.js";
+import { CaptionTrackModel } from "./captionTrack.js";
 import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
 import { ProgramCompositor } from "./compositor.js";
@@ -91,6 +93,8 @@ export class MediaCoreRuntime {
   private readonly compositor = new ProgramCompositor();
   private readonly outputSenderSessionModel = new OutputSenderSessionModel();
   private readonly recordingSink = new RecordingSink();
+  private readonly audioMixSession = new AudioMixSessionModel();
+  private readonly captionTrack = new CaptionTrackModel();
   private frames: MediaCoreFrame[] = [];
   private sourceSnapshot: MediaCoreFrameSourceSnapshot;
   private programFrame?: MediaCoreProgramFrame;
@@ -361,6 +365,27 @@ export class MediaCoreRuntime {
           message: command.reason ?? recording?.warning ?? "Recording writer recovered.",
           droppedFrames: recording?.totalDroppedFrames ?? 0
         });
+        return;
+      }
+
+      if (command.type === "sync-participant-audio-mix") {
+        const audioMix = this.audioMixSession.sync(command.channels);
+        if (audioMix.warnings.length > 0) {
+          this.warn(warnings, "program", "Audio mix warning", audioMix.warnings[0], command.type);
+        }
+        return;
+      }
+
+      if (command.type === "push-caption-cue") {
+        const track = this.captionTrack.pushCue(command.text, command.atMs, command.speaker);
+        if (track.warnings.length > 0) {
+          this.warn(warnings, "program", "Caption track warning", track.warnings[0], command.type);
+        }
+        return;
+      }
+
+      if (command.type === "set-caption-enabled") {
+        this.captionTrack.setEnabled(command.enabled);
       }
     });
 
@@ -378,6 +403,8 @@ export class MediaCoreRuntime {
     const outputSenderSession = this.outputSenderSession();
     this.syncOutputSenderEvents(outputSenderSession.senders);
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
+    const audioMixSession = this.audioMixSession.snapshot();
+    const captionTrack = this.captionTrack.snapshot();
     const operatorActions = buildOperatorActions({
       sourceSnapshot: this.sourceSnapshot,
       renderPlan,
@@ -394,6 +421,8 @@ export class MediaCoreRuntime {
         ...renderPlan.warnings,
         ...encoderSession.warnings,
         ...outputSenderSession.warnings,
+        ...audioMixSession.warnings,
+        ...captionTrack.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -426,9 +455,22 @@ export class MediaCoreRuntime {
       renderPlan,
       encoderSession,
       recording,
+      audioMixSession,
+      captionTrack,
       operatorActions,
       eventLog: [...this.eventLog],
-      diagnostics: this.diagnostics(outputHealth, allWarnings, recording, renderPlan, compositor, encoderSession, outputSenderSession, operatorActions),
+      diagnostics: this.diagnostics(
+        outputHealth,
+        allWarnings,
+        recording,
+        renderPlan,
+        compositor,
+        encoderSession,
+        outputSenderSession,
+        audioMixSession,
+        captionTrack,
+        operatorActions
+      ),
       lastCommandTypes: this.lastCommandTypes,
       warnings: allWarnings
     };
@@ -443,6 +485,7 @@ export class MediaCoreRuntime {
     this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs, this.programFrame);
+    this.audioMixSession.mix(this.frames.length > 0 ? 1 : 0);
   }
 
   private renderPlan() {
@@ -546,6 +589,8 @@ export class MediaCoreRuntime {
     compositor: MediaCoreStateSnapshot["compositor"],
     encoderSession: MediaCoreEncoderSession,
     outputSenderSession: MediaCoreOutputSenderSession,
+    audioMixSession: MediaCoreStateSnapshot["audioMixSession"],
+    captionTrack: MediaCoreStateSnapshot["captionTrack"],
     operatorActions: MediaCoreStateSnapshot["operatorActions"]
   ): MediaCoreDiagnosticsSnapshot {
     return {
@@ -565,6 +610,8 @@ export class MediaCoreRuntime {
       programTransport: this.programTransport,
       encoderSession,
       recording,
+      audioMixSession,
+      captionTrack,
       operatorActions,
       eventLog: [...this.eventLog],
       warnings,

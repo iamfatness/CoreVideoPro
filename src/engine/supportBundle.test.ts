@@ -136,15 +136,20 @@ describe("createSupportBundle", () => {
         ])
       },
       operatorActions: [],
-      eventLog: [
+      eventLog: expect.arrayContaining([
         expect.objectContaining({
           severity: "info",
           area: "sender",
           title: "RTMP sender live",
           detail: "RTMP sender live at 1920x1080 60fps; 8.2 Mbps target.",
           relatedId: "rtmp:program"
+        }),
+        expect.objectContaining({
+          severity: "warning",
+          title: "Media core warning",
+          detail: "Noise suppression active on low-level sources."
         })
-      ]
+      ])
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");

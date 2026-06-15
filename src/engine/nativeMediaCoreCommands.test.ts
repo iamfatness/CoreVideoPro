@@ -162,6 +162,28 @@ describe("native media core command builder", () => {
     });
   });
 
+  it("serializes participant audio mix and caption cues for the native core", () => {
+    const commands = buildNativeMediaCoreCommands(initialProduction);
+
+    expect(commands).toContainEqual({
+      type: "sync-participant-audio-mix",
+      channels: initialProduction.participants.map((participant) => ({
+        participantId: participant.id,
+        inputLevel: participant.audioLevel,
+        muted: participant.isMuted,
+        noiseSuppression: false,
+        manualGainDb: undefined
+      }))
+    });
+    expect(commands).toContainEqual({ type: "set-caption-enabled", enabled: true });
+    expect(commands).toContainEqual({
+      type: "push-caption-cue",
+      text: initialProduction.captionOverlay.text.trim(),
+      speaker: initialProduction.captionOverlay.speakerName,
+      atMs: 0
+    });
+  });
+
   it("stops encoder lifecycle when production outputs are idle", () => {
     const commands = buildNativeMediaCoreCommands({
       ...initialProduction,

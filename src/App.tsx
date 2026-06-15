@@ -2206,6 +2206,12 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Senders" value={mediaCoreSnapshot ? `${mediaCoreSnapshot.outputSenderSession.activeSenderCount} ${mediaCoreSnapshot.outputSenderSession.status}` : "0 idle"} />
               <ControlReadout label="Outputs" value={mediaCoreSnapshot?.outputs.length ? mediaCoreSnapshot.outputs.join(", ") : "Idle"} />
               <ControlReadout label="Profile" value={mediaCoreSnapshot?.outputProfile.profileId ?? "1080p60"} />
+              <ControlReadout label="Audio mix" value={mediaCoreSnapshot?.audioMixSession.summary ?? "Pending"} />
+              <ControlReadout label="Mix level" value={`${mediaCoreSnapshot?.audioMixSession.masterLevel ?? 0}%`} />
+              <ControlReadout label="Mix loudness" value={`${mediaCoreSnapshot?.audioMixSession.loudnessLufs ?? -60} LUFS`} />
+              <ControlReadout label="Caption track" value={mediaCoreSnapshot?.captionTrack.status ?? "Pending"} />
+              <ControlReadout label="Caption cue" value={mediaCoreSnapshot?.captionTrack.currentCue?.text ?? "None"} />
+              <ControlReadout label="Caption latency" value={`${mediaCoreSnapshot?.captionTrack.latencyMs ?? 0} ms`} />
               <ControlReadout label="Recording" value={mediaCoreSnapshot?.recording?.status ?? "Off"} />
               <ControlReadout label="Recorded frames" value={`${mediaCoreSnapshot?.recording?.totalFramesWritten ?? 0}`} />
               <ControlReadout label="Disk rate" value={mediaCoreSnapshot?.recording ? `${mediaCoreSnapshot.recording.estimatedDiskRateMBps} MB/s` : "0 MB/s"} />
