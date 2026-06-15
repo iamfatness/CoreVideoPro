@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "corevideo-telemetry-ingest",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "staging"
+  }
+}
