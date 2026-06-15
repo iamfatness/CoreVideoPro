@@ -11,7 +11,11 @@
  * renderer `request` goes through the IPC router, which delegates media-core
  * traffic to the supervised child process.
  */
+import { mkdtemp, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
+import { createSupportBundle } from "../src/engine/supportBundle";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
 import { createIpcRouter } from "./ipcRouter.ts";
 import { buildNativeMediaCoreCommands } from "../src/engine/nativeMediaCoreCommands";
@@ -163,5 +167,27 @@ describe("desktop integration gate", () => {
     });
     expect(degraded.status).toBe("degraded");
     expect(degraded.label).toMatch(/recovering/i);
+  });
+
+  it("Sprint 6 gate — support bundle export round-trips through the IPC router", async () => {
+    const diagnosticsDirectory = await mkdtemp(join(tmpdir(), "corevideo-integration-diag-"));
+    const supervisor = new MediaCoreSupervisor();
+    active = supervisor;
+    await supervisor.start();
+    const route = createIpcRouter({
+      mediaCore: supervisor,
+      diagnosticsDirectory,
+      readCrashEvents: async () => []
+    });
+
+    const bundle = createSupportBundle(initialProduction, undefined, { platform: process.platform });
+    const response = await route({ id: "export-bundle", type: "export-support-bundle", payload: { bundle } });
+
+    expect(response.ok).toBe(true);
+    if (response.ok && "export" in response) {
+      const raw = await readFile(response.export.path, "utf8");
+      expect(raw).toContain("AI Product Launch Webinar");
+      expect(JSON.parse(raw).app.platform).toBe(process.platform);
+    }
   });
 });

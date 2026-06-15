@@ -26,6 +26,7 @@ declare const process: {
   argv: string[];
   env: NodeJS_ProcessEnv;
   defaultApp?: boolean;
+  resourcesPath?: string;
   exit(code?: number): never;
   stdin: NodeJS_ReadableStream;
   stdout: NodeJS_WritableStream;
@@ -105,11 +106,21 @@ declare module "node:crypto" {
   };
 }
 
+declare module "node:fs" {
+  export function existsSync(path: string): boolean;
+}
+
 declare module "node:fs/promises" {
   export function mkdir(path: string, options: { recursive: boolean }): Promise<void>;
   export function readFile(path: string, encoding: "utf8"): Promise<string>;
   export function writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
 }
+
+declare const TextEncoder: {
+  new (): {
+    encode(input: string): Uint8Array;
+  };
+};
 
 declare namespace Electron {
   interface IpcRendererEvent {

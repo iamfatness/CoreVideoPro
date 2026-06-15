@@ -1,3 +1,4 @@
+import type { SupportBundle } from "../domain/production";
 import type {
   NativeBridgeCommand,
   NativeBridgeResponse,
@@ -37,6 +38,7 @@ export type NativeHostBridge = {
   signOutZoomOAuth?(): Promise<string>;
   onZoomOAuthUpdated?(listener: () => void): () => void;
   onZoomOAuthError?(listener: (message: string) => void): () => void;
+  exportSupportBundle?(bundle: SupportBundle): Promise<{ path: string; bytes: number }>;
 };
 
 declare global {
@@ -152,6 +154,21 @@ export function attachBridgeMediaCoreHealth(bridge: NativeHostBridge): NativeHos
         // Bridge unavailable — return a safe default.
       }
       return { restartCount: 0, recovering: false, stopped: false };
+    };
+  }
+  return bridge;
+}
+
+export function attachBridgeSupportBundleExport(bridge: NativeHostBridge): NativeHostBridge {
+  if (!bridge.exportSupportBundle) {
+    bridge.exportSupportBundle = async (bundle: SupportBundle) => {
+      const id = nextBridgeCommandId("export-support-bundle");
+      const response = await bridge.request({ id, type: "export-support-bundle", payload: { bundle } });
+      if (response.ok && "export" in response) {
+        return response.export;
+      }
+      const message = response.ok ? "Bridge did not return an export result." : response.error.message;
+      throw new NativeZoomBridgeError("protocol-error", `support bundle export failed: ${message}`);
     };
   }
   return bridge;

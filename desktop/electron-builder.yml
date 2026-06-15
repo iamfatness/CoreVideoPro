@@ -1,5 +1,9 @@
 # electron-builder packaging config for the CoreVideo Pro desktop shell.
 # Packaging is a dev-machine concern; CI validates the shell logic headlessly.
+#
+# Code signing (opt-in via env):
+#   Windows: CSC_LINK, CSC_KEY_PASSWORD
+#   macOS:   CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 appId: pro.corevideo.desktop
 productName: CoreVideo Pro
 directories:
@@ -13,13 +17,27 @@ files:
   - desktop/**/*.cjs
   - "!desktop/**/*.test.ts"
   - package.json
+extraResources:
+  - from: desktop/build/native
+    to: native
+    filter:
+      - "**/*"
 extraMetadata:
   main: desktop/main.ts
 win:
   target: nsis
+  artifactName: "${productName}-${version}-win-${arch}.${ext}"
 mac:
   target: dmg
   category: public.app-category.video
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
+  hardenedRuntime: true
+  gatekeeperAssess: false
 linux:
   target: AppImage
   category: AudioVideo
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
