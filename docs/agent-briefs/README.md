@@ -40,6 +40,18 @@ existing seams, not new scaffolding:
   `COREVIDEO_ENABLE_DEV_ADAPTERS` so the default in-container build stays green.
 - `05-dispatch-prompts.md` — ready-to-paste kickoff prompts for each agent.
 
+### Paid v1.0 launch — three-agent plan
+
+The round-1/round-2 work is two-track (Claude + Codex). The launch plan adds a
+third agent (Grok, release/QA/ops) and re-points all three lanes at a paid v1.0:
+
+- `08-launch-plan-v1.md` — the full road-to-paid-launch plan: three lanes
+  (Claude = desktop/renderer, Codex = native core, Grok = release eng / QA /
+  ops + commerce), collision-free ownership, a unified weekly-demo sprint
+  timeline, and the v1.0 launch checklist.
+- `09-launch-dispatch-prompts.md` — ready-to-paste kickoff prompts for Claude,
+  Codex, and Grok pointing each at its lane.
+
 ## Ground rules for both agents
 
 - **Environment constraint:** the default build/test target is a plain Linux
