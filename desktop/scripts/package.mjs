@@ -62,6 +62,9 @@ run("node", ["desktop/scripts/generate-icons.mjs"]);
 console.info("[pack] building renderer…");
 run("npm", ["run", "build"]);
 
+console.info("[pack] installing electron-updater for packaged auto-update…");
+run("npm", ["install", "--no-save", "electron-updater@6.8.9"]);
+
 console.info("[pack] bundling Electron entries…");
 ensurePreloadBundle();
 ensurePackagedMainBundle();
