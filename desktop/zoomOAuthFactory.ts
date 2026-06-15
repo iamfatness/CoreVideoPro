@@ -13,8 +13,7 @@ export function createDesktopZoomOAuthService(): ZoomOAuthService {
         return value;
       }
       try {
-        const encrypted = Buffer.from(value, "base64") as unknown as ReturnType<typeof safeStorage.encryptString>;
-        return safeStorage.decryptString(encrypted);
+        return safeStorage.decryptString(Buffer.from(value, "base64") as unknown as Uint8Array);
       } catch {
         return value;
       }

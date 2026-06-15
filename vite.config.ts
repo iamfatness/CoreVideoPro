@@ -12,10 +12,20 @@ export default defineConfig({
     strictPort: false
   },
   test: {
+    name: "unit",
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",
-    exclude: ["**/node_modules/**", "**/dist/**", "native-core/**", "tests/e2e/**"],
-    testTimeout: 15000
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "native-core/**",
+      "tests/e2e/**",
+      "src/App.test.tsx",
+      "desktop/integration.test.ts",
+      "desktop/mediaCoreClient.test.ts"
+    ],
+    testTimeout: 15_000,
+    pool: "forks"
   }
 });
