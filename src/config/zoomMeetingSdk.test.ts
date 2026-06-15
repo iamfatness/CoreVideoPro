@@ -39,5 +39,21 @@ describe("zoomMeetingSdk", () => {
     expect(input.sdkRuntimePresent).toBe(true);
     expect(input.rawVideoEnabled).toBe(true);
     expect(input.oauthConfigured).toBe(true);
+    expect(input.jwtBrokerConfigured).toBe(true);
+  });
+
+  it("reflects OAuth sign-in in readiness overrides", () => {
+    const signedOut = deriveZoomSdkReadinessInputForRuntime(
+      { status: "ready", label: "Native", host: "electron", platform: "win32", warnings: [], capabilities: [] },
+      {},
+      { signedIn: false }
+    );
+    const signedIn = deriveZoomSdkReadinessInputForRuntime(
+      { status: "ready", label: "Native", host: "electron", platform: "win32", warnings: [], capabilities: [] },
+      {},
+      { signedIn: true }
+    );
+    expect(signedOut.oauthConfigured).toBe(true);
+    expect(signedIn.oauthConfigured).toBe(true);
   });
 });

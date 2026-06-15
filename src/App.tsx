@@ -35,7 +35,7 @@ import {
   Wifi,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { computeAutoCrop, describeFraming } from "./engine/autoCrop";
 import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } from "./engine/brandKit";
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
@@ -84,7 +84,13 @@ import { castVote, closePoll, createPoll, openPoll, resetPoll, tallyResults, typ
 import { addCue, createCueSheet, cueTypeLabel, endCue, goLiveCue, nextCue, skipCue, summarizeCueSheet, type CueSheet } from "./engine/cueSheet";
 import { answerQuestion, approveQuestion, createQaQueue, dismissQuestion, goLiveQuestion, sortedQuestions, submitQuestion, summarizeQaQueue, upvoteCount, upvoteQuestion, type QaQueue } from "./engine/qaQueue";
 import { advanceScroll, createTeleprompter, formatReadTime, jumpToLine, pauseScroll, resetScroll, setSpeed, startScroll, teleprompterView, type TeleprompterState } from "./engine/teleprompter";
-import { addPlate, createDeck, queuedPlates, requeuePlate, showNext, showPlate, summarizeDeck, takeDown, toneLabel, type LowerThirdDeck } from "./engine/lowerThird";
+import { createDeck, queuedPlates, requeuePlate, showNext, showPlate, summarizeDeck, takeDown, toneLabel, type LowerThirdDeck } from "./engine/lowerThird";
+import {
+  buildLiveRosterUpdate,
+  resolveProgramLowerThird,
+  showSceneFocusPlate,
+  syncLowerThirdDeckFromParticipants
+} from "./engine/liveProductionSync";
 import { addTickerItem, advanceTicker, clearTicker, createTicker, currentTickerItem, pauseTicker, priorityLabel, removeTickerItem, setTickerLoop, setTickerSpeed, startTicker, stopTicker, summarizeTicker, type TickerItemPriority, type TickerState } from "./engine/newsTicker";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
@@ -265,13 +271,9 @@ export function App({ engines, runtime }: AppProps) {
       ].join("\n")
     )
   );
-  const [plateDeck, setPlateDeck] = useState<LowerThirdDeck>(() => {
-    let d = createDeck();
-    d = addPlate(d, "Dr. Amara Okafor", "Keynote Speaker", "Quantum Systems Lab", "accent");
-    d = addPlate(d, "James Whitfield", "Panel Moderator", "CoreVideo", "neutral");
-    d = addPlate(d, "Sofia Marchetti", "Special Guest", "Marchetti Studios", "guest");
-    return d;
-  });
+  const [plateDeck, setPlateDeck] = useState<LowerThirdDeck>(() => createDeck());
+  const plateDeckRef = useRef(plateDeck);
+  plateDeckRef.current = plateDeck;
   const [ticker, setTicker] = useState<TickerState>(() => {
     let t = createTicker();
     t = addTickerItem(t, "Welcome to the show — streaming live now", "normal", "LIVE");
@@ -290,6 +292,8 @@ export function App({ engines, runtime }: AppProps) {
     { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
   ]);
   const [mediaCoreHealth, setMediaCoreHealth] = useState<MediaCoreHealth | undefined>(undefined);
+  const [zoomOAuthStatus, setZoomOAuthStatus] = useState<import("./engine/nativeBridgeProtocol").ZoomOAuthSessionStatus | undefined>(undefined);
+  const [zoomOAuthMessage, setZoomOAuthMessage] = useState("");
   const nativeBridgeForRuntime = (window as { coreVideoNative?: import("./engine/nativeHostBridge").NativeHostBridge }).coreVideoNative;
   const liveRuntime = useMemo(
     () =>
@@ -299,9 +303,28 @@ export function App({ engines, runtime }: AppProps) {
     [nativeBridgeForRuntime, runtime, mediaCoreHealth]
   );
   const sdkReadinessInput = useMemo(
-    () => deriveZoomSdkReadinessInputForRuntime(liveRuntime),
-    [liveRuntime?.status, liveRuntime?.host]
+    () => deriveZoomSdkReadinessInputForRuntime(liveRuntime, {}, { signedIn: zoomOAuthStatus?.signedIn }),
+    [liveRuntime?.status, liveRuntime?.host, zoomOAuthStatus?.signedIn]
   );
+
+  useEffect(() => {
+    const bridge = nativeBridgeForRuntime;
+    if (!bridge?.getZoomOAuthStatus) {
+      return;
+    }
+    void bridge.getZoomOAuthStatus().then(setZoomOAuthStatus).catch(() => undefined);
+    const detachUpdated = bridge.onZoomOAuthUpdated?.(() => {
+      void bridge.getZoomOAuthStatus?.().then((status) => {
+        setZoomOAuthStatus(status);
+        setZoomOAuthMessage("Signed in with Zoom.");
+      });
+    });
+    const detachError = bridge.onZoomOAuthError?.((message) => setZoomOAuthMessage(message));
+    return () => {
+      detachUpdated?.();
+      detachError?.();
+    };
+  }, [nativeBridgeForRuntime]);
   const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
   const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
     sdkReadinessInput.platform === "windows"
@@ -355,6 +378,10 @@ export function App({ engines, runtime }: AppProps) {
   const previewRouteWarnings = useMemo(
     () => getRouteWarnings(previewScene, visibleParticipants),
     [previewScene, visibleParticipants]
+  );
+  const programLowerThird = useMemo(
+    () => resolveProgramLowerThird(activeScene, programParticipants),
+    [activeScene, programParticipants]
   );
   const activeShareFrame = production.mediaFrames.find(
     (frame) =>
@@ -429,31 +456,79 @@ export function App({ engines, runtime }: AppProps) {
     production.scenes
   ]);
 
+  const liveRosterPollingEnabled = !engines.zoom.advanceSimulation;
+
   useEffect(() => {
     let mounted = true;
+    let syncGeneration = 0;
 
-    engines.mediaCore.syncProduction(production, elapsedSeconds * 1000).then((snapshot) => {
-      if (mounted) {
-        setMediaCoreSnapshot(snapshot);
+    async function syncLiveProduction() {
+      const generation = ++syncGeneration;
+      let spineSnapshot: Awaited<ReturnType<typeof engines.spineController.syncProduction>>["finalSnapshot"];
+
+      if (meetingState === "in_meeting") {
+        const spineResult = await engines.spineController.syncProduction(production, sdkReadinessInput, {
+          elapsedMs: elapsedSeconds * 1000
+        });
+        if (!mounted || generation !== syncGeneration) {
+          return;
+        }
+        if (spineResult.ok) {
+          spineSnapshot = spineResult.finalSnapshot;
+        }
       }
-    });
 
-    if (meetingState === "in_meeting") {
-      void engines.spineController.syncProduction(production, sdkReadinessInput, { elapsedMs: elapsedSeconds * 1000 });
+      if (liveRosterPollingEnabled && meetingState === "in_meeting" && elapsedSeconds % 2 === 0) {
+        try {
+          const snapshot = await engines.zoom.getSnapshot();
+          if (!mounted || generation !== syncGeneration) {
+            return;
+          }
+          const rosterUpdate = buildLiveRosterUpdate(
+            snapshot,
+            plateDeckRef.current,
+            participantRoleOverrides,
+            spineSnapshot
+          );
+          setMeetingState(rosterUpdate.meetingState);
+          setScreenShareActive(rosterUpdate.screenShareActive);
+          setProduction((current) => ({
+            ...current,
+            ...rosterUpdate.productionPatch
+          }));
+          setPlateDeck(rosterUpdate.plateDeck);
+        } catch {
+          // Live roster polling is best-effort while the meeting is active.
+        }
+      }
+
+      const snapshot = await engines.mediaCore.syncProduction(production, elapsedSeconds * 1000);
+      if (!mounted || generation !== syncGeneration) {
+        return;
+      }
+      setMediaCoreSnapshot(snapshot);
+
+      const nativeBridge = (window as { coreVideoNative?: { getMediaCoreHealth?(): Promise<MediaCoreHealth> } }).coreVideoNative;
+      if (nativeBridge?.getMediaCoreHealth) {
+        void nativeBridge.getMediaCoreHealth().then((h) => {
+          if (mounted && generation === syncGeneration) {
+            setMediaCoreHealth(h);
+          }
+        }).catch(() => {});
+      }
     }
 
-    const nativeBridge = (window as { coreVideoNative?: { getMediaCoreHealth?(): Promise<MediaCoreHealth> } }).coreVideoNative;
-    if (nativeBridge?.getMediaCoreHealth) {
-      void nativeBridge.getMediaCoreHealth().then((h) => { if (mounted) setMediaCoreHealth(h); }).catch(() => {});
-    }
+    void syncLiveProduction();
 
     return () => {
       mounted = false;
+      syncGeneration += 1;
     };
   }, [
     elapsedSeconds,
     engines.mediaCore,
     engines.spineController,
+    liveRosterPollingEnabled,
     meetingState,
     production.activeSceneId,
     production.graphics,
@@ -464,6 +539,7 @@ export function App({ engines, runtime }: AppProps) {
     production.scenes,
     production.streaming,
     production.videoEffects,
+    participantRoleOverrides,
     sdkReadinessInput
   ]);
 
@@ -489,8 +565,16 @@ export function App({ engines, runtime }: AppProps) {
     setProduction((current) => ({ ...current, captureDevices }));
   }
 
-  async function applySnapshot(snapshot: ZoomSessionSnapshot) {
-    const participants = applyParticipantRoleOverrides(snapshot.participants, participantRoleOverrides);
+  async function applySnapshot(
+    snapshot: ZoomSessionSnapshot,
+    spineSnapshot?: import("./engine/zoomMediaSpineNativeSync").ZoomMediaSpineNativeSnapshot
+  ) {
+    let participants = buildLiveRosterUpdate(
+      snapshot,
+      createDeck(),
+      participantRoleOverrides,
+      spineSnapshot
+    ).productionPatch.participants;
     const snapshotWithOverrides = {
       ...snapshot,
       participants
@@ -539,6 +623,11 @@ export function App({ engines, runtime }: AppProps) {
 
       return participants[0]?.id ?? "";
     });
+    setPlateDeck((current) =>
+      snapshot.meetingState === "idle"
+        ? createDeck()
+        : syncLowerThirdDeckFromParticipants(current, participants)
+    );
   }
 
   function applyOutputSession(session: Awaited<ReturnType<EngineBundle["output"]["getSession"]>>) {
@@ -613,6 +702,7 @@ export function App({ engines, runtime }: AppProps) {
       magicSceneStatus: result.warnings.length > 0 ? `${result.summary} ${result.warnings.join(" ")}` : result.summary,
       scenes: result.scenes
     }));
+    setPlateDeck((current) => syncLowerThirdDeckFromParticipants(current, production.participants));
   }
 
   function selectScene(scene: SceneTemplate) {
@@ -675,6 +765,7 @@ export function App({ engines, runtime }: AppProps) {
       },
       scenes: current.scenes.map((item) => ({ ...item, selected: item.id === scene.id }))
     }));
+    setPlateDeck((current) => showSceneFocusPlate(current, scene, production.participants));
   }
 
   function setTransitionStyle(style: TransitionState["style"]) {
@@ -1240,9 +1331,9 @@ export function App({ engines, runtime }: AppProps) {
                   />
                 )}
                 <div className={`lower-third lower-third-bar position-${production.captionOverlay.lowerThirdPosition}`}>
-                  <strong>{selectedParticipant?.name ?? "CoreVideo Pro"}</strong>
-                  <span className="lower-third-title">{selectedParticipant?.title ?? "Zoom-native production"}</span>
-                  <span className="lower-third-org">{production.brandKit.logoText.split(" ")[0]}</span>
+                  <strong>{programLowerThird.name}</strong>
+                  <span className="lower-third-title">{programLowerThird.title}</span>
+                  <span className="lower-third-org">{programLowerThird.org}</span>
                 </div>
                 {production.captionOverlay.warnings.length > 0 && (
                   <div className="overlay-warning">{production.captionOverlay.warnings[0]}</div>
@@ -1465,6 +1556,33 @@ export function App({ engines, runtime }: AppProps) {
               <Activity size={15} />
               Zoom SDK pre-flight
             </div>
+            {zoomOAuthStatus?.brokerConfigured && nativeBridgeForRuntime?.beginZoomOAuth && (
+              <div className="settings-actions" aria-label="Zoom account">
+                {zoomOAuthStatus.signedIn ? (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void nativeBridgeForRuntime.signOutZoomOAuth?.().then((message) => setZoomOAuthMessage(message));
+                      setZoomOAuthStatus({ ...zoomOAuthStatus, signedIn: false, expiresAt: 0 });
+                    }}
+                  >
+                    Sign out of Zoom
+                  </button>
+                ) : (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void nativeBridgeForRuntime.beginZoomOAuth?.().then((message) => setZoomOAuthMessage(message));
+                    }}
+                  >
+                    Sign in with Zoom
+                  </button>
+                )}
+                {zoomOAuthMessage && <span>{zoomOAuthMessage}</span>}
+              </div>
+            )}
             <div className={`sdk-readiness-panel status-${sdkReadiness.status}`} aria-label="SDK readiness panel">
               <p className="sdk-readiness-summary">{sdkReadiness.summary}</p>
               <div className="sdk-checks">

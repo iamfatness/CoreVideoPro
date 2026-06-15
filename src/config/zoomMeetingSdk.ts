@@ -1,6 +1,11 @@
 import type { RuntimeEnvironment } from "../engine/runtimeEnvironment";
 import type { ZoomSdkReadinessInput } from "../engine/zoomSdkReadiness";
+import { zoomOAuthBrokerConfigured } from "./zoomOAuth";
 import manifest from "./zoomMeetingSdk.json";
+
+export type ZoomOAuthReadiness = {
+  signedIn?: boolean;
+};
 
 /** Zoom Meeting SDK Public Client ID — embedded in the shipped app, not user-provided. */
 export const ZOOM_MEETING_SDK_PUBLIC_APP_KEY = manifest.publicAppKey;
@@ -36,22 +41,26 @@ export function createEmbeddedZoomSdkReadinessInput(
   };
 }
 
-/** Vendored zoom-engine path: treat native media ready as SDK-ready for Sprint 1. */
+/** Vendored zoom-engine path: native runtime + embedded app key; OAuth when signed in. */
 export function deriveZoomSdkReadinessInputForRuntime(
   runtime: RuntimeEnvironment | undefined,
-  overrides: Partial<ZoomSdkReadinessInput> = {}
+  overrides: Partial<ZoomSdkReadinessInput> = {},
+  oauth: ZoomOAuthReadiness = {}
 ): ZoomSdkReadinessInput {
   const base = createEmbeddedZoomSdkReadinessInput(overrides);
   if (runtime?.status !== "ready") {
     return base;
   }
 
+  const brokerConfigured = zoomOAuthBrokerConfigured();
+  const oauthConfigured = Boolean(oauth.signedIn) || zoomMeetingSdkAppKeyPresent();
+
   return {
     ...base,
     sdkRuntimePresent: true,
     sdkVersion: "zoom-engine",
-    oauthConfigured: true,
-    jwtBrokerConfigured: true,
+    oauthConfigured,
+    jwtBrokerConfigured: brokerConfigured,
     rawVideoEnabled: true,
     rawAudioEnabled: true,
     rawShareEnabled: true,

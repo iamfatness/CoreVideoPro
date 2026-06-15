@@ -6,7 +6,7 @@
  * native runtime on first paint.
  */
 import { contextBridge, ipcRenderer } from "electron";
-import type { NativeBridgeCommand, NativeBridgeResponse } from "../src/engine/nativeBridgeProtocol";
+import type { NativeBridgeCommand, NativeBridgeResponse, ZoomOAuthSessionStatus } from "../src/engine/nativeBridgeProtocol";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
@@ -51,8 +51,47 @@ async function getMediaCoreHealth(): Promise<MediaCoreHealth> {
   return { restartCount: 0, recovering: false, stopped: false };
 }
 
+async function getZoomOAuthStatus(): Promise<ZoomOAuthSessionStatus> {
+  const response = await request({ id: `zoom-oauth-status-${Date.now()}`, type: "get-zoom-oauth-status" });
+  if (response.ok && "oauthStatus" in response) {
+    return response.oauthStatus;
+  }
+  return { brokerConfigured: false, signedIn: false, expiresAt: 0, pendingAuthorization: false };
+}
+
+async function beginZoomOAuth(): Promise<string> {
+  const response = await request({ id: `zoom-oauth-begin-${Date.now()}`, type: "zoom-oauth-begin" });
+  if (response.ok && "oauthMessage" in response) {
+    return response.oauthMessage;
+  }
+  const message = response.ok ? "Unexpected OAuth response." : response.error.message;
+  throw new Error(message);
+}
+
+async function signOutZoomOAuth(): Promise<string> {
+  const response = await request({ id: `zoom-oauth-sign-out-${Date.now()}`, type: "zoom-oauth-sign-out" });
+  if (response.ok && "oauthMessage" in response) {
+    return response.oauthMessage;
+  }
+  const message = response.ok ? "Unexpected OAuth response." : response.error.message;
+  throw new Error(message);
+}
+
+function onZoomOAuthUpdated(listener: () => void): () => void {
+  const channelListener = () => listener();
+  ipcRenderer.on("corevideo:zoom-oauth-updated", channelListener);
+  return () => ipcRenderer.off("corevideo:zoom-oauth-updated", channelListener);
+}
+
+function onZoomOAuthError(listener: (message: string) => void): () => void {
+  const channelListener = (...args: unknown[]) => listener(args[1] as string);
+  ipcRenderer.on("corevideo:zoom-oauth-error", channelListener);
+  return () => ipcRenderer.off("corevideo:zoom-oauth-error", channelListener);
+}
+
 function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
-  const channelListener = (_event: Electron.IpcRendererEvent, frame: ZoomVideoFrame) => {
+  const channelListener = (...args: unknown[]) => {
+    const frame = args[1] as ZoomVideoFrame;
     listener({
       ...frame,
       rgba: new Uint8ClampedArray(frame.rgba)
@@ -70,5 +109,10 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   syncMediaCore,
   syncZoomMediaSpine,
   getMediaCoreHealth,
-  onZoomVideoFrame
+  onZoomVideoFrame,
+  getZoomOAuthStatus,
+  beginZoomOAuth,
+  signOutZoomOAuth,
+  onZoomOAuthUpdated,
+  onZoomOAuthError
 });

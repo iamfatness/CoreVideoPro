@@ -19,6 +19,7 @@ import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, N
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import type { ZoomOAuthService } from "./zoomOAuthService.ts";
 
 /** The slice of the supervisor the router depends on (eases testing). */
 export type MediaCoreBackend = {
@@ -34,6 +35,7 @@ export type MediaCoreBackend = {
 
 export type IpcRouterOptions = {
   mediaCore: MediaCoreBackend;
+  zoomOAuth?: ZoomOAuthService;
   output?: MockOutputEngine;
   captureDevices?: MockCaptureDeviceEngine;
 };
@@ -93,8 +95,23 @@ class CaptionStub {
   }
 }
 
+async function joinPayloadWithOAuth(
+  zoomOAuth: ZoomOAuthService | undefined,
+  payload: ZoomJoinRequest
+): Promise<ZoomJoinRequest> {
+  if (!zoomOAuth) {
+    return payload;
+  }
+  const creds = await zoomOAuth.ensureJoinCredentials();
+  return {
+    ...payload,
+    ...(creds.sdkJwt ? { sdkJwt: creds.sdkJwt } : {}),
+    ...(creds.userZak ? { userZak: creds.userZak } : {})
+  };
+}
+
 export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
-  const { mediaCore } = options;
+  const { mediaCore, zoomOAuth } = options;
   const output = options.output ?? new MockOutputEngine();
   const captureDevices = options.captureDevices ?? new MockCaptureDeviceEngine();
   const audio = new AudioStub();
@@ -106,7 +123,32 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
       switch (command.type) {
         // ----- Zoom -----
         case "join":
-          return { id, ok: true, snapshot: await mediaCore.joinZoom(command.payload) };
+          return {
+            id,
+            ok: true,
+            snapshot: await mediaCore.joinZoom(await joinPayloadWithOAuth(zoomOAuth, command.payload))
+          };
+        case "get-zoom-oauth-status":
+          if (!zoomOAuth) {
+            return {
+              id,
+              ok: true,
+              oauthStatus: { brokerConfigured: false, signedIn: false, expiresAt: 0, pendingAuthorization: false }
+            };
+          }
+          return { id, ok: true, oauthStatus: await zoomOAuth.getStatus() };
+        case "zoom-oauth-begin":
+          if (!zoomOAuth) {
+            return { id, ok: false, error: { code: "native-unavailable", message: "Zoom OAuth is only available in the Electron shell." } };
+          }
+          await zoomOAuth.beginAuthorization();
+          return { id, ok: true, oauthMessage: "Browser opened for Zoom sign-in. Approve the request and return to CoreVideo Pro." };
+        case "zoom-oauth-sign-out":
+          if (!zoomOAuth) {
+            return { id, ok: true, oauthMessage: "Signed out." };
+          }
+          await zoomOAuth.signOut();
+          return { id, ok: true, oauthMessage: "Signed out of Zoom." };
         case "leave":
           return { id, ok: true, snapshot: await mediaCore.leaveZoom() };
         case "snapshot":
@@ -195,6 +237,9 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
       }
       if (command.type === "snapshot") {
         return { id, ok: false, error: { code: "snapshot-failed", message } };
+      }
+      if (command.type === "zoom-oauth-begin" || command.type === "zoom-oauth-sign-out") {
+        return { id, ok: false, error: { code: "oauth-failed", message } };
       }
       return { id, ok: false, error: { code: "protocol-error", message } };
     }

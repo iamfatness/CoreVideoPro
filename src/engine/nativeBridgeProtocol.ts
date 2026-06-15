@@ -158,6 +158,18 @@ export type NativeGetMediaCoreHealthCommand = {
   type: "get-media-core-health";
 };
 
+export type ZoomOAuthSessionStatus = {
+  brokerConfigured: boolean;
+  signedIn: boolean;
+  expiresAt: number;
+  pendingAuthorization: boolean;
+};
+
+export type NativeZoomOAuthCommand =
+  | { id: string; type: "get-zoom-oauth-status" }
+  | { id: string; type: "zoom-oauth-begin" }
+  | { id: string; type: "zoom-oauth-sign-out" };
+
 /** Caption track commands. Stub-backed in the desktop IPC router for now. */
 export type NativeCaptionCommand =
   | {
@@ -189,7 +201,8 @@ export type NativeBridgeCommand =
   | NativeZoomMediaSpineBridgeCommand
   | NativeAudioCommand
   | NativeCaptionCommand
-  | NativeGetMediaCoreHealthCommand;
+  | NativeGetMediaCoreHealthCommand
+  | NativeZoomOAuthCommand;
 
 export type NativeZoomResponse =
   | {
@@ -351,6 +364,15 @@ export type NativeCaptionResponse =
       };
     };
 
+export type NativeZoomOAuthResponse =
+  | { id: string; ok: true; oauthStatus: ZoomOAuthSessionStatus }
+  | { id: string; ok: true; oauthMessage: string }
+  | {
+      id: string;
+      ok: false;
+      error: { code: "oauth-failed" | "native-unavailable" | "protocol-error"; message: string };
+    };
+
 export type NativeBridgeResponse =
   | NativeZoomResponse
   | NativeOutputResponse
@@ -359,7 +381,8 @@ export type NativeBridgeResponse =
   | NativeZoomMediaSpineResponse
   | NativeAudioResponse
   | NativeCaptionResponse
-  | NativeMediaCoreHealthResponse;
+  | NativeMediaCoreHealthResponse
+  | NativeZoomOAuthResponse;
 
 export interface NativeZoomTransport {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;

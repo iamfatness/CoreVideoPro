@@ -1,4 +1,9 @@
-import type { NativeBridgeCommand, NativeBridgeResponse, NativeZoomTransport } from "./nativeBridgeProtocol";
+import type {
+  NativeBridgeCommand,
+  NativeBridgeResponse,
+  NativeZoomTransport,
+  ZoomOAuthSessionStatus
+} from "./nativeBridgeProtocol";
 import {
   NativeZoomBridgeError,
   createMediaCoreHandshakeCommand,
@@ -27,6 +32,11 @@ export type NativeHostBridge = {
    * back to the simulated frame placeholder.
    */
   onZoomVideoFrame?(listener: (frame: ZoomVideoFrame) => void): () => void;
+  getZoomOAuthStatus?(): Promise<ZoomOAuthSessionStatus>;
+  beginZoomOAuth?(): Promise<string>;
+  signOutZoomOAuth?(): Promise<string>;
+  onZoomOAuthUpdated?(listener: () => void): () => void;
+  onZoomOAuthError?(listener: (message: string) => void): () => void;
 };
 
 declare global {
