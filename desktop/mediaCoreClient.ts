@@ -335,8 +335,8 @@ export class MediaCoreSupervisor {
     request: Extract<CoreRequest, { type: "list-capture-devices" | "select-capture-input" | "set-capture-audio-sync-offset" | "connect-capture-device" }>
   ): Promise<CaptureDeviceState[]> {
     const response = await this.send(request);
-    if (response.ok && ("devices" in response || response.type === "capture-devices")) {
-      return "devices" in response ? response.devices : [];
+    if (response.ok && response.type === "capture-devices") {
+      return response.devices;
     }
     const message = response.ok ? "Unexpected capture response." : response.error.message;
     throw new Error(`capture device request failed: ${message}`);

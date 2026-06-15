@@ -204,6 +204,7 @@ TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
   });
   EXPECT_EQ(listed.getString("id"), "capture-list-1");
   EXPECT_TRUE(listed.get("ok")->asBool());
+  EXPECT_EQ(listed.getString("type"), "capture-devices");
   ASSERT_NE(listed.get("devices"), nullptr);
   EXPECT_GE(listed.get("devices")->asArray().size(), 2);
   const auto deckLinkId = listed.get("devices")->asArray()[0].getString("id");

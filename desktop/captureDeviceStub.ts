@@ -80,7 +80,7 @@ class CaptureDeviceSession {
 const session = new CaptureDeviceSession();
 
 function captureResponse(id: string, devices: CaptureDeviceState[]): CoreResponse {
-  return { id, ok: true, devices };
+  return { id, ok: true, type: "capture-devices", devices };
 }
 
 export function handleCaptureDeviceRequest(request: CoreCaptureBridgeRequest): CoreResponse {

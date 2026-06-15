@@ -68,6 +68,17 @@ child.stdout.on("data", (chunk) => {
       }
       if (msg.type === "zoom-join") {
         console.log("zoom-join snapshot:", JSON.stringify(msg.snapshot, null, 2));
+        const warnings = msg.snapshot?.warnings ?? [];
+        const warningText = warnings.join(" ").toLowerCase();
+        if (warningText.includes("sdk_auth") || warningText.includes("authentication") || warningText.includes("auth")) {
+          fail(`Zoom SDK auth did not complete: ${warnings.join("; ")}`);
+        }
+        if (msg.snapshot?.meetingState === "error" && warningText.includes("join result")) {
+          console.log("auth smoke passed: SDK auth reached the join phase; bogus meeting did not join.");
+        }
+        if (msg.snapshot?.meetingState === "error" && warningText.includes("meeting_failed")) {
+          console.log("auth smoke passed: SDK auth reached Zoom Join(); bogus meeting failed as expected.");
+        }
         child.kill();
         process.exit(0);
       }

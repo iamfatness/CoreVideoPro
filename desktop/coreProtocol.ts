@@ -40,9 +40,10 @@ export type CoreResponse =
   | { id: string; ok: true; type: "handshake"; profile: NativeMediaCoreProfile }
   | { id: string; ok: true; type: "ping" }
   | { id: string; ok: true; type: "media-core-sync"; snapshot: NativeMediaCoreStateSnapshot }
+  | { id: string; ok: true; type: "media-core-sync" | "native-media-core-sync"; state: unknown }
   | { id: string; ok: true; type: "zoom-join" | "zoom-leave" | "zoom-snapshot"; snapshot: RawCaptureSnapshot }
   | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
-  | { id: string; ok: true; devices: CaptureDeviceState[] }
+  | { id: string; ok: true; type: "capture-devices"; devices: CaptureDeviceState[] }
   | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-failed" | "zoom-spine-failed" | "capture-failed"; message: string } };
 
 type ZoomVideoFrameWire = {
