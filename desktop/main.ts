@@ -13,10 +13,12 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { appendCrashRecoveryEvent, readCrashRecoveryEvents } from "./crashRecoveryLog.ts";
+import { setupCrashReporting } from "./crashReporterMain.ts";
 import { createIpcRouter } from "./ipcRouter.ts";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
 import { mediaCoreSupervisorOptionsForApp } from "./packagedRuntime.ts";
 import { createPackagedAppUpdateService } from "./appUpdateMain.ts";
+import { createTelemetryService } from "./telemetryMain.ts";
 import { createDesktopZoomOAuthService } from "./zoomOAuthFactory.ts";
 import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
 
@@ -33,10 +35,19 @@ const supervisor = new MediaCoreSupervisor({
       at: new Date().toISOString(),
       exitCode: info.code,
       restartCount: info.restartCount
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "Failed to persist crash recovery log.";
-      console.warn(`[media-core] ${message}`);
-    });
+    })
+      .then(() => {
+        if (telemetryRef.service) {
+          void telemetryRef.service.client.uploadCrashReport({
+            reason: "media-core-crash",
+            detail: `exit ${info.code ?? "unknown"}; restart #${info.restartCount}`
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Failed to persist crash recovery log.";
+        console.warn(`[media-core] ${message}`);
+      });
   },
   onProfile: (profile) => console.info(`[media-core] profile: ${profile.name} (${profile.renderer})`),
   onZoomVideoFrame: (frame) => {
@@ -45,6 +56,8 @@ const supervisor = new MediaCoreSupervisor({
     }
   }
 });
+const telemetryRef: { service?: Awaited<ReturnType<typeof createTelemetryService>> } = {};
+
 const route = createIpcRouter({
   mediaCore: supervisor,
   zoomOAuth,
@@ -134,6 +147,13 @@ app.whenReady().then(async () => {
   if (callbackUrl) {
     handleOAuthCallbackUrl(callbackUrl);
   }
+
+  telemetryRef.service = await createTelemetryService();
+  setupCrashReporting({
+    windows: () => BrowserWindow.getAllWindows(),
+    telemetry: telemetryRef.service.client,
+    env: process.env
+  });
 
   await supervisor.start();
   await createWindow();

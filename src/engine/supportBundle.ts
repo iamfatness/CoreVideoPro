@@ -364,3 +364,14 @@ function redactSecret(value?: string) {
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "corevideo";
 }
+
+/** Strips participant-identifying labels before crash/telemetry upload. */
+export function prepareSupportBundleForUpload(bundle: SupportBundle): SupportBundle {
+  return {
+    ...bundle,
+    participants: bundle.participants.map((participant) => ({
+      ...participant,
+      name: `participant-${participant.id}`
+    }))
+  };
+}
