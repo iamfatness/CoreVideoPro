@@ -13,7 +13,9 @@ export type NativeMediaCoreCapability =
   | "ndi-output"
   | "srt-output"
   | "webrtc-output"
-  | "virtual-camera";
+  | "virtual-camera"
+  | "decklink-capture"
+  | "aja-capture";
 
 export type NativeMediaCoreProfile = {
   name: string;

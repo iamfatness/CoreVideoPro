@@ -71,7 +71,9 @@ export const SYNTHETIC_PROFILE: NativeMediaCoreProfile = {
     "rtmp-output",
     "ndi-output",
     "srt-output",
-    "webrtc-output"
+    "webrtc-output",
+    "decklink-capture",
+    "aja-capture"
   ]
 };
 

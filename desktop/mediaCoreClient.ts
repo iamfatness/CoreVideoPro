@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import type { CaptureDeviceState } from "../src/domain/production";
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
@@ -182,6 +183,34 @@ export class MediaCoreSupervisor {
     throw new Error(`zoom snapshot failed: ${message}`);
   }
 
+  async listCaptureDevices(): Promise<CaptureDeviceState[]> {
+    return this.sendForCaptureDevices({ id: this.createId(), type: "list-capture-devices" });
+  }
+
+  async selectCaptureInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]> {
+    return this.sendForCaptureDevices({
+      id: this.createId(),
+      type: "select-capture-input",
+      payload: { deviceId, inputId }
+    });
+  }
+
+  async setCaptureAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]> {
+    return this.sendForCaptureDevices({
+      id: this.createId(),
+      type: "set-capture-audio-sync-offset",
+      payload: { deviceId, offsetMs }
+    });
+  }
+
+  async connectCaptureDevice(deviceId: string): Promise<CaptureDeviceState[]> {
+    return this.sendForCaptureDevices({
+      id: this.createId(),
+      type: "connect-capture-device",
+      payload: { deviceId }
+    });
+  }
+
   /** Test hook: ask the core to crash, exercising restart. */
   async forceCrash(): Promise<void> {
     try {
@@ -300,5 +329,16 @@ export class MediaCoreSupervisor {
     const id = `core-${this.nextId}`;
     this.nextId += 1;
     return id;
+  }
+
+  private async sendForCaptureDevices(
+    request: Extract<CoreRequest, { type: "list-capture-devices" | "select-capture-input" | "set-capture-audio-sync-offset" | "connect-capture-device" }>
+  ): Promise<CaptureDeviceState[]> {
+    const response = await this.send(request);
+    if (response.ok && ("devices" in response || response.type === "capture-devices")) {
+      return "devices" in response ? response.devices : [];
+    }
+    const message = response.ok ? "Unexpected capture response." : response.error.message;
+    throw new Error(`capture device request failed: ${message}`);
   }
 }

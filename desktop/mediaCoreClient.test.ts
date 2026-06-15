@@ -119,6 +119,18 @@ describe("MediaCoreSupervisor", () => {
     expect(await supervisor.ping()).toBe(true);
   });
 
+  it("round-trips capture-device commands through the supervised stub core", async () => {
+    const supervisor = makeSupervisor();
+    await supervisor.start();
+
+    const listed = await supervisor.listCaptureDevices();
+    expect(listed.length).toBeGreaterThanOrEqual(2);
+    expect(listed.some((device) => device.vendor === "blackmagic")).toBe(true);
+
+    const connected = await supervisor.connectCaptureDevice("aja-io-1");
+    expect(connected.find((device) => device.id === "aja-io-1")?.connectionState).toBe("connected");
+  });
+
   it("rejects requests after being stopped", async () => {
     const supervisor = makeSupervisor();
     await supervisor.start();

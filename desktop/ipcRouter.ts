@@ -5,7 +5,7 @@
  * supervisor; everything else is backed by the existing simulated engines ported
  * to Node, so the desktop shell runs end-to-end with zero native code.
  */
-import { MockCaptureDeviceEngine } from "../src/engine/captureDevices";
+
 import { MockOutputEngine } from "../src/engine/mockEngines";
 import type {
   NativeAudioBusState,
@@ -24,6 +24,8 @@ import type { CrashRecoveryEvent } from "./crashRecoveryLog.ts";
 import { writeSupportBundleExport } from "./diagnosticsExport.ts";
 import type { ZoomOAuthService } from "./zoomOAuthService.ts";
 
+import type { CaptureDeviceState } from "../src/domain/production.ts";
+
 /** The slice of the supervisor the router depends on (eases testing). */
 export type MediaCoreBackend = {
   getProfile(): NativeMediaCoreProfile | undefined;
@@ -34,13 +36,16 @@ export type MediaCoreBackend = {
   leaveZoom(): Promise<RawCaptureSnapshot>;
   getZoomSnapshot(): Promise<RawCaptureSnapshot>;
   getHealth(): MediaCoreHealth;
+  listCaptureDevices(): Promise<CaptureDeviceState[]>;
+  selectCaptureInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]>;
+  setCaptureAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]>;
+  connectCaptureDevice(deviceId: string): Promise<CaptureDeviceState[]>;
 };
 
 export type IpcRouterOptions = {
   mediaCore: MediaCoreBackend;
   zoomOAuth?: ZoomOAuthService;
   output?: MockOutputEngine;
-  captureDevices?: MockCaptureDeviceEngine;
   diagnosticsDirectory?: string;
   readCrashEvents?: () => Promise<CrashRecoveryEvent[]>;
 };
@@ -118,7 +123,6 @@ async function joinPayloadWithOAuth(
 export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
   const { mediaCore, zoomOAuth, diagnosticsDirectory, readCrashEvents } = options;
   const output = options.output ?? new MockOutputEngine();
-  const captureDevices = options.captureDevices ?? new MockCaptureDeviceEngine();
   const audio = new AudioStub();
   const caption = new CaptionStub();
 
@@ -177,13 +181,13 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
 
         // ----- Capture devices -----
         case "list-capture-devices":
-          return { id, ok: true, devices: await captureDevices.listDevices() };
+          return { id, ok: true, devices: await mediaCore.listCaptureDevices() };
         case "select-capture-input":
-          return { id, ok: true, devices: await captureDevices.selectInput(command.payload.deviceId, command.payload.inputId) };
+          return { id, ok: true, devices: await mediaCore.selectCaptureInput(command.payload.deviceId, command.payload.inputId) };
         case "set-capture-audio-sync-offset":
-          return { id, ok: true, devices: await captureDevices.setAudioSyncOffset(command.payload.deviceId, command.payload.offsetMs) };
+          return { id, ok: true, devices: await mediaCore.setCaptureAudioSyncOffset(command.payload.deviceId, command.payload.offsetMs) };
         case "connect-capture-device":
-          return { id, ok: true, devices: await captureDevices.connectDevice(command.payload.deviceId) };
+          return { id, ok: true, devices: await mediaCore.connectCaptureDevice(command.payload.deviceId) };
 
         // ----- Media core (delegated to the supervised child process) -----
         case "media-core-handshake": {

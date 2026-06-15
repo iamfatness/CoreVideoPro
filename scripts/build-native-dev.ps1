@@ -3,7 +3,9 @@
 param(
   [string]$ZoomSdkDir = $(if ($env:ZOOM_SDK_DIR) { $env:ZOOM_SDK_DIR } else { "C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64" }),
   [string]$NativeDir = (Join-Path $PSScriptRoot "..\native"),
-  [string]$BuildDir = (Join-Path $PSScriptRoot "..\native\build-dev")
+  [string]$BuildDir = (Join-Path $PSScriptRoot "..\native\build-dev"),
+  [switch]$WithDeckLink,
+  [switch]$WithAja
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +29,13 @@ $cmakeArgs = @(
   "-DZOOM_SDK_DIR=$ZoomSdkDir"
 )
 
+if ($WithDeckLink) {
+  $cmakeArgs += "-DCOREVIDEO_WITH_DECKLINK=ON"
+}
+if ($WithAja) {
+  $cmakeArgs += "-DCOREVIDEO_WITH_AJA=ON"
+}
+
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
   "cmake $($cmakeArgs -join ' ')",
@@ -42,4 +51,6 @@ Write-Host "  $BuildDir\corevideo-zoom-engine.exe"
 Write-Host "  $BuildDir\corevideo-native.exe"
 Write-Host ""
 Write-Host "Output adapters: D3D11 compositor, Media Foundation MP4, RTMP send-proof"
+if ($WithDeckLink) { Write-Host "Capture adapters: Blackmagic DeckLink enumeration enabled" }
+if ($WithAja) { Write-Host "Capture adapters: AJA NTV2 runtime probe enabled" }
 Write-Host "Next: .\scripts\sprint1-dev.ps1  (or .\scripts\sprint3-dev.ps1)"

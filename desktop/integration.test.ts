@@ -169,6 +169,15 @@ describe("desktop integration gate", () => {
     expect(degraded.label).toMatch(/recovering/i);
   });
 
+  it("capture devices round-trip through Electron→main→core", async () => {
+    const bridge = await bootBridge();
+    const response = await bridge.request({ id: "capture-list", type: "list-capture-devices" });
+    expect(response.ok).toBe(true);
+    if (response.ok && "devices" in response) {
+      expect(response.devices.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
   it("Sprint 6 gate — support bundle export round-trips through the IPC router", async () => {
     const diagnosticsDirectory = await mkdtemp(join(tmpdir(), "corevideo-integration-diag-"));
     const supervisor = new MediaCoreSupervisor();
