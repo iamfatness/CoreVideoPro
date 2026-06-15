@@ -21,14 +21,21 @@ export function mediaCoreSupervisorOptionsForApp(
   }
 
   const packagedCommand = resolvePackagedMediaCoreBinary(resourcesPath, platform);
-  if (!packagedCommand) {
-    return fromEnv;
+  if (packagedCommand) {
+    return {
+      ...fromEnv,
+      command: packagedCommand,
+      args: fromEnv.args ?? [],
+      cwd: fromEnv.cwd ?? dirname(packagedCommand)
+    };
   }
 
+  // Stub-only package: spawn the Node media-core stub via Electron-as-Node.
   return {
     ...fromEnv,
-    command: packagedCommand,
-    args: fromEnv.args ?? [],
-    cwd: fromEnv.cwd ?? dirname(packagedCommand)
+    env: {
+      ...fromEnv.env,
+      ELECTRON_RUN_AS_NODE: "1"
+    }
   };
 }
