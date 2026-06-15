@@ -22,6 +22,9 @@ import { RuleBasedAiStudioEngine } from "./aiStudio";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import { InMemoryPresetEngine } from "./presets";
 import { InMemoryDiagnosticsEngine } from "./supportBundle";
+import type { CaptionBrokerClient } from "./captionBrokerClient";
+import { createCaptionBrokerClient, createLicenseClient } from "./commerceClients";
+import type { LicenseClient } from "./licenseClient";
 import type { NativeHostBridge } from "./nativeHostBridge";
 import { ZoomMediaSpineSessionController } from "./zoomMediaSpineSessionController";
 import {
@@ -43,6 +46,8 @@ export type EngineBundle = {
   mediaCore: MediaCoreSyncEngine;
   spineController: ZoomMediaSpineSessionController;
   spineTransport: InMemoryZoomMediaSpineTransport | NativeHostZoomMediaSpineTransport;
+  license: LicenseClient;
+  captionBroker: CaptionBrokerClient;
 };
 
 export function createMockEngineBundle(): EngineBundle {
@@ -59,7 +64,9 @@ export function createMockEngineBundle(): EngineBundle {
     captureDevices: new MockCaptureDeviceEngine(),
     mediaCore: new InMemoryMediaCoreSyncEngine(),
     spineController: new ZoomMediaSpineSessionController(spineTransport),
-    spineTransport
+    spineTransport,
+    license: createLicenseClient(),
+    captionBroker: createCaptionBrokerClient()
   };
 }
 
@@ -77,6 +84,8 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bri
     captureDevices: new NativeCaptureDeviceEngineAdapter(transport),
     mediaCore: bridge ? new NativeHostMediaCoreSyncEngine(bridge) : new InMemoryMediaCoreSyncEngine(),
     spineController: new ZoomMediaSpineSessionController(spineTransport),
-    spineTransport: nativeTransport ?? spineTransport
+    spineTransport: nativeTransport ?? spineTransport,
+    license: createLicenseClient(),
+    captionBroker: createCaptionBrokerClient()
   };
 }

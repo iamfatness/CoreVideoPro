@@ -63,6 +63,7 @@ import { describeNdiSource, estimateNdiBandwidth, parseNdiSourceName } from "./e
 import { buildRundownFromScenes, computeShowClock, formatClock } from "./engine/showClock";
 import { assessZoomSdkReadiness, shouldBlockZoomJoin, type ZoomSdkReadinessInput, type ZoomSdkReadinessReport } from "./engine/zoomSdkReadiness";
 import { inspectZoomWindowsSdkPackage, type ZoomWindowsSdkPackageReport } from "./engine/zoomWindowsSdkPackage";
+import { TIER_INFO, deriveEntitlements, type LicenseState, type LicenseTier } from "./engine/licenseClient";
 import { parseZoomMeetingJoinInput } from "./engine/zoomMeetingInput";
 import { formatDbtp, formatLufs, loudnessTargets, planLoudnessNormalisation } from "./engine/audioLoudness";
 import { isoOutputPath, planIsoRecording, summarizeIsoPlan, validateIsoAgainstDisk } from "./engine/isoRecording";
@@ -239,6 +240,9 @@ export function App({ engines, runtime }: AppProps) {
   const [chapterList, setChapterList] = useState<ChapterList>({ markers: [], recordingDurationSec: 3600 });
   const [chapterExportFormat, setChapterExportFormat] = useState<"youtube" | "vtt" | "text" | "json">("youtube");
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(createWatermark());
+  const [licenseState, setLicenseState] = useState<LicenseState>({ tier: "trial", status: "trial" });
+  const [activationKey, setActivationKey] = useState("");
+  const entitlements = useMemo(() => deriveEntitlements(licenseState, Date.now()), [licenseState]);
   const [selectedAnimPresetId, setSelectedAnimPresetId] = useState(animationPresets[0].id);
   const [animState, setAnimState] = useState<AnimationState | null>(null);
   const [activePoll, setActivePoll] = useState<Poll>(() =>
@@ -325,6 +329,43 @@ export function App({ engines, runtime }: AppProps) {
       detachError?.();
     };
   }, [nativeBridgeForRuntime]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void engines.license.refresh().then((state) => {
+      if (!cancelled) {
+        setLicenseState(state);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engines.license]);
+
+  useEffect(() => {
+    if (meetingState !== "in_meeting") {
+      void engines.captionBroker.stop();
+      return;
+    }
+    void engines.captionBroker.start({ languageCode: "en-US", speakerAttribution: true });
+    const unsubscribe = engines.captionBroker.onCue((cue) => {
+      setProduction((current) => ({
+        ...current,
+        captionOverlay: {
+          ...current.captionOverlay,
+          text: cue.text,
+          speakerName: cue.speakerName ?? current.captionOverlay.speakerName,
+          confidence: cue.confidencePct,
+          latencyMs: Math.max(current.captionOverlay.latencyMs, 180)
+        }
+      }));
+    });
+    return () => {
+      unsubscribe();
+      void engines.captionBroker.stop();
+    };
+  }, [meetingState, engines.captionBroker]);
+
   const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
   const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
     sdkReadinessInput.platform === "windows"
@@ -593,6 +634,11 @@ export function App({ engines, runtime }: AppProps) {
         ? production.scenes.find((item) => item.id === autoProduction.recommendedSceneId) ?? scene
         : scene;
     const captionOverlay = await engines.captions.buildOverlay({ snapshot: snapshotWithOverrides, activeScene: overlayScene });
+    engines.captionBroker.observe?.({
+      atMs: snapshot.elapsedSeconds * 1000,
+      text: snapshot.caption,
+      speakerName: snapshot.activeSpeakerName
+    });
 
     setMeetingState(snapshot.meetingState);
     setScreenShareActive(snapshot.screenShareActive);
@@ -793,7 +839,36 @@ export function App({ engines, runtime }: AppProps) {
     };
   }
 
+  async function handleActivateLicense() {
+    const result = await engines.license.activate(activationKey);
+    if (result.ok) {
+      setLicenseState(result.state);
+      setActivationKey("");
+      setCommandStatus("License activated.");
+    } else {
+      setCommandStatus(result.message);
+    }
+  }
+
+  async function handleStartTrial() {
+    const state = await engines.license.signIn("producer@corevideo.pro");
+    setLicenseState(state);
+    setCommandStatus("Trial started.");
+  }
+
+  async function handleUpgrade(tier: LicenseTier) {
+    if (tier === "trial") {
+      return;
+    }
+    const { checkoutUrl } = await engines.license.openUpgrade(tier);
+    window.open(checkoutUrl, "_blank", "noopener,noreferrer");
+  }
+
   function toggleAutomation() {
+    if (!entitlements.setAndForget && production.mode !== "set-and-forget") {
+      setCommandStatus("Set & Forget requires a Pro or Team plan.");
+      return;
+    }
     setProduction((current) => ({
       ...current,
       mode: current.mode === "set-and-forget" ? "manual" : "set-and-forget",
@@ -1583,6 +1658,49 @@ export function App({ engines, runtime }: AppProps) {
             </div>
           </section>
 
+          <section className="panel" aria-label="License">
+            <div className="section-title">
+              <Shield size={15} />
+              License &amp; plan
+            </div>
+            <div className="license-panel">
+              <p>
+                Plan: <strong>{TIER_INFO[licenseState.tier].label}</strong> ({licenseState.status})
+                {licenseState.status === "trial" && typeof licenseState.trialEndsAtMs === "number"
+                  ? ` — ${Math.max(0, Math.ceil((licenseState.trialEndsAtMs - Date.now()) / 86_400_000))} days left`
+                  : ""}
+              </p>
+              <p>
+                Limits: up to {entitlements.maxZoomParticipants} participants, {entitlements.maxOutputHeight}p output
+                {entitlements.watermark ? " · watermark" : ""}
+                {entitlements.setAndForget ? "" : " · Set & Forget locked"}
+                {entitlements.chromaKey ? "" : " · chroma key locked"}
+                {entitlements.phase2Outputs ? "" : " · NDI/SRT/WebRTC locked"}
+              </p>
+              <div className="license-activate">
+                <input
+                  aria-label="License key"
+                  onChange={(event) => setActivationKey(event.target.value)}
+                  placeholder="License key (cv-trial-... or cv-pro-...)"
+                  value={activationKey}
+                />
+                <button disabled={activationKey.trim().length === 0} onClick={() => void handleActivateLicense()}>
+                  Activate
+                </button>
+                <button className="ghost-button" onClick={() => void handleStartTrial()}>
+                  Start trial
+                </button>
+              </div>
+              <div className="license-upgrade">
+                {(["creator", "pro", "team"] as const).map((tier) => (
+                  <button key={tier} className="ghost-button" onClick={() => void handleUpgrade(tier)}>
+                    Upgrade {TIER_INFO[tier].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
           <section className="panel" aria-label="Zoom SDK readiness">
             <div className="section-title">
               <Activity size={15} />
@@ -1804,7 +1922,8 @@ export function App({ engines, runtime }: AppProps) {
                   NDI: "ndi-output", SRT: "srt-output", WebRTC: "webrtc-output"
                 };
                 const destCapability = destCapabilityMap[destination.protocol];
-                const capabilityBlocked = destCapability ? !hasCapability(destCapability) : false;
+                const capabilityBlocked =
+                  destCapability ? !hasCapability(destCapability) || !entitlements.phase2Outputs : false;
                 return (
                 <div
                   className={`destination-row ${destination.enabled ? "enabled" : ""} ${destination.active ? "active" : ""} ${
@@ -4242,7 +4361,11 @@ export function App({ engines, runtime }: AppProps) {
               <small>AI auto-direct</small>
             </span>
           </button>
-          <button className={`ghost-button automation-toggle ${production.mode === "set-and-forget" ? "selected" : ""}`} onClick={toggleAutomation}>
+          <button
+            className={`ghost-button automation-toggle ${production.mode === "set-and-forget" ? "selected" : ""}`}
+            disabled={!entitlements.setAndForget && production.mode !== "set-and-forget"}
+            onClick={toggleAutomation}
+          >
             <Settings2 size={18} />
             <span>
               <strong>Set &amp; Forget</strong>
