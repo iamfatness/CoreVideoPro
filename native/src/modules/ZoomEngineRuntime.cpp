@@ -84,10 +84,31 @@ bool ZoomEngineRuntime::configured() const {
   return !config_.executablePath.empty();
 }
 
+void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload) {
+  config_ = loadConfig();
+  const auto payloadJwt = payload.getString("sdkJwt");
+  const auto payloadZak = payload.getString("userZak");
+  if (!payloadJwt.empty()) {
+    config_.sdkJwt = payloadJwt;
+  }
+  if (!payloadZak.empty()) {
+    config_.userZak = payloadZak;
+  }
+  if (!payloadJwt.empty() && initialized_) {
+    if (process_ && process_->running()) {
+      (void)process_->sendLine(buildZoomEngineLeaveCommand());
+    }
+    initialized_ = false;
+    mediaStarted_ = false;
+  }
+}
+
 rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   if (!configured()) {
     return nullptr;
   }
+
+  applyJoinCredentialsFromPayload(payload);
 
   const auto meetingId = meetingIdFromJoinPayload(payload);
   if (meetingId.empty()) {

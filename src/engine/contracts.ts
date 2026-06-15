@@ -25,6 +25,11 @@ export type ZoomJoinRequest = {
   meetingUrl: string;
   displayName: string;
   webinar: boolean;
+  passcode?: string;
+  /** Broker-minted Meeting SDK JWT from OAuth sign-in. */
+  sdkJwt?: string;
+  /** Zoom Access Key for attributed joins. */
+  userZak?: string;
 };
 
 export type ZoomSessionSnapshot = {

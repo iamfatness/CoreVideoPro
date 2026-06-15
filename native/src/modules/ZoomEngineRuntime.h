@@ -50,6 +50,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
   bool ensureMediaStartedLocked();
+  void applyJoinCredentialsFromPayload(const rpc::Json& payload);
 
   Config config_;
   std::unique_ptr<ZoomEngineProcessClient> process_;

@@ -25,6 +25,7 @@ declare const process: {
   platform: string;
   argv: string[];
   env: NodeJS_ProcessEnv;
+  defaultApp?: boolean;
   exit(code?: number): never;
   stdin: NodeJS_ReadableStream;
   stdout: NodeJS_WritableStream;
@@ -41,6 +42,13 @@ declare function setTimeout(handler: () => void, ms: number): { readonly __timer
 declare function clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 declare function setInterval(handler: () => void, ms: number): { readonly __timer: unique symbol };
 declare function clearInterval(timer: ReturnType<typeof setInterval>): void;
+
+declare const fetch: typeof globalThis.fetch;
+declare const URL: typeof globalThis.URL;
+declare const URLSearchParams: typeof globalThis.URLSearchParams;
+declare const Buffer: {
+  from(value: string, encoding: string): { toString(encoding: string): string };
+};
 
 interface NodeJS_ReadableStream {
   on(event: string, listener: (chunk: unknown) => void): this;
@@ -90,7 +98,29 @@ declare module "node:path" {
   export function join(...parts: string[]): string;
 }
 
+declare module "node:crypto" {
+  export function randomBytes(size: number): { toString(encoding: "base64url"): string };
+  export function createHash(algorithm: string): {
+    update(value: string): { digest(encoding: "base64url"): string };
+  };
+}
+
+declare module "node:fs/promises" {
+  export function mkdir(path: string, options: { recursive: boolean }): Promise<void>;
+  export function readFile(path: string, encoding: "utf8"): Promise<string>;
+  export function writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
+}
+
+declare namespace Electron {
+  interface IpcRendererEvent {
+    returnValue: unknown;
+  }
+}
+
 declare module "electron" {
+  export interface WebContents {
+    send(channel: string, ...args: unknown[]): void;
+  }
   export interface WebPreferences {
     preload?: string;
     contextIsolation?: boolean;
@@ -104,15 +134,20 @@ declare module "electron" {
       backgroundColor?: string;
       webPreferences?: WebPreferences;
     });
+    webContents: WebContents;
     loadURL(url: string): Promise<void>;
     loadFile(path: string): Promise<void>;
+    focus(): void;
     static getAllWindows(): BrowserWindow[];
   }
   export const app: {
     isPackaged: boolean;
     whenReady(): Promise<void>;
-    on(event: string, listener: () => void): void;
+    on(event: string, listener: (...args: unknown[]) => void): void;
     quit(): void;
+    getPath(name: string): string;
+    setAsDefaultProtocolClient(protocol: string, execPath?: string, args?: string[]): boolean;
+    requestSingleInstanceLock(): boolean;
   };
   export const ipcMain: {
     on(channel: string, listener: (event: { returnValue: unknown }, ...args: unknown[]) => void): void;
@@ -121,8 +156,18 @@ declare module "electron" {
   export const ipcRenderer: {
     sendSync(channel: string, ...args: unknown[]): unknown;
     invoke(channel: string, ...args: unknown[]): Promise<unknown>;
+    on(channel: string, listener: (...args: unknown[]) => void): void;
+    off(channel: string, listener: (...args: unknown[]) => void): void;
   };
   export const contextBridge: {
     exposeInMainWorld(key: string, api: unknown): void;
+  };
+  export const shell: {
+    openExternal(url: string): Promise<void>;
+  };
+  export const safeStorage: {
+    isEncryptionAvailable(): boolean;
+    encryptString(value: string): { toString(encoding: "base64"): string };
+    decryptString(value: { toString(encoding: "base64"): string }): string;
   };
 }

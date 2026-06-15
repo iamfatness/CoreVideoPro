@@ -290,6 +290,8 @@ export function App({ engines, runtime }: AppProps) {
     { rttMs: 44, packetLossPct: 0, jitterMs: 3, timestampMs: Date.now() - 1000 },
   ]);
   const [mediaCoreHealth, setMediaCoreHealth] = useState<MediaCoreHealth | undefined>(undefined);
+  const [zoomOAuthStatus, setZoomOAuthStatus] = useState<import("./engine/nativeBridgeProtocol").ZoomOAuthSessionStatus | undefined>(undefined);
+  const [zoomOAuthMessage, setZoomOAuthMessage] = useState("");
   const nativeBridgeForRuntime = (window as { coreVideoNative?: import("./engine/nativeHostBridge").NativeHostBridge }).coreVideoNative;
   const liveRuntime = useMemo(
     () =>
@@ -299,9 +301,28 @@ export function App({ engines, runtime }: AppProps) {
     [nativeBridgeForRuntime, runtime, mediaCoreHealth]
   );
   const sdkReadinessInput = useMemo(
-    () => deriveZoomSdkReadinessInputForRuntime(liveRuntime),
-    [liveRuntime?.status, liveRuntime?.host]
+    () => deriveZoomSdkReadinessInputForRuntime(liveRuntime, {}, { signedIn: zoomOAuthStatus?.signedIn }),
+    [liveRuntime?.status, liveRuntime?.host, zoomOAuthStatus?.signedIn]
   );
+
+  useEffect(() => {
+    const bridge = nativeBridgeForRuntime;
+    if (!bridge?.getZoomOAuthStatus) {
+      return;
+    }
+    void bridge.getZoomOAuthStatus().then(setZoomOAuthStatus).catch(() => undefined);
+    const detachUpdated = bridge.onZoomOAuthUpdated?.(() => {
+      void bridge.getZoomOAuthStatus?.().then((status) => {
+        setZoomOAuthStatus(status);
+        setZoomOAuthMessage("Signed in with Zoom.");
+      });
+    });
+    const detachError = bridge.onZoomOAuthError?.((message) => setZoomOAuthMessage(message));
+    return () => {
+      detachUpdated?.();
+      detachError?.();
+    };
+  }, [nativeBridgeForRuntime]);
   const sdkReadiness: ZoomSdkReadinessReport = assessZoomSdkReadiness(sdkReadinessInput);
   const sdkPackageReport: ZoomWindowsSdkPackageReport | undefined =
     sdkReadinessInput.platform === "windows"
@@ -1465,6 +1486,33 @@ export function App({ engines, runtime }: AppProps) {
               <Activity size={15} />
               Zoom SDK pre-flight
             </div>
+            {zoomOAuthStatus?.brokerConfigured && nativeBridgeForRuntime?.beginZoomOAuth && (
+              <div className="settings-actions" aria-label="Zoom account">
+                {zoomOAuthStatus.signedIn ? (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void nativeBridgeForRuntime.signOutZoomOAuth?.().then((message) => setZoomOAuthMessage(message));
+                      setZoomOAuthStatus({ ...zoomOAuthStatus, signedIn: false, expiresAt: 0 });
+                    }}
+                  >
+                    Sign out of Zoom
+                  </button>
+                ) : (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      void nativeBridgeForRuntime.beginZoomOAuth?.().then((message) => setZoomOAuthMessage(message));
+                    }}
+                  >
+                    Sign in with Zoom
+                  </button>
+                )}
+                {zoomOAuthMessage && <span>{zoomOAuthMessage}</span>}
+              </div>
+            )}
             <div className={`sdk-readiness-panel status-${sdkReadiness.status}`} aria-label="SDK readiness panel">
               <p className="sdk-readiness-summary">{sdkReadiness.summary}</p>
               <div className="sdk-checks">
