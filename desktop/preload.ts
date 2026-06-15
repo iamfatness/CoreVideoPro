@@ -12,6 +12,7 @@ import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, N
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import type { ZoomVideoFrame } from "../src/engine/zoomVideoFrames";
+import type { AppUpdateSnapshot } from "./appUpdate.ts";
 
 const mediaCoreProfile = (ipcRenderer.sendSync("corevideo:handshake") as NativeMediaCoreProfile | null) ?? undefined;
 
@@ -99,6 +100,28 @@ async function exportSupportBundle(bundle: SupportBundle): Promise<{ path: strin
   throw new Error(message);
 }
 
+async function getAppUpdateStatus(): Promise<AppUpdateSnapshot> {
+  return (await ipcRenderer.invoke("corevideo:get-update-status")) as AppUpdateSnapshot;
+}
+
+async function checkForAppUpdates(): Promise<AppUpdateSnapshot> {
+  return (await ipcRenderer.invoke("corevideo:check-for-updates")) as AppUpdateSnapshot;
+}
+
+async function downloadAppUpdate(): Promise<AppUpdateSnapshot> {
+  return (await ipcRenderer.invoke("corevideo:download-update")) as AppUpdateSnapshot;
+}
+
+async function installAppUpdate(): Promise<void> {
+  await ipcRenderer.invoke("corevideo:install-update");
+}
+
+function onAppUpdateStatus(listener: (status: AppUpdateSnapshot) => void): () => void {
+  const channelListener = (...args: unknown[]) => listener(args[1] as AppUpdateSnapshot);
+  ipcRenderer.on("corevideo:app-update-status", channelListener);
+  return () => ipcRenderer.off("corevideo:app-update-status", channelListener);
+}
+
 function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
   const channelListener = (...args: unknown[]) => {
     const frame = args[1] as ZoomVideoFrame;
@@ -125,5 +148,10 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   signOutZoomOAuth,
   onZoomOAuthUpdated,
   onZoomOAuthError,
-  exportSupportBundle
+  exportSupportBundle,
+  getAppUpdateStatus,
+  checkForAppUpdates,
+  downloadAppUpdate,
+  installAppUpdate,
+  onAppUpdateStatus
 });

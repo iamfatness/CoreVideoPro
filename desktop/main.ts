@@ -16,6 +16,7 @@ import { appendCrashRecoveryEvent, readCrashRecoveryEvents } from "./crashRecove
 import { createIpcRouter } from "./ipcRouter.ts";
 import { MediaCoreSupervisor } from "./mediaCoreClient.ts";
 import { mediaCoreSupervisorOptionsForApp } from "./packagedRuntime.ts";
+import { createPackagedAppUpdateService } from "./appUpdateMain.ts";
 import { createDesktopZoomOAuthService } from "./zoomOAuthFactory.ts";
 import type { NativeBridgeCommand } from "../src/engine/nativeBridgeProtocol";
 
@@ -111,6 +112,15 @@ ipcMain.on("corevideo:handshake", (event) => {
 
 ipcMain.handle("corevideo:request", (_event, command: NativeBridgeCommand) => route(command));
 
+const appUpdate = createPackagedAppUpdateService(() => BrowserWindow.getAllWindows());
+
+ipcMain.handle("corevideo:check-for-updates", async () => appUpdate.checkForUpdates());
+ipcMain.handle("corevideo:download-update", async () => appUpdate.downloadUpdate());
+ipcMain.handle("corevideo:install-update", async () => {
+  appUpdate.quitAndInstall();
+});
+ipcMain.handle("corevideo:get-update-status", async () => appUpdate.getSnapshot());
+
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(OAUTH_PROTOCOL, process.execPath, [process.argv[1] ?? ""]);
@@ -127,6 +137,7 @@ app.whenReady().then(async () => {
 
   await supervisor.start();
   await createWindow();
+  appUpdate.startBackgroundChecks();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

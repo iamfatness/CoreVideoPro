@@ -117,6 +117,12 @@ declare module "node:fs" {
   export function existsSync(path: string): boolean;
 }
 
+declare module "node:module" {
+  export function createRequire(url: string): {
+    (id: string): unknown;
+  };
+}
+
 declare module "node:fs/promises" {
   export function mkdir(path: string, options: { recursive: boolean }): Promise<void>;
   export function readFile(path: string, encoding: "utf8"): Promise<string>;
@@ -161,6 +167,7 @@ declare module "electron" {
   }
   export const app: {
     isPackaged: boolean;
+    getVersion(): string;
     whenReady(): Promise<void>;
     on(event: string, listener: (...args: unknown[]) => void): void;
     quit(): void;
