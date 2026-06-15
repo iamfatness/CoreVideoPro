@@ -14,6 +14,7 @@ import type {
   NativeMediaCoreStateSnapshot
 } from "./nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "./zoomMediaSpineNativeSync";
+import type { SupportBundle } from "../domain/production";
 import type { ZoomMediaSpineSyncPayload } from "./zoomMediaSpineSync";
 
 export type NativeZoomCommand =
@@ -158,6 +159,15 @@ export type NativeGetMediaCoreHealthCommand = {
   type: "get-media-core-health";
 };
 
+/** Persist a diagnostics support bundle to the desktop user-data directory. */
+export type NativeExportSupportBundleCommand = {
+  id: string;
+  type: "export-support-bundle";
+  payload: {
+    bundle: SupportBundle;
+  };
+};
+
 export type ZoomOAuthSessionStatus = {
   brokerConfigured: boolean;
   signedIn: boolean;
@@ -202,6 +212,7 @@ export type NativeBridgeCommand =
   | NativeAudioCommand
   | NativeCaptionCommand
   | NativeGetMediaCoreHealthCommand
+  | NativeExportSupportBundleCommand
   | NativeZoomOAuthCommand;
 
 export type NativeZoomResponse =
@@ -373,6 +384,21 @@ export type NativeZoomOAuthResponse =
       error: { code: "oauth-failed" | "native-unavailable" | "protocol-error"; message: string };
     };
 
+export type NativeExportSupportBundleResponse =
+  | {
+      id: string;
+      ok: true;
+      export: {
+        path: string;
+        bytes: number;
+      };
+    }
+  | {
+      id: string;
+      ok: false;
+      error: { code: "export-failed" | "native-unavailable" | "protocol-error"; message: string };
+    };
+
 export type NativeBridgeResponse =
   | NativeZoomResponse
   | NativeOutputResponse
@@ -382,6 +408,7 @@ export type NativeBridgeResponse =
   | NativeAudioResponse
   | NativeCaptionResponse
   | NativeMediaCoreHealthResponse
+  | NativeExportSupportBundleResponse
   | NativeZoomOAuthResponse;
 
 export interface NativeZoomTransport {

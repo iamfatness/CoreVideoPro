@@ -1060,7 +1060,36 @@ export function App({ engines, runtime }: AppProps) {
   }
 
   async function exportSupportBundle() {
-    const bundle = await engines.diagnostics.createSupportBundle(production, mediaCoreSnapshot);
+    const bundle = await engines.diagnostics.createSupportBundle(production, mediaCoreSnapshot, {
+      platform: nativeBridgeForRuntime?.platform ?? runtime?.platform ?? "mock-desktop",
+      version: "0.1.0",
+      runtime: liveRuntime
+        ? {
+            status: liveRuntime.status,
+            label: liveRuntime.label,
+            host: liveRuntime.host,
+            platform: liveRuntime.platform,
+            restartCount: mediaCoreHealth?.restartCount ?? 0,
+            recovering: mediaCoreHealth?.recovering ?? false,
+            warnings: liveRuntime.warnings
+          }
+        : undefined
+    });
+
+    if (nativeBridgeForRuntime?.exportSupportBundle) {
+      try {
+        const exported = await nativeBridgeForRuntime.exportSupportBundle(bundle);
+        setSupportBundle(bundle);
+        setSupportBundleStatus(`Saved ${exported.bytes} bytes to ${exported.path}`);
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Support bundle export failed.";
+        setSupportBundle(bundle);
+        setSupportBundleStatus(message);
+        return;
+      }
+    }
+
     setSupportBundle(bundle);
     setSupportBundleStatus(`${bundle.id} exported`);
   }

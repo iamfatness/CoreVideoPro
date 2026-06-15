@@ -8,6 +8,7 @@ describe("createSupportBundle", () => {
     const bundle = createSupportBundle(initialProduction);
 
     expect(bundle.app.name).toBe("CoreVideo Pro");
+    expect(bundle.app.platform).toBe("mock-desktop");
     expect(bundle.triageLines).toContain("Show: AI Product Launch Webinar (set-and-forget)");
     expect(bundle.summaryText).toContain("Program: speaker-slides; Preview: speaker-slides");
     expect(bundle.participants.find((participant) => participant.name === "Priya Shah")).toMatchObject({
@@ -18,6 +19,30 @@ describe("createSupportBundle", () => {
     expect(bundle.isoCapacity.selectedParticipantIds).toEqual(["p1", "p2"]);
     expect(bundle.isoCapacity.estimatedPathCount).toBe(3);
     expect(bundle.warnings).toContain("1 participant feed delivered below target resolution.");
+  });
+
+  it("includes runtime and crash recovery context when provided", () => {
+    const bundle = createSupportBundle(initialProduction, undefined, {
+      platform: "win32",
+      version: "0.1.0",
+      runtime: {
+        status: "degraded",
+        label: "Media core recovering (1 restart)",
+        host: "electron",
+        platform: "win32",
+        restartCount: 1,
+        recovering: true,
+        warnings: ["The media core child process crashed and is restarting automatically."]
+      },
+      crashEvents: [{ at: "2026-06-14T12:00:00.000Z", exitCode: 1, restartCount: 1 }]
+    });
+
+    expect(bundle.app.platform).toBe("win32");
+    expect(bundle.runtime?.label).toMatch(/recovering/i);
+    expect(bundle.crashRecovery?.events).toHaveLength(1);
+    expect(bundle.triageLines).toContain("Runtime: Media core recovering (1 restart) (degraded)");
+    expect(bundle.triageLines).toContain("Media core restarts: 1");
+    expect(bundle.triageLines).toContain("Latest crash: exit 1 at 2026-06-14T12:00:00.000Z");
   });
 
   it("redacts stream secrets and credential-bearing endpoint parameters", () => {

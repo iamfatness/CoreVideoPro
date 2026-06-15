@@ -1,4 +1,9 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import { initialProduction } from "../src/domain/production.ts";
+import { createSupportBundle } from "../src/engine/supportBundle.ts";
 import { createIpcRouter, type MediaCoreBackend } from "./ipcRouter.ts";
 import {
   SYNTHETIC_PROFILE,
@@ -114,6 +119,25 @@ describe("createIpcRouter", () => {
     expect(response.ok).toBe(true);
     if (response.ok && "track" in response) {
       expect(response.track.cues.at(-1)?.text).toBe("Hello");
+    }
+  });
+
+  it("exports a support bundle to the diagnostics directory with crash events merged in", async () => {
+    const diagnosticsDirectory = await mkdtemp(join(tmpdir(), "corevideo-router-diag-"));
+    const route = createIpcRouter({
+      mediaCore: fakeBackend(),
+      diagnosticsDirectory,
+      readCrashEvents: async () => [{ at: "2026-06-14T12:00:00.000Z", exitCode: 1, restartCount: 1 }]
+    });
+    const bundle = createSupportBundle(initialProduction);
+    const response = await route({ id: "export-1", type: "export-support-bundle", payload: { bundle } });
+
+    expect(response.ok).toBe(true);
+    if (response.ok && "export" in response) {
+      expect(response.export.bytes).toBeGreaterThan(0);
+      const raw = await readFile(response.export.path, "utf8");
+      const parsed = JSON.parse(raw) as { crashRecovery?: { events: Array<{ restartCount: number }> } };
+      expect(parsed.crashRecovery?.events[0]?.restartCount).toBe(1);
     }
   });
 

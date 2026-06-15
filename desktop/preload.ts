@@ -6,6 +6,7 @@
  * native runtime on first paint.
  */
 import { contextBridge, ipcRenderer } from "electron";
+import type { SupportBundle } from "../src/domain/production";
 import type { NativeBridgeCommand, NativeBridgeResponse, ZoomOAuthSessionStatus } from "../src/engine/nativeBridgeProtocol";
 import type { MediaCoreHealth, NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { ZoomMediaSpineNativeSnapshot } from "../src/engine/zoomMediaSpineNativeSync";
@@ -89,6 +90,15 @@ function onZoomOAuthError(listener: (message: string) => void): () => void {
   return () => ipcRenderer.off("corevideo:zoom-oauth-error", channelListener);
 }
 
+async function exportSupportBundle(bundle: SupportBundle): Promise<{ path: string; bytes: number }> {
+  const response = await request({ id: `export-support-bundle-${Date.now()}`, type: "export-support-bundle", payload: { bundle } });
+  if (response.ok && "export" in response) {
+    return response.export;
+  }
+  const message = response.ok ? "Unexpected export response." : response.error.message;
+  throw new Error(message);
+}
+
 function onZoomVideoFrame(listener: (frame: ZoomVideoFrame) => void): () => void {
   const channelListener = (...args: unknown[]) => {
     const frame = args[1] as ZoomVideoFrame;
@@ -114,5 +124,6 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   beginZoomOAuth,
   signOutZoomOAuth,
   onZoomOAuthUpdated,
-  onZoomOAuthError
+  onZoomOAuthError,
+  exportSupportBundle
 });

@@ -7,34 +7,44 @@ import type {
   SupportBundle,
   SupportBundleMediaCore
 } from "../domain/production";
+import type { SupportBundleContext } from "./contracts";
 import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import { buildRecordingManifest } from "./recordingManifest";
 
 const MOCK_FREE_DISK_BYTES = 86 * 1024 * 1024 * 1024;
 
 export class InMemoryDiagnosticsEngine {
-  async createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): Promise<SupportBundle> {
-    return createSupportBundle(state, mediaCore);
+  async createSupportBundle(
+    state: ProductionState,
+    mediaCore?: NativeMediaCoreStateSnapshot,
+    context?: SupportBundleContext
+  ): Promise<SupportBundle> {
+    return createSupportBundle(state, mediaCore, context);
   }
 }
 
-export function createSupportBundle(state: ProductionState, mediaCore?: NativeMediaCoreStateSnapshot): SupportBundle {
+export function createSupportBundle(
+  state: ProductionState,
+  mediaCore?: NativeMediaCoreStateSnapshot,
+  context: SupportBundleContext = {}
+): SupportBundle {
   const createdAt = new Date().toISOString();
   const duplicateAssignments = countDuplicateAssignments(state.scenes);
   const unavailableScreenShare = countUnavailableScreenShare(state);
   const lowDeliveredResolution = state.participants.filter((participant) => participant.health === "low-resolution").length;
   const warnings = buildWarnings(state, duplicateAssignments, unavailableScreenShare, lowDeliveredResolution);
-  const isoCapacity = estimateIsoCapacity(state);
+  const freeDiskBytes = context.freeDiskBytes ?? MOCK_FREE_DISK_BYTES;
+  const isoCapacity = estimateIsoCapacity(state, freeDiskBytes);
   const destinations = getDestinationStates(state);
-  const triageLines = buildTriageLines(state, warnings, isoCapacity);
+  const triageLines = buildTriageLines(state, warnings, isoCapacity, context);
 
   return {
     id: `support-${slugify(state.meetingTitle)}-${createdAt.replace(/[-:.TZ]/g, "").slice(0, 14)}`,
     createdAt,
     app: {
       name: "CoreVideo Pro",
-      version: "0.1.0",
-      platform: "mock-desktop"
+      version: context.version ?? "0.1.0",
+      platform: context.platform ?? "mock-desktop"
     },
     summaryText: triageLines.join("\n"),
     triageLines,
@@ -82,6 +92,8 @@ export function createSupportBundle(state: ProductionState, mediaCore?: NativeMe
     },
     isoCapacity,
     mediaCore: mediaCore ? summarizeMediaCore(mediaCore, state) : undefined,
+    runtime: context.runtime,
+    crashRecovery: context.crashEvents?.length ? { events: context.crashEvents } : undefined,
     warnings
   };
 }
@@ -260,8 +272,13 @@ function buildWarnings(
   return warnings;
 }
 
-function buildTriageLines(state: ProductionState, warnings: string[], isoCapacity: SupportBundle["isoCapacity"]) {
-  return [
+function buildTriageLines(
+  state: ProductionState,
+  warnings: string[],
+  isoCapacity: SupportBundle["isoCapacity"],
+  context: SupportBundleContext
+) {
+  const lines = [
     `Show: ${state.meetingTitle} (${state.mode})`,
     `Program: ${state.activeSceneId}; Preview: ${state.previewSceneId}`,
     `Participants: ${state.participants.length}; low-quality feeds: ${state.participants.filter((participant) => participant.health !== "live").length}`,
@@ -270,22 +287,36 @@ function buildTriageLines(state: ProductionState, warnings: string[], isoCapacit
     `ISO runway: ${isoCapacity.recordingRunwayMinutes} minutes at ${isoCapacity.estimatedPathCount} estimated paths.`,
     "SDK subscribe errors: 0"
   ];
+
+  if (context.runtime) {
+    lines.push(`Runtime: ${context.runtime.label} (${context.runtime.status})`);
+    if (context.runtime.restartCount > 0) {
+      lines.push(`Media core restarts: ${context.runtime.restartCount}`);
+    }
+  }
+
+  if (context.crashEvents?.length) {
+    const latest = context.crashEvents[context.crashEvents.length - 1];
+    lines.push(`Latest crash: exit ${latest.exitCode ?? "unknown"} at ${latest.at}`);
+  }
+
+  return lines;
 }
 
-function estimateIsoCapacity(state: ProductionState): SupportBundle["isoCapacity"] {
+function estimateIsoCapacity(state: ProductionState, freeDiskBytes: number): SupportBundle["isoCapacity"] {
   const selectedParticipantIds = state.recordingSettings.isoParticipantIds.filter((participantId) =>
     state.participants.some((participant) => participant.id === participantId && participant.health !== "video-off")
   );
   const estimatedPathCount = Math.max(1, selectedParticipantIds.length + 1);
   const estimatedDiskRateMBps = Number((estimatedPathCount * 1.85).toFixed(2));
-  const recordingRunwayMinutes = Math.floor(MOCK_FREE_DISK_BYTES / (estimatedDiskRateMBps * 1024 * 1024) / 60);
+  const recordingRunwayMinutes = Math.floor(freeDiskBytes / (estimatedDiskRateMBps * 1024 * 1024) / 60);
   const warning = recordingRunwayMinutes < 30 ? "Recording runway under 30 minutes." : undefined;
 
   return {
     selectedParticipantIds,
     estimatedPathCount,
     estimatedDiskRateMBps,
-    freeDiskBytes: MOCK_FREE_DISK_BYTES,
+    freeDiskBytes,
     recordingRunwayMinutes,
     warning
   };
