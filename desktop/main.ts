@@ -144,7 +144,8 @@ app.on("open-url", (...args: unknown[]) => {
   }
 });
 
-const gotLock = app.requestSingleInstanceLock();
+const isE2e = process.env.COREVIDEO_E2E === "1";
+const gotLock = isE2e || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {

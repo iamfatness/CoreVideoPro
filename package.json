@@ -22,7 +22,7 @@
     "desktop": "node desktop/scripts/launch.mjs",
     "dev:desktop": "powershell -ExecutionPolicy Bypass -File scripts/desktop-dev.ps1",
     "pack:desktop": "node desktop/scripts/package.mjs",
-    "test:e2e": "playwright test tests/e2e/smoke.test.ts"
+    "test:e2e": "node scripts/e2e-smoke.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
