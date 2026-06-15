@@ -601,6 +601,7 @@ export function App({ engines, runtime }: AppProps) {
       ...current,
       participants,
       mediaFrames: snapshot.mediaFrames,
+      graphics: applyBrandKitToGraphics(current.graphics, current.brandKit),
       audioMix,
       autoProduction,
       captionOverlay,
@@ -796,6 +797,8 @@ export function App({ engines, runtime }: AppProps) {
     setProduction((current) => ({
       ...current,
       mode: current.mode === "set-and-forget" ? "manual" : "set-and-forget",
+      previewSceneId: current.mode === "set-and-forget" ? current.previewSceneId : current.activeSceneId,
+      graphics: applyBrandKitToGraphics(current.graphics, current.brandKit),
       transition: {
         ...current.transition,
         statusText:
@@ -2001,6 +2004,8 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Overlay guard" value={production.captionOverlay.adaptiveSummary} />
               <ControlReadout label="Route health" value={previewRouteWarnings[0] ?? "Ready"} />
               <ControlReadout label="Auto director" value={`${production.autoProduction.action} ${production.autoProduction.confidence}%`} />
+              <ControlReadout label="Director hold" value={production.autoProduction.holdReason ?? "None"} />
+              <ControlReadout label="Brand kit" value={mediaCoreSnapshot?.brandKit.summary ?? production.brandKit.name} />
               <ControlReadout label="Output time" value={formatElapsed(production.outputSession.elapsedSeconds)} />
               <ControlReadout label="Recording file" value={production.outputSession.recordingFile ?? "Not recording"} />
               <ControlReadout label="Recording quality" value={production.recordingSettings.quality} />

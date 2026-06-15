@@ -27,6 +27,7 @@ import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
 import { NativeAudioMixSessionSimulator, NativeCaptionTrackSimulator } from "../src/engine/nativeMediaCoreAudioCaption.ts";
+import { NativeBrandKitSimulator } from "../src/engine/nativeMediaCoreBrandKit.ts";
 
 const DEFAULT_OUTPUT_PROFILE: NativeMediaCoreOutputProfile = {
   profileId: "1080p60",
@@ -151,6 +152,7 @@ export function synthesizeSnapshot(
   const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
   const captionCue = commands.find((command) => command.type === "push-caption-cue");
   const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
+  const brandKitCommand = commands.find((command) => command.type === "set-brand-kit");
 
   const sourceCount = roster ? roster.sources.length : 0;
   const routeCount = sceneGraph ? sceneGraph.routes.length : 0;
@@ -204,6 +206,7 @@ export function synthesizeSnapshot(
 
   const audioMixSession = new NativeAudioMixSessionSimulator();
   const captionTrack = new NativeCaptionTrackSimulator();
+  const brandKitSimulator = new NativeBrandKitSimulator();
   if (audioMixCommand) {
     audioMixSession.sync(audioMixCommand.channels);
   }
@@ -214,8 +217,24 @@ export function synthesizeSnapshot(
     captionTrack.pushCue(captionCue.text, captionCue.atMs, captionCue.speaker);
   }
   audioMixSession.mix(frames.length > 0 ? 1 : 0);
+  if (brandKitCommand) {
+    brandKitSimulator.apply(
+      {
+        name: brandKitCommand.name,
+        logoText: brandKitCommand.logoText,
+        brandColor: brandKitCommand.brandColor,
+        accentColor: brandKitCommand.accentColor,
+        backgroundColor: brandKitCommand.backgroundColor,
+        backgroundImageUrl: "",
+        fontFamily: brandKitCommand.fontFamily,
+        lowerThirdStyle: brandKitCommand.lowerThirdStyle
+      },
+      overlays.length
+    );
+  }
   const audioMixSnapshot = audioMixSession.snapshot();
   const captionTrackSnapshot = captionTrack.snapshot();
+  const brandKitSnapshot = brandKitSimulator.snapshot();
 
   const diagnostics = {
     generatedAtMs: elapsedMs,
@@ -264,9 +283,10 @@ export function synthesizeSnapshot(
     },
     audioMixSession: audioMixSnapshot,
     captionTrack: captionTrackSnapshot,
+    brandKit: brandKitSnapshot,
     operatorActions: [],
     eventLog: [],
-    warnings: [...audioMixSnapshot.warnings, ...captionTrackSnapshot.warnings],
+    warnings: [...audioMixSnapshot.warnings, ...captionTrackSnapshot.warnings, ...brandKitSnapshot.warnings],
     lastCommandTypes
   };
 
@@ -293,6 +313,7 @@ export function synthesizeSnapshot(
     encoderSession: diagnostics.encoderSession,
     audioMixSession: audioMixSnapshot,
     captionTrack: captionTrackSnapshot,
+    brandKit: brandKitSnapshot,
     operatorActions: [],
     eventLog: [],
     diagnostics,

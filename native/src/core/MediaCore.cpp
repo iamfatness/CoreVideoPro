@@ -283,6 +283,7 @@ rpc::Json MediaCore::sessionState() const {
       {"profile", profile()},
       {"audioMixSession", audioMixSessionState()},
       {"captionTrack", captionTrackState()},
+      {"brandKit", brandKitState()},
   };
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
@@ -469,6 +470,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     pushCaptionCue(command);
   } else if (type == "set-caption-enabled") {
     setCaptionEnabled(command);
+  } else if (type == "set-brand-kit") {
+    setBrandKit(command);
   }
   return sessionState();
 }
@@ -611,6 +614,21 @@ void MediaCore::setCaptionEnabled(const rpc::Json& command) {
   captionWarnings_.clear();
   if (!captionEnabled_) {
     captionWarnings_.push_back("Caption track disabled.");
+  }
+}
+
+void MediaCore::setBrandKit(const rpc::Json& command) {
+  brandWarnings_.clear();
+  brandName_ = command.getString("name", brandName_);
+  brandLogoText_ = command.getString("logoText", brandLogoText_);
+  brandColor_ = command.getString("brandColor", brandColor_);
+  brandAccentColor_ = command.getString("accentColor", brandAccentColor_);
+  brandBackgroundColor_ = command.getString("backgroundColor", brandBackgroundColor_);
+  brandFontFamily_ = command.getString("fontFamily", brandFontFamily_);
+  brandLowerThirdStyle_ = command.getString("lowerThirdStyle", brandLowerThirdStyle_);
+  if (brandLogoText_.empty()) {
+    brandLogoText_ = "CoreVideo Pro";
+    brandWarnings_.push_back("Brand logo text was empty; using default bug label.");
   }
 }
 
@@ -757,6 +775,35 @@ rpc::Json MediaCore::captionTrackState() const {
       {"status", warnings.empty() ? "live" : "warning"},
       {"currentCue", cue},
       {"latencyMs", 180},
+      {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::brandKitState() const {
+  rpc::Json::Array warnings;
+  for (const auto& warning : brandWarnings_) {
+    warnings.emplace_back(warning);
+  }
+
+  const int appliedOverlayCount = overlayCount_;
+  std::ostringstream summary;
+  summary << brandName_;
+  if (appliedOverlayCount > 0) {
+    summary << " applied to " << appliedOverlayCount << " overlays";
+  } else {
+    summary << " ready";
+  }
+
+  return rpc::Json::Object{
+      {"name", brandName_},
+      {"logoText", brandLogoText_},
+      {"brandColor", brandColor_},
+      {"accentColor", brandAccentColor_},
+      {"backgroundColor", brandBackgroundColor_},
+      {"fontFamily", brandFontFamily_},
+      {"lowerThirdStyle", brandLowerThirdStyle_},
+      {"appliedOverlayCount", appliedOverlayCount},
+      {"summary", summary.str()},
       {"warnings", warnings},
   };
 }

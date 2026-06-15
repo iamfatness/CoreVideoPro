@@ -55,6 +55,7 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
       ...state.colorGrade
     },
     buildOutputProfileCommand(state),
+    buildBrandKitCommand(state),
     buildAudioMixCommand(state),
     ...buildCaptionCommands(state)
   ];
@@ -220,6 +221,19 @@ function buildRecordingCommands(state: ProductionState): NativeMediaCoreCommand[
 
 function mapDestinationProtocol(destination: OutputDestination) {
   return destination.protocol.toLowerCase() as "rtmp" | "ndi" | "srt" | "webrtc";
+}
+
+function buildBrandKitCommand(state: ProductionState): NativeMediaCoreCommand {
+  return {
+    type: "set-brand-kit",
+    name: state.brandKit.name,
+    logoText: state.brandKit.logoText,
+    brandColor: state.brandKit.brandColor,
+    accentColor: state.brandKit.accentColor,
+    backgroundColor: state.brandKit.backgroundColor,
+    fontFamily: state.brandKit.fontFamily,
+    lowerThirdStyle: state.brandKit.lowerThirdStyle
+  };
 }
 
 function buildAudioMixCommand(state: ProductionState): NativeMediaCoreCommand {

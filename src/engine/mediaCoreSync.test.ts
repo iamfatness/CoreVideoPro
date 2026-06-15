@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialProduction } from "../domain/production";
 import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
+import { IDLE_NATIVE_BRAND_KIT } from "./nativeMediaCoreBrandKit";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import type { NativeHostBridge } from "./nativeHostBridge";
 import type { NativeMediaCoreCommand } from "./nativeMediaCoreProtocol";
@@ -330,6 +331,7 @@ describe("media core sync engine", () => {
       },
       audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
       captionTrack: IDLE_NATIVE_CAPTION_TRACK,
+      brandKit: IDLE_NATIVE_BRAND_KIT,
       operatorActions: [],
       eventLog: [],
       programFrameCount: 0,
@@ -445,6 +447,7 @@ describe("media core sync engine", () => {
         },
         audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
         captionTrack: IDLE_NATIVE_CAPTION_TRACK,
+        brandKit: IDLE_NATIVE_BRAND_KIT,
         operatorActions: [],
         eventLog: [],
         warnings: [],

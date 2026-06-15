@@ -26,6 +26,7 @@ import type {
 } from "./protocol.js";
 import { TestPatternMediaSource, createMediaFrameSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
 import { AudioMixSessionModel } from "./audioMixSession.js";
+import { BrandKitStateModel } from "./brandKitState.js";
 import { CaptionTrackModel } from "./captionTrack.js";
 import { RecordingSink } from "./recordingSink.js";
 import { buildRenderPlan } from "./renderPlan.js";
@@ -95,6 +96,7 @@ export class MediaCoreRuntime {
   private readonly recordingSink = new RecordingSink();
   private readonly audioMixSession = new AudioMixSessionModel();
   private readonly captionTrack = new CaptionTrackModel();
+  private readonly brandKitState = new BrandKitStateModel();
   private frames: MediaCoreFrame[] = [];
   private sourceSnapshot: MediaCoreFrameSourceSnapshot;
   private programFrame?: MediaCoreProgramFrame;
@@ -387,6 +389,13 @@ export class MediaCoreRuntime {
       if (command.type === "set-caption-enabled") {
         this.captionTrack.setEnabled(command.enabled);
       }
+
+      if (command.type === "set-brand-kit") {
+        const brandKit = this.brandKitState.apply(command, this.overlays.size);
+        if (brandKit.warnings.length > 0) {
+          this.warn(warnings, "program", "Brand kit warning", brandKit.warnings[0], command.type);
+        }
+      }
     });
 
     return warnings;
@@ -405,6 +414,7 @@ export class MediaCoreRuntime {
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
     const audioMixSession = this.audioMixSession.snapshot();
     const captionTrack = this.captionTrack.snapshot();
+    const brandKit = this.brandKitState.snapshot();
     const operatorActions = buildOperatorActions({
       sourceSnapshot: this.sourceSnapshot,
       renderPlan,
@@ -423,6 +433,7 @@ export class MediaCoreRuntime {
         ...outputSenderSession.warnings,
         ...audioMixSession.warnings,
         ...captionTrack.warnings,
+        ...brandKit.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -457,6 +468,7 @@ export class MediaCoreRuntime {
       recording,
       audioMixSession,
       captionTrack,
+      brandKit,
       operatorActions,
       eventLog: [...this.eventLog],
       diagnostics: this.diagnostics(
@@ -469,6 +481,7 @@ export class MediaCoreRuntime {
         outputSenderSession,
         audioMixSession,
         captionTrack,
+        brandKit,
         operatorActions
       ),
       lastCommandTypes: this.lastCommandTypes,
@@ -591,6 +604,7 @@ export class MediaCoreRuntime {
     outputSenderSession: MediaCoreOutputSenderSession,
     audioMixSession: MediaCoreStateSnapshot["audioMixSession"],
     captionTrack: MediaCoreStateSnapshot["captionTrack"],
+    brandKit: MediaCoreStateSnapshot["brandKit"],
     operatorActions: MediaCoreStateSnapshot["operatorActions"]
   ): MediaCoreDiagnosticsSnapshot {
     return {
@@ -612,6 +626,7 @@ export class MediaCoreRuntime {
       recording,
       audioMixSession,
       captionTrack,
+      brandKit,
       operatorActions,
       eventLog: [...this.eventLog],
       warnings,
