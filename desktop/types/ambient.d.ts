@@ -99,6 +99,13 @@ declare module "node:path" {
   export function join(...parts: string[]): string;
 }
 
+declare module "node:buffer" {
+  export const Buffer: {
+    from(value: string, encoding: string): { toString(encoding: string): string };
+    from(value: { toString(): string }): { toString(encoding: string): string };
+  };
+}
+
 declare module "node:crypto" {
   export function randomBytes(size: number): { toString(encoding: "base64url"): string };
   export function createHash(algorithm: string): {

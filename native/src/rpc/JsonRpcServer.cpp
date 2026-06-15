@@ -112,7 +112,7 @@ Json JsonRpcServer::handle(const Json& request) {
   }
 
   if (hasType(request, "list-capture-devices")) {
-    return success(id, Json::Object{{"devices", mediaCore_.captureDevices()}});
+    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.captureDevices()}});
   }
 
   if (hasType(request, "select-capture-input")) {
@@ -120,7 +120,7 @@ Json JsonRpcServer::handle(const Json& request) {
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "select-capture-input requires a payload.");
     }
-    return success(id, Json::Object{{"devices", mediaCore_.selectCaptureInput(payload->getString("deviceId"), payload->getString("inputId"))}});
+    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.selectCaptureInput(payload->getString("deviceId"), payload->getString("inputId"))}});
   }
 
   if (hasType(request, "set-capture-audio-sync-offset")) {
@@ -129,7 +129,7 @@ Json JsonRpcServer::handle(const Json& request) {
       return failure(id, "protocol-error", "set-capture-audio-sync-offset requires a payload.");
     }
     const Json* offset = payload->get("offsetMs");
-    return success(id, Json::Object{{"devices", mediaCore_.setCaptureAudioSyncOffset(payload->getString("deviceId"), offset ? static_cast<int>(offset->asNumber()) : 0)}});
+    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.setCaptureAudioSyncOffset(payload->getString("deviceId"), offset ? static_cast<int>(offset->asNumber()) : 0)}});
   }
 
   if (hasType(request, "connect-capture-device")) {
@@ -137,7 +137,7 @@ Json JsonRpcServer::handle(const Json& request) {
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "connect-capture-device requires a payload.");
     }
-    return success(id, Json::Object{{"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
+    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
   }
 
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||

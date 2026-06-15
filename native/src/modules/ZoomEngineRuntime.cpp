@@ -191,6 +191,7 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  state_.apply({ZoomEngineEventKind::Error, "error", "", "join", "Timed out waiting for Zoom meeting join result."});
   return rawCaptureSnapshotLocked();
 }
 

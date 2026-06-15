@@ -36,9 +36,16 @@ if ($WithAja) {
   $cmakeArgs += "-DCOREVIDEO_WITH_AJA=ON"
 }
 
+function Quote-CmdArg([string]$Value) {
+  if ($Value -match '[\s"]') {
+    return '"' + ($Value -replace '"', '\"') + '"'
+  }
+  return $Value
+}
+
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
-  "cmake $($cmakeArgs -join ' ')",
+  "cmake $(($cmakeArgs | ForEach-Object { Quote-CmdArg $_ }) -join ' ')",
   "cmake --build `"$BuildDir`" --config Release --target corevideo-zoom-engine corevideo-native corevideo-native-tests"
 ) -join " && "
 
