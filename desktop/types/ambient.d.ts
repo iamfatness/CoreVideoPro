@@ -102,7 +102,7 @@ declare module "node:path" {
 declare module "node:buffer" {
   export const Buffer: {
     from(value: string, encoding: string): { toString(encoding: string): string };
-    from(value: { toString(): string }): { toString(encoding: string): string };
+    from(value: Uint8Array): { toString(encoding: string): string };
   };
 }
 
@@ -149,6 +149,7 @@ declare module "electron" {
     constructor(options: {
       width?: number;
       height?: number;
+      title?: string;
       backgroundColor?: string;
       webPreferences?: WebPreferences;
     });
@@ -185,7 +186,7 @@ declare module "electron" {
   };
   export const safeStorage: {
     isEncryptionAvailable(): boolean;
-    encryptString(value: string): { toString(encoding: "base64"): string };
-    decryptString(value: { toString(encoding: "base64"): string }): string;
+    encryptString(value: string): Uint8Array;
+    decryptString(value: Uint8Array): string;
   };
 }
