@@ -1,0 +1,17 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "corevideo-licensing-api",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "staging"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "LICENSE_KV",
+      "id": "40e5009b681a428492db3fe6f99b899c"
+    }
+  ]
+}
