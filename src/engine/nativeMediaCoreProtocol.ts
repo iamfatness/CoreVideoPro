@@ -144,7 +144,30 @@ export type NativeMediaCoreCommand =
   | {
       type: "set-caption-enabled";
       enabled: boolean;
+    }
+  | {
+      type: "set-brand-kit";
+      name: string;
+      logoText: string;
+      brandColor: string;
+      accentColor: string;
+      backgroundColor: string;
+      fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
+      lowerThirdStyle: "solid" | "minimal" | "gradient";
     };
+
+export type NativeMediaCoreBrandKit = {
+  name: string;
+  logoText: string;
+  brandColor: string;
+  accentColor: string;
+  backgroundColor: string;
+  fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
+  lowerThirdStyle: "solid" | "minimal" | "gradient";
+  appliedOverlayCount: number;
+  summary: string;
+  warnings: string[];
+};
 
 export type NativeMediaCoreParticipantAudioChannel = {
   participantId: string;
@@ -467,6 +490,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   recording?: NativeMediaCoreRecordingSession;
   audioMixSession: NativeMediaCoreAudioMixSession;
   captionTrack: NativeMediaCoreCaptionTrack;
+  brandKit: NativeMediaCoreBrandKit;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   warnings: string[];
@@ -497,6 +521,7 @@ export type NativeMediaCoreStateSnapshot = {
   recording?: NativeMediaCoreRecordingSession;
   audioMixSession: NativeMediaCoreAudioMixSession;
   captionTrack: NativeMediaCoreCaptionTrack;
+  brandKit: NativeMediaCoreBrandKit;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;

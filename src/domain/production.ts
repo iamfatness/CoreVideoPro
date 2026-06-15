@@ -209,6 +209,11 @@ export type AutoProductionState = {
   ruleId?: string;
   overrideReason?: string;
   signals?: string[];
+  heldSceneId?: string;
+  pendingSceneId?: string;
+  holdStartedAtMs?: number;
+  holdElapsedMs?: number;
+  holdReason?: string;
 };
 
 export type OutputHealth = {

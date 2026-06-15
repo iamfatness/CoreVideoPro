@@ -47,10 +47,12 @@ class MediaCore {
   void syncParticipantAudioMix(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
+  void setBrandKit(const rpc::Json& command);
   void renderSyntheticTick();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
+  [[nodiscard]] rpc::Json brandKitState() const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
@@ -101,6 +103,14 @@ class MediaCore {
   double captionAtMs_ = 0;
   int captionConfidence_ = 0;
   std::vector<std::string> captionWarnings_;
+  std::string brandName_ = "CoreVideo Pro House";
+  std::string brandLogoText_ = "CoreVideo Pro";
+  std::string brandColor_ = "#44c1a1";
+  std::string brandAccentColor_ = "#f0a85c";
+  std::string brandBackgroundColor_ = "#0c1118";
+  std::string brandFontFamily_ = "Inter";
+  std::string brandLowerThirdStyle_ = "gradient";
+  std::vector<std::string> brandWarnings_;
 };
 
 }  // namespace corevideo::core

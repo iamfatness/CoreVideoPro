@@ -175,6 +175,16 @@ describe("native media core command builder", () => {
         manualGainDb: undefined
       }))
     });
+    expect(commands).toContainEqual({
+      type: "set-brand-kit",
+      name: initialProduction.brandKit.name,
+      logoText: initialProduction.brandKit.logoText,
+      brandColor: initialProduction.brandKit.brandColor,
+      accentColor: initialProduction.brandKit.accentColor,
+      backgroundColor: initialProduction.brandKit.backgroundColor,
+      fontFamily: initialProduction.brandKit.fontFamily,
+      lowerThirdStyle: initialProduction.brandKit.lowerThirdStyle
+    });
     expect(commands).toContainEqual({ type: "set-caption-enabled", enabled: true });
     expect(commands).toContainEqual({
       type: "push-caption-cue",

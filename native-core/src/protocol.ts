@@ -348,6 +348,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
   captionTrack: MediaCoreCaptionTrack;
+  brandKit: MediaCoreBrandKit;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   warnings: string[];
@@ -473,7 +474,30 @@ export type MediaCoreCommand =
   | {
       type: "set-caption-enabled";
       enabled: boolean;
+    }
+  | {
+      type: "set-brand-kit";
+      name: string;
+      logoText: string;
+      brandColor: string;
+      accentColor: string;
+      backgroundColor: string;
+      fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
+      lowerThirdStyle: "solid" | "minimal" | "gradient";
     };
+
+export type MediaCoreBrandKit = {
+  name: string;
+  logoText: string;
+  brandColor: string;
+  accentColor: string;
+  backgroundColor: string;
+  fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
+  lowerThirdStyle: "solid" | "minimal" | "gradient";
+  appliedOverlayCount: number;
+  summary: string;
+  warnings: string[];
+};
 
 export type MediaCoreParticipantAudioChannel = {
   participantId: string;
@@ -559,6 +583,7 @@ export type MediaCoreStateSnapshot = {
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
   captionTrack: MediaCoreCaptionTrack;
+  brandKit: MediaCoreBrandKit;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   diagnostics: MediaCoreDiagnosticsSnapshot;

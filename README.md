@@ -34,6 +34,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Backend recording-session snapshots with session IDs, target folders, encoder intent, program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, byte counters, stopped/failed writer states, and warning state surfaced in the app's Native core readout.
 - Native media-core diagnostic snapshots with source adapter health, scene/output state, program transport, compositor state, encoder targets, recording health, warnings, and command history for future support-bundle export.
 - Native audio-mix and caption-track commands (`sync-participant-audio-mix`, `push-caption-cue`, `set-caption-enabled`) threaded through the typed media-core boundary with per-participant gain/limiter state, master loudness, mixed-frame counts, live caption cues, and Native core readout in the operator UI.
+- Set & Forget auto-director stabilization with screen-share and scene-change holds, automatic brand-kit application to graphics and the native core (`set-brand-kit`), and one-click resume to automation after manual override.
 - Native output profile snapshots for shared recording/RTMP/NDI/SRT/WebRTC resolution, FPS, and target bitrate decisions before real sender implementations land.
 - Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
 - Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
@@ -72,6 +73,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Native host and media-core protocol tests proving the UI shell is not the real-time video engine.
 - Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to Electron, OBS, or browser capture APIs.
 - Native audio-mix and caption-track tests in `native-core` and the renderer sync/mapper layers proving participant leveling and live caption cues round-trip through the media-core snapshot contract.
+- Auto-director hold tests and brand-kit command tests proving unattended production stays stable and on-brand through the media-core snapshot contract.
 - Diagnostics tests for support bundle redaction, low-quality feed guidance, duplicate assignments, missing screen share, and UI export flow.
 - Scene-layout tests proving template selection changes the rendered program preview.
 - Audio-mix tests for smart leveling, producer mute/gain overrides, and UI control behavior.

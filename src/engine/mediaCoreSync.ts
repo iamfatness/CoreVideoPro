@@ -30,6 +30,7 @@ import type {
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
 import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions";
 import { NativeAudioMixSessionSimulator, NativeCaptionTrackSimulator } from "./nativeMediaCoreAudioCaption";
+import { NativeBrandKitSimulator } from "./nativeMediaCoreBrandKit";
 
 const MAX_EVENT_LOG_LENGTH = 80;
 
@@ -120,6 +121,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
   };
   private readonly audioMixSession = new NativeAudioMixSessionSimulator();
   private readonly captionTrack = new NativeCaptionTrackSimulator();
+  private readonly brandKit = new NativeBrandKitSimulator();
 
   async syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
     return this.syncCommands(buildNativeMediaCoreCommands(state), elapsedMs);
@@ -155,6 +157,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
     const captionCue = commands.find((command) => command.type === "push-caption-cue");
     const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
+    const brandKitCommand = commands.find((command) => command.type === "set-brand-kit");
     if (sourceRoster) {
       this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
       this.syncZoomSourceLifecycleEvents(this.sources, elapsedMs);
@@ -241,6 +244,21 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     if (captionCue) {
       this.captionTrack.pushCue(captionCue.text, captionCue.atMs, captionCue.speaker);
     }
+    if (brandKitCommand) {
+      this.brandKit.apply(
+        {
+          name: brandKitCommand.name,
+          logoText: brandKitCommand.logoText,
+          brandColor: brandKitCommand.brandColor,
+          accentColor: brandKitCommand.accentColor,
+          backgroundColor: brandKitCommand.backgroundColor,
+          backgroundImageUrl: "",
+          fontFamily: brandKitCommand.fontFamily,
+          lowerThirdStyle: brandKitCommand.lowerThirdStyle
+        },
+        overlays.length
+      );
+    }
     const renderPlan = buildNativeMediaCoreRenderPlan({
       sceneGraph,
       sources: this.sources,
@@ -257,6 +275,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     this.audioMixSession.mix(frames.length > 0 ? 1 : 0);
     const audioMixSession = this.audioMixSession.snapshot();
     const captionTrack = this.captionTrack.snapshot();
+    const brandKit = this.brandKit.snapshot();
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
@@ -284,6 +303,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...outputSenderSession.warnings,
         ...audioMixSession.warnings,
         ...captionTrack.warnings,
+        ...brandKit.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -318,6 +338,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       recording,
       audioMixSession,
       captionTrack,
+      brandKit,
       operatorActions,
       eventLog: [...this.eventLog],
       diagnostics: {
@@ -339,6 +360,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         recording,
         audioMixSession,
         captionTrack,
+        brandKit,
         operatorActions,
         eventLog: [...this.eventLog],
         warnings: allWarnings,

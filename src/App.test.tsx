@@ -578,14 +578,14 @@ describe("App production controls", () => {
     await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
 
-    for (let index = 0; index < 4 && !within(program).queryByLabelText("Smart panel grid"); index += 1) {
+    for (let index = 0; index < 8 && !within(program).queryByLabelText("Smart panel grid"); index += 1) {
       await user.click(refresh);
     }
 
     expect(within(program).getByLabelText("Smart panel grid")).toBeInTheDocument();
     expect(screen.getByText(/Set & Forget took Panel/i)).toBeInTheDocument();
     expect(screen.getByText("Auto director")).toBeInTheDocument();
-    expect(screen.getAllByText(/take 92%/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Auto: (take|hold) \d+%/i)).toBeInTheDocument();
   });
 
   it("toggles recording and streaming states", async () => {

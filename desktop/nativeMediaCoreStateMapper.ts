@@ -6,6 +6,7 @@
  */
 import type {
   NativeMediaCoreAudioMixSession,
+  NativeMediaCoreBrandKit,
   NativeMediaCoreCaptionTrack,
   NativeMediaCoreCommand,
   NativeMediaCoreEncoderSession,
@@ -49,6 +50,7 @@ export type NativeMediaCoreWireState = {
   profile?: NativeMediaCoreProfile;
   audioMixSession?: NativeMediaCoreAudioMixSession;
   captionTrack?: NativeMediaCoreCaptionTrack;
+  brandKit?: NativeMediaCoreBrandKit;
 };
 
 function asDestination(value: string): "rtmp" | "ndi" | "srt" | "webrtc" | "recording" | undefined {
@@ -178,10 +180,12 @@ export function mapNativeWireStateToSnapshot(
 
   const audioMixSession = wire.audioMixSession ?? base.audioMixSession;
   const captionTrack = wire.captionTrack ?? base.captionTrack;
+  const brandKit = wire.brandKit ?? base.brandKit;
   const mergedWarnings = [
     ...warnings,
     ...audioMixSession.warnings.filter((warning) => !warnings.includes(warning)),
-    ...captionTrack.warnings.filter((warning) => !warnings.includes(warning))
+    ...captionTrack.warnings.filter((warning) => !warnings.includes(warning)),
+    ...brandKit.warnings.filter((warning) => !warnings.includes(warning))
   ];
 
   const diagnostics = {
@@ -213,6 +217,7 @@ export function mapNativeWireStateToSnapshot(
     recording,
     audioMixSession,
     captionTrack,
+    brandKit,
     warnings: mergedWarnings
   };
 
@@ -234,6 +239,7 @@ export function mapNativeWireStateToSnapshot(
     recording,
     audioMixSession,
     captionTrack,
+    brandKit,
     diagnostics,
     warnings: mergedWarnings
   };

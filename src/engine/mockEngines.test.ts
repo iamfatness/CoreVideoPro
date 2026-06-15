@@ -98,13 +98,24 @@ describe("recommendAutoProduction", () => {
       }))
     });
 
-    const recommendation = recommendAutoProduction(initialProduction, snapshot);
+    const stabilized = recommendAutoProduction(
+      {
+        ...initialProduction,
+        autoProduction: {
+          ...initialProduction.autoProduction,
+          pendingSceneId: "panel",
+          holdStartedAtMs: 0,
+          holdElapsedMs: 5000
+        }
+      },
+      snapshot
+    );
 
-    expect(recommendation.recommendedSceneId).toBe("panel");
-    expect(recommendation.action).toBe("take");
-    expect(recommendation.confidence).toBeGreaterThanOrEqual(90);
-    expect(recommendation.ruleId).toBe("panel-discussion");
-    expect(recommendation.signals).toContain("rule panel-discussion");
+    expect(stabilized.recommendedSceneId).toBe("panel");
+    expect(stabilized.action).toBe("take");
+    expect(stabilized.confidence).toBeGreaterThanOrEqual(90);
+    expect(stabilized.ruleId).toBe("panel-discussion");
+    expect(stabilized.signals).toContain("rule panel-discussion");
   });
 
   it("queues recommendations in manual mode", () => {
@@ -175,7 +186,20 @@ describe("recommendAutoProduction", () => {
       ]
     });
 
-    const recommendation = recommendAutoProduction({ ...initialProduction, activeSceneId: "panel", previewSceneId: "panel" }, snapshot);
+    const recommendation = recommendAutoProduction(
+      {
+        ...initialProduction,
+        activeSceneId: "panel",
+        previewSceneId: "panel",
+        autoProduction: {
+          ...initialProduction.autoProduction,
+          pendingSceneId: "intro",
+          holdStartedAtMs: 0,
+          holdElapsedMs: 5000
+        }
+      },
+      snapshot
+    );
 
     expect(recommendation.recommendedSceneId).toBe("intro");
     expect(recommendation.action).toBe("take");
