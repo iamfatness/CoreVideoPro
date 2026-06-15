@@ -14,10 +14,61 @@ import {
   synthesizeZoomLeaveSnapshot,
   synthesizeZoomSnapshot
 } from "./syntheticMediaCore.ts";
+import type { CaptureDeviceState } from "../src/domain/production.ts";
 import type { NativeMediaCoreProfile } from "../src/engine/nativeMediaCoreProtocol";
+
+function createCaptureBackendState(): CaptureDeviceState[] {
+  return [
+    {
+      id: "decklink-1",
+      vendor: "blackmagic",
+      name: "DeckLink Mini Recorder 4K",
+      inputs: [{ id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true }],
+      selectedInputId: "sdi-1",
+      resolution: { width: 1920, height: 1080 },
+      frameRate: 60,
+      connectionState: "connected",
+      signalPresent: true,
+      droppedFrames: 0,
+      audioSyncOffsetMs: 0
+    }
+  ];
+}
+
+function captureBackendMethods(devices: CaptureDeviceState[]) {
+  return {
+    listCaptureDevices: async () => devices.map((device) => ({ ...device, inputs: device.inputs.map((input) => ({ ...input })) })),
+    selectCaptureInput: async (deviceId: string, inputId: string) => {
+      for (const device of devices) {
+        if (device.id === deviceId && device.inputs.some((input) => input.id === inputId)) {
+          device.selectedInputId = inputId;
+        }
+      }
+      return captureBackendMethods(devices).listCaptureDevices();
+    },
+    setCaptureAudioSyncOffset: async (deviceId: string, offsetMs: number) => {
+      for (const device of devices) {
+        if (device.id === deviceId) {
+          device.audioSyncOffsetMs = Math.max(-500, Math.min(500, offsetMs));
+        }
+      }
+      return captureBackendMethods(devices).listCaptureDevices();
+    },
+    connectCaptureDevice: async (deviceId: string) => {
+      for (const device of devices) {
+        if (device.id === deviceId) {
+          device.connectionState = "connected";
+          device.signalPresent = true;
+        }
+      }
+      return captureBackendMethods(devices).listCaptureDevices();
+    }
+  };
+}
 
 function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PROFILE): MediaCoreBackend {
   const zoomState = createSyntheticZoomCaptureState();
+  const captureDevices = createCaptureBackendState();
   return {
     getProfile: () => profile,
     handshake: async () => profile,
@@ -26,7 +77,8 @@ function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PRO
     joinZoom: async (payload) => synthesizeZoomJoinSnapshot(zoomState, payload),
     leaveZoom: async () => synthesizeZoomLeaveSnapshot(zoomState),
     getZoomSnapshot: async () => synthesizeZoomSnapshot(zoomState),
-    getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
+    getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+    ...captureBackendMethods(captureDevices)
   };
 }
 
@@ -81,7 +133,8 @@ describe("createIpcRouter", () => {
       joinZoom: async (payload) => synthesizeZoomJoinSnapshot(createSyntheticZoomCaptureState(), payload),
       leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
       getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
-      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
+      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+      ...captureBackendMethods(createCaptureBackendState())
     };
     const route = createIpcRouter({ mediaCore: noProfile });
     const response = await route({ id: "5", type: "media-core-handshake" });
@@ -152,7 +205,8 @@ describe("createIpcRouter", () => {
       joinZoom: async (payload) => synthesizeZoomJoinSnapshot(createSyntheticZoomCaptureState(), payload),
       leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
       getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
-      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false })
+      getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+      ...captureBackendMethods(createCaptureBackendState())
     };
     const route = createIpcRouter({ mediaCore: failing });
     const response = await route({ id: "9", type: "media-core-sync", payload: { commands: [], elapsedMs: 0 } });

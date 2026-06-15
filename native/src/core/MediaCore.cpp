@@ -45,6 +45,14 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("rtmp-output");
 #endif
 
+#if COREVIDEO_WITH_DECKLINK
+  result.emplace_back("decklink-capture");
+#endif
+
+#if COREVIDEO_WITH_AJA
+  result.emplace_back("aja-capture");
+#endif
+
   return result;
 }
 

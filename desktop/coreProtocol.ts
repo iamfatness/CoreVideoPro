@@ -6,6 +6,7 @@
  * This is intentionally distinct from the renderer-facing `nativeBridgeProtocol`:
  * the IPC router translates bridge commands into these core requests.
  */
+import type { CaptureDeviceState } from "../src/domain/production";
 import type { NativeMediaCoreCommand, NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "../src/engine/nativeMediaCoreProtocol";
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomJoinRequest } from "../src/engine/contracts";
@@ -23,7 +24,17 @@ export type CoreRequest =
   /** Zoom media spine sync: forward the typed payload to the core. Track B mirrors this. */
   | { id: string; type: "zoom-media-spine-sync"; spinePayload: ZoomMediaSpineSyncPayload; elapsedMs: number }
   /** Test-only hook: makes the stub exit non-zero to exercise crash isolation. */
-  | { id: string; type: "__crash" };
+  | { id: string; type: "__crash" }
+  /** Capture-device bridge commands forwarded to the media core (mirrors nativeBridgeProtocol). */
+  | { id: string; type: "list-capture-devices" }
+  | { id: string; type: "select-capture-input"; payload: { deviceId: string; inputId: string } }
+  | { id: string; type: "set-capture-audio-sync-offset"; payload: { deviceId: string; offsetMs: number } }
+  | { id: string; type: "connect-capture-device"; payload: { deviceId: string } };
+
+export type CoreCaptureBridgeRequest = Extract<
+  CoreRequest,
+  { type: "list-capture-devices" | "select-capture-input" | "set-capture-audio-sync-offset" | "connect-capture-device" }
+>;
 
 export type CoreResponse =
   | { id: string; ok: true; type: "handshake"; profile: NativeMediaCoreProfile }
@@ -31,7 +42,8 @@ export type CoreResponse =
   | { id: string; ok: true; type: "media-core-sync"; snapshot: NativeMediaCoreStateSnapshot }
   | { id: string; ok: true; type: "zoom-join" | "zoom-leave" | "zoom-snapshot"; snapshot: RawCaptureSnapshot }
   | { id: string; ok: true; type: "zoom-media-spine-sync"; spineSnapshot: ZoomMediaSpineNativeSnapshot }
-  | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-failed" | "zoom-spine-failed"; message: string } };
+  | { id: string; ok: true; devices: CaptureDeviceState[] }
+  | { id: string; ok: false; error: { code: "invalid-request" | "media-core-failed" | "zoom-failed" | "zoom-spine-failed" | "capture-failed"; message: string } };
 
 type ZoomVideoFrameWire = {
   participantId: string;

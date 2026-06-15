@@ -7,7 +7,8 @@
  */
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
-import type { CoreRequest, CoreResponse } from "./coreProtocol.ts";
+import { handleCaptureDeviceRequest } from "./captureDeviceStub.ts";
+import type { CoreCaptureBridgeRequest, CoreRequest, CoreResponse } from "./coreProtocol.ts";
 import {
   SYNTHETIC_PROFILE,
   createSyntheticZoomCaptureState,
@@ -74,6 +75,11 @@ export function handleCoreRequest(raw: string): CoreResponse | null {
         spineSnapshot: synthesizeSpineSnapshot(spine.spinePayload, spine.elapsedMs)
       };
     }
+    case "list-capture-devices":
+    case "select-capture-input":
+    case "set-capture-audio-sync-offset":
+    case "connect-capture-device":
+      return handleCaptureDeviceRequest(request as CoreCaptureBridgeRequest);
     case "__crash":
       // Intentionally take the process down to exercise supervisor restart.
       stdout.write(`${JSON.stringify({ id: request.id, ok: false, error: { code: "media-core-failed", message: "crashing" } })}\n`);
