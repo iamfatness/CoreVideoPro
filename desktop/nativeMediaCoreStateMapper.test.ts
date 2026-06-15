@@ -120,4 +120,50 @@ describe("mapNativeWireStateToSnapshot", () => {
     expect(snapshot.warnings[0]).toContain("corevideo-mf-recording-123.mp4");
     expect(snapshot.outputHealth.some((item) => item.destination === "rtmp" && item.status === "live")).toBe(true);
   });
+
+  it("merges native audio mix and caption track state from the wire payload", () => {
+    const snapshot = mapNativeWireStateToSnapshot(commands, 3000, 12, {
+      sceneId: "interview",
+      routeCount: 1,
+      audioMixSession: {
+        status: "live",
+        masterLevel: 72,
+        loudnessLufs: -16,
+        limiterActive: false,
+        mixedFrameCount: 12,
+        participants: [
+          {
+            participantId: "p1",
+            inputLevel: 64,
+            outputLevel: 68,
+            gainDb: 0,
+            noiseSuppression: false,
+            limiterActive: false,
+            muted: false,
+            status: "balanced"
+          }
+        ],
+        summary: "Program mix balanced",
+        warnings: []
+      },
+      captionTrack: {
+        enabled: true,
+        status: "live",
+        currentCue: {
+          text: "Welcome to the webinar.",
+          speaker: "Maya Chen",
+          atMs: 2800,
+          confidence: 95
+        },
+        latencyMs: 180,
+        warnings: []
+      }
+    });
+
+    expect(snapshot.audioMixSession.summary).toBe("Program mix balanced");
+    expect(snapshot.audioMixSession.masterLevel).toBe(72);
+    expect(snapshot.captionTrack.currentCue?.text).toBe("Welcome to the webinar.");
+    expect(snapshot.diagnostics.audioMixSession.masterLevel).toBe(72);
+    expect(snapshot.diagnostics.captionTrack.currentCue?.speaker).toBe("Maya Chen");
+  });
 });

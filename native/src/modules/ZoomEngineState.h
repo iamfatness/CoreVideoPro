@@ -39,6 +39,7 @@ class ZoomEngineRuntimeState {
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
   [[nodiscard]] rpc::Json::Array participantsJson() const;
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs) const;
+  [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs) const;
 
  private:
   std::string meetingState_ = "idle";

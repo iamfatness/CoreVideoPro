@@ -5,6 +5,8 @@
  * preserving the typed boundary contract.
  */
 import type {
+  NativeMediaCoreAudioMixSession,
+  NativeMediaCoreCaptionTrack,
   NativeMediaCoreCommand,
   NativeMediaCoreEncoderSession,
   NativeMediaCoreOutputHealth,
@@ -45,6 +47,8 @@ export type NativeMediaCoreWireState = {
     messages?: string[];
   };
   profile?: NativeMediaCoreProfile;
+  audioMixSession?: NativeMediaCoreAudioMixSession;
+  captionTrack?: NativeMediaCoreCaptionTrack;
 };
 
 function asDestination(value: string): "rtmp" | "ndi" | "srt" | "webrtc" | "recording" | undefined {
@@ -172,6 +176,14 @@ export function mapNativeWireStateToSnapshot(
         }
       : undefined;
 
+  const audioMixSession = wire.audioMixSession ?? base.audioMixSession;
+  const captionTrack = wire.captionTrack ?? base.captionTrack;
+  const mergedWarnings = [
+    ...warnings,
+    ...audioMixSession.warnings.filter((warning) => !warnings.includes(warning)),
+    ...captionTrack.warnings.filter((warning) => !warnings.includes(warning))
+  ];
+
   const diagnostics = {
     ...base.diagnostics,
     generatedAtMs: elapsedMs,
@@ -199,7 +211,9 @@ export function mapNativeWireStateToSnapshot(
     },
     encoderSession,
     recording,
-    warnings
+    audioMixSession,
+    captionTrack,
+    warnings: mergedWarnings
   };
 
   return {
@@ -218,8 +232,10 @@ export function mapNativeWireStateToSnapshot(
     outputSenderSession,
     outputHealth,
     recording,
+    audioMixSession,
+    captionTrack,
     diagnostics,
-    warnings
+    warnings: mergedWarnings
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialProduction } from "../domain/production";
+import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import type { NativeHostBridge } from "./nativeHostBridge";
 import type { NativeMediaCoreCommand } from "./nativeMediaCoreProtocol";
@@ -65,6 +66,13 @@ describe("media core sync engine", () => {
         latencyMs: 0
       }
     });
+    expect(snapshot.audioMixSession.status).toBe("warning");
+    expect(snapshot.audioMixSession.participants.length).toBeGreaterThan(0);
+    expect(snapshot.captionTrack.status).toBe("live");
+    expect(snapshot.captionTrack.currentCue?.text).toBe(initialProduction.captionOverlay.text.trim());
+    expect(snapshot.lastCommandTypes).toEqual(
+      expect.arrayContaining(["sync-participant-audio-mix", "set-caption-enabled", "push-caption-cue"])
+    );
   });
 
   it("creates source actions and events only for routed Zoom feed health issues", () => {
@@ -320,6 +328,8 @@ describe("media core sync engine", () => {
         senders: [],
         warnings: []
       },
+      audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+      captionTrack: IDLE_NATIVE_CAPTION_TRACK,
       operatorActions: [],
       eventLog: [],
       programFrameCount: 0,
@@ -433,6 +443,8 @@ describe("media core sync engine", () => {
           },
           warnings: []
         },
+        audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+        captionTrack: IDLE_NATIVE_CAPTION_TRACK,
         operatorActions: [],
         eventLog: [],
         warnings: [],
@@ -588,7 +600,13 @@ describe("media core sync engine", () => {
       },
       outputHealth: [{ destination: "recording", status: "live", message: "Recording writer active." }],
       operatorActions: [],
-      eventLog: [],
+      eventLog: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "warning",
+          title: "Media core warning",
+          detail: "Noise suppression active on low-level sources."
+        })
+      ]),
       diagnostics: {
         generatedAtMs: 3000,
         outputSenderSession: {
@@ -1069,7 +1087,10 @@ describe("media core sync engine", () => {
           detail: "Screen share route requested but no active screen share source is available."
         })
       ]),
-      warnings: ["Screen share route requested but no active screen share source is available."]
+      warnings: expect.arrayContaining([
+        "Screen share route requested but no active screen share source is available.",
+        "Noise suppression active on low-level sources."
+      ])
     });
   });
 
@@ -1092,7 +1113,10 @@ describe("media core sync engine", () => {
 
     await expect(engine.syncProduction(initialProduction, 10)).resolves.toMatchObject({
       sceneId: "speaker-slides",
-      warnings: ["Native host has no media-core sync bridge; using renderer-side simulation."]
+      warnings: expect.arrayContaining([
+        "Native host has no media-core sync bridge; using renderer-side simulation.",
+        "Noise suppression active on low-level sources."
+      ])
     });
   });
 });

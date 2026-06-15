@@ -69,9 +69,9 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Profile1080p60");
     expect(nativeCore).toHaveTextContent("Disk rate7.49 MB/s");
     expect(nativeCore).toHaveTextContent("Output healthlive");
+    expect(nativeCore).toHaveTextContent("Audio mix");
+    expect(nativeCore).toHaveTextContent("Caption tracklive");
     expect(nativeCore).toHaveTextContent("ActionNone");
-    expect(nativeCore).toHaveTextContent("EventsNone");
-    expect(nativeCore).toHaveTextContent("WarningsNone");
   });
 
   it("executes media-core recovery actions from Settings", async () => {

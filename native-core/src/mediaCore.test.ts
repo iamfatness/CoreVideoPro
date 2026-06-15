@@ -1253,4 +1253,52 @@ describe("MediaCoreRuntime", () => {
       }
     });
   });
+
+  it("syncs participant audio mix and caption cues into the media-core snapshot", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "audio-caption",
+      type: "sync",
+      commands: [
+        {
+          type: "sync-participant-audio-mix",
+          channels: [
+            { participantId: "p1", inputLevel: 64, muted: false, noiseSuppression: false },
+            { participantId: "p2", inputLevel: 82, muted: false, noiseSuppression: false, manualGainDb: -2 }
+          ]
+        },
+        { type: "set-caption-enabled", enabled: true },
+        { type: "push-caption-cue", text: "Welcome to the webinar.", speaker: "Maya Chen", atMs: 1200 }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        audioMixSession: {
+          status: "live",
+          participants: expect.arrayContaining([
+            expect.objectContaining({ participantId: "p1", status: "balanced" }),
+            expect.objectContaining({ participantId: "p2", status: "ducking" })
+          ]),
+          summary: expect.stringContaining("ducked")
+        },
+        captionTrack: {
+          enabled: true,
+          status: "live",
+          currentCue: {
+            text: "Welcome to the webinar.",
+            speaker: "Maya Chen",
+            atMs: 1200
+          },
+          latencyMs: 180
+        },
+        lastCommandTypes: expect.arrayContaining([
+          "sync-participant-audio-mix",
+          "set-caption-enabled",
+          "push-caption-cue"
+        ])
+      }
+    });
+  });
 });

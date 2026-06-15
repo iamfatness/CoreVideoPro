@@ -29,6 +29,7 @@ import type {
 } from "./nativeMediaCoreProtocol";
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
 import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions";
+import { NativeAudioMixSessionSimulator, NativeCaptionTrackSimulator } from "./nativeMediaCoreAudioCaption";
 
 const MAX_EVENT_LOG_LENGTH = 80;
 
@@ -117,6 +118,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     quality: "high",
     isoParticipantIds: []
   };
+  private readonly audioMixSession = new NativeAudioMixSessionSimulator();
+  private readonly captionTrack = new NativeCaptionTrackSimulator();
 
   async syncProduction(state: ProductionState, elapsedMs: number): Promise<NativeMediaCoreStateSnapshot> {
     return this.syncCommands(buildNativeMediaCoreCommands(state), elapsedMs);
@@ -149,6 +152,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const recoveredSender = commands.find((command) => command.type === "recover-output-sender");
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
+    const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
+    const captionCue = commands.find((command) => command.type === "push-caption-cue");
+    const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
     if (sourceRoster) {
       this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
       this.syncZoomSourceLifecycleEvents(this.sources, elapsedMs);
@@ -226,6 +232,15 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     if (recoveredSender) {
       this.recoverOutputSender(recoveredSender.destination, recoveredSender.recoveredAtMs ?? elapsedMs, recoveredSender.reason);
     }
+    if (audioMixCommand) {
+      this.audioMixSession.sync(audioMixCommand.channels);
+    }
+    if (captionEnabled) {
+      this.captionTrack.setEnabled(captionEnabled.enabled);
+    }
+    if (captionCue) {
+      this.captionTrack.pushCue(captionCue.text, captionCue.atMs, captionCue.speaker);
+    }
     const renderPlan = buildNativeMediaCoreRenderPlan({
       sceneGraph,
       sources: this.sources,
@@ -239,6 +254,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const isoReadinessIssues = buildIsoRecordingReadinessIssues(isoParticipantIds, this.sources);
     const frameSources = buildFrameSourceLayers(renderPlan, this.sources, isoParticipantIds);
     const frames = frameSources.map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
+    this.audioMixSession.mix(frames.length > 0 ? 1 : 0);
+    const audioMixSession = this.audioMixSession.snapshot();
+    const captionTrack = this.captionTrack.snapshot();
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
@@ -264,6 +282,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...renderPlan.warnings,
         ...encoderSession.warnings,
         ...outputSenderSession.warnings,
+        ...audioMixSession.warnings,
+        ...captionTrack.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -296,6 +316,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       renderPlan,
       encoderSession,
       recording,
+      audioMixSession,
+      captionTrack,
       operatorActions,
       eventLog: [...this.eventLog],
       diagnostics: {
@@ -315,6 +337,8 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         programTransport: this.programTransport,
         encoderSession,
         recording,
+        audioMixSession,
+        captionTrack,
         operatorActions,
         eventLog: [...this.eventLog],
         warnings: allWarnings,

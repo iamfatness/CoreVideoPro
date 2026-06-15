@@ -28,6 +28,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs);
+  [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs);
 
  private:
   struct Config {

@@ -124,7 +124,65 @@ export type NativeMediaCoreCommand =
       type: "recover-recording-session";
       recoveredAtMs?: number;
       reason?: string;
+    }
+  | {
+      type: "sync-participant-audio-mix";
+      channels: Array<{
+        participantId: string;
+        inputLevel: number;
+        muted: boolean;
+        noiseSuppression: boolean;
+        manualGainDb?: number;
+      }>;
+    }
+  | {
+      type: "push-caption-cue";
+      text: string;
+      speaker?: string;
+      atMs: number;
+    }
+  | {
+      type: "set-caption-enabled";
+      enabled: boolean;
     };
+
+export type NativeMediaCoreParticipantAudioChannel = {
+  participantId: string;
+  inputLevel: number;
+  outputLevel: number;
+  gainDb: number;
+  manualGainDb?: number;
+  noiseSuppression: boolean;
+  limiterActive: boolean;
+  muted: boolean;
+  status: "balanced" | "boosting" | "ducking" | "muted";
+};
+
+export type NativeMediaCoreAudioMixSession = {
+  status: "idle" | "live" | "warning";
+  masterLevel: number;
+  loudnessLufs: number;
+  limiterActive: boolean;
+  mixedFrameCount: number;
+  participants: NativeMediaCoreParticipantAudioChannel[];
+  summary: string;
+  warnings: string[];
+};
+
+export type NativeMediaCoreCaptionCue = {
+  text: string;
+  speaker?: string;
+  atMs: number;
+  confidence: number;
+};
+
+export type NativeMediaCoreCaptionTrack = {
+  enabled: boolean;
+  status: "idle" | "live" | "warning";
+  currentCue?: NativeMediaCoreCaptionCue;
+  latencyMs: number;
+  warnings: string[];
+};
 
 export type NativeMediaCoreFrame = {
   sourceId: string;
@@ -407,6 +465,8 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   programTransport: NativeMediaCoreProgramFrameTransport;
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
+  audioMixSession: NativeMediaCoreAudioMixSession;
+  captionTrack: NativeMediaCoreCaptionTrack;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   warnings: string[];
@@ -435,6 +495,8 @@ export type NativeMediaCoreStateSnapshot = {
   renderPlan: NativeMediaCoreRenderPlan;
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
+  audioMixSession: NativeMediaCoreAudioMixSession;
+  captionTrack: NativeMediaCoreCaptionTrack;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;

@@ -26,6 +26,7 @@ import type {
 import type { RawCaptureSnapshot } from "../src/engine/captureSnapshotMapper";
 import type { ZoomJoinRequest } from "../src/engine/contracts";
 import type { ZoomMediaSpineSyncPayload } from "../src/engine/zoomMediaSpineSync";
+import { NativeAudioMixSessionSimulator, NativeCaptionTrackSimulator } from "../src/engine/nativeMediaCoreAudioCaption.ts";
 
 const DEFAULT_OUTPUT_PROFILE: NativeMediaCoreOutputProfile = {
   profileId: "1080p60",
@@ -147,6 +148,9 @@ export function synthesizeSnapshot(
   const output = commands.find((command) => command.type === "start-program-output");
   const overlays = commands.filter((command) => command.type === "set-overlay-asset");
   const transforms = commands.filter((command) => command.type === "set-participant-transform");
+  const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
+  const captionCue = commands.find((command) => command.type === "push-caption-cue");
+  const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
 
   const sourceCount = roster ? roster.sources.length : 0;
   const routeCount = sceneGraph ? sceneGraph.routes.length : 0;
@@ -198,6 +202,21 @@ export function synthesizeSnapshot(
   const sourceSnapshot = emptySourceSnapshot(sourceCount, elapsedMs);
   const lastCommandTypes = commands.map((command) => command.type);
 
+  const audioMixSession = new NativeAudioMixSessionSimulator();
+  const captionTrack = new NativeCaptionTrackSimulator();
+  if (audioMixCommand) {
+    audioMixSession.sync(audioMixCommand.channels);
+  }
+  if (captionEnabled) {
+    captionTrack.setEnabled(captionEnabled.enabled);
+  }
+  if (captionCue) {
+    captionTrack.pushCue(captionCue.text, captionCue.atMs, captionCue.speaker);
+  }
+  audioMixSession.mix(frames.length > 0 ? 1 : 0);
+  const audioMixSnapshot = audioMixSession.snapshot();
+  const captionTrackSnapshot = captionTrack.snapshot();
+
   const diagnostics = {
     generatedAtMs: elapsedMs,
     sceneId,
@@ -243,9 +262,11 @@ export function synthesizeSnapshot(
       },
       warnings: []
     },
+    audioMixSession: audioMixSnapshot,
+    captionTrack: captionTrackSnapshot,
     operatorActions: [],
     eventLog: [],
-    warnings: [],
+    warnings: [...audioMixSnapshot.warnings, ...captionTrackSnapshot.warnings],
     lastCommandTypes
   };
 
@@ -270,11 +291,13 @@ export function synthesizeSnapshot(
     resolvedRouteCount: routeCount,
     renderPlan,
     encoderSession: diagnostics.encoderSession,
+    audioMixSession: audioMixSnapshot,
+    captionTrack: captionTrackSnapshot,
     operatorActions: [],
     eventLog: [],
     diagnostics,
     lastCommandTypes,
-    warnings: []
+    warnings: diagnostics.warnings
   };
 }
 
