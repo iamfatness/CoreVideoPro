@@ -2,13 +2,11 @@
  * Playwright–Electron end-to-end smoke test.
  *
  * Asserts the join → Magic Scene → take → core-ack round-trip through the
- * real Electron shell against the mock engine bundle (no Zoom SDK, no GPU).
+ * real Electron shell against the Node media-core stub (no Zoom SDK, no GPU).
  *
  * Prerequisites:
- *   npm install --no-save electron@latest
- *   npx playwright test tests/e2e/smoke.test.ts
- *
- * In a container without the Electron binary the test is skipped automatically.
+ *   npm install --no-save electron@latest tsx esbuild
+ *   npm run test:e2e
  */
 import { test, expect } from "playwright/test";
 import { _electron as electron } from "playwright";
@@ -16,102 +14,81 @@ import { existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// TypeScript: we declare the ambient shape of `import.meta` ourselves rather
-// than pulling in @types/node, which is excluded from the project devDeps.
-declare interface ImportMeta {
-  readonly url: string;
-}
-declare const importMeta: ImportMeta;
-
-// ESM-safe __dirname equivalent.
 const _here = dirname(fileURLToPath(import.meta.url));
 const _repoRoot = resolve(_here, "..", "..");
+const _rendererUrl = process.env.COREVIDEO_RENDERER_URL ?? "http://127.0.0.1:5173";
+const _mainE2e =
+  process.env.COREVIDEO_E2E_MAIN ?? join(_repoRoot, "desktop", "main-e2e.mjs");
 
-/**
- * Look for the Electron binary installed via `npm install --no-save electron`.
- * Returns undefined when Electron is not present (CI without the binary).
- */
-function resolveElectronBin(): string | undefined {
-  const candidates = [
-    join(_repoRoot, "node_modules", ".bin", "electron"),
-    join(_repoRoot, "desktop", "node_modules", ".bin", "electron"),
-  ];
-  return candidates.find((c) => existsSync(c));
+function resolveElectronInstalled(): boolean {
+  const roots = [join(_repoRoot, "node_modules"), join(_repoRoot, "desktop", "node_modules")];
+  for (const root of roots) {
+    const binary = join(root, "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
+    if (existsSync(binary)) {
+      return true;
+    }
+  }
+  return false;
 }
 
-const electronBin = resolveElectronBin();
+const hasElectron = resolveElectronInstalled();
 
 test.describe("CoreVideo Pro – Electron smoke", () => {
-  // Skip the entire suite when Electron is not installed so CI (which only
-  // runs the headless vitest gate) doesn't fail.
-  test.skip(!electronBin, "Electron binary not found — install with: npm install --no-save electron@latest");
+  test.skip(!hasElectron, "Electron binary not found — install with: npm install --no-save electron@latest");
+  test.skip(!existsSync(_mainE2e), `E2E main bundle missing at ${_mainE2e} — run npm run test:e2e`);
 
   test("join → Magic Scene → take → core-ack round-trip", async () => {
     const app = await electron.launch({
-      executablePath: electronBin!,
-      args: [join(_repoRoot, "desktop", "main.ts")],
+      args: [_mainE2e],
+      cwd: _repoRoot,
       env: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...(globalThis as any).process?.env as Record<string, string>,
+        ...process.env,
+        COREVIDEO_E2E: "1",
+        COREVIDEO_RENDERER_URL: _rendererUrl,
         ELECTRON_ENABLE_LOGGING: "1",
-        NODE_ENV: "test",
-      },
+        NODE_ENV: "test"
+      }
     });
 
     try {
-      // Wait for the first BrowserWindow to appear.
-      const page = await app.firstWindow();
+      const page = await app.firstWindow({ timeout: 45_000 });
       await page.waitForLoadState("domcontentloaded");
 
-      // ── 1. CoreVideo Pro brand visible ───────────────────────────────────
-      // The <strong>CoreVideo Pro</strong> in the top-bar header is always
-      // rendered regardless of connection state.
       await expect(page.locator("strong", { hasText: "CoreVideo Pro" }).first()).toBeVisible({
-        timeout: 10_000,
+        timeout: 15_000
       });
 
-      // ── 2. Join round-trip ───────────────────────────────────────────────
-      // Navigate to Settings to access the Join Zoom button and connection pill.
       await page.getByRole("button", { name: /Settings/i }).click();
 
       const joinButton = page.getByRole("button", { name: /Join Zoom/i });
-      // The mock engine starts in_meeting; if somehow not joined, click Join.
       if (await joinButton.isVisible()) {
         await joinButton.click();
       }
-      // Whether we joined just now or were already in_meeting, the connected
-      // pill must be visible.
-      await expect(page.locator(".connection-pill.connected")).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator(".connection-pill.connected")).toBeVisible({ timeout: 10_000 });
 
-      // ── 3. Magic Scene ───────────────────────────────────────────────────
-      // Return to Studio tab where the footer Magic Scene button lives.
       await page.getByRole("button", { name: /^Studio$/i }).click();
 
-      // The footer button carries class "magic-scene-button"; we use the first
-      // enabled instance (footer wins over the template panel).
       const magicSceneButton = page.locator(".magic-scene-button").first();
-      await expect(magicSceneButton).toBeVisible({ timeout: 5_000 });
+      await expect(magicSceneButton).toBeVisible({ timeout: 10_000 });
       await expect(magicSceneButton).toBeEnabled();
       await magicSceneButton.click();
 
-      // The mock AI engine returns a scene synchronously; the transition status
-      // text or magicSceneStatus <p> updates immediately.
-      await expect(
-        page.locator("text=/queued by Magic Scene|Magic Scene/").first()
-      ).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator("text=/queued by Magic Scene|Magic Scene/").first()).toBeVisible({
+        timeout: 10_000
+      });
 
-      // ── 4. Take ──────────────────────────────────────────────────────────
       const takeButton = page.locator(".take-button").first();
-      await expect(takeButton).toBeVisible({ timeout: 5_000 });
+      await expect(takeButton).toBeVisible({ timeout: 10_000 });
       await takeButton.click();
 
-      // After take, transition statusText contains "taken with <style>".
-      await expect(page.locator("text=/taken with/").first()).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByRole("button", { name: /Interview.*Program/i })).toBeVisible({
+        timeout: 10_000
+      });
 
-      // ── 5. Core-ack ──────────────────────────────────────────────────────
-      // The InMemoryMediaCoreSyncEngine (mock core) responds synchronously.
-      // Verify the app is still alive and the top-bar brand is present.
-      await expect(page.locator("strong", { hasText: "CoreVideo Pro" }).first()).toBeVisible();
+      await page.getByRole("button", { name: /Settings/i }).click();
+      await expect(
+        page.locator('[aria-label="Native core sync"] strong', { hasText: "live" }).first()
+      ).toBeVisible({ timeout: 10_000 });
     } finally {
       await app.close();
     }

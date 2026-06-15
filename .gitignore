@@ -1,6 +1,7 @@
 node_modules/
 dist/
 desktop/preload.cjs
+desktop/main-e2e.mjs
 artifacts/
 native/build*/
 native/build-ci/
