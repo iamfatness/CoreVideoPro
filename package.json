@@ -35,5 +35,9 @@
     "jsdom": "^29.1.1",
     "playwright": "^1.60.0",
     "vitest": "^4.1.8"
+  },
+  "optionalDependencies": {
+    "@emnapi/core": "1.11.1",
+    "@emnapi/runtime": "1.11.1"
   }
 }
