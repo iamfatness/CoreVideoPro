@@ -22,6 +22,7 @@
     "desktop": "node desktop/scripts/launch.mjs",
     "dev:desktop": "powershell -ExecutionPolicy Bypass -File scripts/desktop-dev.ps1",
     "pack:desktop": "node desktop/scripts/package.mjs",
+    "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "test:e2e": "node scripts/e2e-smoke.mjs"
   },
   "dependencies": {
