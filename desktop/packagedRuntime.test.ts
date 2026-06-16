@@ -48,6 +48,7 @@ describe("packagedRuntime", () => {
     const options = mediaCoreSupervisorOptionsForApp({}, tempDir, "darwin", true);
 
     expect(options.command).toBeUndefined();
+    expect(options.args).toEqual([expect.stringMatching(/coreStub\.cjs$/)]);
     expect(options.env).toMatchObject({ ELECTRON_RUN_AS_NODE: "1" });
   });
 });

@@ -1,0 +1,278 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.WinUI.Models;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
+
+namespace CoreVideoPro.WinUI.ViewModels;
+
+public sealed partial class TransportViewModel : ObservableObject
+{
+    [ObservableProperty]
+    private bool _magicSceneEnabled = true;
+
+    [ObservableProperty]
+    private bool _setAndForgetSelected;
+
+    [ObservableProperty]
+    private bool _setAndForgetCanToggle = true;
+
+    [ObservableProperty]
+    private string _automationStatusLabel = "On";
+
+    [ObservableProperty]
+    private string _programStatValue = "1080p60";
+
+    [ObservableProperty]
+    private string _programStatHealthLabel = "Good";
+
+    [ObservableProperty]
+    private string _streamStatValue = "Idle";
+
+    [ObservableProperty]
+    private string _streamStatHealthLabel = "Idle";
+
+    [ObservableProperty]
+    private string _recordStatValue = "Idle";
+
+    [ObservableProperty]
+    private string _recordStatHealthLabel = "Idle";
+
+    [ObservableProperty]
+    private string _cpuLoadLabel = "18%";
+
+    [ObservableProperty]
+    private string _memoryLoadLabel = "23%";
+
+    [ObservableProperty]
+    private string _diskLoadLabel = "27%";
+
+    [ObservableProperty]
+    private string _frameDropsLabel = "0 (0.0%)";
+
+    [ObservableProperty]
+    private string _liveClockLabel = TransportFormatting.FormatElapsed(TransportFormatting.DemoElapsedSeconds);
+
+    [ObservableProperty]
+    private int _masterLevelLeft = TransportFormatting.DemoMasterLevel;
+
+    [ObservableProperty]
+    private int _masterLevelRight = Math.Max(0, TransportFormatting.DemoMasterLevel - 4);
+
+    [ObservableProperty]
+    private string _masterVolumeLabel = "0.0 dB";
+
+    private Brush _programStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Good);
+
+    private Brush _streamStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
+
+    private Brush _recordStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
+
+    public Brush ProgramStatHealthBrush
+    {
+        get => _programStatHealthBrush;
+        private set => SetProperty(ref _programStatHealthBrush, value);
+    }
+
+    public Brush StreamStatHealthBrush
+    {
+        get => _streamStatHealthBrush;
+        private set => SetProperty(ref _streamStatHealthBrush, value);
+    }
+
+    public Brush RecordStatHealthBrush
+    {
+        get => _recordStatHealthBrush;
+        private set => SetProperty(ref _recordStatHealthBrush, value);
+    }
+
+    public Brush SetAndForgetButtonBackground => SetAndForgetSelected
+        ? new SolidColorBrush(Windows.UI.Color.FromArgb(31, 61, 220, 151))
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+
+    public Brush SetAndForgetButtonBorder => SetAndForgetSelected
+        ? new SolidColorBrush(Windows.UI.Color.FromArgb(140, 61, 220, 151))
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 42, 52, 60));
+
+    public Brush SetAndForgetToggleBackground => SetAndForgetSelected
+        ? new SolidColorBrush(Windows.UI.Color.FromArgb(77, 61, 220, 151))
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(31, 255, 255, 255));
+
+    public Brush SetAndForgetThumbBrush => SetAndForgetSelected
+        ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 61, 220, 151))
+        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 165, 155));
+
+    public Thickness SetAndForgetThumbMargin => SetAndForgetSelected
+        ? new Thickness(16, 2, 2, 2)
+        : new Thickness(2);
+
+    public double MasterLevelLeftBarWidth => MasterLevelLeft * 1.2;
+
+    public double MasterLevelRightBarWidth => MasterLevelRight * 1.2;
+
+    partial void OnSetAndForgetSelectedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SetAndForgetButtonBackground));
+        OnPropertyChanged(nameof(SetAndForgetButtonBorder));
+        OnPropertyChanged(nameof(SetAndForgetToggleBackground));
+        OnPropertyChanged(nameof(SetAndForgetThumbBrush));
+        OnPropertyChanged(nameof(SetAndForgetThumbMargin));
+    }
+
+    partial void OnMasterLevelLeftChanged(int value) =>
+        OnPropertyChanged(nameof(MasterLevelLeftBarWidth));
+
+    partial void OnMasterLevelRightChanged(int value) =>
+        OnPropertyChanged(nameof(MasterLevelRightBarWidth));
+
+    public void ApplyAutomationState(ProductionMode mode, bool canToggle)
+    {
+        SetAndForgetSelected = mode == ProductionMode.SetAndForget;
+        SetAndForgetCanToggle = canToggle;
+        AutomationStatusLabel = SetAndForgetSelected ? "On" : "Off";
+    }
+
+    public void ApplyMeetingState(bool inMeeting) => MagicSceneEnabled = inMeeting;
+
+    public void ApplyDemoState(bool recording, bool streaming, string programResolutionLabel)
+    {
+        var encoderLoad = TransportFormatting.DemoEncoderLoadPercent;
+        var networkHealth = OutputHealthKind.Good;
+
+        ProgramStatValue = programResolutionLabel;
+        ApplyHealth(ProgramStatHealthLabel, networkHealth, brush => ProgramStatHealthBrush = brush);
+
+        StreamStatValue = streaming
+            ? $"{programResolutionLabel} {TransportFormatting.DemoBitrateMbps:0.#} Mbps"
+            : "Idle";
+        ApplyHealth(StreamStatHealthLabel, streaming ? networkHealth : OutputHealthKind.Idle,
+            brush => StreamStatHealthBrush = brush);
+
+        RecordStatValue = recording ? programResolutionLabel : "Idle";
+        ApplyHealth(RecordStatHealthLabel, recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
+            brush => RecordStatHealthBrush = brush);
+
+        CpuLoadLabel = TransportFormatting.PercentLabel(encoderLoad);
+        MemoryLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.MemoryLoadFromEncoder(encoderLoad));
+        DiskLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.DiskLoadFromEncoder(encoderLoad));
+        FrameDropsLabel = TransportFormatting.FrameDropsLabel(0, 0);
+        LiveClockLabel = TransportFormatting.FormatElapsed(TransportFormatting.DemoElapsedSeconds);
+        MasterLevelLeft = TransportFormatting.DemoMasterLevel;
+        MasterLevelRight = Math.Max(0, TransportFormatting.DemoMasterLevel - 4);
+        MasterVolumeLabel = "0.0 dB";
+    }
+
+    public void ApplySnapshot(
+        NativeMediaCoreStateSnapshot snapshot,
+        bool recording,
+        bool streaming,
+        string programResolutionLabel)
+    {
+        var elapsedSeconds = (int)Math.Floor(snapshot.Diagnostics.GeneratedAtMs / 1000d);
+        var encoderLoad = EstimateEncoderLoad(snapshot, recording, streaming);
+        var networkHealth = ResolveNetworkHealth(snapshot);
+        var droppedFrames = ResolveDroppedFrames(snapshot);
+        var totalFrames = Math.Max(snapshot.ProgramFrameCount, droppedFrames);
+        var bitrateMbps = snapshot.OutputSenderSession.Senders.FirstOrDefault()?.BitrateMbps
+            ?? snapshot.OutputProfile.TargetBitrateMbps;
+
+        ProgramStatValue = programResolutionLabel;
+        ApplyHealth(ProgramStatHealthLabel, networkHealth, brush => ProgramStatHealthBrush = brush);
+
+        StreamStatValue = streaming
+            ? $"{programResolutionLabel} {bitrateMbps:0.#} Mbps"
+            : "Idle";
+        ApplyHealth(StreamStatHealthLabel, streaming ? networkHealth : OutputHealthKind.Idle,
+            brush => StreamStatHealthBrush = brush);
+
+        RecordStatValue = recording ? programResolutionLabel : "Idle";
+        ApplyHealth(RecordStatHealthLabel, recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
+            brush => RecordStatHealthBrush = brush);
+
+        CpuLoadLabel = TransportFormatting.PercentLabel(encoderLoad);
+        MemoryLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.MemoryLoadFromEncoder(encoderLoad));
+        DiskLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.DiskLoadFromEncoder(encoderLoad));
+        FrameDropsLabel = TransportFormatting.FrameDropsLabel(droppedFrames, totalFrames);
+        LiveClockLabel = TransportFormatting.FormatElapsed(elapsedSeconds);
+
+        var masterLevel = snapshot.AudioMixSession.MasterLevel > 0
+            ? snapshot.AudioMixSession.MasterLevel
+            : TransportFormatting.DemoMasterLevel;
+        MasterLevelLeft = Math.Clamp(masterLevel, 0, 100);
+        MasterLevelRight = Math.Max(0, MasterLevelLeft - 4);
+        MasterVolumeLabel = snapshot.AudioMixSession.LimiterActive ? "-1.0 dB" : "0.0 dB";
+    }
+
+    private static int EstimateEncoderLoad(
+        NativeMediaCoreStateSnapshot snapshot,
+        bool recording,
+        bool streaming)
+    {
+        if (!recording && !streaming && snapshot.EncoderSession.Status is not "encoding")
+        {
+            return Math.Max(8, snapshot.ProgramFrameCount % 12 + 8);
+        }
+
+        var load = 14 + snapshot.ProgramFrameCount % 18;
+        if (streaming)
+        {
+            load += 8;
+        }
+
+        if (recording)
+        {
+            load += 6;
+        }
+
+        if (snapshot.Compositor.DroppedFrameCount > 0)
+        {
+            load += 4;
+        }
+
+        return Math.Min(100, load);
+    }
+
+    private static OutputHealthKind ResolveNetworkHealth(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var health = snapshot.OutputHealth.FirstOrDefault(item =>
+            item.Destination.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
+            item.Destination.Equals("program", StringComparison.OrdinalIgnoreCase));
+
+        if (health is null)
+        {
+            health = snapshot.OutputHealth.FirstOrDefault();
+        }
+
+        return health is null
+            ? OutputHealthKind.Idle
+            : TransportFormatting.MapNetworkHealth(health.Status);
+    }
+
+    private static int ResolveDroppedFrames(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var healthDrops = snapshot.OutputHealth.Sum(item => item.DroppedFrames);
+        var compositorDrops = snapshot.Compositor.DroppedFrameCount;
+        var recordingDrops = snapshot.Recording?.TotalDroppedFrames ?? 0;
+        return Math.Max(healthDrops, Math.Max(compositorDrops, recordingDrops));
+    }
+
+    private void ApplyHealth(
+        string propertyName,
+        OutputHealthKind health,
+        Action<Brush> setBrush)
+    {
+        setBrush(TransportFormatting.HealthBrush(health));
+        switch (propertyName)
+        {
+            case nameof(ProgramStatHealthLabel):
+                ProgramStatHealthLabel = TransportFormatting.HealthLabel(health);
+                break;
+            case nameof(StreamStatHealthLabel):
+                StreamStatHealthLabel = TransportFormatting.HealthLabel(health);
+                break;
+            case nameof(RecordStatHealthLabel):
+                RecordStatHealthLabel = TransportFormatting.HealthLabel(health);
+                break;
+        }
+    }
+}

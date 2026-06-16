@@ -26,6 +26,8 @@ export type NativeHostBridge = {
   syncMediaCore?(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine?(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;
   getMediaCoreHealth?(): Promise<MediaCoreHealth>;
+  startMediaCore?(): Promise<NativeMediaCoreProfile>;
+  stopMediaCore?(): Promise<void>;
   /**
    * Subscribe to the live per-participant RGBA video frame stream pushed from the
    * native Zoom capture engine. Returns an unsubscribe function. Absent on hosts
@@ -154,6 +156,33 @@ export function attachBridgeMediaCoreHealth(bridge: NativeHostBridge): NativeHos
         // Bridge unavailable — return a safe default.
       }
       return { restartCount: 0, recovering: false, stopped: false };
+    };
+  }
+  return bridge;
+}
+
+export function attachBridgeMediaCoreLifecycle(bridge: NativeHostBridge): NativeHostBridge {
+  if (!bridge.startMediaCore) {
+    bridge.startMediaCore = async () => {
+      const id = nextBridgeCommandId("start-media-core");
+      const response = await bridge.request({ id, type: "start-media-core" });
+      if (response.ok && "profile" in response) {
+        bridge.mediaCoreProfile = response.profile;
+        return response.profile;
+      }
+      const message = response.ok ? "Bridge did not return a media-core profile." : response.error.message;
+      throw new NativeZoomBridgeError("media-core-unreachable", message);
+    };
+  }
+  if (!bridge.stopMediaCore) {
+    bridge.stopMediaCore = async () => {
+      const id = nextBridgeCommandId("stop-media-core");
+      const response = await bridge.request({ id, type: "stop-media-core" });
+      if (response.ok && "stopped" in response) {
+        return;
+      }
+      const message = response.ok ? "Bridge did not confirm media-core stop." : response.error.message;
+      throw new NativeZoomBridgeError("media-core-failed", message);
     };
   }
   return bridge;

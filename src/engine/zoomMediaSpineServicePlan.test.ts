@@ -69,7 +69,7 @@ describe("buildZoomMediaSpineServicePlan", () => {
     expect(plan.requests[3]).toMatchObject({
       type: "zoom-start-recording",
       targets: {
-        filenamePrefix: "AI_Product_Launch_Webinar",
+        filenamePrefix: "Q2_Product_Update",
         isoParticipantIds: ["p1", "p2"]
       }
     });
@@ -166,7 +166,7 @@ describe("buildZoomMediaSpineServicePlan", () => {
       recording: true,
       recordingSettings: {
         ...initialProduction.recordingSettings,
-        isoParticipantIds: ["p1", "p3", "p4"]
+        isoParticipantIds: ["p1", "p6", "p7"]
       }
     } satisfies ProductionState;
     const payload = buildZoomMediaSpineSyncPayload(state, readinessInput);
@@ -180,10 +180,10 @@ describe("buildZoomMediaSpineServicePlan", () => {
       type: "zoom-start-recording",
       targets: {
         targetFolder: "Recordings/CoreVideo Pro",
-        filenamePrefix: "AI_Product_Launch_Webinar",
+        filenamePrefix: "Q2_Product_Update",
         format: "mp4",
         quality: "high",
-        isoParticipantIds: ["p3", "p4"]
+        isoParticipantIds: ["p6", "p7"]
       }
     });
     expect(plan.warnings).toContain("Some requested ISO participants are outside the selected Zoom room or unavailable.");

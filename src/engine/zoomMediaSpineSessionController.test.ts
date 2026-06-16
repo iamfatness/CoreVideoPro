@@ -23,7 +23,7 @@ function snapshot(request: ZoomMediaSpineServiceRequest): ZoomMediaSpineNativeSn
   return {
     meetingState: request.type === "zoom-leave" ? "idle" : "in-meeting",
     sdkVersion: "7.0.5.39292",
-    participantCount: 8,
+    participantCount: 7,
     activeSpeakerId: "p2",
     screenShareParticipantId: "p2",
     participants: [],
@@ -212,7 +212,7 @@ describe("ZoomMediaSpineSessionController", () => {
       recording: true,
       recordingSettings: {
         ...initialProduction.recordingSettings,
-        isoParticipantIds: ["p1", "p3", "p4"]
+        isoParticipantIds: ["p1", "p6", "p7"]
       }
     } satisfies ProductionState;
 
@@ -227,7 +227,7 @@ describe("ZoomMediaSpineSessionController", () => {
       expect.objectContaining({
         type: "zoom-start-recording",
         targets: expect.objectContaining({
-          isoParticipantIds: ["p3", "p4"]
+          isoParticipantIds: ["p6", "p7"]
         })
       })
     );

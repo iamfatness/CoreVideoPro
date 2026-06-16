@@ -24,7 +24,7 @@ describe("buildMagicScene", () => {
       screenShareActive: true
     });
 
-    expect(result.warnings).toContain("Priya Shah is low resolution.");
+    expect(result.warnings).toContain("Robert Smith is low resolution.");
   });
 
   it("falls back to interview for two participants without screen share", () => {
@@ -177,7 +177,7 @@ describe("recommendAutoProduction", () => {
       participants: [
         {
           userId: "p1",
-          displayName: "Maya Chen",
+          displayName: "Sophia Martinez",
           role: "Host",
           talking: true,
           sharingScreen: false,

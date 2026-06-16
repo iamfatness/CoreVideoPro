@@ -14,12 +14,12 @@ describe("CaptionTrackModel", () => {
 
   it("publishes caption cues with confidence and speaker attribution", () => {
     const model = new CaptionTrackModel();
-    const track = model.pushCue("Welcome to the webinar.", 1200, "Maya Chen");
+    const track = model.pushCue("Welcome to the webinar.", 1200, "Sophia Martinez");
 
     expect(track.status).toBe("live");
     expect(track.currentCue).toMatchObject({
       text: "Welcome to the webinar.",
-      speaker: "Maya Chen",
+      speaker: "Sophia Martinez",
       atMs: 1200,
       confidence: expect.any(Number)
     });

@@ -151,7 +151,7 @@ describe("mapNativeWireStateToSnapshot", () => {
         status: "live",
         currentCue: {
           text: "Welcome to the webinar.",
-          speaker: "Maya Chen",
+          speaker: "Sophia Martinez",
           atMs: 2800,
           confidence: 95
         },
@@ -164,6 +164,6 @@ describe("mapNativeWireStateToSnapshot", () => {
     expect(snapshot.audioMixSession.masterLevel).toBe(72);
     expect(snapshot.captionTrack.currentCue?.text).toBe("Welcome to the webinar.");
     expect(snapshot.diagnostics.audioMixSession.masterLevel).toBe(72);
-    expect(snapshot.diagnostics.captionTrack.currentCue?.speaker).toBe("Maya Chen");
+    expect(snapshot.diagnostics.captionTrack.currentCue?.speaker).toBe("Sophia Martinez");
   });
 });

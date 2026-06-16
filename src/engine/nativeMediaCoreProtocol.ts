@@ -66,6 +66,11 @@ export type NativeMediaCoreCommand =
       participantId?: string;
     }
   | {
+      type: "simulate-breakout-room-change";
+      breakoutRoomId: string;
+      breakoutRoomName: string;
+    }
+  | {
       type: "set-screen-share-source";
       participantId?: string;
     }
@@ -529,6 +534,12 @@ export type NativeMediaCoreStateSnapshot = {
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];
+  /** Optional wire field: Zoom meeting state (e.g. in_meeting, idle). */
+  meetingState?: string;
+  /** Optional wire field: active breakout room id from SDK/runtime. */
+  breakoutRoomId?: string;
+  /** Optional wire field: active breakout room label. */
+  breakoutRoomName?: string;
 };
 
 export type NativeMediaCoreValidation = {

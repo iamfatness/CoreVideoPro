@@ -2,6 +2,7 @@
 
 #include "compositor/CompositorLayout.h"
 #include "core/Protocol.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
 #include <cmath>
@@ -293,7 +294,18 @@ rpc::Json MediaCore::sessionState() const {
       {"audioMixSession", audioMixSessionState()},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
+      {"meetingState", resolveMeetingStateForSession()},
+      {"breakoutRoomId", breakoutRoomId_},
+      {"breakoutRoomName", breakoutRoomName_},
   };
+  const auto preview = modules::programFramePreviewJson(lastProgramFrame_);
+  if (!preview.isNull()) {
+    state.emplace("programFramePreview", preview);
+  }
+  const auto sharedTexture = modules::programSharedTextureJson(lastProgramFrame_);
+  if (!sharedTexture.isNull()) {
+    state.emplace("programSharedTexture", sharedTexture);
+  }
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -435,6 +447,32 @@ std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
   return {};
 }
 
+std::vector<rpc::Json> MediaCore::drainProgramFramePreviewEvents() {
+  auto events = std::move(pendingProgramFramePreviewEvents_);
+  pendingProgramFramePreviewEvents_.clear();
+  return events;
+}
+
+std::vector<rpc::Json> MediaCore::drainProgramSharedTextureEvents() {
+  auto events = std::move(pendingProgramSharedTextureEvents_);
+  pendingProgramSharedTextureEvents_.clear();
+  return events;
+}
+
+void MediaCore::enqueueProgramFramePreviewEvent() {
+  const auto event = modules::programFramePreviewEvent(lastProgramFrame_);
+  if (!event.isNull()) {
+    pendingProgramFramePreviewEvents_.emplace_back(event);
+  }
+}
+
+void MediaCore::enqueueProgramSharedTextureEvent() {
+  const auto event = modules::programSharedTextureEvent(lastProgramFrame_);
+  if (!event.isNull()) {
+    pendingProgramSharedTextureEvents_.emplace_back(event);
+  }
+}
+
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands) {
   for (const auto& command : commands) {
     (void)applyCommand(command);
@@ -481,8 +519,36 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setCaptionEnabled(command);
   } else if (type == "set-brand-kit") {
     setBrandKit(command);
+  } else if (type == "simulate-breakout-room-change") {
+    simulateBreakoutRoomChange(command);
   }
   return sessionState();
+}
+
+std::string MediaCore::resolveMeetingStateForSession() const {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto capture = zoomEngineRuntime_->snapshot();
+    const std::string meetingState = capture.getString("meetingState");
+    if (meetingState == "in-meeting" || meetingState == "in_meeting") {
+      return "in_meeting";
+    }
+    if (!meetingState.empty()) {
+      return meetingState;
+    }
+  }
+
+  return zoomJoined_ ? "in_meeting" : "idle";
+}
+
+void MediaCore::simulateBreakoutRoomChange(const rpc::Json& command) {
+  const std::string roomId = command.getString("breakoutRoomId");
+  const std::string roomName = command.getString("breakoutRoomName");
+  if (!roomId.empty()) {
+    breakoutRoomId_ = roomId;
+  }
+  if (!roomName.empty()) {
+    breakoutRoomName_ = roomName;
+  }
 }
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
@@ -1072,6 +1138,11 @@ void MediaCore::renderSyntheticTick() {
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
   const auto renderPlan = buildCompositorRenderPlan(videoFrames);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
+  if (lastProgramFrame_.preview.bgra.empty()) {
+    fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
+  }
+  enqueueProgramFramePreviewEvent();
+  enqueueProgramSharedTextureEvent();
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();
   modules_.outputSender->sync(session.destinations, &lastProgramFrame_, static_cast<double>(lastProgramFrame_.frameNumber * 33));

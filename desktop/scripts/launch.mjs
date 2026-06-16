@@ -23,9 +23,9 @@ if (!electronBin) {
       "Install it once to run the desktop shell:",
       "",
       "  npm install --no-save electron@latest tsx",
-      "  npm run dev:desktop",
       "",
-      "Then re-run: npm run desktop",
+      "Launch the desktop app (no dev server):  npm run launch",
+      "Developer hot-reload only:              npm run dev:desktop",
       "",
       "The headless integration gate runs without Electron:  npm run test -- desktop/integration.test.ts"
     ].join("\n")

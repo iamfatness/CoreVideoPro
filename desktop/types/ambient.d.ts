@@ -48,7 +48,9 @@ declare const fetch: typeof globalThis.fetch;
 declare const URL: typeof globalThis.URL;
 declare const URLSearchParams: typeof globalThis.URLSearchParams;
 declare const Buffer: {
+  alloc(size: number): Uint8Array;
   from(value: string, encoding: string): { toString(encoding: string): string };
+  from(value: ArrayLike<number>): { toString(encoding: string): string };
 };
 
 interface NodeJS_ReadableStream {
@@ -101,8 +103,9 @@ declare module "node:path" {
 
 declare module "node:buffer" {
   export const Buffer: {
+    alloc(size: number): Uint8Array;
     from(value: string, encoding: string): { toString(encoding: string): string };
-    from(value: Uint8Array): { toString(encoding: string): string };
+    from(value: ArrayLike<number>): { toString(encoding: string): string };
   };
 }
 

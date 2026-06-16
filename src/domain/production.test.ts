@@ -10,9 +10,9 @@ describe("initialProduction", () => {
     expect(initialProduction.transition.statusText).toBe("Program ready");
   });
 
-  it("seeds eight Zoom sources with unique ids covering every production role", () => {
-    expect(initialParticipants).toHaveLength(8);
-    expect(new Set(initialParticipants.map((participant) => participant.id)).size).toBe(8);
+  it("seeds seven Zoom sources with unique ids covering every production role", () => {
+    expect(initialParticipants).toHaveLength(7);
+    expect(new Set(initialParticipants.map((participant) => participant.id)).size).toBe(7);
     expect(new Set(initialParticipants.map((participant) => participant.role))).toEqual(
       new Set(["Host", "Presenter", "Panelist", "Guest"])
     );

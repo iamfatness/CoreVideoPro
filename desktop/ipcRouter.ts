@@ -36,6 +36,8 @@ export type MediaCoreBackend = {
   leaveZoom(): Promise<RawCaptureSnapshot>;
   getZoomSnapshot(): Promise<RawCaptureSnapshot>;
   getHealth(): MediaCoreHealth;
+  start(): Promise<NativeMediaCoreProfile | undefined>;
+  stop(): void;
   listCaptureDevices(): Promise<CaptureDeviceState[]>;
   selectCaptureInput(deviceId: string, inputId: string): Promise<CaptureDeviceState[]>;
   setCaptureAudioSyncOffset(deviceId: string, offsetMs: number): Promise<CaptureDeviceState[]>;
@@ -205,6 +207,16 @@ export function createIpcRouter(options: IpcRouterOptions): IpcRouter {
         // ----- Media core health (handled at router layer) -----
         case "get-media-core-health":
           return { id, ok: true, health: mediaCore.getHealth() };
+        case "start-media-core": {
+          const profile = await mediaCore.start();
+          if (!profile) {
+            return { id, ok: false, error: { code: "media-core-unreachable", message: "Media core did not announce a profile." } };
+          }
+          return { id, ok: true, profile };
+        }
+        case "stop-media-core":
+          mediaCore.stop();
+          return { id, ok: true, stopped: true as const };
 
         case "export-support-bundle": {
           if (!diagnosticsDirectory) {

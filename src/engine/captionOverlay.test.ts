@@ -22,7 +22,7 @@ describe("buildCaptionOverlay", () => {
 
     const overlay = buildCaptionOverlay(snapshot, initialProduction.scenes[2]);
 
-    expect(overlay.speakerName).toBe("Andre Wallace");
+    expect(overlay.speakerName).toBe("David Chen");
     expect(overlay.captionPosition).toBe("bottom");
     expect(overlay.lowerThirdPosition).toBe("upper-left");
     expect(overlay.warnings).toContain("Lower-third lifted to protect slide captions.");

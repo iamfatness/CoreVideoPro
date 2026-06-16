@@ -1,0 +1,19 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.ScenePreviewControl"
+    x:Name="Root"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Border x:Name="CanvasBorder" CornerRadius="8" Padding="18">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#A51D5244" Offset="0" />
+                <GradientStop Color="#94100E0C" Offset="1" />
+            </LinearGradientBrush>
+        </Border.Background>
+        <Grid x:Name="LayoutRoot" />
+    </Border>
+</UserControl>

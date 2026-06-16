@@ -18,16 +18,16 @@ describe("planMultitrackAudio", () => {
     expect(plan.trackCount).toBe(3);
     expect(plan.totalChannels).toBe(4);
     expect(plan.tracks.filter((track) => track.kind === "iso").map((track) => track.label)).toEqual([
-      "Maya Chen ISO",
-      "Andre Wallace ISO"
+      "Sophia Martinez ISO",
+      "David Chen ISO"
     ]);
     expect(plan.summary).toBe("3 tracks - 4 ch - 0.58 MB/s");
   });
 
   it("warns when an ISO source is muted", () => {
-    const plan = planMultitrackAudio(initialParticipants, ["p7"]);
+    const plan = planMultitrackAudio(initialParticipants, ["p5"]);
 
-    expect(plan.tracks.find((track) => track.participantId === "p7")?.muted).toBe(true);
+    expect(plan.tracks.find((track) => track.participantId === "p5")?.muted).toBe(true);
     expect(plan.warnings).toContain("Michael Thompson's ISO track will be silent while muted.");
   });
 

@@ -195,7 +195,7 @@ describe("desktop integration gate", () => {
     expect(response.ok).toBe(true);
     if (response.ok && "export" in response) {
       const raw = await readFile(response.export.path, "utf8");
-      expect(raw).toContain("AI Product Launch Webinar");
+      expect(raw).toContain("Q2 Product Update");
       expect(JSON.parse(raw).app.platform).toBe(process.platform);
     }
   });

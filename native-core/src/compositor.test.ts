@@ -24,7 +24,7 @@ const sources: MediaCoreZoomSource[] = [
   {
     sourceId: "participant:p1",
     participantId: "p1",
-    displayName: "Maya Chen",
+    displayName: "Sophia Martinez",
     role: "Host",
     breakoutRoomId: "main",
     breakoutRoomName: "Main room",

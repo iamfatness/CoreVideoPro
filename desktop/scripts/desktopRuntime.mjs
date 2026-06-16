@@ -44,6 +44,23 @@ export function ensurePreloadBundle(root = repoRoot) {
   return preloadCjs;
 }
 
+/** Self-contained media-core stub for packaged Electron (asar cannot run .ts imports). */
+export function ensureCoreStubBundle(root = repoRoot) {
+  const coreStubTs = join(desktopDir, "coreStub.ts");
+  const coreStubCjs = join(desktopDir, "coreStub.cjs");
+  if (!existsSync(coreStubTs)) {
+    return coreStubCjs;
+  }
+  buildSync({
+    entryPoints: [coreStubTs],
+    outfile: coreStubCjs,
+    bundle: true,
+    platform: "node",
+    format: "cjs"
+  });
+  return coreStubCjs;
+}
+
 /** Bundled ESM entry for Playwright Electron (tsx `--import` is unreliable under Playwright's loader). */
 /** Bundled ESM entry for packaged Electron builds (asar-safe, no tsx loader). */
 export function ensurePackagedMainBundle(root = repoRoot) {

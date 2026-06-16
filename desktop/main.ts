@@ -90,11 +90,18 @@ async function createWindow(): Promise<void> {
     }
   });
 
-  if (process.env.COREVIDEO_RENDERER_URL || !app.isPackaged) {
-    await window.loadURL(RENDERER_DEV_URL);
-  } else {
-    await window.loadFile(RENDERER_FILE);
+  const devServerUrl = process.env.COREVIDEO_RENDERER_URL?.trim();
+  if (devServerUrl) {
+    await window.loadURL(devServerUrl);
+    return;
   }
+
+  if (app.isPackaged || existsSync(RENDERER_FILE)) {
+    await window.loadFile(RENDERER_FILE);
+    return;
+  }
+
+  await window.loadURL(RENDERER_DEV_URL);
 }
 
 function handleOAuthCallbackUrl(url: string): void {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SYNTHETIC_PROFILE, synthesizeSnapshot } from "./syntheticMediaCore.ts";
+import { resetSyntheticBreakoutRoomState, SYNTHETIC_PROFILE, synthesizeSnapshot } from "./syntheticMediaCore.ts";
 import { validateNativeMediaCoreProfile } from "../src/engine/nativeMediaCoreProtocol";
 import type { NativeMediaCoreCommand } from "../src/engine/nativeMediaCoreProtocol";
 
@@ -52,5 +52,32 @@ describe("syntheticMediaCore", () => {
   it("records the applied command types", () => {
     const snapshot = synthesizeSnapshot([{ type: "set-active-speaker", participantId: "p1" }], 0, 1);
     expect(snapshot.lastCommandTypes).toEqual(["set-active-speaker"]);
+  });
+
+  it("publishes breakout room fields and simulates room changes", () => {
+    resetSyntheticBreakoutRoomState();
+    const baseline = synthesizeSnapshot(
+      [{ type: "load-scene-graph", sceneId: "scene-1", routes: [{ routeId: "r1", mode: "active-speaker", audioRole: "mix" }] }],
+      500,
+      1
+    );
+    expect(baseline.meetingState).toBe("in_meeting");
+    expect(baseline.breakoutRoomId).toBe("main");
+    expect(baseline.breakoutRoomName).toBe("Main room");
+
+    const changed = synthesizeSnapshot(
+      [
+        {
+          type: "simulate-breakout-room-change",
+          breakoutRoomId: "customer-panel",
+          breakoutRoomName: "Customer panel"
+        },
+        { type: "load-scene-graph", sceneId: "scene-1", routes: [{ routeId: "r1", mode: "active-speaker", audioRole: "mix" }] }
+      ],
+      1000,
+      2
+    );
+    expect(changed.breakoutRoomId).toBe("customer-panel");
+    expect(changed.breakoutRoomName).toBe("Customer panel");
   });
 });

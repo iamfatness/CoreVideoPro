@@ -1,0 +1,188 @@
+using CoreVideoPro.MediaCore.Services;
+using Xunit;
+
+namespace CoreVideoPro.MediaCore.Tests;
+
+public sealed class CoreProtocolParserTests
+{
+    [Fact]
+    public void DistinguishesUnsolicitedZoomVideoFrameEventsFromResponses()
+    {
+        var pixels = new byte[8];
+        pixels[0] = 255;
+        pixels[1] = 255;
+        pixels[2] = 255;
+        pixels[3] = 255;
+        pixels[4] = 0;
+        pixels[5] = 0;
+        pixels[6] = 0;
+        pixels[7] = 255;
+        var base64 = Convert.ToBase64String(pixels);
+        var eventLine = $$"""
+            {
+              "type": "zoom-video-frame",
+              "frame": {
+                "participantId": "42",
+                "width": 2,
+                "height": 1,
+                "frameId": 7,
+                "bgraBase64": "{{base64}}"
+              }
+            }
+            """;
+
+        var frameEvent = CoreProtocolParser.TryParseEvent(eventLine);
+        Assert.NotNull(frameEvent);
+        Assert.Equal("42", frameEvent!.Frame.ParticipantId);
+        Assert.Equal(7, frameEvent.Frame.FrameId);
+        Assert.Equal(2, frameEvent.Frame.Width);
+        Assert.Equal(1, frameEvent.Frame.Height);
+        Assert.Equal(pixels, frameEvent.Frame.Bgra);
+        Assert.Null(CoreProtocolParser.TryParseResponse(eventLine));
+        Assert.Null(CoreProtocolParser.TryParseEvent("""{"id":"core-1","ok":true,"type":"ping"}"""));
+    }
+
+    [Fact]
+    public void RejectsZoomVideoFramesWithMismatchedBgraLength()
+    {
+        var base64 = Convert.ToBase64String(new byte[4]);
+        var line = $$"""
+            {
+              "type": "zoom-video-frame",
+              "frame": {
+                "participantId": "p1",
+                "width": 2,
+                "height": 1,
+                "frameId": 1,
+                "bgraBase64": "{{base64}}"
+              }
+            }
+            """;
+        Assert.Null(CoreProtocolParser.TryParseEvent(line));
+    }
+
+    [Fact]
+    public void RejectsMessagesThatCarryRequestId()
+    {
+        var pixels = new byte[4];
+        var base64 = Convert.ToBase64String(pixels);
+        var line = $$"""
+            {
+              "id": "x",
+              "type": "zoom-video-frame",
+              "frame": {
+                "participantId": "p1",
+                "width": 1,
+                "height": 1,
+                "frameId": 1,
+                "bgraBase64": "{{base64}}"
+              }
+            }
+            """;
+        Assert.Null(CoreProtocolParser.TryParseEvent(line));
+    }
+
+    [Fact]
+    public void DoesNotParseResponseLineAsEvent()
+    {
+        var responseLine = """{"id":"1","ok":true,"type":"ping"}""";
+        Assert.Null(CoreProtocolParser.TryParseEvent(responseLine));
+        Assert.NotNull(CoreProtocolParser.TryParseResponse(responseLine));
+    }
+
+    [Fact]
+    public void ParsesUnsolicitedProgramFramePreviewEvent()
+    {
+        var pixels = new byte[4];
+        pixels[0] = 12;
+        pixels[1] = 34;
+        pixels[2] = 56;
+        pixels[3] = 255;
+        var base64 = Convert.ToBase64String(pixels);
+        var eventLine = $$"""
+            {
+              "type": "program-frame-preview",
+              "preview": {
+                "frameNumber": 9,
+                "width": 1,
+                "height": 1,
+                "renderPlanId": "plan-9",
+                "renderer": "d3d11",
+                "health": "live",
+                "pixelFormat": "bgra",
+                "bgraBase64": "{{base64}}"
+              }
+            }
+            """;
+
+        var previewEvent = CoreProtocolParser.TryParseProgramFramePreviewEvent(eventLine);
+        Assert.NotNull(previewEvent);
+        Assert.Equal(9, previewEvent!.Preview.FrameNumber);
+        Assert.Equal(1, previewEvent.Preview.Width);
+        Assert.Equal(1, previewEvent.Preview.Height);
+        Assert.Equal("plan-9", previewEvent.Preview.RenderPlanId);
+        Assert.Equal("d3d11", previewEvent.Preview.Renderer);
+        Assert.Equal(pixels, previewEvent.Preview.Bgra);
+        Assert.Null(CoreProtocolParser.TryParseProgramFramePreviewEvent("""{"id":"1","type":"program-frame-preview"}"""));
+    }
+
+    [Fact]
+    public void ParsesProgramSharedTextureEvent()
+    {
+        var eventLine = """
+            {
+              "type": "program-shared-texture",
+              "texture": {
+                "sharedHandleHex": "0xFEEDFACE",
+                "width": 1920,
+                "height": 1080,
+                "format": "B8G8R8A8_UNORM",
+                "frameNumber": 12
+              }
+            }
+            """;
+
+        var textureEvent = CoreProtocolParser.TryParseProgramSharedTextureEvent(eventLine);
+        Assert.NotNull(textureEvent);
+        Assert.Equal("0xFEEDFACE", textureEvent!.Texture.SharedHandleHex);
+        Assert.Equal(1920, textureEvent.Texture.Width);
+        Assert.Equal(1080, textureEvent.Texture.Height);
+        Assert.Equal("B8G8R8A8_UNORM", textureEvent.Texture.Format);
+        Assert.Equal(12, textureEvent.Texture.FrameNumber);
+        Assert.Equal(0xFEEDFACEul, CoreProtocolParser.ParseSharedHandleHex(textureEvent.Texture.SharedHandleHex));
+    }
+
+    [Fact]
+    public void ParsesSharedTextureEmbeddedInProgramFramePreview()
+    {
+        var pixels = new byte[4];
+        var base64 = Convert.ToBase64String(pixels);
+        var eventLine = $$"""
+            {
+              "type": "program-frame-preview",
+              "preview": {
+                "frameNumber": 3,
+                "width": 1,
+                "height": 1,
+                "renderer": "d3d11",
+                "health": "live",
+                "pixelFormat": "bgra",
+                "bgraBase64": "{{base64}}",
+                "sharedTexture": {
+                  "sharedHandleHex": "0xABCD",
+                  "width": 640,
+                  "height": 360,
+                  "format": "B8G8R8A8_UNORM",
+                  "frameNumber": 3
+                }
+              }
+            }
+            """;
+
+        var previewEvent = CoreProtocolParser.TryParseProgramFramePreviewEvent(eventLine);
+        Assert.NotNull(previewEvent);
+        Assert.NotNull(previewEvent!.Preview.SharedTexture);
+        Assert.Equal("0xABCD", previewEvent.Preview.SharedTexture!.SharedHandleHex);
+        Assert.Equal(640, previewEvent.Preview.SharedTexture.Width);
+    }
+}

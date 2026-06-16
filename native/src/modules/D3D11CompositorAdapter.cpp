@@ -14,11 +14,13 @@
 #include <dxgi.h>
 
 #include "compositor/CompositorLayout.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <iterator>
 #include <sstream>
 #include <utility>
@@ -129,6 +131,15 @@ uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
   return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
 }
 
+std::string handleToHex(HANDLE handle) {
+  if (!handle) {
+    return {};
+  }
+  std::ostringstream stream;
+  stream << "0x" << std::hex << std::uppercase << reinterpret_cast<uintptr_t>(handle);
+  return stream.str();
+}
+
 class D3D11Compositor final : public ICompositor {
  public:
   D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context)
@@ -176,6 +187,8 @@ class D3D11Compositor final : public ICompositor {
 
     frame.gpuComposed = true;
     frame.programPixelSignature = readProgramPixelSignature(renderPlan.width / 2, renderPlan.height / 2);
+    frame.preview = readProgramFramePreview();
+    exportSharedTexture(frame);
     context_->Flush();
     return frame;
   }
@@ -386,6 +399,87 @@ class D3D11Compositor final : public ICompositor {
     return rgbaToSignature(r, g, b, a);
   }
 
+  bool ensureSharedTexture(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (sharedTexture_ && sharedWidth_ == width && sharedHeight_ == height) {
+      return true;
+    }
+
+    sharedTexture_ = {};
+    sharedHandle_ = nullptr;
+    sharedWidth_ = width;
+    sharedHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, sharedTexture_.put()))) {
+      return false;
+    }
+
+    ComPtrLite<IDXGIResource> dxgiResource;
+    if (FAILED(sharedTexture_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put())))) {
+      sharedTexture_ = {};
+      return false;
+    }
+
+    HANDLE handle = nullptr;
+    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
+      sharedTexture_ = {};
+      return false;
+    }
+
+    sharedHandle_ = handle;
+    return true;
+  }
+
+  void exportSharedTexture(ProgramFrame& frame) {
+    if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
+      return;
+    }
+    if (!ensureSharedTexture(targetWidth_, targetHeight_)) {
+      return;
+    }
+
+    context_->CopyResource(sharedTexture_.get(), renderTarget_.get());
+    frame.sharedTexture.sharedHandleHex = handleToHex(sharedHandle_);
+    frame.sharedTexture.width = targetWidth_;
+    frame.sharedTexture.height = targetHeight_;
+    frame.sharedTexture.format = "B8G8R8A8_UNORM";
+    frame.sharedTexture.frameNumber = frame.frameNumber;
+  }
+
+  ProgramFramePreviewPixels readProgramFramePreview() const {
+    ProgramFramePreviewPixels preview;
+    if (!renderTarget_ || !stagingTexture_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
+      return preview;
+    }
+
+    context_->CopyResource(stagingTexture_.get(), renderTarget_.get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(stagingTexture_.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+      return preview;
+    }
+
+    downscaleBgraNearestNeighbor(
+        static_cast<const uint8_t*>(mapped.pData),
+        targetWidth_,
+        targetHeight_,
+        static_cast<int>(mapped.RowPitch),
+        preview);
+    context_->Unmap(stagingTexture_.get(), 0);
+    return preview;
+  }
+
   ComPtrLite<ID3D11Device> device_;
   ComPtrLite<ID3D11DeviceContext> context_;
   ComPtrLite<ID3D11VertexShader> vertexShader_;
@@ -396,6 +490,10 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> renderTarget_;
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
+  ComPtrLite<ID3D11Texture2D> sharedTexture_;
+  HANDLE sharedHandle_ = nullptr;
+  int sharedWidth_ = 0;
+  int sharedHeight_ = 0;
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;

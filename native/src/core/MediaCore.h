@@ -26,6 +26,8 @@ class MediaCore {
   [[nodiscard]] rpc::Json zoomSnapshot();
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
 
@@ -48,7 +50,10 @@ class MediaCore {
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
+  void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick();
+  void enqueueProgramFramePreviewEvent();
+  void enqueueProgramSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
@@ -56,6 +61,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
+  [[nodiscard]] std::string resolveMeetingStateForSession() const;
 
   struct SceneRouteState {
     std::string routeId;
@@ -98,6 +104,8 @@ class MediaCore {
   bool zoomJoined_ = false;
   int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
+  std::string breakoutRoomId_ = "main";
+  std::string breakoutRoomName_ = "Main room";
   struct ParticipantAudioChannelInput {
     std::string participantId;
     int inputLevel = 0;
@@ -121,6 +129,8 @@ class MediaCore {
   std::string brandFontFamily_ = "Inter";
   std::string brandLowerThirdStyle_ = "gradient";
   std::vector<std::string> brandWarnings_;
+  std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
+  std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
 };
 
 }  // namespace corevideo::core

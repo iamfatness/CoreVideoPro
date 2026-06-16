@@ -78,6 +78,8 @@ function fakeBackend(profile: NativeMediaCoreProfile | undefined = SYNTHETIC_PRO
     leaveZoom: async () => synthesizeZoomLeaveSnapshot(zoomState),
     getZoomSnapshot: async () => synthesizeZoomSnapshot(zoomState),
     getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+    start: async () => profile,
+    stop: () => undefined,
     ...captureBackendMethods(captureDevices)
   };
 }
@@ -134,6 +136,8 @@ describe("createIpcRouter", () => {
       leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
       getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
       getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+      start: async () => undefined,
+      stop: () => undefined,
       ...captureBackendMethods(createCaptureBackendState())
     };
     const route = createIpcRouter({ mediaCore: noProfile });
@@ -194,6 +198,20 @@ describe("createIpcRouter", () => {
     }
   });
 
+  it("starts and stops the supervised media core", async () => {
+    const route = createIpcRouter({ mediaCore: fakeBackend() });
+    const stopResponse = await route({ id: "stop-1", type: "stop-media-core" });
+    expect(stopResponse.ok).toBe(true);
+    if (stopResponse.ok) {
+      expect("stopped" in stopResponse).toBe(true);
+    }
+    const startResponse = await route({ id: "start-1", type: "start-media-core" });
+    expect(startResponse.ok).toBe(true);
+    if (startResponse.ok && "profile" in startResponse) {
+      expect(startResponse.profile.renderer).toBe("vulkan");
+    }
+  });
+
   it("surfaces media-core failures as media-core-failed", async () => {
     const failing: MediaCoreBackend = {
       getProfile: () => SYNTHETIC_PROFILE,
@@ -206,6 +224,8 @@ describe("createIpcRouter", () => {
       leaveZoom: async () => synthesizeZoomLeaveSnapshot(createSyntheticZoomCaptureState()),
       getZoomSnapshot: async () => synthesizeZoomSnapshot(createSyntheticZoomCaptureState()),
       getHealth: () => ({ restartCount: 0, recovering: false, stopped: false }),
+      start: async () => SYNTHETIC_PROFILE,
+      stop: () => undefined,
       ...captureBackendMethods(createCaptureBackendState())
     };
     const route = createIpcRouter({ mediaCore: failing });

@@ -15,9 +15,9 @@ describe("createSupportBundle", () => {
 
     expect(bundle.app.name).toBe("CoreVideo Pro");
     expect(bundle.app.platform).toBe("mock-desktop");
-    expect(bundle.triageLines).toContain("Show: AI Product Launch Webinar (set-and-forget)");
+    expect(bundle.triageLines).toContain("Show: Q2 Product Update (set-and-forget)");
     expect(bundle.summaryText).toContain("Program: speaker-slides; Preview: speaker-slides");
-    expect(bundle.participants.find((participant) => participant.name === "Priya Shah")).toMatchObject({
+    expect(bundle.participants.find((participant) => participant.name === "Robert Smith")).toMatchObject({
       health: "low-resolution",
       recommendedAction: "Ask participant to improve network or reduce competing bandwidth."
     });
@@ -212,7 +212,7 @@ describe("createSupportBundle", () => {
           participantId: "p2",
           readiness: "video-off",
           status: "warning",
-          warning: "Andre Wallace ISO video is off."
+          warning: "David Chen ISO video is off."
         }),
         expect.objectContaining({
           kind: "iso",
@@ -231,7 +231,7 @@ describe("createSupportBundle", () => {
       totals: {
         missingFrames: expect.any(Number)
       },
-      warnings: expect.arrayContaining(["Andre Wallace ISO video is off."])
+      warnings: expect.arrayContaining(["David Chen ISO video is off."])
     });
   });
 
@@ -246,7 +246,7 @@ describe("createSupportBundle", () => {
                 {
                   sourceId: "participant:p1",
                   participantId: "p1",
-                  displayName: "Maya Chen",
+                  displayName: "Sophia Martinez",
                   role: "Host",
                   breakoutRoomId: "main",
                   breakoutRoomName: "Main room",
@@ -278,10 +278,10 @@ describe("createSupportBundle", () => {
       {
         sourceId: "participant:p1",
         participantId: "p1",
-        displayName: "Maya Chen",
+        displayName: "Sophia Martinez",
         health: "low-resolution",
         severity: "warning",
-        detail: "Maya Chen feed is below target resolution."
+        detail: "Sophia Martinez feed is below target resolution."
       }
     ]);
   });
@@ -297,7 +297,7 @@ describe("createSupportBundle", () => {
                 {
                   sourceId: "participant:p1",
                   participantId: "p1",
-                  displayName: "Maya Chen",
+                  displayName: "Sophia Martinez",
                   role: "Host",
                   breakoutRoomId: "main",
                   breakoutRoomName: "Main room",

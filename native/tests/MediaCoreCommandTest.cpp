@@ -1,6 +1,7 @@
 #include "compositor/CompositorLayout.h"
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
+#include "modules/ProgramFramePreview.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
 #include "rpc/Json.h"
 
@@ -587,6 +588,80 @@ TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions)
   EXPECT_TRUE(source->pollVideoFrames().empty());
   EXPECT_TRUE(source->pollAudioFrames().empty());
 #else
+  EXPECT_TRUE(true);
+#endif
+}
+
+TEST(MediaCoreCommand, EmitsDownscaledProgramFramePreviewInSnapshotAndEvent) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "preview-test"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "a"}, {"mode", "fixed"}, {"audioRole", "mix"}, {"participantId", "speaker-1"}},
+                     }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"recording"}},
+          {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+      },
+  });
+
+  const auto* preview = state.get("programFramePreview");
+  ASSERT_NE(preview, nullptr);
+  EXPECT_TRUE(preview->get("width")->asNumber() <= corevideo::modules::kProgramFramePreviewMaxWidth);
+  EXPECT_TRUE(preview->get("height")->asNumber() <= corevideo::modules::kProgramFramePreviewMaxHeight);
+  EXPECT_EQ(preview->getString("pixelFormat"), "bgra");
+  EXPECT_FALSE(preview->getString("bgraBase64").empty());
+  EXPECT_GE(preview->get("frameNumber")->asNumber(), 1);
+
+  const auto events = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(events.empty());
+  EXPECT_EQ(events.back().getString("type"), "program-frame-preview");
+  const auto* eventPreview = events.back().get("preview");
+  ASSERT_NE(eventPreview, nullptr);
+  EXPECT_EQ(eventPreview->getString("pixelFormat"), "bgra");
+  EXPECT_FALSE(eventPreview->getString("bgraBase64").empty());
+}
+
+TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "shared-texture-test"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "a"}, {"mode", "fixed"}, {"audioRole", "mix"}, {"participantId", "speaker-1"}},
+                     }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"recording"}},
+          {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+      },
+  });
+
+#if COREVIDEO_STUB
+  const auto* snapshotTexture = state.get("programSharedTexture");
+  ASSERT_NE(snapshotTexture, nullptr);
+  EXPECT_FALSE(snapshotTexture->getString("sharedHandleHex").empty());
+  EXPECT_GE(snapshotTexture->get("width")->asNumber(), 1);
+  EXPECT_GE(snapshotTexture->get("height")->asNumber(), 1);
+  EXPECT_EQ(snapshotTexture->getString("format"), "B8G8R8A8_UNORM");
+
+  const auto events = mediaCore.drainProgramSharedTextureEvents();
+  ASSERT_FALSE(events.empty());
+  EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
+  const auto* texture = events.back().get("texture");
+  ASSERT_NE(texture, nullptr);
+  EXPECT_FALSE(texture->getString("sharedHandleHex").empty());
+  EXPECT_GE(texture->get("width")->asNumber(), 1);
+  EXPECT_GE(texture->get("height")->asNumber(), 1);
+  EXPECT_EQ(texture->getString("format"), "B8G8R8A8_UNORM");
+#else
+  (void)state;
   EXPECT_TRUE(true);
 #endif
 }

@@ -21,7 +21,7 @@ const readyConfig: ZoomMediaSpineRuntimeConfig = {
 const participants: ZoomMediaSpineParticipant[] = [
   {
     sdkUserId: "sdk-host-1",
-    displayName: "Maya Chen",
+    displayName: "Sophia Martinez",
     role: "host",
     videoOn: true,
     muted: false,
@@ -32,7 +32,7 @@ const participants: ZoomMediaSpineParticipant[] = [
   },
   {
     sdkUserId: "sdk-presenter-2",
-    displayName: "Andre Wallace",
+    displayName: "David Chen",
     role: "panelist",
     videoOn: true,
     muted: false,
@@ -131,8 +131,8 @@ describe("ZoomMediaSpineRuntime", () => {
       ])
     );
     expect(snapshot.warnings).toEqual([
-      "Maya Chen video is off.",
-      "Andre Wallace raw media subscribed below target resolution."
+      "Sophia Martinez video is off.",
+      "David Chen raw media subscribed below target resolution."
     ]);
   });
 

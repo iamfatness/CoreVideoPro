@@ -1,0 +1,262 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Views.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:conv="using:CoreVideoPro.WinUI.Converters"
+    xmlns:models="using:CoreVideoPro.WinUI.Models">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+
+        <Style x:Key="SettingsSectionBorder" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource StudioPanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <Style x:Key="SettingsField" TargetType="TextBox">
+            <Setter Property="Background" Value="#0C1118" />
+            <Setter Property="Foreground" Value="#E8F0EC" />
+            <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+
+        <Style x:Key="SettingsGhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+
+        <Style x:Key="SdkChipReady" TargetType="Border">
+            <Setter Property="Background" Value="#122018" />
+            <Setter Property="BorderBrush" Value="#4ADE80" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,10" />
+        </Style>
+
+        <Style x:Key="SdkChipWarning" TargetType="Border">
+            <Setter Property="Background" Value="#1F1A10" />
+            <Setter Property="BorderBrush" Value="#F59E0B" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,10" />
+        </Style>
+
+        <Style x:Key="SdkChipBlocked" TargetType="Border">
+            <Setter Property="Background" Value="#1F1212" />
+            <Setter Property="BorderBrush" Value="#EF4444" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,10" />
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="16" MaxWidth="760" Padding="0,0,8,16">
+            <!-- Zoom connection -->
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Zoom connection" FontSize="14" FontWeight="SemiBold" />
+
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="0.7*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBox Grid.Column="0" Style="{StaticResource SettingsField}"
+                                 PlaceholderText="Zoom meeting URL or ID"
+                                 Text="{x:Bind ViewModel.JoinMeetingUrl, Mode=TwoWay}"
+                                 IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
+                        <TextBox Grid.Column="1" Style="{StaticResource SettingsField}"
+                                 PlaceholderText="Producer display name"
+                                 Text="{x:Bind ViewModel.DisplayName, Mode=TwoWay}"
+                                 IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
+                        <CheckBox Grid.Column="2" Content="Webinar" VerticalAlignment="Center"
+                                  IsChecked="{x:Bind ViewModel.IsWebinar, Mode=TwoWay}"
+                                  IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
+
+                        <TextBlock Grid.Row="1" Grid.ColumnSpan="3"
+                                   Text="{x:Bind ViewModel.JoinStatus, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+
+                        <TextBlock Grid.Row="2" Grid.ColumnSpan="3"
+                                   Text="{x:Bind ViewModel.MeetingStatusLine, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="Wrap" />
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Style="{StaticResource SettingsGhostButton}"
+                                Content="Leave"
+                                Command="{x:Bind ViewModel.LeaveZoomCommand}"
+                                Visibility="{x:Bind ViewModel.ShowLeaveButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                        <Button Style="{StaticResource SettingsGhostButton}"
+                                Content="Join Zoom"
+                                Command="{x:Bind ViewModel.JoinZoomCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanJoinZoom, Mode=OneWay}"
+                                Visibility="{x:Bind ViewModel.ShowJoinButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- License -->
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="License &amp; plan" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock FontSize="12">
+                        <Run Text="Plan: " />
+                        <Run Text="{x:Bind ViewModel.LicensePlanLabel, Mode=OneWay}" FontWeight="SemiBold" />
+                        <Run Text=" (" />
+                        <Run Text="{x:Bind ViewModel.LicenseStatusLabel, Mode=OneWay}" />
+                        <Run Text=")" />
+                        <Run Text="{x:Bind ViewModel.TrialDaysLabel, Mode=OneWay}" />
+                    </TextBlock>
+                    <TextBlock Text="{x:Bind ViewModel.EntitlementsSummary, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Style="{StaticResource SettingsField}"
+                                 PlaceholderText="License key (cv-trial-... or cv-pro-...)"
+                                 Text="{x:Bind ViewModel.ActivationKey, Mode=TwoWay}" />
+                        <Button Grid.Column="1" Content="Activate" Style="{StaticResource SettingsGhostButton}"
+                                Command="{x:Bind ViewModel.ActivateLicenseCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanActivateLicense, Mode=OneWay}" />
+                        <Button Grid.Column="2" Content="Start trial" Style="{StaticResource SettingsGhostButton}"
+                                Command="{x:Bind ViewModel.StartTrialCommand}" />
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Upgrade Creator" Style="{StaticResource SettingsGhostButton}"
+                                Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="creator" />
+                        <Button Content="Upgrade Pro" Style="{StaticResource SettingsGhostButton}"
+                                Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="pro" />
+                        <Button Content="Upgrade Team" Style="{StaticResource SettingsGhostButton}"
+                                Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="team" />
+                    </StackPanel>
+
+                    <TextBlock Text="{x:Bind ViewModel.LicenseActionStatus, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                               Visibility="{x:Bind ViewModel.ShowLicenseActionStatus, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+            </Border>
+
+            <!-- Zoom SDK readiness -->
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Zoom SDK" FontSize="14" FontWeight="SemiBold" />
+
+                    <!-- Compact status chip -->
+                    <Border Style="{StaticResource SdkChipReady}"
+                            Visibility="{x:Bind ViewModel.SdkIsReady, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
+                                       Foreground="#86EFAC" FontSize="12" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                                    Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}"
+                                    Visibility="{x:Bind ViewModel.ShowSdkDetailsButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SdkChipWarning}"
+                            Visibility="{x:Bind ViewModel.SdkIsWarning, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
+                                       Foreground="#FCD34D" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                                    Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource SdkChipBlocked}"
+                            Visibility="{x:Bind ViewModel.SdkIsBlocked, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
+                                       Foreground="#FCA5A5" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                                    Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Expandable checklist -->
+                    <StackPanel Spacing="8"
+                                Visibility="{x:Bind ViewModel.ShowSdkChecklist, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{x:Bind ViewModel.SdkReadiness.Summary, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.SdkBlockers, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontSize="11" Foreground="#FCA5A5"
+                                               TextWrapping="Wrap" Margin="0,0,0,4" />
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.SdkChecks, Mode=OneWay}"
+                                       Visibility="{x:Bind ViewModel.SdkDiagnosticsExpanded, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:ZoomSdkReadinessCheck">
+                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                                        <StackPanel Spacing="4">
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind Label}" FontSize="12" FontWeight="SemiBold" />
+                                                <TextBlock Grid.Column="1" Text="{x:Bind Status}" FontSize="11"
+                                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                            </Grid>
+                                            <TextBlock Text="{x:Bind Detail}" FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="Wrap"
+                                                       Visibility="{x:Bind ShowDetail, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

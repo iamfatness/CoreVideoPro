@@ -9,7 +9,7 @@ describe("media frame modeling", () => {
 
     expect(frames.filter((frame) => frame.kind === "participant-video")).toHaveLength(expectedVideoCount);
     const shareFrame = frames.find((frame) => frame.kind === "screen-share");
-    expect(shareFrame?.label).toBe("Andre Wallace screen share");
+    expect(shareFrame?.label).toBe("David Chen screen share");
     expect(shareFrame?.participantId).toBe("p2");
     expect(shareFrame?.sourceId).toBeTruthy();
     expect(shareFrame?.width).toBeGreaterThan(0);
@@ -18,7 +18,7 @@ describe("media frame modeling", () => {
 
   it("models low-resolution participant feeds distinctly", () => {
     const frames = buildMediaFrames(initialParticipants, 0);
-    const priyaFrame = getFrameForParticipant(frames, "p3");
+    const priyaFrame = getFrameForParticipant(frames, "p6");
 
     expect(priyaFrame?.width).toBe(1280);
     expect(priyaFrame?.height).toBe(720);

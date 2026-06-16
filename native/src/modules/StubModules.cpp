@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
 #include <cctype>
@@ -36,7 +37,22 @@ class CpuNoopCompositor final : public ICompositor {
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
     const int layerCount = renderPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(renderPlan.layers.size());
-    return {renderPlan.width, renderPlan.height, layerCount, frameNumber_, renderPlan.renderPlanId, "software"};
+    ProgramFrame frame;
+    frame.width = renderPlan.width;
+    frame.height = renderPlan.height;
+    frame.layerCount = layerCount;
+    frame.frameNumber = frameNumber_;
+    frame.renderPlanId = renderPlan.renderPlanId;
+    frame.renderer = "software";
+    fillSyntheticProgramFramePreview(frame.preview, renderPlan, frames, frame);
+#if COREVIDEO_STUB
+    frame.sharedTexture.sharedHandleHex = "0xFEEDFACE";
+    frame.sharedTexture.width = frame.width;
+    frame.sharedTexture.height = frame.height;
+    frame.sharedTexture.format = "B8G8R8A8_UNORM";
+    frame.sharedTexture.frameNumber = frame.frameNumber;
+#endif
+    return frame;
   }
 
  private:

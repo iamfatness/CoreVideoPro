@@ -25,12 +25,12 @@ describe("buildZoomMediaSpineSyncPayload", () => {
     const payload = buildZoomMediaSpineSyncPayload(state, readyInput);
 
     expect(payload.blocked).toBe(false);
-    expect(payload.summary).toBe("8 Zoom participants, 2 video, 1 screen-share, 8 audio raw Zoom subscriptions planned.");
+    expect(payload.summary).toBe("7 Zoom participants, 2 video, 1 screen-share, 7 audio raw Zoom subscriptions planned.");
     expect(payload.participants).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           sdkUserId: "p1",
-          displayName: "Maya Chen",
+          displayName: "Sophia Martinez",
           role: "host",
           videoOn: true,
           muted: false,
@@ -38,8 +38,8 @@ describe("buildZoomMediaSpineSyncPayload", () => {
           networkQuality: "good"
         }),
         expect.objectContaining({
-          sdkUserId: "p3",
-          role: "panelist",
+          sdkUserId: "p6",
+          role: "guest",
           muted: true,
           networkQuality: "low"
         })
@@ -55,7 +55,7 @@ describe("buildZoomMediaSpineSyncPayload", () => {
     );
     expect(payload.recording).toEqual({
       targetFolder: "Recordings/CoreVideo Pro",
-      filenamePrefix: "AI_Product_Launch_Webinar",
+      filenamePrefix: "Q2_Product_Update",
       format: "mp4",
       quality: "high",
       isoParticipantIds: ["p1", "p2"]
@@ -70,15 +70,15 @@ describe("buildZoomMediaSpineSyncPayload", () => {
       recording: true,
       recordingSettings: {
         ...initialProduction.recordingSettings,
-        isoParticipantIds: ["p1", "p3", "p4"]
+        isoParticipantIds: ["p1", "p6", "p7"]
       }
     } satisfies ProductionState;
 
     const payload = buildZoomMediaSpineSyncPayload(state, readyInput);
 
-    expect(payload.participants.map((participant) => participant.sdkUserId)).toEqual(["p3", "p4"]);
-    expect(payload.subscriptions.every((subscription) => ["p3", "p4"].includes(subscription.participantId))).toBe(true);
-    expect(payload.recording?.isoParticipantIds).toEqual(["p3", "p4"]);
+    expect(payload.participants.map((participant) => participant.sdkUserId)).toEqual(["p6", "p7"]);
+    expect(payload.subscriptions.every((subscription) => ["p6", "p7"].includes(subscription.participantId))).toBe(true);
+    expect(payload.recording?.isoParticipantIds).toEqual(["p6", "p7"]);
     expect(payload.warnings).toContain("Participant p1 is not available for iso video.");
     expect(payload.warnings).toContain("Some requested ISO participants are outside the selected Zoom room or unavailable.");
   });
@@ -114,6 +114,6 @@ describe("buildZoomMediaSpineSyncPayload", () => {
     });
     expect(payload.subscriptions.some((subscription) => subscription.participantId === "p2" && subscription.kind === "participant-video")).toBe(false);
     expect(payload.subscriptions).toContainEqual({ participantId: "p2", kind: "participant-audio", purpose: "mix", priority: 41 });
-    expect(payload.warnings).toContain("Andre Wallace cannot provide active-speaker video because camera is off.");
+    expect(payload.warnings).toContain("David Chen cannot provide active-speaker video because camera is off.");
   });
 });

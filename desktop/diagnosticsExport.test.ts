@@ -24,6 +24,6 @@ describe("writeSupportBundleExport", () => {
     const raw = await readFile(exported.path, "utf8");
     const parsed = JSON.parse(raw) as { app: { platform: string } };
     expect(parsed.app.platform).toBe("win32");
-    expect(raw).toContain("AI Product Launch Webinar");
+    expect(raw).toContain("Q2 Product Update");
   });
 });

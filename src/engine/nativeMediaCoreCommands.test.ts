@@ -101,7 +101,7 @@ describe("native media core command builder", () => {
             expect.objectContaining({
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               isActiveSpeaker: true,
               isScreenSharing: true,
               health: "live"
@@ -146,16 +146,16 @@ describe("native media core command builder", () => {
     expect(commands).toContainEqual({
       type: "set-recording-targets",
       targetFolder: "Recordings/CoreVideo Pro",
-      filenamePrefix: "AI_Product_Launch_Webinar",
+      filenamePrefix: "Q2_Product_Update",
       format: "mp4",
       quality: "high",
       isoParticipantIds: ["p1", "p2"]
     });
     expect(commands).toContainEqual({
       type: "start-recording-session",
-      sessionId: "AI_Product_Launch_Webinar-p1-p2",
+      sessionId: "Q2_Product_Update-p1-p2",
       targetFolder: "Recordings/CoreVideo Pro",
-      filenamePrefix: "AI_Product_Launch_Webinar",
+      filenamePrefix: "Q2_Product_Update",
       format: "mp4",
       quality: "high",
       isoParticipantIds: ["p1", "p2"]
