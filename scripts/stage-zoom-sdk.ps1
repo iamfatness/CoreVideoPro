@@ -21,6 +21,25 @@ $requiredFiles = @(
   @{ Id = "raw-audio-header"; RelativePath = "h\rawdata\rawdata_audio_helper_interface.h"; Purpose = "Raw mixed and per-participant audio callbacks." }
 )
 
+function Resolve-DefaultZoomSdkDir {
+  if ($env:ZOOM_SDK_DIR) {
+    return $env:ZOOM_SDK_DIR
+  }
+
+  $repoSdkCandidates = @(
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64"),
+    (Join-Path $repoRoot "ZoomSDK")
+  )
+  foreach ($candidate in $repoSdkCandidates) {
+    if (Resolve-ArchitectureRoot -SdkDir $candidate) {
+      return $candidate
+    }
+  }
+
+  return ""
+}
+
 function Resolve-ArchitectureRoot([string]$SdkDir) {
   if ([string]::IsNullOrWhiteSpace($SdkDir)) {
     return $null
@@ -120,6 +139,10 @@ function Show-StagingInstructions {
   Write-Host "  native-core\zoom-runtime\windows\$Architecture"
   Write-Host ""
   Write-Host "After staging, build native helpers with .\scripts\build-native-dev.ps1" -ForegroundColor DarkGray
+}
+
+if ([string]::IsNullOrWhiteSpace($ZoomSdkDir)) {
+  $ZoomSdkDir = Resolve-DefaultZoomSdkDir
 }
 
 $architectureRoot = Resolve-ArchitectureRoot -SdkDir $ZoomSdkDir

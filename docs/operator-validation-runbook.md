@@ -16,8 +16,10 @@ Use this checklist on a **Windows 10/11 x64 dev machine** before demoing CoreVid
 
 ```powershell
 cd C:\path\to\CoreVideoPro
-$env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.0.5.39292\x64"
+# Repo-local SDK (auto-discovered when present):
+#   ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64
 .\scripts\stage-zoom-sdk.ps1
+# Or override: $env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.0.5.39292\x64"
 ```
 
 Staged target: `native-core/zoom-runtime/windows/x64`. Settings → Zoom readiness should show SDK runtime checks passing after a dev build.
