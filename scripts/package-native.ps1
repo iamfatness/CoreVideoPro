@@ -1,6 +1,6 @@
 # Package CoreVideo Pro WinUI native shell for demo distribution (unpackaged folder layout).
 # Stages corevideo-native.exe from COREVIDEO_NATIVE_BUILD_DIR when set, else prefers
-# native/build-dev/Release (dev adapters) before native/build* CI stub outputs.
+# native/build-dev/ (dev adapters) before native/build* CI stub outputs.
 param(
   [string]$NativeBuildDir = $(if ($env:COREVIDEO_NATIVE_BUILD_DIR) { $env:COREVIDEO_NATIVE_BUILD_DIR } else { "" })
 )
@@ -95,13 +95,14 @@ function Resolve-NativeSourceDir {
     return $Override
   }
 
-  # Prefer the dev-machine Release output from scripts/build-native-dev.ps1
-  # (COREVIDEO_ENABLE_DEV_ADAPTERS=ON) before CI stub artifacts under native/build*.
+  # Prefer the dev-machine output from scripts/build-native-dev.ps1
+  # (COREVIDEO_ENABLE_DEV_ADAPTERS=ON). CMake writes Release binaries to
+  # native/build-dev/ (not build-dev/Release); the Release subfolder is a staged copy.
   $candidates = @(
-    (Join-Path $repoRoot "native\build-dev\Release"),
     (Join-Path $repoRoot "native\build-dev"),
-    (Join-Path $repoRoot "native\build\Release"),
-    (Join-Path $repoRoot "native\build")
+    (Join-Path $repoRoot "native\build-dev\Release"),
+    (Join-Path $repoRoot "native\build"),
+    (Join-Path $repoRoot "native\build\Release")
   )
   foreach ($candidate in $candidates) {
     if (Test-NativeCorePresent $candidate) {

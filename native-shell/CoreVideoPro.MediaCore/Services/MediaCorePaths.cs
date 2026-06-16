@@ -2,6 +2,21 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public static class MediaCorePaths
 {
+    public const string ZoomSdkDirEnvVar = "ZOOM_SDK_DIR";
+    public const string ZoomRuntimeDirEnvVar = "COREVIDEO_ZOOM_RUNTIME_DIR";
+    public const string ZoomJwtBrokerUrlEnvVar = "COREVIDEO_ZOOM_JWT_BROKER_URL";
+
+    public static string StagedZoomRuntimeRelativePath =>
+        Path.Combine("native-core", "zoom-runtime", "windows", "x64");
+
+    public static string ArtifactsZoomRuntimeRelativePath =>
+        Path.Combine("artifacts", "native", "zoom-runtime", "windows", "x64");
+
+    public static string ZoomSdkStagingInstructions =>
+        $"Set {ZoomSdkDirEnvVar} to the Zoom Meeting SDK x64 folder (contains h/zoom_sdk.h and bin/sdk.dll), " +
+        $"then run .\\scripts\\stage-zoom-sdk.ps1. " +
+        $"Alternatively set {ZoomRuntimeDirEnvVar} to an already-staged runtime folder.";
+
     public static string RepoRoot
     {
         get
@@ -44,46 +59,86 @@ public static class MediaCorePaths
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    public static string? ResolveZoomSdkArchitectureRoot()
+    public static IReadOnlyList<string> BuildZoomSdkArchitectureRootCandidates(string repoRoot)
     {
-        var repo = RepoRoot;
-        var envPath = Environment.GetEnvironmentVariable("ZOOM_SDK_DIR");
         var candidates = new List<string>();
-        if (!string.IsNullOrWhiteSpace(envPath))
+
+        var runtimeDir = Environment.GetEnvironmentVariable(ZoomRuntimeDirEnvVar);
+        if (!string.IsNullOrWhiteSpace(runtimeDir))
         {
-            candidates.Add(envPath);
+            candidates.Add(runtimeDir);
+        }
+
+        candidates.Add(Path.Combine(repoRoot, StagedZoomRuntimeRelativePath));
+        candidates.Add(Path.Combine(repoRoot, ArtifactsZoomRuntimeRelativePath));
+
+        var sdkDir = Environment.GetEnvironmentVariable(ZoomSdkDirEnvVar);
+        if (!string.IsNullOrWhiteSpace(sdkDir))
+        {
+            candidates.Add(sdkDir);
         }
 
         candidates.AddRange(
         [
-            Path.Combine(repo, "native-core", "zoom-runtime", "windows", "x64"),
-            Path.Combine(repo, "native", "build-dev"),
-            Path.Combine(repo, "native", "build"),
+            Path.Combine(repoRoot, "native", "build-dev"),
+            Path.Combine(repoRoot, "native", "build"),
             Path.Combine(AppContext.BaseDirectory, "zoom-runtime", "windows", "x64"),
-            Path.Combine(AppContext.BaseDirectory)
+            AppContext.BaseDirectory
         ]);
 
-        foreach (var candidate in candidates)
+        return candidates;
+    }
+
+    public static bool IsZoomSdkArchitectureRoot(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || !Directory.Exists(candidate))
         {
-            if (string.IsNullOrWhiteSpace(candidate) || !Directory.Exists(candidate))
+            return false;
+        }
+
+        if (File.Exists(Path.Combine(candidate, "bin", "sdk.dll")))
+        {
+            return true;
+        }
+
+        return File.Exists(Path.Combine(candidate, "sdk.dll"));
+    }
+
+    public static string? ResolveZoomSdkArchitectureRoot(string? repoRoot = null)
+    {
+        repoRoot ??= RepoRoot;
+        foreach (var candidate in BuildZoomSdkArchitectureRootCandidates(repoRoot))
+        {
+            if (!IsZoomSdkArchitectureRoot(candidate))
             {
                 continue;
             }
 
-            var sdkDll = Path.Combine(candidate, "bin", "sdk.dll");
-            if (File.Exists(sdkDll))
-            {
-                return candidate;
-            }
-
-            if (File.Exists(Path.Combine(candidate, "sdk.dll")))
-            {
-                return candidate;
-            }
+            return Path.GetFullPath(candidate);
         }
 
         return null;
     }
+
+    public static string ResolveStagedZoomRuntimeTarget(string? repoRoot = null)
+    {
+        repoRoot ??= RepoRoot;
+        var overrideDir = Environment.GetEnvironmentVariable(ZoomRuntimeDirEnvVar);
+        if (!string.IsNullOrWhiteSpace(overrideDir))
+        {
+            return Path.GetFullPath(overrideDir);
+        }
+
+        return Path.GetFullPath(Path.Combine(repoRoot, StagedZoomRuntimeRelativePath));
+    }
+
+    public static string? ResolveZoomJwtBrokerUrl()
+    {
+        var value = Environment.GetEnvironmentVariable(ZoomJwtBrokerUrlEnvVar);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    public static bool IsZoomJwtBrokerConfigured() => ResolveZoomJwtBrokerUrl() is not null;
 
     public static string? ResolveNodeCoreStub()
     {

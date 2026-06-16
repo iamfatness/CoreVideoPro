@@ -81,12 +81,13 @@ function Resolve-NativeSourceDir {
     return $Override
   }
 
-  # Prefer dev-machine Release output (build-native-dev.ps1) before CI stub artifacts.
+  # Prefer dev-machine output (build-native-dev.ps1) before CI stub artifacts.
+  # CMake writes Release binaries to native/build-dev/; Release/ is a staged copy.
   $candidates = @(
-    (Join-Path $repoRoot "native/build-dev/Release"),
     (Join-Path $repoRoot "native/build-dev"),
-    (Join-Path $repoRoot "native/build/Release"),
-    (Join-Path $repoRoot "native/build")
+    (Join-Path $repoRoot "native/build-dev/Release"),
+    (Join-Path $repoRoot "native/build"),
+    (Join-Path $repoRoot "native/build/Release")
   )
   foreach ($candidate in $candidates) {
     if (Test-NativeCorePresent $candidate) {

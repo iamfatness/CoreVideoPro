@@ -42,11 +42,12 @@ npm run test:native-media-core      # C++ stub build + stdio smoke
 npm run test:native-shell-smoke     # WinUI Release publish + brief process launch
 ```
 
-The script stages `corevideo-native.exe` to:
+The CI stub gate stages `corevideo-native.exe` to:
 
 - `native/build/`
-- `native/build-dev/`
-- `native/build-dev/Release/`
+- `native/build/Release/`
+
+`scripts/build-native-dev.ps1` owns `native/build-dev/` (and stages copies to `native/build-dev/Release/`).
 
 `MediaCorePaths.ResolveNativeCoreExecutable()` probes those locations (plus the app directory after `npm run pack:native`).
 

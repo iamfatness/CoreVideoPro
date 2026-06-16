@@ -10,6 +10,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "build:native-core": "npm run build --workspace native-core",
+    "build:native-dev": "powershell -ExecutionPolicy Bypass -File scripts/build-native-dev.ps1",
     "dev:native-core": "npm run dev --workspace native-core",
     "preview": "vite preview --host 127.0.0.1",
     "test": "npm run test:unit && npm run test:integration",

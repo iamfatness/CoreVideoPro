@@ -25,6 +25,9 @@ public sealed class ZoomSdkReadinessInput
     public bool RawAudioEnabled { get; init; }
     public bool RawShareEnabled { get; init; }
     public string? PackagingPath { get; init; }
+    public bool NativeCorePresent { get; init; }
+    public bool StagedRuntimeReady { get; init; }
+    public string? StagingTargetPath { get; init; }
 }
 
 public sealed class ZoomSdkReadinessCheck

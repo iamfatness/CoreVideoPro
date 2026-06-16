@@ -31,3 +31,20 @@ Important implementation constraints:
 - Leave/rejoin must clear roster and raw subscription state before resubscribing.
 
 The app-side verifier lives in `src/engine/zoomWindowsSdkPackage.ts` and should be used by packaging/preflight code before enabling a real Windows Zoom media helper.
+
+## Staging for WinUI native shell
+
+Discovery env vars (checked in order for runtime resolution):
+
+- `COREVIDEO_ZOOM_RUNTIME_DIR` — staged runtime folder override
+- `ZOOM_SDK_DIR` — source SDK x64 folder (or package root containing `x64/`)
+- `COREVIDEO_ZOOM_JWT_BROKER_URL` — optional dev JWT broker URL for Settings readiness
+
+Stage the SDK beside the helper target:
+
+```powershell
+$env:ZOOM_SDK_DIR = "C:\path\to\zoom-sdk-windows-7.0.5.39292\x64"
+.\scripts\stage-zoom-sdk.ps1
+```
+
+Default runtime target: `native-core/zoom-runtime/windows/x64`

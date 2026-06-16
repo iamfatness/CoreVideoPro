@@ -153,10 +153,11 @@ function Stage-NativeArtifacts {
     [string]$SourceDir
   )
 
+  # Stage only CI stub probe paths. build-dev/ is owned by scripts/build-native-dev.ps1
+  # (D3D11 + dev adapters) and must not be overwritten by the portable stub gate.
   $targets = @(
     (Join-Path $NativeDir "build"),
-    (Join-Path $NativeDir "build-dev"),
-    (Join-Path $NativeDir "build-dev\$Config")
+    (Join-Path $NativeDir "build\$Config")
   )
 
   foreach ($targetDir in $targets) {

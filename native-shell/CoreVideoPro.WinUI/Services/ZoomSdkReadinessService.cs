@@ -40,28 +40,34 @@ public static class ZoomSdkReadinessService
             RawVideoEnabled = overrides.RawVideoEnabled,
             RawAudioEnabled = overrides.RawAudioEnabled,
             RawShareEnabled = overrides.RawShareEnabled,
-            PackagingPath = overrides.PackagingPath ?? input.PackagingPath
+            PackagingPath = overrides.PackagingPath ?? input.PackagingPath,
+            NativeCorePresent = overrides.NativeCorePresent,
+            StagedRuntimeReady = overrides.StagedRuntimeReady,
+            StagingTargetPath = overrides.StagingTargetPath ?? input.StagingTargetPath
         };
     }
 
-    public static ZoomSdkReadinessInput DeriveInputForEngine(bool engineRunning)
+    public static ZoomSdkReadinessInput DeriveInputForEngine(bool _)
     {
         var baseInput = CreateEmbeddedInput();
-        if (!engineRunning)
-        {
-            return baseInput;
-        }
-
         var nativeExe = MediaCorePaths.ResolveNativeCoreExecutable();
         var zoomSdkRoot = MediaCorePaths.ResolveZoomSdkArchitectureRoot();
-        var runtimePresent = nativeExe is not null;
+        var stagedTarget = MediaCorePaths.ResolveStagedZoomRuntimeTarget();
         var packageReport = zoomSdkRoot is not null
             ? ZoomWindowsSdkPackageService.InspectDirectory(zoomSdkRoot)
             : null;
-        var sdkRuntimeReady = runtimePresent &&
-                              (packageReport?.IsReady == true || File.Exists(Path.Combine(Path.GetDirectoryName(nativeExe!) ?? string.Empty, "sdk.dll")));
+        var sdkDllBesideNative = nativeExe is not null &&
+                                 File.Exists(Path.Combine(Path.GetDirectoryName(nativeExe) ?? string.Empty, "sdk.dll"));
+        var stagedRuntimeReady = packageReport?.IsReady == true &&
+                                 zoomSdkRoot is not null &&
+                                 string.Equals(
+                                     Path.GetFullPath(zoomSdkRoot),
+                                     Path.GetFullPath(stagedTarget),
+                                     StringComparison.OrdinalIgnoreCase);
+        var sdkRuntimeReady = packageReport?.IsReady == true || sdkDllBesideNative;
         var sdkVersion = packageReport?.Version ?? (sdkRuntimeReady ? "zoom-engine" : null);
         var packagingPath = zoomSdkRoot ?? nativeExe;
+        var jwtBrokerConfigured = MediaCorePaths.IsZoomJwtBrokerConfigured();
 
         return new ZoomSdkReadinessInput
         {
@@ -70,14 +76,17 @@ public static class ZoomSdkReadinessService
             SdkVersion = sdkVersion,
             AppKeyPresent = baseInput.AppKeyPresent,
             OauthConfigured = baseInput.AppKeyPresent,
-            JwtBrokerConfigured = false,
+            JwtBrokerConfigured = jwtBrokerConfigured,
             RawVideoEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-api-header")?.Present == true
                               || sdkRuntimeReady,
             RawAudioEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-audio-header")?.Present == true
                               || sdkRuntimeReady,
             RawShareEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-renderer-header")?.Present == true
                               || sdkRuntimeReady,
-            PackagingPath = packagingPath
+            PackagingPath = packagingPath,
+            NativeCorePresent = nativeExe is not null,
+            StagedRuntimeReady = stagedRuntimeReady,
+            StagingTargetPath = stagedTarget
         };
     }
 
@@ -89,9 +98,7 @@ public static class ZoomSdkReadinessService
                 "sdk-runtime",
                 input.SdkRuntimePresent,
                 "Zoom Meeting SDK runtime",
-                input.SdkRuntimePresent
-                    ? $"Runtime found{(string.IsNullOrWhiteSpace(input.PackagingPath) ? "." : $" at {input.PackagingPath}.")}"
-                    : "Zoom Meeting SDK runtime is missing from the packaged helper process."),
+                DescribeSdkRuntimeDetail(input)),
             BuildCheck(
                 "app-key",
                 input.AppKeyPresent,
@@ -106,7 +113,9 @@ public static class ZoomSdkReadinessService
                 "jwt-broker",
                 input.JwtBrokerConfigured,
                 "SDK JWT broker",
-                input.JwtBrokerConfigured ? "SDK JWT broker is configured." : "SDK JWT broker is not configured."),
+                input.JwtBrokerConfigured
+                    ? $"SDK JWT broker is configured ({MediaCorePaths.ZoomJwtBrokerUrlEnvVar})."
+                    : $"SDK JWT broker is not configured. Set {MediaCorePaths.ZoomJwtBrokerUrlEnvVar} for dev JWT auth bypass messaging."),
             BuildCheck(
                 "raw-video",
                 input.RawVideoEnabled,
@@ -130,6 +139,17 @@ public static class ZoomSdkReadinessService
             .ToList();
 
         var warnings = new List<string>();
+        if (!input.SdkRuntimePresent && input.NativeCorePresent)
+        {
+            warnings.Add($"Native media core is built but Zoom SDK runtime is not staged at {input.StagingTargetPath}.");
+        }
+
+        if (!input.StagedRuntimeReady && input.SdkRuntimePresent)
+        {
+            warnings.Add(
+                $"Zoom SDK runtime was discovered outside the staged target ({input.StagingTargetPath}). Run .\\scripts\\stage-zoom-sdk.ps1 to normalize packaging.");
+        }
+
         if (string.IsNullOrWhiteSpace(input.SdkVersion))
         {
             warnings.Add("SDK version is unknown; include it in support bundles before beta.");
@@ -187,6 +207,21 @@ public static class ZoomSdkReadinessService
 
     public static bool ShouldBlockZoomJoin(bool engineRunning, ZoomSdkReadinessReport readiness) =>
         engineRunning && readiness.Status == ZoomSdkReadinessStatus.Blocked;
+
+    private static string DescribeSdkRuntimeDetail(ZoomSdkReadinessInput input)
+    {
+        if (input.SdkRuntimePresent)
+        {
+            return $"Runtime found{(string.IsNullOrWhiteSpace(input.PackagingPath) ? "." : $" at {input.PackagingPath}.")}";
+        }
+
+        if (!input.NativeCorePresent)
+        {
+            return "Native media core executable is missing. Build with .\\scripts\\build-native-dev.ps1 after staging the SDK.";
+        }
+
+        return $"Zoom Meeting SDK runtime is missing from the staged helper target ({input.StagingTargetPath}). {MediaCorePaths.ZoomSdkStagingInstructions}";
+    }
 
     private static ZoomSdkReadinessCheck BuildCheck(string id, bool passed, string label, string detail) =>
         new()
