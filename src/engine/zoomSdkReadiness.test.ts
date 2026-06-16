@@ -105,7 +105,7 @@ describe("buildZoomRawMediaSubscriptionPlan", () => {
   it("plans speaker, screen-share, ISO, and audio subscriptions for speaker-slides", () => {
     const plan = buildZoomRawMediaSubscriptionPlan(initialProduction);
 
-    expect(plan.summary).toBe("2 video, 1 screen-share, 8 audio raw Zoom subscriptions planned.");
+    expect(plan.summary).toBe("2 video, 1 screen-share, 7 audio raw Zoom subscriptions planned.");
     expect(plan.subscriptions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ participantId: "p2", kind: "screen-share", purpose: "screen-share" }),
@@ -124,14 +124,14 @@ describe("buildZoomRawMediaSubscriptionPlan", () => {
       selectedBreakoutRoomId: "customer-panel",
       recordingSettings: {
         ...initialProduction.recordingSettings,
-        isoParticipantIds: ["p3", "p4"]
+        isoParticipantIds: ["p6", "p7"]
       }
     } satisfies ProductionState;
 
     const plan = buildZoomRawMediaSubscriptionPlan(state);
 
     expect(plan.audioSubscriptionCount).toBe(2);
-    expect(plan.subscriptions.map((subscription) => subscription.participantId).sort()).toEqual(["p3", "p3", "p4", "p4"]);
+    expect(plan.subscriptions.map((subscription) => subscription.participantId).sort()).toEqual(["p6", "p6", "p7", "p7"]);
   });
 
   it("warns and skips participant video subscriptions when the camera is off", () => {
@@ -149,7 +149,7 @@ describe("buildZoomRawMediaSubscriptionPlan", () => {
     const plan = buildZoomRawMediaSubscriptionPlan(state);
 
     expect(plan.subscriptions.some((subscription) => subscription.participantId === "p1" && subscription.kind === "participant-video")).toBe(false);
-    expect(plan.warnings).toEqual(["Maya Chen cannot provide iso video because camera is off."]);
+    expect(plan.warnings).toEqual(["Sophia Martinez cannot provide iso video because camera is off."]);
   });
 
   it("caps lower-priority video subscriptions when the SDK subscription budget is tight", () => {
@@ -165,8 +165,8 @@ describe("buildZoomRawMediaSubscriptionPlan", () => {
     const plan = buildZoomRawMediaSubscriptionPlan(state, { maxVideoSubscriptions: 3 });
 
     expect(plan.videoSubscriptionCount).toBe(3);
-    expect(plan.warnings).toContain("Noah Kim program video not subscribed; max video subscription limit is 3.");
-    expect(plan.warnings).toContain("Jeremy Collins program video not subscribed; max video subscription limit is 3.");
+    expect(plan.warnings).toContain("Michael Thompson program video not subscribed; max video subscription limit is 3.");
     expect(plan.warnings).toContain("Ava Patel program video not subscribed; max video subscription limit is 3.");
+    expect(plan.warnings).toContain("Robert Smith program video not subscribed; max video subscription limit is 3.");
   });
 });

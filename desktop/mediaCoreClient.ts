@@ -265,7 +265,9 @@ export class MediaCoreSupervisor {
   private onLine(line: string): void {
     const event = parseCoreEvent(line);
     if (event) {
-      this.options.onZoomVideoFrame?.(event.frame);
+      if (event.type === "zoom-video-frame") {
+        this.options.onZoomVideoFrame?.(event.frame);
+      }
       return;
     }
 

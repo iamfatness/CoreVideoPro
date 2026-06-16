@@ -7,8 +7,8 @@ describe("AI Studio engine", () => {
     const studio = buildAiStudioState(initialProduction);
 
     expect(studio.transcript[0]).toMatchObject({
-      speakerName: "Andre Wallace",
-      text: "The active speaker is framed automatically while the slides remain readable.",
+      speakerName: "David Chen",
+      text: "and the feedback from our customers continues to shape everything we build. Thank you for being here.",
       confidence: 94
     });
     expect(studio.chapters[0]).toMatchObject({
@@ -17,10 +17,10 @@ describe("AI Studio engine", () => {
     });
     expect(studio.highlights[0]).toMatchObject({
       title: "Presenter plus slides moment",
-      speakerName: "Andre Wallace",
-      suggestedClipName: "ai-product-launch-webinar-andre-wallace-speaker-slides"
+      speakerName: "David Chen",
+      suggestedClipName: "q2-product-update-david-chen-speaker-slides"
     });
-    expect(studio.showNotes.title).toBe("AI Product Launch Webinar show notes");
+    expect(studio.showNotes.title).toBe("Q2 Product Update show notes");
     expect(studio.showNotes.bullets).toContain("Caption confidence: 94%");
     expect(studio.rundown[2]).toContain("Speaker + Slides - live");
   });

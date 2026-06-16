@@ -21,6 +21,20 @@ struct AudioFrame {
   int64_t timestampMs = 0;
 };
 
+struct ProgramFramePreviewPixels {
+  int width = 0;
+  int height = 0;
+  std::vector<uint8_t> bgra;
+};
+
+struct ProgramFrameSharedTexture {
+  std::string sharedHandleHex;
+  int width = 0;
+  int height = 0;
+  std::string format = "B8G8R8A8_UNORM";
+  int64_t frameNumber = 0;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -31,6 +45,8 @@ struct ProgramFrame {
   bool gpuComposed = false;
   std::string health = "live";
   uint32_t programPixelSignature = 0;
+  ProgramFramePreviewPixels preview;
+  ProgramFrameSharedTexture sharedTexture;
 };
 
 struct CompositorLayerRect {

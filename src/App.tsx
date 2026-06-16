@@ -10,10 +10,12 @@ import {
   FileText,
   Gauge,
   HardDrive,
+  LayoutGrid,
   LayoutTemplate,
   LogIn,
   LogOut,
   Maximize2,
+  Power,
   Mic,
   MicOff,
   Minus,
@@ -95,8 +97,9 @@ import {
 import { addTickerItem, advanceTicker, clearTicker, createTicker, currentTickerItem, pauseTicker, priorityLabel, removeTickerItem, setTickerLoop, setTickerSpeed, startTicker, stopTicker, summarizeTicker, type TickerItemPriority, type TickerState } from "./engine/newsTicker";
 import { applyVideoEffectToFrame, getVideoEffect, toggleChromaKey, toggleCropMode } from "./engine/videoEffects";
 import {
-  getBreakoutRooms,
   initialProduction,
+  participantsWithVideoInRoom,
+  resolveCurrentBreakoutRoom,
   sortParticipantsForProduction,
   type AiStudioState,
   type AutoProductionState,
@@ -170,6 +173,7 @@ const tabs = [
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
+type StudioViewMode = "program" | "preview" | "program-preview" | "multiview";
 
 const roleBadgeLabels: Record<ParticipantRole, string> = {
   Host: "HOST",
@@ -205,7 +209,7 @@ export function App({ engines, runtime }: AppProps) {
   const [production, setProduction] = useState(initialProduction);
   const [meetingState, setMeetingState] = useState<MeetingState>("in_meeting");
   const [screenShareActive, setScreenShareActive] = useState(true);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(1727);
   const [joinRequest, setJoinRequest] = useState({
     meetingUrl: "https://zoom.us/j/123456789",
     displayName: "CoreVideo Producer",
@@ -220,7 +224,10 @@ export function App({ engines, runtime }: AppProps) {
   const [supportBundle, setSupportBundle] = useState<SupportBundle | undefined>();
   const [aiStudio, setAiStudio] = useState<AiStudioState>();
   const [mediaCoreSnapshot, setMediaCoreSnapshot] = useState<NativeMediaCoreStateSnapshot>();
-  const [showPreviewMonitor, setShowPreviewMonitor] = useState(false);
+  const [studioViewMode, setStudioViewMode] = useState<StudioViewMode>("program");
+  const [mockEngineStopped, setMockEngineStopped] = useState(false);
+  const [sdkDiagnosticsExpanded, setSdkDiagnosticsExpanded] = useState(false);
+  const [engineToggleStatus, setEngineToggleStatus] = useState("");
   const [commandStatus, setCommandStatus] = useState("Ready");
   const [participantRoleOverrides, setParticipantRoleOverrides] = useState<Record<string, ParticipantRole>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState("p2");
@@ -392,13 +399,21 @@ export function App({ engines, runtime }: AppProps) {
     () => planMultitrackAudio(production.participants, production.recordingSettings.isoParticipantIds),
     [production.participants, production.recordingSettings.isoParticipantIds]
   );
-  const breakoutRooms = useMemo(() => getBreakoutRooms(production.participants), [production.participants]);
-  const visibleParticipants = useMemo(
-    () =>
-      production.selectedBreakoutRoomId === "all"
-        ? production.participants
-        : production.participants.filter((participant) => participant.breakoutRoomId === production.selectedBreakoutRoomId),
-    [production.participants, production.selectedBreakoutRoomId]
+  const currentBreakoutRoom = useMemo(
+    () => resolveCurrentBreakoutRoom(production.participants),
+    [production.participants]
+  );
+  const engineRunning = !(mediaCoreHealth?.stopped ?? mockEngineStopped);
+  const visibleParticipants = useMemo(() => {
+    const roomId = engineRunning ? currentBreakoutRoom.id : production.selectedBreakoutRoomId;
+    if (roomId === "all") {
+      return production.participants;
+    }
+    return production.participants.filter((participant) => participant.breakoutRoomId === roomId);
+  }, [production.participants, production.selectedBreakoutRoomId, engineRunning, currentBreakoutRoom.id]);
+  const roomVideoParticipants = useMemo(
+    () => participantsWithVideoInRoom(production.participants, currentBreakoutRoom.id),
+    [production.participants, currentBreakoutRoom.id]
   );
   const activeScene = useMemo(
     () => production.scenes.find((scene) => scene.id === production.activeSceneId) ?? production.scenes[0],
@@ -507,6 +522,10 @@ export function App({ engines, runtime }: AppProps) {
       const generation = ++syncGeneration;
       let spineSnapshot: Awaited<ReturnType<typeof engines.spineController.syncProduction>>["finalSnapshot"];
 
+      if (!engineRunning) {
+        return;
+      }
+
       if (meetingState === "in_meeting") {
         const spineResult = await engines.spineController.syncProduction(production, sdkReadinessInput, {
           elapsedMs: elapsedSeconds * 1000
@@ -581,8 +600,23 @@ export function App({ engines, runtime }: AppProps) {
     production.streaming,
     production.videoEffects,
     participantRoleOverrides,
-    sdkReadinessInput
+    sdkReadinessInput,
+    engineRunning
   ]);
+
+  const previousEngineRunning = useRef(engineRunning);
+  useEffect(() => {
+    const started = engineRunning && !previousEngineRunning.current;
+    previousEngineRunning.current = engineRunning;
+    if (!started) {
+      return;
+    }
+    setProduction((current) =>
+      current.selectedBreakoutRoomId === currentBreakoutRoom.id
+        ? current
+        : { ...current, selectedBreakoutRoomId: currentBreakoutRoom.id }
+    );
+  }, [engineRunning, currentBreakoutRoom.id]);
 
   const joinBlockedBySdk = shouldBlockZoomJoin(liveRuntime, sdkReadiness);
 
@@ -1077,21 +1111,33 @@ export function App({ engines, runtime }: AppProps) {
     }));
   }
 
-  function selectBreakoutRoom(roomId: string) {
-    const nextParticipants =
-      roomId === "all"
-        ? production.participants
-        : production.participants.filter((participant) => participant.breakoutRoomId === roomId);
-
-    setProduction((current) => ({
-      ...current,
-      selectedBreakoutRoomId: roomId
-    }));
-    setSelectedParticipantId((currentId) =>
-      nextParticipants.some((participant) => participant.id === currentId)
-        ? currentId
-        : nextParticipants[0]?.id ?? production.participants[0]?.id ?? ""
-    );
+  async function toggleEngine() {
+    setEngineToggleStatus(engineRunning ? "Stopping engine…" : "Starting engine…");
+    try {
+      if (engineRunning) {
+        if (nativeBridgeForRuntime?.stopMediaCore) {
+          await nativeBridgeForRuntime.stopMediaCore();
+        } else {
+          setMockEngineStopped(true);
+        }
+        setMediaCoreHealth((current) => ({ restartCount: current?.restartCount ?? 0, recovering: false, stopped: true }));
+        setEngineToggleStatus("Engine off — Zoom ingest paused");
+      } else {
+        if (nativeBridgeForRuntime?.startMediaCore) {
+          const profile = await nativeBridgeForRuntime.startMediaCore();
+          if (nativeBridgeForRuntime.mediaCoreProfile === undefined) {
+            nativeBridgeForRuntime.mediaCoreProfile = profile;
+          }
+        } else {
+          setMockEngineStopped(false);
+        }
+        setMediaCoreHealth((current) => ({ restartCount: current?.restartCount ?? 0, recovering: false, stopped: false }));
+        setEngineToggleStatus("Engine on");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Engine toggle failed.";
+      setEngineToggleStatus(message);
+    }
   }
 
   function toggleSelectedChromaKey() {
@@ -1262,7 +1308,7 @@ export function App({ engines, runtime }: AppProps) {
         }
         break;
       case "p":
-        setShowPreviewMonitor((current) => !current);
+        setStudioViewMode((current) => (current === "program-preview" ? "program" : "program-preview"));
         break;
     }
   }
@@ -1330,6 +1376,16 @@ export function App({ engines, runtime }: AppProps) {
         </nav>
 
         <div className="topbar-right">
+          <button
+            className={`engine-toggle ${engineRunning ? "on" : "off"}`}
+            onClick={() => void toggleEngine()}
+            title={engineRunning ? "Stop engine before switching breakout rooms" : "Start engine to gather Zoom feeds in your current room"}
+            type="button"
+          >
+            <Power size={14} />
+            {engineRunning ? "Engine On" : "Engine Off"}
+          </button>
+          {engineToggleStatus && <span className="engine-toggle-status">{engineToggleStatus}</span>}
           <div className={`connection-pill ${meetingState === "in_meeting" ? "connected" : ""}`}>
             <span className="connection-dot" />
             {meetingState === "in_meeting" ? "Zoom Connected" : "Zoom Offline"}
@@ -1384,9 +1440,29 @@ export function App({ engines, runtime }: AppProps) {
 
           <section className="program-column">
             <div className="program-toolbar">
-              <span className="program-label">PROGRAM</span>
+              <span className="program-label">
+                {studioViewMode === "multiview" ? "MULTIVIEW" : studioViewMode === "preview" ? "PREVIEW" : "PROGRAM"}
+              </span>
               <span className="badge">{programResLabel}</span>
               <span className="badge">16:9</span>
+              <div className="view-mode-switch" aria-label="Studio view mode">
+                {([
+                  ["program", "Program"],
+                  ["preview", "Preview"],
+                  ["program-preview", "Both"],
+                  ["multiview", "Multiview"]
+                ] as const).map(([mode, label]) => (
+                  <button
+                    className={`view-mode-button ${studioViewMode === mode ? "selected" : ""}`}
+                    key={mode}
+                    onClick={() => setStudioViewMode(mode)}
+                    type="button"
+                  >
+                    {mode === "multiview" ? <LayoutGrid size={13} /> : null}
+                    {label}
+                  </button>
+                ))}
+              </div>
               <div className="program-toolbar-actions">
                 <button
                   className={`ghost-button small ${safeAreasEnabled ? "selected" : ""}`}
@@ -1396,10 +1472,10 @@ export function App({ engines, runtime }: AppProps) {
                   Safe Areas
                 </button>
                 <button
-                  className={`ghost-button small ${showPreviewMonitor ? "selected" : ""}`}
+                  className={`ghost-button small ${studioViewMode === "program-preview" ? "selected" : ""}`}
                   onClick={() => {
                     setCommandStatus(commandLabels.p);
-                    setShowPreviewMonitor((current) => !current);
+                    setStudioViewMode((current) => (current === "program-preview" ? "program" : "program-preview"));
                   }}
                 >
                   <Maximize2 size={14} />
@@ -1408,6 +1484,24 @@ export function App({ engines, runtime }: AppProps) {
               </div>
             </div>
 
+            {studioViewMode === "multiview" && (
+              <section className="program-frame multiview-frame" aria-label="Multiview">
+                <div className={`program-canvas layout-smart-grid ${safeAreasEnabled ? "safe-areas" : ""}`}>
+                  {roomVideoParticipants.map((participant, index) => (
+                    <ParticipantTile
+                      effect={getVideoEffect(production.videoEffects, participant.id)}
+                      frame={getFrameForParticipant(production.mediaFrames, participant.id)}
+                      index={index}
+                      key={participant.id}
+                      participant={participant}
+                      variant="grid"
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {studioViewMode !== "multiview" && studioViewMode !== "preview" && (
             <section className="program-frame" aria-label="Program preview">
               <div
                 className={`program-canvas layout-${activeScene.layout} ${safeAreasEnabled ? "safe-areas" : ""}`}
@@ -1463,8 +1557,9 @@ export function App({ engines, runtime }: AppProps) {
                 </div>
               </div>
             </section>
+            )}
 
-            {showPreviewMonitor && (
+            {studioViewMode !== "multiview" && studioViewMode !== "program" && (
               <section className="preview-frame" aria-label="Preview monitor">
                 <div className="program-header preview-header">
                   <span className="preview-dot" />
@@ -1487,36 +1582,35 @@ export function App({ engines, runtime }: AppProps) {
 
           <aside className="participants-column" aria-label="Participants and source controls">
             <div className="column-header">
-              <span>Participants ({visibleParticipants.length})</span>
+              <span>Video in room ({roomVideoParticipants.length})</span>
               <div className="column-header-actions">
                 <Search size={14} className="decorative-icon" aria-hidden="true" />
                 <MoreHorizontal size={14} className="decorative-icon" aria-hidden="true" />
               </div>
             </div>
 
-            <div className="breakout-list" aria-label="Breakout rooms">
-              <button
-                className={production.selectedBreakoutRoomId === "all" ? "selected" : ""}
-                onClick={() => selectBreakoutRoom("all")}
-              >
-                <strong>All rooms</strong>
-                <span>{production.participants.length} participants</span>
-              </button>
-              {breakoutRooms.map((room) => (
+            <p className="current-room-label">
+              {currentBreakoutRoom.name}
+              {!engineRunning && <em> — engine off, feeds paused</em>}
+            </p>
+
+            <div className="video-participant-strip" aria-label="Video-enabled participants in current room">
+              {roomVideoParticipants.map((participant) => (
                 <button
-                  className={production.selectedBreakoutRoomId === room.id ? "selected" : ""}
-                  key={room.id}
-                  onClick={() => selectBreakoutRoom(room.id)}
+                  className={`video-participant-thumb ${participant.id === selectedParticipantId ? "selected" : ""} ${participant.isActiveSpeaker ? "talking" : ""}`}
+                  key={`thumb-${participant.id}`}
+                  onClick={() => setSelectedParticipantId(participant.id)}
+                  type="button"
                 >
-                  <strong>{room.name}</strong>
-                  <span>{room.participantCount} participants</span>
+                  <ParticipantVideoCanvas participantId={participant.id} />
+                  <span>{participant.name}</span>
                 </button>
               ))}
             </div>
 
-            <h2 className="visually-hidden">Zoom participants</h2>
+            <h2 className="visually-hidden">Zoom participants with video enabled</h2>
             <div className="participant-list">
-              {visibleParticipants.map((participant) => {
+              {roomVideoParticipants.map((participant) => {
                 const mix = production.audioMix.participants.find((item) => item.participantId === participant.id);
                 const muted = mix?.muted ?? participant.isMuted;
                 const level = mix?.outputLevel ?? participant.audioLevel;
@@ -1622,7 +1716,7 @@ export function App({ engines, runtime }: AppProps) {
             </div>
             <p className="topbar-status-line">
               {meetingState.replace("_", " ")} - {production.participants.length} participants -{" "}
-              {production.selectedBreakoutRoomId === "all" ? "All rooms" : breakoutRooms.find((room) => room.id === production.selectedBreakoutRoomId)?.name} -{" "}
+              {currentBreakoutRoom.name} -{" "}
               {screenShareActive ? "Screen share active" : "No screen share"} - Captions on - {production.output.resolution} {production.output.fps}fps -{" "}
               {formatElapsed(elapsedSeconds)}
             </p>
@@ -1704,7 +1798,7 @@ export function App({ engines, runtime }: AppProps) {
           <section className="panel" aria-label="Zoom SDK readiness">
             <div className="section-title">
               <Activity size={15} />
-              Zoom SDK pre-flight
+              Zoom SDK
             </div>
             {zoomOAuthStatus?.brokerConfigured && nativeBridgeForRuntime?.beginZoomOAuth && (
               <div className="settings-actions" aria-label="Zoom account">
@@ -1733,40 +1827,43 @@ export function App({ engines, runtime }: AppProps) {
                 {zoomOAuthMessage && <span>{zoomOAuthMessage}</span>}
               </div>
             )}
-            <div className={`sdk-readiness-panel status-${sdkReadiness.status}`} aria-label="SDK readiness panel">
-              <p className="sdk-readiness-summary">{sdkReadiness.summary}</p>
-              <div className="sdk-checks">
-                {sdkReadiness.checks.map((check) => (
-                  <div key={check.id} className={`sdk-check status-${check.status}`} aria-label={`SDK check ${check.id}`}>
-                    <span className="sdk-check-label">{check.label}</span>
-                    <span className={`sdk-check-status check-${check.status}`}>{check.status}</span>
-                    {check.status !== "ready" && <span className="sdk-check-detail">{check.detail}</span>}
-                  </div>
-                ))}
-              </div>
-              {sdkReadiness.blockers.length > 0 && (
-                <div className="sdk-blockers" aria-label="SDK blockers">
-                  {sdkReadiness.blockers.map((b) => (
-                    <p key={b} className="sdk-blocker">{b}</p>
-                  ))}
-                </div>
-              )}
-              {sdkPackageReport && (
-                <div className={`sdk-package-report pkg-${sdkPackageReport.status}`} aria-label="Windows SDK package">
-                  <span className="sdk-pkg-label">Windows SDK</span>
-                  <span>{sdkPackageReport.summary}</span>
-                  {sdkPackageReport.blockers.length > 0 && (
-                    <ul className="sdk-missing-files">
-                      {sdkPackageReport.requiredFiles
-                        .filter((f) => !f.present)
-                        .map((f) => (
-                          <li key={f.relativePath}>{f.relativePath}</li>
-                        ))}
-                    </ul>
-                  )}
-                </div>
+            <div className={`sdk-status-chip status-${sdkReadiness.status}`} aria-label="SDK status">
+              <span>{sdkReadiness.status === "ready" ? "SDK ready" : sdkReadiness.summary}</span>
+              {(sdkReadiness.status !== "ready" || sdkDiagnosticsExpanded) && (
+                <button className="ghost-button small" onClick={() => setSdkDiagnosticsExpanded((current) => !current)} type="button">
+                  {sdkDiagnosticsExpanded ? "Hide details" : "Show details"}
+                </button>
               )}
             </div>
+            {(sdkReadiness.status !== "ready" || sdkDiagnosticsExpanded) && (
+              <div className={`sdk-readiness-panel status-${sdkReadiness.status}`} aria-label="SDK readiness panel">
+                <p className="sdk-readiness-summary">{sdkReadiness.summary}</p>
+                {sdkReadiness.blockers.length > 0 && (
+                  <div className="sdk-blockers" aria-label="SDK blockers">
+                    {sdkReadiness.blockers.map((b) => (
+                      <p key={b} className="sdk-blocker">{b}</p>
+                    ))}
+                  </div>
+                )}
+                {sdkDiagnosticsExpanded && (
+                  <div className="sdk-checks">
+                    {sdkReadiness.checks.map((check) => (
+                      <div key={check.id} className={`sdk-check status-${check.status}`} aria-label={`SDK check ${check.id}`}>
+                        <span className="sdk-check-label">{check.label}</span>
+                        <span className={`sdk-check-status check-${check.status}`}>{check.status}</span>
+                        {check.status !== "ready" && <span className="sdk-check-detail">{check.detail}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {sdkPackageReport && sdkDiagnosticsExpanded && (
+                  <div className={`sdk-package-report pkg-${sdkPackageReport.status}`} aria-label="Windows SDK package">
+                    <span className="sdk-pkg-label">Windows SDK</span>
+                    <span>{sdkPackageReport.summary}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="panel">
@@ -4914,21 +5011,8 @@ function ScenePreview({
 
   return (
     <>
-      <div className="slide-share" aria-label="Speaker slides layout">
-        <span>{activeShareFrame ? "Product roadmap" : "No screen share"}</span>
-        <div className="slide-chart">
-          <i />
-          <i />
-          <i />
-        </div>
-        <p>
-          {activeShareFrame
-            ? `${activeShareFrame.label} - ${activeShareFrame.width}x${activeShareFrame.height} - ${activeShareFrame.ageMs}ms`
-            : "Magic Scene will reserve this region until a presenter starts sharing."}
-        </p>
-      </div>
       <div className="speaker-stack">
-        {participants.map((participant, index) => (
+        {participants.slice(0, 3).map((participant, index) => (
           <ParticipantTile
             effect={getVideoEffect(videoEffects, participant.id)}
             frame={applyVideoEffectToFrame(getFrameForParticipant(frames, participant.id), getVideoEffect(videoEffects, participant.id))}
@@ -4937,6 +5021,21 @@ function ScenePreview({
             participant={participant}
           />
         ))}
+      </div>
+      <div className="slide-share" aria-label="Speaker slides layout">
+        <span className="slide-kicker">Q2 PRODUCT UPDATE</span>
+        <strong className="slide-headline">Building what matters next</strong>
+        <div className="slide-chart" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
+        <ul className="slide-bullets">
+          <li>Customer-obsessed roadmap</li>
+          <li>Platform scalability &amp; reliability</li>
+          <li>Ecosystem partnerships</li>
+        </ul>
+        <p className="slide-brand">{activeShareFrame ? "COREVIDEO" : "Waiting for screen share"}</p>
       </div>
     </>
   );

@@ -10,7 +10,7 @@ const commands: MediaCoreCommand[] = [
       {
         sourceId: "participant:p1",
         participantId: "p1",
-        displayName: "Maya Chen",
+        displayName: "Sophia Martinez",
         role: "Host",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -25,7 +25,7 @@ const commands: MediaCoreCommand[] = [
       {
         sourceId: "participant:p2",
         participantId: "p2",
-        displayName: "Andre Wallace",
+        displayName: "David Chen",
         role: "Presenter",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -288,7 +288,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -303,7 +303,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "Presenter",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -318,7 +318,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p3",
               participantId: "p3",
-              displayName: "Priya Shah",
+              displayName: "Robert Smith",
               role: "Panelist",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -357,15 +357,15 @@ describe("MediaCoreRuntime", () => {
         recording: {
           status: "warning",
           writerStatus: "warning",
-          warning: "Andre Wallace ISO video is off.",
+          warning: "David Chen ISO video is off.",
           streams: expect.arrayContaining([
-            expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", status: "warning", warning: "Andre Wallace ISO video is off." }),
+            expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", status: "warning", warning: "David Chen ISO video is off." }),
             expect.objectContaining({
               kind: "iso",
               participantId: "p3",
               readiness: "unsubscribable",
               status: "warning",
-              warning: "Priya Shah ISO video cannot be subscribed by the Zoom SDK."
+              warning: "Robert Smith ISO video cannot be subscribed by the Zoom SDK."
             }),
             expect.objectContaining({
               kind: "iso",
@@ -379,7 +379,7 @@ describe("MediaCoreRuntime", () => {
         encoderSession: {
           status: "warning",
           targets: expect.arrayContaining([
-            expect.objectContaining({ targetId: "recording:iso:p2", status: "warning", warning: "Andre Wallace ISO video is off." })
+            expect.objectContaining({ targetId: "recording:iso:p2", status: "warning", warning: "David Chen ISO video is off." })
           ])
         },
         operatorActions: expect.arrayContaining([
@@ -387,7 +387,7 @@ describe("MediaCoreRuntime", () => {
             actionId: "recording:iso:p2:check",
             area: "recording",
             title: "Check p2 ISO recording",
-            detail: "Andre Wallace ISO video is off."
+            detail: "David Chen ISO video is off."
           })
         ]),
         eventLog: expect.arrayContaining([
@@ -395,10 +395,10 @@ describe("MediaCoreRuntime", () => {
             severity: "warning",
             area: "recording",
             title: "ISO recording warning",
-            detail: "Andre Wallace ISO video is off."
+            detail: "David Chen ISO video is off."
           })
         ]),
-        warnings: expect.arrayContaining(["Andre Wallace ISO video is off."])
+        warnings: expect.arrayContaining(["David Chen ISO video is off."])
       }
     });
   });
@@ -415,7 +415,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -430,7 +430,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "Presenter",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -461,10 +461,10 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               health: "recovering",
               severity: "warning",
-              detail: "Maya Chen feed is recovering."
+              detail: "Sophia Martinez feed is recovering."
             }
           ]
         },
@@ -472,15 +472,15 @@ describe("MediaCoreRuntime", () => {
           {
             actionId: "source:p1:check",
             area: "source",
-            title: "Check Maya Chen feed",
-            detail: "Maya Chen feed is recovering."
+            title: "Check Sophia Martinez feed",
+            detail: "Sophia Martinez feed is recovering."
           }
         ],
         eventLog: [
           {
             area: "source",
             title: "Zoom feed recovering",
-            detail: "Maya Chen feed is recovering.",
+            detail: "Sophia Martinez feed is recovering.",
             relatedId: "p1"
           }
         ]
@@ -497,7 +497,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -512,7 +512,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "Presenter",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -545,7 +545,7 @@ describe("MediaCoreRuntime", () => {
             severity: "info",
             area: "source",
             title: "Zoom feed recovered",
-            detail: "Maya Chen feed recovered.",
+            detail: "Sophia Martinez feed recovered.",
             relatedId: "p1"
           })
         ])
@@ -559,7 +559,7 @@ describe("MediaCoreRuntime", () => {
       {
         sourceId: "participant:p1",
         participantId: "p1",
-        displayName: "Maya Chen",
+        displayName: "Sophia Martinez",
         role: "Host",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -574,7 +574,7 @@ describe("MediaCoreRuntime", () => {
       {
         sourceId: "participant:p2",
         participantId: "p2",
-        displayName: "Andre Wallace",
+        displayName: "David Chen",
         role: "Presenter",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -589,7 +589,7 @@ describe("MediaCoreRuntime", () => {
       {
         sourceId: "participant:p4",
         participantId: "p4",
-        displayName: "Noah Kim",
+        displayName: "Linda Park",
         role: "Guest",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -616,7 +616,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p3",
               participantId: "p3",
-              displayName: "Priya Shah",
+              displayName: "Robert Smith",
               role: "Panelist",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -638,12 +638,12 @@ describe("MediaCoreRuntime", () => {
       ok: true,
       state: {
         eventLog: expect.arrayContaining([
-          expect.objectContaining({ severity: "critical", area: "source", title: "Zoom participant video off", detail: "Maya Chen turned video off.", relatedId: "p1" }),
-          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant muted", detail: "Maya Chen muted their microphone.", relatedId: "p1" }),
-          expect.objectContaining({ severity: "info", area: "source", title: "Zoom screen share started", detail: "Andre Wallace started screen sharing.", relatedId: "p2" }),
-          expect.objectContaining({ severity: "info", area: "source", title: "Zoom active speaker changed", detail: "Andre Wallace is now the active speaker.", relatedId: "p2" }),
-          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant joined", detail: "Priya Shah joined Main room.", relatedId: "p3" }),
-          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant left", detail: "Noah Kim left Main room.", relatedId: "p4" })
+          expect.objectContaining({ severity: "critical", area: "source", title: "Zoom participant video off", detail: "Sophia Martinez turned video off.", relatedId: "p1" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant muted", detail: "Sophia Martinez muted their microphone.", relatedId: "p1" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom screen share started", detail: "David Chen started screen sharing.", relatedId: "p2" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom active speaker changed", detail: "David Chen is now the active speaker.", relatedId: "p2" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant joined", detail: "Robert Smith joined Main room.", relatedId: "p3" }),
+          expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant left", detail: "Linda Park left Main room.", relatedId: "p4" })
         ])
       }
     });
@@ -1187,7 +1187,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -1202,7 +1202,7 @@ describe("MediaCoreRuntime", () => {
             {
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "Presenter",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -1236,17 +1236,17 @@ describe("MediaCoreRuntime", () => {
         resolvedRouteCount: 2,
         renderPlan: {
           routes: [
-            { routeId: "muted", status: "resolved", warning: "Maya Chen is muted but assigned isolated audio." },
+            { routeId: "muted", status: "resolved", warning: "Sophia Martinez is muted but assigned isolated audio." },
             { routeId: "dupe", status: "resolved", warning: "p1 is assigned to multiple program routes." },
-            { routeId: "video-off", status: "missing", warning: "Andre Wallace has no clean video feed." },
+            { routeId: "video-off", status: "missing", warning: "David Chen has no clean video feed." },
             { routeId: "missing", status: "missing", warning: "p9 is not present in the Zoom source roster." },
             { routeId: "screen", status: "missing", warning: "Screen share route requested but no active screen share source is available." }
           ]
         },
         warnings: expect.arrayContaining([
-          "Maya Chen is muted but assigned isolated audio.",
+          "Sophia Martinez is muted but assigned isolated audio.",
           "p1 is assigned to multiple program routes.",
-          "Andre Wallace has no clean video feed.",
+          "David Chen has no clean video feed.",
           "p9 is not present in the Zoom source roster.",
           "Screen share route requested but no active screen share source is available."
         ])
@@ -1268,7 +1268,7 @@ describe("MediaCoreRuntime", () => {
           ]
         },
         { type: "set-caption-enabled", enabled: true },
-        { type: "push-caption-cue", text: "Welcome to the webinar.", speaker: "Maya Chen", atMs: 1200 }
+        { type: "push-caption-cue", text: "Welcome to the webinar.", speaker: "Sophia Martinez", atMs: 1200 }
       ]
     });
 
@@ -1288,7 +1288,7 @@ describe("MediaCoreRuntime", () => {
           status: "live",
           currentCue: {
             text: "Welcome to the webinar.",
-            speaker: "Maya Chen",
+            speaker: "Sophia Martinez",
             atMs: 1200
           },
           latencyMs: 180

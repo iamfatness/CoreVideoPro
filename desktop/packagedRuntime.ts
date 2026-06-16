@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { MediaCoreSupervisorOptions } from "./mediaCoreClient.ts";
 import { mediaCoreSupervisorOptionsFromEnv } from "./mediaCoreRuntime.ts";
+
+const desktopDir = dirname(fileURLToPath(import.meta.url));
+const PACKAGED_STUB_PATH = join(desktopDir, "coreStub.cjs");
 
 export function resolvePackagedMediaCoreBinary(resourcesPath: string, platform: string): string | undefined {
   const binaryName = platform === "win32" ? "corevideo-native.exe" : "corevideo-native";
@@ -30,9 +34,11 @@ export function mediaCoreSupervisorOptionsForApp(
     };
   }
 
-  // Stub-only package: spawn the Node media-core stub via Electron-as-Node.
+  // Stub-only package: spawn the bundled media-core stub via Electron-as-Node.
+  // The .ts stub imports src/ modules that are not shipped in the asar.
   return {
     ...fromEnv,
+    args: [PACKAGED_STUB_PATH],
     env: {
       ...fromEnv.env,
       ELECTRON_RUN_AS_NODE: "1"

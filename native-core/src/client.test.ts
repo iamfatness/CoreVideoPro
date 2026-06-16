@@ -28,7 +28,7 @@ describe("MediaCoreServiceClient", () => {
           {
             sourceId: "participant:p1",
             participantId: "p1",
-            displayName: "Maya Chen",
+            displayName: "Sophia Martinez",
             role: "Host",
             breakoutRoomId: "main",
             breakoutRoomName: "Main room",
@@ -182,7 +182,7 @@ describe("MediaCoreServiceClient", () => {
         [
           {
             sdkUserId: "sdk-presenter",
-            displayName: "Andre Wallace",
+            displayName: "David Chen",
             role: "panelist",
             videoOn: true,
             muted: false,

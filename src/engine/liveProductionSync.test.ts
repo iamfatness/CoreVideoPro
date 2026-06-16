@@ -69,8 +69,8 @@ describe("syncLowerThirdDeckFromParticipants", () => {
     const deck = syncLowerThirdDeckFromParticipants(createDeck(), participants.slice(0, 3));
 
     expect(deck.plates).toHaveLength(3);
-    expect(deck.plates[0]?.name).toBe("Andre Wallace");
-    expect(deck.plates[0]?.title).toBe("Product Lead");
+    expect(deck.plates[0]?.name).toBe("David Chen");
+    expect(deck.plates[0]?.title).toBe("Chief Product Officer");
     expect(deck.queue).toHaveLength(3);
   });
 
@@ -80,7 +80,7 @@ describe("syncLowerThirdDeckFromParticipants", () => {
 
     const refreshed = syncLowerThirdDeckFromParticipants(onAir, participants.slice(0, 2));
     expect(refreshed.onAirId).toBe(participantPlateId("p1"));
-    expect(refreshed.plates.find((plate) => plate.id === participantPlateId("p1"))?.name).toBe("Maya Chen");
+    expect(refreshed.plates.find((plate) => plate.id === participantPlateId("p1"))?.name).toBe("Sophia Martinez");
   });
 });
 
@@ -89,7 +89,7 @@ describe("resolveSceneFocusParticipant", () => {
     const focus = resolveSceneFocusParticipant(initialProduction.scenes.find((scene) => scene.id === "interview")!, participants);
 
     expect(focus?.id).toBe("p2");
-    expect(focus?.name).toBe("Andre Wallace");
+    expect(focus?.name).toBe("David Chen");
   });
 
   it("falls back to the host on intro layouts", () => {
@@ -99,7 +99,7 @@ describe("resolveSceneFocusParticipant", () => {
     const focus = resolveSceneFocusParticipant(initialProduction.scenes.find((scene) => scene.id === "intro")!, roster);
 
     expect(focus?.role).toBe("Host");
-    expect(focus?.name).toBe("Maya Chen");
+    expect(focus?.name).toBe("Sophia Martinez");
   });
 });
 
@@ -107,8 +107,8 @@ describe("resolveProgramLowerThird", () => {
   it("returns display metadata for the scene focus participant", () => {
     const lowerThird = resolveProgramLowerThird(initialProduction.scenes.find((scene) => scene.id === "panel")!, participants);
 
-    expect(lowerThird.name).toBe("Andre Wallace");
-    expect(lowerThird.title).toBe("Product Lead");
+    expect(lowerThird.name).toBe("David Chen");
+    expect(lowerThird.title).toBe("Chief Product Officer");
     expect(lowerThird.org).toBe("Main room");
   });
 });
@@ -146,6 +146,6 @@ describe("showSceneFocusPlate", () => {
     const deck = showSceneFocusPlate(createDeck(), initialProduction.scenes.find((scene) => scene.id === "panel")!, participants);
 
     expect(deck.onAirId).toBe(participantPlateId("p2"));
-    expect(deck.plates.find((plate) => plate.id === deck.onAirId)?.name).toBe("Andre Wallace");
+    expect(deck.plates.find((plate) => plate.id === deck.onAirId)?.name).toBe("David Chen");
   });
 });

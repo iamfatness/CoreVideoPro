@@ -27,7 +27,7 @@ describe("NativeHostZoomMediaSpineSyncEngine", () => {
     const nativeSnapshot: ZoomMediaSpineNativeSnapshot = {
       meetingState: "in-meeting",
       sdkVersion: "6.2.0",
-      participantCount: 8,
+      participantCount: 7,
       activeSpeakerId: "p2",
       screenShareParticipantId: "p2",
       participants: [],
@@ -101,13 +101,13 @@ describe("NativeHostZoomMediaSpineSyncEngine", () => {
     expect(snapshot).toMatchObject({
       meetingState: "in-meeting",
       sdkVersion: "6.2.0",
-      participantCount: 8,
+      participantCount: 7,
       activeSpeakerId: "p2",
       screenShareParticipantId: "p2",
       recording: {
         session: {
           active: true,
-          filenamePrefix: "AI_Product_Launch_Webinar"
+          filenamePrefix: "Q2_Product_Update"
         },
         evidence: {
           programFramesWritten: 3,
@@ -147,7 +147,7 @@ describe("buildFallbackZoomMediaSpineSnapshot", () => {
       recording: true,
       recordingSettings: {
         ...initialProduction.recordingSettings,
-        isoParticipantIds: ["p3"]
+        isoParticipantIds: ["p6"]
       }
     } satisfies ProductionState;
     const payload = buildZoomMediaSpineSyncPayload(state, readyInput);
@@ -155,7 +155,7 @@ describe("buildFallbackZoomMediaSpineSnapshot", () => {
 
     expect(snapshot.subscriptions).toContainEqual(
       expect.objectContaining({
-        participantId: "p3",
+        participantId: "p6",
         kind: "participant-video",
         status: "degraded",
         lastResultCode: "low-resolution",

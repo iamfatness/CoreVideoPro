@@ -1,0 +1,131 @@
+namespace CoreVideoPro.MediaCore.Models;
+
+public sealed class ZoomVideoFrame
+{
+    public required string ParticipantId { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int FrameId { get; init; }
+    public required byte[] Bgra { get; init; }
+}
+
+public sealed class CoreZoomVideoFrameEvent
+{
+    public string Type => "zoom-video-frame";
+    public required ZoomVideoFrame Frame { get; init; }
+}
+
+public sealed class ProgramSharedTexture
+{
+    public string SharedHandleHex { get; init; } = string.Empty;
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string Format { get; init; } = "B8G8R8A8_UNORM";
+    public int FrameNumber { get; init; }
+
+    public bool IsValid =>
+        !string.IsNullOrWhiteSpace(SharedHandleHex) &&
+        Width > 0 &&
+        Height > 0;
+}
+
+public sealed class ProgramFramePreview
+{
+    public int FrameNumber { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string? RenderPlanId { get; init; }
+    public string Renderer { get; init; } = "software";
+    public string Health { get; init; } = "live";
+    public string PixelFormat { get; init; } = "bgra";
+    public byte[] Bgra { get; init; } = [];
+    public ProgramSharedTexture? SharedTexture { get; init; }
+}
+
+public sealed class CoreProgramFramePreviewEvent
+{
+    public string Type => "program-frame-preview";
+    public required ProgramFramePreview Preview { get; init; }
+}
+
+public sealed class CoreProgramSharedTextureEvent
+{
+    public string Type => "program-shared-texture";
+    public required ProgramSharedTexture Texture { get; init; }
+}
+
+public sealed class CoreError
+{
+    public required string Code { get; init; }
+    public required string Message { get; init; }
+}
+
+public sealed class CoreResponseEnvelope
+{
+    public required string Id { get; init; }
+    public bool Ok { get; init; }
+    public string? Type { get; init; }
+    public CoreError? Error { get; init; }
+}
+
+public sealed class NativeMediaCoreWireHealth
+{
+    public string? Status { get; init; }
+    public string? Renderer { get; init; }
+    public string? Encoder { get; init; }
+    public string? Codec { get; init; }
+    public bool? HardwareEncoder { get; init; }
+    public string? RecordingArtifactPath { get; init; }
+    public long? RecordingBytesWritten { get; init; }
+    public int? EncodedFrameCount { get; init; }
+    public int? FrameCount { get; init; }
+    public IReadOnlyList<string>? Messages { get; init; }
+}
+
+public sealed class RawCaptureSnapshot
+{
+    public required string MeetingState { get; init; }
+    public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
+    public string? ActiveSpeakerId { get; init; }
+    public string? Caption { get; init; }
+    public int Tick { get; init; }
+}
+
+public sealed class RawParticipantEvent
+{
+    public required string UserId { get; init; }
+    public required string DisplayName { get; init; }
+    public string? Role { get; init; }
+    public bool? Muted { get; init; }
+    public bool? VideoOn { get; init; }
+    public bool? Talking { get; init; }
+    public bool? SharingScreen { get; init; }
+    public int? AudioLevel { get; init; }
+    public string? NetworkQuality { get; init; }
+}
+
+public sealed class NativeMediaCoreWireState
+{
+    public string? SceneId { get; init; }
+    public int? RouteCount { get; init; }
+    public int? TransformCount { get; init; }
+    public int? OverlayCount { get; init; }
+    public IReadOnlyList<string>? Outputs { get; init; }
+    public IReadOnlyList<string>? IsoParticipantIds { get; init; }
+    public int? ProgramFrameCount { get; init; }
+    public string? RenderPlanId { get; init; }
+    public string? CompositorRenderer { get; init; }
+    public NativeMediaCoreEncoderSession? EncoderSession { get; init; }
+    public NativeMediaCoreOutputSenderSession? OutputSenderSession { get; init; }
+    public NativeMediaCoreRecordingSession? Recording { get; init; }
+    public NativeMediaCoreWireHealth? Health { get; init; }
+    public NativeMediaCoreProfile? Profile { get; init; }
+    public NativeMediaCoreAudioMixSession? AudioMixSession { get; init; }
+    public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }
+    public NativeMediaCoreBrandKit? BrandKit { get; init; }
+    public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
+    public NativeMediaCoreProgramSharedTexture? ProgramSharedTexture { get; init; }
+    public string? MeetingState { get; init; }
+    public string? BreakoutRoomId { get; init; }
+    public string? BreakoutRoomName { get; init; }
+}

@@ -13,6 +13,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ensureCoreStubBundle,
   ensurePackagedMainBundle,
   ensurePreloadBundle,
   repoRoot
@@ -41,18 +42,15 @@ function resolveElectronBuilder() {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
+if (!resolveElectronBuilder()) {
+  console.info("[pack] installing packaging deps (electron + electron-updater + electron-builder)…");
+  run("npm", ["install", "--no-save", "electron@latest", "electron-updater@6.8.9", "electron-builder@latest", "tsx"]);
+  run("node", ["node_modules/electron/install.js"]);
+}
+
 const electronBuilder = resolveElectronBuilder();
 if (!electronBuilder) {
-  console.error(
-    [
-      "electron-builder is not installed.",
-      "Install packaging deps once:",
-      "",
-      "  npm install --no-save electron@latest electron-builder@latest electron-updater@latest",
-      "",
-      "Then re-run: npm run pack:desktop"
-    ].join("\n")
-  );
+  console.error("[pack] electron-builder is still missing after install. Re-run: npm run pack:desktop");
   process.exit(1);
 }
 
@@ -62,11 +60,9 @@ run("node", ["desktop/scripts/generate-icons.mjs"]);
 console.info("[pack] building renderer…");
 run("npm", ["run", "build"]);
 
-console.info("[pack] installing electron-updater for packaged auto-update…");
-run("npm", ["install", "--no-save", "electron-updater@6.8.9"]);
-
 console.info("[pack] bundling Electron entries…");
 ensurePreloadBundle();
+ensureCoreStubBundle();
 ensurePackagedMainBundle();
 
 const nativeSource = process.env.COREVIDEO_NATIVE_BUILD_DIR?.trim() || join(repoRoot, "native", "build-dev", "Release");

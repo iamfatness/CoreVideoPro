@@ -12,7 +12,7 @@ const snapshot: ZoomMediaSpineNativeSnapshot = {
   participants: [
     {
       sdkUserId: "p1",
-      displayName: "Maya Chen",
+      displayName: "Sophia Martinez",
       role: "host",
       videoOn: true,
       muted: false,

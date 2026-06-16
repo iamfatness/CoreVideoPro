@@ -4,6 +4,17 @@ desktop/preload.cjs
 desktop/main-e2e.mjs
 desktop/main-packaged.mjs
 artifacts/
+native-shell/**/bin/
+native-shell/**/obj/
+native-shell/**/AppPackages/
+native-shell/**/msix-payload/
+native-shell/**/*.log
+native-shell/**/*.binlog
+native-shell/**/xaml-err.txt
+native-shell/**/xaml-out.txt
+electron-err.txt
+electron-out.txt
+packaged-err.txt
 native/build*/
 native/build-ci/
 *.tsbuildinfo

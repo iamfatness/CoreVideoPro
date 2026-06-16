@@ -27,6 +27,7 @@ add_library(corevideo_native
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
+  src/modules/ProgramFramePreview.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
   src/modules/StubModules.cpp
   src/modules/ZoomEngineClient.cpp

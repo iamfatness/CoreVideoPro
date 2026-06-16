@@ -53,7 +53,7 @@ describe("native media core protocol", () => {
           {
             sourceId: "participant:p2",
             participantId: "p2",
-            displayName: "Andre Wallace",
+            displayName: "David Chen",
             role: "Presenter",
             breakoutRoomId: "main",
             breakoutRoomName: "Main room",
@@ -87,7 +87,7 @@ describe("native media core protocol", () => {
       {
         type: "set-overlay-asset",
         overlayId: "lower-third",
-        text: "Andre Wallace - Product Lead",
+        text: "David Chen - Chief Product Officer",
         position: "lower-third"
       },
       {

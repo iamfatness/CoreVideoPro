@@ -1,0 +1,183 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Views.OverlaysPage"
+    x:Name="OverlaysRoot"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:CoreVideoPro.WinUI.Models">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Graphics" Style="{StaticResource OperatorSectionTitle}" />
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.Overlays.Graphics, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:GraphicOverlay">
+                                <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                        Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6"
+                                        Command="{Binding ViewModel.Overlays.ToggleGraphicCommand, ElementName=OverlaysRoot}"
+                                        CommandParameter="{x:Bind Id}">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="8" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="8" Height="32" CornerRadius="4"
+                                                Background="{StaticResource StudioAccentBrush}" />
+                                        <StackPanel Grid.Column="1" HorizontalAlignment="Left">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
+                                            <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind Kind}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind PositionLabel}" />
+                                            </TextBlock>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="11"
+                                                   Foreground="{StaticResource StudioAccentBrush}" VerticalAlignment="Center" />
+                                    </Grid>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Brand kit" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.Summary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Kit name" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.Name, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Logo text" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.LogoText, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Lower-third &amp; captions" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Lower-third position" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
+                                      SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="Caption position" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.CaptionPositionOptions, Mode=OneWay}"
+                                      SelectedItem="{x:Bind ViewModel.Overlays.CaptionPosition, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionStyleSummary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
+
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Caption size" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.CaptionFontSizeOptions, Mode=OneWay}"
+                                      SelectedItem="{x:Bind ViewModel.Overlays.CaptionFontSize, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="Caption color" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBox Text="{x:Bind ViewModel.Overlays.CaptionTextColor, Mode=TwoWay}"
+                                     PlaceholderText="#f7fbf8" />
+                        </StackPanel>
+                    </Grid>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                            <Run Text="Backdrop opacity (" />
+                            <Run Text="{x:Bind ViewModel.Overlays.CaptionBackgroundOpacity, Mode=OneWay}" />
+                            <Run Text="%)" />
+                        </TextBlock>
+                        <Slider Minimum="0" Maximum="100" StepFrequency="5"
+                                Value="{x:Bind ViewModel.Overlays.CaptionBackgroundOpacity, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <CheckBox Content="Uppercase captions"
+                              IsChecked="{x:Bind ViewModel.Overlays.CaptionUppercase, Mode=TwoWay}" />
+
+                    <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionQualitySummary, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Speaker captions" Style="{StaticResource OperatorSectionTitle}" />
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.Overlays.CaptionTranscript, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:CaptionTranscriptEntry">
+                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                                    <StackPanel Spacing="4">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{x:Bind SpeakerName}" FontWeight="SemiBold" FontSize="12" />
+                                            <TextBlock Grid.Column="1" FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind Role}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind Confidence}" />
+                                                <Run Text="%" />
+                                            </TextBlock>
+                                        </Grid>
+                                        <TextBlock Text="{x:Bind Text}" FontSize="11" TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

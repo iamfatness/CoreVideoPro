@@ -1,0 +1,111 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Views.AutomationPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12" MaxWidth="900">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Set &amp; Forget" Style="{StaticResource OperatorSectionTitle}" />
+                    <Button Content="{x:Bind ViewModel.AutomationButtonLabel, Mode=OneWay}"
+                            Style="{StaticResource OperatorGhostButton}"
+                            Command="{x:Bind ViewModel.ToggleAutomationCommand}" />
+                    <TextBlock Text="{x:Bind ViewModel.AutoProductionReadout, Mode=OneWay}"
+                               FontSize="12" TextWrapping="WrapWholeWords" />
+                    <TextBlock Text="Magic scene" FontSize="11" FontWeight="SemiBold"
+                               Foreground="{StaticResource StudioAccentBrush}" />
+                    <TextBlock Text="{x:Bind ViewModel.MagicSceneStatus, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Scene intelligence" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="{x:Bind ViewModel.SceneIntelligenceSummary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Recommended" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.RecommendedSceneName, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Layout" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.RecommendedLayout, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Confidence" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.RecommendedConfidence, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Cameras on" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.CamerasOnCount, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Screen share" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.ScreenShareLabel, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Auto-switch" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.AutoSwitchLabel, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.AutoProductionReason, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="WrapWholeWords" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Auto-production readout" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="{x:Bind ViewModel.AutoProductionReadout, Mode=OneWay}"
+                               FontSize="13" TextWrapping="WrapWholeWords" />
+                    <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords">
+                        <Run Text="Mode: " />
+                        <Run Text="{x:Bind ViewModel.ProductionMode, Mode=OneWay}" FontWeight="SemiBold" />
+                        <Run Text=" · Magic scene monitors participant mix and rebuilds layouts automatically." />
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

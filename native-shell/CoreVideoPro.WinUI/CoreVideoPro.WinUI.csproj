@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>CoreVideoPro.WinUI</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- None = unpackaged dev/launch; override with -p:WindowsPackageType=MSIX for demo MSIX packs -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <ApplicationTitle>CoreVideo Pro</ApplicationTitle>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>100</ApplicationVersion>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <AppxPackageSigningEnabled Condition="'$(WindowsPackageType)' == 'MSIX'">false</AppxPackageSigningEnabled>
+    <GenerateAppxPackageOnBuild Condition="'$(WindowsPackageType)' == 'MSIX'">true</GenerateAppxPackageOnBuild>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\*.png" />
+  </ItemGroup>
+
+  <!-- Staged by scripts/package-native-msix.ps1 before MSIX publish (see MsixPayloadDir). -->
+  <ItemGroup Condition="'$(WindowsPackageType)' == 'MSIX' AND '$(MsixPayloadDir)' != ''">
+    <Content Include="$(MsixPayloadDir)**\*.*">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

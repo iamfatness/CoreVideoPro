@@ -1,3 +1,5 @@
+import { buildMediaFrames } from "../engine/mediaFrames";
+
 export type ParticipantRole = "Host" | "Guest" | "Presenter" | "Panelist";
 
 export type FeedHealth = "live" | "low-resolution" | "recovering" | "video-off";
@@ -583,7 +585,7 @@ export type SupportBundle = {
 export const initialParticipants: Participant[] = [
   {
     id: "p1",
-    name: "Maya Chen",
+    name: "Sophia Martinez",
     title: "Host",
     role: "Host",
     breakoutRoomId: "main",
@@ -599,8 +601,8 @@ export const initialParticipants: Participant[] = [
   },
   {
     id: "p2",
-    name: "Andre Wallace",
-    title: "Product Lead",
+    name: "David Chen",
+    title: "Chief Product Officer",
     role: "Presenter",
     breakoutRoomId: "main",
     breakoutRoomName: "Main room",
@@ -615,38 +617,6 @@ export const initialParticipants: Participant[] = [
   },
   {
     id: "p3",
-    name: "Priya Shah",
-    title: "Customer Panelist",
-    role: "Panelist",
-    breakoutRoomId: "customer-panel",
-    breakoutRoomName: "Customer panel",
-    isActiveSpeaker: false,
-    isMuted: true,
-    isScreenSharing: false,
-    audioLevel: 18,
-    gainDb: 3,
-    noiseSuppression: true,
-    cropConfidence: 88,
-    health: "low-resolution"
-  },
-  {
-    id: "p4",
-    name: "Noah Kim",
-    title: "Guest Analyst",
-    role: "Guest",
-    breakoutRoomId: "customer-panel",
-    breakoutRoomName: "Customer panel",
-    isActiveSpeaker: false,
-    isMuted: false,
-    isScreenSharing: false,
-    audioLevel: 41,
-    gainDb: 2,
-    noiseSuppression: true,
-    cropConfidence: 91,
-    health: "live"
-  },
-  {
-    id: "p5",
     name: "Jeremy Collins",
     title: "Engineering Panelist",
     role: "Panelist",
@@ -662,7 +632,7 @@ export const initialParticipants: Participant[] = [
     health: "live"
   },
   {
-    id: "p6",
+    id: "p4",
     name: "Ava Patel",
     title: "Customer Panelist",
     role: "Panelist",
@@ -678,7 +648,7 @@ export const initialParticipants: Participant[] = [
     health: "live"
   },
   {
-    id: "p7",
+    id: "p5",
     name: "Michael Thompson",
     title: "Attendee",
     role: "Guest",
@@ -694,12 +664,28 @@ export const initialParticipants: Participant[] = [
     health: "live"
   },
   {
-    id: "p8",
+    id: "p6",
+    name: "Robert Smith",
+    title: "Attendee",
+    role: "Guest",
+    breakoutRoomId: "customer-panel",
+    breakoutRoomName: "Customer panel",
+    isActiveSpeaker: false,
+    isMuted: true,
+    isScreenSharing: false,
+    audioLevel: 6,
+    gainDb: 0,
+    noiseSuppression: true,
+    cropConfidence: 86,
+    health: "low-resolution"
+  },
+  {
+    id: "p7",
     name: "Linda Park",
     title: "Attendee",
     role: "Guest",
-    breakoutRoomId: "main",
-    breakoutRoomName: "Main room",
+    breakoutRoomId: "customer-panel",
+    breakoutRoomName: "Customer panel",
     isActiveSpeaker: false,
     isMuted: false,
     isScreenSharing: false,
@@ -740,6 +726,22 @@ export function sortParticipantsForProduction(participants: Participant[]) {
   });
 }
 
+export function resolveCurrentBreakoutRoom(participants: Participant[]): { id: string; name: string } {
+  const host = participants.find((participant) => participant.role === "Host");
+  if (host) {
+    return { id: host.breakoutRoomId, name: host.breakoutRoomName };
+  }
+
+  const first = participants[0];
+  return first
+    ? { id: first.breakoutRoomId, name: first.breakoutRoomName }
+    : { id: "main", name: "Main room" };
+}
+
+export function participantsWithVideoInRoom(participants: Participant[], roomId: string): Participant[] {
+  return participants.filter((participant) => participant.breakoutRoomId === roomId && participant.health !== "video-off");
+}
+
 export function getBreakoutRooms(participants: Participant[]) {
   const rooms = new Map<string, { id: string; name: string; participantCount: number }>();
 
@@ -766,7 +768,7 @@ export function getBreakoutRooms(participants: Participant[]) {
 }
 
 export const initialProduction: ProductionState = {
-  meetingTitle: "AI Product Launch Webinar",
+  meetingTitle: "Q2 Product Update",
   mode: "set-and-forget",
   activeSceneId: "speaker-slides",
   previewSceneId: "speaker-slides",
@@ -779,10 +781,10 @@ export const initialProduction: ProductionState = {
   autoProduction: {
     recommendedSceneId: "speaker-slides",
     confidence: 92,
-    reason: "Presenter is sharing slides, so keep speaker plus slides live.",
+    reason: "David Chen is sharing slides, so keep speaker plus slides live.",
     action: "hold"
   },
-  magicSceneStatus: "Ready to rebuild from 4 participants, 1 presenter, screen share active",
+  magicSceneStatus: "Ready to rebuild from 7 participants, 1 presenter, screen share active",
   recording: false,
   streaming: false,
   outputSession: {
@@ -790,11 +792,11 @@ export const initialProduction: ProductionState = {
     streaming: false,
     activeDestinationIds: [],
     destinations: [],
-    elapsedSeconds: 0,
+    elapsedSeconds: 1727,
     health: {
       resolution: "1920x1080",
       fps: 60,
-      bitrateMbps: 0,
+      bitrateMbps: 6,
       droppedFrames: 0,
       encoderLoad: 18,
       network: "good",
@@ -804,7 +806,7 @@ export const initialProduction: ProductionState = {
   },
   recordingSettings: {
     folder: "Recordings/CoreVideo Pro",
-    filenamePrefix: "AI_Product_Launch_Webinar",
+    filenamePrefix: "Q2_Product_Update",
     format: "mp4",
     quality: "high",
     isoParticipantIds: ["p1", "p2"]
@@ -861,14 +863,14 @@ export const initialProduction: ProductionState = {
     summary: "Smart audio leveling ready"
   },
   captionOverlay: {
-    text: "The active speaker is framed automatically while the slides remain readable.",
-    speakerName: "Andre Wallace",
+    text: "and the feedback from our customers continues to shape everything we build. Thank you for being here.",
+    speakerName: "David Chen",
     confidence: 94,
     latencyMs: 180,
     captionPosition: "bottom",
-    lowerThirdPosition: "upper-left",
+    lowerThirdPosition: "lower-left",
     warnings: [],
-    adaptiveSummary: "Captions clear; lower-third lifted away from captions"
+    adaptiveSummary: "Captions clear; lower-third clear of captions"
   },
   captionStyle: {
     fontSize: "medium",
@@ -879,17 +881,17 @@ export const initialProduction: ProductionState = {
   captionTranscript: [
     {
       id: "cc-1",
-      speakerName: "Maya Chen",
+      speakerName: "Sophia Martinez",
       role: "Host",
-      text: "Welcome to the AI Product Launch Webinar.",
+      text: "Welcome to the Q2 Product Update.",
       confidence: 96,
       atSeconds: 4
     },
     {
       id: "cc-2",
-      speakerName: "Andre Wallace",
+      speakerName: "David Chen",
       role: "Presenter",
-      text: "Let me share the roadmap slides now.",
+      text: "Let me walk through what we are building next.",
       confidence: 93,
       atSeconds: 12
     }
@@ -924,8 +926,8 @@ export const initialProduction: ProductionState = {
     }
   ],
   brandKit: {
-    name: "CoreVideo Pro House",
-    logoText: "CoreVideo Pro",
+    name: "CoreVideo",
+    logoText: "CoreVideo",
     brandColor: "#44c1a1",
     accentColor: "#f0a85c",
     backgroundColor: "#0c1118",
@@ -958,9 +960,9 @@ export const initialProduction: ProductionState = {
     chromaKeyColor: "green",
     spillSuppression: 42
   })),
-  captions: "The active speaker is framed automatically while the slides remain readable.",
+  captions: "and the feedback from our customers continues to shape everything we build. Thank you for being here.",
   participants: initialParticipants,
-  mediaFrames: [],
+  mediaFrames: buildMediaFrames(initialParticipants, 1727),
   scenes: [
     { id: "intro", name: "Intro", type: "intro", layout: "host-focus", automation: "Host lower-third + countdown" },
     { id: "interview", name: "Interview", type: "interview", layout: "two-up", automation: "Two-up speaker hold" },
@@ -978,10 +980,10 @@ export const initialProduction: ProductionState = {
   output: {
     resolution: "1920x1080",
     fps: 60,
-    bitrateMbps: 8.2,
+    bitrateMbps: 6,
     droppedFrames: 0,
-    encoderLoad: 42,
-    network: "excellent",
+    encoderLoad: 18,
+    network: "good",
     availableDiskGb: 247.3
   },
   captureDevices: []

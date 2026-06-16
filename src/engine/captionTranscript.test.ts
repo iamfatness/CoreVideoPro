@@ -4,7 +4,7 @@ import { appendCaptionEntry, attributeCaption, summarizeSpeakers } from "./capti
 
 const overlay: CaptionOverlayState = {
   ...initialProduction.captionOverlay,
-  speakerName: "Andre Wallace",
+  speakerName: "David Chen",
   text: "Here is the launch timeline.",
   confidence: 91
 };
@@ -12,7 +12,7 @@ const overlay: CaptionOverlayState = {
 function entry(overrides: Partial<CaptionTranscriptEntry>): CaptionTranscriptEntry {
   return {
     id: "x",
-    speakerName: "Maya Chen",
+    speakerName: "Sophia Martinez",
     role: "Host",
     text: "Line",
     confidence: 90,
@@ -24,7 +24,7 @@ function entry(overrides: Partial<CaptionTranscriptEntry>): CaptionTranscriptEnt
 describe("attributeCaption", () => {
   it("recovers the speaker's production role from the roster", () => {
     const result = attributeCaption(overlay, initialProduction.participants, 20);
-    expect(result.speakerName).toBe("Andre Wallace");
+    expect(result.speakerName).toBe("David Chen");
     expect(result.role).toBe("Presenter");
     expect(result.confidence).toBe(91);
     expect(result.atSeconds).toBe(20);
@@ -63,14 +63,14 @@ describe("appendCaptionEntry", () => {
 describe("summarizeSpeakers", () => {
   it("counts lines per speaker, most frequent first", () => {
     const transcript = [
-      entry({ speakerName: "Maya Chen" }),
-      entry({ speakerName: "Andre Wallace" }),
-      entry({ speakerName: "Andre Wallace" })
+      entry({ speakerName: "Sophia Martinez" }),
+      entry({ speakerName: "David Chen" }),
+      entry({ speakerName: "David Chen" })
     ];
 
     expect(summarizeSpeakers(transcript)).toEqual([
-      { speakerName: "Andre Wallace", lineCount: 2 },
-      { speakerName: "Maya Chen", lineCount: 1 }
+      { speakerName: "David Chen", lineCount: 2 },
+      { speakerName: "Sophia Martinez", lineCount: 1 }
     ]);
   });
 });

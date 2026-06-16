@@ -28,15 +28,15 @@ describe("media core sync engine", () => {
         subscribedSourceCount: 2,
         liveFrameCount: 2
       },
-      participantTransformCount: 8,
+      participantTransformCount: 7,
       overlayCount: 1,
-      sourceCount: 8,
+      sourceCount: 7,
       resolvedRouteCount: 2,
       outputs: [],
       isoParticipantIds: [],
       renderPlan: {
         sceneId: "speaker-slides",
-        sourceCount: 8,
+        sourceCount: 7,
         resolvedRouteCount: 2,
         colorGrade: { lut: "none" },
         layers: [
@@ -69,7 +69,7 @@ describe("media core sync engine", () => {
     });
     expect(snapshot.audioMixSession.status).toBe("warning");
     expect(snapshot.audioMixSession.participants.length).toBeGreaterThan(0);
-    expect(snapshot.captionTrack.status).toBe("live");
+    expect(snapshot.captionTrack.status).toBe("warning");
     expect(snapshot.captionTrack.currentCue?.text).toBe(initialProduction.captionOverlay.text.trim());
     expect(snapshot.lastCommandTypes).toEqual(
       expect.arrayContaining(["sync-participant-audio-mix", "set-caption-enabled", "push-caption-cue"])
@@ -82,7 +82,7 @@ describe("media core sync engine", () => {
       {
         sourceId: "participant:p1",
         participantId: "p1",
-        displayName: "Maya Chen",
+        displayName: "Sophia Martinez",
         role: "Host",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -97,7 +97,7 @@ describe("media core sync engine", () => {
       {
         sourceId: "participant:p2",
         participantId: "p2",
-        displayName: "Andre Wallace",
+        displayName: "David Chen",
         role: "Presenter",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -144,10 +144,10 @@ describe("media core sync engine", () => {
         {
           sourceId: "participant:p1",
           participantId: "p1",
-          displayName: "Maya Chen",
+          displayName: "Sophia Martinez",
           health: "low-resolution",
           severity: "warning",
-          detail: "Maya Chen feed is below target resolution."
+          detail: "Sophia Martinez feed is below target resolution."
         }
       ]
     });
@@ -156,8 +156,8 @@ describe("media core sync engine", () => {
         expect.objectContaining({
           actionId: "source:p1:check",
           area: "source",
-          title: "Check Maya Chen feed",
-          detail: "Maya Chen feed is below target resolution."
+          title: "Check Sophia Martinez feed",
+          detail: "Sophia Martinez feed is below target resolution."
         })
       ])
     );
@@ -166,7 +166,7 @@ describe("media core sync engine", () => {
         expect.objectContaining({
           area: "source",
           title: "Zoom feed quality warning",
-          detail: "Maya Chen feed is below target resolution.",
+          detail: "Sophia Martinez feed is below target resolution.",
           relatedId: "p1"
         })
       ])
@@ -194,7 +194,7 @@ describe("media core sync engine", () => {
           severity: "info",
           area: "source",
           title: "Zoom feed recovered",
-          detail: "Maya Chen feed recovered.",
+          detail: "Sophia Martinez feed recovered.",
           relatedId: "p1"
         })
       ])
@@ -207,7 +207,7 @@ describe("media core sync engine", () => {
       {
         sourceId: "participant:p1",
         participantId: "p1",
-        displayName: "Maya Chen",
+        displayName: "Sophia Martinez",
         role: "Host",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -222,7 +222,7 @@ describe("media core sync engine", () => {
       {
         sourceId: "participant:p2",
         participantId: "p2",
-        displayName: "Andre Wallace",
+        displayName: "David Chen",
         role: "Presenter",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -237,7 +237,7 @@ describe("media core sync engine", () => {
       {
         sourceId: "participant:p4",
         participantId: "p4",
-        displayName: "Noah Kim",
+        displayName: "Linda Park",
         role: "Guest",
         breakoutRoomId: "main",
         breakoutRoomName: "Main room",
@@ -262,7 +262,7 @@ describe("media core sync engine", () => {
             {
               sourceId: "participant:p3",
               participantId: "p3",
-              displayName: "Priya Shah",
+              displayName: "Robert Smith",
               role: "Panelist",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -283,12 +283,12 @@ describe("media core sync engine", () => {
     expect(baseline.eventLog).toEqual([]);
     expect(changed.eventLog).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ severity: "critical", area: "source", title: "Zoom participant video off", detail: "Maya Chen turned video off.", relatedId: "p1" }),
-        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant muted", detail: "Maya Chen muted their microphone.", relatedId: "p1" }),
-        expect.objectContaining({ severity: "info", area: "source", title: "Zoom screen share started", detail: "Andre Wallace started screen sharing.", relatedId: "p2" }),
-        expect.objectContaining({ severity: "info", area: "source", title: "Zoom active speaker changed", detail: "Andre Wallace is now the active speaker.", relatedId: "p2" }),
-        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant joined", detail: "Priya Shah joined Main room.", relatedId: "p3" }),
-        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant left", detail: "Noah Kim left Main room.", relatedId: "p4" })
+        expect.objectContaining({ severity: "critical", area: "source", title: "Zoom participant video off", detail: "Sophia Martinez turned video off.", relatedId: "p1" }),
+        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant muted", detail: "Sophia Martinez muted their microphone.", relatedId: "p1" }),
+        expect.objectContaining({ severity: "info", area: "source", title: "Zoom screen share started", detail: "David Chen started screen sharing.", relatedId: "p2" }),
+        expect.objectContaining({ severity: "info", area: "source", title: "Zoom active speaker changed", detail: "David Chen is now the active speaker.", relatedId: "p2" }),
+        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant joined", detail: "Robert Smith joined Main room.", relatedId: "p3" }),
+        expect.objectContaining({ severity: "info", area: "source", title: "Zoom participant left", detail: "Linda Park left Main room.", relatedId: "p4" })
       ])
     );
   });
@@ -491,7 +491,7 @@ describe("media core sync engine", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -546,7 +546,7 @@ describe("media core sync engine", () => {
         targetBitrateMbps: 8.2
       },
       frameCount: 3,
-      sourceCount: 8,
+      sourceCount: 7,
       resolvedRouteCount: 2,
       renderPlan: {
         routes: [
@@ -561,7 +561,7 @@ describe("media core sync engine", () => {
         writerStatus: "writing",
         warning: undefined,
         estimatedDiskRateMBps: 7.49,
-        programPath: "Recordings/CoreVideo Pro/AI_Product_Launch_Webinar-program-3000.mp4",
+        programPath: "Recordings/CoreVideo Pro/Q2_Product_Update-program-3000.mp4",
         streams: [
           { kind: "program", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0 },
           { kind: "iso", participantId: "p1", status: "writing", expectedFrames: 1, framesWritten: 1, missingFrames: 0, warning: undefined },
@@ -624,7 +624,7 @@ describe("media core sync engine", () => {
         programTransport: {
           status: "publishing"
         },
-        recording: { sessionId: "AI_Product_Launch_Webinar-p1-p2" }
+        recording: { sessionId: "Q2_Product_Update-p1-p2" }
       }
     });
   });
@@ -639,7 +639,7 @@ describe("media core sync engine", () => {
             {
               sourceId: "participant:p1",
               participantId: "p1",
-              displayName: "Maya Chen",
+              displayName: "Sophia Martinez",
               role: "Host",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -654,7 +654,7 @@ describe("media core sync engine", () => {
             {
               sourceId: "participant:p2",
               participantId: "p2",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "Presenter",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -669,7 +669,7 @@ describe("media core sync engine", () => {
             {
               sourceId: "participant:p3",
               participantId: "p3",
-              displayName: "Priya Shah",
+              displayName: "Robert Smith",
               role: "Panelist",
               breakoutRoomId: "main",
               breakoutRoomName: "Main room",
@@ -707,15 +707,15 @@ describe("media core sync engine", () => {
       recording: {
         status: "warning",
         writerStatus: "warning",
-        warning: "Andre Wallace ISO video is off.",
+        warning: "David Chen ISO video is off.",
         streams: expect.arrayContaining([
-          expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", status: "warning", warning: "Andre Wallace ISO video is off." }),
+          expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", status: "warning", warning: "David Chen ISO video is off." }),
           expect.objectContaining({
             kind: "iso",
             participantId: "p3",
             readiness: "unsubscribable",
             status: "warning",
-            warning: "Priya Shah ISO video cannot be subscribed by the Zoom SDK."
+            warning: "Robert Smith ISO video cannot be subscribed by the Zoom SDK."
           }),
           expect.objectContaining({
             kind: "iso",
@@ -729,16 +729,16 @@ describe("media core sync engine", () => {
       encoderSession: {
         status: "warning",
         targets: expect.arrayContaining([
-          expect.objectContaining({ targetId: "recording:iso:p2", status: "warning", warning: "Andre Wallace ISO video is off." })
+          expect.objectContaining({ targetId: "recording:iso:p2", status: "warning", warning: "David Chen ISO video is off." })
         ])
       },
-      outputHealth: [expect.objectContaining({ destination: "recording", status: "warning", message: "Andre Wallace ISO video is off." })],
+      outputHealth: [expect.objectContaining({ destination: "recording", status: "warning", message: "David Chen ISO video is off." })],
       operatorActions: expect.arrayContaining([
         expect.objectContaining({
           actionId: "recording:iso:p2:check",
           area: "recording",
           title: "Check p2 ISO recording",
-          detail: "Andre Wallace ISO video is off."
+          detail: "David Chen ISO video is off."
         })
       ]),
       eventLog: expect.arrayContaining([
@@ -746,10 +746,10 @@ describe("media core sync engine", () => {
           severity: "warning",
           area: "recording",
           title: "ISO recording warning",
-          detail: "Andre Wallace ISO video is off."
+          detail: "David Chen ISO video is off."
         })
       ]),
-      warnings: expect.arrayContaining(["Andre Wallace ISO video is off."])
+      warnings: expect.arrayContaining(["David Chen ISO video is off."])
     });
   });
 
@@ -797,7 +797,7 @@ describe("media core sync engine", () => {
           {
             sourceId: "participant:p1",
             participantId: "p1",
-            displayName: "Maya Chen",
+            displayName: "Sophia Martinez",
             role: "Host",
             breakoutRoomId: "main",
             breakoutRoomName: "Main room",
@@ -995,7 +995,7 @@ describe("media core sync engine", () => {
           {
             sourceId: "participant:p1",
             participantId: "p1",
-            displayName: "Maya Chen",
+            displayName: "Sophia Martinez",
             role: "Host",
             breakoutRoomId: "main",
             breakoutRoomName: "Main room",

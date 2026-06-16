@@ -159,6 +159,18 @@ export type NativeGetMediaCoreHealthCommand = {
   type: "get-media-core-health";
 };
 
+/** Start the supervised media-core child process (e.g. after breakout-room switch). */
+export type NativeStartMediaCoreCommand = {
+  id: string;
+  type: "start-media-core";
+};
+
+/** Stop ingest/compositing without quitting the desktop shell. */
+export type NativeStopMediaCoreCommand = {
+  id: string;
+  type: "stop-media-core";
+};
+
 /** Persist a diagnostics support bundle to the desktop user-data directory. */
 export type NativeExportSupportBundleCommand = {
   id: string;
@@ -212,6 +224,8 @@ export type NativeBridgeCommand =
   | NativeAudioCommand
   | NativeCaptionCommand
   | NativeGetMediaCoreHealthCommand
+  | NativeStartMediaCoreCommand
+  | NativeStopMediaCoreCommand
   | NativeExportSupportBundleCommand
   | NativeZoomOAuthCommand;
 
@@ -325,6 +339,23 @@ export type NativeMediaCoreHealthResponse =
       error: { code: "native-unavailable" | "protocol-error"; message: string };
     };
 
+export type NativeMediaCoreLifecycleResponse =
+  | {
+      id: string;
+      ok: true;
+      profile: import("./nativeMediaCoreProtocol").NativeMediaCoreProfile;
+    }
+  | {
+      id: string;
+      ok: true;
+      stopped: true;
+    }
+  | {
+      id: string;
+      ok: false;
+      error: { code: "native-unavailable" | "media-core-failed" | "media-core-unreachable" | "protocol-error"; message: string };
+    };
+
 export type NativeAudioBusState = {
   busId: string;
   label: string;
@@ -408,6 +439,7 @@ export type NativeBridgeResponse =
   | NativeAudioResponse
   | NativeCaptionResponse
   | NativeMediaCoreHealthResponse
+  | NativeMediaCoreLifecycleResponse
   | NativeExportSupportBundleResponse
   | NativeZoomOAuthResponse;
 

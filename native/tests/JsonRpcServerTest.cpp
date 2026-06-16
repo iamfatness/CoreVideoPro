@@ -50,6 +50,36 @@ TEST(JsonRpcServer, HandlesMediaCoreSyncRequestEnvelope) {
   EXPECT_EQ(response.getString("type"), "media-core-sync");
   ASSERT_NE(response.get("snapshot"), nullptr);
   EXPECT_TRUE(response.get("snapshot")->get("active")->asBool());
+  EXPECT_EQ(response.get("snapshot")->getString("meetingState"), "idle");
+  EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomId"), "main");
+  EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomName"), "Main room");
+}
+
+TEST(JsonRpcServer, SimulatesBreakoutRoomChangeOnSyncCommand) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "core-sync-room"},
+      {"type", "media-core-sync"},
+      {"elapsedMs", 120},
+      {"commands",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"type", "simulate-breakout-room-change"},
+               {"breakoutRoomId", "customer-panel"},
+               {"breakoutRoomName", "Customer panel"},
+           },
+           corevideo::rpc::Json::Object{
+               {"type", "start-program-output"},
+               {"destinations", corevideo::rpc::Json::Array{"recording"}},
+               {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+           },
+       }},
+  });
+
+  ASSERT_NE(response.get("snapshot"), nullptr);
+  EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomId"), "customer-panel");
+  EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomName"), "Customer panel");
 }
 
 TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {

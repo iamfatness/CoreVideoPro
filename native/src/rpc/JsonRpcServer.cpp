@@ -174,6 +174,12 @@ void JsonRpcServer::flushFrameEvents(std::ostream& output) {
   for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
     output << event.stringify() << '\n';
   }
+  for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
+    output << event.stringify() << '\n';
+  }
+  for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+    output << event.stringify() << '\n';
+  }
 }
 
 Json JsonRpcServer::success(const Json& id, Json::Object payload) const {

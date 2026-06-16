@@ -27,7 +27,7 @@ describe("createCaptionBrokerClient", () => {
         return new Response(
           JSON.stringify({
             latencyMs: 180,
-            cues: [{ id: "cue-1", text: "Maya Chen: Audio level 42 — caption chunk 1.", speaker: "Maya Chen", atMs: 1200, confidence: 0.9 }]
+            cues: [{ id: "cue-1", text: "Sophia Martinez: Audio level 42 — caption chunk 1.", speaker: "Sophia Martinez", atMs: 1200, confidence: 0.9 }]
           }),
           { status: 200 }
         );
@@ -45,10 +45,10 @@ describe("createCaptionBrokerClient", () => {
     const chunk = await client.pushChunk(session.brokerSessionId, {
       atMs: 1200,
       speakerId: "p1",
-      speakerName: "Maya Chen",
+      speakerName: "Sophia Martinez",
       audioLevel: 42
     });
-    expect(chunk.cues[0]?.speaker).toBe("Maya Chen");
+    expect(chunk.cues[0]?.speaker).toBe("Sophia Martinez");
     expect(chunk.latencyMs).toBeLessThanOrEqual(250);
 
     const ended = await client.endSession(session.brokerSessionId);

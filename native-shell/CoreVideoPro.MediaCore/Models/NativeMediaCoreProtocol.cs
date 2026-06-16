@@ -1,0 +1,550 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace CoreVideoPro.MediaCore.Models;
+
+public enum NativeMediaCoreCapability
+{
+    [JsonStringEnumMemberName("zoom-raw-video")] ZoomRawVideo,
+    [JsonStringEnumMemberName("zoom-raw-audio")] ZoomRawAudio,
+    [JsonStringEnumMemberName("gpu-compositor")] GpuCompositor,
+    [JsonStringEnumMemberName("scene-graph-rendering")] SceneGraphRendering,
+    [JsonStringEnumMemberName("dynamic-overlays")] DynamicOverlays,
+    [JsonStringEnumMemberName("chroma-key")] ChromaKey,
+    [JsonStringEnumMemberName("smart-framing")] SmartFraming,
+    [JsonStringEnumMemberName("audio-mixer")] AudioMixer,
+    [JsonStringEnumMemberName("program-recording")] ProgramRecording,
+    [JsonStringEnumMemberName("iso-recording")] IsoRecording,
+    [JsonStringEnumMemberName("rtmp-output")] RtmpOutput,
+    [JsonStringEnumMemberName("ndi-output")] NdiOutput,
+    [JsonStringEnumMemberName("srt-output")] SrtOutput,
+    [JsonStringEnumMemberName("webrtc-output")] WebrtcOutput,
+    [JsonStringEnumMemberName("virtual-camera")] VirtualCamera,
+    [JsonStringEnumMemberName("decklink-capture")] DecklinkCapture,
+    [JsonStringEnumMemberName("aja-capture")] AjaCapture
+}
+
+public sealed class NativeMediaCoreProfile
+{
+    public required string Name { get; init; }
+    public required string Renderer { get; init; }
+    public required string MaxProgramResolution { get; init; }
+    public int MaxProgramFps { get; init; }
+    public int MaxParticipantFeeds { get; init; }
+    public int MaxIsoRecordings { get; init; }
+    public IReadOnlyList<string> Capabilities { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreCommand
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; init; }
+}
+
+public sealed class MediaCoreHealth
+{
+    public int RestartCount { get; init; }
+    public bool Recovering { get; init; }
+    public bool Stopped { get; init; }
+}
+
+public sealed class NativeMediaCoreColorGrade
+{
+    public string Lut { get; init; } = "none";
+    public double Exposure { get; init; }
+    public double Contrast { get; init; }
+    public double Saturation { get; init; }
+    public double Temperature { get; init; }
+}
+
+public sealed class NativeMediaCoreOutputProfile
+{
+    public required string ProfileId { get; init; }
+    public required string Resolution { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Fps { get; init; }
+    public double TargetBitrateMbps { get; init; }
+}
+
+public sealed class NativeMediaCoreFrame
+{
+    public required string SourceId { get; init; }
+    public string? ParticipantId { get; init; }
+    public required string Kind { get; init; }
+    public int FrameNumber { get; init; }
+    public double TimestampMs { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Fps { get; init; }
+    public required string Health { get; init; }
+}
+
+public sealed class NativeMediaCoreFrameSourceSnapshot
+{
+    public required string AdapterId { get; init; }
+    public required string Kind { get; init; }
+    public required string Status { get; init; }
+    public int SubscribedSourceCount { get; init; }
+    public int LiveFrameCount { get; init; }
+    public int StaleFrameCount { get; init; }
+    public int DroppedFrameCount { get; init; }
+    public int LowResolutionFrameCount { get; init; }
+    public double? LastFrameTimestampMs { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed record NativeMediaCoreProgramFramePreview
+{
+    public int FrameNumber { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string? RenderPlanId { get; init; }
+    public string Renderer { get; init; } = "software";
+    public string Health { get; init; } = "live";
+    public string PixelFormat { get; init; } = "bgra";
+    public byte[]? Bgra { get; init; }
+    public string? BgraBase64 { get; init; }
+    public NativeMediaCoreProgramSharedTexture? SharedTexture { get; init; }
+}
+
+public sealed record NativeMediaCoreProgramSharedTexture
+{
+    public string SharedHandleHex { get; init; } = string.Empty;
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string Format { get; init; } = "B8G8R8A8_UNORM";
+    public int FrameNumber { get; init; }
+}
+
+public sealed record NativeMediaCoreProgramFrame
+{
+    public int FrameNumber { get; init; }
+    public double TimestampMs { get; init; }
+    public required string RenderPlanId { get; init; }
+    public string? SceneId { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Fps { get; init; }
+    public int LayerCount { get; init; }
+    public NativeMediaCoreColorGrade ColorGrade { get; init; } = new();
+    public required string Health { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed record NativeMediaCoreProgramFrameTransport
+{
+    public string TransportId { get; init; } = "in-process-preview";
+    public required string Status { get; init; }
+    public int? FrameNumber { get; init; }
+    public string? RenderPlanId { get; init; }
+    public double? TimestampMs { get; init; }
+    public double LatencyMs { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed record NativeMediaCoreCompositorState
+{
+    public required string Status { get; init; }
+    public string? RenderPlanId { get; init; }
+    public int ProgramFrameCount { get; init; }
+    public int DroppedFrameCount { get; init; }
+    public int DegradedFrameCount { get; init; }
+    public string? LastReconfigureReason { get; init; }
+    public NativeMediaCoreProgramFrame? LastFrame { get; init; }
+}
+
+public sealed class NativeMediaCoreResolvedRoute
+{
+    public required string RouteId { get; init; }
+    public required string Mode { get; init; }
+    public required string AudioRole { get; init; }
+    public string? SourceId { get; init; }
+    public string? ParticipantId { get; init; }
+    public string? Kind { get; init; }
+    public required string Status { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed class NativeMediaCoreRenderPlanLayer
+{
+    public required string LayerId { get; init; }
+    public required string Kind { get; init; }
+    public string? SourceId { get; init; }
+    public string? ParticipantId { get; init; }
+    public string? OverlayId { get; init; }
+    public int Order { get; init; }
+    public string? RouteId { get; init; }
+    public string? Position { get; init; }
+}
+
+public sealed class NativeMediaCoreRenderPlan
+{
+    public required string RenderPlanId { get; init; }
+    public string? SceneId { get; init; }
+    public NativeMediaCoreOutputProfile OutputProfile { get; init; } = new()
+    {
+        ProfileId = "1080p60",
+        Resolution = "1920x1080"
+    };
+    public NativeMediaCoreColorGrade ColorGrade { get; init; } = new();
+    public int SourceCount { get; init; }
+    public int ResolvedRouteCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreRenderPlanLayer> Layers { get; init; } = [];
+    public IReadOnlyList<NativeMediaCoreResolvedRoute> Routes { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreEncoderLifecycle
+{
+    public required string Status { get; init; }
+    public double? PreparedAtMs { get; init; }
+    public double? StartedAtMs { get; init; }
+    public double? StoppedAtMs { get; init; }
+    public required string LastTransition { get; init; }
+}
+
+public sealed class NativeMediaCoreEncoderTarget
+{
+    public required string TargetId { get; init; }
+    public required string Destination { get; init; }
+    public required string StreamKind { get; init; }
+    public string? ParticipantId { get; init; }
+    public required string Status { get; init; }
+    public int AttachedFrameCount { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed class NativeMediaCoreEncoderSession
+{
+    public required string Status { get; init; }
+    public string? RenderPlanId { get; init; }
+    public int ProgramFrameCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreEncoderTarget> Targets { get; init; } = [];
+    public NativeMediaCoreEncoderLifecycle Lifecycle { get; init; } = new() { Status = "idle", LastTransition = "idle" };
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreOutputHealth
+{
+    public required string Destination { get; init; }
+    public required string Status { get; init; }
+    public required string Message { get; init; }
+    public int DroppedFrames { get; init; }
+}
+
+public sealed class NativeMediaCoreOutputSender
+{
+    public required string SenderId { get; init; }
+    public required string Destination { get; init; }
+    public required string Status { get; init; }
+    public double? StartedAtMs { get; init; }
+    public double? StoppedAtMs { get; init; }
+    public int? LastFrameNumber { get; init; }
+    public int FramesSent { get; init; }
+    public int RetryCount { get; init; }
+    public double LatencyMs { get; init; }
+    public double BitrateMbps { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed class NativeMediaCoreOutputSenderSession
+{
+    public required string Status { get; init; }
+    public int ActiveSenderCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreOutputSender> Senders { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreRecordingStream
+{
+    public required string Kind { get; init; }
+    public string? ParticipantId { get; init; }
+    public required string Path { get; init; }
+    public required string Status { get; init; }
+    public int FramesWritten { get; init; }
+    public int DroppedFrames { get; init; }
+    public long BytesWritten { get; init; }
+    public string? Warning { get; init; }
+}
+
+public sealed record NativeMediaCoreRecordingSession
+{
+    public required string SessionId { get; init; }
+    public bool Active { get; init; }
+    public required string Status { get; init; }
+    public required string WriterStatus { get; init; }
+    public double StartedAtMs { get; init; }
+    public double? StoppedAtMs { get; init; }
+    public double ElapsedMs { get; init; }
+    public required string TargetFolder { get; init; }
+    public required string FilenamePrefix { get; init; }
+    public required string Format { get; init; }
+    public required string Quality { get; init; }
+    public NativeMediaCoreRecordingEncoder Encoder { get; init; } = new();
+    public double EstimatedDiskRateMBps { get; init; }
+    public required string ProgramPath { get; init; }
+    public IReadOnlyList<NativeMediaCoreRecordingStream> Streams { get; init; } = [];
+    public int TotalFramesWritten { get; init; }
+    public int TotalDroppedFrames { get; init; }
+    public long TotalBytesWritten { get; init; }
+    public string? Warning { get; init; }
+    public string? Error { get; init; }
+}
+
+public sealed class NativeMediaCoreRecordingEncoder
+{
+    public string Codec { get; init; } = "h264";
+    public bool HardwareAccelerated { get; init; }
+    public double TargetBitrateMbps { get; init; }
+}
+
+public sealed class NativeMediaCoreParticipantAudioChannel
+{
+    public required string ParticipantId { get; init; }
+    public int InputLevel { get; init; }
+    public int OutputLevel { get; init; }
+    public double GainDb { get; init; }
+    public double? ManualGainDb { get; init; }
+    public bool NoiseSuppression { get; init; }
+    public bool LimiterActive { get; init; }
+    public bool Muted { get; init; }
+    public required string Status { get; init; }
+}
+
+public sealed class NativeMediaCoreAudioMixSession
+{
+    public required string Status { get; init; }
+    public int MasterLevel { get; init; }
+    public double LoudnessLufs { get; init; }
+    public bool LimiterActive { get; init; }
+    public int MixedFrameCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
+    public required string Summary { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreCaptionCue
+{
+    public required string Text { get; init; }
+    public string? Speaker { get; init; }
+    public double AtMs { get; init; }
+    public double Confidence { get; init; }
+}
+
+public sealed class NativeMediaCoreCaptionTrack
+{
+    public bool Enabled { get; init; }
+    public required string Status { get; init; }
+    public NativeMediaCoreCaptionCue? CurrentCue { get; init; }
+    public double LatencyMs { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreBrandKit
+{
+    public required string Name { get; init; }
+    public required string LogoText { get; init; }
+    public required string BrandColor { get; init; }
+    public required string AccentColor { get; init; }
+    public required string BackgroundColor { get; init; }
+    public required string FontFamily { get; init; }
+    public required string LowerThirdStyle { get; init; }
+    public int AppliedOverlayCount { get; init; }
+    public required string Summary { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreOperatorAction
+{
+    public required string ActionId { get; init; }
+    public required string Severity { get; init; }
+    public required string Area { get; init; }
+    public required string Title { get; init; }
+    public required string Detail { get; init; }
+    public string? Command { get; init; }
+    public string? RelatedId { get; init; }
+}
+
+public sealed class NativeMediaCoreEvent
+{
+    public required string EventId { get; init; }
+    public double AtMs { get; init; }
+    public required string Severity { get; init; }
+    public required string Area { get; init; }
+    public required string Title { get; init; }
+    public required string Detail { get; init; }
+    public string? RelatedId { get; init; }
+    public string? CommandType { get; init; }
+}
+
+public sealed record NativeMediaCoreDiagnosticsSnapshot
+{
+    public double GeneratedAtMs { get; init; }
+    public string? SceneId { get; init; }
+    public int RouteCount { get; init; }
+    public int FrameCount { get; init; }
+    public int ProgramFrameCount { get; init; }
+    public IReadOnlyList<string> Outputs { get; init; } = [];
+    public NativeMediaCoreOutputProfile OutputProfile { get; init; } = new()
+    {
+        ProfileId = "1080p60",
+        Resolution = "1920x1080"
+    };
+    public IReadOnlyList<NativeMediaCoreOutputHealth> OutputHealth { get; init; } = [];
+    public NativeMediaCoreOutputSenderSession OutputSenderSession { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreFrameSourceSnapshot SourceSnapshot { get; init; } = new()
+    {
+        AdapterId = "idle",
+        Kind = "zoom-sdk",
+        Status = "idle"
+    };
+    public NativeMediaCoreRenderPlan RenderPlan { get; init; } = new() { RenderPlanId = "idle" };
+    public NativeMediaCoreCompositorState Compositor { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
+    public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
+    public NativeMediaCoreProgramFrameTransport ProgramTransport { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreRecordingSession? Recording { get; init; }
+    public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreCaptionTrack CaptionTrack { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
+    {
+        Name = "Default",
+        LogoText = "CV",
+        BrandColor = "#111111",
+        AccentColor = "#3366ff",
+        BackgroundColor = "#000000",
+        FontFamily = "Inter",
+        LowerThirdStyle = "solid",
+        Summary = "Idle"
+    };
+    public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
+    public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+    public IReadOnlyList<string> LastCommandTypes { get; init; } = [];
+}
+
+public sealed record NativeMediaCoreStateSnapshot
+{
+    public string? SceneId { get; init; }
+    public int RouteCount { get; init; }
+    public int FrameCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreFrame> Frames { get; init; } = [];
+    public NativeMediaCoreFrameSourceSnapshot SourceSnapshot { get; init; } = new()
+    {
+        AdapterId = "idle",
+        Kind = "zoom-sdk",
+        Status = "idle"
+    };
+    public NativeMediaCoreProgramFrame? ProgramFrame { get; init; }
+    public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
+    public int ProgramFrameCount { get; init; }
+    public NativeMediaCoreProgramFrameTransport ProgramTransport { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreCompositorState Compositor { get; init; } = new() { Status = "idle" };
+    public int ParticipantTransformCount { get; init; }
+    public int OverlayCount { get; init; }
+    public IReadOnlyList<string> Outputs { get; init; } = [];
+    public IReadOnlyList<string> IsoParticipantIds { get; init; } = [];
+    public NativeMediaCoreOutputProfile OutputProfile { get; init; } = new()
+    {
+        ProfileId = "1080p60",
+        Resolution = "1920x1080"
+    };
+    public IReadOnlyList<NativeMediaCoreOutputHealth> OutputHealth { get; init; } = [];
+    public NativeMediaCoreOutputSenderSession OutputSenderSession { get; init; } = new() { Status = "idle" };
+    public int SourceCount { get; init; }
+    public int ResolvedRouteCount { get; init; }
+    public NativeMediaCoreRenderPlan RenderPlan { get; init; } = new() { RenderPlanId = "idle" };
+    public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreRecordingSession? Recording { get; init; }
+    public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreCaptionTrack CaptionTrack { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
+    {
+        Name = "Default",
+        LogoText = "CV",
+        BrandColor = "#111111",
+        AccentColor = "#3366ff",
+        BackgroundColor = "#000000",
+        FontFamily = "Inter",
+        LowerThirdStyle = "solid",
+        Summary = "Idle"
+    };
+    public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
+    public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
+    public NativeMediaCoreDiagnosticsSnapshot Diagnostics { get; init; } = new();
+    public IReadOnlyList<string> LastCommandTypes { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+    /// <summary>Optional wire field: Zoom meeting state (e.g. in_meeting, idle). Stub until native core publishes it.</summary>
+    public string? MeetingState { get; init; }
+    /// <summary>Optional wire field: active breakout room id. Stub until native core publishes it.</summary>
+    public string? BreakoutRoomId { get; init; }
+    /// <summary>Optional wire field: active breakout room label.</summary>
+    public string? BreakoutRoomName { get; init; }
+}
+
+public sealed class NativeMediaCoreValidation
+{
+    public bool Ready { get; init; }
+    public IReadOnlyList<string> MissingCapabilities { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public static class NativeMediaCoreProfileValidator
+{
+    public static readonly IReadOnlyList<string> RequiredMvpCapabilities =
+    [
+        "zoom-raw-video",
+        "zoom-raw-audio",
+        "gpu-compositor",
+        "scene-graph-rendering",
+        "dynamic-overlays",
+        "chroma-key",
+        "smart-framing",
+        "audio-mixer",
+        "program-recording",
+        "iso-recording",
+        "rtmp-output"
+    ];
+
+    public static NativeMediaCoreValidation Validate(NativeMediaCoreProfile profile)
+    {
+        var missing = RequiredMvpCapabilities
+            .Where(capability => !profile.Capabilities.Contains(capability, StringComparer.Ordinal))
+            .ToList();
+        var warnings = new List<string>();
+
+        if (profile.Renderer.Equals("software", StringComparison.Ordinal))
+        {
+            warnings.Add("Software rendering is not suitable for production 1080p/4K switching.");
+        }
+
+        if (profile.MaxParticipantFeeds < 6)
+        {
+            warnings.Add("MVP target expects at least 6 clean Zoom participant feeds.");
+        }
+
+        if (profile.MaxIsoRecordings < 2)
+        {
+            warnings.Add("MVP target expects program recording plus selected ISO recovery paths.");
+        }
+
+        if (!profile.MaxProgramResolution.Equals("3840x2160", StringComparison.Ordinal))
+        {
+            warnings.Add("4K output will be unavailable on this media core profile.");
+        }
+
+        return new NativeMediaCoreValidation
+        {
+            Ready = missing.Count == 0 &&
+                    !profile.Renderer.Equals("software", StringComparison.Ordinal) &&
+                    profile.MaxParticipantFeeds >= 6,
+            MissingCapabilities = missing,
+            Warnings = warnings
+        };
+    }
+}

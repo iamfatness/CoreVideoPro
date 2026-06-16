@@ -50,7 +50,7 @@ describe("native-core service", () => {
               {
                 sourceId: "participant:p1",
                 participantId: "p1",
-                displayName: "Maya Chen",
+                displayName: "Sophia Martinez",
                 role: "Host",
                 breakoutRoomId: "main",
                 breakoutRoomName: "Main room",
@@ -120,7 +120,7 @@ describe("native-core service", () => {
         participants: [
           {
             sdkUserId: "sdk-presenter",
-            displayName: "Andre Wallace",
+            displayName: "David Chen",
             role: "panelist",
             videoOn: true,
             muted: false,
@@ -200,7 +200,7 @@ describe("native-core service", () => {
           participants: [
             {
               sdkUserId: "sdk-presenter",
-              displayName: "Andre Wallace",
+              displayName: "David Chen",
               role: "panelist",
               videoOn: true,
               muted: false,

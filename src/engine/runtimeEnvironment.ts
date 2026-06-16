@@ -30,6 +30,17 @@ export function describeRuntimeEnvironment(
     };
   }
 
+  if (health?.stopped) {
+    return {
+      status: "degraded",
+      label: "Engine off",
+      host: bridge.host,
+      platform: bridge.platform,
+      warnings: ["Zoom ingest and compositing are paused. Turn the engine on when you are in the room you want to produce."],
+      capabilities: profile?.capabilities ?? []
+    };
+  }
+
   if (health?.recovering) {
     const restarts = health.restartCount;
     return {

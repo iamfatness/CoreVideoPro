@@ -57,6 +57,24 @@ async function getMediaCoreHealth(): Promise<MediaCoreHealth> {
   return { restartCount: 0, recovering: false, stopped: false };
 }
 
+async function startMediaCore(): Promise<NativeMediaCoreProfile> {
+  const response = await request({ id: `start-media-core-${Date.now()}`, type: "start-media-core" });
+  if (response.ok && "profile" in response) {
+    return response.profile;
+  }
+  const message = response.ok ? "Unexpected start response." : response.error.message;
+  throw new Error(message);
+}
+
+async function stopMediaCore(): Promise<void> {
+  const response = await request({ id: `stop-media-core-${Date.now()}`, type: "stop-media-core" });
+  if (response.ok && "stopped" in response) {
+    return;
+  }
+  const message = response.ok ? "Unexpected stop response." : response.error.message;
+  throw new Error(message);
+}
+
 async function getZoomOAuthStatus(): Promise<ZoomOAuthSessionStatus> {
   const response = await request({ id: `zoom-oauth-status-${Date.now()}`, type: "get-zoom-oauth-status" });
   if (response.ok && "oauthStatus" in response) {
@@ -234,6 +252,8 @@ contextBridge.exposeInMainWorld("coreVideoNative", {
   syncMediaCore,
   syncZoomMediaSpine,
   getMediaCoreHealth,
+  startMediaCore,
+  stopMediaCore,
   onZoomVideoFrame,
   getZoomOAuthStatus,
   beginZoomOAuth,

@@ -50,12 +50,12 @@ describe("caption-broker handlers", () => {
     const chunk = handlePushChunk(session.brokerSessionId, {
       atMs: 1500,
       speakerId: "p1",
-      speakerName: "Priya Shah",
+      speakerName: "Robert Smith",
       audioLevel: 55
     });
     expect(chunk.ok).toBe(true);
     expect(chunk.latencyMs).toBeLessThanOrEqual(250);
-    expect(chunk.cues[0]?.speaker).toBe("Priya Shah");
-    expect(chunk.cues[0]?.text).toContain("Priya Shah");
+    expect(chunk.cues[0]?.speaker).toBe("Robert Smith");
+    expect(chunk.cues[0]?.text).toContain("Robert Smith");
   });
 });

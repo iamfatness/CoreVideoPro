@@ -10,14 +10,14 @@ describe("buildRecordingManifest", () => {
     const manifest = buildRecordingManifest(state, mediaCore);
 
     expect(manifest).toMatchObject({
-      manifestId: "manifest-ai-product-launch-webinar-AI_Product_Launch_Webinar-p1-p2",
-      sessionId: "AI_Product_Launch_Webinar-p1-p2",
+      manifestId: "manifest-q2-product-update-Q2_Product_Update-p1-p2",
+      sessionId: "Q2_Product_Update-p1-p2",
       status: "recording",
       active: true,
-      meetingTitle: "AI Product Launch Webinar",
+      meetingTitle: "Q2 Product Update",
       sceneId: "speaker-slides",
       targetFolder: "Recordings/CoreVideo Pro",
-      filenamePrefix: "AI_Product_Launch_Webinar",
+      filenamePrefix: "Q2_Product_Update",
       format: "mp4",
       quality: "high",
       outputProfile: {
@@ -28,13 +28,13 @@ describe("buildRecordingManifest", () => {
       },
       tracks: expect.arrayContaining([
         expect.objectContaining({ kind: "program", status: "writing", framesWritten: 1 }),
-        expect.objectContaining({ kind: "iso", participantId: "p1", participantName: "Maya Chen", participantRole: "Host", readiness: "ready" }),
-        expect.objectContaining({ kind: "iso", participantId: "p2", participantName: "Andre Wallace", participantRole: "Presenter", readiness: "ready" })
+        expect.objectContaining({ kind: "iso", participantId: "p1", participantName: "Sophia Martinez", participantRole: "Host", readiness: "ready" }),
+        expect.objectContaining({ kind: "iso", participantId: "p2", participantName: "David Chen", participantRole: "Presenter", readiness: "ready" })
       ]),
       isoPlan: {
         trackCount: 4,
         estimatedTotalMbps: 29,
-        outputFolder: "recordings/aiproductlaunchwebinar",
+        outputFolder: "recordings/q2productupdate",
         valid: true
       },
       totals: {
@@ -66,12 +66,12 @@ describe("buildRecordingManifest", () => {
     expect(manifest.status).toBe("warning");
     expect(manifest.tracks).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", warning: "Andre Wallace ISO video is off." }),
+        expect.objectContaining({ kind: "iso", participantId: "p2", readiness: "video-off", warning: "David Chen ISO video is off." }),
         expect.objectContaining({ kind: "iso", participantId: "p9", readiness: "missing", warning: "p9 ISO participant is not present in the Zoom roster." })
       ])
     );
     expect(manifest.totals.missingFrames).toBeGreaterThan(0);
-    expect(manifest.warnings).toEqual(expect.arrayContaining(["Andre Wallace ISO video is off.", "p9 ISO participant is not present in the Zoom roster."]));
+    expect(manifest.warnings).toEqual(expect.arrayContaining(["David Chen ISO video is off.", "p9 ISO participant is not present in the Zoom roster."]));
   });
 
   it("returns an idle manifest before recording starts", () => {

@@ -12,7 +12,7 @@ describe("show presets", () => {
       )
     });
 
-    expect(preset.id).toBe("ai-product-launch-webinar");
+    expect(preset.id).toBe("q2-product-update");
     expect(preset.scenes).toHaveLength(initialProduction.scenes.length);
     expect(preset.selectedOutputProfileId).toBe("1080p60");
     expect(preset.outputProfiles).toHaveLength(initialProduction.outputProfiles.length);

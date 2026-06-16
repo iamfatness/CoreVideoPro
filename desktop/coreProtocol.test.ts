@@ -48,6 +48,37 @@ describe("coreProtocol", () => {
     expect(parseCoreEvent("   ")).toBeNull();
   });
 
+  it("parses unsolicited program-frame-preview events", () => {
+    const event = parseCoreEvent(
+      JSON.stringify({
+        type: "program-frame-preview",
+        preview: {
+          frameNumber: 4,
+          width: 320,
+          height: 180,
+          renderPlanId: "plan-4",
+          renderer: "software",
+          health: "live",
+          pixelFormat: "bgra",
+          bgraBase64: Buffer.from([12, 34, 56, 255]).toString("base64")
+        }
+      })
+    );
+
+    expect(event?.type).toBe("program-frame-preview");
+    expect(event?.preview.frameNumber).toBe(4);
+    expect(event?.preview.pixelFormat).toBe("bgra");
+    expect(parseCoreEvent(JSON.stringify({ id: "1", type: "program-frame-preview", preview: {} }))).toBeNull();
+    expect(
+      parseCoreEvent(
+        JSON.stringify({
+          type: "program-frame-preview",
+          preview: { frameNumber: 1, width: 400, height: 180, pixelFormat: "bgra", bgraBase64: "AA==" }
+        })
+      )
+    ).toBeNull();
+  });
+
   it("does not parse a response line as an event, and vice versa", () => {
     const responseLine = JSON.stringify({ id: "1", ok: true, type: "ping" });
     expect(parseCoreEvent(responseLine)).toBeNull();

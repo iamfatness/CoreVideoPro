@@ -83,6 +83,22 @@ export type SyntheticZoomCaptureState = {
   displayName: string;
 };
 
+export type SyntheticBreakoutRoomState = {
+  breakoutRoomId: string;
+  breakoutRoomName: string;
+};
+
+const DEFAULT_BREAKOUT_ROOM: SyntheticBreakoutRoomState = {
+  breakoutRoomId: "main",
+  breakoutRoomName: "Main room"
+};
+
+let breakoutRoomState: SyntheticBreakoutRoomState = { ...DEFAULT_BREAKOUT_ROOM };
+
+export function resetSyntheticBreakoutRoomState(): void {
+  breakoutRoomState = { ...DEFAULT_BREAKOUT_ROOM };
+}
+
 export function createSyntheticZoomCaptureState(): SyntheticZoomCaptureState {
   return { joined: false, tick: 0, displayName: "Guest Producer" };
 }
@@ -155,6 +171,13 @@ export function synthesizeSnapshot(
   const captionCue = commands.find((command) => command.type === "push-caption-cue");
   const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
   const brandKitCommand = commands.find((command) => command.type === "set-brand-kit");
+  const breakoutRoomChange = commands.find((command) => command.type === "simulate-breakout-room-change");
+  if (breakoutRoomChange && breakoutRoomChange.type === "simulate-breakout-room-change") {
+    breakoutRoomState = {
+      breakoutRoomId: breakoutRoomChange.breakoutRoomId.trim() || DEFAULT_BREAKOUT_ROOM.breakoutRoomId,
+      breakoutRoomName: breakoutRoomChange.breakoutRoomName.trim() || DEFAULT_BREAKOUT_ROOM.breakoutRoomName
+    };
+  }
 
   const sourceCount = roster ? roster.sources.length : 0;
   const routeCount = sceneGraph ? sceneGraph.routes.length : 0;
@@ -320,7 +343,10 @@ export function synthesizeSnapshot(
     eventLog: [],
     diagnostics,
     lastCommandTypes,
-    warnings: diagnostics.warnings
+    warnings: diagnostics.warnings,
+    meetingState: sceneId || sourceCount > 0 ? "in_meeting" : "idle",
+    breakoutRoomId: breakoutRoomState.breakoutRoomId,
+    breakoutRoomName: breakoutRoomState.breakoutRoomName
   };
 }
 

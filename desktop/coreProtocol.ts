@@ -54,7 +54,30 @@ type ZoomVideoFrameWire = {
   rgba: number[] | Uint8ClampedArray;
 };
 
-export type CoreEvent = { type: "zoom-video-frame"; frame: ZoomVideoFrame };
+export type ProgramSharedTextureWire = {
+  sharedHandleHex: string;
+  width: number;
+  height: number;
+  format: string;
+  frameNumber?: number;
+};
+
+export type ProgramFramePreviewWire = {
+  frameNumber: number;
+  width: number;
+  height: number;
+  renderPlanId?: string;
+  renderer?: string;
+  health?: string;
+  pixelFormat: "bgra";
+  bgraBase64: string;
+  sharedTexture?: ProgramSharedTextureWire;
+};
+
+export type CoreEvent =
+  | { type: "zoom-video-frame"; frame: ZoomVideoFrame }
+  | { type: "program-frame-preview"; preview: ProgramFramePreviewWire }
+  | { type: "program-shared-texture"; texture: ProgramSharedTextureWire };
 
 export function normalizeZoomVideoFrameWire(wire: ZoomVideoFrameWire): ZoomVideoFrame {
   return {
@@ -80,6 +103,52 @@ export function parseCoreResponse(line: string): CoreResponse | null {
   }
 }
 
+function parseProgramFramePreviewEvent(value: {
+  type?: string;
+  preview?: {
+    frameNumber?: unknown;
+    width?: unknown;
+    height?: unknown;
+    renderPlanId?: unknown;
+    renderer?: unknown;
+    health?: unknown;
+    pixelFormat?: unknown;
+    bgraBase64?: unknown;
+  };
+}): CoreEvent | null {
+  if (value.type !== "program-frame-preview" || !value.preview) {
+    return null;
+  }
+  const { frameNumber, width, height, pixelFormat, bgraBase64 } = value.preview;
+  if (
+    typeof frameNumber !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    width <= 0 ||
+    height <= 0 ||
+    width > 320 ||
+    height > 180 ||
+    pixelFormat !== "bgra" ||
+    typeof bgraBase64 !== "string" ||
+    bgraBase64.length === 0
+  ) {
+    return null;
+  }
+  return {
+    type: "program-frame-preview",
+    preview: {
+      frameNumber,
+      width,
+      height,
+      renderPlanId: typeof value.preview.renderPlanId === "string" ? value.preview.renderPlanId : undefined,
+      renderer: typeof value.preview.renderer === "string" ? value.preview.renderer : undefined,
+      health: typeof value.preview.health === "string" ? value.preview.health : undefined,
+      pixelFormat: "bgra",
+      bgraBase64
+    }
+  };
+}
+
 /** Parse a single unsolicited stdio line into a CoreEvent, or null when unparseable. */
 export function parseCoreEvent(line: string): CoreEvent | null {
   const trimmed = line.trim();
@@ -87,8 +156,55 @@ export function parseCoreEvent(line: string): CoreEvent | null {
     return null;
   }
   try {
-    const value = JSON.parse(trimmed) as { id?: unknown; type?: string; frame?: ZoomVideoFrameWire };
-    if (value?.id !== undefined || value?.type !== "zoom-video-frame" || !value.frame) {
+    const value = JSON.parse(trimmed) as {
+      id?: unknown;
+      type?: string;
+      frame?: ZoomVideoFrameWire;
+      preview?: {
+        frameNumber?: unknown;
+        width?: unknown;
+        height?: unknown;
+        renderPlanId?: unknown;
+        renderer?: unknown;
+        health?: unknown;
+        pixelFormat?: unknown;
+        bgraBase64?: unknown;
+      };
+    };
+    if (value?.id !== undefined) {
+      return null;
+    }
+
+    if (value.type === "program-frame-preview") {
+      return parseProgramFramePreviewEvent(value);
+    }
+
+    if (value.type === "program-shared-texture") {
+      const texture = (value as { texture?: ProgramSharedTextureWire }).texture;
+      if (
+        !texture ||
+        typeof texture.sharedHandleHex !== "string" ||
+        texture.sharedHandleHex.length === 0 ||
+        typeof texture.width !== "number" ||
+        typeof texture.height !== "number" ||
+        texture.width <= 0 ||
+        texture.height <= 0
+      ) {
+        return null;
+      }
+      return {
+        type: "program-shared-texture",
+        texture: {
+          sharedHandleHex: texture.sharedHandleHex,
+          width: texture.width,
+          height: texture.height,
+          format: typeof texture.format === "string" ? texture.format : "B8G8R8A8_UNORM",
+          frameNumber: typeof texture.frameNumber === "number" ? texture.frameNumber : undefined
+        }
+      };
+    }
+
+    if (value.type !== "zoom-video-frame" || !value.frame) {
       return null;
     }
     const { participantId, width, height, frameId, rgba } = value.frame;
