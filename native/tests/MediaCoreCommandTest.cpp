@@ -643,7 +643,7 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
       },
   });
 
-#if COREVIDEO_STUB
+#if COREVIDEO_STUB || COREVIDEO_WITH_D3D11
   const auto* snapshotTexture = state.get("programSharedTexture");
   ASSERT_NE(snapshotTexture, nullptr);
   EXPECT_FALSE(snapshotTexture->getString("sharedHandleHex").empty());
@@ -656,12 +656,16 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
   EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
   const auto* texture = events.back().get("texture");
   ASSERT_NE(texture, nullptr);
-  EXPECT_FALSE(texture->getString("sharedHandleHex").empty());
+  const auto handleHex = texture->getString("sharedHandleHex");
+  EXPECT_FALSE(handleHex.empty());
+  EXPECT_EQ(handleHex.rfind("0x", 0), 0u);
+#if COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+  EXPECT_TRUE(handleHex.size() > 4u);
+#endif
   EXPECT_GE(texture->get("width")->asNumber(), 1);
   EXPECT_GE(texture->get("height")->asNumber(), 1);
   EXPECT_EQ(texture->getString("format"), "B8G8R8A8_UNORM");
 #else
-  (void)state;
-  EXPECT_TRUE(true);
+  GTEST_SKIP() << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
 #endif
 }

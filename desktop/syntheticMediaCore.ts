@@ -157,10 +157,26 @@ function emptySourceSnapshot(sourceCount: number, elapsedMs: number): NativeMedi
  * Apply a batch of media-core commands and return synthetic health. `frameNumber`
  * is monotonic across calls so the program/compositor counters advance.
  */
+function zoomRosterForSync(state: SyntheticZoomCaptureState | undefined): Pick<RawCaptureSnapshot, "meetingState" | "participants" | "activeSpeakerId"> {
+  if (!state?.joined) {
+    return { meetingState: "idle", participants: [] };
+  }
+
+  return {
+    meetingState: "in_meeting",
+    activeSpeakerId: "operator-1",
+    participants: [
+      { userId: "operator-1", displayName: state.displayName, role: "Host", videoOn: true, muted: false, talking: true, audioLevel: 76, networkQuality: "good" },
+      { userId: "guest-1", displayName: "Guest 1", role: "Guest", videoOn: true, muted: false, talking: false, audioLevel: 22, networkQuality: "good" }
+    ]
+  };
+}
+
 export function synthesizeSnapshot(
   commands: NativeMediaCoreCommand[],
   elapsedMs: number,
-  frameNumber: number
+  frameNumber: number,
+  zoomState?: SyntheticZoomCaptureState
 ): NativeMediaCoreStateSnapshot {
   const sceneGraph = commands.find((command) => command.type === "load-scene-graph");
   const roster = commands.find((command) => command.type === "set-zoom-source-roster");
@@ -344,9 +360,17 @@ export function synthesizeSnapshot(
     diagnostics,
     lastCommandTypes,
     warnings: diagnostics.warnings,
-    meetingState: sceneId || sourceCount > 0 ? "in_meeting" : "idle",
-    breakoutRoomId: breakoutRoomState.breakoutRoomId,
-    breakoutRoomName: breakoutRoomState.breakoutRoomName
+    ...(() => {
+      const zoomRoster = zoomRosterForSync(zoomState);
+      const inMeeting = zoomRoster.meetingState === "in_meeting" || Boolean(sceneId) || sourceCount > 0;
+      return {
+        meetingState: inMeeting ? "in_meeting" : "idle",
+        activeSpeakerId: zoomRoster.activeSpeakerId,
+        participants: zoomRoster.participants,
+        breakoutRoomId: breakoutRoomState.breakoutRoomId,
+        breakoutRoomName: breakoutRoomState.breakoutRoomName
+      };
+    })()
   };
 }
 

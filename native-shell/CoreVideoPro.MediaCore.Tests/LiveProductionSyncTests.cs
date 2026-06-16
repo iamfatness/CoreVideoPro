@@ -146,6 +146,111 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
+    public void MapsRawParticipantsIntoLiveProductionContext()
+    {
+        var participants = LiveProductionSync.MapRawParticipants(
+        [
+            new RawParticipantEvent
+            {
+                UserId = "42",
+                DisplayName = "  Dana Lee  ",
+                Role = "Presenter",
+                Title = "Demo Lead",
+                BreakoutRoomId = "green-room",
+                BreakoutRoomName = "Green Room",
+                Talking = false,
+                SharingScreen = true,
+                AudioLevel = 91,
+                NetworkQuality = "good"
+            },
+            new RawParticipantEvent
+            {
+                UserId = "guest-7",
+                DisplayName = "",
+                VideoOn = false,
+                NetworkQuality = "low"
+            }
+        ],
+        activeSpeakerId: "42");
+
+        Assert.Equal("Dana Lee", participants[0].Name);
+        Assert.Equal("Demo Lead", participants[0].Title);
+        Assert.Equal("Presenter", participants[0].RoleLabel);
+        Assert.Equal("green-room", participants[0].BreakoutRoomId);
+        Assert.Equal("Green Room", participants[0].BreakoutRoomName);
+        Assert.True(participants[0].IsActiveSpeaker);
+        Assert.True(participants[0].IsScreenSharing);
+        Assert.Equal("live", participants[0].HealthLabel);
+        Assert.Equal("guest-7", participants[1].Id);
+        Assert.Equal("Zoom User guest-7", participants[1].Name);
+        Assert.Equal("video-off", participants[1].HealthLabel);
+    }
+
+    [Fact]
+    public void MapsSnapshotParticipantsWhenMeetingIsLive()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            MeetingState = "in_meeting",
+            ActiveSpeakerId = "operator-1",
+            Participants =
+            [
+                new RawParticipantEvent
+                {
+                    UserId = "operator-1",
+                    DisplayName = "Operator",
+                    Role = "Host",
+                    Talking = true,
+                    VideoOn = true
+                },
+                new RawParticipantEvent
+                {
+                    UserId = "guest-1",
+                    DisplayName = "Guest 1",
+                    Role = "Guest",
+                    VideoOn = true
+                }
+            ]
+        };
+
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context);
+
+        Assert.NotNull(patch.Participants);
+        Assert.Equal(2, patch.Participants!.Count);
+        Assert.Equal("Operator", patch.Participants[0].Name);
+        Assert.Equal("Guest 1", patch.Participants[1].Name);
+        Assert.Equal("in_meeting", patch.MeetingStateLabel);
+    }
+
+    [Fact]
+    public void MapsCaptureSnapshotParticipantsForInMeetingState()
+    {
+        var participants = LiveProductionSync.MapCaptureSnapshotParticipants(new RawCaptureSnapshot
+        {
+            MeetingState = "in_meeting",
+            Tick = 3,
+            ActiveSpeakerId = "live-1",
+            Participants =
+            [
+                new RawParticipantEvent
+                {
+                    UserId = "live-1",
+                    DisplayName = "Live Host",
+                    Role = "Host",
+                    Title = "Executive Producer",
+                    Talking = true,
+                    VideoOn = true
+                }
+            ]
+        });
+
+        Assert.Single(participants);
+        Assert.Equal("Live Host", participants[0].Name);
+        Assert.Equal("Executive Producer", participants[0].Title);
+        Assert.True(participants[0].IsActiveSpeaker);
+    }
+
+    [Fact]
     public void CreateDemoFallbackPatchRestoresIdleDemoReadouts()
     {
         var patch = LiveProductionSync.CreateDemoFallbackPatch();

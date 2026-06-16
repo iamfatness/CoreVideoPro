@@ -126,6 +126,28 @@ public sealed class CoreProtocolParserTests
         Assert.Null(CoreProtocolParser.TryParseProgramFramePreviewEvent("""{"id":"1","type":"program-frame-preview"}"""));
     }
 
+    [Theory]
+    [InlineData("0xFEEDFACE", 0xFEEDFACEul)]
+    [InlineData("0xfeedface", 0xFEEDFACEul)]
+    [InlineData("FEEDFACE", 0xFEEDFACEul)]
+    [InlineData("0xABCD", 0xABCDul)]
+    [InlineData("  0x10  ", 0x10ul)]
+    public void ParseSharedHandleHexAcceptsCommonWireFormats(string handleHex, ulong expected)
+    {
+        Assert.Equal(expected, CoreProtocolParser.ParseSharedHandleHex(handleHex));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("0x")]
+    [InlineData("not-hex")]
+    [InlineData("0xZZZZ")]
+    public void ParseSharedHandleHexRejectsInvalidValues(string handleHex)
+    {
+        Assert.Equal(0ul, CoreProtocolParser.ParseSharedHandleHex(handleHex));
+    }
+
     [Fact]
     public void ParsesProgramSharedTextureEvent()
     {

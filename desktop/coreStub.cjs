@@ -576,7 +576,20 @@ function emptySourceSnapshot(sourceCount, elapsedMs) {
     warnings: []
   };
 }
-function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
+function zoomRosterForSync(state) {
+  if (!state?.joined) {
+    return { meetingState: "idle", participants: [] };
+  }
+  return {
+    meetingState: "in_meeting",
+    activeSpeakerId: "operator-1",
+    participants: [
+      { userId: "operator-1", displayName: state.displayName, role: "Host", videoOn: true, muted: false, talking: true, audioLevel: 76, networkQuality: "good" },
+      { userId: "guest-1", displayName: "Guest 1", role: "Guest", videoOn: true, muted: false, talking: false, audioLevel: 22, networkQuality: "good" }
+    ]
+  };
+}
+function synthesizeSnapshot(commands, elapsedMs, frameNumber2, zoomState) {
   const sceneGraph = commands.find((command) => command.type === "load-scene-graph");
   const roster = commands.find((command) => command.type === "set-zoom-source-roster");
   const output = commands.find((command) => command.type === "start-program-output");
@@ -747,9 +760,17 @@ function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
     diagnostics,
     lastCommandTypes,
     warnings: diagnostics.warnings,
-    meetingState: sceneId || sourceCount > 0 ? "in_meeting" : "idle",
-    breakoutRoomId: breakoutRoomState.breakoutRoomId,
-    breakoutRoomName: breakoutRoomState.breakoutRoomName
+    ...(() => {
+      const zoomRoster = zoomRosterForSync(zoomState);
+      const inMeeting = zoomRoster.meetingState === "in_meeting" || Boolean(sceneId) || sourceCount > 0;
+      return {
+        meetingState: inMeeting ? "in_meeting" : "idle",
+        activeSpeakerId: zoomRoster.activeSpeakerId,
+        participants: zoomRoster.participants,
+        breakoutRoomId: breakoutRoomState.breakoutRoomId,
+        breakoutRoomName: breakoutRoomState.breakoutRoomName
+      };
+    })()
   };
 }
 function synthesizeSpineSnapshot(payload, elapsedMs) {
@@ -855,7 +876,7 @@ function handleCoreRequest(raw) {
         return { id: request.id, ok: false, error: { code: "invalid-request", message: "sync needs commands and elapsedMs." } };
       }
       frameNumber += 1;
-      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber);
+      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber, zoomCaptureState);
       return {
         id: request.id,
         ok: true,

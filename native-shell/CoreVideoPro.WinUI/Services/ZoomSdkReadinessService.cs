@@ -53,19 +53,31 @@ public static class ZoomSdkReadinessService
         }
 
         var nativeExe = MediaCorePaths.ResolveNativeCoreExecutable();
+        var zoomSdkRoot = MediaCorePaths.ResolveZoomSdkArchitectureRoot();
         var runtimePresent = nativeExe is not null;
+        var packageReport = zoomSdkRoot is not null
+            ? ZoomWindowsSdkPackageService.InspectDirectory(zoomSdkRoot)
+            : null;
+        var sdkRuntimeReady = runtimePresent &&
+                              (packageReport?.IsReady == true || File.Exists(Path.Combine(Path.GetDirectoryName(nativeExe!) ?? string.Empty, "sdk.dll")));
+        var sdkVersion = packageReport?.Version ?? (sdkRuntimeReady ? "zoom-engine" : null);
+        var packagingPath = zoomSdkRoot ?? nativeExe;
+
         return new ZoomSdkReadinessInput
         {
             Platform = ZoomSdkRuntimePlatform.Windows,
-            SdkRuntimePresent = runtimePresent,
-            SdkVersion = runtimePresent ? "zoom-engine" : null,
+            SdkRuntimePresent = sdkRuntimeReady,
+            SdkVersion = sdkVersion,
             AppKeyPresent = baseInput.AppKeyPresent,
             OauthConfigured = baseInput.AppKeyPresent,
             JwtBrokerConfigured = false,
-            RawVideoEnabled = runtimePresent,
-            RawAudioEnabled = runtimePresent,
-            RawShareEnabled = runtimePresent,
-            PackagingPath = nativeExe
+            RawVideoEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-api-header")?.Present == true
+                              || sdkRuntimeReady,
+            RawAudioEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-audio-header")?.Present == true
+                              || sdkRuntimeReady,
+            RawShareEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-renderer-header")?.Present == true
+                              || sdkRuntimeReady,
+            PackagingPath = packagingPath
         };
     }
 
@@ -117,9 +129,35 @@ public static class ZoomSdkReadinessService
             .Select(check => check.Detail)
             .ToList();
 
-        var warnings = string.IsNullOrWhiteSpace(input.SdkVersion)
-            ? new List<string> { "SDK version is unknown; include it in support bundles before beta." }
-            : [];
+        var warnings = new List<string>();
+        if (string.IsNullOrWhiteSpace(input.SdkVersion))
+        {
+            warnings.Add("SDK version is unknown; include it in support bundles before beta.");
+        }
+
+        if (input.SdkRuntimePresent && input.PackagingPath is not null)
+        {
+            var packageRoot = Directory.Exists(input.PackagingPath)
+                ? input.PackagingPath
+                : Path.GetDirectoryName(input.PackagingPath);
+            if (packageRoot is not null && Directory.Exists(packageRoot))
+            {
+                var packageReport = ZoomWindowsSdkPackageService.InspectDirectory(packageRoot);
+                warnings.AddRange(packageReport.Warnings.Where(warning => !warnings.Contains(warning)));
+                if (!packageReport.IsReady)
+                {
+                    foreach (var blocker in packageReport.Blockers.Where(blocker => !blockers.Contains(blocker)))
+                    {
+                        blockers.Add(blocker);
+                        checks.Add(BuildCheck(
+                            $"sdk-package-{checks.Count}",
+                            false,
+                            "Zoom SDK package",
+                            blocker));
+                    }
+                }
+            }
+        }
 
         var status = blockers.Count > 0
             ? ZoomSdkReadinessStatus.Blocked

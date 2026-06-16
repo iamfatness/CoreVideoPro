@@ -44,6 +44,47 @@ public static class MediaCorePaths
         return candidates.FirstOrDefault(File.Exists);
     }
 
+    public static string? ResolveZoomSdkArchitectureRoot()
+    {
+        var repo = RepoRoot;
+        var envPath = Environment.GetEnvironmentVariable("ZOOM_SDK_DIR");
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(envPath))
+        {
+            candidates.Add(envPath);
+        }
+
+        candidates.AddRange(
+        [
+            Path.Combine(repo, "native-core", "zoom-runtime", "windows", "x64"),
+            Path.Combine(repo, "native", "build-dev"),
+            Path.Combine(repo, "native", "build"),
+            Path.Combine(AppContext.BaseDirectory, "zoom-runtime", "windows", "x64"),
+            Path.Combine(AppContext.BaseDirectory)
+        ]);
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || !Directory.Exists(candidate))
+            {
+                continue;
+            }
+
+            var sdkDll = Path.Combine(candidate, "bin", "sdk.dll");
+            if (File.Exists(sdkDll))
+            {
+                return candidate;
+            }
+
+            if (File.Exists(Path.Combine(candidate, "sdk.dll")))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     public static string? ResolveNodeCoreStub()
     {
         var appRoot = RepoRoot;

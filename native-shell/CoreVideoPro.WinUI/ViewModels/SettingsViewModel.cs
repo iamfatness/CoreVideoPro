@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
@@ -26,6 +27,9 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private string _joinStatus = "Ready";
+
+    [ObservableProperty]
+    private int _liveParticipantCount;
 
     [ObservableProperty]
     private bool _sdkDiagnosticsExpanded;
@@ -153,9 +157,12 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         get
         {
+            var participantCount = _engineRunning() && LiveParticipantCount > 0
+                ? LiveParticipantCount
+                : DemoProduction.Participants.Count;
             var room = DemoProduction.CurrentRoom();
             var stateLabel = MeetingState.ToString().Replace('_', ' ');
-            return $"{stateLabel} - {DemoProduction.Participants.Count} participants - {room.Name} - Screen share active - Captions on - 1920×1080 60fps - 28:47";
+            return $"{stateLabel} - {participantCount} participants - {room.Name} - Screen share active - Captions on - 1920×1080 60fps - 28:47";
         }
     }
 
@@ -197,17 +204,27 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         try
         {
-            var message = await _bridge.JoinZoomAsync(
+            if (!_engineRunning())
+            {
+                MeetingState = ZoomMeetingState.InMeeting;
+                LiveParticipantCount = DemoProduction.Participants.Count;
+                JoinStatus = $"Join queued (demo): {DisplayName.Trim()} → {JoinMeetingUrl.Trim()}";
+                NotifyMeetingUi();
+                return;
+            }
+
+            var snapshot = await _bridge.JoinZoomAsync(
                 JoinMeetingUrl.Trim(),
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
                 IsWebinar).ConfigureAwait(true);
-            MeetingState = ZoomMeetingState.InMeeting;
-            JoinStatus = message;
+            ApplyCaptureSnapshot(snapshot);
+            JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
         }
         catch (Exception ex)
         {
             MeetingState = ZoomMeetingState.Error;
             JoinStatus = ex.Message;
+            NotifyMeetingUi();
         }
     }
 
@@ -217,15 +234,48 @@ public sealed partial class SettingsViewModel : ObservableObject
         JoinStatus = "Leaving meeting…";
         try
         {
-            var message = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
-            MeetingState = ZoomMeetingState.Idle;
-            JoinStatus = message;
+            if (!_engineRunning())
+            {
+                MeetingState = ZoomMeetingState.Idle;
+                LiveParticipantCount = 0;
+                JoinStatus = "Left Zoom meeting (demo).";
+                NotifyMeetingUi();
+                return;
+            }
+
+            var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
+            ApplyCaptureSnapshot(snapshot);
+            JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Left");
         }
         catch (Exception ex)
         {
             MeetingState = ZoomMeetingState.Error;
             JoinStatus = ex.Message;
+            NotifyMeetingUi();
         }
+    }
+
+    public void ApplyCaptureSnapshot(RawCaptureSnapshot snapshot)
+    {
+        MeetingState = ParseMeetingState(snapshot.MeetingState);
+        LiveParticipantCount = snapshot.Participants.Count;
+        NotifyMeetingUi();
+    }
+
+    public void ApplyMeetingStateLabel(string? meetingStateLabel, int participantCount = 0)
+    {
+        if (string.IsNullOrWhiteSpace(meetingStateLabel))
+        {
+            return;
+        }
+
+        MeetingState = ParseMeetingState(meetingStateLabel);
+        if (participantCount > 0)
+        {
+            LiveParticipantCount = participantCount;
+        }
+
+        NotifyMeetingUi();
     }
 
     [RelayCommand]
@@ -298,4 +348,14 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private static ZoomSdkReadinessReport CreateDefaultReport() =>
         ZoomSdkReadinessService.Assess(ZoomSdkReadinessService.CreateEmbeddedInput());
+
+    private static ZoomMeetingState ParseMeetingState(string? meetingState) =>
+        meetingState?.Trim().ToLowerInvariant() switch
+        {
+            "in_meeting" or "in-meeting" or "joining" => ZoomMeetingState.InMeeting,
+            "idle" or "leaving" => ZoomMeetingState.Idle,
+            "reconnecting" => ZoomMeetingState.Reconnecting,
+            "error" => ZoomMeetingState.Error,
+            _ => ZoomMeetingState.Idle
+        };
 }

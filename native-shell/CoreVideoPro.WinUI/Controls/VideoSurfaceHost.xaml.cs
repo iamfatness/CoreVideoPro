@@ -2,6 +2,7 @@ using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -20,6 +21,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     public VideoSurfaceHost()
     {
         InitializeComponent();
+        _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -62,11 +64,35 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             ? $"Renderer {frame.Renderer}"
             : string.Empty;
 
-    public bool ShowInteropBadge => SurfaceState?.AwaitingDirect3D == true || IsDirect3DReady;
+    public bool ShowPathBadge =>
+        IsProgramSurface &&
+        (IsGpuPathActive || IsCpuFallbackActive || (SurfaceState?.AwaitingDirect3D == true && IsDirect3DReady));
+
+    public string PathBadgeText =>
+        IsGpuPathActive
+            ? "GPU · full-res"
+            : IsCpuFallbackActive
+                ? "CPU · BGRA preview"
+                : SurfaceState?.AwaitingDirect3D == true && IsDirect3DReady
+                    ? "GPU · waiting for handle"
+                    : string.Empty;
+
+    public Brush PathBadgeForeground =>
+        IsGpuPathActive
+            ? (Brush)Application.Current.Resources["StudioAccentBrush"]
+            : IsCpuFallbackActive
+                ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 240, 168, 92))
+                : (Brush)Application.Current.Resources["StudioMutedBrush"];
 
     public bool HasPreviewBitmap => SurfaceState?.HasPreviewBitmap == true;
 
     public bool IsDirect3DReady => _direct3DInterop.IsReady || _direct3DDevicePointer != 0;
+
+    public bool IsGpuPathActive => _direct3DInterop.IsGpuPresenting;
+
+    public bool IsCpuFallbackActive =>
+        _direct3DInterop.IsCpuFallback ||
+        (SurfaceState?.PendingSharedHandle is { IsValid: true } && !IsGpuPathActive && HasPreviewBitmap);
 
     public void UpdateMetadata(VideoFrameMetadata metadata, string statusLine, string? detailLine = null)
     {
@@ -86,8 +112,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         if (IsDirect3DReady)
         {
-            PresentSharedHandle(handle);
-            return true;
+            return PresentSharedHandle(handle);
         }
 
         return false;
@@ -112,11 +137,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         }
     }
 
-    public void PresentSharedHandle(SharedTextureHandle handle)
+    public bool PresentSharedHandle(SharedTextureHandle handle)
     {
         if (!handle.IsValid)
         {
-            return;
+            return false;
         }
 
         if (_direct3DInterop.TryPresentSharedTexture(handle))
@@ -124,10 +149,13 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             SwapChainHost.Visibility = Visibility.Visible;
             PreviewImage.Visibility = Visibility.Collapsed;
             PlaceholderPanel.Visibility = Visibility.Collapsed;
-            return;
+            RefreshPathBindings();
+            return true;
         }
 
         UpdatePreviewBitmap();
+        RefreshPathBindings();
+        return false;
     }
 
     private static void OnSurfaceStateChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
@@ -136,7 +164,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         {
             host.TryPresentPendingSharedHandle();
             host.UpdatePreviewBitmap();
-            host.Bindings.Update();
+            host.RefreshPathBindings();
         }
     }
 
@@ -154,7 +182,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
         {
             _direct3DDevicePointer = _direct3DInterop.DevicePointer;
+            SetDirect3DDevice(_direct3DDevicePointer);
             TryPresentPendingSharedHandle();
+            RefreshPathBindings();
         }
     }
 
@@ -163,6 +193,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         _direct3DInterop.Dispose();
         _direct3DDevicePointer = 0;
     }
+
+    private void OnPresentationPathChanged() =>
+        DispatcherQueue.TryEnqueue(RefreshPathBindings);
 
     private void TryPresentPendingSharedHandle()
     {
@@ -183,7 +216,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             return;
         }
 
-        if (SurfaceState.PendingSharedHandle is { IsValid: true } && _direct3DInterop.IsReady)
+        if (IsGpuPathActive)
         {
             return;
         }
@@ -204,4 +237,6 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         PreviewImage.Visibility = Visibility.Collapsed;
         PlaceholderPanel.Visibility = Visibility.Visible;
     }
+
+    private void RefreshPathBindings() => Bindings.Update();
 }

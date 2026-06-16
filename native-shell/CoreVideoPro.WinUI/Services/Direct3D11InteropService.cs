@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using CoreVideoPro.WinUI.Models;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -14,6 +15,14 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public sealed class Direct3D11InteropService : IDisposable
 {
+    public enum PresentationPath
+    {
+        Uninitialized,
+        DeviceReady,
+        GpuActive,
+        CpuFallback
+    }
+
     [ComImport]
     [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -32,6 +41,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private static readonly Guid D3D11DeviceGuid = new("DDB0B8B9-9585-4E8C-9CA0-8776E7C35E96");
 
+    private readonly HashSet<ulong> _invalidHandles = [];
     private IDirect3DDevice? _winrtDevice;
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
@@ -40,24 +50,24 @@ public sealed class Direct3D11InteropService : IDisposable
     private SwapChainPanel? _panel;
     private int _surfaceWidth;
     private int _surfaceHeight;
+    private int _panelWidth;
+    private int _panelHeight;
+    private ulong _lastPresentedHandle;
+    private nint _cachedDevicePointer;
     private bool _disposed;
+    private PresentationPath _path = PresentationPath.Uninitialized;
+
+    public event Action? PresentationPathChanged;
 
     public bool IsReady => _device is not null && _swapChain is not null && _backBuffer is not null;
 
-    public nint DevicePointer
-    {
-        get
-        {
-            if (_winrtDevice is null)
-            {
-                return 0;
-            }
+    public bool IsGpuPresenting => _path == PresentationPath.GpuActive;
 
-            var unknown = Marshal.GetIUnknownForObject(_winrtDevice);
-            Marshal.Release(unknown);
-            return unknown;
-        }
-    }
+    public bool IsCpuFallback => _path == PresentationPath.CpuFallback;
+
+    public PresentationPath ActivePath => _path;
+
+    public nint DevicePointer => _cachedDevicePointer;
 
     public bool TryAttachSwapChainPanel(SwapChainPanel panel)
     {
@@ -66,14 +76,29 @@ public sealed class Direct3D11InteropService : IDisposable
             return false;
         }
 
+        DetachPanelHandlers();
         _panel = panel;
+        _panel.SizeChanged += OnPanelSizeChanged;
         return EnsureDevice() && EnsureSwapChain();
     }
 
     public bool TryPresentSharedTexture(SharedTextureHandle handle)
     {
-        if (_disposed || !handle.IsValid || !EnsureDevice() || !EnsureSwapChain(handle.Width, handle.Height))
+        if (_disposed || !handle.IsValid || IsHandleInvalidated(handle.NtHandle))
         {
+            SetPresentationPath(PresentationPath.CpuFallback);
+            return false;
+        }
+
+        if (!EnsureDevice())
+        {
+            SetPresentationPath(PresentationPath.CpuFallback);
+            return false;
+        }
+
+        if (!EnsureSwapChain(handle.Width, handle.Height))
+        {
+            SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
 
@@ -82,11 +107,30 @@ public sealed class Direct3D11InteropService : IDisposable
             using var sharedTexture = _device!.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
             _context!.CopyResource(_backBuffer!, sharedTexture);
             _swapChain!.Present(1, PresentFlags.None);
+            _lastPresentedHandle = handle.NtHandle;
+            SetPresentationPath(PresentationPath.GpuActive);
             return true;
         }
         catch
         {
+            InvalidateSharedHandle(handle.NtHandle);
+            ResetSwapChain();
+            SetPresentationPath(PresentationPath.CpuFallback);
             return false;
+        }
+    }
+
+    public void InvalidateSharedHandle(ulong ntHandle)
+    {
+        if (ntHandle == 0)
+        {
+            return;
+        }
+
+        _invalidHandles.Add(ntHandle);
+        if (_lastPresentedHandle == ntHandle)
+        {
+            _lastPresentedHandle = 0;
         }
     }
 
@@ -98,17 +142,56 @@ public sealed class Direct3D11InteropService : IDisposable
         }
 
         _disposed = true;
-        _backBuffer?.Dispose();
-        _swapChain?.Dispose();
+        DetachPanelHandlers();
+        ResetSwapChain();
         _context?.Dispose();
         _device?.Dispose();
         _winrtDevice?.Dispose();
-        _backBuffer = null;
-        _swapChain = null;
         _context = null;
         _device = null;
         _winrtDevice = null;
+        _cachedDevicePointer = 0;
+        _invalidHandles.Clear();
+        _lastPresentedHandle = 0;
+        SetPresentationPath(PresentationPath.Uninitialized);
+    }
+
+    private bool IsHandleInvalidated(ulong ntHandle) => _invalidHandles.Contains(ntHandle);
+
+    private void DetachPanelHandlers()
+    {
+        if (_panel is null)
+        {
+            return;
+        }
+
+        _panel.SizeChanged -= OnPanelSizeChanged;
         _panel = null;
+    }
+
+    private void OnPanelSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_disposed || _panel is null)
+        {
+            return;
+        }
+
+        var width = Math.Max(1, (int)Math.Ceiling(e.NewSize.Width));
+        var height = Math.Max(1, (int)Math.Ceiling(e.NewSize.Height));
+        if (width == _panelWidth && height == _panelHeight)
+        {
+            return;
+        }
+
+        _panelWidth = width;
+        _panelHeight = height;
+
+        if (_surfaceWidth > 0 && _surfaceHeight > 0)
+        {
+            return;
+        }
+
+        EnsureSwapChain(width, height);
     }
 
     private bool EnsureDevice()
@@ -129,15 +212,20 @@ public sealed class Direct3D11InteropService : IDisposable
             var hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out var winrtDevicePtr);
             if (hr < 0 || winrtDevicePtr == IntPtr.Zero)
             {
+                SetPresentationPath(PresentationPath.DeviceReady);
                 return true;
             }
 
             _winrtDevice = (IDirect3DDevice)Marshal.GetObjectForIUnknown(winrtDevicePtr);
+            _cachedDevicePointer = winrtDevicePtr;
             Marshal.Release(winrtDevicePtr);
+            SetPresentationPath(PresentationPath.DeviceReady);
             return true;
         }
         catch
         {
+            ResetDevice();
+            SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
     }
@@ -157,15 +245,15 @@ public sealed class Direct3D11InteropService : IDisposable
             targetHeight = 720;
         }
 
+        _panelWidth = Math.Max(1, (int)Math.Ceiling(_panel.ActualWidth));
+        _panelHeight = Math.Max(1, (int)Math.Ceiling(_panel.ActualHeight));
+
         if (_swapChain is not null && _surfaceWidth == targetWidth && _surfaceHeight == targetHeight)
         {
             return true;
         }
 
-        _backBuffer?.Dispose();
-        _swapChain?.Dispose();
-        _backBuffer = null;
-        _swapChain = null;
+        ResetSwapChain();
 
         using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
         using var adapter = dxgiDevice.GetAdapter();
@@ -194,6 +282,39 @@ public sealed class Direct3D11InteropService : IDisposable
         _surfaceWidth = targetWidth;
         _surfaceHeight = targetHeight;
         return true;
+    }
+
+    private void ResetSwapChain()
+    {
+        _backBuffer?.Dispose();
+        _swapChain?.Dispose();
+        _backBuffer = null;
+        _swapChain = null;
+        _surfaceWidth = 0;
+        _surfaceHeight = 0;
+    }
+
+    private void ResetDevice()
+    {
+        ResetSwapChain();
+        _context?.Dispose();
+        _device?.Dispose();
+        _winrtDevice?.Dispose();
+        _context = null;
+        _device = null;
+        _winrtDevice = null;
+        _cachedDevicePointer = 0;
+    }
+
+    private void SetPresentationPath(PresentationPath path)
+    {
+        if (_path == path)
+        {
+            return;
+        }
+
+        _path = path;
+        PresentationPathChanged?.Invoke();
     }
 
     [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = true)]

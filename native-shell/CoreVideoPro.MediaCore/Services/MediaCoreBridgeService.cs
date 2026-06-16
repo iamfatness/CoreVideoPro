@@ -71,36 +71,33 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public Task<bool> PingAsync(CancellationToken cancellationToken = default) =>
         _supervisor.PingAsync(cancellationToken);
 
-    public async Task<string> JoinZoomAsync(
+    public async Task<RawCaptureSnapshot> JoinZoomAsync(
         string meetingUrl,
         string displayName,
         bool webinar,
         CancellationToken cancellationToken = default)
     {
-        try
+        if (!Running)
         {
-            var snapshot = await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
-                .ConfigureAwait(false);
-            return SummarizeCaptureSnapshot(snapshot, "Joined");
+            throw new InvalidOperationException("Media core is not running.");
         }
-        catch (InvalidOperationException)
-        {
-            return $"Join queued (stub): {displayName} → {meetingUrl}";
-        }
+
+        return await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    public async Task<string> LeaveZoomAsync(CancellationToken cancellationToken = default)
+    public async Task<RawCaptureSnapshot> LeaveZoomAsync(CancellationToken cancellationToken = default)
     {
-        try
+        if (!Running)
         {
-            var snapshot = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
-            return SummarizeCaptureSnapshot(snapshot, "Left");
+            throw new InvalidOperationException("Media core is not running.");
         }
-        catch (InvalidOperationException)
-        {
-            return "Left Zoom meeting (stub).";
-        }
+
+        return await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    public static string SummarizeJoinLeaveMessage(RawCaptureSnapshot snapshot, string verb) =>
+        SummarizeCaptureSnapshot(snapshot, verb);
 
     public Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default) =>
         _supervisor.GetZoomSnapshotAsync(cancellationToken);

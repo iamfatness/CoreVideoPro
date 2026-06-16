@@ -130,6 +130,60 @@ if ($roomChange.snapshot.breakoutRoomName -ne "Customer panel") {
 }
 Write-Host "Breakout room change ok: $($roomChange.snapshot.breakoutRoomName)"
 
+$joinPayload = @{
+    id = "core-5"
+    type = "zoom-join"
+    payload = @{
+        meetingUrl = "https://zoom.us/j/123456789"
+        displayName = "Operator"
+        webinar = $true
+    }
+} | ConvertTo-Json -Depth 6 -Compress
+
+$join = Send-Line $joinPayload | ConvertFrom-Json
+if (-not $join.ok) { throw "zoom-join failed." }
+if ($join.snapshot.meetingState -ne "in_meeting") {
+    throw "Expected zoom-join meetingState 'in_meeting', got '$($join.snapshot.meetingState)'."
+}
+if ($join.snapshot.participants.Count -lt 1) {
+    throw "Expected zoom-join participants in snapshot."
+}
+Write-Host "zoom-join ok: $($join.snapshot.participants.Count) participants"
+
+$syncAfterJoinPayload = @{
+    id = "core-6"
+    type = "media-core-sync"
+    elapsedMs = 3000
+    commands = @(
+        @{
+            type = "load-scene-graph"
+            sceneId = "speaker-slides"
+            routes = @(
+                @{
+                    routeId = "program"
+                    mode = "active-speaker"
+                    audioRole = "mix"
+                    participantId = "operator-1"
+                }
+            )
+        }
+    )
+} | ConvertTo-Json -Depth 6 -Compress
+
+$syncAfterJoin = Send-Line $syncAfterJoinPayload | ConvertFrom-Json
+if (-not $syncAfterJoin.ok) { throw "post-join media-core-sync failed." }
+if ($syncAfterJoin.snapshot.participants.Count -lt 1) {
+    throw "Expected roster participants on post-join sync snapshot."
+}
+Write-Host "Post-join roster ok: $($syncAfterJoin.snapshot.participants.Count) participants"
+
+$leave = Send-Line '{"id":"core-7","type":"zoom-leave"}' | ConvertFrom-Json
+if (-not $leave.ok) { throw "zoom-leave failed." }
+if ($leave.snapshot.meetingState -ne "idle") {
+    throw "Expected zoom-leave meetingState 'idle', got '$($leave.snapshot.meetingState)'."
+}
+Write-Host "zoom-leave ok"
+
 $process.Kill()
 $process.WaitForExit()
 Write-Host "Integration smoke test passed."

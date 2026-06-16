@@ -719,55 +719,110 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async Task SyncActiveSceneAsync()
     {
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
-        var commands = BuildCommandsForScene(scene);
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(BuildProductionSyncContext());
         var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(false);
         ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
         CommandStatus = $"{scene.Name} synced to media core";
     }
 
-    private IReadOnlyList<NativeMediaCoreCommand> BuildCommandsForScene(Scene scene)
+    private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
-        var routes = new List<(string RouteId, string Mode, string AudioRole, string? ParticipantId)>
+        var sceneRoutes = GetMutableRoutes(ActiveSceneId)
+            .Select(route => new MediaCoreSceneRouteWire(
+                route.Id,
+                SceneRoutingService.ModeToWire(route.Mode),
+                SceneRoutingService.AudioRoleToWire(route.AudioRole),
+                route.ParticipantId))
+            .ToList();
+
+        var participants = RoomVideoParticipants
+            .Select(participant => new MediaCoreParticipantWire(
+                participant.Id,
+                participant.Name,
+                participant.Role.ToString().ToLowerInvariant(),
+                participant.BreakoutRoomId,
+                participant.BreakoutRoomName,
+                participant.IsActiveSpeaker,
+                participant.IsMuted,
+                participant.IsScreenSharing,
+                participant.AudioLevel,
+                MapParticipantHealth(participant.Health)))
+            .ToList();
+
+        var audioMixByParticipant = AudioMix.Participants.ToDictionary(mix => mix.ParticipantId);
+        var audioChannels = RoomVideoParticipants
+            .Select(participant =>
+            {
+                audioMixByParticipant.TryGetValue(participant.Id, out var mix);
+                return new MediaCoreAudioMixChannelWire(
+                    participant.Id,
+                    mix?.OutputLevel ?? participant.AudioLevel,
+                    mix?.Muted ?? participant.IsMuted,
+                    mix?.NoiseSuppression ?? false,
+                    mix?.ManualGainDb == 0 ? null : mix?.ManualGainDb);
+            })
+            .ToList();
+
+        var isoParticipantIds = GetMutableRoutes(ActiveSceneId)
+            .Where(route =>
+                route.AudioRole == SourceAudioRole.Isolated &&
+                route.ParticipantId is not null)
+            .Select(route => route.ParticipantId!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+
+        if (isoParticipantIds.Count == 0)
         {
-            ("program", "active-speaker", "mix", SelectedParticipantId)
+            isoParticipantIds = MediaCoreProductionSyncContext.DefaultRecordingTargets.IsoParticipantIds.ToList();
+        }
+
+        return new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = ActiveSceneId,
+            SceneRoutes = sceneRoutes,
+            Participants = participants,
+            Recording = Recording,
+            Streaming = Streaming,
+            StreamDestinations = ["rtmp", "ndi"],
+            RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
+            {
+                IsoParticipantIds = isoParticipantIds
+            },
+            Graphics = Graphics
+                .Select(graphic => new MediaCoreGraphicWire(
+                    graphic.Id,
+                    graphic.Name,
+                    graphic.Position,
+                    graphic.Enabled))
+                .ToList(),
+            ColorGrade = new MediaCoreColorGradeWire(
+                ColorGrade.Lut,
+                ColorGrade.Exposure,
+                ColorGrade.Contrast,
+                ColorGrade.Saturation,
+                ColorGrade.Temperature),
+            BrandKit = new MediaCoreBrandKitWire(
+                BrandKit.Name,
+                BrandKit.LogoText,
+                BrandKit.BrandColor,
+                BrandKit.AccentColor,
+                BrandKit.BackgroundColor,
+                BrandKit.FontFamily,
+                BrandKit.LowerThirdStyle),
+            AudioMixChannels = audioChannels,
+            CaptionText = CaptionText,
+            CaptionSpeaker = CaptionSpeaker
         };
-
-        var commands = MediaCoreBridgeService.BuildSceneGraphCommand(scene.Id, routes).ToList();
-
-        if (Streaming)
-        {
-            commands.Add(new NativeMediaCoreCommand
-            {
-                Type = "start-program-output",
-                ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["destinations"] = System.Text.Json.JsonSerializer.SerializeToElement(new[] { "rtmp" }),
-                    ["isoParticipantIds"] = System.Text.Json.JsonSerializer.SerializeToElement(
-                        SelectedParticipantId is not null ? new[] { SelectedParticipantId } : Array.Empty<string>())
-                }
-            });
-        }
-
-        if (Recording)
-        {
-            commands.Add(new NativeMediaCoreCommand
-            {
-                Type = "start-recording-session",
-                ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["sessionId"] = System.Text.Json.JsonSerializer.SerializeToElement("winui-show"),
-                    ["targetFolder"] = System.Text.Json.JsonSerializer.SerializeToElement("Recordings"),
-                    ["filenamePrefix"] = System.Text.Json.JsonSerializer.SerializeToElement("Q2_Product_Update"),
-                    ["format"] = System.Text.Json.JsonSerializer.SerializeToElement("mp4"),
-                    ["quality"] = System.Text.Json.JsonSerializer.SerializeToElement("high"),
-                    ["isoParticipantIds"] = System.Text.Json.JsonSerializer.SerializeToElement(
-                        SelectedParticipantId is not null ? new[] { SelectedParticipantId } : Array.Empty<string>())
-                }
-            });
-        }
-
-        return commands;
     }
+
+    private static string MapParticipantHealth(FeedHealth health) => health switch
+    {
+        FeedHealth.LowResolution => "low-resolution",
+        FeedHealth.Recovering => "recovering",
+        FeedHealth.VideoOff => "video-off",
+        _ => "live"
+    };
 
     private void OnBridgeHealthChanged(MediaCoreHealth health)
     {
@@ -804,7 +859,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext));
-        Transport.ApplySnapshot(snapshot, Recording, Streaming, ResolveProgramResolutionLabel(snapshot));
+        Transport.ApplySnapshot(
+            snapshot,
+            snapshot.Recording?.Active == true,
+            LiveProductionSync.IsStreamingLive(snapshot),
+            ResolveProgramResolutionLabel(snapshot));
     }
 
     private LiveProductionSync.LiveProductionSyncContext BuildLiveProductionContext() =>
@@ -899,7 +958,43 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             CommandStatus = breakoutHint;
         }
+
+        if (patch.MeetingStateLabel is { Length: > 0 } meetingStateLabel)
+        {
+            Settings.ApplyMeetingStateLabel(
+                meetingStateLabel,
+                patch.Participants?.Count ?? LiveParticipantCountFromPatch(patch));
+        }
+
+        if (patch.Participants is { Count: > 0 } participants)
+        {
+            ApplyLiveParticipants(participants);
+        }
+        else if (patch.Participants is { Count: 0 })
+        {
+            RestoreDemoLiveProductionParticipants();
+        }
     }
+
+    private static int LiveParticipantCountFromPatch(LiveProductionSync.StudioLiveProductionPatch patch) =>
+        patch.Participants?.Count ?? 0;
+
+    private void ApplyLiveParticipants(IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
+    {
+        var mapped = ParticipantMapper.ToParticipants(participants);
+        RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
+        CurrentRoomLabel = _currentRoomName;
+        MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        OnPropertyChanged(nameof(RoomVideoParticipants));
+        OnPropertyChanged(nameof(CurrentRoomHeader));
+        RefreshParticipantListItems();
+        RefreshAudioParticipantRows();
+        OnPropertyChanged(nameof(CamerasOnCount));
+        OnPropertyChanged(nameof(ScreenShareLabel));
+        RefreshPreviewRoutingState();
+    }
+
+    private void RestoreDemoLiveProductionParticipants() => RefreshRoomParticipants();
 
     private void RestoreDemoLiveProductionState()
     {
@@ -909,6 +1004,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshRoomParticipants()
     {
+        if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
+        {
+            var liveParticipants = LiveProductionSync.MapSnapshotParticipants(snapshot);
+            if (liveParticipants is { Count: > 0 })
+            {
+                ApplyLiveParticipants(liveParticipants);
+                return;
+            }
+        }
+
         RoomVideoParticipants = DemoProduction.VideoParticipantsInRoom(_currentRoomId);
         CurrentRoomLabel = EngineRunning
             ? _currentRoomName
@@ -967,7 +1072,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
         {
-            Transport.ApplySnapshot(snapshot, Recording, Streaming, ResolveProgramResolutionLabel(snapshot));
+            Transport.ApplySnapshot(
+                snapshot,
+                snapshot.Recording?.Active == true,
+                LiveProductionSync.IsStreamingLive(snapshot),
+                ResolveProgramResolutionLabel(snapshot));
             return;
         }
 

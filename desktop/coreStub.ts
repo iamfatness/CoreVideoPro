@@ -88,7 +88,7 @@ export function handleCoreRequest(raw: string): CoreResponse | null {
         return { id: request.id, ok: false, error: { code: "invalid-request", message: "sync needs commands and elapsedMs." } };
       }
       frameNumber += 1;
-      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber);
+      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber, zoomCaptureState);
       return {
         id: request.id,
         ok: true,

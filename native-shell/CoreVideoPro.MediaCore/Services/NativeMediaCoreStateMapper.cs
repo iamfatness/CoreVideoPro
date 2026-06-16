@@ -176,7 +176,11 @@ public static class NativeMediaCoreStateMapper
             Warnings = mergedWarnings,
             MeetingState = wire.MeetingState ?? baseSnapshot.MeetingState,
             BreakoutRoomId = wire.BreakoutRoomId ?? baseSnapshot.BreakoutRoomId,
-            BreakoutRoomName = wire.BreakoutRoomName ?? baseSnapshot.BreakoutRoomName
+            BreakoutRoomName = wire.BreakoutRoomName ?? baseSnapshot.BreakoutRoomName,
+            ActiveSpeakerId = wire.ActiveSpeakerId ?? baseSnapshot.ActiveSpeakerId,
+            Participants = wire.Participants is { Count: > 0 } participants
+                ? participants
+                : baseSnapshot.Participants
         };
     }
 
