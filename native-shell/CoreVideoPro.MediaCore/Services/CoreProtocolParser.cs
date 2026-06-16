@@ -342,6 +342,27 @@ public static class CoreProtocolParser
         return JsonSerializer.Deserialize<NativeMediaCoreWireState>(wireElement.GetRawText(), MediaCoreJson.Options);
     }
 
+    public static ZoomMediaSpineNativeSnapshot? TryParseZoomMediaSpineSnapshot(JsonDocument response)
+    {
+        var root = response.RootElement;
+        if (!root.TryGetProperty("ok", out var okElement) ||
+            !okElement.GetBoolean() ||
+            !root.TryGetProperty("type", out var typeElement) ||
+            typeElement.GetString() != "zoom-media-spine-sync")
+        {
+            return null;
+        }
+
+        if (!root.TryGetProperty("spineSnapshot", out var spineElement))
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<ZoomMediaSpineNativeSnapshot>(
+            spineElement.GetRawText(),
+            MediaCoreJson.Options);
+    }
+
     public static RawCaptureSnapshot? TryParseCaptureSnapshot(JsonDocument response, string responseType)
     {
         var root = response.RootElement;

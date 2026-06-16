@@ -511,6 +511,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 EngineStatus = "Starting engine…";
                 await _bridge.StartAsync().ConfigureAwait(false);
+                _bridge.ConfigureZoomSpineSync(BuildSpinePayload);
                 EngineRunning = true;
                 _surfaces.SetEngineRunning(true, _bridge.Profile?.Renderer);
                 _surfaces.SetPreviewParticipant(SelectedParticipantId);
@@ -737,6 +738,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"Auto: {auto.Action} {auto.Confidence}% - {auto.Reason}";
     }
 
+    private Dictionary<string, object?> BuildSpinePayload()
+    {
+        var syncContext = BuildProductionSyncContext();
+        var participants = syncContext.Participants;
+        if (_bridge.LastSnapshot?.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true &&
+            _bridge.LastSnapshot.Participants is { Count: > 0 } liveParticipants)
+        {
+            participants = liveParticipants
+                .Select(participant => new MediaCoreParticipantWire(
+                    participant.UserId,
+                    participant.DisplayName,
+                    participant.Role ?? "guest",
+                    participant.BreakoutRoomId ?? _currentRoomId,
+                    participant.BreakoutRoomName ?? _currentRoomName,
+                    string.Equals(participant.UserId, _bridge.LastSnapshot.ActiveSpeakerId, StringComparison.Ordinal) ||
+                    participant.Talking == true,
+                    participant.Muted == true,
+                    participant.SharingScreen == true,
+                    participant.AudioLevel ?? 0,
+                    participant.NetworkQuality ?? "live"))
+                .ToList();
+        }
+
+        return ZoomMediaSpinePayloadBuilder.Build(
+            new ZoomMediaSpinePayloadBuilder.BuildInput
+            {
+                Participants = participants,
+                Recording = Recording,
+                SelectedBreakoutRoomId = _currentRoomId,
+                EngineRunning = EngineRunning,
+                OAuthSignedIn = Settings.ZoomOAuthSignedIn,
+                SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
+                SdkRuntimeReady = Settings.SdkIsReady || EngineRunning
+            });
+    }
+
     private async Task SyncActiveSceneAsync()
     {
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
@@ -909,6 +946,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void StopEngine(string status)
     {
+        _bridge.ConfigureZoomSpineSync(null);
         _bridge.Stop();
         _surfaces.SetEngineRunning(false);
         EngineRunning = false;
