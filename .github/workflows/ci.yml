@@ -89,3 +89,23 @@ jobs:
         run: node node_modules/electron/install.js
       - name: Playwright Electron smoke
         run: xvfb-run --auto-servernum npm run test:e2e
+
+  native-shell-windows:
+    runs-on: windows-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+      - run: npm ci
+      - name: Native media-core stub gate
+        run: npm run test:native-media-core
+      - name: MediaCore bridge + unit tests
+        run: npm run test:native-shell
+      - name: Publish WinUI shell (build gate)
+        run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false
