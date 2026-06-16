@@ -1,4 +1,6 @@
 # Package CoreVideo Pro WinUI native shell for demo distribution (unpackaged folder layout).
+# Stages corevideo-native.exe from COREVIDEO_NATIVE_BUILD_DIR when set, else prefers
+# native/build-dev/Release (dev adapters) before native/build* CI stub outputs.
 param(
   [string]$NativeBuildDir = $(if ($env:COREVIDEO_NATIVE_BUILD_DIR) { $env:COREVIDEO_NATIVE_BUILD_DIR } else { "" })
 )

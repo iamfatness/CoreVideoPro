@@ -158,6 +158,81 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void BuildsFullTakeSyncBatchWithSceneRoutesRosterAndOutputs()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            SceneRoutes =
+            [
+                new("speaker-slides-1", "fixed", "isolated", "p2"),
+                new("speaker-slides-2", "screen-share", "audience", null)
+            ],
+            Participants = Participants,
+            Recording = true,
+            Streaming = true,
+            StreamDestinations = ["rtmp", "ndi"],
+            CaptionText = "Welcome to the show.",
+            CaptionSpeaker = "Sophia Martinez"
+        });
+
+        var sceneGraph = commands.Single(command => command.Type == "load-scene-graph");
+        Assert.Equal("speaker-slides", GetString(sceneGraph, "sceneId"));
+        Assert.Equal(2, GetRoutes(sceneGraph).Count);
+
+        var commandTypes = commands.Select(command => command.Type).ToList();
+        Assert.Contains("set-zoom-source-roster", commandTypes);
+        Assert.Contains("set-active-speaker", commandTypes);
+        Assert.Contains("set-screen-share-source", commandTypes);
+        Assert.Contains("load-scene-graph", commandTypes);
+        Assert.Contains("prepare-encoder-session", commandTypes);
+        Assert.Contains("start-program-output", commandTypes);
+        Assert.Contains("start-encoder-session", commandTypes);
+        Assert.Contains("set-recording-targets", commandTypes);
+        Assert.Contains("start-recording-session", commandTypes);
+        Assert.Contains("push-caption-cue", commandTypes);
+    }
+
+    [Fact]
+    public void ArmsRecordingOnlyWithoutStreamingDestinations()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants,
+            Recording = true,
+            Streaming = false
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["recording"], GetStringArray(output, "destinations"));
+        Assert.Contains(commands, command => command.Type == "start-recording-session");
+        Assert.DoesNotContain(commands, command => command.Type == "stop-recording-session");
+    }
+
+    [Fact]
+    public void ArmsStreamingOnlyWithoutRecordingSession()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants,
+            Recording = false,
+            Streaming = true,
+            StreamDestinations = ["rtmp"]
+        });
+
+        var output = commands.Single(command => command.Type == "start-program-output");
+        Assert.Equal(["rtmp"], GetStringArray(output, "destinations"));
+        Assert.DoesNotContain(commands, command => command.Type == "start-recording-session");
+
+        var stopRecording = commands.Single(command => command.Type == "stop-recording-session");
+        Assert.Equal("Recording disabled in production state.", GetString(stopRecording, "reason"));
+    }
+
+    [Fact]
     public void IncludesZoomRosterActiveSpeakerAndScreenShareCommands()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

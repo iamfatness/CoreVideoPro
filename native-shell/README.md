@@ -1,11 +1,13 @@
 # CoreVideo Pro — WinUI native shell
 
-**Primary desktop shell** for Windows demos and packaging. The WinUI host loads the same media-core JSON bridge as the legacy Electron supervisor, without bundling Chromium.
+**Primary desktop shell** for Windows demos and packaging. Use the WinUI host for day-to-day operator work, `npm run pack:native`, and demo distribution. The WinUI app loads the same media-core JSON bridge as the legacy Electron supervisor, without bundling Chromium.
+
+**Electron is legacy.** Keep `npm run launch` / `pack:desktop` only for Chromium-based fallback when WinUI or the Windows App Runtime is unavailable (older CI agents, cross-platform dev).
 
 | Launch path | Role |
 |-------------|------|
-| `npm run launch:native` | **Default** — build/publish WinUI and run the native shell |
-| `npm run launch` | **Electron fallback** — Chromium + desktop supervisor for dev/CI when WinUI is unavailable |
+| `npm run launch:native` | **Default / primary demo path** — build/publish WinUI and run the native shell |
+| `npm run launch` | **Legacy Electron fallback** — Chromium + desktop supervisor |
 | `Launch CoreVideo Pro (Native).bat` | Double-click entry for packaged or dev native shell |
 | `Launch CoreVideo Pro.bat` | Electron fallback launcher |
 

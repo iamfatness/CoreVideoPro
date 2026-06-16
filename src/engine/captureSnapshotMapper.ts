@@ -25,6 +25,16 @@ export type RawCaptureSnapshot = {
   tick: number;
 };
 
+export function isRawCaptureSnapshot(value: unknown): value is RawCaptureSnapshot {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "meetingState" in value &&
+    "tick" in value &&
+    Array.isArray((value as RawCaptureSnapshot).participants)
+  );
+}
+
 export function mapCaptureSnapshot(raw: RawCaptureSnapshot): ZoomSessionSnapshot {
   const participants = raw.meetingState === "in_meeting" ? normalizeParticipants(raw) : [];
   const activeSpeaker = participants.find((participant) => participant.isActiveSpeaker && participant.health !== "video-off");

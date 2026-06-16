@@ -54,6 +54,38 @@ describe("syntheticMediaCore", () => {
     expect(snapshot.lastCommandTypes).toEqual(["set-active-speaker"]);
   });
 
+  it("reflects recording and streaming sessions from sync commands", () => {
+    const commands: NativeMediaCoreCommand[] = [
+      {
+        type: "load-scene-graph",
+        sceneId: "speaker-slides",
+        routes: [
+          { routeId: "speaker-slides-1", mode: "fixed", audioRole: "isolated", participantId: "p2" },
+          { routeId: "speaker-slides-2", mode: "screen-share", audioRole: "audience" }
+        ]
+      },
+      { type: "start-program-output", destinations: ["recording", "rtmp", "ndi"], isoParticipantIds: ["p1", "p2"] },
+      {
+        type: "start-recording-session",
+        sessionId: "Q2_Product_Update-p1-p2",
+        targetFolder: "Recordings/CoreVideo Pro",
+        filenamePrefix: "Q2_Product_Update",
+        format: "mp4",
+        quality: "high",
+        isoParticipantIds: ["p1", "p2"]
+      }
+    ];
+
+    const snapshot = synthesizeSnapshot(commands, 2400, 12);
+
+    expect(snapshot.recording?.active).toBe(true);
+    expect(snapshot.recording?.sessionId).toBe("Q2_Product_Update-p1-p2");
+    expect(snapshot.outputSenderSession.status).toBe("live");
+    expect(snapshot.outputSenderSession.activeSenderCount).toBe(2);
+    expect(snapshot.outputHealth.map((item) => item.destination)).toEqual(["recording", "rtmp", "ndi"]);
+    expect(snapshot.outputHealth.find((item) => item.destination === "recording")?.status).toBe("live");
+  });
+
   it("publishes breakout room fields and simulates room changes", () => {
     resetSyntheticBreakoutRoomState();
     const baseline = synthesizeSnapshot(

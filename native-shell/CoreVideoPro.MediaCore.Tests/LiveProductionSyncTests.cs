@@ -223,6 +223,42 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
+    public void MapsSophiaStyleHostParticipantFromCaptureSnapshot()
+    {
+        var participants = LiveProductionSync.MapCaptureSnapshotParticipants(new RawCaptureSnapshot
+        {
+            MeetingState = "in_meeting",
+            Tick = 2,
+            ActiveSpeakerId = "operator-1",
+            Participants =
+            [
+                new RawParticipantEvent
+                {
+                    UserId = "operator-1",
+                    DisplayName = "Sophia Martinez",
+                    Role = "Host",
+                    Title = "Executive Producer",
+                    BreakoutRoomId = "main",
+                    BreakoutRoomName = "Main room",
+                    Talking = true,
+                    VideoOn = true,
+                    SharingScreen = true,
+                    AudioLevel = 82
+                }
+            ]
+        });
+
+        Assert.Single(participants);
+        Assert.Equal("operator-1", participants[0].Id);
+        Assert.Equal("Sophia Martinez", participants[0].Name);
+        Assert.Equal("Host", participants[0].RoleLabel);
+        Assert.Equal("main", participants[0].BreakoutRoomId);
+        Assert.True(participants[0].IsActiveSpeaker);
+        Assert.True(participants[0].IsScreenSharing);
+        Assert.Equal("live", participants[0].HealthLabel);
+    }
+
+    [Fact]
     public void MapsCaptureSnapshotParticipantsForInMeetingState()
     {
         var participants = LiveProductionSync.MapCaptureSnapshotParticipants(new RawCaptureSnapshot
@@ -248,6 +284,65 @@ public sealed class LiveProductionSyncTests
         Assert.Equal("Live Host", participants[0].Name);
         Assert.Equal("Executive Producer", participants[0].Title);
         Assert.True(participants[0].IsActiveSpeaker);
+    }
+
+    [Fact]
+    public void SummarizeOutputSessionForRecordingAndStreaming()
+    {
+        var snapshot = BuildSnapshot(recordingActive: true, streamingLive: true);
+
+        var sessionStatus = LiveProductionSync.SummarizeOutputSession(snapshot);
+
+        Assert.Contains("Recording", sessionStatus);
+        Assert.Contains("program", sessionStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SummarizeOutputSessionReportsIdleWhenOutputsDisabled()
+    {
+        var snapshot = BuildSnapshot();
+
+        Assert.Equal("Outputs idle", LiveProductionSync.SummarizeOutputSession(snapshot));
+    }
+
+    [Fact]
+    public void IsStreamingLiveUsesSenderSessionWhenOutputHealthIsEmpty()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth = [],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "live",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "live",
+                        FramesSent = 4,
+                        RetryCount = 0,
+                        LatencyMs = 1800,
+                        BitrateMbps = 6
+                    }
+                ]
+            }
+        };
+
+        Assert.True(LiveProductionSync.IsStreamingLive(snapshot));
+    }
+
+    [Fact]
+    public void MapsTransportReadoutsFromIdleSnapshotPatch()
+    {
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(BuildSnapshot(), Context);
+
+        Assert.False(patch.Recording);
+        Assert.False(patch.Streaming);
+        Assert.Equal("Outputs idle", patch.OutputStatus);
+        Assert.Equal("Outputs idle", patch.OutputSessionStatus);
     }
 
     [Fact]

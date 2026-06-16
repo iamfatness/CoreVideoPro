@@ -132,9 +132,21 @@ public sealed class CoreProtocolParserTests
     [InlineData("FEEDFACE", 0xFEEDFACEul)]
     [InlineData("0xABCD", 0xABCDul)]
     [InlineData("  0x10  ", 0x10ul)]
+    [InlineData("0x00000000DEADBEEF", 0x00000000DEADBEEFul)]
+    [InlineData("0000000042AABBCC", 0x0000000042AABBCCul)]
     public void ParseSharedHandleHexAcceptsCommonWireFormats(string handleHex, ulong expected)
     {
         Assert.Equal(expected, CoreProtocolParser.ParseSharedHandleHex(handleHex));
+    }
+
+    [Theory]
+    [InlineData("0xFEEDFACE", false)]
+    [InlineData("0x00000000DEADBEEF", true)]
+    [InlineData("0x10", true)]
+    public void ParseSharedHandleHexPresentabilityMatchesInteropRules(string handleHex, bool expectedPresentable)
+    {
+        var handle = CoreProtocolParser.ParseSharedHandleHex(handleHex);
+        Assert.Equal(expectedPresentable, SharedTextureInteropRules.IsPresentableHandle(handle));
     }
 
     [Theory]
@@ -172,6 +184,7 @@ public sealed class CoreProtocolParserTests
         Assert.Equal("B8G8R8A8_UNORM", textureEvent.Texture.Format);
         Assert.Equal(12, textureEvent.Texture.FrameNumber);
         Assert.Equal(0xFEEDFACEul, CoreProtocolParser.ParseSharedHandleHex(textureEvent.Texture.SharedHandleHex));
+        Assert.False(SharedTextureInteropRules.IsPresentable(textureEvent.Texture));
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -84,7 +85,10 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public bool TryPresentSharedTexture(SharedTextureHandle handle)
     {
-        if (_disposed || !handle.IsValid || IsHandleInvalidated(handle.NtHandle))
+        if (_disposed ||
+            !handle.IsValid ||
+            SharedTextureInteropRules.IsStubHandle(handle.NtHandle) ||
+            IsHandleInvalidated(handle.NtHandle))
         {
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;

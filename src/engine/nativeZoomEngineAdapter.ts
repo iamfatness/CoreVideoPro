@@ -1,5 +1,5 @@
 import type { Participant } from "../domain/production";
-import { mapCaptureSnapshot } from "./captureSnapshotMapper";
+import { isRawCaptureSnapshot, mapCaptureSnapshot } from "./captureSnapshotMapper";
 import type { ZoomCaptureEngine, ZoomJoinRequest, ZoomSessionSnapshot } from "./contracts";
 import {
   NativeZoomBridgeError,
@@ -39,7 +39,7 @@ export class NativeZoomEngineAdapter implements ZoomCaptureEngine {
       throw new NativeZoomBridgeError(response.error.code, response.error.message);
     }
 
-    if (!("snapshot" in response) || !("meetingState" in response.snapshot)) {
+    if (!("snapshot" in response) || !isRawCaptureSnapshot(response.snapshot)) {
       throw new NativeZoomBridgeError("snapshot-failed", "Native Zoom bridge returned a non-snapshot response.");
     }
 

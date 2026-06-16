@@ -1,4 +1,6 @@
 # Package CoreVideo Pro WinUI native shell as an unsigned MSIX demo (single-project dual mode).
+# Stages corevideo-native.exe from COREVIDEO_NATIVE_BUILD_DIR when set, else prefers
+# native/build-dev/Release (dev adapters) before native/build* CI stub outputs.
 param(
   [string]$NativeBuildDir = $(if ($env:COREVIDEO_NATIVE_BUILD_DIR) { $env:COREVIDEO_NATIVE_BUILD_DIR } else { "" }),
   [switch]$ForceLayoutFallback
@@ -68,18 +70,26 @@ function Ensure-MsixAssets {
   }
 }
 
+function Test-NativeCorePresent {
+  param([string]$Dir)
+  return [bool](Test-Path (Join-Path $Dir "corevideo-native.exe"))
+}
+
 function Resolve-NativeSourceDir {
   param([string]$Override)
-  if ($Override -and (Test-Path $Override)) {
+  if ($Override -and (Test-NativeCorePresent $Override)) {
     return $Override
   }
+
+  # Prefer dev-machine Release output (build-native-dev.ps1) before CI stub artifacts.
   $candidates = @(
     (Join-Path $repoRoot "native/build-dev/Release"),
     (Join-Path $repoRoot "native/build-dev"),
+    (Join-Path $repoRoot "native/build/Release"),
     (Join-Path $repoRoot "native/build")
   )
   foreach ($candidate in $candidates) {
-    if (Test-Path (Join-Path $candidate "corevideo-native.exe")) {
+    if (Test-NativeCorePresent $candidate) {
       return $candidate
     }
   }

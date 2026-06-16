@@ -82,8 +82,10 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             throw new InvalidOperationException("Media core is not running.");
         }
 
-        return await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
+        var capture = await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
             .ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
     }
 
     public async Task<RawCaptureSnapshot> LeaveZoomAsync(CancellationToken cancellationToken = default)
@@ -93,14 +95,20 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             throw new InvalidOperationException("Media core is not running.");
         }
 
-        return await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
+        var capture = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
     }
 
     public static string SummarizeJoinLeaveMessage(RawCaptureSnapshot snapshot, string verb) =>
         SummarizeCaptureSnapshot(snapshot, verb);
 
-    public Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default) =>
-        _supervisor.GetZoomSnapshotAsync(cancellationToken);
+    public async Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var capture = await _supervisor.GetZoomSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
+    }
 
     public async Task<NativeMediaCoreStateSnapshot> SyncAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
@@ -224,6 +232,18 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
 
         SnapshotChanged?.Invoke(snapshot);
+    }
+
+    private void PublishCaptureSnapshot(RawCaptureSnapshot capture)
+    {
+        NativeMediaCoreStateSnapshot merged;
+        lock (_gate)
+        {
+            merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
+            _lastSnapshot = merged;
+        }
+
+        SnapshotChanged?.Invoke(merged);
     }
 
     private double GetElapsedMs()
