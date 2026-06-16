@@ -568,7 +568,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async Task ToggleRecordingAsync()
     {
         Recording = !Recording;
-        OutputStatus = Recording ? "Recording to Q2_Product_Update.mp4" : "Recording stopped";
+        RefreshOutputStatus();
 
         if (EngineRunning)
         {
@@ -587,7 +587,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async Task ToggleStreamingAsync()
     {
         Streaming = !Streaming;
-        OutputStatus = Streaming ? "Streaming to YouTube + Custom RTMP" : "Streaming stopped";
+        RefreshOutputStatus();
 
         if (EngineRunning)
         {
@@ -1122,6 +1122,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramSurface = _surfaces.ProgramSurface;
         PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+    }
+
+    private void RefreshOutputStatus()
+    {
+        if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
+        {
+            OutputStatus = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+            OutputSessionStatus = LiveProductionSync.SummarizeOutputSession(snapshot);
+            return;
+        }
+
+        if (!Recording && !Streaming)
+        {
+            OutputStatus = LiveProductionSync.DemoDefaults.OutputStatus;
+            OutputSessionStatus = LiveProductionSync.DemoDefaults.OutputStatus;
+            return;
+        }
+
+        var localStatus = LiveProductionSync.SummarizeLocalOutputs(Recording, Streaming);
+        OutputStatus = localStatus;
+        OutputSessionStatus = localStatus;
     }
 
     private void RefreshTransportState()

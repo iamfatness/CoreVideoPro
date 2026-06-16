@@ -41,6 +41,7 @@
     "bump:version": "node scripts/bump-version.mjs",
     "release:notes": "node scripts/release-notes.mjs",
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
+    "validate:record-stream": "node ./scripts/validate-record-stream.mjs",
     "test:e2e": "node scripts/e2e-smoke.mjs"
   },
   "dependencies": {

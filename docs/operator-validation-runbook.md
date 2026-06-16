@@ -103,6 +103,22 @@ npm run validate:live-zoom
 
 Pass criteria (defaults): ≥3 participants, ≥3 video feeds, first frame ≤1000 ms. Requires `build-native-dev` output and staged Zoom runtime.
 
+## 8b. Headless record/stream harness (optional)
+
+For stdio-level proof of recording + RTMP output without WinUI GUI:
+
+```powershell
+npm run validate:record-stream
+# Optional: node ./scripts/validate-record-stream.mjs --timeout-ms 30000 --destinations recording,rtmp
+```
+
+The harness launches `native/build-dev/corevideo-native.exe`, arms `load-scene-graph` + `start-program-output` + `start-recording-session`, then polls snapshot/`get-output-health` until:
+
+- **Recording:** MP4 artifact path on disk, or `recordingBytesWritten` / `totalBytesWritten` > 0 (Media Foundation dev adapter or stub counters).
+- **RTMP:** send-proof JSONL artifact, or `warning` status from the dev adapter when RTMP runtime is unavailable, or `live` with frames sent.
+
+Pass criteria (defaults): recording bytes ≥1, program frames ≥3, RTMP proof via artifact or acceptable warning/live status. Requires `build-native-dev` output (D3D11 + MF encoder + RTMP send-proof adapters).
+
 ## 9. Package for demo
 
 ```powershell
@@ -121,3 +137,4 @@ For MSIX: `npm run pack:native:msix` then `Add-AppxPackage -Path artifacts/nativ
 - [ ] Live join shows roster + program preview
 - [ ] `pack:native` bundles `corevideo-native.exe` from `build-dev`
 - [ ] (Optional) `validate:live-zoom` report `status: "passed"`
+- [ ] (Optional) `validate:record-stream` report `status: "passed"`

@@ -89,6 +89,39 @@ jobs:
           path: artifacts/desktop/*
           if-no-files-found: error
 
+  pack-native-windows:
+    needs: [validate]
+    if: >-
+      always() &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
+      (github.event_name == 'push' ||
+      github.event.inputs.platform == 'all' ||
+      github.event.inputs.platform == 'win')
+    runs-on: windows-latest
+    env:
+      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+      - run: npm ci
+      - name: Package Windows native shell
+        # Requires .NET 9 SDK (setup-dotnet) and Node 22 (setup-node). package-native.ps1
+        # throws a clear error if dotnet or node is missing from PATH.
+        run: npm run pack:native
+      - name: Upload Windows native artifacts
+        if: env.COREVIDEO_PUBLISH == 'never'
+        uses: actions/upload-artifact@v4
+        with:
+          name: corevideo-native-win
+          path: artifacts/native/win-unpacked
+          if-no-files-found: error
+
   pack-macos:
     needs: [validate]
     if: >-

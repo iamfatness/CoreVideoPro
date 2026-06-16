@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
@@ -173,20 +174,25 @@ public sealed partial class TransportViewModel : ObservableObject
         var networkHealth = ResolveNetworkHealth(snapshot);
         var droppedFrames = ResolveDroppedFrames(snapshot);
         var totalFrames = Math.Max(snapshot.ProgramFrameCount, droppedFrames);
-        var bitrateMbps = snapshot.OutputSenderSession.Senders.FirstOrDefault()?.BitrateMbps
-            ?? snapshot.OutputProfile.TargetBitrateMbps;
+        var transportReadouts = LiveProductionSync.MapTransportReadouts(
+            snapshot,
+            recording,
+            streaming,
+            programResolutionLabel);
 
         ProgramStatValue = programResolutionLabel;
         ApplyHealth(ProgramStatHealthLabel, networkHealth, brush => ProgramStatHealthBrush = brush);
 
-        StreamStatValue = streaming
-            ? $"{programResolutionLabel} {bitrateMbps:0.#} Mbps"
-            : "Idle";
-        ApplyHealth(StreamStatHealthLabel, streaming ? networkHealth : OutputHealthKind.Idle,
+        StreamStatValue = transportReadouts.StreamStatValue;
+        ApplyHealth(
+            StreamStatHealthLabel,
+            TransportFormatting.MapNetworkHealth(transportReadouts.StreamHealthStatus),
             brush => StreamStatHealthBrush = brush);
 
-        RecordStatValue = recording ? programResolutionLabel : "Idle";
-        ApplyHealth(RecordStatHealthLabel, recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
+        RecordStatValue = transportReadouts.RecordStatValue;
+        ApplyHealth(
+            RecordStatHealthLabel,
+            TransportFormatting.MapNetworkHealth(transportReadouts.RecordHealthStatus),
             brush => RecordStatHealthBrush = brush);
 
         CpuLoadLabel = TransportFormatting.PercentLabel(encoderLoad);

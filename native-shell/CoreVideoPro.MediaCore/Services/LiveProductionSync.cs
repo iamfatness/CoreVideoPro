@@ -269,11 +269,148 @@ public static class LiveProductionSync
             item.Status is "live" or "warning");
     }
 
+    public sealed record TransportReadoutLabels
+    {
+        public required string RecordStatValue { get; init; }
+        public required string StreamStatValue { get; init; }
+        public required string RecordHealthStatus { get; init; }
+        public required string StreamHealthStatus { get; init; }
+    }
+
+    public static TransportReadoutLabels MapTransportReadouts(
+        NativeMediaCoreStateSnapshot snapshot,
+        bool recording,
+        bool streaming,
+        string programResolutionLabel)
+    {
+        var recordHealthStatus = ResolveRecordHealthStatus(snapshot, recording);
+        var streamHealthStatus = ResolveStreamHealthStatus(snapshot, streaming);
+
+        return new TransportReadoutLabels
+        {
+            RecordStatValue = SummarizeRecordStat(snapshot, recording),
+            StreamStatValue = SummarizeStreamStat(snapshot, streaming, programResolutionLabel),
+            RecordHealthStatus = recordHealthStatus,
+            StreamHealthStatus = streamHealthStatus
+        };
+    }
+
+    public static string SummarizeRecordStat(NativeMediaCoreStateSnapshot snapshot, bool recording)
+    {
+        if (!recording && snapshot.Recording?.Active != true)
+        {
+            return "Idle";
+        }
+
+        var path = ResolveRecordingPath(snapshot);
+        if (path is { Length: > 0 })
+        {
+            return path;
+        }
+
+        if (snapshot.Recording?.Active == true)
+        {
+            return snapshot.Recording.Status;
+        }
+
+        return recording ? "Recording program" : "Idle";
+    }
+
+    public static string SummarizeStreamStat(
+        NativeMediaCoreStateSnapshot snapshot,
+        bool streaming,
+        string programResolutionLabel)
+    {
+        var liveOutputs = snapshot.OutputHealth
+            .Where(item =>
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+                item.Status is "live" or "warning")
+            .ToList();
+
+        if (liveOutputs.Count == 0)
+        {
+            var liveSender = snapshot.OutputSenderSession.Senders.FirstOrDefault(sender =>
+                sender.Status is "live" or "warning" or "starting");
+            if (liveSender is null)
+            {
+                return streaming ? $"{programResolutionLabel} · starting" : "Idle";
+            }
+
+            return FormatStreamSenderLabel(liveSender, programResolutionLabel, snapshot.OutputProfile.TargetBitrateMbps);
+        }
+
+        if (liveOutputs.Count == 1)
+        {
+            return FormatStreamOutputLabel(liveOutputs[0], snapshot, programResolutionLabel);
+        }
+
+        return $"Live: {string.Join(", ", liveOutputs.Select(item => item.Destination.ToUpperInvariant()))}";
+    }
+
+    public static string? ResolveRecordingPath(NativeMediaCoreStateSnapshot snapshot)
+    {
+        if (snapshot.Recording?.ProgramPath is { Length: > 0 } programPath)
+        {
+            return programPath;
+        }
+
+        return ResolveRecordingArtifactPath(snapshot);
+    }
+
+    public static string? ResolveRecordingArtifactPath(NativeMediaCoreStateSnapshot snapshot)
+    {
+        const string prefix = "Recording artifact: ";
+        var warning = snapshot.Warnings.FirstOrDefault(item => item.StartsWith(prefix, StringComparison.Ordinal));
+        return warning is null ? null : warning[prefix.Length..].Trim();
+    }
+
+    public static string ResolveRecordHealthStatus(NativeMediaCoreStateSnapshot snapshot, bool recording)
+    {
+        var health = snapshot.OutputHealth.FirstOrDefault(item =>
+            item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase));
+
+        return health?.Status ?? (recording || snapshot.Recording?.Active == true ? "live" : "idle");
+    }
+
+    public static string ResolveStreamHealthStatus(NativeMediaCoreStateSnapshot snapshot, bool streaming)
+    {
+        var health = snapshot.OutputHealth.FirstOrDefault(item =>
+            !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+            (item.Destination.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
+             item.Destination.Equals("program", StringComparison.OrdinalIgnoreCase)));
+
+        health ??= snapshot.OutputHealth.FirstOrDefault(item =>
+            !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase));
+
+        return health?.Status ?? (streaming || IsStreamingLive(snapshot) ? "live" : "idle");
+    }
+
+    public static string SummarizeLocalOutputs(bool recording, bool streaming)
+    {
+        if (recording && streaming)
+        {
+            return "Recording and streaming";
+        }
+
+        if (recording)
+        {
+            return "Recording program";
+        }
+
+        if (streaming)
+        {
+            return "Streaming live";
+        }
+
+        return DemoDefaults.OutputStatus;
+    }
+
     public static string SummarizeOutputSession(NativeMediaCoreStateSnapshot snapshot)
     {
         if (snapshot.Recording?.Active == true)
         {
-            return $"Recording {snapshot.Recording.Status} · {snapshot.Recording.ProgramPath}";
+            var path = ResolveRecordingPath(snapshot) ?? snapshot.Recording.ProgramPath;
+            return $"Recording {snapshot.Recording.Status} · {path}";
         }
 
         var liveOutputs = snapshot.OutputHealth
@@ -391,4 +528,21 @@ public static class LiveProductionSync
 
         return null;
     }
+
+    private static string FormatStreamOutputLabel(
+        NativeMediaCoreOutputHealth output,
+        NativeMediaCoreStateSnapshot snapshot,
+        string programResolutionLabel)
+    {
+        var sender = snapshot.OutputSenderSession.Senders.FirstOrDefault(item =>
+            item.Destination.Equals(output.Destination, StringComparison.OrdinalIgnoreCase));
+        var bitrateMbps = sender?.BitrateMbps ?? snapshot.OutputProfile.TargetBitrateMbps;
+        return $"{output.Destination.ToUpperInvariant()} · {output.Status} · {bitrateMbps:0.#} Mbps";
+    }
+
+    private static string FormatStreamSenderLabel(
+        NativeMediaCoreOutputSender sender,
+        string programResolutionLabel,
+        double fallbackBitrateMbps) =>
+        $"{sender.Destination.ToUpperInvariant()} · {sender.Status} · {sender.BitrateMbps:0.#} Mbps";
 }
