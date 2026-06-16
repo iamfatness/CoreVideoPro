@@ -4,30 +4,47 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public sealed class ZoomOAuthManifest
 {
+    public const string DefaultBrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start";
+    public const string DefaultBrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback";
+    public const string DefaultAppReturnUri = "corevideopro://oauth/callback";
+    public const string DefaultPublicClientId = "y6sIWSwiTZe1JygMx4C9EQ";
+
     public string BrokerStartUrl { get; init; } = string.Empty;
-    public string RedirectUri { get; init; } = "corevideopro://oauth/callback";
+    public string BrokerCallbackUrl { get; init; } = DefaultBrokerCallbackUrl;
+    public string RedirectUri { get; init; } = DefaultAppReturnUri;
+    public string PublicClientId { get; init; } = DefaultPublicClientId;
     public string Scopes { get; init; } = "user:read:token user:read:user";
 
     public bool BrokerConfigured => BrokerStartUrl.Trim().Length > 0;
+    public bool PublicClientIdPresent => PublicClientId.Trim().Length > 0;
 
     public static ZoomOAuthManifest Load(string? repoRoot = null)
     {
         repoRoot ??= MediaCorePaths.RepoRoot;
-        var envOverride = Environment.GetEnvironmentVariable(MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar);
-        if (!string.IsNullOrWhiteSpace(envOverride))
+        var manifest = LoadFromFile(repoRoot) ?? CreateDefaults();
+
+        var brokerOverride = Environment.GetEnvironmentVariable(MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar);
+        if (string.IsNullOrWhiteSpace(brokerOverride))
         {
-            return new ZoomOAuthManifest
-            {
-                BrokerStartUrl = envOverride.Trim(),
-                RedirectUri = ResolveRedirectUri(repoRoot),
-                Scopes = "user:read:token user:read:user"
-            };
+            return manifest;
         }
 
+        return new ZoomOAuthManifest
+        {
+            BrokerStartUrl = brokerOverride.Trim(),
+            BrokerCallbackUrl = manifest.BrokerCallbackUrl,
+            RedirectUri = manifest.RedirectUri,
+            PublicClientId = manifest.PublicClientId,
+            Scopes = manifest.Scopes
+        };
+    }
+
+    private static ZoomOAuthManifest? LoadFromFile(string repoRoot)
+    {
         var manifestPath = Path.Combine(repoRoot, "src", "config", "zoomOAuth.json");
         if (!File.Exists(manifestPath))
         {
-            return new ZoomOAuthManifest();
+            return null;
         }
 
         try
@@ -36,38 +53,30 @@ public sealed class ZoomOAuthManifest
             var root = document.RootElement;
             return new ZoomOAuthManifest
             {
-                BrokerStartUrl = root.TryGetProperty("brokerStartUrl", out var broker) ? broker.GetString()?.Trim() ?? "" : "",
-                RedirectUri = root.TryGetProperty("redirectUri", out var redirect) ? redirect.GetString()?.Trim() ?? "corevideopro://oauth/callback" : "corevideopro://oauth/callback",
-                Scopes = root.TryGetProperty("scopes", out var scopes) ? scopes.GetString()?.Trim() ?? "user:read:token user:read:user" : "user:read:token user:read:user"
+                BrokerStartUrl = ReadString(root, "brokerStartUrl", DefaultBrokerStartUrl),
+                BrokerCallbackUrl = ReadString(root, "brokerCallbackUrl", DefaultBrokerCallbackUrl),
+                RedirectUri = ReadString(root, "redirectUri", DefaultAppReturnUri),
+                PublicClientId = ReadString(root, "publicClientId", DefaultPublicClientId),
+                Scopes = ReadString(root, "scopes", "user:read:token user:read:user")
             };
         }
         catch
         {
-            return new ZoomOAuthManifest();
+            return null;
         }
     }
 
-    private static string ResolveRedirectUri(string repoRoot)
-    {
-        var manifestPath = Path.Combine(repoRoot, "src", "config", "zoomOAuth.json");
-        if (!File.Exists(manifestPath))
+    private static ZoomOAuthManifest CreateDefaults() =>
+        new()
         {
-            return "corevideopro://oauth/callback";
-        }
+            BrokerStartUrl = DefaultBrokerStartUrl,
+            BrokerCallbackUrl = DefaultBrokerCallbackUrl,
+            RedirectUri = DefaultAppReturnUri,
+            PublicClientId = DefaultPublicClientId
+        };
 
-        try
-        {
-            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
-            if (document.RootElement.TryGetProperty("redirectUri", out var redirect))
-            {
-                return redirect.GetString()?.Trim() ?? "corevideopro://oauth/callback";
-            }
-        }
-        catch
-        {
-            // ignore
-        }
-
-        return "corevideopro://oauth/callback";
-    }
+    private static string ReadString(JsonElement root, string property, string fallback) =>
+        root.TryGetProperty(property, out var element)
+            ? element.GetString()?.Trim() ?? fallback
+            : fallback;
 }

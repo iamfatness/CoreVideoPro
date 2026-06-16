@@ -1,5 +1,7 @@
 {
   "brokerStartUrl": "https://corevideo.iamfatness.us/oauth/start",
+  "brokerCallbackUrl": "https://corevideo.iamfatness.us/oauth/callback",
   "redirectUri": "corevideopro://oauth/callback",
+  "publicClientId": "y6sIWSwiTZe1JygMx4C9EQ",
   "scopes": "user:read:token user:read:user"
 }

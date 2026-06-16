@@ -90,7 +90,10 @@ public sealed class MediaCorePathsTests : IDisposable
         using var _ = SetEnv(MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar, "https://corevideo.example.test/oauth/start");
 
         Assert.True(MediaCorePaths.IsZoomOAuthBrokerConfigured());
-        Assert.Equal("https://corevideo.example.test/oauth/start", MediaCorePaths.LoadZoomOAuthManifest().BrokerStartUrl);
+        var manifest = MediaCorePaths.LoadZoomOAuthManifest();
+        Assert.Equal("https://corevideo.example.test/oauth/start", manifest.BrokerStartUrl);
+        Assert.Equal("https://corevideo.iamfatness.us/oauth/callback", manifest.BrokerCallbackUrl);
+        Assert.Equal("y6sIWSwiTZe1JygMx4C9EQ", manifest.PublicClientId);
     }
 
     [Fact]

@@ -1,7 +1,9 @@
 import manifest from "./zoomOAuth.json";
 
 export const ZOOM_OAUTH_BROKER_START_URL = manifest.brokerStartUrl;
+export const ZOOM_OAUTH_BROKER_CALLBACK_URL = manifest.brokerCallbackUrl;
 export const ZOOM_OAUTH_REDIRECT_URI = manifest.redirectUri;
+export const ZOOM_OAUTH_PUBLIC_CLIENT_ID = manifest.publicClientId;
 export const ZOOM_OAUTH_SCOPES = manifest.scopes;
 
 export function zoomOAuthBrokerConfigured(): boolean {

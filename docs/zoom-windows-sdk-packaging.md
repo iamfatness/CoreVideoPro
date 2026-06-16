@@ -40,6 +40,15 @@ Discovery env vars (checked in order for runtime resolution):
 - `ZOOM_SDK_DIR` — source SDK x64 folder (or package root containing `x64/`)
 - `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL` — optional override for embedded PKCE broker (`src/config/zoomOAuth.json`)
 
+Embedded OAuth identity (same broker as [CoreVideo plugin](https://github.com/iamfatness/CoreVideo)):
+
+| Field | Value |
+|-------|-------|
+| Broker start | `https://corevideo.iamfatness.us/oauth/start` |
+| Zoom redirect (broker) | `https://corevideo.iamfatness.us/oauth/callback` |
+| App return URI | `corevideopro://oauth/callback` |
+| Public Client ID | `y6sIWSwiTZe1JygMx4C9EQ` |
+
 Stage the SDK beside the helper target:
 
 ```powershell

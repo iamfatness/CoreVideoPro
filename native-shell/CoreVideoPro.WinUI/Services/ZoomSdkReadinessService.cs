@@ -6,7 +6,7 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class ZoomSdkReadinessService
 {
-    private const string DefaultAppKey = "y6sIWSwiTZe1JygMx4C9EQ";
+    private const string DefaultAppKey = ZoomOAuthManifest.DefaultPublicClientId;
 
     public static bool AppKeyPresent() => ResolveAppKey().Length > 0;
 
@@ -113,7 +113,7 @@ public static class ZoomSdkReadinessService
                 input.OAuthBrokerConfigured,
                 "OAuth PKCE broker",
                 input.OAuthBrokerConfigured
-                    ? "Public Client OAuth + PKCE broker is embedded (corevideo.iamfatness.us/oauth/start)."
+                    ? $"Public Client OAuth + PKCE broker embedded ({ZoomOAuthManifest.DefaultBrokerStartUrl}, Zoom redirect {ZoomOAuthManifest.DefaultBrokerCallbackUrl})."
                     : $"OAuth PKCE broker is not configured. Embed src/config/zoomOAuth.json or set {MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar}."),
             BuildCheck(
                 "oauth-session",
@@ -247,6 +247,12 @@ public static class ZoomSdkReadinessService
 
     private static string ResolveAppKey()
     {
+        var oauthManifest = MediaCorePaths.LoadZoomOAuthManifest();
+        if (oauthManifest.PublicClientIdPresent)
+        {
+            return oauthManifest.PublicClientId;
+        }
+
         try
         {
             var manifestPath = Path.Combine(MediaCorePaths.RepoRoot, "src", "config", "zoomMeetingSdk.json");
