@@ -1,7 +1,7 @@
 # Build CoreVideo Pro native binaries for Sprint 1–3 (Zoom engine + output adapters).
 # Requires: Visual Studio 2022+ with C++ tools, CMake, Zoom Meeting SDK x64.
 param(
-  [string]$ZoomSdkDir = $(if ($env:ZOOM_SDK_DIR) { $env:ZOOM_SDK_DIR } else { "C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64" }),
+  [string]$ZoomSdkDir = "",
   [string]$NativeDir = (Join-Path $PSScriptRoot "..\native"),
   [string]$BuildDir = (Join-Path $PSScriptRoot "..\native\build-dev"),
   [string]$Config = "Release",
@@ -10,6 +10,29 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+
+function Resolve-DefaultZoomSdkDir {
+  if ($env:ZOOM_SDK_DIR) {
+    return $env:ZOOM_SDK_DIR
+  }
+
+  $repoSdkCandidates = @(
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64"),
+    (Join-Path $repoRoot "ZoomSDK\x64")
+  )
+  foreach ($candidate in $repoSdkCandidates) {
+    if (Test-Path (Join-Path $candidate "h\zoom_sdk.h")) {
+      return $candidate
+    }
+  }
+
+  return "C:\Users\walla\Downloads\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64"
+}
+
+if (-not $PSBoundParameters.ContainsKey("ZoomSdkDir")) {
+  $ZoomSdkDir = Resolve-DefaultZoomSdkDir
+}
 
 function Resolve-VsDevCmd {
   $candidates = @(
