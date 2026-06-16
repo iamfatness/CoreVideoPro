@@ -4,6 +4,7 @@
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
+#include "zoom/FrameEmitThrottle.h"
 
 #include <memory>
 #include <mutex>
@@ -65,6 +66,7 @@ class ZoomEngineRuntime {
   bool mediaStarted_ = false;
   int fallbackTick_ = 0;
   std::vector<rpc::Json> pendingFrameEvents_;
+  zoom::FrameEmitThrottle frameEmitThrottle_;
 };
 
 }  // namespace corevideo::modules
