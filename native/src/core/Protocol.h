@@ -86,4 +86,8 @@ inline constexpr std::array<std::string_view, 2> kZoomMediaSpineSyncTypeNames = 
     "ZoomMediaSpineNativeSnapshot",
 };
 
+inline constexpr std::array<std::string_view, 1> kCoreEventTypes = {
+    "zoom-video-frame",
+};
+
 }  // namespace corevideo::core

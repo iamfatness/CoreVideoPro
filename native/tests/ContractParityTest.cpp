@@ -61,6 +61,14 @@ TEST(ContractParity, ZoomMediaSpineSyncMirrorsTypeScriptProtocolNames) {
   expectAllStringsPresent(payloadSource + snapshotSource, corevideo::core::kZoomMediaSpineSyncTypeNames);
 }
 
+TEST(ContractParity, CoreEventTypesMatchDesktopProtocol) {
+  const std::string desktopProtocol = readRepoFile("desktop/coreProtocol.ts");
+  ASSERT_FALSE(desktopProtocol.empty());
+  expectAllStringsPresent(desktopProtocol, corevideo::core::kCoreEventTypes);
+  EXPECT_NE(desktopProtocol.find("participantId"), std::string::npos);
+  EXPECT_NE(desktopProtocol.find("frameId"), std::string::npos);
+}
+
 TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
   const std::string desktopProtocol = readRepoFile("desktop/coreProtocol.ts");
   const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
