@@ -46,6 +46,15 @@ type Pending = {
 
 const STUB_PATH = join(dirname(fileURLToPath(import.meta.url)), "coreStub.ts");
 
+/** Drain unsolicited zoom-video-frame events at up to 60fps (pro production path). */
+const ZOOM_FRAME_DRAIN_INTERVAL_MS = (() => {
+  const configured = Number(process.env.COREVIDEO_ZOOM_FRAME_DRAIN_INTERVAL_MS ?? "16");
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return 16;
+  }
+  return Math.min(configured, 1000);
+})();
+
 export class MediaCoreSupervisor {
   private child: ChildProcessWithoutNullStreams | undefined;
   private lines: Interface | undefined;
@@ -235,7 +244,7 @@ export class MediaCoreSupervisor {
         return;
       }
       void this.ping().catch(() => undefined);
-    }, 66);
+    }, ZOOM_FRAME_DRAIN_INTERVAL_MS);
   }
 
   private stopFrameDrain(): void {
