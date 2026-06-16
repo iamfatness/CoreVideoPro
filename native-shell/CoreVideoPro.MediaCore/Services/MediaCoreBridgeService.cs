@@ -71,39 +71,52 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public Task<bool> PingAsync(CancellationToken cancellationToken = default) =>
         _supervisor.PingAsync(cancellationToken);
 
-    public async Task<string> JoinZoomAsync(
+    public async Task<RawCaptureSnapshot> JoinZoomAsync(
         string meetingUrl,
         string displayName,
         bool webinar,
+        string? sdkJwt = null,
+        string? userZak = null,
         CancellationToken cancellationToken = default)
     {
-        try
+        if (!Running)
         {
-            var snapshot = await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
-                .ConfigureAwait(false);
-            return SummarizeCaptureSnapshot(snapshot, "Joined");
+            throw new InvalidOperationException("Media core is not running.");
         }
-        catch (InvalidOperationException)
-        {
-            return $"Join queued (stub): {displayName} → {meetingUrl}";
-        }
+
+        var capture = await _supervisor.JoinZoomAsync(
+                meetingUrl,
+                displayName,
+                webinar,
+                sdkJwt,
+                userZak,
+                cancellationToken)
+            .ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
     }
 
-    public async Task<string> LeaveZoomAsync(CancellationToken cancellationToken = default)
+    public async Task<RawCaptureSnapshot> LeaveZoomAsync(CancellationToken cancellationToken = default)
     {
-        try
+        if (!Running)
         {
-            var snapshot = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
-            return SummarizeCaptureSnapshot(snapshot, "Left");
+            throw new InvalidOperationException("Media core is not running.");
         }
-        catch (InvalidOperationException)
-        {
-            return "Left Zoom meeting (stub).";
-        }
+
+        var capture = await _supervisor.LeaveZoomAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
     }
 
-    public Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default) =>
-        _supervisor.GetZoomSnapshotAsync(cancellationToken);
+    public static string SummarizeJoinLeaveMessage(RawCaptureSnapshot snapshot, string verb) =>
+        SummarizeCaptureSnapshot(snapshot, verb);
+
+    public async Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var capture = await _supervisor.GetZoomSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        PublishCaptureSnapshot(capture);
+        return capture;
+    }
 
     public async Task<NativeMediaCoreStateSnapshot> SyncAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
@@ -227,6 +240,18 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
 
         SnapshotChanged?.Invoke(snapshot);
+    }
+
+    private void PublishCaptureSnapshot(RawCaptureSnapshot capture)
+    {
+        NativeMediaCoreStateSnapshot merged;
+        lock (_gate)
+        {
+            merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
+            _lastSnapshot = merged;
+        }
+
+        SnapshotChanged?.Invoke(merged);
     }
 
     private double GetElapsedMs()

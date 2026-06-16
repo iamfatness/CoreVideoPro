@@ -78,13 +78,20 @@
                 <Border VerticalAlignment="Bottom"
                         HorizontalAlignment="Left"
                         Margin="10"
-                        Background="#660C1118"
+                        Background="#AA0C1118"
                         CornerRadius="4"
                         Padding="6,3"
-                        Visibility="{x:Bind ShowInteropBadge, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="D3D GPU surface"
-                               FontSize="9"
-                               Foreground="{StaticResource StudioMutedBrush}" />
+                        Visibility="{x:Bind ShowPathBadge, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="6"
+                                 Height="6"
+                                 VerticalAlignment="Center"
+                                 Fill="{x:Bind PathBadgeForeground, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind PathBadgeText, Mode=OneWay}"
+                                   FontSize="9"
+                                   FontWeight="SemiBold"
+                                   Foreground="{x:Bind PathBadgeForeground, Mode=OneWay}" />
+                    </StackPanel>
                 </Border>
             </Grid>
         </Border>

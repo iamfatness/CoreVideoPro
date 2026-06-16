@@ -225,7 +225,7 @@ rpc::Json MediaCore::leaveZoom() {
   return zoomSnapshot();
 }
 
-rpc::Json MediaCore::zoomSnapshot() {
+rpc::Json MediaCore::zoomSnapshot() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->snapshot();
   }
@@ -298,6 +298,13 @@ rpc::Json MediaCore::sessionState() const {
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
   };
+  const auto zoomCapture = zoomSnapshot();
+  if (zoomCapture.get("participants")) {
+    state.emplace("participants", *zoomCapture.get("participants"));
+  }
+  if (const auto activeSpeakerId = zoomCapture.getString("activeSpeakerId"); !activeSpeakerId.empty()) {
+    state.emplace("activeSpeakerId", activeSpeakerId);
+  }
   const auto preview = modules::programFramePreviewJson(lastProgramFrame_);
   if (!preview.isNull()) {
     state.emplace("programFramePreview", preview);

@@ -29,9 +29,13 @@ public static class LiveProductionSync
         public required string Name { get; init; }
         public string Title { get; init; } = string.Empty;
         public required string RoleLabel { get; init; }
+        public string BreakoutRoomId { get; init; } = "main";
         public string BreakoutRoomName { get; init; } = string.Empty;
         public bool IsActiveSpeaker { get; init; }
         public bool IsScreenSharing { get; init; }
+        public bool IsMuted { get; init; }
+        public int AudioLevel { get; init; }
+        public string HealthLabel { get; init; } = "live";
     }
 
     public sealed record LiveProductionSyncContext
@@ -65,6 +69,7 @@ public static class LiveProductionSync
         public string? MeetingStateLabel { get; init; }
         public string? BreakoutRoomChangeHint { get; init; }
         public string? EngineAutoStopStatus { get; init; }
+        public IReadOnlyList<LiveProductionParticipantContext>? Participants { get; init; }
     }
 
     public static StudioLiveProductionPatch MapSnapshotToStudioPatch(
@@ -99,9 +104,82 @@ public static class LiveProductionSync
             ZoomStatus = zoomStatus,
             MeetingStateLabel = meetingStateLabel,
             BreakoutRoomChangeHint = ResolveBreakoutRoomChangeHint(snapshot, context.CurrentBreakoutRoomId),
-            EngineAutoStopStatus = ResolveBreakoutRoomAutoStopStatus(snapshot, context.CurrentBreakoutRoomId)
+            EngineAutoStopStatus = ResolveBreakoutRoomAutoStopStatus(snapshot, context.CurrentBreakoutRoomId),
+            Participants = MapSnapshotParticipants(snapshot)
         };
     }
+
+    /// <summary>
+    /// Maps immutable media-core roster data into studio participant context.
+    /// Mirrors <c>captureSnapshotMapper.ts</c>.
+    /// </summary>
+    public static IReadOnlyList<LiveProductionParticipantContext>? MapSnapshotParticipants(
+        NativeMediaCoreStateSnapshot snapshot)
+    {
+        if (snapshot.Participants.Count == 0)
+        {
+            return null;
+        }
+
+        var meetingState = ResolveMeetingStateLabel(snapshot);
+        if (!string.Equals(meetingState, "in_meeting", StringComparison.Ordinal))
+        {
+            return [];
+        }
+
+        return MapRawParticipants(snapshot.Participants, snapshot.ActiveSpeakerId);
+    }
+
+    public static IReadOnlyList<LiveProductionParticipantContext> MapRawParticipants(
+        IReadOnlyList<RawParticipantEvent> participants,
+        string? activeSpeakerId = null)
+    {
+        var normalizedActiveSpeakerId = activeSpeakerId?.Trim() ?? string.Empty;
+
+        return participants
+            .Select(participant =>
+            {
+                var id = participant.UserId.Trim();
+                var healthLabel = NormalizeFeedHealthLabel(participant);
+                var roleLabel = string.IsNullOrWhiteSpace(participant.Role) ? "Guest" : participant.Role.Trim();
+                var title = string.IsNullOrWhiteSpace(participant.Title)
+                    ? roleLabel
+                    : participant.Title.Trim();
+                var isActiveSpeaker = !string.IsNullOrWhiteSpace(normalizedActiveSpeakerId)
+                    ? id.Equals(normalizedActiveSpeakerId, StringComparison.Ordinal)
+                    : participant.Talking == true;
+                var audioLevel = participant.AudioLevel ?? (participant.Talking == true ? 78 : 22);
+                audioLevel = Math.Clamp(audioLevel, 0, 100);
+
+                return new LiveProductionParticipantContext
+                {
+                    Id = id,
+                    Name = string.IsNullOrWhiteSpace(participant.DisplayName)
+                        ? $"Zoom User {id}"
+                        : participant.DisplayName.Trim(),
+                    Title = title,
+                    RoleLabel = roleLabel,
+                    BreakoutRoomId = string.IsNullOrWhiteSpace(participant.BreakoutRoomId)
+                        ? "main"
+                        : participant.BreakoutRoomId.Trim(),
+                    BreakoutRoomName = string.IsNullOrWhiteSpace(participant.BreakoutRoomName)
+                        ? "Main room"
+                        : participant.BreakoutRoomName.Trim(),
+                    IsActiveSpeaker = isActiveSpeaker,
+                    IsScreenSharing = participant.SharingScreen == true,
+                    IsMuted = participant.Muted == true,
+                    AudioLevel = audioLevel,
+                    HealthLabel = healthLabel
+                };
+            })
+            .ToList();
+    }
+
+    public static IReadOnlyList<LiveProductionParticipantContext> MapCaptureSnapshotParticipants(
+        RawCaptureSnapshot snapshot) =>
+        string.Equals(snapshot.MeetingState, "in_meeting", StringComparison.Ordinal)
+            ? MapRawParticipants(snapshot.Participants, snapshot.ActiveSpeakerId)
+            : [];
 
     public static StudioLiveProductionPatch CreateDemoFallbackPatch() =>
         new()
@@ -257,6 +335,21 @@ public static class LiveProductionSync
             : snapshot.BreakoutRoomName;
 
         return $"Breakout room changed to {roomLabel} — turn engine off before switching rooms.";
+    }
+
+    private static string NormalizeFeedHealthLabel(RawParticipantEvent participant)
+    {
+        if (participant.VideoOn == false)
+        {
+            return "video-off";
+        }
+
+        return participant.NetworkQuality switch
+        {
+            "low" => "low-resolution",
+            "recovering" => "recovering",
+            _ => "live"
+        };
     }
 
     private static string? ResolveMeetingStateLabel(NativeMediaCoreStateSnapshot snapshot)

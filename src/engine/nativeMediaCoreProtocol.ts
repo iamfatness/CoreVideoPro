@@ -1,3 +1,5 @@
+import type { RawParticipantEvent } from "./captureSnapshotMapper";
+
 export type NativeMediaCoreCapability =
   | "zoom-raw-video"
   | "zoom-raw-audio"
@@ -536,6 +538,10 @@ export type NativeMediaCoreStateSnapshot = {
   warnings: string[];
   /** Optional wire field: Zoom meeting state (e.g. in_meeting, idle). */
   meetingState?: string;
+  /** Optional wire field: active speaker participant id from Zoom runtime. */
+  activeSpeakerId?: string;
+  /** Optional wire field: Zoom roster participants (raw capture shape). */
+  participants?: RawParticipantEvent[];
   /** Optional wire field: active breakout room id from SDK/runtime. */
   breakoutRoomId?: string;
   /** Optional wire field: active breakout room label. */

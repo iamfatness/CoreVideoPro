@@ -155,9 +155,13 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             return;
         }
 
-        if (preview.SharedTexture is { IsValid: true } sharedTexture)
+        if (SharedTextureInteropRules.ShouldPreferGpuSurface(preview.SharedTexture))
         {
-            ApplyProgramSharedTexture(sharedTexture, preview.RenderPlanId, preview.Renderer, preview.Health);
+            ApplyProgramSharedTexture(
+                preview.SharedTexture!,
+                preview.RenderPlanId,
+                preview.Renderer,
+                preview.Health);
         }
 
         if (preview.Bgra is { Length: > 0 })
@@ -168,7 +172,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     public void OnProgramSharedTexture(ProgramSharedTexture texture)
     {
-        if (!_engineRunning || !texture.IsValid)
+        if (!_engineRunning || !SharedTextureInteropRules.IsPresentable(texture))
         {
             return;
         }
@@ -262,8 +266,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         lock (_gate)
         {
             var next = _programSurface
-                .WithFrame(metadata, "Program GPU surface live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · {renderer}")
-                .WithSharedHandle(handle);
+                .WithFrame(metadata, "Program GPU surface live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · {renderer}");
+            if (handle.IsValid)
+            {
+                next = next.WithSharedHandle(handle);
+            }
+
             _programSurface = next;
         }
 

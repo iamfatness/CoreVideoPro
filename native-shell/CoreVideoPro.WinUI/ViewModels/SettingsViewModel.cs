@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
@@ -9,6 +10,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class SettingsViewModel : ObservableObject
 {
     private readonly MediaCoreBridgeService _bridge;
+    private readonly ZoomOAuthService? _oauth;
     private readonly Func<bool> _engineRunning;
     private readonly Action<string>? _zoomStatusChanged;
 
@@ -28,6 +30,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _joinStatus = "Ready";
 
     [ObservableProperty]
+    private int _liveParticipantCount;
+
+    [ObservableProperty]
     private bool _sdkDiagnosticsExpanded;
 
     [ObservableProperty]
@@ -42,18 +47,33 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _licenseActionStatus = string.Empty;
 
+    [ObservableProperty]
+    private string _oauthStatusMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _zoomOAuthSignedIn;
+
     private ZoomSdkReadinessReport _sdkReadiness = CreateDefaultReport();
 
     public SettingsViewModel(
         MediaCoreBridgeService bridge,
         Func<bool> engineRunning,
+        ZoomOAuthService? oauth = null,
         Action<string>? zoomStatusChanged = null)
     {
         _bridge = bridge;
+        _oauth = oauth;
         _engineRunning = engineRunning;
         _zoomStatusChanged = zoomStatusChanged;
+        _ = RefreshOAuthStatusAsync();
         RefreshSdkReadiness();
     }
+
+    public bool ShowZoomOAuthControls => _oauth?.Manifest.BrokerConfigured == true;
+
+    public bool CanSignInWithZoom => ShowZoomOAuthControls && !ZoomOAuthSignedIn;
+
+    public bool CanSignOutZoom => ShowZoomOAuthControls && ZoomOAuthSignedIn;
 
     public ZoomSdkReadinessReport SdkReadiness => _sdkReadiness;
 
@@ -153,9 +173,12 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         get
         {
+            var participantCount = _engineRunning() && LiveParticipantCount > 0
+                ? LiveParticipantCount
+                : DemoProduction.Participants.Count;
             var room = DemoProduction.CurrentRoom();
             var stateLabel = MeetingState.ToString().Replace('_', ' ');
-            return $"{stateLabel} - {DemoProduction.Participants.Count} participants - {room.Name} - Screen share active - Captions on - 1920×1080 60fps - 28:47";
+            return $"{stateLabel} - {participantCount} participants - {room.Name} - Screen share active - Captions on - 1920×1080 60fps - 28:47";
         }
     }
 
@@ -173,9 +196,24 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     partial void OnLicenseActionStatusChanged(string value) => OnPropertyChanged(nameof(ShowLicenseActionStatus));
 
+    public async Task RefreshOAuthStatusAsync()
+    {
+        if (_oauth is null)
+        {
+            ZoomOAuthSignedIn = false;
+            NotifyOAuthUi();
+            return;
+        }
+
+        var status = await _oauth.GetStatusAsync().ConfigureAwait(true);
+        ZoomOAuthSignedIn = status.SignedIn;
+        NotifyOAuthUi();
+        RefreshSdkReadiness();
+    }
+
     public void RefreshSdkReadiness()
     {
-        var input = ZoomSdkReadinessService.DeriveInputForEngine(_engineRunning());
+        var input = ZoomSdkReadinessService.DeriveInputForEngine(_engineRunning(), ZoomOAuthSignedIn);
         _sdkReadiness = ZoomSdkReadinessService.Assess(input);
         NotifySdkUi();
         OnPropertyChanged(nameof(JoinBlockedBySdk));
@@ -197,17 +235,48 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         try
         {
-            var message = await _bridge.JoinZoomAsync(
+            if (!_engineRunning())
+            {
+                MeetingState = ZoomMeetingState.InMeeting;
+                LiveParticipantCount = DemoProduction.Participants.Count;
+                JoinStatus = $"Join queued (demo): {DisplayName.Trim()} → {JoinMeetingUrl.Trim()}";
+                NotifyMeetingUi();
+                return;
+            }
+
+            string? sdkJwt = null;
+            string? userZak = null;
+            if (_oauth is not null)
+            {
+                try
+                {
+                    var creds = await _oauth.EnsureJoinCredentialsAsync().ConfigureAwait(true);
+                    sdkJwt = creds.SdkJwt;
+                    userZak = creds.UserZak;
+                }
+                catch (Exception authEx)
+                {
+                    JoinStatus = authEx.Message;
+                    MeetingState = ZoomMeetingState.Error;
+                    NotifyMeetingUi();
+                    return;
+                }
+            }
+
+            var snapshot = await _bridge.JoinZoomAsync(
                 JoinMeetingUrl.Trim(),
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
-                IsWebinar).ConfigureAwait(true);
-            MeetingState = ZoomMeetingState.InMeeting;
-            JoinStatus = message;
+                IsWebinar,
+                sdkJwt,
+                userZak).ConfigureAwait(true);
+            ApplyCaptureSnapshot(snapshot);
+            JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
         }
         catch (Exception ex)
         {
             MeetingState = ZoomMeetingState.Error;
             JoinStatus = ex.Message;
+            NotifyMeetingUi();
         }
     }
 
@@ -217,15 +286,84 @@ public sealed partial class SettingsViewModel : ObservableObject
         JoinStatus = "Leaving meeting…";
         try
         {
-            var message = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
-            MeetingState = ZoomMeetingState.Idle;
-            JoinStatus = message;
+            if (!_engineRunning())
+            {
+                MeetingState = ZoomMeetingState.Idle;
+                LiveParticipantCount = 0;
+                JoinStatus = "Left Zoom meeting (demo).";
+                NotifyMeetingUi();
+                return;
+            }
+
+            var snapshot = await _bridge.LeaveZoomAsync().ConfigureAwait(true);
+            ApplyCaptureSnapshot(snapshot);
+            JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Left");
         }
         catch (Exception ex)
         {
             MeetingState = ZoomMeetingState.Error;
             JoinStatus = ex.Message;
+            NotifyMeetingUi();
         }
+    }
+
+    public void ApplyCaptureSnapshot(RawCaptureSnapshot snapshot)
+    {
+        MeetingState = ParseMeetingState(snapshot.MeetingState);
+        LiveParticipantCount = snapshot.Participants.Count;
+        NotifyMeetingUi();
+    }
+
+    public void ApplyMeetingStateLabel(string? meetingStateLabel, int participantCount = 0)
+    {
+        if (string.IsNullOrWhiteSpace(meetingStateLabel))
+        {
+            return;
+        }
+
+        MeetingState = ParseMeetingState(meetingStateLabel);
+        if (participantCount > 0)
+        {
+            LiveParticipantCount = participantCount;
+        }
+
+        NotifyMeetingUi();
+    }
+
+    [RelayCommand]
+    private async Task SignInWithZoomAsync()
+    {
+        if (_oauth is null)
+        {
+            OauthStatusMessage = "Zoom OAuth is not available in this shell build.";
+            return;
+        }
+
+        try
+        {
+            OauthStatusMessage = "Opening browser for Zoom sign-in (PKCE)…";
+            await _oauth.BeginAuthorizationAsync().ConfigureAwait(true);
+            OauthStatusMessage = "Approve Zoom in your browser, then return to CoreVideo Pro.";
+        }
+        catch (Exception ex)
+        {
+            OauthStatusMessage = ex.Message;
+        }
+
+        NotifyOAuthUi();
+    }
+
+    [RelayCommand]
+    private async Task SignOutZoomAsync()
+    {
+        if (_oauth is null)
+        {
+            return;
+        }
+
+        await _oauth.SignOutAsync().ConfigureAwait(true);
+        OauthStatusMessage = "Signed out of Zoom.";
+        await RefreshOAuthStatusAsync().ConfigureAwait(true);
     }
 
     [RelayCommand]
@@ -296,6 +434,23 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(EntitlementsSummary));
     }
 
+    private void NotifyOAuthUi()
+    {
+        OnPropertyChanged(nameof(ShowZoomOAuthControls));
+        OnPropertyChanged(nameof(CanSignInWithZoom));
+        OnPropertyChanged(nameof(CanSignOutZoom));
+    }
+
     private static ZoomSdkReadinessReport CreateDefaultReport() =>
         ZoomSdkReadinessService.Assess(ZoomSdkReadinessService.CreateEmbeddedInput());
+
+    private static ZoomMeetingState ParseMeetingState(string? meetingState) =>
+        meetingState?.Trim().ToLowerInvariant() switch
+        {
+            "in_meeting" or "in-meeting" or "joining" => ZoomMeetingState.InMeeting,
+            "idle" or "leaving" => ZoomMeetingState.Idle,
+            "reconnecting" => ZoomMeetingState.Reconnecting,
+            "error" => ZoomMeetingState.Error,
+            _ => ZoomMeetingState.Idle
+        };
 }

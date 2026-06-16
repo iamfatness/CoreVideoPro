@@ -96,6 +96,9 @@ public sealed class RawParticipantEvent
     public required string UserId { get; init; }
     public required string DisplayName { get; init; }
     public string? Role { get; init; }
+    public string? Title { get; init; }
+    public string? BreakoutRoomId { get; init; }
+    public string? BreakoutRoomName { get; init; }
     public bool? Muted { get; init; }
     public bool? VideoOn { get; init; }
     public bool? Talking { get; init; }
@@ -128,4 +131,6 @@ public sealed class NativeMediaCoreWireState
     public string? MeetingState { get; init; }
     public string? BreakoutRoomId { get; init; }
     public string? BreakoutRoomName { get; init; }
+    public string? ActiveSpeakerId { get; init; }
+    public IReadOnlyList<RawParticipantEvent>? Participants { get; init; }
 }

@@ -576,10 +576,24 @@ function emptySourceSnapshot(sourceCount, elapsedMs) {
     warnings: []
   };
 }
-function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
+function zoomRosterForSync(state) {
+  if (!state?.joined) {
+    return { meetingState: "idle", participants: [] };
+  }
+  return {
+    meetingState: "in_meeting",
+    activeSpeakerId: "operator-1",
+    participants: [
+      { userId: "operator-1", displayName: state.displayName, role: "Host", videoOn: true, muted: false, talking: true, audioLevel: 76, networkQuality: "good" },
+      { userId: "guest-1", displayName: "Guest 1", role: "Guest", videoOn: true, muted: false, talking: false, audioLevel: 22, networkQuality: "good" }
+    ]
+  };
+}
+function synthesizeSnapshot(commands, elapsedMs, frameNumber2, zoomState) {
   const sceneGraph = commands.find((command) => command.type === "load-scene-graph");
   const roster = commands.find((command) => command.type === "set-zoom-source-roster");
   const output = commands.find((command) => command.type === "start-program-output");
+  const recordingCommand = commands.find((command) => command.type === "start-recording-session");
   const overlays = commands.filter((command) => command.type === "set-overlay-asset");
   const transforms = commands.filter((command) => command.type === "set-participant-transform");
   const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
@@ -665,16 +679,37 @@ function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
   const audioMixSnapshot = audioMixSession.snapshot();
   const captionTrackSnapshot = captionTrack.snapshot();
   const brandKitSnapshot = brandKitSimulator.snapshot();
+  const programFrameCount = programFrame ? frameNumber2 : 0;
+  const recording = buildRecordingSession(recordingCommand, elapsedMs, programFrameCount);
+  const outputSenderSession = buildOutputSenderSession(outputs, programFrameCount);
+  const encoderSession = {
+    status: encoding ? "encoding" : "idle",
+    renderPlanId: programFrame?.renderPlanId,
+    programFrameCount: programFrame ? 1 : 0,
+    targets: outputs.map((destination) => ({
+      targetId: `${destination}:program`,
+      destination,
+      streamKind: "program",
+      status: "attached",
+      attachedFrameCount: programFrame ? 1 : 0
+    })),
+    lifecycle: {
+      status: encoding ? "encoding" : "idle",
+      lastTransition: encoding ? "Program output encoding." : "Encoder idle."
+    },
+    warnings: []
+  };
+  const outputHealth = buildOutputHealth(outputs, outputSenderSession, recording, encoderSession.warnings);
   const diagnostics = {
     generatedAtMs: elapsedMs,
     sceneId,
     routeCount,
     frameCount: frames.length,
-    programFrameCount: programFrame ? frameNumber2 : 0,
+    programFrameCount,
     outputs,
     outputProfile: DEFAULT_OUTPUT_PROFILE,
-    outputHealth: [],
-    outputSenderSession: { status: "idle", activeSenderCount: 0, senders: [], warnings: [] },
+    outputHealth,
+    outputSenderSession,
     sourceSnapshot,
     renderPlan,
     compositor: {
@@ -693,23 +728,8 @@ function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
       timestampMs: programFrame?.timestampMs,
       latencyMs: 0
     },
-    encoderSession: {
-      status: encoding ? "encoding" : "idle",
-      renderPlanId: programFrame?.renderPlanId,
-      programFrameCount: programFrame ? 1 : 0,
-      targets: outputs.map((destination) => ({
-        targetId: `${destination}:program`,
-        destination,
-        streamKind: "program",
-        status: "attached",
-        attachedFrameCount: programFrame ? 1 : 0
-      })),
-      lifecycle: {
-        status: encoding ? "encoding" : "idle",
-        lastTransition: encoding ? "Program output encoding." : "Encoder idle."
-      },
-      warnings: []
-    },
+    encoderSession,
+    recording,
     audioMixSession: audioMixSnapshot,
     captionTrack: captionTrackSnapshot,
     brandKit: brandKitSnapshot,
@@ -733,12 +753,13 @@ function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
     outputs,
     isoParticipantIds: output ? output.isoParticipantIds : [],
     outputProfile: DEFAULT_OUTPUT_PROFILE,
-    outputHealth: diagnostics.outputHealth,
-    outputSenderSession: diagnostics.outputSenderSession,
+    outputHealth,
+    outputSenderSession,
     sourceCount,
     resolvedRouteCount: routeCount,
     renderPlan,
-    encoderSession: diagnostics.encoderSession,
+    encoderSession,
+    recording,
     audioMixSession: audioMixSnapshot,
     captionTrack: captionTrackSnapshot,
     brandKit: brandKitSnapshot,
@@ -747,10 +768,99 @@ function synthesizeSnapshot(commands, elapsedMs, frameNumber2) {
     diagnostics,
     lastCommandTypes,
     warnings: diagnostics.warnings,
-    meetingState: sceneId || sourceCount > 0 ? "in_meeting" : "idle",
-    breakoutRoomId: breakoutRoomState.breakoutRoomId,
-    breakoutRoomName: breakoutRoomState.breakoutRoomName
+    ...(() => {
+      const zoomRoster = zoomRosterForSync(zoomState);
+      const inMeeting = zoomRoster.meetingState === "in_meeting" || Boolean(sceneId) || sourceCount > 0;
+      return {
+        meetingState: inMeeting ? "in_meeting" : "idle",
+        activeSpeakerId: zoomRoster.activeSpeakerId == null ? void 0 : String(zoomRoster.activeSpeakerId),
+        participants: zoomRoster.participants,
+        breakoutRoomId: breakoutRoomState.breakoutRoomId,
+        breakoutRoomName: breakoutRoomState.breakoutRoomName
+      };
+    })()
   };
+}
+function buildRecordingSession(recordingCommand, elapsedMs, programFrameCount) {
+  if (!recordingCommand) {
+    return void 0;
+  }
+  const targetFolder = recordingCommand.targetFolder ?? "Recordings";
+  const filenamePrefix = recordingCommand.filenamePrefix ?? "program";
+  return {
+    sessionId: recordingCommand.sessionId ?? "recording",
+    active: true,
+    status: "recording",
+    writerStatus: "writing",
+    startedAtMs: Math.max(0, elapsedMs - 1e3),
+    elapsedMs: Math.max(0, elapsedMs - 1e3),
+    targetFolder,
+    filenamePrefix,
+    format: recordingCommand.format ?? "mp4",
+    quality: recordingCommand.quality ?? "high",
+    encoder: {
+      codec: "h264",
+      hardwareAccelerated: true,
+      targetBitrateMbps: 18
+    },
+    estimatedDiskRateMBps: 4.99,
+    programPath: `${targetFolder}/${filenamePrefix}-program-0.mp4`,
+    streams: [],
+    totalFramesWritten: programFrameCount,
+    totalDroppedFrames: 0,
+    totalBytesWritten: programFrameCount > 0 ? 4096 : 0
+  };
+}
+function buildOutputSenderSession(outputs, programFrameCount) {
+  const streamDestinations = outputs.filter(
+    (destination) => destination !== "recording"
+  );
+  const senders = streamDestinations.map((destination) => ({
+    senderId: `${destination}:program`,
+    destination,
+    status: "live",
+    framesSent: programFrameCount,
+    retryCount: 0,
+    latencyMs: 2100,
+    bitrateMbps: 6
+  }));
+  return {
+    status: senders.length > 0 ? "live" : "idle",
+    activeSenderCount: senders.length,
+    senders,
+    warnings: []
+  };
+}
+function buildOutputHealth(outputs, senderSession, recording, encoderWarnings) {
+  const health = [];
+  for (const destination of outputs) {
+    if (destination === "recording") {
+      const status = recording?.status === "failed" ? "failed" : recording?.status === "warning" ? "warning" : recording?.active ? "live" : "idle";
+      health.push({
+        destination: "recording",
+        status,
+        message: recording?.programPath ?? "Recording idle.",
+        droppedFrames: recording?.totalDroppedFrames ?? 0
+      });
+      continue;
+    }
+    const sender = senderSession.senders.find((item) => item.destination === destination);
+    health.push({
+      destination,
+      status: sender?.status === "failed" ? "failed" : sender?.status === "warning" ? "warning" : sender?.status === "live" || sender?.status === "starting" ? "live" : "idle",
+      message: sender?.warning ?? `${destination.toUpperCase()} sender ${sender?.status ?? "idle"}.`,
+      droppedFrames: 0
+    });
+  }
+  for (const warning of encoderWarnings) {
+    health.push({
+      destination: "recording",
+      status: "warning",
+      message: warning,
+      droppedFrames: 0
+    });
+  }
+  return health;
 }
 function synthesizeSpineSnapshot(payload, elapsedMs) {
   const participantsById = new Map(payload.participants.map((p) => [p.sdkUserId, p]));
@@ -855,7 +965,7 @@ function handleCoreRequest(raw) {
         return { id: request.id, ok: false, error: { code: "invalid-request", message: "sync needs commands and elapsedMs." } };
       }
       frameNumber += 1;
-      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber);
+      const snapshot = synthesizeSnapshot(sync.commands, sync.elapsedMs, frameNumber, zoomCaptureState);
       return {
         id: request.id,
         ok: true,

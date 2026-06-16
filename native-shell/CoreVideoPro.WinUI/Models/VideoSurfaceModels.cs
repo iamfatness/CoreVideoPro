@@ -1,3 +1,5 @@
+using CoreVideoPro.MediaCore.Services;
+
 namespace CoreVideoPro.WinUI.Models;
 
 /// <summary>
@@ -46,7 +48,8 @@ public sealed class SharedTextureHandle
     public long AdapterLuid { get; init; }
     public int FrameNumber { get; init; }
 
-    public bool IsValid => NtHandle != 0 && Width > 0 && Height > 0;
+    public bool IsValid =>
+        SharedTextureInteropRules.IsPresentableHandle(NtHandle) && Width > 0 && Height > 0;
 }
 
 /// <summary>

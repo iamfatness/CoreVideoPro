@@ -55,7 +55,7 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: "Record" }));
     await waitFor(() => expect(nativeCore).toHaveTextContent("Recordingrecording"));
     expect(nativeCore).toHaveTextContent("Frames3");
-    expect(nativeCore).toHaveTextContent("Sources8");
+    expect(nativeCore).toHaveTextContent("Sources7");
     expect(nativeCore).toHaveTextContent("Resolved routes2");
     expect(nativeCore).toHaveTextContent("Render plan3 layers");
     expect(nativeCore).toHaveTextContent(/Plan IDrp-/);
@@ -202,7 +202,7 @@ describe("App production controls", () => {
 
     const highlights = screen.getByLabelText("AI Studio highlights");
     expect(within(highlights).getByText("Presenter plus slides moment")).toBeInTheDocument();
-    expect(within(highlights).getByText("ai-product-launch-webinar-andre-wallace-speaker-slides")).toBeInTheDocument();
+    expect(within(highlights).getByText("q2-product-update-david-chen-speaker-slides")).toBeInTheDocument();
   });
 
   it("runs Magic Scene through the engine and updates status", async () => {
@@ -246,11 +246,11 @@ describe("App production controls", () => {
     expect(within(program).getByLabelText("Speaker slides layout")).toBeInTheDocument();
     expect((await within(program).findAllByText("David Chen")).length).toBeGreaterThan(0);
     expect(within(program).getAllByText("1920x1080 30fps").length).toBeGreaterThan(0);
-    expect(within(program).getByText(/David Chen screen share - 1920x1080 - 75ms/i)).toBeInTheDocument();
+    expect(within(program).getByText("Building what matters next")).toBeInTheDocument();
     expect(within(program).getAllByText(/crop \d+% \/ \d+ms/i).length).toBeGreaterThan(0);
     expect(within(program).getAllByText("David Chen").length).toBeGreaterThan(0);
     expect(within(program).getByText(/Lower-third lifted to protect slide captions/i)).toBeInTheDocument();
-    expect(within(program).getByText("CoreVideo Pro")).toBeInTheDocument();
+    expect(within(program).getByText("CoreVideo")).toBeInTheDocument();
 
     await goToTab(user, "Settings");
     expect(screen.getByText("Caption confidence")).toBeInTheDocument();
@@ -333,6 +333,7 @@ describe("App production controls", () => {
 
     const program = screen.getByLabelText("Program preview");
     const captionSpan = () => program.querySelector(".caption-strip-text span") as HTMLElement;
+    await waitFor(() => expect(captionSpan().textContent).toMatch(/active speaker/i));
     const original = captionSpan().textContent ?? "";
     expect(original).not.toBe(original.toUpperCase());
 
@@ -382,7 +383,7 @@ describe("App production controls", () => {
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: "Export Bundle" }));
 
-    expect((await screen.findAllByText(/support-ai-product-launch-webinar/i)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/support-q2-product-update/i)).length).toBeGreaterThan(0);
     const summary = screen.getByLabelText("Support bundle summary");
     expect(within(summary).getByText("Show: Q2 Product Update (set-and-forget)")).toBeInTheDocument();
     expect(within(summary).getByText(/Outputs: Outputs idle/i)).toBeInTheDocument();
@@ -511,15 +512,15 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: /Preview Monitor/i }));
     await user.selectOptions(screen.getByLabelText("Slot 1 participant"), "p3");
 
-    expect(screen.getByText("Robert Smith + Sophia Martinez")).toBeInTheDocument();
+    expect(screen.getByText("Jeremy Collins + Sophia Martinez")).toBeInTheDocument();
     expect(screen.getByText("Interview route 1 updated")).toBeInTheDocument();
-    expect(within(program).queryByText("Robert Smith")).not.toBeInTheDocument();
-    expect(within(screen.getByLabelText("Preview monitor")).getByText("Robert Smith")).toBeInTheDocument();
+    expect(within(program).queryByText("Jeremy Collins")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Preview monitor")).getByText("Jeremy Collins")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Take" }));
 
     expect(within(program).getByLabelText("Interview layout")).toBeInTheDocument();
-    expect(within(program).getAllByText("Robert Smith").length).toBeGreaterThanOrEqual(1);
+    expect(within(program).getAllByText("Jeremy Collins").length).toBeGreaterThanOrEqual(1);
   });
 
   it("routes preview scene slots by active speaker with audio role metadata", async () => {
@@ -683,7 +684,7 @@ describe("App production controls", () => {
     expect(session.recordingSettings).toMatchObject({
       format: "mkv",
       quality: "archive",
-      isoParticipantIds: ["p2", "p4"]
+      isoParticipantIds: ["p2", "p7"]
     });
     expect(screen.getByLabelText("Recording folder")).toBeDisabled();
     expect(screen.getByLabelText("Linda Park ISO recording")).toBeDisabled();
@@ -812,17 +813,19 @@ describe("App production controls", () => {
     renderApp();
 
     await goToTab(user, "Audio");
-    await user.click(screen.getByRole("button", { name: /Linda Park/i }));
+    await user.click(screen.getByRole("button", { name: /Ava Patel/i }));
     await user.selectOptions(screen.getByLabelText("Production role"), "Host");
 
-    expect(screen.getByText("Linda Park set as Host for scene automation")).toBeInTheDocument();
-    expect(screen.getByText("Linda Park role set to Host")).toBeInTheDocument();
+    expect(screen.getByText("Ava Patel set as Host for scene automation")).toBeInTheDocument();
+    expect(screen.getByText("Ava Patel role set to Host")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Magic Scene/i }));
 
-    expect(await screen.findByText(/Host open with Linda Park/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Host open with Ava Patel/i)).toBeInTheDocument();
     await goToTab(user, "Studio");
-    expect(within(screen.getByText("Zoom participants").closest("aside") as HTMLElement).getByRole("button", { name: /Linda Park/i })).toHaveTextContent("Host");
+    const participantPanel = screen.getByLabelText("Participants and source controls");
+    const participantList = participantPanel.querySelector(".participant-list") as HTMLElement;
+    expect(within(participantList).getByText("Ava Patel", { selector: "strong" }).closest(".participant-card")).toHaveTextContent("HOST");
   });
 
   it("preserves producer role overrides across Zoom feed refreshes", async () => {
@@ -830,7 +833,7 @@ describe("App production controls", () => {
     renderApp();
 
     await goToTab(user, "Audio");
-    await user.click(screen.getByRole("button", { name: /Linda Park/i }));
+    await user.click(screen.getByRole("button", { name: /Ava Patel/i }));
     await user.selectOptions(screen.getByLabelText("Production role"), "Host");
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: /Refresh feeds/i }));
@@ -839,7 +842,9 @@ describe("App production controls", () => {
     await goToTab(user, "Audio");
     expect(screen.getByLabelText("Production role")).toHaveValue("Host");
     await goToTab(user, "Studio");
-    expect(within(screen.getByText("Zoom participants").closest("aside") as HTMLElement).getByRole("button", { name: /Linda Park/i })).toHaveTextContent("Host");
+    const participantPanel = screen.getByLabelText("Participants and source controls");
+    const participantList = participantPanel.querySelector(".participant-list") as HTMLElement;
+    expect(within(participantList).getByText("Ava Patel", { selector: "strong" }).closest(".participant-card")).toHaveTextContent("HOST");
   });
 
   it("applies participant video effects from smart handling controls", async () => {
@@ -872,6 +877,7 @@ describe("App production controls", () => {
     expect(within(panel).getByText("good")).toBeInTheDocument();
     expect(within(panel).queryByRole("status")).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: /Engine On/i }));
     await goToTab(user, "Audio");
     await user.click(screen.getByRole("button", { name: /Robert Smith/i }));
     await goToTab(user, "Media");
@@ -953,13 +959,14 @@ describe("App production controls", () => {
 
     await goToTab(user, "Settings");
     const refresh = screen.getByRole("button", { name: /Refresh feeds/i });
-    for (let index = 0; index < 4 && !screen.queryByText(/reserve this region/i); index += 1) {
+    for (let index = 0; index < 4 && screen.queryAllByText(/No screen share/i).length === 0; index += 1) {
       await user.click(refresh);
       await waitFor(() => expect(screen.getByText(/in meeting - 7 participants/i)).toBeInTheDocument());
     }
 
-    expect(screen.getAllByText(/No screen share/i).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/reserve this region/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/No screen share/i).length).toBeGreaterThanOrEqual(1);
+    await goToTab(user, "Studio");
+    expect(within(screen.getByLabelText("Program preview")).getByText(/Waiting for screen share/i)).toBeInTheDocument();
   });
 
   it("renders from injected engine implementations", async () => {
@@ -1119,14 +1126,14 @@ describe("feed health roster", () => {
     const roster = screen.getByLabelText("Feed health roster");
     const summary = within(roster).getByLabelText("Feed health summary");
 
-    // 7 participants seeded; most live, some muted/low-res/video-off
-    expect(summary).toHaveTextContent(/\/8/);
+    // Main-room roster: 5 participants; most live, one muted
+    expect(summary).toHaveTextContent(/\/5/);
     expect(summary).toHaveTextContent(/live/i);
 
     // Spot check: Sophia Martinez (live/Host) should show "Live" badge
     expect(within(roster).getByText("Sophia Martinez")).toBeInTheDocument();
-    // Robert Smith is seeded as low-resolution
-    expect(within(roster).getByText("Robert Smith")).toBeInTheDocument();
+    // Michael Thompson is seeded muted in the host room
+    expect(within(roster).getByText("Michael Thompson")).toBeInTheDocument();
   });
 });
 

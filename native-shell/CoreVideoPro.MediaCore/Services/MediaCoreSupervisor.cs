@@ -158,19 +158,32 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         string meetingUrl,
         string displayName,
         bool webinar,
+        string? sdkJwt = null,
+        string? userZak = null,
         CancellationToken cancellationToken = default)
     {
+        var payload = new Dictionary<string, object?>
+        {
+            ["meetingUrl"] = meetingUrl,
+            ["displayName"] = displayName,
+            ["webinar"] = webinar
+        };
+        if (!string.IsNullOrWhiteSpace(sdkJwt))
+        {
+            payload["sdkJwt"] = sdkJwt;
+        }
+
+        if (!string.IsNullOrWhiteSpace(userZak))
+        {
+            payload["userZak"] = userZak;
+        }
+
         var response = await SendAsync(
             new Dictionary<string, object?>
             {
                 ["id"] = NextId(),
                 ["type"] = "zoom-join",
-                ["payload"] = new Dictionary<string, object?>
-                {
-                    ["meetingUrl"] = meetingUrl,
-                    ["displayName"] = displayName,
-                    ["webinar"] = webinar
-                }
+                ["payload"] = payload
             },
             cancellationToken).ConfigureAwait(false);
 

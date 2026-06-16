@@ -1,6 +1,15 @@
 # CoreVideo Pro — WinUI native shell
 
-Lightweight Windows demo shell that hosts the same media-core JSON bridge as the Electron desktop app, without bundling Chromium.
+**Primary desktop shell** for Windows demos and packaging. Use the WinUI host for day-to-day operator work, `npm run pack:native`, and demo distribution. The WinUI app loads the same media-core JSON bridge as the legacy Electron supervisor, without bundling Chromium.
+
+**Electron is legacy.** Keep `npm run launch` / `pack:desktop` only for Chromium-based fallback when WinUI or the Windows App Runtime is unavailable (older CI agents, cross-platform dev).
+
+| Launch path | Role |
+|-------------|------|
+| `npm run launch:native` | **Default / primary demo path** — build/publish WinUI and run the native shell |
+| `npm run launch` | **Legacy Electron fallback** — Chromium + desktop supervisor |
+| `Launch CoreVideo Pro (Native).bat` | Double-click entry for packaged or dev native shell |
+| `Launch CoreVideo Pro.bat` | Electron fallback launcher |
 
 ## Prerequisites
 
@@ -26,21 +35,44 @@ cmake --build native/build --config Release --target corevideo-native corevideo-
 ctest -C Release --test-dir native/build --output-on-failure
 ```
 
-CI gate (skips gracefully when `cmake` or MSVC is unavailable):
+CI gates (skip gracefully when toolchain or GUI session is unavailable):
 
 ```powershell
-npm run test:native-media-core
+npm run test:native-media-core      # C++ stub build + stdio smoke
+npm run test:native-shell-smoke     # WinUI Release publish + brief process launch
 ```
 
-The script stages `corevideo-native.exe` to:
+The CI stub gate stages `corevideo-native.exe` to:
 
 - `native/build/`
-- `native/build-dev/`
-- `native/build-dev/Release/`
+- `native/build/Release/`
+
+`scripts/build-native-dev.ps1` owns `native/build-dev/` (and stages copies to `native/build-dev/Release/`).
 
 `MediaCorePaths.ResolveNativeCoreExecutable()` probes those locations (plus the app directory after `npm run pack:native`).
 
 For a full dev-machine build with Zoom SDK, D3D11 compositor, and hardware adapters, use `scripts/build-native-dev.ps1` instead (`COREVIDEO_STUB=OFF`).
+
+### D3D11 GPU compositor + shared-texture export (dev machine)
+
+The WinUI program surface opens DXGI shared handles from the native D3D11 compositor when a real adapter build is available. The portable stub (`COREVIDEO_STUB=ON`) still emits synthetic `program-shared-texture` events for protocol validation.
+
+From a **x64 Native Tools** or **Developer PowerShell for VS** prompt:
+
+```powershell
+# From repo root — real D3D11 compositor (no portable stub)
+cmake -S native -B native/build-dev `
+  -DCOREVIDEO_STUB=OFF `
+  -DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON `
+  -DCOREVIDEO_WITH_D3D11=ON `
+  -DBUILD_TESTING=ON
+cmake --build native/build-dev --config Release --target corevideo-native corevideo-native-tests
+ctest -C Release --test-dir native/build-dev --output-on-failure
+```
+
+When `cmake` or MSVC is unavailable, `npm run test:native-media-core` still runs the portable stub gate and skips gracefully.
+
+After a successful D3D11 build, stage `corevideo-native.exe` under `native/build-dev/` (or run `scripts/build-native-dev.ps1`) so `MediaCorePaths.ResolveNativeCoreExecutable()` picks up the GPU compositor. The WinUI program tile shows **GPU · full-res** when shared-handle presentation succeeds and falls back to **CPU · BGRA preview** when interop is unavailable or a handle is invalid.
 
 ## Quick start (dev)
 
@@ -89,7 +121,14 @@ Add-AppxPackage -Path artifacts/native/CoreVideoPro.msix -AllowUnsigned
 powershell -ExecutionPolicy Bypass -File artifacts/native/install-msix.ps1
 ```
 
-For repeatable installs on a dev PC you can create a self-signed cert (`New-SelfSignedCertificate -Type Custom -Subject "CN=CoreVideo Pro Dev" ...`), sign the `.msix` with `SignTool`, and trust the cert under **Local Computer → Trusted People**. Production distribution needs a real code-signing certificate and signed MSIX; the unsigned path is intentional for demo/CI.
+For repeatable installs on a dev PC you can run the optional signing stub:
+
+```powershell
+npm run pack:native:msix
+powershell -ExecutionPolicy Bypass -File scripts/sign-native-msix.ps1
+```
+
+The script creates a self-signed dev cert when `SignTool` is available, or prints manual `New-SelfSignedCertificate` / `SignTool` steps when signing tools are missing. Trust the cert under **Local Computer → Trusted People**. Production distribution needs a real code-signing certificate and signed MSIX; the unsigned path is intentional for demo/CI.
 
 **CI without signing:** if `dotnet publish` cannot emit an `.msix`, the script publishes an unpackaged layout, writes `AppxManifest.xml`, and optionally runs `makeappx.exe pack` when the Windows SDK is available. Use `install-msix-layout.ps1` to register the layout unsigned.
 

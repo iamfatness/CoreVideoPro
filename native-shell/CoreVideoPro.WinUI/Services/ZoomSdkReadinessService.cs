@@ -6,7 +6,7 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class ZoomSdkReadinessService
 {
-    private const string DefaultAppKey = "y6sIWSwiTZe1JygMx4C9EQ";
+    private const string DefaultAppKey = ZoomOAuthManifest.DefaultPublicClientId;
 
     public static bool AppKeyPresent() => ResolveAppKey().Length > 0;
 
@@ -18,7 +18,8 @@ public static class ZoomSdkReadinessService
             SdkRuntimePresent = false,
             AppKeyPresent = AppKeyPresent(),
             OauthConfigured = false,
-            JwtBrokerConfigured = false,
+            OAuthSignedIn = false,
+            OAuthBrokerConfigured = false,
             RawVideoEnabled = false,
             RawAudioEnabled = false,
             RawShareEnabled = false
@@ -36,36 +37,60 @@ public static class ZoomSdkReadinessService
             SdkVersion = overrides.SdkVersion ?? input.SdkVersion,
             AppKeyPresent = overrides.AppKeyPresent,
             OauthConfigured = overrides.OauthConfigured,
-            JwtBrokerConfigured = overrides.JwtBrokerConfigured,
+            OAuthSignedIn = overrides.OAuthSignedIn,
+            OAuthBrokerConfigured = overrides.OAuthBrokerConfigured,
             RawVideoEnabled = overrides.RawVideoEnabled,
             RawAudioEnabled = overrides.RawAudioEnabled,
             RawShareEnabled = overrides.RawShareEnabled,
-            PackagingPath = overrides.PackagingPath ?? input.PackagingPath
+            PackagingPath = overrides.PackagingPath ?? input.PackagingPath,
+            NativeCorePresent = overrides.NativeCorePresent,
+            StagedRuntimeReady = overrides.StagedRuntimeReady,
+            StagingTargetPath = overrides.StagingTargetPath ?? input.StagingTargetPath
         };
     }
 
-    public static ZoomSdkReadinessInput DeriveInputForEngine(bool engineRunning)
+    public static ZoomSdkReadinessInput DeriveInputForEngine(bool _, bool oauthSignedIn = false)
     {
         var baseInput = CreateEmbeddedInput();
-        if (!engineRunning)
-        {
-            return baseInput;
-        }
-
+        var oauthManifest = MediaCorePaths.LoadZoomOAuthManifest();
         var nativeExe = MediaCorePaths.ResolveNativeCoreExecutable();
-        var runtimePresent = nativeExe is not null;
+        var zoomSdkRoot = MediaCorePaths.ResolveZoomSdkArchitectureRoot();
+        var stagedTarget = MediaCorePaths.ResolveStagedZoomRuntimeTarget();
+        var packageReport = zoomSdkRoot is not null
+            ? ZoomWindowsSdkPackageService.InspectDirectory(zoomSdkRoot)
+            : null;
+        var sdkDllBesideNative = nativeExe is not null &&
+                                 File.Exists(Path.Combine(Path.GetDirectoryName(nativeExe) ?? string.Empty, "sdk.dll"));
+        var stagedRuntimeReady = packageReport?.IsReady == true &&
+                                 zoomSdkRoot is not null &&
+                                 string.Equals(
+                                     Path.GetFullPath(zoomSdkRoot),
+                                     Path.GetFullPath(stagedTarget),
+                                     StringComparison.OrdinalIgnoreCase);
+        var sdkRuntimeReady = packageReport?.IsReady == true || sdkDllBesideNative;
+        var sdkVersion = packageReport?.Version ?? (sdkRuntimeReady ? "zoom-engine" : null);
+        var packagingPath = zoomSdkRoot ?? nativeExe;
+        var oauthBrokerConfigured = oauthManifest.BrokerConfigured;
+
         return new ZoomSdkReadinessInput
         {
             Platform = ZoomSdkRuntimePlatform.Windows,
-            SdkRuntimePresent = runtimePresent,
-            SdkVersion = runtimePresent ? "zoom-engine" : null,
+            SdkRuntimePresent = sdkRuntimeReady,
+            SdkVersion = sdkVersion,
             AppKeyPresent = baseInput.AppKeyPresent,
-            OauthConfigured = baseInput.AppKeyPresent,
-            JwtBrokerConfigured = false,
-            RawVideoEnabled = runtimePresent,
-            RawAudioEnabled = runtimePresent,
-            RawShareEnabled = runtimePresent,
-            PackagingPath = nativeExe
+            OauthConfigured = oauthBrokerConfigured || oauthSignedIn || baseInput.AppKeyPresent,
+            OAuthSignedIn = oauthSignedIn,
+            OAuthBrokerConfigured = oauthBrokerConfigured,
+            RawVideoEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-api-header")?.Present == true
+                              || sdkRuntimeReady,
+            RawAudioEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-audio-header")?.Present == true
+                              || sdkRuntimeReady,
+            RawShareEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-renderer-header")?.Present == true
+                              || sdkRuntimeReady,
+            PackagingPath = packagingPath,
+            NativeCorePresent = nativeExe is not null,
+            StagedRuntimeReady = stagedRuntimeReady,
+            StagingTargetPath = stagedTarget
         };
     }
 
@@ -77,24 +102,28 @@ public static class ZoomSdkReadinessService
                 "sdk-runtime",
                 input.SdkRuntimePresent,
                 "Zoom Meeting SDK runtime",
-                input.SdkRuntimePresent
-                    ? $"Runtime found{(string.IsNullOrWhiteSpace(input.PackagingPath) ? "." : $" at {input.PackagingPath}.")}"
-                    : "Zoom Meeting SDK runtime is missing from the packaged helper process."),
+                DescribeSdkRuntimeDetail(input)),
             BuildCheck(
                 "app-key",
                 input.AppKeyPresent,
                 "Meeting SDK app key",
                 input.AppKeyPresent ? "Meeting SDK app key is configured." : "Meeting SDK app key is missing."),
             BuildCheck(
-                "oauth",
-                input.OauthConfigured,
-                "OAuth broker",
-                input.OauthConfigured ? "OAuth broker is configured for meeting authorization." : "OAuth broker is not configured."),
+                "oauth-broker",
+                input.OAuthBrokerConfigured,
+                "OAuth PKCE broker",
+                input.OAuthBrokerConfigured
+                    ? $"Public Client OAuth + PKCE broker embedded ({ZoomOAuthManifest.DefaultBrokerStartUrl}, Zoom redirect {ZoomOAuthManifest.DefaultBrokerCallbackUrl})."
+                    : $"OAuth PKCE broker is not configured. Embed src/config/zoomOAuth.json or set {MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar}."),
             BuildCheck(
-                "jwt-broker",
-                input.JwtBrokerConfigured,
-                "SDK JWT broker",
-                input.JwtBrokerConfigured ? "SDK JWT broker is configured." : "SDK JWT broker is not configured."),
+                "oauth-session",
+                true,
+                "Zoom account sign-in",
+                input.OAuthSignedIn
+                    ? "Signed in with Zoom — broker mints Meeting SDK JWT via PKCE (same flow as CoreVideo plugin)."
+                    : input.OAuthBrokerConfigured
+                        ? "Not signed in. Use Sign in with Zoom for external-account meetings; public app key joins still work for dev."
+                        : "OAuth sign-in unavailable until the PKCE broker is configured."),
             BuildCheck(
                 "raw-video",
                 input.RawVideoEnabled,
@@ -117,9 +146,51 @@ public static class ZoomSdkReadinessService
             .Select(check => check.Detail)
             .ToList();
 
-        var warnings = string.IsNullOrWhiteSpace(input.SdkVersion)
-            ? new List<string> { "SDK version is unknown; include it in support bundles before beta." }
-            : [];
+        var warnings = new List<string>();
+        if (!input.SdkRuntimePresent && input.NativeCorePresent)
+        {
+            warnings.Add($"Native media core is built but Zoom SDK runtime is not staged at {input.StagingTargetPath}.");
+        }
+
+        if (!input.StagedRuntimeReady && input.SdkRuntimePresent)
+        {
+            warnings.Add(
+                $"Zoom SDK runtime was discovered outside the staged target ({input.StagingTargetPath}). Run .\\scripts\\stage-zoom-sdk.ps1 to normalize packaging.");
+        }
+
+        if (string.IsNullOrWhiteSpace(input.SdkVersion))
+        {
+            warnings.Add("SDK version is unknown; include it in support bundles before beta.");
+        }
+
+        if (input.OAuthBrokerConfigured && !input.OAuthSignedIn)
+        {
+            warnings.Add("Sign in with Zoom (PKCE) before joining external-account meetings.");
+        }
+
+        if (input.SdkRuntimePresent && input.PackagingPath is not null)
+        {
+            var packageRoot = Directory.Exists(input.PackagingPath)
+                ? input.PackagingPath
+                : Path.GetDirectoryName(input.PackagingPath);
+            if (packageRoot is not null && Directory.Exists(packageRoot))
+            {
+                var packageReport = ZoomWindowsSdkPackageService.InspectDirectory(packageRoot);
+                warnings.AddRange(packageReport.Warnings.Where(warning => !warnings.Contains(warning)));
+                if (!packageReport.IsReady)
+                {
+                    foreach (var blocker in packageReport.Blockers.Where(blocker => !blockers.Contains(blocker)))
+                    {
+                        blockers.Add(blocker);
+                        checks.Add(BuildCheck(
+                            $"sdk-package-{checks.Count}",
+                            false,
+                            "Zoom SDK package",
+                            blocker));
+                    }
+                }
+            }
+        }
 
         var status = blockers.Count > 0
             ? ZoomSdkReadinessStatus.Blocked
@@ -150,6 +221,21 @@ public static class ZoomSdkReadinessService
     public static bool ShouldBlockZoomJoin(bool engineRunning, ZoomSdkReadinessReport readiness) =>
         engineRunning && readiness.Status == ZoomSdkReadinessStatus.Blocked;
 
+    private static string DescribeSdkRuntimeDetail(ZoomSdkReadinessInput input)
+    {
+        if (input.SdkRuntimePresent)
+        {
+            return $"Runtime found{(string.IsNullOrWhiteSpace(input.PackagingPath) ? "." : $" at {input.PackagingPath}.")}";
+        }
+
+        if (!input.NativeCorePresent)
+        {
+            return "Native media core executable is missing. Build with .\\scripts\\build-native-dev.ps1 after staging the SDK.";
+        }
+
+        return $"Zoom Meeting SDK runtime is missing from the staged helper target ({input.StagingTargetPath}). {MediaCorePaths.ZoomSdkStagingInstructions}";
+    }
+
     private static ZoomSdkReadinessCheck BuildCheck(string id, bool passed, string label, string detail) =>
         new()
         {
@@ -161,6 +247,12 @@ public static class ZoomSdkReadinessService
 
     private static string ResolveAppKey()
     {
+        var oauthManifest = MediaCorePaths.LoadZoomOAuthManifest();
+        if (oauthManifest.PublicClientIdPresent)
+        {
+            return oauthManifest.PublicClientId;
+        }
+
         try
         {
             var manifestPath = Path.Combine(MediaCorePaths.RepoRoot, "src", "config", "zoomMeetingSdk.json");

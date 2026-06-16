@@ -1,0 +1,136 @@
+using CoreVideoPro.MediaCore.Services;
+using Xunit;
+
+namespace CoreVideoPro.MediaCore.Tests;
+
+public sealed class MediaCorePathsTests : IDisposable
+{
+    private readonly string _repoRoot;
+    private readonly Dictionary<string, string?> _originalEnv = new(StringComparer.Ordinal);
+
+    public MediaCorePathsTests()
+    {
+        _repoRoot = Path.Combine(Path.GetTempPath(), "corevideo-media-core-paths-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_repoRoot);
+    }
+
+    public void Dispose()
+    {
+        foreach (var (key, value) in _originalEnv)
+        {
+            Environment.SetEnvironmentVariable(key, value);
+        }
+
+        if (Directory.Exists(_repoRoot))
+        {
+            Directory.Delete(_repoRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildZoomSdkArchitectureRootCandidates_PrefersRuntimeOverrideBeforeStagedFolder()
+    {
+        var staged = Path.Combine(_repoRoot, MediaCorePaths.StagedZoomRuntimeRelativePath);
+        var overrideDir = Path.Combine(_repoRoot, "custom-runtime");
+        Directory.CreateDirectory(staged);
+        Directory.CreateDirectory(overrideDir);
+
+        using var _ = SetEnv(MediaCorePaths.ZoomRuntimeDirEnvVar, overrideDir);
+
+        var candidates = MediaCorePaths.BuildZoomSdkArchitectureRootCandidates(_repoRoot);
+
+        Assert.Equal(overrideDir, candidates[0]);
+        Assert.Equal(staged, candidates[1]);
+        Assert.Contains(Path.Combine(_repoRoot, MediaCorePaths.ArtifactsZoomRuntimeRelativePath), candidates);
+    }
+
+    [Fact]
+    public void ResolveZoomSdkArchitectureRoot_ReturnsStagedRuntimeWhenSdkDllPresent()
+    {
+        var staged = Path.Combine(_repoRoot, MediaCorePaths.StagedZoomRuntimeRelativePath, "bin");
+        Directory.CreateDirectory(staged);
+        File.WriteAllText(Path.Combine(staged, "sdk.dll"), "stub");
+
+        var resolved = MediaCorePaths.ResolveZoomSdkArchitectureRoot(_repoRoot);
+
+        Assert.NotNull(resolved);
+        Assert.Contains($"{Path.DirectorySeparatorChar}native-core{Path.DirectorySeparatorChar}zoom-runtime", resolved, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveZoomSdkArchitectureRoot_HonorsZoomSdkDirWhenStagedRuntimeMissing()
+    {
+        var sdkDir = Path.Combine(_repoRoot, "zoom-sdk", "bin");
+        Directory.CreateDirectory(sdkDir);
+        File.WriteAllText(Path.Combine(sdkDir, "sdk.dll"), "stub");
+
+        using var _ = SetEnv(MediaCorePaths.ZoomSdkDirEnvVar, Path.Combine(_repoRoot, "zoom-sdk"));
+
+        var resolved = MediaCorePaths.ResolveZoomSdkArchitectureRoot(_repoRoot);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(_repoRoot, "zoom-sdk")), resolved);
+    }
+
+    [Fact]
+    public void ResolveStagedZoomRuntimeTarget_UsesRuntimeOverrideWhenSet()
+    {
+        var overrideDir = Path.Combine(_repoRoot, "artifacts", "zoom-runtime");
+        Directory.CreateDirectory(overrideDir);
+
+        using var _ = SetEnv(MediaCorePaths.ZoomRuntimeDirEnvVar, overrideDir);
+
+        var target = MediaCorePaths.ResolveStagedZoomRuntimeTarget(_repoRoot);
+
+        Assert.Equal(Path.GetFullPath(overrideDir), target);
+    }
+
+    [Fact]
+    public void IsZoomOAuthBrokerConfigured_ReturnsTrueWhenBrokerStartUrlSet()
+    {
+        using var _ = SetEnv(MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar, "https://corevideo.example.test/oauth/start");
+
+        Assert.True(MediaCorePaths.IsZoomOAuthBrokerConfigured());
+        var manifest = MediaCorePaths.LoadZoomOAuthManifest();
+        Assert.Equal("https://corevideo.example.test/oauth/start", manifest.BrokerStartUrl);
+        Assert.Equal("https://corevideo.iamfatness.us/oauth/callback", manifest.BrokerCallbackUrl);
+        Assert.Equal("y6sIWSwiTZe1JygMx4C9EQ", manifest.PublicClientId);
+    }
+
+    [Fact]
+    public void IsZoomSdkArchitectureRoot_AcceptsFlatOrBinLayout()
+    {
+        var flatRoot = Path.Combine(_repoRoot, "flat");
+        Directory.CreateDirectory(flatRoot);
+        File.WriteAllText(Path.Combine(flatRoot, "sdk.dll"), "stub");
+        Assert.True(MediaCorePaths.IsZoomSdkArchitectureRoot(flatRoot));
+
+        var binRoot = Path.Combine(_repoRoot, "bin-layout");
+        Directory.CreateDirectory(Path.Combine(binRoot, "bin"));
+        File.WriteAllText(Path.Combine(binRoot, "bin", "sdk.dll"), "stub");
+        Assert.True(MediaCorePaths.IsZoomSdkArchitectureRoot(binRoot));
+    }
+
+    private IDisposable SetEnv(string key, string? value)
+    {
+        _originalEnv.TryAdd(key, Environment.GetEnvironmentVariable(key));
+        Environment.SetEnvironmentVariable(key, value);
+        return new EnvRestore(key, value, _originalEnv);
+    }
+
+    private sealed class EnvRestore : IDisposable
+    {
+        private readonly string _key;
+        private readonly Dictionary<string, string?> _originalEnv;
+
+        public EnvRestore(string key, string? _, Dictionary<string, string?> originalEnv)
+        {
+            _key = key;
+            _originalEnv = originalEnv;
+        }
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable(_key, _originalEnv[_key]);
+        }
+    }
+}

@@ -1,5 +1,5 @@
 # Simple integration smoke test for the media-core stdio bridge.
-# Requires Node and desktop/coreStub.cjs (or a built corevideo-native.exe).
+# Prefers corevideo-native.exe when built; falls back to desktop/coreStub.cjs via Node.
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -9,24 +9,43 @@ if (-not (Test-Path $stub)) {
     Write-Error "coreStub.cjs not found at $stub"
 }
 
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) {
-    $electron = Join-Path $repoRoot "node_modules\electron\dist\electron.exe"
-    if (Test-Path $electron) {
-        $env:ELECTRON_RUN_AS_NODE = "1"
-        $runner = $electron
-    }
-    else {
-        Write-Error "Node.js is required to run the integration script."
-    }
+$nativeCandidates = @(
+    (Join-Path $repoRoot "native\build-dev\corevideo-native.exe"),
+    (Join-Path $repoRoot "native\build\corevideo-native.exe"),
+    (Join-Path $repoRoot "native\build-dev\Release\corevideo-native.exe")
+)
+$nativeExe = $nativeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+$usingNativeCore = $false
+if ($nativeExe) {
+    $runner = $nativeExe
+    $runnerArgs = ""
+    $usingNativeCore = $true
+    Write-Host "Using packaged native core: $runner"
 }
 else {
-    $runner = $node.Source
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        $electron = Join-Path $repoRoot "node_modules\electron\dist\electron.exe"
+        if (Test-Path $electron) {
+            $env:ELECTRON_RUN_AS_NODE = "1"
+            $runner = $electron
+        }
+        else {
+            Write-Error "Node.js is required to run the integration script when corevideo-native.exe is not built."
+        }
+    }
+    else {
+        $runner = $node.Source
+    }
+
+    $runnerArgs = "`"$stub`""
+    Write-Host "Using Node stub: $stub"
 }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $runner
-$psi.Arguments = "`"$stub`""
+$psi.Arguments = $runnerArgs
 $psi.WorkingDirectory = $repoRoot
 $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true
@@ -36,7 +55,7 @@ $psi.CreateNoWindow = $true
 
 $process = [System.Diagnostics.Process]::Start($psi)
 if (-not $process) {
-    Write-Error "Failed to start media core stub."
+    Write-Error "Failed to start media core process."
 }
 
 function Send-Line($json) {
@@ -90,10 +109,11 @@ Write-Host "media-core-sync ok: scene=$($sync.snapshot.sceneId) frames=$($sync.s
 if ($sync.snapshot.breakoutRoomId -ne "main") {
     throw "Expected default breakoutRoomId 'main', got '$($sync.snapshot.breakoutRoomId)'."
 }
-if ($sync.snapshot.meetingState -ne "in_meeting") {
-    throw "Expected meetingState 'in_meeting', got '$($sync.snapshot.meetingState)'."
+$expectedBaselineMeetingState = if ($usingNativeCore) { "idle" } else { "in_meeting" }
+if ($sync.snapshot.meetingState -ne $expectedBaselineMeetingState) {
+    throw "Expected baseline meetingState '$expectedBaselineMeetingState', got '$($sync.snapshot.meetingState)'."
 }
-Write-Host "Baseline breakout room ok: $($sync.snapshot.breakoutRoomName)"
+Write-Host "Baseline breakout room ok: $($sync.snapshot.breakoutRoomName) (meetingState=$($sync.snapshot.meetingState))"
 
 $roomChangePayload = @{
     id = "core-4"
@@ -129,6 +149,78 @@ if ($roomChange.snapshot.breakoutRoomName -ne "Customer panel") {
     throw "Expected breakoutRoomName 'Customer panel', got '$($roomChange.snapshot.breakoutRoomName)'."
 }
 Write-Host "Breakout room change ok: $($roomChange.snapshot.breakoutRoomName)"
+
+$joinPayload = @{
+    id = "core-5"
+    type = "zoom-join"
+    payload = @{
+        meetingUrl = "https://zoom.us/j/123456789"
+        displayName = "Operator"
+        webinar = $true
+    }
+} | ConvertTo-Json -Depth 6 -Compress
+
+$join = Send-Line $joinPayload | ConvertFrom-Json
+if (-not $join.ok) { throw "zoom-join failed." }
+if ($join.snapshot.meetingState -ne "in_meeting") {
+    throw "Expected zoom-join meetingState 'in_meeting', got '$($join.snapshot.meetingState)'."
+}
+if ($join.snapshot.participants.Count -lt 1) {
+    throw "Expected zoom-join participants in snapshot."
+}
+Write-Host "zoom-join ok: $($join.snapshot.participants.Count) participants"
+
+$zoomSnapshot = Send-Line '{"id":"core-6","type":"zoom-snapshot"}' | ConvertFrom-Json
+if (-not $zoomSnapshot.ok) { throw "zoom-snapshot failed." }
+if ($zoomSnapshot.snapshot.meetingState -ne "in_meeting") {
+    throw "Expected zoom-snapshot meetingState 'in_meeting', got '$($zoomSnapshot.snapshot.meetingState)'."
+}
+$operator = $zoomSnapshot.snapshot.participants | Where-Object { $_.userId -eq "operator-1" } | Select-Object -First 1
+if (-not $operator) {
+    throw "Expected zoom-snapshot roster to include participant id 'operator-1'."
+}
+Write-Host "zoom-snapshot ok: $($zoomSnapshot.snapshot.participants.Count) participants (operator-1 present)"
+
+$syncAfterJoinPayload = @{
+    id = "core-7"
+    type = "media-core-sync"
+    elapsedMs = 3000
+    commands = @(
+        @{
+            type = "load-scene-graph"
+            sceneId = "speaker-slides"
+            routes = @(
+                @{
+                    routeId = "program"
+                    mode = "active-speaker"
+                    audioRole = "mix"
+                    participantId = "operator-1"
+                }
+            )
+        }
+    )
+} | ConvertTo-Json -Depth 6 -Compress
+
+$syncAfterJoin = Send-Line $syncAfterJoinPayload | ConvertFrom-Json
+if (-not $syncAfterJoin.ok) { throw "post-join media-core-sync failed." }
+if ($syncAfterJoin.snapshot.meetingState -ne "in_meeting") {
+    throw "Expected post-join meetingState 'in_meeting', got '$($syncAfterJoin.snapshot.meetingState)'."
+}
+if ($syncAfterJoin.snapshot.participants.Count -lt 1) {
+    throw "Expected roster participants on post-join sync snapshot."
+}
+$postJoinOperator = $syncAfterJoin.snapshot.participants | Where-Object { $_.userId -eq "operator-1" } | Select-Object -First 1
+if (-not $postJoinOperator) {
+    throw "Expected post-join sync roster to include participant id 'operator-1'."
+}
+Write-Host "Post-join roster ok: $($syncAfterJoin.snapshot.participants.Count) participants (operator-1 present)"
+
+$leave = Send-Line '{"id":"core-8","type":"zoom-leave"}' | ConvertFrom-Json
+if (-not $leave.ok) { throw "zoom-leave failed." }
+if ($leave.snapshot.meetingState -ne "idle") {
+    throw "Expected zoom-leave meetingState 'idle', got '$($leave.snapshot.meetingState)'."
+}
+Write-Host "zoom-leave ok"
 
 $process.Kill()
 $process.WaitForExit()

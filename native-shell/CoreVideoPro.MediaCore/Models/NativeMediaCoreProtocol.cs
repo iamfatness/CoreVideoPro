@@ -485,6 +485,9 @@ public sealed record NativeMediaCoreStateSnapshot
     public string? BreakoutRoomId { get; init; }
     /// <summary>Optional wire field: active breakout room label.</summary>
     public string? BreakoutRoomName { get; init; }
+    /// <summary>Live Zoom roster from media-core sync when the engine is connected.</summary>
+    public string? ActiveSpeakerId { get; init; }
+    public IReadOnlyList<RawParticipantEvent> Participants { get; init; } = [];
 }
 
 public sealed class NativeMediaCoreValidation

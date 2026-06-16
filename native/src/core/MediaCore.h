@@ -23,7 +23,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json connectCaptureDevice(const std::string& deviceId);
   [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
   [[nodiscard]] rpc::Json leaveZoom();
-  [[nodiscard]] rpc::Json zoomSnapshot();
+  [[nodiscard]] rpc::Json zoomSnapshot() const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
@@ -102,7 +102,7 @@ class MediaCore {
   std::string recordingWarning_;
   std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
   bool zoomJoined_ = false;
-  int zoomSnapshotTick_ = 0;
+  mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
   std::string breakoutRoomId_ = "main";
   std::string breakoutRoomName_ = "Main room";

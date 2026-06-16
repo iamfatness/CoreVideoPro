@@ -1,4 +1,6 @@
 # Package CoreVideo Pro WinUI native shell for demo distribution (unpackaged folder layout).
+# Stages corevideo-native.exe from COREVIDEO_NATIVE_BUILD_DIR when set, else prefers
+# native/build-dev/ (dev adapters) before native/build* CI stub outputs.
 param(
   [string]$NativeBuildDir = $(if ($env:COREVIDEO_NATIVE_BUILD_DIR) { $env:COREVIDEO_NATIVE_BUILD_DIR } else { "" })
 )
@@ -60,18 +62,50 @@ if (Test-Path $builtExe) {
   Rename-Item -Path $builtExe -NewName $productExe
 }
 
+function Test-NativeCorePresent {
+  param([string]$Dir)
+  return [bool](Test-Path (Join-Path $Dir "corevideo-native.exe"))
+}
+
+function Get-NativeSourceLabel {
+  param([string]$Dir)
+  $devRelease = Join-Path $repoRoot "native\build-dev\Release"
+  $devRoot = Join-Path $repoRoot "native\build-dev"
+  $stubRelease = Join-Path $repoRoot "native\build\Release"
+  $stubRoot = Join-Path $repoRoot "native\build"
+
+  if ($Dir -ieq $devRelease) {
+    return "dev adapters (build-dev/Release)"
+  }
+  if ($Dir -ieq $devRoot) {
+    return "dev build (build-dev)"
+  }
+  if ($Dir -ieq $stubRelease) {
+    return "CI stub (build/Release)"
+  }
+  if ($Dir -ieq $stubRoot) {
+    return "CI stub (build)"
+  }
+  return "custom ($Dir)"
+}
+
 function Resolve-NativeSourceDir {
   param([string]$Override)
-  if ($Override -and (Test-Path $Override)) {
+  if ($Override -and (Test-NativeCorePresent $Override)) {
     return $Override
   }
+
+  # Prefer the dev-machine output from scripts/build-native-dev.ps1
+  # (COREVIDEO_ENABLE_DEV_ADAPTERS=ON). CMake writes Release binaries to
+  # native/build-dev/ (not build-dev/Release); the Release subfolder is a staged copy.
   $candidates = @(
-    (Join-Path $repoRoot "native\build-dev\Release"),
     (Join-Path $repoRoot "native\build-dev"),
-    (Join-Path $repoRoot "native\build")
+    (Join-Path $repoRoot "native\build-dev\Release"),
+    (Join-Path $repoRoot "native\build"),
+    (Join-Path $repoRoot "native\build\Release")
   )
   foreach ($candidate in $candidates) {
-    if (Test-Path (Join-Path $candidate "corevideo-native.exe")) {
+    if (Test-NativeCorePresent $candidate) {
       return $candidate
     }
   }
@@ -81,6 +115,7 @@ function Resolve-NativeSourceDir {
 $nativeSource = Resolve-NativeSourceDir -Override $NativeBuildDir
 $stagedNative = $false
 if ($nativeSource) {
+  Write-Host "[pack:native] using native core from $(Get-NativeSourceLabel $nativeSource)" -ForegroundColor DarkGray
   $nativeArtifacts = Get-ChildItem -Path $nativeSource -Filter "corevideo-*" |
     Where-Object {
       -not $_.PSIsContainer -and

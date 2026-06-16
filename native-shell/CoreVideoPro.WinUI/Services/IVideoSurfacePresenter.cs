@@ -31,5 +31,5 @@ public interface IDirect3DVideoSurfaceHost
     /// <param name="devicePointer">Opaque IDirect3DDevice pointer from WinRT interop.</param>
     void SetDirect3DDevice(nint devicePointer);
 
-    void PresentSharedHandle(SharedTextureHandle handle);
+    bool PresentSharedHandle(SharedTextureHandle handle);
 }
