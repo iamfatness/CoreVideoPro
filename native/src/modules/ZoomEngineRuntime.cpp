@@ -55,15 +55,9 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
-int frameEmitIntervalMs() {
-  const int configured = envInt("COREVIDEO_ZOOM_FRAME_EMIT_INTERVAL_MS", 66);
-  return (std::max)(0, (std::min)(configured, 1000));
-}
-
 }  // namespace
 
-ZoomEngineRuntime::ZoomEngineRuntime()
-    : config_(loadConfig()), frameEmitThrottle_(frameEmitIntervalMs()) {}
+ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()) {}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   stopReader();
@@ -212,7 +206,6 @@ rpc::Json ZoomEngineRuntime::leave() {
   }
   state_.reset();
   mediaStarted_ = false;
-  frameEmitThrottle_.reset();
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -443,11 +436,6 @@ bool ZoomEngineRuntime::ensureMediaStartedLocked() {
 
 void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   if (event.sourceUuid.empty() || event.participantId == 0 || event.width == 0 || event.height == 0) {
-    return;
-  }
-
-  const auto participantId = participantIdString(event.participantId);
-  if (!frameEmitThrottle_.shouldEmit(participantId)) {
     return;
   }
 

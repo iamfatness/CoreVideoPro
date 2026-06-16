@@ -1,4 +1,3 @@
-#include "zoom/FrameEmitThrottle.h"
 #include "zoom/I420Convert.h"
 #include "zoom/ShmFrameReader.h"
 
@@ -108,41 +107,6 @@ TEST(I420Convert, ReturnsEmptyForDegenerateInput) {
   std::vector<uint8_t> i420(6, 0);
   EXPECT_TRUE(i420ToRgbaThumbnail(i420.data(), 0, 0, 4, 4).empty());
   EXPECT_TRUE(i420ToRgbaThumbnail(nullptr, 2, 2, 2, 2).empty());
-}
-
-TEST(FrameEmitThrottle, AllowsFirstFrameThenThrottlesWithinInterval) {
-  using corevideo::zoom::FrameEmitThrottle;
-
-  FrameEmitThrottle throttle(66);
-  const auto start = std::chrono::steady_clock::now();
-
-  EXPECT_TRUE(throttle.shouldEmit("participant-1", start));
-  EXPECT_FALSE(throttle.shouldEmit("participant-1", start + std::chrono::milliseconds(10)));
-  EXPECT_TRUE(throttle.shouldEmit("participant-1", start + std::chrono::milliseconds(66)));
-}
-
-TEST(FrameEmitThrottle, TracksParticipantsIndependently) {
-  using corevideo::zoom::FrameEmitThrottle;
-
-  FrameEmitThrottle throttle(50);
-  const auto start = std::chrono::steady_clock::now();
-
-  EXPECT_TRUE(throttle.shouldEmit("participant-1", start));
-  EXPECT_TRUE(throttle.shouldEmit("participant-2", start + std::chrono::milliseconds(10)));
-  EXPECT_FALSE(throttle.shouldEmit("participant-1", start + std::chrono::milliseconds(20)));
-  EXPECT_TRUE(throttle.shouldEmit("participant-2", start + std::chrono::milliseconds(60)));
-}
-
-TEST(FrameEmitThrottle, ResetClearsParticipantHistory) {
-  using corevideo::zoom::FrameEmitThrottle;
-
-  FrameEmitThrottle throttle(100);
-  const auto start = std::chrono::steady_clock::now();
-
-  EXPECT_TRUE(throttle.shouldEmit("participant-1", start));
-  EXPECT_FALSE(throttle.shouldEmit("participant-1", start + std::chrono::milliseconds(10)));
-  throttle.reset();
-  EXPECT_TRUE(throttle.shouldEmit("participant-1", start + std::chrono::milliseconds(20)));
 }
 
 // End-to-end: decode a shared-memory frame, then thumbnail it.

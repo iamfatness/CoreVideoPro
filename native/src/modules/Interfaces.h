@@ -28,6 +28,23 @@ struct ProgramFrame {
   int64_t frameNumber = 0;
   std::string renderPlanId;
   std::string renderer = "software";
+  bool gpuComposed = false;
+  std::string health = "live";
+  uint32_t programPixelSignature = 0;
+};
+
+struct CompositorLayerRect {
+  float x = 0.f;
+  float y = 0.f;
+  float width = 1.f;
+  float height = 1.f;
+};
+
+struct CompositorColorGrade {
+  float exposure = 0.f;
+  float contrast = 0.f;
+  float saturation = 0.f;
+  float temperature = 0.f;
 };
 
 struct CompositorRenderPlanLayer {
@@ -36,6 +53,8 @@ struct CompositorRenderPlanLayer {
   std::string sourceId;
   std::string participantId;
   int order = 0;
+  CompositorLayerRect rect;
+  float opacity = 1.f;
 };
 
 struct CompositorRenderPlan {
@@ -44,6 +63,7 @@ struct CompositorRenderPlan {
   int width = 1920;
   int height = 1080;
   int fps = 30;
+  CompositorColorGrade colorGrade;
   std::vector<CompositorRenderPlanLayer> layers;
   std::vector<std::string> warnings;
 };

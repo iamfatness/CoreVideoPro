@@ -1,5 +1,6 @@
 #include "core/MediaCore.h"
 
+#include "compositor/CompositorLayout.h"
 #include "core/Protocol.h"
 
 #include <algorithm>
@@ -486,8 +487,19 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
+  sceneRoutes_.clear();
   const rpc::Json* routes = command.get("routes");
-  routeCount_ = routes && routes->isArray() ? static_cast<int>(routes->asArray().size()) : 0;
+  if (routes && routes->isArray()) {
+    for (const auto& route : routes->asArray()) {
+      SceneRouteState state;
+      state.routeId = route.getString("routeId");
+      state.mode = route.getString("mode");
+      state.participantId = route.getString("participantId");
+      state.audioRole = route.getString("audioRole");
+      sceneRoutes_.push_back(std::move(state));
+    }
+  }
+  routeCount_ = static_cast<int>(sceneRoutes_.size());
 }
 
 void MediaCore::setParticipantTransform(const rpc::Json&) {
@@ -984,6 +996,64 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   return recording;
 }
 
+modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
+  renderPlan.sceneId = sceneId_;
+  renderPlan.width = 1920;
+  renderPlan.height = 1080;
+  renderPlan.fps = 30;
+
+  int videoLayerIndex = 0;
+  const int videoLayerCount = routeCount_ > 0 ? routeCount_ : static_cast<int>(videoFrames.size());
+  if (!sceneRoutes_.empty()) {
+    renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes_.size() + overlayCount_));
+    for (const auto& route : sceneRoutes_) {
+      modules::CompositorRenderPlanLayer layer;
+      layer.layerId = "route:" + route.routeId;
+      layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
+      layer.order = videoLayerIndex;
+      if (!route.participantId.empty()) {
+        layer.participantId = route.participantId;
+        layer.sourceId = "zoom:" + route.participantId;
+      } else if (videoLayerIndex < static_cast<int>(videoFrames.size())) {
+        layer.participantId = videoFrames[static_cast<size_t>(videoLayerIndex)].participantId;
+        layer.sourceId = "zoom:" + layer.participantId;
+      }
+      const auto layout = compositor::gridCell((std::max)(1, videoLayerCount), videoLayerIndex);
+      layer.rect = {layout.x, layout.y, layout.width, layout.height};
+      renderPlan.layers.push_back(std::move(layer));
+      ++videoLayerIndex;
+    }
+  } else if (!videoFrames.empty()) {
+    renderPlan.layers.reserve(videoFrames.size());
+    for (size_t index = 0; index < videoFrames.size(); ++index) {
+      modules::CompositorRenderPlanLayer layer;
+      layer.layerId = "zoom:" + videoFrames[index].participantId;
+      layer.kind = "participant-video";
+      layer.participantId = videoFrames[index].participantId;
+      layer.sourceId = "zoom:" + layer.participantId;
+      layer.order = static_cast<int>(index);
+      const auto layout = compositor::gridCell(static_cast<int>(videoFrames.size()), static_cast<int>(index));
+      layer.rect = {layout.x, layout.y, layout.width, layout.height};
+      renderPlan.layers.push_back(std::move(layer));
+    }
+  }
+
+  for (int overlayIndex = 0; overlayIndex < overlayCount_; ++overlayIndex) {
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = overlayIndex == 0 ? "overlay:lower-third" : "overlay:brand-bug";
+    layer.kind = "overlay";
+    layer.order = static_cast<int>(renderPlan.layers.size());
+    const auto layout = overlayIndex == 0 ? compositor::lowerThirdOverlay() : compositor::topRightOverlay();
+    layer.rect = {layout.x, layout.y, layout.width, layout.height};
+    layer.opacity = 0.92f;
+    renderPlan.layers.push_back(std::move(layer));
+  }
+
+  return renderPlan;
+}
+
 void MediaCore::renderSyntheticTick() {
   auto videoFrames = modules_.zoom->pollVideoFrames();
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
@@ -1000,24 +1070,7 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  modules::CompositorRenderPlan renderPlan;
-  renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
-  renderPlan.sceneId = sceneId_;
-  const int plannedLayerCount = routeCount_ + overlayCount_;
-  const int fallbackLayerCount = static_cast<int>(videoFrames.size());
-  const int layerCount = plannedLayerCount > 0 ? plannedLayerCount : fallbackLayerCount;
-  renderPlan.layers.reserve(static_cast<size_t>(layerCount));
-  for (int index = 0; index < layerCount; ++index) {
-    modules::CompositorRenderPlanLayer layer;
-    layer.layerId = "layer:" + std::to_string(index);
-    layer.kind = index < routeCount_ ? "participant-video" : "overlay";
-    layer.order = index;
-    if (index < static_cast<int>(videoFrames.size())) {
-      layer.participantId = videoFrames[static_cast<size_t>(index)].participantId;
-      layer.sourceId = "zoom:" + layer.participantId;
-    }
-    renderPlan.layers.push_back(std::move(layer));
-  }
+  const auto renderPlan = buildCompositorRenderPlan(videoFrames);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();

@@ -66,7 +66,7 @@ if(COREVIDEO_WITH_D3D11)
     message(FATAL_ERROR "COREVIDEO_WITH_D3D11 currently supports the Windows D3D11 adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC d3d11 dxgi)
+  target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler)
 endif()
 
 if(COREVIDEO_WITH_MF_ENCODER)
@@ -211,6 +211,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/ContractParityTest.cpp
+    tests/D3D11CompositorTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/ZoomFrameReaderTest.cpp

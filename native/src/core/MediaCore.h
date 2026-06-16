@@ -57,8 +57,18 @@ class MediaCore {
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
 
+  struct SceneRouteState {
+    std::string routeId;
+    std::string mode;
+    std::string participantId;
+    std::string audioRole;
+  };
+
+  [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+
   modules::ModuleSet modules_;
   std::string sceneId_ = "unloaded";
+  std::vector<SceneRouteState> sceneRoutes_;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
