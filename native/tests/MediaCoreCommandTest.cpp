@@ -1,3 +1,4 @@
+#include "compositor/CompositorLayout.h"
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
@@ -322,10 +323,15 @@ TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
   renderPlan.sceneId = "interview";
   renderPlan.layers.push_back({"speaker", "participant-video", "zoom:123", "123", 0});
 
+  const auto layout = corevideo::compositor::gridCell(1, 0);
+  renderPlan.layers[0].rect = {layout.x, layout.y, layout.width, layout.height};
+
   const auto frame = compositor->render(renderPlan, {{"123", 1280, 720, 16}});
   EXPECT_EQ(frame.renderer, "d3d11");
   EXPECT_EQ(frame.renderPlanId, "test-plan");
   EXPECT_EQ(frame.layerCount, 1);
+  EXPECT_TRUE(frame.gpuComposed);
+  EXPECT_NE(frame.programPixelSignature, 0u);
 #else
   EXPECT_EQ(corevideo::modules::createD3D11Compositor(), nullptr);
 #endif
