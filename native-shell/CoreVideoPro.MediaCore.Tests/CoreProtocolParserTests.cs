@@ -83,6 +83,47 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ParsesZoomMediaSpineSyncResponse()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("""
+            {
+              "id": "core-9",
+              "ok": true,
+              "type": "zoom-media-spine-sync",
+              "spineSnapshot": {
+                "meetingState": "in-meeting",
+                "sdkVersion": "zoom-engine",
+                "participantCount": 1,
+                "activeSpeakerId": "operator-1",
+                "participants": [
+                  {
+                    "sdkUserId": "operator-1",
+                    "displayName": "Operator",
+                    "role": "guest",
+                    "videoOn": true,
+                    "muted": false,
+                    "talking": true,
+                    "sharingScreen": false,
+                    "audioLevel": 70,
+                    "networkQuality": "good"
+                  }
+                ],
+                "subscriptions": [],
+                "warnings": [],
+                "events": ["zoom-media-spine-sync accepted by Node stub core."]
+              }
+            }
+            """);
+
+        var snapshot = CoreProtocolParser.TryParseZoomMediaSpineSnapshot(document);
+        Assert.NotNull(snapshot);
+        Assert.Equal("in-meeting", snapshot!.MeetingState);
+        Assert.Equal("operator-1", snapshot.ActiveSpeakerId);
+        Assert.Single(snapshot.Participants);
+        Assert.Equal("Operator", snapshot.Participants[0].DisplayName);
+    }
+
+    [Fact]
     public void DoesNotParseResponseLineAsEvent()
     {
         var responseLine = """{"id":"1","ok":true,"type":"ping"}""";

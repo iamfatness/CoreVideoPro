@@ -223,6 +223,34 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task<ZoomMediaSpineNativeSnapshot> SyncZoomMediaSpineAsync(
+        Dictionary<string, object?> spinePayload,
+        double elapsedMs,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "zoom-media-spine-sync",
+                ["spinePayload"] = spinePayload,
+                ["elapsedMs"] = elapsedMs
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            var snapshot = CoreProtocolParser.TryParseZoomMediaSpineSnapshot(response);
+            if (snapshot is not null)
+            {
+                return snapshot;
+            }
+
+            throw new InvalidOperationException(
+                $"zoom-media-spine-sync failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+        }
+    }
+
     public async Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var response = await SendAsync(

@@ -7,8 +7,11 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     private readonly MediaCoreSupervisor _supervisor;
     private readonly object _gate = new();
     private Timer? _pollTimer;
+    private Timer? _spineSyncTimer;
     private double _elapsedMs;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
+    private Func<Dictionary<string, object?>>? _spinePayloadFactory;
+    private bool _spineSyncInFlight;
 
     public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
     {
@@ -58,11 +61,32 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public void Stop()
     {
         StopPolling();
+        StopSpineSync();
         _supervisor.Stop();
         lock (_gate)
         {
             _lastSnapshot = null;
             _elapsedMs = 0;
+            _spinePayloadFactory = null;
+        }
+    }
+
+    public void ConfigureZoomSpineSync(Func<Dictionary<string, object?>>? payloadFactory)
+    {
+        lock (_gate)
+        {
+            _spinePayloadFactory = payloadFactory;
+        }
+
+        if (payloadFactory is null)
+        {
+            StopSpineSync();
+            return;
+        }
+
+        if (Running)
+        {
+            StartSpineSync();
         }
     }
 
@@ -146,6 +170,33 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         return await SyncAsync([], cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<ZoomMediaSpineNativeSnapshot> SyncZoomMediaSpineAsync(
+        Dictionary<string, object?> spinePayload,
+        double? elapsedMs = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Running)
+        {
+            throw new InvalidOperationException("Media core is not running.");
+        }
+
+        lock (_gate)
+        {
+            if (elapsedMs is not null)
+            {
+                _elapsedMs = elapsedMs.Value;
+            }
+        }
+
+        var spine = await _supervisor.SyncZoomMediaSpineAsync(
+                spinePayload,
+                GetElapsedMs(),
+                cancellationToken)
+            .ConfigureAwait(false);
+        PublishSpineSnapshot(spine);
+        return spine;
+    }
+
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSceneGraphCommand(
         string sceneId,
         IReadOnlyList<(string RouteId, string Mode, string AudioRole, string? ParticipantId)> routes)
@@ -207,12 +258,37 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             null,
             TimeSpan.FromMilliseconds(250),
             TimeSpan.FromMilliseconds(250));
+        StartSpineSync();
     }
 
     private void StopPolling()
     {
         _pollTimer?.Dispose();
         _pollTimer = null;
+    }
+
+    private void StartSpineSync()
+    {
+        StopSpineSync();
+        lock (_gate)
+        {
+            if (_spinePayloadFactory is null)
+            {
+                return;
+            }
+        }
+
+        _spineSyncTimer = new Timer(
+            _ => _ = SpineSyncLoopAsync(),
+            null,
+            TimeSpan.FromMilliseconds(500),
+            TimeSpan.FromMilliseconds(500));
+    }
+
+    private void StopSpineSync()
+    {
+        _spineSyncTimer?.Dispose();
+        _spineSyncTimer = null;
     }
 
     private async Task PollLoopAsync()
@@ -232,6 +308,45 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
     }
 
+    private async Task SpineSyncLoopAsync()
+    {
+        if (!Running || _spineSyncInFlight)
+        {
+            return;
+        }
+
+        Func<Dictionary<string, object?>>? factory;
+        NativeMediaCoreStateSnapshot? snapshot;
+        lock (_gate)
+        {
+            factory = _spinePayloadFactory;
+            snapshot = _lastSnapshot;
+        }
+
+        if (factory is null ||
+            snapshot?.MeetingState is not { } meetingState ||
+            !meetingState.Equals("in_meeting", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _spineSyncInFlight = true;
+        try
+        {
+            AdvanceElapsed(500);
+            await SyncZoomMediaSpineAsync(factory(), cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Spine sync is best-effort while the meeting is live.
+        }
+        finally
+        {
+            _spineSyncInFlight = false;
+        }
+    }
+
     private void PublishSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
         lock (_gate)
@@ -248,6 +363,26 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         lock (_gate)
         {
             merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
+            _lastSnapshot = merged;
+        }
+
+        SnapshotChanged?.Invoke(merged);
+        if (merged.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true)
+        {
+            StartSpineSync();
+        }
+        else
+        {
+            StopSpineSync();
+        }
+    }
+
+    private void PublishSpineSnapshot(ZoomMediaSpineNativeSnapshot spine)
+    {
+        NativeMediaCoreStateSnapshot merged;
+        lock (_gate)
+        {
+            merged = ZoomMediaSpineSnapshotMerger.Merge(_lastSnapshot, spine);
             _lastSnapshot = merged;
         }
 
@@ -273,6 +408,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopPolling();
+        StopSpineSync();
         await _supervisor.DisposeAsync().ConfigureAwait(false);
     }
 }

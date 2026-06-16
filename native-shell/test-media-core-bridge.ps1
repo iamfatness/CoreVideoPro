@@ -170,6 +170,61 @@ if ($join.snapshot.participants.Count -lt 1) {
 }
 Write-Host "zoom-join ok: $($join.snapshot.participants.Count) participants"
 
+$spineParticipants = @(
+    @{
+        sdkUserId = "operator-1"
+        displayName = "Operator"
+        role = "guest"
+        videoOn = $true
+        muted = $false
+        talking = $true
+        sharingScreen = $false
+        audioLevel = 70
+        networkQuality = "good"
+    }
+)
+$spinePayload = @{
+    id = "core-5b"
+    type = "zoom-media-spine-sync"
+    elapsedMs = 1500
+    spinePayload = @{
+        readiness = @{
+            status = "ready"
+            platform = "windows"
+            sdkVersion = "zoom-engine"
+            checks = @()
+            blockers = @()
+            warnings = @()
+            summary = "ready"
+        }
+        participants = $spineParticipants
+        subscriptions = @(
+            @{
+                participantId = "operator-1"
+                kind = "participant-video"
+                purpose = "active-speaker"
+                priority = 10
+            }
+        )
+        blocked = $false
+        warnings = @()
+        summary = "1 Zoom participant, 1 raw subscriptions requested."
+    }
+} | ConvertTo-Json -Depth 8 -Compress
+
+$spine = Send-Line $spinePayload | ConvertFrom-Json
+if (-not $spine.ok) { throw "zoom-media-spine-sync failed." }
+if ($spine.type -ne "zoom-media-spine-sync") {
+    throw "Expected zoom-media-spine-sync response type, got '$($spine.type)'."
+}
+if (-not $spine.spineSnapshot) {
+    throw "Expected zoom-media-spine-sync spineSnapshot payload."
+}
+if ($spine.spineSnapshot.participantCount -lt 1) {
+    throw "Expected spine snapshot participantCount >= 1."
+}
+Write-Host "zoom-media-spine-sync ok: $($spine.spineSnapshot.participantCount) participants"
+
 $zoomSnapshot = Send-Line '{"id":"core-6","type":"zoom-snapshot"}' | ConvertFrom-Json
 if (-not $zoomSnapshot.ok) { throw "zoom-snapshot failed." }
 if ($zoomSnapshot.snapshot.meetingState -ne "in_meeting") {
