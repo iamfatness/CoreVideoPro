@@ -75,6 +75,8 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         string meetingUrl,
         string displayName,
         bool webinar,
+        string? sdkJwt = null,
+        string? userZak = null,
         CancellationToken cancellationToken = default)
     {
         if (!Running)
@@ -82,7 +84,13 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             throw new InvalidOperationException("Media core is not running.");
         }
 
-        var capture = await _supervisor.JoinZoomAsync(meetingUrl, displayName, webinar, cancellationToken)
+        var capture = await _supervisor.JoinZoomAsync(
+                meetingUrl,
+                displayName,
+                webinar,
+                sdkJwt,
+                userZak,
+                cancellationToken)
             .ConfigureAwait(false);
         PublishCaptureSnapshot(capture);
         return capture;

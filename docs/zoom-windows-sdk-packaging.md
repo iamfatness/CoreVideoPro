@@ -38,7 +38,7 @@ Discovery env vars (checked in order for runtime resolution):
 
 - `COREVIDEO_ZOOM_RUNTIME_DIR` — staged runtime folder override
 - `ZOOM_SDK_DIR` — source SDK x64 folder (or package root containing `x64/`)
-- `COREVIDEO_ZOOM_JWT_BROKER_URL` — optional dev JWT broker URL for Settings readiness
+- `COREVIDEO_ZOOM_OAUTH_BROKER_START_URL` — optional override for embedded PKCE broker (`src/config/zoomOAuth.json`)
 
 Stage the SDK beside the helper target:
 

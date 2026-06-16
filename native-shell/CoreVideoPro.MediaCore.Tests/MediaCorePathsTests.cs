@@ -85,12 +85,12 @@ public sealed class MediaCorePathsTests : IDisposable
     }
 
     [Fact]
-    public void IsZoomJwtBrokerConfigured_ReturnsTrueWhenBrokerUrlSet()
+    public void IsZoomOAuthBrokerConfigured_ReturnsTrueWhenBrokerStartUrlSet()
     {
-        using var _ = SetEnv(MediaCorePaths.ZoomJwtBrokerUrlEnvVar, "https://jwt.example.test/zoom");
+        using var _ = SetEnv(MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar, "https://corevideo.example.test/oauth/start");
 
-        Assert.True(MediaCorePaths.IsZoomJwtBrokerConfigured());
-        Assert.Equal("https://jwt.example.test/zoom", MediaCorePaths.ResolveZoomJwtBrokerUrl());
+        Assert.True(MediaCorePaths.IsZoomOAuthBrokerConfigured());
+        Assert.Equal("https://corevideo.example.test/oauth/start", MediaCorePaths.LoadZoomOAuthManifest().BrokerStartUrl);
     }
 
     [Fact]

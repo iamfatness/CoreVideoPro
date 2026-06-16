@@ -4,7 +4,7 @@ public static class MediaCorePaths
 {
     public const string ZoomSdkDirEnvVar = "ZOOM_SDK_DIR";
     public const string ZoomRuntimeDirEnvVar = "COREVIDEO_ZOOM_RUNTIME_DIR";
-    public const string ZoomJwtBrokerUrlEnvVar = "COREVIDEO_ZOOM_JWT_BROKER_URL";
+    public const string ZoomOAuthBrokerStartUrlEnvVar = "COREVIDEO_ZOOM_OAUTH_BROKER_START_URL";
 
     public static string StagedZoomRuntimeRelativePath =>
         Path.Combine("native-core", "zoom-runtime", "windows", "x64");
@@ -132,13 +132,9 @@ public static class MediaCorePaths
         return Path.GetFullPath(Path.Combine(repoRoot, StagedZoomRuntimeRelativePath));
     }
 
-    public static string? ResolveZoomJwtBrokerUrl()
-    {
-        var value = Environment.GetEnvironmentVariable(ZoomJwtBrokerUrlEnvVar);
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    }
+    public static ZoomOAuthManifest LoadZoomOAuthManifest() => ZoomOAuthManifest.Load();
 
-    public static bool IsZoomJwtBrokerConfigured() => ResolveZoomJwtBrokerUrl() is not null;
+    public static bool IsZoomOAuthBrokerConfigured() => LoadZoomOAuthManifest().BrokerConfigured;
 
     public static string? ResolveNodeCoreStub()
     {

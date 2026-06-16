@@ -14,6 +14,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
+    private readonly ZoomOAuthService _zoomOAuth;
+    private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
     private readonly string _currentRoomName;
 
@@ -190,7 +192,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         RefreshAudioParticipantRows();
 
-        Settings = new SettingsViewModel(_bridge, () => EngineRunning, status => ZoomStatus = status);
+        _zoomOAuth = new ZoomOAuthService(new FileZoomTokenStore(FileZoomTokenStore.DefaultTokenStorePath()));
+        _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
+            _zoomOAuth,
+            Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+        _zoomOAuthCoordinator.Initialize();
+        if (Environment.ProcessPath is { } exePath)
+        {
+            _zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out _);
+        }
+
+        Settings = new SettingsViewModel(
+            _bridge,
+            () => EngineRunning,
+            _zoomOAuth,
+            status => ZoomStatus = status);
+        _zoomOAuthCoordinator.SetStatusChangedHandler(message =>
+        {
+            Settings.OauthStatusMessage = message;
+            _ = Settings.RefreshOAuthStatusAsync();
+        });
         Transport = new TransportViewModel();
         Overlays = new OverlaysViewModel(this);
         InitializeSceneRoutes();
@@ -1238,6 +1259,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged -= RefreshSurfaceBindings;
         _surfaces.Dispose();
+        _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);
     }
 }

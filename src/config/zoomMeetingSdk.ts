@@ -33,6 +33,7 @@ export function createEmbeddedZoomSdkReadinessInput(
     sdkRuntimePresent: false,
     appKeyPresent: zoomMeetingSdkAppKeyPresent(),
     oauthConfigured: false,
+    /** True when the embedded OAuth PKCE broker URL is present (not a user JWT). */
     jwtBrokerConfigured: false,
     rawVideoEnabled: false,
     rawAudioEnabled: false,
@@ -52,15 +53,15 @@ export function deriveZoomSdkReadinessInputForRuntime(
     return base;
   }
 
-  const brokerConfigured = zoomOAuthBrokerConfigured();
-  const oauthConfigured = Boolean(oauth.signedIn) || zoomMeetingSdkAppKeyPresent();
+  const oauthBrokerConfigured = zoomOAuthBrokerConfigured();
+  const oauthConfigured = Boolean(oauth.signedIn) || oauthBrokerConfigured || zoomMeetingSdkAppKeyPresent();
 
   return {
     ...base,
     sdkRuntimePresent: true,
     sdkVersion: "zoom-engine",
     oauthConfigured,
-    jwtBrokerConfigured: brokerConfigured,
+    jwtBrokerConfigured: oauthBrokerConfigured,
     rawVideoEnabled: true,
     rawAudioEnabled: true,
     rawShareEnabled: true,

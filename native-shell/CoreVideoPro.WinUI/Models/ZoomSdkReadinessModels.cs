@@ -20,7 +20,8 @@ public sealed class ZoomSdkReadinessInput
     public string? SdkVersion { get; init; }
     public bool AppKeyPresent { get; init; }
     public bool OauthConfigured { get; init; }
-    public bool JwtBrokerConfigured { get; init; }
+    public bool OAuthSignedIn { get; init; }
+    public bool OAuthBrokerConfigured { get; init; }
     public bool RawVideoEnabled { get; init; }
     public bool RawAudioEnabled { get; init; }
     public bool RawShareEnabled { get; init; }

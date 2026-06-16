@@ -102,6 +102,27 @@
                                    TextWrapping="Wrap" />
                     </Grid>
 
+                    <StackPanel Spacing="8"
+                                Visibility="{x:Bind ViewModel.ShowZoomOAuthControls, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Zoom account (Public Client OAuth + PKCE)"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Style="{StaticResource SettingsGhostButton}"
+                                    Content="Sign in with Zoom"
+                                    Command="{x:Bind ViewModel.SignInWithZoomCommand}"
+                                    IsEnabled="{x:Bind ViewModel.CanSignInWithZoom, Mode=OneWay}"
+                                    Visibility="{x:Bind ViewModel.CanSignInWithZoom, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                            <Button Style="{StaticResource SettingsGhostButton}"
+                                    Content="Sign out"
+                                    Command="{x:Bind ViewModel.SignOutZoomCommand}"
+                                    IsEnabled="{x:Bind ViewModel.CanSignOutZoom, Mode=OneWay}"
+                                    Visibility="{x:Bind ViewModel.CanSignOutZoom, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+                        <TextBlock Text="{x:Bind ViewModel.OauthStatusMessage, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Style="{StaticResource SettingsGhostButton}"
                                 Content="Leave"

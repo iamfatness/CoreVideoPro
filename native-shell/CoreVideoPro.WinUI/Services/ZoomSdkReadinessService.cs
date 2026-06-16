@@ -18,7 +18,8 @@ public static class ZoomSdkReadinessService
             SdkRuntimePresent = false,
             AppKeyPresent = AppKeyPresent(),
             OauthConfigured = false,
-            JwtBrokerConfigured = false,
+            OAuthSignedIn = false,
+            OAuthBrokerConfigured = false,
             RawVideoEnabled = false,
             RawAudioEnabled = false,
             RawShareEnabled = false
@@ -36,7 +37,8 @@ public static class ZoomSdkReadinessService
             SdkVersion = overrides.SdkVersion ?? input.SdkVersion,
             AppKeyPresent = overrides.AppKeyPresent,
             OauthConfigured = overrides.OauthConfigured,
-            JwtBrokerConfigured = overrides.JwtBrokerConfigured,
+            OAuthSignedIn = overrides.OAuthSignedIn,
+            OAuthBrokerConfigured = overrides.OAuthBrokerConfigured,
             RawVideoEnabled = overrides.RawVideoEnabled,
             RawAudioEnabled = overrides.RawAudioEnabled,
             RawShareEnabled = overrides.RawShareEnabled,
@@ -47,9 +49,10 @@ public static class ZoomSdkReadinessService
         };
     }
 
-    public static ZoomSdkReadinessInput DeriveInputForEngine(bool _)
+    public static ZoomSdkReadinessInput DeriveInputForEngine(bool _, bool oauthSignedIn = false)
     {
         var baseInput = CreateEmbeddedInput();
+        var oauthManifest = MediaCorePaths.LoadZoomOAuthManifest();
         var nativeExe = MediaCorePaths.ResolveNativeCoreExecutable();
         var zoomSdkRoot = MediaCorePaths.ResolveZoomSdkArchitectureRoot();
         var stagedTarget = MediaCorePaths.ResolveStagedZoomRuntimeTarget();
@@ -67,7 +70,7 @@ public static class ZoomSdkReadinessService
         var sdkRuntimeReady = packageReport?.IsReady == true || sdkDllBesideNative;
         var sdkVersion = packageReport?.Version ?? (sdkRuntimeReady ? "zoom-engine" : null);
         var packagingPath = zoomSdkRoot ?? nativeExe;
-        var jwtBrokerConfigured = MediaCorePaths.IsZoomJwtBrokerConfigured();
+        var oauthBrokerConfigured = oauthManifest.BrokerConfigured;
 
         return new ZoomSdkReadinessInput
         {
@@ -75,8 +78,9 @@ public static class ZoomSdkReadinessService
             SdkRuntimePresent = sdkRuntimeReady,
             SdkVersion = sdkVersion,
             AppKeyPresent = baseInput.AppKeyPresent,
-            OauthConfigured = baseInput.AppKeyPresent,
-            JwtBrokerConfigured = jwtBrokerConfigured,
+            OauthConfigured = oauthBrokerConfigured || oauthSignedIn || baseInput.AppKeyPresent,
+            OAuthSignedIn = oauthSignedIn,
+            OAuthBrokerConfigured = oauthBrokerConfigured,
             RawVideoEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-video-api-header")?.Present == true
                               || sdkRuntimeReady,
             RawAudioEnabled = packageReport?.RequiredFiles.FirstOrDefault(file => file.Id == "raw-audio-header")?.Present == true
@@ -105,17 +109,21 @@ public static class ZoomSdkReadinessService
                 "Meeting SDK app key",
                 input.AppKeyPresent ? "Meeting SDK app key is configured." : "Meeting SDK app key is missing."),
             BuildCheck(
-                "oauth",
-                input.OauthConfigured,
-                "OAuth broker",
-                input.OauthConfigured ? "OAuth broker is configured for meeting authorization." : "OAuth broker is not configured."),
+                "oauth-broker",
+                input.OAuthBrokerConfigured,
+                "OAuth PKCE broker",
+                input.OAuthBrokerConfigured
+                    ? "Public Client OAuth + PKCE broker is embedded (corevideo.iamfatness.us/oauth/start)."
+                    : $"OAuth PKCE broker is not configured. Embed src/config/zoomOAuth.json or set {MediaCorePaths.ZoomOAuthBrokerStartUrlEnvVar}."),
             BuildCheck(
-                "jwt-broker",
-                input.JwtBrokerConfigured,
-                "SDK JWT broker",
-                input.JwtBrokerConfigured
-                    ? $"SDK JWT broker is configured ({MediaCorePaths.ZoomJwtBrokerUrlEnvVar})."
-                    : $"SDK JWT broker is not configured. Set {MediaCorePaths.ZoomJwtBrokerUrlEnvVar} for dev JWT auth bypass messaging."),
+                "oauth-session",
+                true,
+                "Zoom account sign-in",
+                input.OAuthSignedIn
+                    ? "Signed in with Zoom — broker mints Meeting SDK JWT via PKCE (same flow as CoreVideo plugin)."
+                    : input.OAuthBrokerConfigured
+                        ? "Not signed in. Use Sign in with Zoom for external-account meetings; public app key joins still work for dev."
+                        : "OAuth sign-in unavailable until the PKCE broker is configured."),
             BuildCheck(
                 "raw-video",
                 input.RawVideoEnabled,
@@ -153,6 +161,11 @@ public static class ZoomSdkReadinessService
         if (string.IsNullOrWhiteSpace(input.SdkVersion))
         {
             warnings.Add("SDK version is unknown; include it in support bundles before beta.");
+        }
+
+        if (input.OAuthBrokerConfigured && !input.OAuthSignedIn)
+        {
+            warnings.Add("Sign in with Zoom (PKCE) before joining external-account meetings.");
         }
 
         if (input.SdkRuntimePresent && input.PackagingPath is not null)
