@@ -6,7 +6,7 @@ Use this checklist on a **Windows 10/11 x64 dev machine** before demoing CoreVid
 
 | Item | Verify |
 |------|--------|
-| Windows App Runtime **1.6** | Installed from [Windows App SDK downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads) |
+| Windows App Runtime **2.x** (2.2+) | Installed from [Windows App SDK downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads) |
 | .NET 9 SDK | `dotnet --version` |
 | Node.js 22+ | `node --version` |
 | Visual Studio 2022+ (C++ workload) | `scripts/test-native.ps1` finds `VsDevCmd.bat` |
@@ -54,7 +54,7 @@ npm run launch:native
 # or double-click: Launch CoreVideo Pro (Native).bat
 ```
 
-If the app fails with a side-by-side / configuration error, install **Windows App Runtime 1.6** and retry.
+If the app fails with a side-by-side / configuration error, install **Windows App Runtime 2.x** (match the NuGet pin in `CoreVideoPro.WinUI.csproj`) and retry.
 
 ## 6. PKCE sign-in (Settings)
 
@@ -132,7 +132,7 @@ For MSIX: `npm run pack:native:msix` then `Add-AppxPackage -Path artifacts/nativ
 ## 10. Sign-off checklist
 
 - [ ] `test:native-shell` green locally
-- [ ] WinUI launches (App Runtime 1.6)
+- [ ] WinUI launches (App Runtime 2.x)
 - [ ] PKCE sign-in completes via `corevideopro://oauth/callback`
 - [ ] Live join shows roster + program preview
 - [ ] `pack:native` bundles `corevideo-native.exe` from `build-dev`

@@ -161,7 +161,7 @@ catch {
   if ($message -match "access is denied|interactive|desktop|session|GUI|0x800|side-by-side|sxstrace|configuration is incorrect|failed to start") {
     Write-Host "[test-native-shell-smoke] GUI launch blocked ($message); treating as pass in constrained environment." -ForegroundColor Yellow
     if ($message -match "side-by-side|configuration is incorrect") {
-      Write-Host "[test-native-shell-smoke] Install Windows App Runtime 1.6 for a real local smoke run." -ForegroundColor DarkGray
+      Write-Host "[test-native-shell-smoke] Install Windows App Runtime 2.x for a real local smoke run." -ForegroundColor DarkGray
     }
     exit 0
   }

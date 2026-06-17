@@ -16,7 +16,7 @@
 | Requirement | Notes |
 |-------------|-------|
 | **Windows 10/11 (x64)** | Target platform `10.0.19041.0`, min `10.0.17763.0` |
-| **[Windows App Runtime 1.6](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads)** | Required for unpackaged runs (`WindowsAppSDKSelfContained=false`) |
+| **[Windows App Runtime 2.x](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads)** | Required for unpackaged runs (`WindowsAppSDKSelfContained=false`); project targets **2.2** |
 | **[.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)** | Build and framework-dependent publish |
 | **Node.js** (optional) | Only when no `corevideo-native.exe` is staged; runs `desktop/coreStub.cjs` |
 | **Visual Studio 2022** or **Build Tools** | WinUI / Windows SDK build chain (via `Microsoft.Windows.SDK.BuildTools`) |
@@ -136,8 +136,8 @@ The script creates a self-signed dev cert when `SignTool` is available, or print
 
 ```
 native-shell/
-  CoreVideoPro.WinUI/   # WinUI 3 app (.NET 9, Windows App SDK 1.6)
+  CoreVideoPro.WinUI/   # WinUI 3 app (.NET 9, Windows App SDK 2.2)
   README.md
 ```
 
-Bootstrap version in `Program.cs` (`0x00010006`) matches Windows App SDK **1.6** for unpackaged launch.
+Unpackaged bootstrap is handled by the Windows App SDK module auto-initializer (NuGet **2.2**); `Program.cs` only hosts the WinUI message loop.
