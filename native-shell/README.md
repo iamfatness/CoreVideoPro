@@ -140,4 +140,4 @@ native-shell/
   README.md
 ```
 
-Unpackaged bootstrap is handled by the Windows App SDK module auto-initializer (NuGet **2.2**); `Program.cs` only hosts the WinUI message loop.
+`Program.cs` bootstraps Windows App SDK **2.2** (`0x00020002`) before starting the WinUI loop. Publish uses `UseAppHost=false`; launch via `dotnet CoreVideoPro.WinUI.dll` (see `scripts/launch-native.ps1`).

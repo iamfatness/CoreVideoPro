@@ -35,15 +35,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $publishDir = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish"
-if (-not (Test-Path (Join-Path $publishDir "CoreVideoPro.WinUI.exe"))) {
-  $publishExe = Get-ChildItem -Path (Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin") -Recurse -Filter "CoreVideoPro.WinUI.exe" |
+if (-not (Test-Path (Join-Path $publishDir "CoreVideoPro.WinUI.dll"))) {
+  $publishDll = Get-ChildItem -Path (Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin") -Recurse -Filter "CoreVideoPro.WinUI.dll" |
     Where-Object { $_.DirectoryName -match "\\publish$" } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
-  if (-not $publishExe) {
-    throw "Could not find CoreVideoPro.WinUI.exe after dotnet publish."
+  if (-not $publishDll) {
+    throw "Could not find CoreVideoPro.WinUI.dll after dotnet publish."
   }
-  $publishDir = $publishExe.DirectoryName
+  $publishDir = $publishDll.DirectoryName
 }
 
 Write-Host "[pack:native] staging $outDir ..." -ForegroundColor Cyan
@@ -52,6 +52,17 @@ if (Test-Path $outDir) {
 }
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 Copy-Item -Path (Join-Path $publishDir "*") -Destination $outDir -Recurse -Force
+
+$launcherCmd = Join-Path $outDir $productExe.Replace(".exe", ".cmd")
+$launcherBat = Join-Path $outDir "CoreVideo Pro.bat"
+@(
+  "@echo off",
+  "setlocal",
+  "cd /d ""%~dp0""",
+  "dotnet ""%~dp0CoreVideoPro.WinUI.dll"" %*",
+  "exit /b %ERRORLEVEL%"
+) | Set-Content -Path $launcherCmd -Encoding ASCII
+Copy-Item -Path $launcherCmd -Destination $launcherBat -Force
 
 $builtExe = Join-Path $outDir "CoreVideoPro.WinUI.exe"
 $renamedExe = Join-Path $outDir $productExe

@@ -19,12 +19,16 @@
     <AppxPackageSigningEnabled Condition="'$(WindowsPackageType)' == 'MSIX'">false</AppxPackageSigningEnabled>
     <GenerateAppxPackageOnBuild Condition="'$(WindowsPackageType)' == 'MSIX'">true</GenerateAppxPackageOnBuild>
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <!-- WinUI apphost can fail SXS on some machines; launch via dotnet host (see scripts/launch-native.ps1). -->
+    <UseAppHost>false</UseAppHost>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.2.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.2.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />

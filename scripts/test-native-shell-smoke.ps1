@@ -32,19 +32,28 @@ function Test-HeadlessEnvironment {
   return $false
 }
 
-function Resolve-PublishedExe {
-  $expected = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish\CoreVideoPro.WinUI.exe"
-  if (Test-Path $expected) {
-    return $expected
+function Resolve-PublishedLaunch {
+  $expectedDir = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin\Release\net9.0-windows10.0.19041.0\win-x64\publish"
+  $expectedDll = Join-Path $expectedDir "CoreVideoPro.WinUI.dll"
+  if (Test-Path $expectedDll) {
+    return @{
+      WorkingDir = $expectedDir
+      DllPath    = $expectedDll
+      ExePath    = Join-Path $expectedDir "CoreVideoPro.WinUI.exe"
+    }
   }
 
-  $publishExe = Get-ChildItem -Path (Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin") -Recurse -Filter "CoreVideoPro.WinUI.exe" |
+  $publishDll = Get-ChildItem -Path (Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\bin") -Recurse -Filter "CoreVideoPro.WinUI.dll" |
     Where-Object { $_.DirectoryName -match "\\publish$" } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 
-  if ($publishExe) {
-    return $publishExe.FullName
+  if ($publishDll) {
+    return @{
+      WorkingDir = $publishDll.DirectoryName
+      DllPath    = $publishDll.FullName
+      ExePath    = Join-Path $publishDll.DirectoryName "CoreVideoPro.WinUI.exe"
+    }
   }
 
   return $null
@@ -95,17 +104,20 @@ finally {
   Pop-Location
 }
 
-$exe = Resolve-PublishedExe
-if (-not $exe) {
-  Write-Host "[test-native-shell-smoke] CoreVideoPro.WinUI.exe not found after publish; skipping WinUI shell smoke." -ForegroundColor Yellow
+$launch = Resolve-PublishedLaunch
+if (-not $launch) {
+  Write-Host "[test-native-shell-smoke] CoreVideoPro.WinUI.dll not found after publish; skipping WinUI shell smoke." -ForegroundColor Yellow
   exit 0
 }
 
-$workingDir = Split-Path $exe -Parent
-Write-Host "[test-native-shell-smoke] launching $exe (hold ${HoldSeconds}s)..." -ForegroundColor Cyan
+$workingDir = $launch.WorkingDir
+$launchTarget = if (Test-Path $launch.ExePath) { $launch.ExePath } else { $launch.DllPath }
+$launchFile = if (Test-Path $launch.ExePath) { $launch.ExePath } else { "dotnet" }
+$launchArgs = if (Test-Path $launch.ExePath) { @() } else { @($launch.DllPath) }
+Write-Host "[test-native-shell-smoke] launching $launchTarget (hold ${HoldSeconds}s)..." -ForegroundColor Cyan
 
 try {
-  $launchedProcess = Start-Process -FilePath $exe -WorkingDirectory $workingDir -PassThru
+  $launchedProcess = Start-Process -FilePath $launchFile -ArgumentList $launchArgs -WorkingDirectory $workingDir -PassThru
   if (-not $launchedProcess) {
     throw "Start-Process did not return a process handle."
   }
@@ -173,4 +185,4 @@ finally {
 
 Write-Host ""
 Write-Host "[test-native-shell-smoke] WinUI native shell smoke passed." -ForegroundColor Green
-Write-Host "  Binary: $exe"
+Write-Host "  Binary: $launchTarget"
