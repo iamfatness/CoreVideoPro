@@ -411,6 +411,23 @@ public static class DemoProduction
             ConnectionState = CaptureConnectionState.Detected,
             SignalPresent = false,
             AudioSyncOffsetMs = 0
+        },
+        new()
+        {
+            Id = "uvc-webcam-1",
+            Vendor = "uvc",
+            Name = "Logitech Brio 4K",
+            Inputs =
+            [
+                new() { Id = "usb-1", Label = "USB" }
+            ],
+            SelectedInputId = "usb-1",
+            Width = 1920,
+            Height = 1080,
+            FrameRate = 30,
+            ConnectionState = CaptureConnectionState.Detected,
+            SignalPresent = true,
+            AudioSyncOffsetMs = 0
         }
     ];
 

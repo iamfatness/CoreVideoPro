@@ -9,31 +9,11 @@
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
 
         <Style x:Key="SettingsSectionBorder" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource StudioPanelBrush}" />
+            <Setter Property="Background" Value="{StaticResource StudioSurfaceRaisedBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="16" />
-        </Style>
-
-        <Style x:Key="SettingsField" TargetType="TextBox">
-            <Setter Property="Background" Value="#0C1118" />
-            <Setter Property="Foreground" Value="#E8F0EC" />
-            <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="10,8" />
-            <Setter Property="FontSize" Value="12" />
-        </Style>
-
-        <Style x:Key="SettingsGhostButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="6" />
-            <Setter Property="Padding" Value="12,8" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="18" />
         </Style>
 
         <Style x:Key="SdkChipReady" TargetType="Border">
@@ -63,10 +43,9 @@
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Spacing="16" MaxWidth="760" Padding="0,0,8,16">
-            <!-- Zoom connection -->
             <Border Style="{StaticResource SettingsSectionBorder}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Zoom connection" FontSize="14" FontWeight="SemiBold" />
+                <StackPanel Spacing="14">
+                    <TextBlock Text="Zoom connection" Style="{StaticResource StudioSectionTitle}" />
 
                     <Grid ColumnSpacing="8" RowSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -80,11 +59,11 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBox Grid.Column="0" Style="{StaticResource SettingsField}"
+                        <TextBox Grid.Column="0" Style="{StaticResource StudioField}"
                                  PlaceholderText="Zoom meeting URL or ID"
                                  Text="{x:Bind ViewModel.JoinMeetingUrl, Mode=TwoWay}"
                                  IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
-                        <TextBox Grid.Column="1" Style="{StaticResource SettingsField}"
+                        <TextBox Grid.Column="1" Style="{StaticResource StudioField}"
                                  PlaceholderText="Producer display name"
                                  Text="{x:Bind ViewModel.DisplayName, Mode=TwoWay}"
                                  IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
@@ -94,41 +73,42 @@
 
                         <TextBlock Grid.Row="1" Grid.ColumnSpan="3"
                                    Text="{x:Bind ViewModel.JoinStatus, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+                                   FontSize="12" Foreground="{StaticResource StudioAccentBrush}" />
 
                         <TextBlock Grid.Row="2" Grid.ColumnSpan="3"
                                    Text="{x:Bind ViewModel.MeetingStatusLine, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
-                                   TextWrapping="Wrap" />
+                                   Style="{StaticResource StudioBody}" />
                     </Grid>
 
-                    <StackPanel Spacing="8"
+                    <StackPanel Spacing="10"
                                 Visibility="{x:Bind ViewModel.ShowZoomOAuthControls, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="Zoom account (Public Client OAuth + PKCE)"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Text="Zoom account" Style="{StaticResource StudioSectionTitle}" FontSize="12" />
+                        <TextBlock Text="Public Client OAuth with PKCE. Sign in once, then join meetings from Settings."
+                                   Style="{StaticResource StudioBody}" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Style="{StaticResource SettingsGhostButton}"
+                            <Button Style="{StaticResource StudioAccentButton}"
                                     Content="Sign in with Zoom"
                                     Command="{x:Bind ViewModel.SignInWithZoomCommand}"
                                     IsEnabled="{x:Bind ViewModel.CanSignInWithZoom, Mode=OneWay}"
                                     Visibility="{x:Bind ViewModel.CanSignInWithZoom, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                            <Button Style="{StaticResource SettingsGhostButton}"
+                            <Button Style="{StaticResource StudioGhostButton}"
                                     Content="Sign out"
                                     Command="{x:Bind ViewModel.SignOutZoomCommand}"
                                     IsEnabled="{x:Bind ViewModel.CanSignOutZoom, Mode=OneWay}"
                                     Visibility="{x:Bind ViewModel.CanSignOutZoom, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                         </StackPanel>
                         <TextBlock Text="{x:Bind ViewModel.OauthStatusMessage, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                   Style="{StaticResource StudioBody}"
+                                   Foreground="{StaticResource StudioTextBrush}"
                                    TextWrapping="Wrap" />
                     </StackPanel>
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Style="{StaticResource SettingsGhostButton}"
-                                Content="Leave"
+                        <Button Style="{StaticResource StudioGhostButton}"
+                                Content="Leave meeting"
                                 Command="{x:Bind ViewModel.LeaveZoomCommand}"
                                 Visibility="{x:Bind ViewModel.ShowLeaveButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                        <Button Style="{StaticResource SettingsGhostButton}"
+                        <Button Style="{StaticResource StudioAccentButton}"
                                 Content="Join Zoom"
                                 Command="{x:Bind ViewModel.JoinZoomCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanJoinZoom, Mode=OneWay}"
@@ -137,20 +117,19 @@
                 </StackPanel>
             </Border>
 
-            <!-- License -->
             <Border Style="{StaticResource SettingsSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="License &amp; plan" FontSize="14" FontWeight="SemiBold" />
-                    <TextBlock FontSize="12">
-                        <Run Text="Plan: " />
+                    <TextBlock Text="License &amp; plan" Style="{StaticResource StudioSectionTitle}" />
+                    <TextBlock FontSize="12" Foreground="{StaticResource StudioTextBrush}">
+                        <Run Text="Plan: " Foreground="{StaticResource StudioTextSecondaryBrush}" />
                         <Run Text="{x:Bind ViewModel.LicensePlanLabel, Mode=OneWay}" FontWeight="SemiBold" />
-                        <Run Text=" (" />
+                        <Run Text=" (" Foreground="{StaticResource StudioTextSecondaryBrush}" />
                         <Run Text="{x:Bind ViewModel.LicenseStatusLabel, Mode=OneWay}" />
-                        <Run Text=")" />
+                        <Run Text=")" Foreground="{StaticResource StudioTextSecondaryBrush}" />
                         <Run Text="{x:Bind ViewModel.TrialDaysLabel, Mode=OneWay}" />
                     </TextBlock>
                     <TextBlock Text="{x:Bind ViewModel.EntitlementsSummary, Mode=OneWay}"
-                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                               Style="{StaticResource StudioBody}" />
 
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -158,37 +137,35 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox Style="{StaticResource SettingsField}"
+                        <TextBox Style="{StaticResource StudioField}"
                                  PlaceholderText="License key (cv-trial-... or cv-pro-...)"
                                  Text="{x:Bind ViewModel.ActivationKey, Mode=TwoWay}" />
-                        <Button Grid.Column="1" Content="Activate" Style="{StaticResource SettingsGhostButton}"
+                        <Button Grid.Column="1" Content="Activate" Style="{StaticResource StudioGhostButton}"
                                 Command="{x:Bind ViewModel.ActivateLicenseCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanActivateLicense, Mode=OneWay}" />
-                        <Button Grid.Column="2" Content="Start trial" Style="{StaticResource SettingsGhostButton}"
+                        <Button Grid.Column="2" Content="Start trial" Style="{StaticResource StudioGhostButton}"
                                 Command="{x:Bind ViewModel.StartTrialCommand}" />
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="Upgrade Creator" Style="{StaticResource SettingsGhostButton}"
+                        <Button Content="Upgrade Creator" Style="{StaticResource StudioGhostButton}"
                                 Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="creator" />
-                        <Button Content="Upgrade Pro" Style="{StaticResource SettingsGhostButton}"
+                        <Button Content="Upgrade Pro" Style="{StaticResource StudioGhostButton}"
                                 Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="pro" />
-                        <Button Content="Upgrade Team" Style="{StaticResource SettingsGhostButton}"
+                        <Button Content="Upgrade Team" Style="{StaticResource StudioGhostButton}"
                                 Command="{x:Bind ViewModel.UpgradeCommand}" CommandParameter="team" />
                     </StackPanel>
 
                     <TextBlock Text="{x:Bind ViewModel.LicenseActionStatus, Mode=OneWay}"
-                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                               Style="{StaticResource StudioBody}"
                                Visibility="{x:Bind ViewModel.ShowLicenseActionStatus, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                 </StackPanel>
             </Border>
 
-            <!-- Zoom SDK readiness -->
             <Border Style="{StaticResource SettingsSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Zoom SDK" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="Zoom SDK" Style="{StaticResource StudioSectionTitle}" />
 
-                    <!-- Compact status chip -->
                     <Border Style="{StaticResource SdkChipReady}"
                             Visibility="{x:Bind ViewModel.SdkIsReady, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <Grid ColumnSpacing="10">
@@ -198,7 +175,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
                                        Foreground="#86EFAC" FontSize="12" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                            <Button Grid.Column="1" Style="{StaticResource StudioGhostButton}"
                                     Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
                                     Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}"
                                     Visibility="{x:Bind ViewModel.ShowSdkDetailsButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
@@ -214,7 +191,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
                                        Foreground="#FCD34D" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                            <Button Grid.Column="1" Style="{StaticResource StudioGhostButton}"
                                     Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
                                     Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}" />
                         </Grid>
@@ -229,17 +206,16 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
                                        Foreground="#FCA5A5" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Style="{StaticResource SettingsGhostButton}"
+                            <Button Grid.Column="1" Style="{StaticResource StudioGhostButton}"
                                     Content="{x:Bind ViewModel.SdkDetailsButtonLabel, Mode=OneWay}"
                                     Command="{x:Bind ViewModel.ToggleSdkDiagnosticsCommand}" />
                         </Grid>
                     </Border>
 
-                    <!-- Expandable checklist -->
                     <StackPanel Spacing="8"
                                 Visibility="{x:Bind ViewModel.ShowSdkChecklist, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <TextBlock Text="{x:Bind ViewModel.SdkReadiness.Summary, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                                   Style="{StaticResource StudioBody}" />
 
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.SdkBlockers, Mode=OneWay}">
                             <ItemsRepeater.ItemTemplate>
@@ -254,7 +230,8 @@
                                        Visibility="{x:Bind ViewModel.SdkDiagnosticsExpanded, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                             <ItemsRepeater.ItemTemplate>
                                 <DataTemplate x:DataType="models:ZoomSdkReadinessCheck">
-                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                    <Border Background="{StaticResource StudioFieldBrush}"
+                                            BorderBrush="{StaticResource StudioBorderBrush}"
                                             BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
                                         <StackPanel Spacing="4">
                                             <Grid ColumnSpacing="8">
@@ -262,13 +239,12 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{x:Bind Label}" FontSize="12" FontWeight="SemiBold" />
+                                                <TextBlock Text="{x:Bind Label}" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource StudioTextBrush}" />
                                                 <TextBlock Grid.Column="1" Text="{x:Bind Status}" FontSize="11"
-                                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
                                             </Grid>
-                                            <TextBlock Text="{x:Bind Detail}" FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       TextWrapping="Wrap"
+                                            <TextBlock Text="{x:Bind Detail}" Style="{StaticResource StudioBody}"
                                                        Visibility="{x:Bind ShowDetail, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                         </StackPanel>
                                     </Border>

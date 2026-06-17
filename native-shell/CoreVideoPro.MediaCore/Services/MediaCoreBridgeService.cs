@@ -224,8 +224,14 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
 
     public static string SummarizeCaptureSnapshot(RawCaptureSnapshot snapshot, string verb)
     {
-        if (!snapshot.MeetingState.Equals("in_meeting", StringComparison.Ordinal))
+        if (!snapshot.MeetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))
         {
+            var warning = snapshot.Warnings?.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+            if (!string.IsNullOrWhiteSpace(warning))
+            {
+                return $"{verb} failed — {warning}";
+            }
+
             return $"{verb} — meeting {snapshot.MeetingState}.";
         }
 

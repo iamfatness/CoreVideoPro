@@ -6,7 +6,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw ".NET SDK is required on PATH. Install .NET 9 from https://dotnet.microsoft.com/download/dotnet/9.0"
 }
 
-Write-Host "Building CoreVideo Pro (WinUI native shell)..."
+Write-Host "Building CoreVideo Pro (WinUI native shell, framework-dependent + Runtime 2.2)..."
 dotnet publish $project -c Release -r win-x64 --self-contained false
 
 if ($LASTEXITCODE -ne 0) {
@@ -14,49 +14,91 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $publishDir = Join-Path $repoRoot "native-shell/CoreVideoPro.WinUI/bin/Release/net9.0-windows10.0.19041.0/win-x64/publish"
-$dll = Join-Path $publishDir "CoreVideoPro.WinUI.dll"
 $exe = Join-Path $publishDir "CoreVideoPro.WinUI.exe"
 
-if (-not (Test-Path $dll)) {
-    $found = Get-ChildItem -Path (Join-Path $repoRoot "native-shell/CoreVideoPro.WinUI/bin") -Recurse -Filter "CoreVideoPro.WinUI.dll" |
+if (-not (Test-Path $exe)) {
+    $found = Get-ChildItem -Path (Join-Path $repoRoot "native-shell/CoreVideoPro.WinUI/bin") -Recurse -Filter "CoreVideoPro.WinUI.exe" |
         Where-Object { $_.DirectoryName -match "\\publish$" } |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($found) {
-        $dll = $found.FullName
+        $exe = $found.FullName
         $publishDir = $found.DirectoryName
-        $exe = Join-Path $publishDir "CoreVideoPro.WinUI.exe"
     }
 }
 
-if (-not (Test-Path $dll)) {
-    Write-Error "Could not find CoreVideoPro.WinUI.dll after build."
+if (-not (Test-Path $exe)) {
+    Write-Error "Could not find CoreVideoPro.WinUI.exe after build."
 }
 
-function Start-WinUiShell {
+function Sync-NativeCoreArtifacts {
+    param([string]$TargetDir)
+    $nativeCandidates = @(
+        (Join-Path $repoRoot "native\build-dev"),
+        (Join-Path $repoRoot "native\build-dev\Release"),
+        (Join-Path $repoRoot "native\build"),
+        (Join-Path $repoRoot "native\build\Release")
+    )
+    foreach ($candidate in $nativeCandidates) {
+        if (-not (Test-Path (Join-Path $candidate "corevideo-native.exe"))) {
+            continue
+        }
+        Write-Host "[launch:native] staging native core from $candidate" -ForegroundColor DarkGray
+        Get-ChildItem -Path $candidate -Filter "corevideo-*" -File |
+            Where-Object { $_.Extension -in ".exe", ".dll" -and $_.BaseName -notmatch "-tests$" } |
+            ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination (Join-Path $TargetDir $_.Name) -Force
+            }
+        return
+    }
+    Write-Host "[launch:native] native build not found; publish may run stub-only media core" -ForegroundColor Yellow
+}
+
+Write-Host "[launch:native] syncing Zoom SDK runtime beside publish output..." -ForegroundColor Cyan
+& (Join-Path $repoRoot "scripts\sync-zoom-runtime-to-app.ps1") -AppDir $publishDir
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Sync-NativeCoreArtifacts -TargetDir $publishDir
+
+Write-Host "Launching $exe on the interactive desktop..."
+function Start-InteractiveApp {
     param(
-        [string]$PublishDirectory,
-        [string]$DllPath,
-        [string]$ExePath
+        [string]$Executable,
+        [string]$WorkingDirectory
     )
 
-    if (Test-Path $ExePath) {
-        try {
-            Write-Host "Launching $ExePath"
-            Start-Process -FilePath $ExePath -WorkingDirectory $PublishDirectory
-            return
-        }
-        catch {
-            $message = $_.Exception.Message
-            if ($message -notmatch "side-by-side|configuration is incorrect|sxstrace") {
-                throw
-            }
-            Write-Host "App host failed with side-by-side error; using dotnet host..." -ForegroundColor Yellow
-        }
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $null = $shell.ShellExecute($Executable, "", $WorkingDirectory, "open", 1)
+        return $true
+    }
+    catch {
+        Write-Host "[launch:native] ShellExecute failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 
-    Write-Host "Launching dotnet $DllPath"
-    Start-Process -FilePath "dotnet" -ArgumentList @($DllPath) -WorkingDirectory $PublishDirectory
+    try {
+        $shortcut = Join-Path $env:USERPROFILE "OneDrive\Desktop\CoreVideo Pro.lnk"
+        if (-not (Test-Path $shortcut)) {
+            $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "CoreVideo Pro.lnk"
+        }
+        if (Test-Path $shortcut) {
+            $wsh = New-Object -ComObject WScript.Shell
+            $null = $wsh.Run("`"$shortcut`"", 1, $false)
+            return $true
+        }
+    }
+    catch {
+        Write-Host "[launch:native] shortcut launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Executable`"" -WorkingDirectory $WorkingDirectory
+    return $true
 }
 
-Start-WinUiShell -PublishDirectory $publishDir -DllPath $dll -ExePath $exe
+if (-not (Start-InteractiveApp -Executable $exe -WorkingDirectory $publishDir)) {
+    throw "Failed to launch $exe on the interactive desktop."
+}
+
+Start-Process -FilePath "explorer.exe" -ArgumentList $publishDir | Out-Null

@@ -111,12 +111,12 @@ public sealed partial class ScenePreviewControl : UserControl
         Grid.SetRowSpan(heroTile, 3);
         LayoutRoot.Children.Add(heroTile);
 
-        var kicker = CreateLabel(isOutro ? "Closing scene" : "Intro scene", 14, Microsoft.UI.Text.FontWeights.Bold, "#8FDCC8");
+        var kicker = CreateLabel(isOutro ? "Closing scene" : "Intro scene", 12, Microsoft.UI.Text.FontWeights.Bold, "#8FDCC8");
         Grid.SetColumn(kicker, 1);
         Grid.SetRow(kicker, 0);
         LayoutRoot.Children.Add(kicker);
 
-        var title = CreateLabel(Scene?.Name ?? string.Empty, 36, Microsoft.UI.Text.FontWeights.Bold, "#F7FBF8");
+        var title = CreateLabel(Scene?.Name ?? string.Empty, 28, Microsoft.UI.Text.FontWeights.Bold, "#F7FBF8");
         Grid.SetColumn(title, 1);
         Grid.SetRow(title, 1);
         LayoutRoot.Children.Add(title);
@@ -212,16 +212,16 @@ public sealed partial class ScenePreviewControl : UserControl
 
     private Border BuildSlideSharePanel()
     {
-        var chart = new Grid { Margin = new Thickness(0, 20, 0, 0), MaxWidth = 420 };
+        var chart = new Grid { Margin = new Thickness(0, 12, 0, 0), MaxWidth = 360 };
         chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         chart.ColumnSpacing = 10;
 
-        var bar0 = new Border { Height = 96, CornerRadius = new CornerRadius(8), Background = BrushFromHex("#44C1A1") };
+        var bar0 = new Border { Height = 72, CornerRadius = new CornerRadius(8), Background = BrushFromHex("#44C1A1") };
         var bar1 = new Border
         {
-            Height = 132,
+            Height = 96,
             VerticalAlignment = VerticalAlignment.Bottom,
             CornerRadius = new CornerRadius(8),
             Background = BrushFromHex("#F0A85C")
@@ -241,7 +241,7 @@ public sealed partial class ScenePreviewControl : UserControl
 
         var panel = new StackPanel { Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
         panel.Children.Add(CreateLabel("Q2 PRODUCT UPDATE", 11, Microsoft.UI.Text.FontWeights.Bold, "#8FDCC8"));
-        panel.Children.Add(CreateLabel("Building what matters next", 26, Microsoft.UI.Text.FontWeights.Bold, "#EDF4EF"));
+        panel.Children.Add(CreateLabel("Building what matters next", 20, Microsoft.UI.Text.FontWeights.Bold, "#EDF4EF"));
         panel.Children.Add(chart);
         panel.Children.Add(CreateLabel("• Customer-obsessed roadmap", 13, Microsoft.UI.Text.FontWeights.Normal, "#AEBEB5"));
         panel.Children.Add(CreateLabel("• Platform scalability & reliability", 13, Microsoft.UI.Text.FontWeights.Normal, "#AEBEB5"));

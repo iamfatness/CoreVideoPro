@@ -17,7 +17,7 @@
             BorderThickness="1"
             BorderBrush="#1FEDF4EF"
             Background="#141B18"
-            MinHeight="96">
+            MinHeight="0">
         <Grid>
             <Image x:Name="PreviewImage"
                    Stretch="UniformToFill"

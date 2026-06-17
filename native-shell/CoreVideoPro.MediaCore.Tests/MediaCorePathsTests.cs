@@ -47,9 +47,11 @@ public sealed class MediaCorePathsTests : IDisposable
     [Fact]
     public void ResolveZoomSdkArchitectureRoot_ReturnsStagedRuntimeWhenSdkDllPresent()
     {
-        var staged = Path.Combine(_repoRoot, MediaCorePaths.StagedZoomRuntimeRelativePath, "bin");
-        Directory.CreateDirectory(staged);
-        File.WriteAllText(Path.Combine(staged, "sdk.dll"), "stub");
+        var staged = Path.Combine(_repoRoot, MediaCorePaths.StagedZoomRuntimeRelativePath);
+        Directory.CreateDirectory(Path.Combine(staged, "bin"));
+        Directory.CreateDirectory(Path.Combine(staged, "h"));
+        File.WriteAllText(Path.Combine(staged, "bin", "sdk.dll"), "stub");
+        File.WriteAllText(Path.Combine(staged, "h", "zoom_sdk.h"), "stub");
 
         var resolved = MediaCorePaths.ResolveZoomSdkArchitectureRoot(_repoRoot);
 
@@ -60,15 +62,17 @@ public sealed class MediaCorePathsTests : IDisposable
     [Fact]
     public void ResolveZoomSdkArchitectureRoot_HonorsZoomSdkDirWhenStagedRuntimeMissing()
     {
-        var sdkDir = Path.Combine(_repoRoot, "zoom-sdk", "bin");
-        Directory.CreateDirectory(sdkDir);
-        File.WriteAllText(Path.Combine(sdkDir, "sdk.dll"), "stub");
+        var sdkDir = Path.Combine(_repoRoot, "zoom-sdk");
+        Directory.CreateDirectory(Path.Combine(sdkDir, "bin"));
+        Directory.CreateDirectory(Path.Combine(sdkDir, "h"));
+        File.WriteAllText(Path.Combine(sdkDir, "bin", "sdk.dll"), "stub");
+        File.WriteAllText(Path.Combine(sdkDir, "h", "zoom_sdk.h"), "stub");
 
-        using var _ = SetEnv(MediaCorePaths.ZoomSdkDirEnvVar, Path.Combine(_repoRoot, "zoom-sdk"));
+        using var _ = SetEnv(MediaCorePaths.ZoomSdkDirEnvVar, sdkDir);
 
         var resolved = MediaCorePaths.ResolveZoomSdkArchitectureRoot(_repoRoot);
 
-        Assert.Equal(Path.GetFullPath(Path.Combine(_repoRoot, "zoom-sdk")), resolved);
+        Assert.Equal(Path.GetFullPath(sdkDir), resolved);
     }
 
     [Fact]
@@ -97,17 +101,52 @@ public sealed class MediaCorePathsTests : IDisposable
     }
 
     [Fact]
-    public void IsZoomSdkArchitectureRoot_AcceptsFlatOrBinLayout()
+    public void IsZoomSdkArchitectureRoot_RequiresBinDllAndHeaderLayout()
     {
         var flatRoot = Path.Combine(_repoRoot, "flat");
         Directory.CreateDirectory(flatRoot);
         File.WriteAllText(Path.Combine(flatRoot, "sdk.dll"), "stub");
-        Assert.True(MediaCorePaths.IsZoomSdkArchitectureRoot(flatRoot));
+        Assert.False(MediaCorePaths.IsZoomSdkArchitectureRoot(flatRoot));
 
         var binRoot = Path.Combine(_repoRoot, "bin-layout");
         Directory.CreateDirectory(Path.Combine(binRoot, "bin"));
+        Directory.CreateDirectory(Path.Combine(binRoot, "h"));
         File.WriteAllText(Path.Combine(binRoot, "bin", "sdk.dll"), "stub");
+        File.WriteAllText(Path.Combine(binRoot, "h", "zoom_sdk.h"), "stub");
         Assert.True(MediaCorePaths.IsZoomSdkArchitectureRoot(binRoot));
+    }
+
+    [Fact]
+    public void NormalizeZoomSdkArchitectureRoot_ResolvesPackageRootToX64Folder()
+    {
+        var packageRoot = Path.Combine(_repoRoot, "zoom-sdk-windows-7.0.5.39292");
+        var architectureRoot = Path.Combine(packageRoot, "x64");
+        Directory.CreateDirectory(Path.Combine(architectureRoot, "bin"));
+        Directory.CreateDirectory(Path.Combine(architectureRoot, "h"));
+        File.WriteAllText(Path.Combine(architectureRoot, "bin", "sdk.dll"), "stub");
+        File.WriteAllText(Path.Combine(architectureRoot, "h", "zoom_sdk.h"), "stub");
+
+        var resolved = MediaCorePaths.NormalizeZoomSdkArchitectureRoot(packageRoot);
+
+        Assert.Equal(Path.GetFullPath(architectureRoot), resolved);
+    }
+
+    [Fact]
+    public void ResolveZoomSdkArchitectureRoot_PrefersRepoZoomSdkBeforeFlatNativeBuildDrop()
+    {
+        var flatDrop = Path.Combine(_repoRoot, "native", "build-dev");
+        Directory.CreateDirectory(flatDrop);
+        File.WriteAllText(Path.Combine(flatDrop, "sdk.dll"), "stub");
+
+        var sdkRoot = Path.Combine(_repoRoot, "ZoomSDK", "zoom-sdk-windows-7.0.5.39292", "x64");
+        Directory.CreateDirectory(Path.Combine(sdkRoot, "bin"));
+        Directory.CreateDirectory(Path.Combine(sdkRoot, "h"));
+        File.WriteAllText(Path.Combine(sdkRoot, "bin", "sdk.dll"), "stub");
+        File.WriteAllText(Path.Combine(sdkRoot, "h", "zoom_sdk.h"), "stub");
+
+        var resolved = MediaCorePaths.ResolveZoomSdkArchitectureRoot(_repoRoot);
+
+        Assert.Equal(Path.GetFullPath(sdkRoot), resolved);
     }
 
     private IDisposable SetEnv(string key, string? value)

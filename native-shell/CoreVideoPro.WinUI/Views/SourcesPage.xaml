@@ -23,6 +23,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
@@ -125,6 +126,58 @@
             </Border>
 
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Show inputs" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Orientation="Vertical" Spacing="6" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
+                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,8">
+                                    <Grid ColumnSpacing="8" RowSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="72" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12"
+                                                   VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1" Spacing="4">
+                                            <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <ComboBox ItemsSource="{x:Bind KindOptions}"
+                                                      SelectedValue="{x:Bind Kind, Mode=TwoWay}"
+                                                      SelectedValuePath="Value"
+                                                      DisplayMemberPath="Label"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Spacing="4">
+                                            <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <ComboBox ItemsSource="{x:Bind SourceOptions}"
+                                                      SelectedValue="{x:Bind SelectedSourceId, Mode=TwoWay}"
+                                                      SelectedValuePath="Value"
+                                                      DisplayMemberPath="Label"
+                                                      IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
+                                        <ToggleSwitch Grid.Column="3"
+                                                      Header="In show"
+                                                      IsOn="{x:Bind InShow, Mode=TwoWay}"
+                                                      IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}"
+                                                      VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="Capture devices" Style="{StaticResource OperatorSectionTitle}" />
                     <StackPanel Orientation="Horizontal" Spacing="8">

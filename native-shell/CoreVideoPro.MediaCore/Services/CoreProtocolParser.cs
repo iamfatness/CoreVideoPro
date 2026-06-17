@@ -395,6 +395,41 @@ public static class CoreProtocolParser
         return "Media core request failed.";
     }
 
+    public static string DescribeUnexpectedCaptureResponse(JsonDocument response, string responseType)
+    {
+        var error = TryParseErrorMessage(response);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            return $"{responseType} failed: {error}";
+        }
+
+        var root = response.RootElement;
+        if (root.TryGetProperty("snapshot", out var snapshotElement) &&
+            snapshotElement.TryGetProperty("warnings", out var warningsElement) &&
+            warningsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var warning in warningsElement.EnumerateArray())
+            {
+                if (warning.ValueKind == JsonValueKind.String)
+                {
+                    var text = warning.GetString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return $"{responseType} failed: {text}";
+                    }
+                }
+            }
+        }
+
+        if (root.TryGetProperty("snapshot", out var stateElement) &&
+            stateElement.TryGetProperty("meetingState", out var meetingStateElement))
+        {
+            return $"{responseType} failed: meeting state '{meetingStateElement.GetString()}'.";
+        }
+
+        return $"{responseType} failed: unexpected media-core response.";
+    }
+
     private static CoreZoomVideoFrameEvent? TryParseZoomVideoFrameEvent(JsonElement root)
     {
         if (!root.TryGetProperty("frame", out var frameElement) ||

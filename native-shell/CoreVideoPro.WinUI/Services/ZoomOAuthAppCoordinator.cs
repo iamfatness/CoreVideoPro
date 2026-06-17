@@ -7,6 +7,7 @@ namespace CoreVideoPro.WinUI.Services;
 public sealed class ZoomOAuthAppCoordinator
 {
     public const string Protocol = "corevideopro";
+    public static readonly string[] SupportedProtocols = ["corevideo", Protocol];
 
     private readonly ZoomOAuthService _oauth;
     private readonly DispatcherQueue _dispatcher;
@@ -26,6 +27,16 @@ public sealed class ZoomOAuthAppCoordinator
     {
         AppInstance.GetCurrent().Activated += OnAppActivated;
         TryHandleActivationArguments(Environment.GetCommandLineArgs());
+        TryDrainPendingCallback();
+    }
+
+    public void TryDrainPendingCallback()
+    {
+        var pending = OAuthCallbackRelay.TryConsume();
+        if (!string.IsNullOrWhiteSpace(pending))
+        {
+            TryHandleOAuthCallback(pending);
+        }
     }
 
     public void Dispose()
@@ -38,11 +49,15 @@ public sealed class ZoomOAuthAppCoordinator
         error = null;
         try
         {
-            using var protocolKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey($@"Software\Classes\{Protocol}");
-            protocolKey.SetValue("", $"URL:{Protocol} Protocol");
-            protocolKey.SetValue("URL Protocol", "");
-            using var commandKey = protocolKey.CreateSubKey(@"shell\open\command");
-            commandKey.SetValue("", $"\"{exePath}\" \"%1\"");
+            foreach (var protocol in SupportedProtocols)
+            {
+                using var protocolKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey($@"Software\Classes\{protocol}");
+                protocolKey.SetValue("", $"URL:{protocol} Protocol");
+                protocolKey.SetValue("URL Protocol", "");
+                using var commandKey = protocolKey.CreateSubKey(@"shell\open\command");
+                commandKey.SetValue("", $"\"{exePath}\" \"%1\"");
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -52,50 +67,58 @@ public sealed class ZoomOAuthAppCoordinator
         }
     }
 
-    private void OnAppActivated(object? sender, AppActivationArguments args)
-    {
-        if (args.Kind != ExtendedActivationKind.Protocol)
-        {
-            return;
-        }
-
-        if (args.Data is not Windows.ApplicationModel.Activation.IProtocolActivatedEventArgs protocolArgs)
-        {
-            return;
-        }
-
-        TryHandleOAuthCallback(protocolArgs.Uri?.ToString());
-    }
+    private void OnAppActivated(object? sender, AppActivationArguments args) =>
+        HandleActivationArguments(args);
 
     private void TryHandleActivationArguments(string[] args)
     {
-        var callback = args.FirstOrDefault(arg =>
-            arg.StartsWith($"{Protocol}://", StringComparison.OrdinalIgnoreCase));
+        var callback = args.FirstOrDefault(IsOAuthCallbackUrl);
         if (!string.IsNullOrWhiteSpace(callback))
         {
             TryHandleOAuthCallback(callback);
         }
     }
 
-    private void TryHandleOAuthCallback(string? callbackUrl)
+    public static bool IsOAuthCallbackUrl(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        SupportedProtocols.Any(protocol =>
+            value.StartsWith($"{protocol}://", StringComparison.OrdinalIgnoreCase));
+
+    public void TryHandleOAuthCallback(string? callbackUrl)
     {
-        if (string.IsNullOrWhiteSpace(callbackUrl) ||
-            !callbackUrl.StartsWith($"{Protocol}://", StringComparison.OrdinalIgnoreCase))
+        if (!IsOAuthCallbackUrl(callbackUrl))
         {
             return;
         }
 
+        LaunchLog.Write("oauth: callback received");
         _ = Task.Run(async () =>
         {
             try
             {
                 await _oauth.HandleRedirectUrlAsync(callbackUrl).ConfigureAwait(false);
+                LaunchLog.Write("oauth: sign-in completed");
                 _dispatcher.TryEnqueue(() => _statusChanged?.Invoke("Signed in with Zoom."));
             }
             catch (Exception ex)
             {
+                LaunchLog.Write($"oauth: callback failed: {ex.Message}");
                 _dispatcher.TryEnqueue(() => _statusChanged?.Invoke(ex.Message));
             }
         });
+    }
+
+    public void HandleActivationArguments(AppActivationArguments args)
+    {
+        LaunchLog.Write($"activation: kind={args.Kind}");
+        var callback = OAuthCallbackRelay.ExtractFromActivation(args);
+        if (!string.IsNullOrWhiteSpace(callback))
+        {
+            TryHandleOAuthCallback(callback);
+            return;
+        }
+
+        TryHandleActivationArguments(Environment.GetCommandLineArgs());
+        TryDrainPendingCallback();
     }
 }

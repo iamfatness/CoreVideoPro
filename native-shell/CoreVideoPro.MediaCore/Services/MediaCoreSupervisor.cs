@@ -12,6 +12,8 @@ public sealed class MediaCoreSupervisorOptions
     public string? WorkingDirectory { get; init; }
     public IReadOnlyDictionary<string, string>? Environment { get; init; }
     public int RequestTimeoutMs { get; init; } = 4000;
+    public int HandshakeRequestTimeoutMs { get; init; } = 15000;
+    public int ZoomJoinRequestTimeoutMs { get; init; } = 60000;
     public int MaxRestarts { get; init; } = 5;
     public int FrameDrainIntervalMs { get; init; } = 16;
 }
@@ -88,7 +90,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             SpawnChild();
         }
 
-        var profile = await HandshakeAsync(cancellationToken).ConfigureAwait(false);
+        var profile = await EnsureHandshakeProfileAsync(cancellationToken).ConfigureAwait(false);
         StartFrameDrain();
         RaiseHealth();
         StatusChanged?.Invoke("Engine on");
@@ -128,13 +130,22 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
     {
+        lock (_gate)
+        {
+            if (_profile is not null)
+            {
+                return _profile;
+            }
+        }
+
         var response = await SendAsync(
             new Dictionary<string, object?>
             {
                 ["id"] = NextId(),
                 ["type"] = "handshake"
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            _options.HandshakeRequestTimeoutMs).ConfigureAwait(false);
 
         using (response)
         {
@@ -162,12 +173,23 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         string? userZak = null,
         CancellationToken cancellationToken = default)
     {
+        var joinDetails = ZoomMeetingUrlParser.Parse(meetingUrl);
         var payload = new Dictionary<string, object?>
         {
-            ["meetingUrl"] = meetingUrl,
+            ["meetingUrl"] = joinDetails.MeetingUrl,
             ["displayName"] = displayName,
             ["webinar"] = webinar
         };
+        if (!string.IsNullOrWhiteSpace(joinDetails.Passcode))
+        {
+            payload["passcode"] = joinDetails.Passcode;
+        }
+
+        if (!string.IsNullOrWhiteSpace(joinDetails.MeetingNumber))
+        {
+            payload["meetingNumber"] = joinDetails.MeetingNumber;
+        }
+
         if (!string.IsNullOrWhiteSpace(sdkJwt))
         {
             payload["sdkJwt"] = sdkJwt;
@@ -185,7 +207,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 ["type"] = "zoom-join",
                 ["payload"] = payload
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            _options.ZoomJoinRequestTimeoutMs).ConfigureAwait(false);
 
         using (response)
         {
@@ -196,7 +219,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
 
             throw new InvalidOperationException(
-                $"zoom join failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+                CoreProtocolParser.DescribeUnexpectedCaptureResponse(response, "zoom-join"));
         }
     }
 
@@ -219,7 +242,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
 
             throw new InvalidOperationException(
-                $"zoom leave failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+                CoreProtocolParser.DescribeUnexpectedCaptureResponse(response, "zoom-leave"));
         }
     }
 
@@ -348,7 +371,19 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     {
         string fileName;
         string arguments;
-        var env = new Dictionary<string, string>(_options.Environment ?? new Dictionary<string, string>());
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in MediaCorePaths.BuildMediaCoreChildEnvironment())
+        {
+            env[pair.Key] = pair.Value;
+        }
+
+        if (_options.Environment is not null)
+        {
+            foreach (var pair in _options.Environment)
+            {
+                env[pair.Key] = pair.Value;
+            }
+        }
 
         if (_options.Command is not null)
         {
@@ -384,7 +419,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             FileName = fileName,
             Arguments = arguments,
-            WorkingDirectory = _options.WorkingDirectory ?? MediaCorePaths.RepoRoot,
+            WorkingDirectory = _options.WorkingDirectory ?? MediaCorePaths.ResolveMediaCoreWorkingDirectory(),
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -467,14 +502,18 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 continue;
             }
 
-            if (!document.RootElement.TryGetProperty("id", out var idElement) ||
-                idElement.ValueKind != JsonValueKind.String)
+            if (!document.RootElement.TryGetProperty("id", out var idElement))
             {
                 document.Dispose();
                 continue;
             }
 
-            var id = idElement.GetString();
+            var id = idElement.ValueKind switch
+            {
+                JsonValueKind.String => idElement.GetString(),
+                JsonValueKind.Number => idElement.GetRawText(),
+                _ => null
+            };
             if (id is null)
             {
                 document.Dispose();
@@ -489,6 +528,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                     waiter.TrySetResult(document);
                     continue;
                 }
+            }
+
+            if (TryAcceptBootstrapHandshake(document))
+            {
+                document.Dispose();
+                continue;
             }
 
             document.Dispose();
@@ -523,9 +568,65 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         _ = HandshakeAsync(CancellationToken.None);
     }
 
+    private async Task<NativeMediaCoreProfile?> EnsureHandshakeProfileAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(_options.HandshakeRequestTimeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (_gate)
+            {
+                if (_profile is not null)
+                {
+                    return _profile;
+                }
+
+                if (_process is null || _process.HasExited)
+                {
+                    throw new InvalidOperationException(DescribeChildStartupFailure());
+                }
+            }
+
+            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await HandshakeAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private string DescribeChildStartupFailure()
+    {
+        var exitCode = _process?.HasExited == true ? _process.ExitCode.ToString() : "running";
+        return $"Media core exited before handshake completed (exit {exitCode}).";
+    }
+
+    private bool TryAcceptBootstrapHandshake(JsonDocument document)
+    {
+        if (!MediaCoreHandshakeRules.IsUnsolicitedBootstrapHandshake(document.RootElement))
+        {
+            return false;
+        }
+
+        var profile = CoreProtocolParser.TryParseHandshakeProfile(document);
+        if (profile is null)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            _profile = profile;
+            _recovering = false;
+        }
+
+        ProfileChanged?.Invoke(profile);
+        return true;
+    }
+
     private async Task<JsonDocument> SendAsync(
         Dictionary<string, object?> payload,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? timeoutMs = null)
     {
         if (!payload.TryGetValue("id", out var idValue) || idValue is not string id)
         {
@@ -544,7 +645,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_options.RequestTimeoutMs);
+        timeoutCts.CancelAfter(timeoutMs ?? _options.RequestTimeoutMs);
         await using var registration = timeoutCts.Token.Register(() =>
         {
             lock (_gate)

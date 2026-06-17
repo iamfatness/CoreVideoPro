@@ -17,15 +17,7 @@
                 <Setter Property="CornerRadius" Value="8" />
             </Style>
 
-            <Style x:Key="GhostButton" TargetType="Button">
-                <Setter Property="Background" Value="Transparent" />
-                <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
-                <Setter Property="BorderBrush" Value="{StaticResource StudioBorderBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="6" />
-                <Setter Property="Padding" Value="10,6" />
-                <Setter Property="FontSize" Value="12" />
-            </Style>
+            <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource StudioNavButton}" />
 
             <Style x:Key="PlaceholderPanel" TargetType="Border" BasedOn="{StaticResource StudioPanelBorder}">
                 <Setter Property="Padding" Value="24" />
@@ -97,7 +89,8 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="16,10" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" Padding="18,14" Background="{StaticResource StudioSurfaceBrush}"
+                  BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,0,0,1">
             <Grid ColumnSpacing="16">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -111,7 +104,8 @@
                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <StackPanel VerticalAlignment="Center" Spacing="0">
-                        <TextBlock Text="CoreVideo Pro" FontWeight="SemiBold" FontSize="14" />
+                        <TextBlock Text="CoreVideo Pro" FontWeight="SemiBold" FontSize="14"
+                                   Foreground="{StaticResource StudioTextBrush}" />
                         <TextBlock Text="Zoom-native production" FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
                     </StackPanel>
                 </StackPanel>
@@ -156,23 +150,26 @@
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
                     <Button Command="{x:Bind ViewModel.ToggleEngineCommand}"
+                            IsEnabled="{x:Bind ViewModel.CanToggleCapture, Mode=OneWay}"
                             Background="{x:Bind ViewModel.EngineToggleBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.EngineToggleBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.EngineToggleForeground, Mode=OneWay}"
-                            BorderThickness="1" CornerRadius="999" Padding="12,6" FontSize="11" FontWeight="Bold">
+                            BorderThickness="1" CornerRadius="999" Padding="14,8" FontSize="12" FontWeight="Bold"
+                            ToolTipService.ToolTip="{x:Bind ViewModel.CaptureEngineHint, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon Glyph="&#xE7E8;" FontSize="12" />
+                            <FontIcon Glyph="&#xE7E8;" FontSize="13" />
                             <TextBlock Text="{x:Bind ViewModel.EngineRunningLabel, Mode=OneWay}" />
                         </StackPanel>
                     </Button>
                     <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}" FontSize="11"
-                               Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="220"
+                               Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="260"
                                TextTrimming="CharacterEllipsis" />
                     <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="1"
                             CornerRadius="12" Padding="10,4">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.ZoomStatus, Mode=OneWay}" FontSize="12" />
+                            <TextBlock Text="{x:Bind ViewModel.ZoomStatus, Mode=OneWay}" FontSize="12"
+                                       Foreground="{StaticResource StudioTextBrush}" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -182,232 +179,221 @@
         <Grid Grid.Row="1" Padding="12" ColumnSpacing="10"
               Visibility="{x:Bind ViewModel.IsStudioTab, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="300" />
+                <ColumnDefinition Width="300" MinWidth="280" />
+                <ColumnDefinition Width="*" MinWidth="640" />
+                <ColumnDefinition Width="280" MinWidth="240" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
                 <Grid RowSpacing="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="Scenes" FontWeight="SemiBold" FontSize="13" />
-                    <ListView Grid.Row="1" ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}" SelectionMode="None">
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="models:SceneDisplayItem">
-                                <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                        Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
-                                        BorderBrush="{x:Bind ItemBorderBrush, Mode=OneWay}"
-                                        BorderThickness="1" Padding="11"
-                                        CornerRadius="8"
-                                        Command="{x:Bind SelectCommand}"
-                                        CommandParameter="{x:Bind Id}">
-                                    <Grid>
-                                        <Border BorderBrush="#CC44C1A1"
-                                                BorderThickness="1"
-                                                CornerRadius="8"
-                                                Visibility="{x:Bind PreviewOutlineVisibility, Mode=OneWay}" />
-                                        <Border HorizontalAlignment="Left"
-                                                Width="3"
-                                                Background="#F0A85C"
-                                                CornerRadius="2"
-                                                Visibility="{x:Bind ProgramAccentVisibility, Mode=OneWay}" />
-                                        <StackPanel Spacing="2" Margin="6,0,0,0">
-                                            <Grid>
-                                                <TextBlock Text="{x:Bind Name}" FontWeight="Bold" FontSize="14" />
-                                                <TextBlock Text="{x:Bind StatusBadge}" FontSize="10" FontWeight="ExtraBold"
-                                                           Foreground="{StaticResource StudioAccentBrush}"
-                                                           HorizontalAlignment="Right"
-                                                           Visibility="{x:Bind StatusBadgeVisibility, Mode=OneWay}" />
-                                            </Grid>
-                                            <TextBlock Text="{x:Bind Automation}" FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
-                                            <TextBlock Text="{x:Bind DurationLabel}" FontSize="10"
-                                                       Foreground="{StaticResource StudioMutedBrush}" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Button>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
-                    <Button Grid.Row="2" Content="Reorder Scenes" Style="{StaticResource GhostButton}"
-                            HorizontalAlignment="Stretch" />
+
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="Scenes" FontWeight="SemiBold" FontSize="14"
+                                   Foreground="{StaticResource StudioTextBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.SceneRailSummary, Mode=OneWay}" FontSize="11"
+                                   Foreground="{StaticResource StudioTextSecondaryBrush}" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="1" CornerRadius="6" Padding="8,5">
+                            <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="#F0A85C"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}">
+                                <Run Text="PGM " />
+                                <Run Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" />
+                            </TextBlock>
+                        </Border>
+                        <Border Grid.Column="1" Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="8,5">
+                            <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioAccentBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}">
+                                <Run Text="PVW " />
+                                <Run Text="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}" />
+                            </TextBlock>
+                        </Border>
+                    </Grid>
+
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <controls:StackLayout Spacing="6" />
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:SceneDisplayItem">
+                                    <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                            Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
+                                            BorderBrush="{x:Bind ItemBorderBrush, Mode=OneWay}"
+                                            Foreground="{StaticResource StudioTextBrush}"
+                                            BorderThickness="1" Padding="{x:Bind ItemPadding, Mode=OneWay}"
+                                            CornerRadius="8"
+                                            Command="{x:Bind SelectCommand}"
+                                            CommandParameter="{x:Bind Id}">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="28" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Width="28" Height="28" CornerRadius="14"
+                                                    Background="{x:Bind SlotBadgeBackground, Mode=OneWay}">
+                                                <TextBlock Text="{x:Bind SlotNumber}" FontWeight="Bold" FontSize="11"
+                                                           Foreground="{x:Bind SlotBadgeForeground, Mode=OneWay}"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind Name}"
+                                                           FontWeight="SemiBold"
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTipService.ToolTip="{x:Bind Name}" />
+                                                <TextBlock Text="{x:Bind MetaLabel}"
+                                                           FontSize="10"
+                                                           Foreground="{StaticResource StudioMutedBrush}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <Border Grid.Column="2" Background="{x:Bind StatusBackgroundBrush, Mode=OneWay}"
+                                                    CornerRadius="4" Padding="6,3" VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind StatusLabel, Mode=OneWay}"
+                                                           FontSize="9" FontWeight="ExtraBold"
+                                                           Foreground="{x:Bind StatusForegroundBrush, Mode=OneWay}" />
+                                            </Border>
+                                        </Grid>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </ScrollViewer>
+
+                    <TextBlock Grid.Row="3" Text="Tap a scene to queue on preview · Take promotes PVW → PGM"
+                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                 </Grid>
             </Border>
 
-            <Grid Grid.Column="1" RowSpacing="8">
+            <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="6">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" MinHeight="220" />
                 </Grid.RowDefinitions>
 
-                <Border Style="{StaticResource StudioPanelBorder}" Padding="10,8">
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                            <TextBlock Text="{x:Bind ViewModel.ViewModeLabel, Mode=OneWay}" FontWeight="Bold" FontSize="12" />
-                            <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
-                                <TextBlock Text="{x:Bind ViewModel.ProgramResolutionLabel, Mode=OneWay}" FontSize="11" />
-                            </Border>
-                            <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
-                                <TextBlock Text="16:9" FontSize="11" />
-                            </Border>
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4">
-                            <Button Content="Program" Style="{StaticResource GhostButton}"
-                                    Command="{x:Bind ViewModel.SetViewModeCommand}" CommandParameter="program" />
-                            <Button Content="Preview" Style="{StaticResource GhostButton}"
-                                    Command="{x:Bind ViewModel.SetViewModeCommand}" CommandParameter="preview" />
-                            <Button Content="Both" Style="{StaticResource GhostButton}"
-                                    Command="{x:Bind ViewModel.SetViewModeCommand}" CommandParameter="program-preview" />
-                            <Button Content="Multiview" Style="{StaticResource GhostButton}"
-                                    Command="{x:Bind ViewModel.SetViewModeCommand}" CommandParameter="multiview" />
-                        </StackPanel>
-                    </Grid>
+                <Border Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock Text="PROGRAM + PREVIEW" FontWeight="Bold" FontSize="12"
+                                   Foreground="{StaticResource StudioTextBrush}" />
+                        <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
+                            <TextBlock Text="{x:Bind ViewModel.ProgramResolutionLabel, Mode=OneWay}" FontSize="11"
+                                       Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                        </Border>
+                        <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
+                            <TextBlock Text="16:9 monitors" FontSize="11"
+                                       Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                        </Border>
+                    </StackPanel>
                 </Border>
 
-                <Grid Grid.Row="1" RowSpacing="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
+                <Grid Grid.Row="1" ColumnSpacing="6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-                    <Border Style="{StaticResource StudioPanelBorder}"
-                            Visibility="{x:Bind ViewModel.ShowProgram, Mode=OneWay}">
+                    <Border Grid.Column="0" Style="{StaticResource StudioPanelBorder}">
                         <Grid>
-                            <cvcontrols:ScenePreviewControl
-                                Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
-                                Tiles="{x:Bind ViewModel.MultiviewTiles, Mode=OneWay}" />
-                            <cvcontrols:VideoSurfaceHost
-                                VerticalAlignment="Top"
-                                HorizontalAlignment="Right"
-                                MaxWidth="190"
-                                MaxHeight="110"
-                                Margin="8"
-                                Opacity="0.88"
-                                SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
-                            <Border Margin="16"
-                                    Background="#AA0C1118" CornerRadius="6" Padding="10,6"
-                                    HorizontalAlignment="{x:Bind ViewModel.Overlays.LowerThirdHorizontalAlignment, Mode=OneWay}"
-                                    VerticalAlignment="{x:Bind ViewModel.Overlays.LowerThirdVerticalAlignment, Mode=OneWay}"
-                                    IsHitTestVisible="False">
-                                <StackPanel>
-                                    <TextBlock Text="{x:Bind ViewModel.LowerThirdName, Mode=OneWay}" FontWeight="Bold" />
-                                    <TextBlock Text="{x:Bind ViewModel.LowerThirdTitle, Mode=OneWay}" FontSize="11" />
-                                    <TextBlock Text="{x:Bind ViewModel.LowerThirdOrg, Mode=OneWay}" FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                </StackPanel>
-                            </Border>
-
-                            <Border Padding="10,6" Margin="{x:Bind ViewModel.Overlays.CaptionStripMargin, Mode=OneWay}"
-                                    Background="{x:Bind ViewModel.Overlays.CaptionBackgroundBrush, Mode=OneWay}"
-                                    CornerRadius="6"
-                                    HorizontalAlignment="Stretch"
-                                    VerticalAlignment="Top"
-                                    Visibility="{x:Bind ViewModel.Overlays.ShowCaptionStripInProgram, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                    IsHitTestVisible="False">
-                                <StackPanel Orientation="Horizontal" Spacing="10">
-                                    <Border Background="#2A343C" CornerRadius="4" Padding="6,2">
-                                        <TextBlock Text="CC" FontWeight="Bold" FontSize="11" />
-                                    </Border>
-                                    <StackPanel>
-                                        <TextBlock Text="{x:Bind ViewModel.CaptionSpeaker, Mode=OneWay}"
-                                                   FontWeight="SemiBold"
-                                                   FontSize="{x:Bind ViewModel.Overlays.CaptionFontSizePx, Mode=OneWay}"
-                                                   Foreground="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}" />
-                                        <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionDisplayText, Mode=OneWay}"
-                                                   FontSize="{x:Bind ViewModel.Overlays.CaptionFontSizePx, Mode=OneWay}"
-                                                   Foreground="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}"
-                                                   TextWrapping="Wrap" />
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-                        </Grid>
-                    </Border>
-
-                    <Border Grid.Row="1" Style="{StaticResource StudioPanelBorder}" Padding="10,6"
-                            Background="{x:Bind ViewModel.Overlays.CaptionBackgroundBrush, Mode=OneWay}"
-                            Visibility="{x:Bind ViewModel.ShowProgram, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="10"
-                                    Visibility="{x:Bind ViewModel.Overlays.ShowCaptionStripBelowProgram, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <Border Background="#2A343C" CornerRadius="4" Padding="6,2">
-                                <TextBlock Text="CC" FontWeight="Bold" FontSize="11" />
-                            </Border>
-                            <StackPanel>
-                                <TextBlock Text="{x:Bind ViewModel.CaptionSpeaker, Mode=OneWay}"
-                                           FontWeight="SemiBold"
-                                           FontSize="{x:Bind ViewModel.Overlays.CaptionFontSizePx, Mode=OneWay}"
-                                           Foreground="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}" />
-                                <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionDisplayText, Mode=OneWay}"
-                                           FontSize="{x:Bind ViewModel.Overlays.CaptionFontSizePx, Mode=OneWay}"
-                                           Foreground="{x:Bind ViewModel.Overlays.CaptionTextBrush, Mode=OneWay}"
-                                           TextWrapping="Wrap" />
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}"
-                            BorderBrush="#47F0A85C"
-                            Visibility="{x:Bind ViewModel.ShowPreview, Mode=OneWay}">
-                        <Grid RowSpacing="6" Padding="8">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Ellipse Width="8" Height="8" Fill="#F0A85C" />
-                                <TextBlock Text="Preview" FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}"
-                                           FontWeight="SemiBold" FontSize="12"
-                                           Foreground="{StaticResource StudioAccentBrush}"
-                                           Margin="8,0,0,0" />
-                            </StackPanel>
-                            <Grid Grid.Row="1">
-                                <cvcontrols:ScenePreviewControl
-                                    Scene="{x:Bind ViewModel.PreviewScene, Mode=OneWay}"
-                                    Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
-                                    IsPreview="True" />
-                                <cvcontrols:VideoSurfaceHost
-                                    VerticalAlignment="Top"
-                                    HorizontalAlignment="Right"
-                                    MaxWidth="170"
-                                    MaxHeight="96"
-                                    Margin="8"
-                                    Opacity="0.82"
-                                    SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
-                            </Grid>
+                            <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="PROGRAM" FontWeight="ExtraBold" FontSize="11" Foreground="#F0A85C" CharacterSpacing="60" />
+                                    <TextBlock Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" FontSize="11"
+                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
+                                <cvcontrols:AspectRatioHost.Child>
+                                    <Grid>
+                                        <cvcontrols:ScenePreviewControl
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch"
+                                            Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
+                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}" />
+                                        <cvcontrols:VideoSurfaceHost
+                                            VerticalAlignment="Top" HorizontalAlignment="Right"
+                                            MaxWidth="160" MaxHeight="92" Margin="8" Opacity="0.88"
+                                            SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
+                                    </Grid>
+                                </cvcontrols:AspectRatioHost.Child>
+                            </cvcontrols:AspectRatioHost>
                         </Grid>
                     </Border>
 
-                    <Border Grid.RowSpan="3" Style="{StaticResource StudioPanelBorder}" Padding="8"
-                            Visibility="{x:Bind ViewModel.ShowMultiview, Mode=OneWay}">
-                        <GridView ItemsSource="{x:Bind ViewModel.MultiviewTiles, Mode=OneWay}">
-                            <GridView.ItemTemplate>
-                                <DataTemplate x:DataType="models:ParticipantSurfaceTile">
-                                    <Grid Width="200" Height="130">
-                                        <cvcontrols:VideoSurfaceHost SurfaceState="{x:Bind Surface, Mode=OneWay}" />
-                                        <Border VerticalAlignment="Bottom" Background="#AA0C1118"
-                                                CornerRadius="0,0,6,6" Padding="8,4" IsHitTestVisible="False">
-                                            <StackPanel>
-                                                <TextBlock Text="{x:Bind Participant.Name}" FontWeight="SemiBold" FontSize="12" />
-                                                <TextBlock Text="{x:Bind Participant.RoleBadge}" FontSize="10"
-                                                           Foreground="{StaticResource StudioMutedBrush}" />
-                                            </StackPanel>
-                                        </Border>
+                    <Border Grid.Column="1" Style="{StaticResource StudioPanelBorder}" BorderBrush="#473DDC97">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="0,0,0,1" Padding="10,6">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="PREVIEW" FontWeight="ExtraBold" FontSize="11"
+                                               Foreground="{StaticResource StudioAccentBrush}" CharacterSpacing="60" />
+                                    <TextBlock Text="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}" FontSize="11"
+                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
+                                <cvcontrols:AspectRatioHost.Child>
+                                    <Grid>
+                                        <cvcontrols:ScenePreviewControl
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch"
+                                            Scene="{x:Bind ViewModel.PreviewScene, Mode=OneWay}"
+                                            Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
+                                            IsPreview="True" />
+                                        <cvcontrols:VideoSurfaceHost
+                                            VerticalAlignment="Top" HorizontalAlignment="Right"
+                                            MaxWidth="150" MaxHeight="86" Margin="8" Opacity="0.82"
+                                            SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
                                     </Grid>
-                                </DataTemplate>
-                            </GridView.ItemTemplate>
-                        </GridView>
+                                </cvcontrols:AspectRatioHost.Child>
+                            </cvcontrols:AspectRatioHost>
+                        </Grid>
                     </Border>
                 </Grid>
+
+                <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                    <Grid RowSpacing="6">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
+                                       FontWeight="SemiBold" FontSize="12"
+                                       Foreground="{StaticResource StudioTextBrush}" />
+                            <TextBlock Grid.Column="1" Text="UP TO 2 LIVE" FontSize="10" FontWeight="ExtraBold"
+                                       Foreground="#6C7A72" CharacterSpacing="80" />
+                        </Grid>
+                        <cvcontrols:ShowMultiviewHost Grid.Row="1"
+                                                      Tiles="{x:Bind ViewModel.MultiviewGridTiles, Mode=OneWay}" />
+                    </Grid>
+                </Border>
             </Grid>
 
             <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -420,7 +406,8 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Text="{x:Bind ViewModel.CurrentRoomHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
+                    <TextBlock Text="{x:Bind ViewModel.CurrentRoomHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="13"
+                               Foreground="{StaticResource StudioTextBrush}" />
                     <TextBlock Grid.Row="1" Text="{x:Bind ViewModel.CurrentRoomLabel, Mode=OneWay}" FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
 
@@ -462,6 +449,7 @@
                                         CornerRadius="8" Margin="0,0,0,6">
                                     <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
                                             Background="Transparent" BorderThickness="0" Padding="6"
+                                            Foreground="{StaticResource StudioTextBrush}"
                                             Command="{x:Bind SelectCommand}"
                                             CommandParameter="{x:Bind Participant.Id}">
                                         <Grid ColumnSpacing="8">

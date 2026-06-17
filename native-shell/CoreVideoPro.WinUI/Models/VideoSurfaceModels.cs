@@ -129,6 +129,32 @@ public sealed record VideoSurfaceState
 /// </summary>
 public sealed class ParticipantSurfaceTile
 {
-    public required Participant Participant { get; init; }
-    public required VideoSurfaceState Surface { get; init; }
+    public Participant Participant { get; init; } = new();
+
+    public VideoSurfaceState Surface { get; init; } =
+        VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, "empty", "No source");
+
+    public int SourceIndex { get; init; }
+
+    public bool IsEmpty { get; init; }
+
+    public string SourceLabel => SourceIndex > 0 ? SourceIndex.ToString("00") : "—";
+
+    public static ParticipantSurfaceTile EmptySlot(int slotNumber) =>
+        new()
+        {
+            SourceIndex = slotNumber,
+            IsEmpty = true,
+            Participant = new Participant
+            {
+                Id = $"mv-empty-{slotNumber}",
+                Name = $"Input {slotNumber:00}",
+                Role = ParticipantRole.Guest,
+                Health = FeedHealth.VideoOff
+            },
+            Surface = VideoSurfaceState.Waiting(
+                VideoSurfaceKind.Multiview,
+                $"mv-empty-{slotNumber}",
+                $"Input {slotNumber:00}")
+        };
 }

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CoreVideoPro.WinUI;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
@@ -23,24 +24,6 @@ public sealed class Direct3D11InteropService : IDisposable
         GpuActive,
         CpuFallback
     }
-
-    [ComImport]
-    [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IDirect3DDxgiInterfaceAccess
-    {
-        IntPtr GetInterface(ref Guid iid);
-    }
-
-    [ComImport]
-    [Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface ISwapChainPanelNative
-    {
-        void SetSwapChain(IntPtr swapChain);
-    }
-
-    private static readonly Guid D3D11DeviceGuid = new("DDB0B8B9-9585-4E8C-9CA0-8776E7C35E96");
 
     private readonly HashSet<ulong> _invalidHandles = [];
     private IDirect3DDevice? _winrtDevice;
@@ -80,7 +63,20 @@ public sealed class Direct3D11InteropService : IDisposable
         DetachPanelHandlers();
         _panel = panel;
         _panel.SizeChanged += OnPanelSizeChanged;
-        return EnsureDevice() && EnsureSwapChain();
+        if (!EnsureDevice())
+        {
+            LaunchLog.Write("d3d: device init failed");
+            return false;
+        }
+
+        if (!EnsureSwapChain())
+        {
+            LaunchLog.Write("d3d: swap-chain attach failed");
+            return false;
+        }
+
+        LaunchLog.Write($"d3d: swap-chain attached path={_path}");
+        return true;
     }
 
     public bool TryPresentSharedTexture(SharedTextureHandle handle)
@@ -113,6 +109,7 @@ public sealed class Direct3D11InteropService : IDisposable
             _swapChain!.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
+            LaunchLog.Write($"d3d: presented shared handle 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
             return true;
         }
         catch
@@ -257,35 +254,49 @@ public sealed class Direct3D11InteropService : IDisposable
             return true;
         }
 
-        ResetSwapChain();
-
-        using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
-        using var adapter = dxgiDevice.GetAdapter();
-        using var factory = adapter.GetParent<IDXGIFactory2>();
-
-        var swapChainDesc = new SwapChainDescription1
+        try
         {
-            Width = (uint)targetWidth,
-            Height = (uint)targetHeight,
-            Format = Format.B8G8R8A8_UNorm,
-            Stereo = false,
-            SampleDescription = new SampleDescription(1, 0),
-            BufferUsage = Usage.RenderTargetOutput,
-            BufferCount = 2,
-            Scaling = Scaling.Stretch,
-            SwapEffect = SwapEffect.FlipSequential,
-            AlphaMode = AlphaMode.Premultiplied,
-            Flags = SwapChainFlags.None
-        };
+            ResetSwapChain();
 
-        _swapChain = factory.CreateSwapChainForComposition(_device, swapChainDesc);
-        var panelNative = (ISwapChainPanelNative)Marshal.GetObjectForIUnknown(Marshal.GetIUnknownForObject(_panel));
-        panelNative.SetSwapChain(_swapChain.NativePointer);
+            using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+            using var adapter = dxgiDevice.GetAdapter();
+            using var factory = adapter.GetParent<IDXGIFactory2>();
 
-        _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
-        _surfaceWidth = targetWidth;
-        _surfaceHeight = targetHeight;
-        return true;
+            var swapChainDesc = new SwapChainDescription1
+            {
+                Width = (uint)targetWidth,
+                Height = (uint)targetHeight,
+                Format = Format.B8G8R8A8_UNorm,
+                Stereo = false,
+                SampleDescription = new SampleDescription(1, 0),
+                BufferUsage = Usage.RenderTargetOutput,
+                BufferCount = 2,
+                Scaling = Scaling.Stretch,
+                SwapEffect = SwapEffect.FlipSequential,
+                AlphaMode = AlphaMode.Premultiplied,
+                Flags = SwapChainFlags.None
+            };
+
+            _swapChain = factory.CreateSwapChainForComposition(_device, swapChainDesc);
+            if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
+            {
+                LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
+                ResetSwapChain();
+                SetPresentationPath(PresentationPath.CpuFallback);
+                return false;
+            }
+
+            _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+            _surfaceWidth = targetWidth;
+            _surfaceHeight = targetHeight;
+            return true;
+        }
+        catch
+        {
+            ResetSwapChain();
+            SetPresentationPath(PresentationPath.CpuFallback);
+            return false;
+        }
     }
 
     private void ResetSwapChain()

@@ -1,0 +1,19 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.AspectRatioHost"
+    x:Name="Root"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="mc"
+    HorizontalAlignment="Stretch"
+    VerticalAlignment="Stretch"
+    Background="#020304"
+    SizeChanged="OnSizeChanged">
+
+    <Grid x:Name="LetterboxRoot" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <ContentPresenter x:Name="ContentHost"
+                          Content="{x:Bind Child, Mode=OneWay}"
+                          HorizontalContentAlignment="Stretch"
+                          VerticalContentAlignment="Stretch" />
+    </Grid>
+</UserControl>

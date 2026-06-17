@@ -50,13 +50,101 @@ public static class MediaCorePaths
         var repo = RepoRoot;
         var candidates = new[]
         {
+            Path.Combine(AppContext.BaseDirectory, "corevideo-native.exe"),
             Path.Combine(repo, "native", "build-dev", "corevideo-native.exe"),
-            Path.Combine(repo, "native", "build", "corevideo-native.exe"),
             Path.Combine(repo, "native", "build-dev", "Release", "corevideo-native.exe"),
-            Path.Combine(AppContext.BaseDirectory, "corevideo-native.exe")
+            Path.Combine(repo, "native", "build", "corevideo-native.exe"),
+            Path.Combine(repo, "native", "build", "Release", "corevideo-native.exe")
         };
 
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    public static string? ResolveZoomEngineExecutable()
+    {
+        var repo = RepoRoot;
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "corevideo-zoom-engine.exe"),
+            Path.Combine(repo, "native", "build-dev", "corevideo-zoom-engine.exe"),
+            Path.Combine(repo, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"),
+            Path.Combine(repo, "native", "build", "corevideo-zoom-engine.exe"),
+            Path.Combine(repo, "native", "build", "Release", "corevideo-zoom-engine.exe")
+        };
+
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    public static string ResolveMediaCoreWorkingDirectory()
+    {
+        var nativeExe = ResolveNativeCoreExecutable();
+        if (!string.IsNullOrWhiteSpace(nativeExe))
+        {
+            return Path.GetDirectoryName(nativeExe) ?? AppContext.BaseDirectory;
+        }
+
+        return AppContext.BaseDirectory;
+    }
+
+    public static string? ResolvePackagedZoomRuntimeDirectory()
+    {
+        var appDir = AppContext.BaseDirectory;
+        var candidates = new[]
+        {
+            Path.Combine(appDir, "zoom-runtime", "windows", "x64"),
+            Path.Combine(ResolveMediaCoreWorkingDirectory(), "zoom-runtime", "windows", "x64"),
+            ResolveZoomSdkArchitectureRoot()
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                continue;
+            }
+
+            if (File.Exists(Path.Combine(candidate, "bin", "sdk.dll")))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    public static IReadOnlyDictionary<string, string> BuildMediaCoreChildEnvironment()
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        var workingDirectory = ResolveMediaCoreWorkingDirectory();
+
+        var zoomEngine = ResolveZoomEngineExecutable();
+        if (!string.IsNullOrWhiteSpace(zoomEngine))
+        {
+            env["COREVIDEO_ZOOM_ENGINE_PATH"] = zoomEngine;
+        }
+
+        var zoomRuntime = ResolvePackagedZoomRuntimeDirectory();
+        if (!string.IsNullOrWhiteSpace(zoomRuntime))
+        {
+            env[ZoomRuntimeDirEnvVar] = zoomRuntime;
+        }
+
+        env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = "45000";
+
+        var pathEntries = new List<string> { workingDirectory };
+        var packagedBin = zoomRuntime is not null
+            ? Path.Combine(zoomRuntime, "bin")
+            : null;
+        if (!string.IsNullOrWhiteSpace(packagedBin) && Directory.Exists(packagedBin))
+        {
+            pathEntries.Add(packagedBin);
+        }
+
+        var existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        pathEntries.Add(existingPath);
+        env["PATH"] = string.Join(';', pathEntries.Where(static entry => !string.IsNullOrWhiteSpace(entry)));
+
+        return env;
     }
 
     public static IReadOnlyList<string> BuildZoomSdkArchitectureRootCandidates(string repoRoot)
@@ -80,10 +168,11 @@ public static class MediaCorePaths
 
         candidates.AddRange(
         [
-            Path.Combine(repoRoot, "native", "build-dev"),
-            Path.Combine(repoRoot, "native", "build"),
-            Path.Combine(AppContext.BaseDirectory, "zoom-runtime", "windows", "x64"),
-            AppContext.BaseDirectory
+            Path.Combine(repoRoot, "ZoomSDK", "zoom-sdk-windows-7.0.5.39292", "x64"),
+            Path.Combine(repoRoot, "ZoomSDK", "zoom-sdk-windows-7.0.5.39292"),
+            Path.Combine(repoRoot, "ZoomSDK", "x64"),
+            Path.Combine(repoRoot, "ZoomSDK"),
+            Path.Combine(AppContext.BaseDirectory, "zoom-runtime", "windows", "x64")
         ]);
 
         return candidates;
@@ -96,12 +185,25 @@ public static class MediaCorePaths
             return false;
         }
 
-        if (File.Exists(Path.Combine(candidate, "bin", "sdk.dll")))
+        return File.Exists(Path.Combine(candidate, "bin", "sdk.dll")) &&
+               File.Exists(Path.Combine(candidate, "h", "zoom_sdk.h"));
+    }
+
+    public static string? NormalizeZoomSdkArchitectureRoot(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || !Directory.Exists(candidate))
         {
-            return true;
+            return null;
         }
 
-        return File.Exists(Path.Combine(candidate, "sdk.dll"));
+        var normalized = Path.GetFullPath(candidate);
+        if (IsZoomSdkArchitectureRoot(normalized))
+        {
+            return normalized;
+        }
+
+        var architectureRoot = Path.Combine(normalized, "x64");
+        return IsZoomSdkArchitectureRoot(architectureRoot) ? architectureRoot : null;
     }
 
     public static string? ResolveZoomSdkArchitectureRoot(string? repoRoot = null)
@@ -109,12 +211,13 @@ public static class MediaCorePaths
         repoRoot ??= RepoRoot;
         foreach (var candidate in BuildZoomSdkArchitectureRootCandidates(repoRoot))
         {
-            if (!IsZoomSdkArchitectureRoot(candidate))
+            var resolved = NormalizeZoomSdkArchitectureRoot(candidate);
+            if (resolved is null)
             {
                 continue;
             }
 
-            return Path.GetFullPath(candidate);
+            return resolved;
         }
 
         return null;

@@ -101,13 +101,7 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private void ApplyVariantStyle()
     {
-        TileBorder.MinHeight = TileVariant switch
-        {
-            "hero" => 180,
-            "large" => 120,
-            "grid" => 100,
-            _ => 96
-        };
+        TileBorder.MinHeight = 0;
     }
 
     private void UpdatePreviewBitmap()

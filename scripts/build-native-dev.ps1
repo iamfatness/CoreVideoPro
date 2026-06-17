@@ -93,11 +93,24 @@ if (-not (Test-Path (Join-Path $ZoomSdkDir "h\zoom_sdk.h"))) {
   throw "Zoom SDK not found. Set -ZoomSdkDir or ZOOM_SDK_DIR to the x64 SDK folder (h/zoom_sdk.h + lib/sdk.lib)."
 }
 
+Write-Host "[build-native-dev] ensuring staged Zoom runtime..." -ForegroundColor Cyan
+& (Join-Path $repoRoot "scripts\stage-zoom-sdk.ps1") -ZoomSdkDir $ZoomSdkDir
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+
+$stagedZoomRuntime = Join-Path $repoRoot "native-core\zoom-runtime\windows\x64"
+if (-not (Test-Path (Join-Path $stagedZoomRuntime "bin\sdk.dll"))) {
+  throw "Staged Zoom runtime is missing at $stagedZoomRuntime after stage-zoom-sdk.ps1."
+}
+
 $cmakeArgs = @(
   "-S", $NativeDir,
   "-B", $BuildDir,
   "-DCOREVIDEO_STUB=OFF",
   "-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON",
+  "-DCOREVIDEO_WITH_ZOOM=ON",
+  "-DCOREVIDEO_ZOOM_SDK_ROOT=$stagedZoomRuntime",
   "-DCOREVIDEO_WITH_D3D11=ON",
   "-DCOREVIDEO_WITH_MF_ENCODER=ON",
   "-DCOREVIDEO_WITH_RTMP_OUTPUT=ON",

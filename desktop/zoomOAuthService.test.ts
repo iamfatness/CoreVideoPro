@@ -46,7 +46,7 @@ describe("ZoomOAuthService", () => {
     const store = memoryStore();
     const service = new ZoomOAuthService({ tokenStore: store, fetch, openUrl, nowSeconds: () => 1_000 });
     await service.beginAuthorization();
-    await service.handleRedirectUrl(`corevideopro://oauth/callback?state=${capturedState}&broker_token=broker-1`);
+    await service.handleRedirectUrl(`corevideo://oauth/callback?state=${capturedState}&broker_token=broker-1`);
 
     const saved = await store.load();
     expect(saved?.accessToken).toBe("access-1");

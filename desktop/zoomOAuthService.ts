@@ -1,4 +1,5 @@
 import {
+  ZOOM_OAUTH_BROKER_CALLBACK_URL,
   ZOOM_OAUTH_BROKER_START_URL,
   ZOOM_OAUTH_REDIRECT_URI,
   ZOOM_OAUTH_SCOPES,
@@ -115,7 +116,13 @@ export class ZoomOAuthService {
 
     url.searchParams.set("state", state);
     if (useBroker) {
-      url.searchParams.set("return_uri", ZOOM_OAUTH_REDIRECT_URI);
+      const brokerCallback =
+        ZOOM_OAUTH_BROKER_CALLBACK_URL.trim() ||
+        brokerEndpoint(brokerBaseUrl(authorizationUrl), "/oauth/callback");
+      url.searchParams.set("redirect_uri", brokerCallback);
+      if (ZOOM_OAUTH_REDIRECT_URI && ZOOM_OAUTH_REDIRECT_URI !== brokerCallback) {
+        url.searchParams.set("return_uri", ZOOM_OAUTH_REDIRECT_URI);
+      }
     } else {
       url.searchParams.set("response_type", "code");
       url.searchParams.set("redirect_uri", ZOOM_OAUTH_REDIRECT_URI);

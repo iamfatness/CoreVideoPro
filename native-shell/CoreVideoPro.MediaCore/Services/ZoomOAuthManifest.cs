@@ -6,7 +6,7 @@ public sealed class ZoomOAuthManifest
 {
     public const string DefaultBrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start";
     public const string DefaultBrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback";
-    public const string DefaultAppReturnUri = "corevideopro://oauth/callback";
+    public const string DefaultAppReturnUri = "corevideo://oauth/callback";
     public const string DefaultPublicClientId = "y6sIWSwiTZe1JygMx4C9EQ";
 
     public string BrokerStartUrl { get; init; } = string.Empty;

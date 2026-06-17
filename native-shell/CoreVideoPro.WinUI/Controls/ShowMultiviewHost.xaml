@@ -1,0 +1,24 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.ShowMultiviewHost"
+    x:Name="Root"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls"
+    xmlns:models="using:CoreVideoPro.WinUI.Models"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="mc"
+    HorizontalAlignment="Stretch"
+    VerticalAlignment="Stretch"
+    SizeChanged="OnSizeChanged">
+
+    <Grid x:Name="LayoutSurface" Background="#020304" Padding="2" ColumnSpacing="4">
+        <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock Text="Assign show inputs in Sources to populate multiview."
+                       FontSize="12"
+                       Foreground="#6C7A72"
+                       TextAlignment="Center"
+                       TextWrapping="WrapWholeWords"
+                       MaxWidth="420" />
+        </Grid>
+    </Grid>
+</UserControl>

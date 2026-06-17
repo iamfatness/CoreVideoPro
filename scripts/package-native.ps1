@@ -53,16 +53,13 @@ if (Test-Path $outDir) {
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 Copy-Item -Path (Join-Path $publishDir "*") -Destination $outDir -Recurse -Force
 
-$launcherCmd = Join-Path $outDir $productExe.Replace(".exe", ".cmd")
 $launcherBat = Join-Path $outDir "CoreVideo Pro.bat"
 @(
   "@echo off",
   "setlocal",
   "cd /d ""%~dp0""",
-  "dotnet ""%~dp0CoreVideoPro.WinUI.dll"" %*",
-  "exit /b %ERRORLEVEL%"
-) | Set-Content -Path $launcherCmd -Encoding ASCII
-Copy-Item -Path $launcherCmd -Destination $launcherBat -Force
+  "start """" ""%~dp0CoreVideo Pro.exe"" %*"
+) | Set-Content -Path $launcherBat -Encoding ASCII
 
 $builtExe = Join-Path $outDir "CoreVideoPro.WinUI.exe"
 $renamedExe = Join-Path $outDir $productExe
@@ -147,6 +144,12 @@ if (-not (Test-Path (Join-Path $outDir "corevideo-native.exe"))) {
   New-Item -ItemType Directory -Path $desktopOut -Force | Out-Null
   Copy-Item -Path (Join-Path $repoRoot "desktop\coreStub.cjs") -Destination (Join-Path $desktopOut "coreStub.cjs") -Force
   Write-Host "[pack:native] staged desktop/coreStub.cjs (stub fallback)" -ForegroundColor DarkGray
+}
+
+Write-Host "[pack:native] syncing Zoom SDK runtime beside packaged app..." -ForegroundColor Cyan
+& (Join-Path $repoRoot "scripts\sync-zoom-runtime-to-app.ps1") -AppDir $outDir
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
 }
 
 Write-Host ""

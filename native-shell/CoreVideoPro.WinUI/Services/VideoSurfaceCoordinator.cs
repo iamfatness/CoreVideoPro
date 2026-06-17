@@ -59,7 +59,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         lock (_gate)
         {
             return participants
-                .Select(participant =>
+                .Select((participant, index) =>
                 {
                     var key = ParticipantKey(participant.Id);
                     var surface = _participantSurfaces.TryGetValue(key, out var existing)
@@ -68,7 +68,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                     return new ParticipantSurfaceTile
                     {
                         Participant = participant,
-                        Surface = surface
+                        Surface = surface,
+                        SourceIndex = index + 1
                     };
                 })
                 .ToList();

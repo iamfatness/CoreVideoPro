@@ -140,4 +140,4 @@ native-shell/
   README.md
 ```
 
-`Program.cs` bootstraps Windows App SDK **2.2** (`0x00020002`) before starting the WinUI loop. Publish uses `UseAppHost=false`; launch via `dotnet CoreVideoPro.WinUI.dll` (see `scripts/launch-native.ps1`).
+`Program.cs` bootstraps Windows App SDK **2.2** (`0x00020002`) before starting the WinUI loop. The project uses framework-dependent deployment with `Microsoft.WindowsAppSDK.Runtime` 2.2.0 (matches the installed Windows App Runtime). Launch via `CoreVideoPro.WinUI.exe` — see `npm run launch:native` or `scripts/launch-native.ps1`. Do not embed `app.manifest` on unpackaged builds; the compatibility manifest caused apphost side-by-side failures on some machines.

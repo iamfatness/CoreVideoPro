@@ -14,7 +14,8 @@ public sealed class ZoomOAuthServiceTests
         var service = new ZoomOAuthService(store, new ZoomOAuthManifest
         {
             BrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start",
-            RedirectUri = "corevideopro://oauth/callback"
+            BrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback",
+            RedirectUri = "corevideo://oauth/callback"
         });
 
         var status = await service.GetStatusAsync();
@@ -49,7 +50,8 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start",
-                RedirectUri = "corevideopro://oauth/callback"
+                BrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback",
+                RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),
             url =>
@@ -60,6 +62,8 @@ public sealed class ZoomOAuthServiceTests
             () => 1_000);
         await service2.BeginAuthorizationAsync();
         Assert.False(string.IsNullOrWhiteSpace(openUrl));
+        Assert.Contains("redirect_uri=https%3A%2F%2Fcorevideo.iamfatness.us%2Foauth%2Fcallback", openUrl, StringComparison.Ordinal);
+        Assert.Contains("return_uri=corevideo%3A%2F%2Foauth%2Fcallback", openUrl, StringComparison.Ordinal);
         var query = new Uri(openUrl).Query.TrimStart('?');
         var capturedState = query.Split('&', StringSplitOptions.RemoveEmptyEntries)
             .Select(part => part.Split('=', 2))
@@ -68,7 +72,7 @@ public sealed class ZoomOAuthServiceTests
             .First();
 
         await service2.HandleRedirectUrlAsync(
-            $"corevideopro://oauth/callback?state={Uri.EscapeDataString(capturedState)}&broker_token=broker-1");
+            $"corevideo://oauth/callback?state={Uri.EscapeDataString(capturedState)}&broker_token=broker-1");
 
         var saved = await store.LoadAsync();
         Assert.Equal("access-1", saved?.AccessToken);
@@ -113,7 +117,8 @@ public sealed class ZoomOAuthServiceTests
             new ZoomOAuthManifest
             {
                 BrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start",
-                RedirectUri = "corevideopro://oauth/callback"
+                BrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback",
+                RedirectUri = "corevideo://oauth/callback"
             },
             new HttpClient(handler),
             nowSeconds: () => 1_000);

@@ -81,7 +81,15 @@ public sealed class ZoomOAuthService
         };
         if (useBroker)
         {
-            queryParts.Add(new("return_uri", _manifest.RedirectUri));
+            var brokerCallback = string.IsNullOrWhiteSpace(_manifest.BrokerCallbackUrl)
+                ? BrokerEndpoint(BrokerBaseUrl(_manifest.BrokerStartUrl), "/oauth/callback")
+                : _manifest.BrokerCallbackUrl;
+            queryParts.Add(new("redirect_uri", brokerCallback));
+            if (!string.IsNullOrWhiteSpace(_manifest.RedirectUri) &&
+                !string.Equals(_manifest.RedirectUri, brokerCallback, StringComparison.OrdinalIgnoreCase))
+            {
+                queryParts.Add(new("return_uri", _manifest.RedirectUri));
+            }
         }
         else
         {

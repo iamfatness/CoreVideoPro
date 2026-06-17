@@ -89,6 +89,7 @@ public sealed class RawCaptureSnapshot
     public string? ActiveSpeakerId { get; init; }
     public string? Caption { get; init; }
     public int Tick { get; init; }
+    public IReadOnlyList<string>? Warnings { get; init; }
 }
 
 public sealed class RawParticipantEvent
