@@ -87,6 +87,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.isoParticipantIds = isoParticipantIds;
     session_.recordingArtifactPath.clear();
     session_.recordingBytesWritten = 0;
+    session_.recordingDurationMs = 0;
+    session_.recordingVideoFrameCount = 0;
+    session_.recordingWidth = 0;
+    session_.recordingHeight = 0;
+    session_.recordingFps = 0;
+    session_.recordingContainerFormat.clear();
+    session_.recordingVideoCodec.clear();
+    session_.recordingAudioCodec.clear();
+    session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
     if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
       openRecordingWriter();
@@ -170,6 +179,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     writerOpen_ = true;
     frameTime100ns_ = 0;
     session_.recordingArtifactPath = recordingPath_.string();
+    session_.recordingWidth = kRecordingWidth;
+    session_.recordingHeight = kRecordingHeight;
+    session_.recordingFps = kRecordingFps;
+    session_.recordingContainerFormat = "mp4";
+    session_.recordingVideoCodec = session_.codec;
+    session_.recordingAudioCodec = "aac";
+    session_.recordingMetadataValid = true;
   }
 
   void writeSyntheticProgramSample(const ProgramFrame& frame) {
@@ -216,6 +232,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
     frameTime100ns_ += kFrameDuration100ns;
+    ++session_.recordingVideoFrameCount;
+    session_.recordingDurationMs = (session_.recordingVideoFrameCount * 1000) / kRecordingFps;
     session_.recordingBytesWritten += frameByteCount;
   }
 

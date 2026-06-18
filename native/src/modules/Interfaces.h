@@ -136,6 +136,15 @@ struct OutputSession {
   bool hardwareAccelerated = false;
   std::string recordingArtifactPath;
   int64_t recordingBytesWritten = 0;
+  int64_t recordingDurationMs = 0;
+  int64_t recordingVideoFrameCount = 0;
+  int recordingWidth = 0;
+  int recordingHeight = 0;
+  int recordingFps = 0;
+  std::string recordingContainerFormat;
+  std::string recordingVideoCodec;
+  std::string recordingAudioCodec;
+  bool recordingMetadataValid = false;
   std::string recordingWarning;
 };
 

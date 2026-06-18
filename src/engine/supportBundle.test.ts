@@ -132,6 +132,15 @@ describe("createSupportBundle", () => {
         lifecycle: "encoding",
         targetCount: 4
       },
+      audio: {
+        status: "warning",
+        masterLevel: expect.any(Number),
+        loudnessLufs: expect.any(Number),
+        limiterActive: expect.any(Boolean),
+        participantCount: expect.any(Number),
+        warningCategories: expect.arrayContaining(["low-level", "noise-suppression"]),
+        warnings: expect.arrayContaining(["Noise suppression active on low-level sources."])
+      },
       senders: {
         status: "live",
         activeSenderCount: 1,
@@ -184,6 +193,52 @@ describe("createSupportBundle", () => {
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
+  });
+
+  it("surfaces aggregate native audio underrun clipping and sync diagnostics in support data", async () => {
+    const mediaCore = await new InMemoryMediaCoreSyncEngine().syncProduction(
+      {
+        ...initialProduction,
+        participants: initialProduction.participants.map((participant) =>
+          participant.id === "p2"
+            ? {
+                ...participant,
+                audioLevel: 98,
+                gainDb: 12
+              }
+            : participant
+        )
+      },
+      5600
+    );
+    const diagnosticWarnings = [
+      "Audio packet underrun or timing gap detected in native DSP mix.",
+      "Audio clipping detected before native DSP limiting.",
+      "A/V sync offset exceeded threshold in native DSP mix."
+    ];
+    const bundle = createSupportBundle(initialProduction, {
+      ...mediaCore,
+      audioMixSession: {
+        ...mediaCore.audioMixSession,
+        status: "warning",
+        limiterActive: true,
+        warnings: [...mediaCore.audioMixSession.warnings, ...diagnosticWarnings]
+      },
+      warnings: [...mediaCore.warnings, ...diagnosticWarnings]
+    });
+
+    expect(bundle.mediaCore?.audio).toMatchObject({
+      status: "warning",
+      limiterActive: true,
+      participantCount: mediaCore.audioMixSession.participants.length,
+      limitedParticipantCount: expect.any(Number),
+      warningCount: expect.any(Number),
+      warningCategories: expect.arrayContaining(["underrun", "clipping", "av-sync", "limiter"])
+    });
+    expect(bundle.mediaCore?.audio.warnings).toEqual(expect.arrayContaining(diagnosticWarnings));
+    expect(bundle.triageLines).toContain("Audio diagnostics: warning; categories: underrun, clipping, av-sync, limiter, low-level, noise-suppression; warnings: 4");
+    expect(JSON.stringify(bundle.mediaCore?.audio)).not.toContain("avSyncOffsetMs");
+    expect(JSON.stringify(bundle.mediaCore?.audio)).not.toContain("timingDriftMs");
   });
 
   it("includes ISO recording readiness in media-core support diagnostics", async () => {

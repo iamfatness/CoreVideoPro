@@ -381,13 +381,52 @@ function recordingEvidence() {
     ...((recording.streams ?? []).map((stream) => stream.kind === "program" ? numberOrZero(stream.framesWritten) : 0))
   );
 
+  const proof = recording.proof ?? {};
+  const proofDurationMs = Math.max(numberOrZero(proof.durationMs), numberOrZero(health.recordingDurationMs));
+  const proofFrameCount = Math.max(
+    numberOrZero(proof.videoFrameCount),
+    numberOrZero(proof.programFrameCount),
+    numberOrZero(health.recordingFrameCount),
+    framesWritten
+  );
+  const metadataValid = Boolean(proof.metadataValid ?? health.recordingMetadataValid);
+  const audioPresent = Boolean(proof.audioPresent ?? numberOrZero(proof.audioPacketsObserved) > 0);
+
   return {
-    pass: artifactBytes >= minRecordingBytes || bytesWritten >= minRecordingBytes,
+    pass: (artifactBytes >= minRecordingBytes || bytesWritten >= minRecordingBytes) && proofFrameCount >= minProgramFrames && metadataValid,
     artifactPath: artifactPath ?? artifactCandidates[0] ?? null,
     artifactExists: Boolean(artifactPath),
     artifactBytes,
     bytesWritten,
     framesWritten,
+    proof: {
+      durationMs: proofDurationMs,
+      videoFrameCount: proofFrameCount,
+      programFrameCount: numberOrZero(proof.programFrameCount),
+      isoFrameCount: numberOrZero(proof.isoFrameCount),
+      audioPacketsObserved: numberOrZero(proof.audioPacketsObserved),
+      audioPresent,
+      metadataValid,
+      containerFormat: proof.containerFormat ?? recording.format ?? null,
+      videoCodec: proof.videoCodec ?? encoderSession.codec ?? health.codec ?? null,
+      audioCodec: proof.audioCodec ?? null,
+      width: numberOrNull(proof.width),
+      height: numberOrNull(proof.height),
+      frameRate: numberOrNull(proof.frameRate),
+      failureCount: numberOrZero(proof.failureCount),
+      recoveryCount: numberOrZero(proof.recoveryCount),
+    },
+    streams: (recording.streams ?? []).map((stream) => ({
+      kind: stream.kind ?? null,
+      status: stream.status ?? null,
+      framesWritten: numberOrZero(stream.framesWritten),
+      durationMs: numberOrZero(stream.durationMs),
+      bytesWritten: numberOrZero(stream.bytesWritten),
+      hasAudio: Boolean(stream.hasAudio),
+      metadataValid: Boolean(stream.metadataValid),
+    })),
+    lastFailure: recording.lastFailure ?? null,
+    lastRecovery: recording.lastRecovery ?? null,
     status: recording.status ?? null,
     writerStatus: recording.writerStatus ?? null,
     active: Boolean(recording.active ?? snapshot.active),
@@ -399,6 +438,7 @@ function rtmpEvidence() {
   const snapshot = latestSnapshot ?? {};
   const senderSession = snapshot.outputSenderSession ?? {};
   const sender = (senderSession.senders ?? []).find((item) => item.destination === "rtmp");
+  const packagingSignal = readFfmpegPackagingSignal();
 
   if (!sender) {
     return {
@@ -411,6 +451,10 @@ function rtmpEvidence() {
       sendProofSeen: false,
       sendProofRuntimeAvailable: null,
       sendProofRuntimeDetail: null,
+      runtimeCandidates: [],
+      runtimeAvailabilityStatuses: [],
+      endpointEvidence: null,
+      packagingSignal,
       framesSent: 0,
       warning: null,
     };
@@ -422,6 +466,9 @@ function rtmpEvidence() {
   let sendProofRuntimeAvailable = null;
   let sendProofRuntimeDetail = null;
   let sendProofAttemptCount = 0;
+  let endpointEvidence = null;
+  let proofPackagingSignal = null;
+  let runtimeCandidates = [];
   const sendProofStatuses = new Set();
   if (sender.sendArtifactPath && existsSync(sender.sendArtifactPath)) {
     try {
@@ -436,6 +483,15 @@ function rtmpEvidence() {
           if (event.type === "rtmp-send-proof-start") {
             sendProofRuntimeAvailable = Boolean(event.runtimeAvailable);
             sendProofRuntimeDetail = event.runtimeDetail ?? null;
+            runtimeCandidates = Array.isArray(event.runtimeCandidates) ? event.runtimeCandidates : [];
+            endpointEvidence = {
+              destination: event.destination ?? "rtmp",
+              endpointConfigured: Boolean(event.endpointConfigured),
+              endpointMode: event.endpointMode ?? null,
+              testMode: Boolean(event.testMode),
+              muxingMode: event.muxingMode ?? null,
+            };
+            proofPackagingSignal = event.packagingSignal ?? null;
           }
           if (event.type === "rtmp-send-attempt") {
             sendProofAttemptCount += 1;
@@ -453,9 +509,18 @@ function rtmpEvidence() {
   }
 
   const runtimeDetail = sender.runtimeDetail ?? sendProofRuntimeDetail ?? null;
+  const runtimeAvailabilityStatuses = runtimeCandidates.map((candidate) => ({
+    name: candidate.name ?? null,
+    status: candidate.status ?? null,
+    detail: candidate.detail ?? null,
+  }));
   const runtimeMissing =
     sender.status === "warning" &&
-    Boolean(sender.warning?.toLowerCase().includes("libavformat") || String(runtimeDetail ?? "").startsWith("missing:"));
+    Boolean(
+      sender.warning?.toLowerCase().includes("libavformat") ||
+      String(runtimeDetail ?? "").startsWith("missing:") ||
+      (runtimeAvailabilityStatuses.length > 0 && runtimeAvailabilityStatuses.every((candidate) => candidate.status !== "available"))
+    );
   const pass =
     sendProofSeen ||
     sender.status === "live" ||
@@ -474,6 +539,13 @@ function rtmpEvidence() {
     sendProofRuntimeDetail,
     sendProofAttemptCount,
     sendProofStatuses: [...sendProofStatuses],
+    runtimeCandidates,
+    runtimeAvailabilityStatuses,
+    endpointEvidence,
+    packagingSignal: {
+      ...packagingSignal,
+      proof: proofPackagingSignal,
+    },
     framesSent: numberOrZero(sender.framesSent),
     sendBytesWritten: numberOrZero(sender.sendBytesWritten),
     warning: sender.warning ?? null,
@@ -481,6 +553,40 @@ function rtmpEvidence() {
     runtimeMissing,
     sessionStatus: senderSession.status ?? null,
   };
+}
+
+function readFfmpegPackagingSignal() {
+  const manifestPath = join(dirname(nativeCore), "corevideo-ffmpeg-runtime.json");
+  if (!existsSync(manifestPath)) {
+    return {
+      manifestPath,
+      manifestExists: false,
+      status: "not-staged",
+      copiedDlls: [],
+    };
+  }
+
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8").replace(/^\uFEFF/, ""));
+    return {
+      manifestPath,
+      manifestExists: true,
+      status: manifest.status ?? (Array.isArray(manifest.copiedDlls) && manifest.copiedDlls.length > 0 ? "staged" : "unknown"),
+      sourceDir: manifest.sourceDir ?? null,
+      copiedDlls: Array.isArray(manifest.copiedDlls) ? manifest.copiedDlls : [],
+      missingPatterns: Array.isArray(manifest.missingPatterns) ? manifest.missingPatterns : [],
+      stagedAtUtc: manifest.stagedAtUtc ?? null,
+      warning: manifest.warning ?? null,
+    };
+  } catch (error) {
+    return {
+      manifestPath,
+      manifestExists: true,
+      status: "unreadable",
+      copiedDlls: [],
+      warning: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function criteriaMet() {
@@ -572,8 +678,20 @@ function buildRecommendations(compositor, encodedFrames, recording, rtmp) {
   if (destinations.includes("recording") && !recording.artifactExists && recording.bytesWritten === 0) {
     recommendations.push("Recording did not produce artifact bytes; rerun build-native-dev and confirm Media Foundation encoder is active.");
   }
+  if (destinations.includes("recording") && recording.proof.videoFrameCount < minProgramFrames) {
+    recommendations.push("Recording proof did not include enough video frames; confirm the encoder is receiving compositor frames.");
+  }
+  if (destinations.includes("recording") && !recording.proof.metadataValid) {
+    recommendations.push("Recording metadata proof is invalid; inspect encoder container/codec/duration fields before using this build for a show.");
+  }
+  if (destinations.includes("recording") && !recording.proof.audioPresent) {
+    recommendations.push("Recording proof did not observe audio packets; confirm the native audio mixer receives Zoom raw audio or synthetic audio frames.");
+  }
   if (destinations.includes("rtmp") && rtmp.runtimeMissing) {
     recommendations.push("RTMP runtime is missing. Install FFmpeg or set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing avformat*.dll before packaging or validation.");
+  }
+  if (destinations.includes("rtmp") && rtmp.packagingSignal?.status === "missing") {
+    recommendations.push("RTMP packaging manifest reports missing FFmpeg DLLs; package output will keep recording flows usable but RTMP needs COREVIDEO_FFMPEG_BIN_DIR before release validation.");
   }
   if (destinations.includes("rtmp") && rtmp.present && !rtmp.sendProofSeen) {
     recommendations.push("RTMP sender was present but no send-proof artifact was readable; check temp directory permissions.");

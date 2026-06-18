@@ -412,6 +412,23 @@ export type SupportBundleMediaCore = {
     lifecycle: "idle" | "prepared" | "encoding" | "stopped" | "failed";
     targetCount: number;
   };
+  audio: {
+    status: "idle" | "live" | "warning";
+    masterLevel: number;
+    loudnessLufs: number;
+    limiterActive: boolean;
+    mixedFrameCount: number;
+    participantCount: number;
+    mutedParticipantCount: number;
+    boostedParticipantCount: number;
+    duckedParticipantCount: number;
+    limitedParticipantCount: number;
+    lowLevelParticipantCount: number;
+    peakOutputLevel: number;
+    warningCount: number;
+    warningCategories: Array<"underrun" | "clipping" | "av-sync" | "limiter" | "low-level" | "noise-suppression">;
+    warnings: string[];
+  };
   senders: {
     status: "idle" | "live" | "warning" | "failed";
     activeSenderCount: number;

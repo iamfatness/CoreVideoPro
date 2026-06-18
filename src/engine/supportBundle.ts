@@ -8,7 +8,7 @@ import type {
   SupportBundleMediaCore
 } from "../domain/production";
 import type { SupportBundleContext } from "./contracts";
-import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
+import type { NativeMediaCoreAudioMixSession, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import { buildRecordingManifest } from "./recordingManifest";
 
 const MOCK_FREE_DISK_BYTES = 86 * 1024 * 1024 * 1024;
@@ -36,7 +36,7 @@ export function createSupportBundle(
   const freeDiskBytes = context.freeDiskBytes ?? MOCK_FREE_DISK_BYTES;
   const isoCapacity = estimateIsoCapacity(state, freeDiskBytes);
   const destinations = getDestinationStates(state);
-  const triageLines = buildTriageLines(state, warnings, isoCapacity, context);
+  const triageLines = buildTriageLines(state, warnings, isoCapacity, context, mediaCore);
 
   return {
     id: `support-${slugify(state.meetingTitle)}-${createdAt.replace(/[-:.TZ]/g, "").slice(0, 14)}`,
@@ -135,6 +135,7 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: Prod
       lifecycle: snapshot.encoderSession.lifecycle.status,
       targetCount: snapshot.encoderSession.targets.length
     },
+    audio: summarizeAudioDiagnostics(snapshot.audioMixSession),
     senders: {
       status: snapshot.outputSenderSession.status,
       activeSenderCount: snapshot.outputSenderSession.activeSenderCount,
@@ -276,7 +277,8 @@ function buildTriageLines(
   state: ProductionState,
   warnings: string[],
   isoCapacity: SupportBundle["isoCapacity"],
-  context: SupportBundleContext
+  context: SupportBundleContext,
+  mediaCore?: NativeMediaCoreStateSnapshot
 ) {
   const lines = [
     `Show: ${state.meetingTitle} (${state.mode})`,
@@ -295,12 +297,73 @@ function buildTriageLines(
     }
   }
 
+  if (mediaCore) {
+    const audio = summarizeAudioDiagnostics(mediaCore.audioMixSession);
+    if (audio.status === "warning" || audio.warningCount > 0 || audio.limiterActive) {
+      lines.push(
+        `Audio diagnostics: ${audio.status}; categories: ${audio.warningCategories.join(", ") || "none"}; warnings: ${audio.warningCount}`
+      );
+    }
+  }
+
   if (context.crashEvents?.length) {
     const latest = context.crashEvents[context.crashEvents.length - 1];
     lines.push(`Latest crash: exit ${latest.exitCode ?? "unknown"} at ${latest.at}`);
   }
 
   return lines;
+}
+
+function summarizeAudioDiagnostics(session: NativeMediaCoreAudioMixSession): SupportBundleMediaCore["audio"] {
+  const warnings = [...session.warnings];
+  const warningCategories = categorizeAudioWarnings(session);
+  const outputLevels = session.participants.map((participant) => participant.outputLevel);
+
+  return {
+    status: session.status,
+    masterLevel: session.masterLevel,
+    loudnessLufs: session.loudnessLufs,
+    limiterActive: session.limiterActive,
+    mixedFrameCount: session.mixedFrameCount,
+    participantCount: session.participants.length,
+    mutedParticipantCount: session.participants.filter((participant) => participant.muted).length,
+    boostedParticipantCount: session.participants.filter((participant) => participant.status === "boosting").length,
+    duckedParticipantCount: session.participants.filter((participant) => participant.status === "ducking").length,
+    limitedParticipantCount: session.participants.filter((participant) => participant.limiterActive).length,
+    lowLevelParticipantCount: session.participants.filter((participant) => participant.noiseSuppression && participant.inputLevel < 35).length,
+    peakOutputLevel: outputLevels.length ? Math.max(...outputLevels) : 0,
+    warningCount: warnings.length,
+    warningCategories,
+    warnings
+  };
+}
+
+function categorizeAudioWarnings(
+  session: NativeMediaCoreAudioMixSession
+): SupportBundleMediaCore["audio"]["warningCategories"] {
+  const categories = new Set<SupportBundleMediaCore["audio"]["warningCategories"][number]>();
+  const warningText = session.warnings.join(" ").toLowerCase();
+
+  if (warningText.includes("underrun") || warningText.includes("timing gap")) {
+    categories.add("underrun");
+  }
+  if (warningText.includes("clipping") || warningText.includes("clip")) {
+    categories.add("clipping");
+  }
+  if (warningText.includes("a/v") || warningText.includes("av sync") || warningText.includes("sync offset") || warningText.includes("drift")) {
+    categories.add("av-sync");
+  }
+  if (session.limiterActive || warningText.includes("limiter")) {
+    categories.add("limiter");
+  }
+  if (session.participants.some((participant) => participant.noiseSuppression && participant.inputLevel < 35)) {
+    categories.add("low-level");
+  }
+  if (warningText.includes("noise suppression")) {
+    categories.add("noise-suppression");
+  }
+
+  return [...categories];
 }
 
 function estimateIsoCapacity(state: ProductionState, freeDiskBytes: number): SupportBundle["isoCapacity"] {

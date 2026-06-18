@@ -329,6 +329,26 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   EXPECT_EQ(recording->get("encoder")->getString("codec"), "h264");
   EXPECT_GE(recording->get("totalFramesWritten")->asNumber(), 1);
   EXPECT_GE(recording->get("streams")->asArray().size(), 2);
+
+  const auto* proof = recording->get("proof");
+  ASSERT_NE(proof, nullptr);
+  EXPECT_GE(proof->get("durationMs")->asNumber(), 33);
+  EXPECT_GE(proof->get("programFrameCount")->asNumber(), 1);
+  EXPECT_GE(proof->get("isoFrameCount")->asNumber(), 1);
+  EXPECT_GE(proof->get("audioPacketsObserved")->asNumber(), 1);
+  EXPECT_TRUE(proof->get("audioPresent")->asBool());
+  EXPECT_TRUE(proof->get("metadataValid")->asBool());
+  EXPECT_EQ(proof->getString("containerFormat"), "mp4");
+  EXPECT_EQ(proof->getString("videoCodec"), "h264");
+  EXPECT_EQ(proof->getString("audioCodec"), "aac");
+  EXPECT_EQ(proof->get("width")->asNumber(), 1920);
+  EXPECT_EQ(proof->get("height")->asNumber(), 1080);
+  EXPECT_EQ(proof->get("frameRate")->asNumber(), 30);
+
+  const auto& programStream = recording->get("streams")->asArray()[0];
+  EXPECT_GE(programStream.get("durationMs")->asNumber(), 33);
+  EXPECT_TRUE(programStream.get("hasAudio")->asBool());
+  EXPECT_TRUE(programStream.get("metadataValid")->asBool());
 }
 
 TEST(MediaCoreCommand, AppliesRecordingFailureAndRecoveryCommands) {
@@ -347,6 +367,9 @@ TEST(MediaCoreCommand, AppliesRecordingFailureAndRecoveryCommands) {
   EXPECT_EQ(failed.get("recording")->getString("status"), "failed");
   EXPECT_EQ(failed.get("recording")->getString("writerStatus"), "failed");
   EXPECT_EQ(failed.get("recording")->getString("error"), "Encoder process exited.");
+  EXPECT_EQ(failed.get("recording")->getString("lastFailure"), "Encoder process exited.");
+  ASSERT_NE(failed.get("recording")->get("proof"), nullptr);
+  EXPECT_EQ(failed.get("recording")->get("proof")->get("failureCount")->asNumber(), 1);
 
   auto recovered = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "recover-recording-session"},
@@ -356,6 +379,10 @@ TEST(MediaCoreCommand, AppliesRecordingFailureAndRecoveryCommands) {
   EXPECT_EQ(recovered.get("recording")->getString("status"), "recording");
   EXPECT_EQ(recovered.get("recording")->getString("writerStatus"), "writing");
   EXPECT_EQ(recovered.get("recording")->getString("warning"), "Recording writer recovered.");
+  EXPECT_EQ(recovered.get("recording")->getString("lastRecovery"), "Recording writer recovered.");
+  ASSERT_NE(recovered.get("recording")->get("proof"), nullptr);
+  EXPECT_EQ(recovered.get("recording")->get("proof")->get("failureCount")->asNumber(), 1);
+  EXPECT_EQ(recovered.get("recording")->get("proof")->get("recoveryCount")->asNumber(), 1);
 }
 
 TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
@@ -509,6 +536,15 @@ TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArme
   encoder->submit({1920, 1080, 2, 44, "mp4-plan", "d3d11"});
   const auto session = encoder->session();
   EXPECT_TRUE(session.recordingBytesWritten > 0);
+  EXPECT_EQ(session.recordingVideoFrameCount, 3);
+  EXPECT_GE(session.recordingDurationMs, 99);
+  EXPECT_EQ(session.recordingContainerFormat, "mp4");
+  EXPECT_EQ(session.recordingVideoCodec, "h264");
+  EXPECT_EQ(session.recordingAudioCodec, "aac");
+  EXPECT_EQ(session.recordingWidth, 1920);
+  EXPECT_EQ(session.recordingHeight, 1080);
+  EXPECT_EQ(session.recordingFps, 30);
+  EXPECT_TRUE(session.recordingMetadataValid);
   EXPECT_TRUE(session.recordingWarning.empty()) << session.recordingWarning;
   const auto artifactPath = session.recordingArtifactPath;
   encoder.reset();
@@ -560,6 +596,10 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   const auto content = buffer.str();
   EXPECT_NE(content.find("rtmp-send-proof-start"), std::string::npos);
   EXPECT_NE(content.find("runtimeDetail"), std::string::npos);
+  EXPECT_NE(content.find("runtimeCandidates"), std::string::npos);
+  EXPECT_NE(content.find("endpointMode"), std::string::npos);
+  EXPECT_NE(content.find("synthetic-test-mode"), std::string::npos);
+  EXPECT_NE(content.find("packagingSignal"), std::string::npos);
   EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
   input.close();
   const auto artifactPath = session.senders[0].sendArtifactPath;

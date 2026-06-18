@@ -9,6 +9,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Write-FfmpegRuntimeManifest {
+  param(
+    [string]$Status,
+    [AllowNull()][string]$SourceDir,
+    [string[]]$CopiedDlls = @(),
+    [string[]]$MissingPatterns = @(),
+    [string]$Warning = ""
+  )
+
+  $manifest = @{
+    status = $Status
+    sourceDir = $(if ($SourceDir) { $SourceDir } else { $null })
+    copiedDlls = @($CopiedDlls | Sort-Object -Unique)
+    missingPatterns = @($MissingPatterns | Sort-Object -Unique)
+    warning = $Warning
+    stagedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+  } | ConvertTo-Json -Depth 4
+
+  $manifestPath = Join-Path $AppDir "corevideo-ffmpeg-runtime.json"
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $resolvedManifestPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($manifestPath)
+  [System.IO.File]::WriteAllText($resolvedManifestPath, $manifest, $utf8NoBom)
+}
+
 function Resolve-FfmpegBinDir {
   param([string]$Override)
 
@@ -43,7 +67,9 @@ if (-not (Test-Path $AppDir)) {
 
 $sourceDir = Resolve-FfmpegBinDir -Override $FfmpegBinDir
 if (-not $sourceDir) {
-  Write-Warning "[ffmpeg-runtime] FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing avformat*.dll for RTMP runtime packaging."
+  $warning = "FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing avformat*.dll for RTMP runtime packaging."
+  Write-FfmpegRuntimeManifest -Status "missing" -SourceDir $null -CopiedDlls @() -MissingPatterns @("avformat*.dll") -Warning $warning
+  Write-Warning "[ffmpeg-runtime] $warning"
   return
 }
 
@@ -67,15 +93,11 @@ foreach ($pattern in $patterns) {
 }
 
 if ($copied.Count -eq 0) {
-  Write-Warning "[ffmpeg-runtime] No FFmpeg DLLs copied from $sourceDir."
+  $warning = "No FFmpeg DLLs copied from $sourceDir."
+  Write-FfmpegRuntimeManifest -Status "empty" -SourceDir $sourceDir -CopiedDlls @() -MissingPatterns $patterns -Warning $warning
+  Write-Warning "[ffmpeg-runtime] $warning"
   return
 }
 
-$manifest = @{
-  sourceDir = $sourceDir
-  copiedDlls = $copied | Sort-Object -Unique
-  stagedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-} | ConvertTo-Json -Depth 4
-
-Set-Content -Path (Join-Path $AppDir "corevideo-ffmpeg-runtime.json") -Value $manifest -Encoding UTF8
+Write-FfmpegRuntimeManifest -Status "staged" -SourceDir $sourceDir -CopiedDlls $copied
 Write-Host "[ffmpeg-runtime] staged $($copied.Count) FFmpeg runtime DLL(s) from $sourceDir" -ForegroundColor DarkGray

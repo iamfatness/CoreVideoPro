@@ -190,6 +190,9 @@ rpc::Json MediaCore::health() const {
       {"hardwareEncoder", session.hardwareAccelerated},
       {"recordingArtifactPath", session.recordingArtifactPath},
       {"recordingBytesWritten", static_cast<double>(session.recordingBytesWritten)},
+      {"recordingDurationMs", static_cast<double>(session.recordingDurationMs)},
+      {"recordingFrameCount", static_cast<double>(session.recordingVideoFrameCount)},
+      {"recordingMetadataValid", session.recordingMetadataValid},
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
@@ -646,10 +649,18 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   recordingSessionId_ = command.getString("sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_);
   recordingStartedAtMs_ = command.get("startedAtMs") ? command.get("startedAtMs")->asNumber() : recordingStartedAtMs_;
   recordingElapsedMs_ = 0;
+  recordingProgramFramesWritten_ = 0;
+  recordingIsoFramesWritten_ = 0;
+  recordingDroppedFrames_ = 0;
+  recordingAudioPacketsObserved_ = 0;
+  recordingFailureCount_ = 0;
+  recordingRecoveryCount_ = 0;
   recordingStatus_ = "recording";
   recordingWriterStatus_ = "writing";
   recordingError_.clear();
   recordingWarning_.clear();
+  recordingLastFailure_.clear();
+  recordingLastRecovery_.clear();
   if (encoderLifecycleStatus_ != "encoding") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Recording session started encoder.";
@@ -667,13 +678,17 @@ void MediaCore::failRecordingSession(const rpc::Json& command) {
   recordingStatus_ = "failed";
   recordingWriterStatus_ = "failed";
   recordingError_ = command.getString("message", "Recording writer failed.");
+  recordingLastFailure_ = recordingError_;
+  ++recordingFailureCount_;
 }
 
 void MediaCore::recoverRecordingSession(const rpc::Json& command) {
-  recordingStatus_ = recordingWarning_.empty() ? "recording" : "warning";
-  recordingWriterStatus_ = recordingWarning_.empty() ? "writing" : "warning";
+  recordingStatus_ = "recording";
+  recordingWriterStatus_ = "writing";
   recordingError_.clear();
   recordingWarning_ = command.getString("reason", recordingWarning_);
+  recordingLastRecovery_ = recordingWarning_;
+  ++recordingRecoveryCount_;
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
@@ -1009,6 +1024,9 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
   if (!session.recordingArtifactPath.empty()) {
     encoderState.emplace("recordingArtifactPath", session.recordingArtifactPath);
     encoderState.emplace("recordingBytesWritten", static_cast<double>(session.recordingBytesWritten));
+    encoderState.emplace("recordingDurationMs", static_cast<double>(session.recordingDurationMs));
+    encoderState.emplace("recordingFrameCount", static_cast<double>(session.recordingVideoFrameCount));
+    encoderState.emplace("recordingMetadataValid", session.recordingMetadataValid);
   }
   return encoderState;
 }
@@ -1066,16 +1084,34 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   }
 
   const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
+  const int64_t programFramesWritten = std::max<int64_t>(recordingProgramFramesWritten_, session.recordingVideoFrameCount);
+  const int64_t isoFramesWritten = recordingIsoFramesWritten_ > 0 ? recordingIsoFramesWritten_ : static_cast<int64_t>(isoIds.size()) * programFramesWritten;
+  const double durationMs = std::max(recordingElapsedMs_, static_cast<double>(session.recordingDurationMs));
+  const int64_t audioPacketsObserved = recordingAudioPacketsObserved_;
+  const bool audioPresent = audioPacketsObserved > 0;
+  const bool metadataValid = session.recordingMetadataValid || (!session.recordingContainerFormat.empty() && !session.recordingVideoCodec.empty() &&
+                                                               (session.recordingWidth == 0 || session.recordingWidth == lastProgramFrame_.width) &&
+                                                               (session.recordingHeight == 0 || session.recordingHeight == lastProgramFrame_.height));
+  const int recordingWidth = session.recordingWidth > 0 ? session.recordingWidth : lastProgramFrame_.width;
+  const int recordingHeight = session.recordingHeight > 0 ? session.recordingHeight : lastProgramFrame_.height;
+  const int recordingFps = session.recordingFps > 0 ? session.recordingFps : 30;
+  const std::string containerFormat = session.recordingContainerFormat.empty() ? recordingFormat_ : session.recordingContainerFormat;
+  const std::string videoCodec = session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec;
+  const std::string audioCodec = session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec;
   rpc::Json::Array streams{
       rpc::Json::Object{
           {"kind", "program"},
           {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
           {"status", recordingWriterStatus_},
-          {"expectedFrames", static_cast<double>(recordingProgramFramesWritten_ + recordingDroppedFrames_)},
-          {"framesWritten", static_cast<double>(recordingProgramFramesWritten_)},
+          {"expectedFrames", static_cast<double>(programFramesWritten + recordingDroppedFrames_)},
+          {"framesWritten", static_cast<double>(programFramesWritten)},
+          {"durationMs", durationMs},
+          {"frameRate", recordingFps},
+          {"hasAudio", audioPresent},
           {"missingFrames", 0},
           {"droppedFrames", static_cast<double>(recordingDroppedFrames_)},
-          {"bytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 260000)},
+          {"bytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000))},
+          {"metadataValid", metadataValid},
       },
   };
   for (const auto& participantId : isoIds) {
@@ -1085,8 +1121,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
         {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
         {"status", recordingWriterStatus_},
         {"readiness", "ready"},
-        {"framesWritten", static_cast<double>(recordingProgramFramesWritten_)},
-        {"bytesWritten", static_cast<double>(recordingProgramFramesWritten_ * 140000)},
+        {"framesWritten", static_cast<double>(programFramesWritten)},
+        {"durationMs", durationMs},
+        {"frameRate", recordingFps},
+        {"hasAudio", audioPresent},
+        {"bytesWritten", static_cast<double>(programFramesWritten * 140000)},
+        {"metadataValid", metadataValid},
     });
   }
 
@@ -1110,9 +1150,26 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"estimatedDiskRateMBps", 4.99},
       {"programPath", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
       {"streams", streams},
-      {"totalFramesWritten", static_cast<double>(recordingProgramFramesWritten_ + recordingIsoFramesWritten_)},
+      {"proof",
+       rpc::Json::Object{
+           {"durationMs", durationMs},
+           {"programFrameCount", static_cast<double>(programFramesWritten)},
+           {"isoFrameCount", static_cast<double>(isoFramesWritten)},
+           {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
+           {"audioPresent", audioPresent},
+           {"metadataValid", metadataValid},
+           {"containerFormat", containerFormat},
+           {"videoCodec", videoCodec},
+           {"audioCodec", audioCodec},
+           {"width", recordingWidth},
+           {"height", recordingHeight},
+           {"frameRate", recordingFps},
+           {"failureCount", recordingFailureCount_},
+           {"recoveryCount", recordingRecoveryCount_},
+       }},
+      {"totalFramesWritten", static_cast<double>(programFramesWritten + isoFramesWritten)},
       {"totalDroppedFrames", static_cast<double>(recordingDroppedFrames_)},
-      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, recordingProgramFramesWritten_ * 260000 + recordingIsoFramesWritten_ * 140000))},
+      {"totalBytesWritten", static_cast<double>(std::max<int64_t>(session.recordingBytesWritten, programFramesWritten * 260000 + isoFramesWritten * 140000))},
   };
   if (!session.recordingArtifactPath.empty()) {
     recording.emplace("artifactPath", session.recordingArtifactPath);
@@ -1122,6 +1179,12 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   }
   if (!recordingWarning_.empty()) {
     recording.emplace("warning", recordingWarning_);
+  }
+  if (!recordingLastFailure_.empty()) {
+    recording.emplace("lastFailure", recordingLastFailure_);
+  }
+  if (!recordingLastRecovery_.empty()) {
+    recording.emplace("lastRecovery", recordingLastRecovery_);
   }
   return recording;
 }
@@ -1214,6 +1277,7 @@ void MediaCore::renderSyntheticTick() {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
     recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
+    recordingAudioPacketsObserved_ += static_cast<int64_t>(audioFrames.size());
     recordingElapsedMs_ += 33;
   }
 }
