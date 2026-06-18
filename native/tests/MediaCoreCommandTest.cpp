@@ -122,6 +122,80 @@ TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
 #endif
 }
 
+TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "quiet-guest"},
+               {"inputLevel", -20},
+               {"noiseSuppression", true},
+               {"muted", false},
+           },
+           corevideo::rpc::Json::Object{
+               {"participantId", "hot-host"},
+               {"inputLevel", 120},
+               {"manualGainDb", 40},
+               {"noiseSuppression", false},
+               {"muted", false},
+           },
+           corevideo::rpc::Json::Object{
+               {"participantId", "muted-panelist"},
+               {"inputLevel", 64},
+               {"manualGainDb", -40},
+               {"noiseSuppression", false},
+               {"muted", true},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_EQ(mix->getString("status"), "warning");
+  EXPECT_TRUE(mix->get("limiterActive")->asBool());
+  EXPECT_EQ(mix->get("loudnessLufs")->asNumber(), -14);
+  EXPECT_NE(mix->getString("summary").find("boosted"), std::string::npos);
+  EXPECT_NE(mix->getString("summary").find("manual"), std::string::npos);
+  ASSERT_TRUE(mix->get("warnings")->asArray().size() == 1u);
+
+  const auto& participants = mix->get("participants")->asArray();
+  ASSERT_TRUE(participants.size() == 3u);
+  EXPECT_EQ(participants[0].getString("participantId"), "quiet-guest");
+  EXPECT_EQ(participants[0].get("inputLevel")->asNumber(), 0);
+  EXPECT_EQ(participants[0].get("gainDb")->asNumber(), 6);
+  EXPECT_TRUE(participants[0].get("noiseSuppression")->asBool());
+
+  EXPECT_EQ(participants[1].getString("participantId"), "hot-host");
+  EXPECT_EQ(participants[1].get("inputLevel")->asNumber(), 100);
+  EXPECT_EQ(participants[1].get("gainDb")->asNumber(), 12);
+  EXPECT_EQ(participants[1].get("manualGainDb")->asNumber(), 24);
+  EXPECT_TRUE(participants[1].get("limiterActive")->asBool());
+
+  EXPECT_EQ(participants[2].getString("status"), "muted");
+  EXPECT_EQ(participants[2].get("gainDb")->asNumber(), -60);
+  EXPECT_EQ(participants[2].get("manualGainDb")->asNumber(), -24);
+  EXPECT_EQ(participants[2].get("outputLevel")->asNumber(), 0);
+}
+
+TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_TRUE(mix->getString("status") == "live" || mix->getString("status") == "warning");
+  EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() > 0);
+  EXPECT_TRUE(mix->get("masterLevel")->asNumber() > 0);
+  EXPECT_EQ(mix->get("participants")->asArray().size(), 2u);
+  EXPECT_NE(mix->getString("summary").find("native DSP mix"), std::string::npos);
+}
+
 TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
