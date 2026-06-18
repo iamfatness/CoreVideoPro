@@ -73,7 +73,7 @@ test.describe("CoreVideo Pro – Electron smoke", () => {
       await expect(magicSceneButton).toBeEnabled();
       await magicSceneButton.click();
 
-      await expect(page.locator(".transition-status", { hasText: /queued by Magic Scene/i })).toBeVisible({
+      await expect(page.locator(".transition-status")).toContainText(/queued by Magic Scene/i, {
         timeout: 10_000
       });
 
