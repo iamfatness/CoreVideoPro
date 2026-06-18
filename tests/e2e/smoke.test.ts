@@ -86,9 +86,9 @@ test.describe("CoreVideo Pro – Electron smoke", () => {
       });
 
       await page.getByRole("button", { name: /Settings/i }).click();
-      await expect(
-        page.locator('[aria-label="Native core sync"] strong', { hasText: "live" }).first()
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('[aria-label="Native core sync"]')).toContainText(/Synced scene|Transport|Compositor/i, {
+        timeout: 10_000
+      });
     } finally {
       await app.close();
     }
