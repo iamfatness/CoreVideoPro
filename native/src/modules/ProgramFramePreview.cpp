@@ -3,6 +3,7 @@
 #include "compositor/CompositorLayout.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -12,6 +13,32 @@ namespace {
 
 uint32_t unpackColor(uint32_t rgba) {
   return rgba;
+}
+
+std::string lowercaseAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+bool layerTextContains(const CompositorRenderPlanLayer& layer, const std::string& needle) {
+  return lowercaseAscii(layer.layerId).find(needle) != std::string::npos ||
+         lowercaseAscii(layer.kind).find(needle) != std::string::npos ||
+         lowercaseAscii(layer.sourceId).find(needle) != std::string::npos;
+}
+
+int semanticLayerDepth(const CompositorRenderPlanLayer& layer) {
+  if (compositorLayerIsLowerThird(layer)) {
+    return 3000;
+  }
+  if (compositorLayerIsOverlay(layer)) {
+    return 2500;
+  }
+  if (compositorLayerIsChromaKey(layer)) {
+    return 1500;
+  }
+  return 1000;
 }
 
 void setPixelBgra(std::vector<uint8_t>& pixels, int width, int x, int y, uint32_t rgba) {
@@ -28,14 +55,34 @@ void setPixelBgra(std::vector<uint8_t>& pixels, int width, int x, int y, uint32_
   pixels[offset + 3] = static_cast<uint8_t>((rgba >> 24) & 0xff);
 }
 
-void fillRectBgra(std::vector<uint8_t>& pixels, int width, int height, float x, float y, float w, float h, uint32_t rgba) {
+void blendPixelBgra(std::vector<uint8_t>& pixels, int width, int x, int y, uint32_t rgba, float opacity) {
+  if (x < 0 || y < 0 || x >= width) {
+    return;
+  }
+  const size_t offset = static_cast<size_t>((y * width + x) * 4);
+  if (offset + 3 >= pixels.size()) {
+    return;
+  }
+
+  const float sourceAlpha = std::clamp(static_cast<float>((rgba >> 24) & 0xff) / 255.f * opacity, 0.f, 1.f);
+  const float inverseAlpha = 1.f - sourceAlpha;
+  pixels[offset + 0] = static_cast<uint8_t>(std::lround(static_cast<float>(rgba & 0xff) * sourceAlpha + pixels[offset + 0] * inverseAlpha));
+  pixels[offset + 1] = static_cast<uint8_t>(std::lround(static_cast<float>((rgba >> 8) & 0xff) * sourceAlpha + pixels[offset + 1] * inverseAlpha));
+  pixels[offset + 2] = static_cast<uint8_t>(std::lround(static_cast<float>((rgba >> 16) & 0xff) * sourceAlpha + pixels[offset + 2] * inverseAlpha));
+  pixels[offset + 3] = 0xff;
+}
+
+void fillRectBgra(std::vector<uint8_t>& pixels, int width, int height, float x, float y, float w, float h, uint32_t rgba, float opacity) {
+  if (opacity <= 0.f) {
+    return;
+  }
   const int left = std::max(0, static_cast<int>(std::floor(x * static_cast<float>(width))));
   const int top = std::max(0, static_cast<int>(std::floor(y * static_cast<float>(height))));
   const int right = std::min(width, static_cast<int>(std::ceil((x + w) * static_cast<float>(width))));
   const int bottom = std::min(height, static_cast<int>(std::ceil((y + h) * static_cast<float>(height))));
   for (int py = top; py < bottom; ++py) {
     for (int px = left; px < right; ++px) {
-      setPixelBgra(pixels, width, px, py, rgba);
+      blendPixelBgra(pixels, width, px, py, rgba, opacity);
     }
   }
 }
@@ -54,6 +101,44 @@ void computeProgramFramePreviewSize(int sourceWidth, int sourceHeight, int& outW
       static_cast<double>(kProgramFramePreviewMaxHeight) / static_cast<double>(sourceHeight));
   outWidth = std::clamp(static_cast<int>(std::lround(static_cast<double>(sourceWidth) * scale)), 1, kProgramFramePreviewMaxWidth);
   outHeight = std::clamp(static_cast<int>(std::lround(static_cast<double>(sourceHeight) * scale)), 1, kProgramFramePreviewMaxHeight);
+}
+
+bool compositorLayerIsOverlay(const CompositorRenderPlanLayer& layer) {
+  return layer.kind == "overlay" || layerTextContains(layer, "overlay");
+}
+
+bool compositorLayerIsLowerThird(const CompositorRenderPlanLayer& layer) {
+  return compositorLayerIsOverlay(layer) &&
+         (layerTextContains(layer, "lower-third") || layerTextContains(layer, "lower_third") || layerTextContains(layer, "lowerthird"));
+}
+
+bool compositorLayerIsChromaKey(const CompositorRenderPlanLayer& layer) {
+  return layerTextContains(layer, "chroma-key") || layerTextContains(layer, "chromakey") || layerTextContains(layer, "green-screen");
+}
+
+float compositorLayerOpacity(const CompositorRenderPlanLayer& layer) {
+  return std::clamp(layer.opacity, 0.f, 1.f);
+}
+
+CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan) {
+  std::stable_sort(
+      renderPlan.layers.begin(),
+      renderPlan.layers.end(),
+      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
+        const int leftDepth = semanticLayerDepth(left);
+        const int rightDepth = semanticLayerDepth(right);
+        if (leftDepth != rightDepth) {
+          return leftDepth < rightDepth;
+        }
+        if (left.order != right.order) {
+          return left.order < right.order;
+        }
+        if (left.layerId != right.layerId) {
+          return left.layerId < right.layerId;
+        }
+        return left.sourceId < right.sourceId;
+      });
+  return renderPlan;
 }
 
 void fillSyntheticProgramFramePreview(
@@ -85,18 +170,21 @@ void fillSyntheticProgramFramePreview(
 
   if (!renderPlan.layers.empty()) {
     int videoIndex = 0;
-    for (const auto& layer : renderPlan.layers) {
+    const auto sortedPlan = sortCompositorRenderPlan(renderPlan);
+    for (const auto& layer : sortedPlan.layers) {
+      if (compositorLayerIsChromaKey(layer) && compositorLayerOpacity(layer) <= 0.f) {
+        continue;
+      }
       auto rect = layer.rect;
       if (rect.width <= 0.f || rect.height <= 0.f) {
-        if (layer.kind == "overlay") {
-          const auto layout = layer.layerId.find("lower") != std::string::npos ? compositor::lowerThirdOverlay()
-                                                                                 : compositor::topRightOverlay();
+        if (compositorLayerIsOverlay(layer)) {
+          const auto layout = compositorLayerIsLowerThird(layer) ? compositor::lowerThirdOverlay() : compositor::topRightOverlay();
           rect = {layout.x, layout.y, layout.width, layout.height};
         } else {
           const int videoLayerCount = static_cast<int>(std::count_if(
-              renderPlan.layers.begin(),
-              renderPlan.layers.end(),
-              [](const CompositorRenderPlanLayer& entry) { return entry.kind != "overlay"; }));
+              sortedPlan.layers.begin(),
+              sortedPlan.layers.end(),
+              [](const CompositorRenderPlanLayer& entry) { return !compositorLayerIsOverlay(entry); }));
           const auto layout = compositor::gridCell((std::max)(1, videoLayerCount), videoIndex);
           rect = {layout.x, layout.y, layout.width, layout.height};
           ++videoIndex;
@@ -104,14 +192,14 @@ void fillSyntheticProgramFramePreview(
       }
 
       uint32_t color = 0xff2a3548;
-      if (layer.kind != "overlay") {
+      if (!compositorLayerIsOverlay(layer)) {
         if (!layer.participantId.empty()) {
           color = compositor::colorFromParticipantId(layer.participantId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           color = compositor::colorFromParticipantId(frames[static_cast<size_t>(videoIndex - 1)].participantId);
         }
       }
-      fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color));
+      fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), compositorLayerOpacity(layer));
     }
     return;
   }
@@ -120,7 +208,7 @@ void fillSyntheticProgramFramePreview(
   for (int index = 0; index < count; ++index) {
     const auto layout = compositor::gridCell((std::max)(1, count), index);
     const auto color = compositor::colorFromParticipantId(frames[static_cast<size_t>(index)].participantId);
-    fillRectBgra(preview.bgra, previewWidth, previewHeight, layout.x, layout.y, layout.width, layout.height, unpackColor(color));
+    fillRectBgra(preview.bgra, previewWidth, previewHeight, layout.x, layout.y, layout.width, layout.height, unpackColor(color), 1.f);
   }
 }
 

@@ -1,5 +1,6 @@
 #include "compositor/CompositorLayout.h"
 #include "core/MediaCore.h"
+#include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
@@ -194,6 +195,74 @@ TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   EXPECT_TRUE(mix->get("masterLevel")->asNumber() > 0);
   EXPECT_EQ(mix->get("participants")->asArray().size(), 2u);
   EXPECT_NE(mix->getString("summary").find("native DSP mix"), std::string::npos);
+}
+
+TEST(AudioDsp, BoundsFramesAndTracksInternalBridgeFaultMetrics) {
+  corevideo::modules::AudioFrame frame;
+  frame.participantId = "host";
+  frame.sampleRate = 384000;
+  frame.channels = 0;
+  frame.timestampMs = 2000;
+  frame.sampleCount = -12;
+  frame.rmsLevel = 2.5;
+  frame.peakLevel = 1.4;
+  frame.noiseFloorDb = -140.0;
+  frame.voiceActive = true;
+
+  corevideo::modules::AudioDspTimingReference timing;
+  timing.hasPreviousTimestamp = true;
+  timing.previousTimestampMs = 1000;
+  timing.hasMixReferenceTimestamp = true;
+  timing.mixReferenceTimestampMs = 100;
+
+  const auto participant = corevideo::modules::analyzeAudioParticipantFrame(frame, timing);
+  EXPECT_EQ(participant.inputLevel, 100);
+  EXPECT_TRUE(participant.outputLevel <= 88);
+  EXPECT_TRUE(participant.rmsLevel <= 1.0);
+  EXPECT_TRUE(participant.peakLevel <= 1.0);
+  EXPECT_GE(participant.noiseFloorDb, -96.0);
+  EXPECT_TRUE(participant.underrunDetected);
+  EXPECT_TRUE(participant.clippingDetected);
+  EXPECT_FALSE(participant.silenceDetected);
+  EXPECT_EQ(participant.avSyncOffsetMs, 500);
+  EXPECT_EQ(participant.timingDriftMs, 500);
+
+  const auto session = corevideo::modules::summarizeAudioMixMetrics({participant}, 1);
+  EXPECT_EQ(session.underrunCount, 1);
+  EXPECT_EQ(session.clippingCount, 1);
+  EXPECT_EQ(session.silenceCount, 0);
+  EXPECT_EQ(session.maxAbsAvSyncOffsetMs, 500);
+  EXPECT_TRUE(session.warnings.size() >= 2u);
+}
+
+TEST(AudioDsp, TracksSilenceWithoutLeakingInternalMetricsIntoPublicAudioMixShape) {
+  corevideo::modules::AudioFrame frame;
+  frame.participantId = "muted-guest";
+  frame.voiceActive = false;
+  frame.rmsLevel = 0.0;
+  frame.peakLevel = 0.0;
+
+  const auto participant = corevideo::modules::analyzeAudioParticipantFrame(frame);
+  EXPECT_TRUE(participant.silenceDetected);
+  EXPECT_TRUE(participant.muted);
+  const auto session = corevideo::modules::summarizeAudioMixMetrics({participant}, 1);
+  EXPECT_EQ(session.silenceCount, 1);
+  EXPECT_EQ(session.status, "warning");
+
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_EQ(mix->get("underrunCount"), nullptr);
+  EXPECT_EQ(mix->get("clippingCount"), nullptr);
+  EXPECT_EQ(mix->get("silenceCount"), nullptr);
+  ASSERT_FALSE(mix->get("participants")->asArray().empty());
+  EXPECT_EQ(mix->get("participants")->asArray()[0].get("avSyncOffsetMs"), nullptr);
+  EXPECT_EQ(mix->get("participants")->asArray()[0].get("timingDriftMs"), nullptr);
 }
 
 TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {

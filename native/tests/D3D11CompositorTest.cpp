@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -20,6 +21,18 @@ uint32_t previewPixelRgba(const corevideo::modules::ProgramFramePreviewPixels& p
          (static_cast<uint32_t>(preview.bgra[offset + 2]) << 16) |
          (static_cast<uint32_t>(preview.bgra[offset + 1]) << 8) |
          static_cast<uint32_t>(preview.bgra[offset + 0]);
+}
+
+uint32_t blendRgbaOver(uint32_t source, uint32_t destination, float opacity) {
+  const float alpha = static_cast<float>((source >> 24) & 0xff) / 255.f * opacity;
+  const float inverseAlpha = 1.f - alpha;
+  const auto mix = [alpha, inverseAlpha](uint32_t sourceChannel, uint32_t destinationChannel) {
+    return static_cast<uint32_t>(std::lround(static_cast<float>(sourceChannel) * alpha + static_cast<float>(destinationChannel) * inverseAlpha));
+  };
+  const uint32_t r = mix((source >> 16) & 0xff, (destination >> 16) & 0xff);
+  const uint32_t g = mix((source >> 8) & 0xff, (destination >> 8) & 0xff);
+  const uint32_t b = mix(source & 0xff, destination & 0xff);
+  return 0xff000000u | (r << 16) | (g << 8) | b;
 }
 
 corevideo::modules::CompositorRenderPlan overlappingSceneGraphPlan() {
@@ -117,6 +130,73 @@ TEST(StubCompositor, MarksWarnedRenderPlansDegraded) {
   const auto frame = modules.compositor->render(renderPlan, {{"front", 1280, 720, 16}, {"back", 1280, 720, 16}});
   EXPECT_EQ(frame.health, "degraded");
   EXPECT_NE(frame.programPixelSignature, 0u);
+}
+
+TEST(StubCompositor, AppliesSemanticOverlayDepthAndOpacity) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "b3-overlay-depth";
+  renderPlan.width = 640;
+  renderPlan.height = 360;
+  renderPlan.layers.push_back({
+      "overlay:lower-third",
+      "overlay",
+      "",
+      "",
+      0,
+      {0.f, 0.f, 0.f, 0.f},
+      0.5f,
+  });
+  renderPlan.layers.push_back({
+      "speaker",
+      "participant-video",
+      "zoom:speaker",
+      "speaker",
+      100,
+      {0.f, 0.f, 1.f, 1.f},
+      1.f,
+  });
+
+  const auto frame = modules.compositor->render(renderPlan, {{"speaker", 1280, 720, 16}});
+  const int sampleX = frame.preview.width / 2;
+  const int sampleY = static_cast<int>(frame.preview.height * 0.84f);
+  const uint32_t participantColor = corevideo::compositor::colorFromParticipantId("speaker");
+  const uint32_t overlayColor = 0xff2a3548u;
+
+  EXPECT_EQ(previewPixelRgba(frame.preview, sampleX, sampleY), blendRgbaOver(overlayColor, participantColor, 0.5f));
+}
+
+TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "b3-chroma-depth";
+  renderPlan.width = 640;
+  renderPlan.height = 360;
+  renderPlan.layers.push_back({
+      "back",
+      "participant-video",
+      "zoom:back",
+      "back",
+      0,
+      {0.f, 0.f, 1.f, 1.f},
+      1.f,
+  });
+  renderPlan.layers.push_back({
+      "front:chroma-key",
+      "chroma-key",
+      "zoom:front",
+      "front",
+      0,
+      {0.f, 0.f, 1.f, 1.f},
+      0.f,
+  });
+
+  const auto frame = modules.compositor->render(renderPlan, {{"back", 1280, 720, 16}, {"front", 1280, 720, 16}});
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::colorFromParticipantId("back"));
 }
 #endif
 
