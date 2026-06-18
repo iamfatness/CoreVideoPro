@@ -168,6 +168,18 @@ rpc::Json MediaCore::profile() const {
 
 rpc::Json MediaCore::health() const {
   const auto session = modules_.encoder->session();
+  rpc::Json::Array messages;
+#if COREVIDEO_STUB
+  messages.emplace_back("COREVIDEO_STUB synthetic media path active");
+#else
+  messages.emplace_back("COREVIDEO dev adapter media path active");
+#endif
+  if (modules_.compositor->rendererName() != "software") {
+    messages.emplace_back("GPU compositor active: " + modules_.compositor->rendererName());
+  }
+  if (session.hardwareAccelerated) {
+    messages.emplace_back("Hardware encoder active: " + session.encoderName);
+  }
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
       {"renderer", modules_.compositor->rendererName()},
@@ -181,7 +193,7 @@ rpc::Json MediaCore::health() const {
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
       {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
-      {"messages", rpc::Json::Array{"COREVIDEO_STUB synthetic media path active"}},
+      {"messages", messages},
   };
 }
 

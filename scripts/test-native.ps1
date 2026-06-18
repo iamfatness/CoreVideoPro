@@ -40,112 +40,8 @@ function Invoke-NativeSmokeTest {
     [string]$Label
   )
 
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $Runner
-  $psi.Arguments = ($RunnerArgs | ForEach-Object { Quote-CmdArg $_ }) -join " "
-  $psi.WorkingDirectory = $repoRoot
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardInput = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.CreateNoWindow = $true
-
-  $process = [System.Diagnostics.Process]::Start($psi)
-  if (-not $process) {
-    throw "Failed to start $Label media core process."
-  }
-
-  function Send-Line([string]$json) {
-    $process.StandardInput.WriteLine($json)
-    $process.StandardInput.Flush()
-    return $process.StandardOutput.ReadLine()
-  }
-
-  try {
-    $handshake = Send-Line '{"id":"native-1","type":"handshake"}' | ConvertFrom-Json
-    if (-not $handshake.ok) { throw "$Label handshake failed." }
-
-    $syncPayload = @{
-      id = "native-2"
-      type = "media-core-sync"
-      elapsedMs = 1000
-      commands = @(
-        @{
-          type = "load-scene-graph"
-          sceneId = "preview-test"
-          routes = @(
-            @{
-              routeId = "program"
-              mode = "fixed"
-              audioRole = "mix"
-              participantId = "speaker-1"
-            }
-          )
-        },
-        @{
-          type = "start-program-output"
-          destinations = @("recording")
-          isoParticipantIds = @()
-        }
-      )
-    } | ConvertTo-Json -Depth 8 -Compress
-
-    $syncLine = Send-Line $syncPayload
-    $sync = $syncLine | ConvertFrom-Json
-    if (-not $sync.ok) { throw "$Label media-core-sync failed." }
-
-    $embeddedPreview = $null
-    if ($sync.snapshot -and $sync.snapshot.programFramePreview) {
-      $embeddedPreview = $sync.snapshot.programFramePreview
-    }
-
-    $previewEvent = $null
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ([DateTime]::UtcNow -lt $deadline) {
-      $line = $process.StandardOutput.ReadLine()
-      if (-not $line) {
-        Start-Sleep -Milliseconds 50
-        continue
-      }
-      try {
-        $parsed = $line | ConvertFrom-Json
-      }
-      catch {
-        continue
-      }
-      if ($parsed.type -eq "program-frame-preview") {
-        $previewEvent = $parsed
-        break
-      }
-    }
-
-    if (-not $previewEvent -and $embeddedPreview) {
-      $previewEvent = [pscustomobject]@{
-        type = "program-frame-preview"
-        preview = $embeddedPreview
-      }
-    }
-    if (-not $previewEvent) {
-      throw "$Label did not emit program-frame-preview event."
-    }
-    if ($previewEvent.preview.pixelFormat -ne "bgra") {
-      throw "$Label preview pixelFormat must be bgra."
-    }
-    if ([string]::IsNullOrWhiteSpace($previewEvent.preview.bgraBase64)) {
-      throw "$Label preview bgraBase64 must be non-empty."
-    }
-    if ($previewEvent.preview.width -gt 320 -or $previewEvent.preview.height -gt 180) {
-      throw "$Label preview exceeds 320x180 downscale cap."
-    }
-
-    Write-Host "[test-native] $Label program-frame-preview smoke ok ($($previewEvent.preview.width)x$($previewEvent.preview.height))" -ForegroundColor Green
-  }
-  finally {
-    if (-not $process.HasExited) {
-      $process.Kill()
-      $process.WaitForExit()
-    }
-  }
+  & node (Join-Path $repoRoot "scripts\native-stdio-smoke.mjs") $Label $Runner @RunnerArgs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 function Stage-NativeArtifacts {
@@ -230,10 +126,10 @@ if (-not (Test-Path $testBinary)) {
 }
 
 Write-Host "[test-native] running native unit tests..." -ForegroundColor Cyan
-Push-Location $artifactDir
+Push-Location $BuildDir
 try {
   if (Get-Command ctest -ErrorAction SilentlyContinue) {
-    ctest -C $Config --output-on-failure
+    ctest -C $Config --output-on-failure --test-dir $BuildDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   }
   else {

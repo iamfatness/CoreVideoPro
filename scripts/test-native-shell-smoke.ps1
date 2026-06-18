@@ -117,7 +117,12 @@ $launchArgs = if (Test-Path $launch.ExePath) { @() } else { @($launch.DllPath) }
 Write-Host "[test-native-shell-smoke] launching $launchTarget (hold ${HoldSeconds}s)..." -ForegroundColor Cyan
 
 try {
-  $launchedProcess = Start-Process -FilePath $launchFile -ArgumentList $launchArgs -WorkingDirectory $workingDir -PassThru
+  if ($launchArgs.Count -gt 0) {
+    $launchedProcess = Start-Process -FilePath $launchFile -ArgumentList $launchArgs -WorkingDirectory $workingDir -PassThru
+  }
+  else {
+    $launchedProcess = Start-Process -FilePath $launchFile -WorkingDirectory $workingDir -PassThru
+  }
   if (-not $launchedProcess) {
     throw "Start-Process did not return a process handle."
   }

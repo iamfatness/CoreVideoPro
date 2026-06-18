@@ -62,15 +62,32 @@ function Send-Line($json) {
     $request = $json | ConvertFrom-Json
     $process.StandardInput.WriteLine($json)
     $process.StandardInput.Flush()
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    $read = $process.StandardOutput.ReadLineAsync()
     while ($true) {
-        $line = $process.StandardOutput.ReadLine()
+        if ([DateTime]::UtcNow -gt $deadline) {
+            throw "Timed out waiting for response to $($request.id)."
+        }
+        if ($process.HasExited) {
+            $stderr = $process.StandardError.ReadToEnd()
+            throw "Media core process exited with code $($process.ExitCode) before responding to $($request.id). $stderr"
+        }
+        if (-not $read.Wait(250)) {
+            continue
+        }
+        $line = $read.Result
         if (-not $line) {
-            throw "Media core process closed stdout before responding to $($request.id)."
+            $read = $process.StandardOutput.ReadLineAsync()
+            continue
         }
         $payload = $line | ConvertFrom-Json
+        if ($request.type -eq "handshake" -and $payload.type -eq "handshake" -and $payload.ok) {
+            return $line
+        }
         if ($payload.id -eq $request.id) {
             return $line
         }
+        $read = $process.StandardOutput.ReadLineAsync()
     }
 }
 

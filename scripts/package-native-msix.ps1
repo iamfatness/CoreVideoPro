@@ -131,6 +131,45 @@ function Stage-MsixPayload {
   return $stagedNative
 }
 
+function Stage-ZoomRuntimePayload {
+  Write-Host "[pack:native:msix] syncing Zoom SDK runtime into MSIX payload..." -ForegroundColor Cyan
+  & (Join-Path $repoRoot "scripts\sync-zoom-runtime-to-app.ps1") -AppDir $payloadDir
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+
+  # Zoom SDK drops a partial Microsoft.UI.Xaml tree that shadows WinUI theme resources
+  # when it lands at the app root.
+  $shadowedWinUi = Join-Path $payloadDir "Microsoft.UI.Xaml"
+  if (Test-Path $shadowedWinUi) {
+    Remove-Item $shadowedWinUi -Recurse -Force
+    Write-Host "[pack:native:msix] removed shadowing Microsoft.UI.Xaml folder from payload root" -ForegroundColor DarkGray
+  }
+}
+
+function Assert-MsixPayloadReady {
+  param([bool]$StagedNative)
+
+  if ($StagedNative -and -not (Test-Path (Join-Path $payloadDir "corevideo-native.exe"))) {
+    throw "MSIX payload expected corevideo-native.exe from native build, but it was not staged."
+  }
+
+  $runtimeSdkDll = Join-Path $payloadDir "zoom-runtime\windows\x64\bin\sdk.dll"
+  if (-not (Test-Path $runtimeSdkDll)) {
+    throw "MSIX payload is missing Zoom runtime sdk.dll at $runtimeSdkDll."
+  }
+}
+
+function Copy-MsixPayloadToLayout {
+  param([string]$Destination)
+
+  if (-not (Test-Path $payloadDir)) {
+    return
+  }
+
+  Copy-Item -Path (Join-Path $payloadDir "*") -Destination $Destination -Recurse -Force
+}
+
 function Find-MakeAppx {
   $kits = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
   if (-not (Test-Path $kits)) {
@@ -222,6 +261,7 @@ function Publish-MsixLayoutFallback {
   Write-Warning "[pack:native:msix] MSIX pack/sign failed; producing unsigned layout fallback."
 
   Copy-PublishLayout -PublishDir $PublishDir -Destination $layoutDir
+  Copy-MsixPayloadToLayout -Destination $layoutDir
 
   $manifestSource = Join-Path $winUiDir "Package.appxmanifest"
   $manifestTarget = Join-Path $layoutDir "AppxManifest.xml"
@@ -276,6 +316,8 @@ try {
 }
 
 $stagedNative = Stage-MsixPayload
+Stage-ZoomRuntimePayload
+Assert-MsixPayloadReady -StagedNative $stagedNative
 
 $publishArgs = @(
   "publish", $project,
