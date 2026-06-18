@@ -30,6 +30,8 @@ declare const process: {
   exit(code?: number): never;
   stdin: NodeJS_ReadableStream;
   stdout: NodeJS_WritableStream;
+  on(event: "uncaughtException", listener: (error: Error) => void): void;
+  on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
 };
 
 declare const console: {
@@ -145,8 +147,14 @@ declare namespace Electron {
 }
 
 declare module "electron" {
+  export interface RenderProcessGoneDetails {
+    reason: string;
+    exitCode: number;
+  }
   export interface WebContents {
     send(channel: string, ...args: unknown[]): void;
+    on(event: "render-process-gone", listener: (event: unknown, details: RenderProcessGoneDetails) => void): void;
+    on(event: "unresponsive", listener: () => void): void;
   }
   export interface WebPreferences {
     preload?: string;
@@ -172,6 +180,7 @@ declare module "electron" {
     isPackaged: boolean;
     getVersion(): string;
     whenReady(): Promise<void>;
+    on(event: "browser-window-created", listener: (event: unknown, window: BrowserWindow) => void): void;
     on(event: string, listener: (...args: unknown[]) => void): void;
     quit(): void;
     getPath(name: string): string;
