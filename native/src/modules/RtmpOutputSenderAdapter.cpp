@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
 #if defined(_WIN32)
@@ -21,36 +22,104 @@ namespace corevideo::modules {
 namespace {
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
-std::string libavformatRuntimeDetail() {
-#if defined(_WIN32)
-  const char* candidates[] = {"avformat-61.dll", "avformat-60.dll", "avformat-59.dll", "avformat.dll"};
-  for (const auto* candidate : candidates) {
-    if (HMODULE module = LoadLibraryA(candidate)) {
-      FreeLibrary(module);
-      return std::string("available:") + candidate;
+struct RuntimeCandidate {
+  std::string name;
+  std::string status;
+  std::string detail;
+};
+
+struct RuntimeProbe {
+  bool available = false;
+  std::string detail;
+  std::vector<RuntimeCandidate> candidates;
+};
+
+std::string jsonEscape(const std::string& value) {
+  std::string escaped;
+  escaped.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        escaped += "\\\\";
+        break;
+      case '"':
+        escaped += "\\\"";
+        break;
+      case '\n':
+        escaped += "\\n";
+        break;
+      case '\r':
+        escaped += "\\r";
+        break;
+      case '\t':
+        escaped += "\\t";
+        break;
+      default:
+        escaped += ch;
+        break;
     }
   }
-  return "missing:avformat-61.dll,avformat-60.dll,avformat-59.dll,avformat.dll";
+  return escaped;
+}
+
+std::string jsonString(const std::string& value) {
+  return "\"" + jsonEscape(value) + "\"";
+}
+
+std::string runtimeCandidatesJson(const std::vector<RuntimeCandidate>& candidates) {
+  std::string json = "[";
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    if (index > 0) {
+      json += ",";
+    }
+    json += "{\"name\":" + jsonString(candidates[index].name) +
+            ",\"status\":" + jsonString(candidates[index].status) +
+            ",\"detail\":" + jsonString(candidates[index].detail) + "}";
+  }
+  json += "]";
+  return json;
+}
+
+RuntimeProbe probeLibavformatRuntime() {
+  RuntimeProbe probe;
+#if defined(_WIN32)
+  const char* candidates[] = {"avformat-62.dll", "avformat-61.dll", "avformat-60.dll", "avformat-59.dll", "avformat.dll"};
+  for (const auto* candidate : candidates) {
+    if (HMODULE module = LoadLibraryA(candidate)) {
+      char modulePath[MAX_PATH] = {};
+      const auto pathLength = GetModuleFileNameA(module, modulePath, MAX_PATH);
+      FreeLibrary(module);
+      probe.available = true;
+      probe.detail = std::string("available:") + candidate;
+      probe.candidates.push_back({candidate, "available", pathLength > 0 ? std::string(modulePath, pathLength) : "LoadLibraryA succeeded"});
+      return probe;
+    }
+    const auto error = GetLastError();
+    probe.candidates.push_back({candidate, "unavailable", "LoadLibraryA failed with Win32 error " + std::to_string(error)});
+  }
+  probe.detail = "missing:avformat-62.dll,avformat-61.dll,avformat-60.dll,avformat-59.dll,avformat.dll";
 #else
-  const char* candidates[] = {"libavformat.so.61", "libavformat.so.60", "libavformat.so.59", "libavformat.so"};
+  const char* candidates[] = {"libavformat.so.62", "libavformat.so.61", "libavformat.so.60", "libavformat.so.59", "libavformat.so"};
   for (const auto* candidate : candidates) {
     if (void* module = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL)) {
       dlclose(module);
-      return std::string("available:") + candidate;
+      probe.available = true;
+      probe.detail = std::string("available:") + candidate;
+      probe.candidates.push_back({candidate, "available", "dlopen succeeded"});
+      return probe;
     }
+    const char* error = dlerror();
+    probe.candidates.push_back({candidate, "unavailable", error ? error : "dlopen failed"});
   }
-  return "missing:libavformat.so.61,libavformat.so.60,libavformat.so.59,libavformat.so";
+  probe.detail = "missing:libavformat.so.62,libavformat.so.61,libavformat.so.60,libavformat.so.59,libavformat.so";
 #endif
-}
-
-bool libavformatRuntimeAvailable(const std::string& detail) {
-  return detail.rfind("available:", 0) == 0;
+  return probe;
 }
 
 class RtmpOutputSender final : public IOutputSender {
  public:
-  explicit RtmpOutputSender(std::string runtimeDetail)
-      : runtimeDetail_(std::move(runtimeDetail)), runtimeAvailable_(libavformatRuntimeAvailable(runtimeDetail_)) {}
+  explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
+      : runtimeProbe_(std::move(runtimeProbe)), runtimeDetail_(runtimeProbe_.detail), runtimeAvailable_(runtimeProbe_.available) {}
 
   OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) override {
     const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
@@ -104,8 +173,9 @@ class RtmpOutputSender final : public IOutputSender {
     if (destination != "rtmp") {
       return snapshot();
     }
-    runtimeDetail_ = libavformatRuntimeDetail();
-    runtimeAvailable_ = libavformatRuntimeAvailable(runtimeDetail_);
+    runtimeProbe_ = probeLibavformatRuntime();
+    runtimeDetail_ = runtimeProbe_.detail;
+    runtimeAvailable_ = runtimeProbe_.available;
     ensureSender(elapsedMs);
     sender_.status = runtimeAvailable_ ? "starting" : "warning";
     sender_.startedAtMs = elapsedMs;
@@ -143,20 +213,24 @@ class RtmpOutputSender final : public IOutputSender {
       return;
     }
     sender_.sendArtifactPath = path.string();
-    writeLine("{\"type\":\"rtmp-send-proof-start\",\"runtimeAvailable\":" + std::string(runtimeAvailable_ ? "true" : "false") +
-              ",\"runtimeDetail\":\"" + runtimeDetail_ + "\"}");
+    writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":false,\"endpointMode\":\"synthetic-test-mode\","
+              "\"testMode\":true,\"muxingMode\":\"runtime-probe-only\",\"runtimeLibrary\":\"libavformat\",\"runtimeAvailable\":" +
+              std::string(runtimeAvailable_ ? "true" : "false") +
+              ",\"runtimeDetail\":" + jsonString(runtimeDetail_) +
+              ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
+              ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages corevideo-ffmpeg-runtime.json when FFmpeg DLLs are copied or unavailable\"}");
   }
 
   void appendSendProof(const ProgramFrame* frame, const std::string& status) {
     if (!sendProof_.is_open()) {
       return;
     }
-    std::string line = "{\"type\":\"rtmp-send-attempt\",\"status\":\"" + status + "\"";
+    std::string line = "{\"type\":\"rtmp-send-attempt\",\"destination\":\"rtmp\",\"endpointMode\":\"synthetic-test-mode\",\"status\":" + jsonString(status);
     if (frame) {
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
               ",\"width\":" + std::to_string(frame->width) +
               ",\"height\":" + std::to_string(frame->height) +
-              ",\"renderPlanId\":\"" + frame->renderPlanId + "\"";
+              ",\"renderPlanId\":" + jsonString(frame->renderPlanId);
     }
     line += "}";
     writeLine(line);
@@ -183,6 +257,7 @@ class RtmpOutputSender final : public IOutputSender {
     return session;
   }
 
+  RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
   OutputSender sender_;
@@ -196,7 +271,7 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   // REQUIRES DEV MACHINE: real RTMP packet muxing belongs behind this libavformat
   // sender. The scaffold verifies runtime availability without affecting stubs.
-  return std::make_unique<RtmpOutputSender>(libavformatRuntimeDetail());
+  return std::make_unique<RtmpOutputSender>(probeLibavformatRuntime());
 #else
   return nullptr;
 #endif

@@ -130,16 +130,44 @@ class CountingEncoderSink final : public IEncoderSink {
     session_.active = true;
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds;
+    session_.encodedFrameCount = 0;
     session_.encoderName = "software-counting";
     session_.codec = "h264";
     session_.targetBitrateMbps = 10;
     session_.hardwareAccelerated = false;
+    session_.recordingArtifactPath.clear();
+    session_.recordingBytesWritten = 0;
+    session_.recordingDurationMs = 0;
+    session_.recordingVideoFrameCount = 0;
+    session_.recordingWidth = 0;
+    session_.recordingHeight = 0;
+    session_.recordingFps = 0;
+    session_.recordingContainerFormat.clear();
+    session_.recordingVideoCodec.clear();
+    session_.recordingAudioCodec.clear();
+    session_.recordingMetadataValid = false;
+    session_.recordingWarning.clear();
+    if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
+      session_.recordingContainerFormat = "mp4";
+      session_.recordingVideoCodec = session_.codec;
+      session_.recordingAudioCodec = "aac";
+      session_.recordingFps = 30;
+    }
     return session_;
   }
 
-  void submit(const ProgramFrame&) override {
+  void submit(const ProgramFrame& frame) override {
     if (session_.active) {
       ++session_.encodedFrameCount;
+      if (std::find(session_.destinations.begin(), session_.destinations.end(), "recording") != session_.destinations.end()) {
+        ++session_.recordingVideoFrameCount;
+        session_.recordingDurationMs = session_.recordingVideoFrameCount * 33;
+        session_.recordingWidth = frame.width;
+        session_.recordingHeight = frame.height;
+        session_.recordingBytesWritten = session_.recordingVideoFrameCount * 260000;
+        session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
+                                          !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty();
+      }
     }
   }
 

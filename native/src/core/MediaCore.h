@@ -98,8 +98,13 @@ class MediaCore {
   int64_t recordingProgramFramesWritten_ = 0;
   int64_t recordingIsoFramesWritten_ = 0;
   int64_t recordingDroppedFrames_ = 0;
+  int64_t recordingAudioPacketsObserved_ = 0;
+  int recordingFailureCount_ = 0;
+  int recordingRecoveryCount_ = 0;
   std::string recordingError_;
   std::string recordingWarning_;
+  std::string recordingLastFailure_;
+  std::string recordingLastRecovery_;
   std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
