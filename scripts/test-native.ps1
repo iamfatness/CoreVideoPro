@@ -20,10 +20,28 @@ function Resolve-VsDevCmd {
     "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat",
     "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat",
     "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2026\Community\Common7\Tools\VsDevCmd.bat",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2026\Professional\Common7\Tools\VsDevCmd.bat",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2026\Enterprise\Common7\Tools\VsDevCmd.bat",
     "${env:ProgramFiles}\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat",
+    "${env:ProgramFiles}\Microsoft Visual Studio\18\Professional\Common7\Tools\VsDevCmd.bat",
+    "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\Common7\Tools\VsDevCmd.bat",
     "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
   )
-  return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  $candidate = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($candidate) {
+    return $candidate
+  }
+
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if (Test-Path $vswhere) {
+    $discovered = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "Common7\Tools\VsDevCmd.bat" | Select-Object -First 1
+    if ($discovered -and (Test-Path $discovered)) {
+      return $discovered
+    }
+  }
+
+  return $null
 }
 
 function Quote-CmdArg([string]$Value) {
