@@ -43,9 +43,11 @@ Expect artifacts under `native/build-dev/`:
 ```powershell
 npm run test:native-media-core   # C++ stub build + stdio smoke
 npm run test:native-shell        # 75 MediaCore unit tests + bridge smoke
+npm run test:native-shell-smoke  # WinUI publish + brief launch smoke
 ```
 
 Bridge smoke should report `Using packaged native core: ...\native\build-dev\corevideo-native.exe` when the dev build is present.
+Native shell smoke should either launch briefly or skip with an explicit Windows App Runtime / GUI-session reason.
 
 ## 5. Launch WinUI operator console
 
@@ -132,6 +134,7 @@ For MSIX: `npm run pack:native:msix` then `Add-AppxPackage -Path artifacts/nativ
 ## 10. Sign-off checklist
 
 - [ ] `test:native-shell` green locally
+- [ ] `test:native-shell-smoke` green locally or explicitly skipped for missing GUI/App Runtime
 - [ ] WinUI launches (App Runtime 2.x)
 - [ ] PKCE sign-in completes via `corevideopro://oauth/callback`
 - [ ] Live join shows roster + program preview
