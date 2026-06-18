@@ -19,6 +19,38 @@ struct AudioFrame {
   int sampleRate = 48000;
   int channels = 1;
   int64_t timestampMs = 0;
+  int sampleCount = 960;
+  double rmsLevel = 0.0;
+  double peakLevel = 0.0;
+  double noiseFloorDb = -60.0;
+  bool voiceActive = true;
+};
+
+struct AudioParticipantMixMetrics {
+  std::string participantId;
+  int inputLevel = 0;
+  int outputLevel = 0;
+  int gainDb = 0;
+  double rmsLevel = 0.0;
+  double peakLevel = 0.0;
+  double noiseFloorDb = -60.0;
+  bool noiseSuppressionActive = false;
+  bool limiterActive = false;
+  bool muted = false;
+  int64_t framesMixed = 0;
+  std::string status = "idle";
+};
+
+struct AudioMixMetrics {
+  std::string status = "idle";
+  int masterLevel = 0;
+  double loudnessLufs = -60.0;
+  bool limiterActive = false;
+  int64_t mixedFrameCount = 0;
+  int participantCount = 0;
+  std::vector<AudioParticipantMixMetrics> participants;
+  std::vector<std::string> warnings;
+  std::string summary = "Audio mix idle.";
 };
 
 struct ProgramFramePreviewPixels {
@@ -159,6 +191,7 @@ class IAudioMixer {
  public:
   virtual ~IAudioMixer() = default;
   virtual int64_t mix(const std::vector<AudioFrame>& frames) = 0;
+  virtual AudioMixMetrics session() const = 0;
 };
 
 class IEncoderSink {

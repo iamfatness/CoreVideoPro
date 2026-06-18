@@ -1,8 +1,10 @@
+#include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <map>
 #include <utility>
 
@@ -30,21 +32,60 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
   int64_t frameNumber_ = 0;
 };
 
+CompositorRenderPlan sortedRenderPlan(CompositorRenderPlan renderPlan) {
+  std::stable_sort(
+      renderPlan.layers.begin(),
+      renderPlan.layers.end(),
+      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
+        if (left.order != right.order) {
+          return left.order < right.order;
+        }
+        if (left.layerId != right.layerId) {
+          return left.layerId < right.layerId;
+        }
+        return left.sourceId < right.sourceId;
+      });
+  return renderPlan;
+}
+
+uint32_t programPreviewSignature(const ProgramFramePreviewPixels& preview) {
+  if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
+    return 0;
+  }
+
+  uint32_t hash = 2166136261u;
+  const auto mix = [&hash](uint8_t value) {
+    hash ^= value;
+    hash *= 16777619u;
+  };
+  mix(static_cast<uint8_t>(preview.width & 0xff));
+  mix(static_cast<uint8_t>((preview.width >> 8) & 0xff));
+  mix(static_cast<uint8_t>(preview.height & 0xff));
+  mix(static_cast<uint8_t>((preview.height >> 8) & 0xff));
+  for (const uint8_t value : preview.bgra) {
+    mix(value);
+  }
+  return hash == 0 ? 1u : hash;
+}
+
 class CpuNoopCompositor final : public ICompositor {
  public:
   std::string rendererName() const override { return "software"; }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
-    const int layerCount = renderPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(renderPlan.layers.size());
+    const auto deterministicPlan = sortedRenderPlan(renderPlan);
+    const int layerCount = deterministicPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(deterministicPlan.layers.size());
     ProgramFrame frame;
-    frame.width = renderPlan.width;
-    frame.height = renderPlan.height;
+    frame.width = deterministicPlan.width;
+    frame.height = deterministicPlan.height;
     frame.layerCount = layerCount;
     frame.frameNumber = frameNumber_;
-    frame.renderPlanId = renderPlan.renderPlanId;
+    frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "software";
-    fillSyntheticProgramFramePreview(frame.preview, renderPlan, frames, frame);
+    frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
+    fillSyntheticProgramFramePreview(frame.preview, deterministicPlan, frames, frame);
+    frame.programPixelSignature = programPreviewSignature(frame.preview);
 #if COREVIDEO_STUB
     frame.sharedTexture.sharedHandleHex = "0xFEEDFACE";
     frame.sharedTexture.width = frame.width;
@@ -59,15 +100,24 @@ class CpuNoopCompositor final : public ICompositor {
   int64_t frameNumber_ = 0;
 };
 
-class PassthroughAudioMixer final : public IAudioMixer {
+class DevSafeAudioMixer final : public IAudioMixer {
  public:
   int64_t mix(const std::vector<AudioFrame>& frames) override {
     mixedFrameCount_ += static_cast<int64_t>(frames.size());
+    std::vector<AudioParticipantMixMetrics> participants;
+    participants.reserve(frames.size());
+    for (const auto& frame : frames) {
+      participants.push_back(analyzeAudioParticipantFrame(frame));
+    }
+    session_ = summarizeAudioMixMetrics(std::move(participants), mixedFrameCount_);
     return mixedFrameCount_;
   }
 
+  AudioMixMetrics session() const override { return session_; }
+
  private:
   int64_t mixedFrameCount_ = 0;
+  AudioMixMetrics session_;
 };
 
 class CountingEncoderSink final : public IEncoderSink {
@@ -354,7 +404,7 @@ ModuleSet createStubModules() {
   ModuleSet modules;
   modules.zoom = std::make_unique<SyntheticZoomCaptureSource>();
   modules.compositor = std::make_unique<CpuNoopCompositor>();
-  modules.mixer = std::make_unique<PassthroughAudioMixer>();
+  modules.mixer = std::make_unique<DevSafeAudioMixer>();
   modules.encoder = std::make_unique<CountingEncoderSink>();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
   modules.captureDevice = std::make_unique<FakeCaptureDevice>();

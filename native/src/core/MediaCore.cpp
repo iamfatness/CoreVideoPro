@@ -8,6 +8,7 @@
 #include <cmath>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace corevideo::core {
@@ -684,11 +685,11 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   for (const auto& channel : channels->asArray()) {
     ParticipantAudioChannelInput input;
     input.participantId = channel.getString("participantId");
-    input.inputLevel = static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0);
+    input.inputLevel = std::max(0, std::min(100, static_cast<int>(channel.get("inputLevel") ? channel.get("inputLevel")->asNumber() : 0)));
     input.muted = channel.get("muted") && channel.get("muted")->asBool();
     input.noiseSuppression = channel.get("noiseSuppression") && channel.get("noiseSuppression")->asBool();
     if (const rpc::Json* manualGain = channel.get("manualGainDb")) {
-      input.manualGainDb = manualGain->asNumber();
+      input.manualGainDb = std::max(-24.0, std::min(24.0, manualGain->asNumber()));
       input.hasManualGain = true;
     }
     if (!input.participantId.empty()) {
@@ -763,10 +764,50 @@ std::string audioStatusFor(bool muted, int gainDb) {
   return "balanced";
 }
 
+std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
+  if (participant.muted) return "muted";
+  if (participant.gainDb > 0) return "boosting";
+  if (participant.gainDb < 0) return "ducking";
+  return "balanced";
+}
+
 }  // namespace
 
 rpc::Json MediaCore::audioMixSessionState() const {
   if (audioChannels_.empty()) {
+    const auto nativeMix = modules_.mixer->session();
+    if (!nativeMix.participants.empty()) {
+      rpc::Json::Array participants;
+      for (const auto& participant : nativeMix.participants) {
+        participants.emplace_back(rpc::Json::Object{
+            {"participantId", participant.participantId},
+            {"inputLevel", participant.inputLevel},
+            {"outputLevel", participant.outputLevel},
+            {"gainDb", participant.gainDb},
+            {"noiseSuppression", participant.noiseSuppressionActive},
+            {"limiterActive", participant.limiterActive},
+            {"muted", participant.muted},
+            {"status", protocolAudioStatusForDsp(participant)},
+        });
+      }
+
+      rpc::Json::Array warnings;
+      for (const auto& warning : nativeMix.warnings) {
+        warnings.emplace_back(warning);
+      }
+
+      return rpc::Json::Object{
+          {"status", nativeMix.status},
+          {"masterLevel", nativeMix.masterLevel},
+          {"loudnessLufs", nativeMix.loudnessLufs},
+          {"limiterActive", nativeMix.limiterActive},
+          {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
+          {"participants", participants},
+          {"summary", nativeMix.summary},
+          {"warnings", warnings},
+      };
+    }
+
     return rpc::Json::Object{
         {"status", "idle"},
         {"masterLevel", 0},
@@ -781,6 +822,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
 
   rpc::Json::Array participants;
   rpc::Json::Array warnings;
+  std::unordered_set<std::string> warningSet;
   int masterTotal = 0;
   int audibleCount = 0;
   bool limiterActive = false;
@@ -803,7 +845,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
     if (gainDb < 0 && !channel.muted) ++duckingCount;
     if (channel.muted) ++mutedCount;
     if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
-    if (noiseSuppression && channel.inputLevel < 35) {
+    if (noiseSuppression && channel.inputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
       warnings.emplace_back("Noise suppression active on low-level sources.");
     }
 

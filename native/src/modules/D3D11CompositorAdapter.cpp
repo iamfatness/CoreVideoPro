@@ -1,5 +1,8 @@
 #include "modules/Interfaces.h"
 
+// The GPU compositor is intentionally a dev-machine adapter. COREVIDEO_STUB
+// builds must stay portable and resolve this factory to nullptr unless all
+// three gates are explicit: non-stub, dev adapters, and D3D11.
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -131,6 +134,22 @@ uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
   return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
 }
 
+CompositorRenderPlan sortedRenderPlan(CompositorRenderPlan renderPlan) {
+  std::stable_sort(
+      renderPlan.layers.begin(),
+      renderPlan.layers.end(),
+      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
+        if (left.order != right.order) {
+          return left.order < right.order;
+        }
+        if (left.layerId != right.layerId) {
+          return left.layerId < right.layerId;
+        }
+        return left.sourceId < right.sourceId;
+      });
+  return renderPlan;
+}
+
 std::string handleToHex(HANDLE handle) {
   if (!handle) {
     return {};
@@ -151,20 +170,21 @@ class D3D11Compositor final : public ICompositor {
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
+    const auto deterministicPlan = sortedRenderPlan(renderPlan);
     ProgramFrame frame;
-    frame.width = renderPlan.width;
-    frame.height = renderPlan.height;
-    frame.layerCount = renderPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(renderPlan.layers.size());
+    frame.width = deterministicPlan.width;
+    frame.height = deterministicPlan.height;
+    frame.layerCount = deterministicPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(deterministicPlan.layers.size());
     frame.frameNumber = frameNumber_;
-    frame.renderPlanId = renderPlan.renderPlanId;
+    frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "d3d11";
-    frame.health = renderPlan.warnings.empty() ? "live" : "degraded";
+    frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
 
     if (!pipelineReady_ || !device_ || !context_) {
       return frame;
     }
 
-    if (!ensureRenderTarget(renderPlan.width, renderPlan.height)) {
+    if (!ensureRenderTarget(deterministicPlan.width, deterministicPlan.height)) {
       frame.health = "degraded";
       return frame;
     }
@@ -180,13 +200,13 @@ class D3D11Compositor final : public ICompositor {
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
     context_->RSSetState(rasterizerState_.get());
 
-    const auto layers = resolveLayers(renderPlan, frames);
+    const auto layers = resolveLayers(deterministicPlan, frames);
     for (const auto& layer : layers) {
-      drawLayer(layer, renderPlan);
+      drawLayer(layer, deterministicPlan);
     }
 
     frame.gpuComposed = true;
-    frame.programPixelSignature = readProgramPixelSignature(renderPlan.width / 2, renderPlan.height / 2);
+    frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
     frame.preview = readProgramFramePreview();
     exportSharedTexture(frame);
     context_->Flush();
