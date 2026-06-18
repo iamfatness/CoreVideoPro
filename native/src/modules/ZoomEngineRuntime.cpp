@@ -55,9 +55,11 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
+constexpr double kFrameStaleAfterMs = 1000.0;
+
 }  // namespace
 
-ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()) {}
+ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
   stopReader();
@@ -256,6 +258,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
     }
   }
+  state_.refreshFrameFreshness(runtimeElapsedMs(), kFrameStaleAfterMs);
   return spineSnapshotLocked(payload, elapsedMs);
 }
 
@@ -400,6 +403,14 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
           {"deliveredFps", hasStats ? 30 : 0},
           {"framesReceived", hasStats ? static_cast<int>(found->framesReceived) : 0},
           {"audioPacketsReceived", hasStats ? static_cast<int>(found->audioPacketsReceived) : 0},
+          {"firstFrameAtMs", hasStats ? found->firstFrameAtMs : -1.0},
+          {"lastFrameAtMs", hasStats ? found->lastFrameAtMs : -1.0},
+          {"firstFrameDelayMs", hasStats ? found->firstFrameDelayMs : -1.0},
+          {"lastFrameAgeMs", hasStats ? found->lastFrameAgeMs : -1.0},
+          {"lastFrameId", hasStats ? static_cast<int>(found->lastFrameId) : 0},
+          {"frameFresh", hasStats ? found->frameFresh : false},
+          {"staleFrameCount", hasStats ? static_cast<int>(found->staleFrameCount) : 0},
+          {"malformedFrameCount", hasStats ? static_cast<int>(found->malformedFrameCount) : 0},
       });
     }
   }
@@ -444,20 +455,30 @@ bool ZoomEngineRuntime::ensureMediaStartedLocked() {
 
 void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   if (event.sourceUuid.empty() || event.participantId == 0 || event.width == 0 || event.height == 0) {
+    state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "frame event missing source, participant, width, or height");
     return;
   }
 
   ShmRegion region;
   const auto size = zoomEngineI420FrameByteSize(event.width, event.height);
   if (!shm_region_open_read(region, zoomEngineVideoSharedMemoryName(event.sourceUuid), size)) {
+    state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory region could not be opened");
     return;
   }
   const auto closeRegion = [&region]() { shm_region_destroy(region); };
   const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 320, 180);
   closeRegion();
   if (!frame) {
+    state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory snapshot was incomplete, stale, or malformed");
     return;
   }
+  state_.recordFrameIngestSuccess(
+      event.sourceUuid,
+      event.participantId,
+      event.width,
+      event.height,
+      frame->frameId,
+      runtimeElapsedMs());
 
   rpc::Json::Array rgba;
   rgba.reserve(frame->rgba.size());
@@ -476,6 +497,11 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
            {"rgba", rgba},
        }},
   });
+}
+
+double ZoomEngineRuntime::runtimeElapsedMs() const {
+  return static_cast<double>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt_).count());
 }
 
 }  // namespace corevideo::modules

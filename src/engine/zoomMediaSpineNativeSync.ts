@@ -10,12 +10,28 @@ import {
 import type { ZoomSdkReadinessInput } from "./zoomSdkReadiness";
 
 export type ZoomMediaSpineSubscriptionStatus = "subscribed" | "degraded" | "failed";
+export type ZoomMediaSpineSubscriptionResultCode =
+  | "ok"
+  | "participant-missing"
+  | "video-off"
+  | "raw-media-disabled"
+  | "raw-audio-unavailable"
+  | "low-resolution";
+
+export type ZoomMediaSpineRawAudioEvidence = {
+  participantId: string;
+  displayName?: string;
+  status: ZoomMediaSpineSubscriptionStatus;
+  lastResultCode: ZoomMediaSpineSubscriptionResultCode;
+  audioPacketsReceived: number;
+  warning?: string;
+};
 
 export type ZoomMediaSpineNativeSubscription = ZoomMediaSpineSubscriptionRequestPayload & {
   subscriptionId: string;
   displayName?: string;
   status: ZoomMediaSpineSubscriptionStatus;
-  lastResultCode: "ok" | "participant-missing" | "video-off" | "raw-media-disabled" | "low-resolution";
+  lastResultCode: ZoomMediaSpineSubscriptionResultCode;
   deliveredWidth?: number;
   deliveredHeight?: number;
   deliveredFps?: number;
@@ -47,6 +63,7 @@ export type ZoomMediaSpineNativeSnapshot = {
       isoFramesWritten: number;
       audioPacketsObserved: number;
       subscribedVideoFeeds: number;
+      rawAudioByParticipant?: ZoomMediaSpineRawAudioEvidence[];
     };
   };
   warnings: string[];
@@ -88,20 +105,20 @@ export function buildFallbackZoomMediaSpineSnapshot(
   const participantsById = new Map(payload.participants.map((participant) => [participant.sdkUserId, participant]));
   const subscriptions = payload.subscriptions.map((subscription): ZoomMediaSpineNativeSubscription => {
     const participant = participantsById.get(subscription.participantId);
-    const rawMediaDisabledWarning = rawMediaDisabledWarningFor(payload, subscription.kind);
+    const rawMediaDisabled = rawMediaDisabledResultFor(payload, subscription.kind);
     const videoOffWarning =
       participant && (subscription.kind === "participant-video" || subscription.kind === "screen-share") && !participant.videoOn
         ? `${participant.displayName} video is off.`
         : undefined;
     const lowResolution = participant?.networkQuality === "low";
-    const failedWarning = rawMediaDisabledWarning ?? videoOffWarning;
+    const failedWarning = rawMediaDisabled?.warning ?? videoOffWarning;
 
     return {
       ...subscription,
       subscriptionId: `${subscription.kind}:${subscription.participantId}:${subscription.purpose}`,
       displayName: participant?.displayName,
       status: failedWarning ? "failed" : lowResolution ? "degraded" : "subscribed",
-      lastResultCode: failedWarning ? (rawMediaDisabledWarning ? "raw-media-disabled" : "video-off") : lowResolution ? "low-resolution" : "ok",
+      lastResultCode: failedWarning ? (rawMediaDisabled?.code ?? "video-off") : lowResolution ? "low-resolution" : "ok",
       deliveredWidth: subscription.kind === "screen-share" ? 1920 : lowResolution ? 640 : 1280,
       deliveredHeight: subscription.kind === "screen-share" ? 1080 : lowResolution ? 360 : 720,
       deliveredFps: subscription.kind === "screen-share" ? 30 : lowResolution ? 15 : 30,
@@ -113,6 +130,16 @@ export function buildFallbackZoomMediaSpineSnapshot(
   const activeSpeaker = payload.participants.find((participant) => participant.talking);
   const screenShare = payload.participants.find((participant) => participant.sharingScreen);
   const subscribedVideoFeeds = subscriptions.filter((subscription) => subscription.status !== "failed" && subscription.kind === "participant-video").length;
+  const rawAudioByParticipant = subscriptions
+    .filter((subscription) => subscription.kind === "participant-audio")
+    .map((subscription): ZoomMediaSpineRawAudioEvidence => ({
+      participantId: subscription.participantId,
+      displayName: subscription.displayName,
+      status: subscription.status,
+      lastResultCode: subscription.lastResultCode,
+      audioPacketsReceived: subscription.audioPacketsReceived,
+      warning: subscription.warning
+    }));
   const recordingActive = Boolean(payload.recording);
 
   return {
@@ -139,7 +166,8 @@ export function buildFallbackZoomMediaSpineSnapshot(
         programFramesWritten: recordingActive && subscribedVideoFeeds > 0 ? Math.max(1, Math.floor(elapsedMs / 33)) : 0,
         isoFramesWritten: recordingActive ? Math.max(0, payload.recording?.isoParticipantIds.length ?? 0) * Math.max(1, Math.floor(elapsedMs / 33)) : 0,
         audioPacketsObserved: subscriptions.reduce((total, subscription) => total + subscription.audioPacketsReceived, 0),
-        subscribedVideoFeeds
+        subscribedVideoFeeds,
+        rawAudioByParticipant
       }
     },
     warnings: [...new Set([...payload.warnings, bridgeWarning].filter(Boolean) as string[])],
@@ -150,17 +178,24 @@ export function buildFallbackZoomMediaSpineSnapshot(
   };
 }
 
-function rawMediaDisabledWarningFor(payload: ZoomMediaSpineSyncPayload, kind: ZoomMediaSpineSubscriptionRequestPayload["kind"]) {
+function rawMediaDisabledResultFor(
+  payload: ZoomMediaSpineSyncPayload,
+  kind: ZoomMediaSpineSubscriptionRequestPayload["kind"]
+): { code: ZoomMediaSpineSubscriptionResultCode; warning: string } | undefined {
   if (kind === "participant-video" && payload.readiness.checks.some((check) => check.id === "raw-video" && check.status === "blocked")) {
-    return "participant-video callbacks are not enabled in the Zoom SDK helper.";
+    return { code: "raw-media-disabled", warning: "participant-video callbacks are not enabled in the Zoom SDK helper." };
   }
 
   if (kind === "participant-audio" && payload.readiness.checks.some((check) => check.id === "raw-audio" && check.status === "blocked")) {
-    return "participant-audio callbacks are not enabled in the Zoom SDK helper.";
+    return {
+      code: "raw-audio-unavailable",
+      warning:
+        "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
+    };
   }
 
   if (kind === "screen-share" && payload.readiness.checks.some((check) => check.id === "raw-share" && check.status === "blocked")) {
-    return "screen-share callbacks are not enabled in the Zoom SDK helper.";
+    return { code: "raw-media-disabled", warning: "screen-share callbacks are not enabled in the Zoom SDK helper." };
   }
 
   return undefined;

@@ -116,7 +116,11 @@ describe("createSupportBundle", () => {
         adapterId: "renderer-test-pattern",
         kind: "test-pattern",
         status: "subscribed",
-        subscribedSourceCount: 3
+        subscribedSourceCount: 3,
+        deliveredFrameCount: 3,
+        liveFrameCount: 3,
+        staleFrameCount: 0,
+        backing: "fallback-simulated"
       },
       compositor: {
         status: "live",
@@ -193,6 +197,34 @@ describe("createSupportBundle", () => {
     });
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("streamKey");
     expect(JSON.stringify(bundle.mediaCore)).not.toContain("endpoint");
+    expect(bundle.triageLines).toContain("Video source: fallback-simulated; subscribed 3; delivered 3; stale 0");
+  });
+
+  it("proves native frame backing and stale delivery counts from media-core snapshots", async () => {
+    const mediaCore = await new InMemoryMediaCoreSyncEngine().syncProduction(initialProduction, 5000);
+    const bundle = createSupportBundle(initialProduction, {
+      ...mediaCore,
+      sourceSnapshot: {
+        ...mediaCore.sourceSnapshot,
+        adapterId: "zoom-native-raw-video",
+        kind: "zoom-sdk",
+        subscribedSourceCount: 4,
+        liveFrameCount: 2,
+        staleFrameCount: 1
+      },
+      frameCount: 3
+    });
+
+    expect(bundle.mediaCore?.source).toMatchObject({
+      adapterId: "zoom-native-raw-video",
+      kind: "zoom-sdk",
+      subscribedSourceCount: 4,
+      deliveredFrameCount: 3,
+      liveFrameCount: 2,
+      staleFrameCount: 1,
+      backing: "native-frame"
+    });
+    expect(bundle.triageLines).toContain("Video source: native-frame; subscribed 4; delivered 3; stale 1");
   });
 
   it("surfaces aggregate native audio underrun clipping and sync diagnostics in support data", async () => {

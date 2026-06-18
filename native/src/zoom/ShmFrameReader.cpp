@@ -32,7 +32,8 @@ FrameReadStatus tryReadFrame(const uint8_t* base, std::size_t size, DecodedI420F
   }
 
   // I420: Y is width*height, U and V are each a quarter of that.
-  if (yLen != width * height || (yLen % 4u) != 0u) {
+  const std::size_t expectedYLen = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  if ((width & 1u) != 0u || (height & 1u) != 0u || yLen != expectedYLen || (yLen % 4u) != 0u) {
     return FrameReadStatus::Malformed;
   }
   const std::size_t planeBytes = static_cast<std::size_t>(yLen) + yLen / 2u;

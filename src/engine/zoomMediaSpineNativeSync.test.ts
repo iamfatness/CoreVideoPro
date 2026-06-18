@@ -134,9 +134,42 @@ describe("buildFallbackZoomMediaSpineSnapshot", () => {
         participantId: "p1",
         kind: "participant-audio",
         status: "failed",
-        lastResultCode: "raw-media-disabled",
-        warning: "participant-audio callbacks are not enabled in the Zoom SDK helper."
+        lastResultCode: "raw-audio-unavailable",
+        warning: "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
       })
+    );
+    expect(snapshot.recording.evidence.rawAudioByParticipant).toContainEqual(
+      expect.objectContaining({
+        participantId: "p1",
+        status: "failed",
+        lastResultCode: "raw-audio-unavailable",
+        audioPacketsReceived: 0
+      })
+    );
+  });
+
+  it("records raw audio packet evidence per participant", () => {
+    const payload = buildZoomMediaSpineSyncPayload(initialProduction, readyInput);
+    const snapshot = buildFallbackZoomMediaSpineSnapshot(payload, 100);
+
+    expect(snapshot.recording.evidence.audioPacketsObserved).toBeGreaterThan(0);
+    expect(snapshot.recording.evidence.rawAudioByParticipant).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          participantId: "p1",
+          displayName: "Sophia Martinez",
+          status: "subscribed",
+          lastResultCode: "ok",
+          audioPacketsReceived: 5
+        }),
+        expect.objectContaining({
+          participantId: "p2",
+          displayName: "David Chen",
+          status: "subscribed",
+          lastResultCode: "ok",
+          audioPacketsReceived: 5
+        })
+      ])
     );
   });
 

@@ -67,6 +67,50 @@ TEST(ZoomEngineRuntimeState, TracksFrameAudioAndErrorEvidence) {
   EXPECT_EQ(snapshot.warnings[0], "raw_data_unavailable");
 }
 
+TEST(ZoomEngineRuntimeState, TracksFrameFreshnessAndFirstFrameTimingPerParticipant) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+
+  state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+  state.recordFrameIngestSuccess("source-1", 42, 320, 180, 10, 125.0);
+  state.refreshFrameFreshness(900.0, 1000.0);
+
+  auto snapshot = state.snapshot();
+  ASSERT_TRUE(snapshot.subscriptions.size() == 1u);
+  EXPECT_EQ(snapshot.subscriptions[0].participantId, "42");
+  EXPECT_EQ(snapshot.subscriptions[0].firstFrameAtMs, 125.0);
+  EXPECT_EQ(snapshot.subscriptions[0].firstFrameDelayMs, 125.0);
+  EXPECT_EQ(snapshot.subscriptions[0].lastFrameAtMs, 125.0);
+  EXPECT_EQ(snapshot.subscriptions[0].lastFrameAgeMs, 775.0);
+  EXPECT_EQ(snapshot.subscriptions[0].lastFrameId, 10u);
+  EXPECT_TRUE(snapshot.subscriptions[0].frameFresh);
+  EXPECT_TRUE(snapshot.warnings.empty());
+
+  state.refreshFrameFreshness(1200.0, 1000.0);
+  snapshot = state.snapshot();
+  ASSERT_TRUE(snapshot.subscriptions.size() == 1u);
+  EXPECT_FALSE(snapshot.subscriptions[0].frameFresh);
+  EXPECT_EQ(snapshot.subscriptions[0].lastFrameAgeMs, 1075.0);
+  ASSERT_TRUE(snapshot.warnings.size() == 1u);
+  EXPECT_NE(snapshot.warnings[0].find("stale"), std::string::npos);
+}
+
+TEST(ZoomEngineRuntimeState, CountsRepeatedAndMalformedSharedMemoryFrames) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+
+  state.recordFrameIngestSuccess("source-1", 42, 320, 180, 22, 100.0);
+  state.recordFrameIngestSuccess("source-1", 42, 320, 180, 22, 133.0);
+  state.recordFrameIngestFailure("source-1", 42, "shared memory snapshot was incomplete");
+
+  const auto snapshot = state.snapshot();
+  ASSERT_TRUE(snapshot.subscriptions.size() == 1u);
+  EXPECT_EQ(snapshot.subscriptions[0].staleFrameCount, 1u);
+  EXPECT_EQ(snapshot.subscriptions[0].malformedFrameCount, 1u);
+  EXPECT_FALSE(snapshot.subscriptions[0].frameFresh);
+  ASSERT_TRUE(snapshot.warnings.size() == 2u);
+  EXPECT_NE(snapshot.warnings[0].find("repeated stale frame 22"), std::string::npos);
+  EXPECT_NE(snapshot.warnings[1].find("malformed or unavailable"), std::string::npos);
+}
+
 TEST(ZoomEngineRuntimeState, ExposesCompositorVideoFramesFromSubscriptionStats) {
   corevideo::modules::ZoomEngineRuntimeState state;
   state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"src-1","participant_id":42,"width":1280,"height":720})"));

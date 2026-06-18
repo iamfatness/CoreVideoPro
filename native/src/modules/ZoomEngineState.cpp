@@ -9,6 +9,10 @@ std::string participantIdString(std::uint32_t id) {
   return id == 0 ? std::string{} : std::to_string(id);
 }
 
+std::string frameWarningPrefix(const ZoomEngineSubscriptionStats& stats) {
+  return "Zoom video frame ingest for participant " + stats.participantId + " (" + stats.sourceUuid + ")";
+}
+
 }  // namespace
 
 void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
@@ -34,15 +38,15 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
     case ZoomEngineEventKind::AuthFail:
       sdkAuthenticated_ = false;
       meetingState_ = "error";
-      warnings_.emplace_back(!event.message.empty() ? event.message
-                             : !event.stage.empty() ? "Zoom SDK authentication failed during " + event.stage + "."
-                                                    : "Zoom SDK authentication failed.");
+      addWarning(!event.message.empty() ? event.message
+                 : !event.stage.empty() ? "Zoom SDK authentication failed during " + event.stage + "."
+                                        : "Zoom SDK authentication failed.");
       break;
     case ZoomEngineEventKind::Error:
       meetingState_ = "error";
-      warnings_.emplace_back(!event.message.empty() ? event.message
-                             : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
-                                                    : "Zoom engine reported an error.");
+      addWarning(!event.message.empty() ? event.message
+                 : !event.stage.empty() ? "Zoom engine failed during " + event.stage + "."
+                                        : "Zoom engine reported an error.");
       break;
     case ZoomEngineEventKind::Participants:
       participants_.clear();
@@ -88,6 +92,66 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
     }
     default:
       break;
+  }
+}
+
+void ZoomEngineRuntimeState::recordFrameIngestSuccess(const std::string& sourceUuid,
+                                                      std::uint32_t participantId,
+                                                      std::uint32_t width,
+                                                      std::uint32_t height,
+                                                      std::uint32_t frameId,
+                                                      double observedAtMs) {
+  auto& stats = subscriptionStats_[sourceUuid];
+  stats.sourceUuid = sourceUuid;
+  stats.participantId = participantIdString(participantId);
+  stats.kind = "participant-video";
+  stats.width = width;
+  stats.height = height;
+  if (stats.firstFrameAtMs < 0.0) {
+    stats.firstFrameAtMs = observedAtMs;
+    stats.firstFrameDelayMs = observedAtMs;
+  }
+  if (stats.lastFrameId == frameId && stats.lastFrameAtMs >= 0.0) {
+    ++stats.staleFrameCount;
+    addWarning(frameWarningPrefix(stats) + " repeated stale frame " + std::to_string(frameId) + ".");
+  }
+  stats.lastFrameId = frameId;
+  stats.lastFrameAtMs = observedAtMs;
+  stats.lastFrameAgeMs = 0.0;
+  stats.frameFresh = true;
+}
+
+void ZoomEngineRuntimeState::recordFrameIngestFailure(const std::string& sourceUuid,
+                                                      std::uint32_t participantId,
+                                                      const std::string& reason) {
+  auto& stats = subscriptionStats_[sourceUuid];
+  stats.sourceUuid = sourceUuid;
+  stats.participantId = participantIdString(participantId);
+  stats.kind = "participant-video";
+  ++stats.malformedFrameCount;
+  stats.frameFresh = false;
+  addWarning(frameWarningPrefix(stats) + " was malformed or unavailable" + (reason.empty() ? "." : ": " + reason + "."));
+}
+
+void ZoomEngineRuntimeState::refreshFrameFreshness(double nowMs, double staleAfterMs) {
+  for (auto& [_, stats] : subscriptionStats_) {
+    if (stats.kind != "participant-video" || stats.lastFrameAtMs < 0.0) {
+      continue;
+    }
+    stats.lastFrameAgeMs = (std::max)(0.0, nowMs - stats.lastFrameAtMs);
+    stats.frameFresh = stats.lastFrameAgeMs <= staleAfterMs;
+    if (!stats.frameFresh) {
+      addWarning(frameWarningPrefix(stats) + " is stale.");
+    }
+  }
+}
+
+void ZoomEngineRuntimeState::addWarning(const std::string& warning) {
+  if (warning.empty()) {
+    return;
+  }
+  if (std::find(warnings_.begin(), warnings_.end(), warning) == warnings_.end()) {
+    warnings_.push_back(warning);
   }
 }
 

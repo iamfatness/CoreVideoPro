@@ -67,6 +67,9 @@ function plan(overrides: Partial<ZoomMediaSpineServicePlan> = {}): ZoomMediaSpin
 }
 
 describe("executeZoomMediaSpineServicePlan", () => {
+  const rawAudioUnavailableWarning =
+    "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation.";
+
   it("executes every request in order and returns the final Zoom snapshot", async () => {
     const requests: ZoomMediaSpineServiceRequest[] = [];
     const transport: ZoomMediaSpineServiceTransport = {
@@ -168,14 +171,14 @@ describe("executeZoomMediaSpineServicePlan", () => {
   it("returns blocked when the plan is blocked even if diagnostic requests execute", async () => {
     const transport: ZoomMediaSpineServiceTransport = {
       async request(request) {
-        return { id: request.id, ok: true, zoom: { ...snapshot, warnings: ["Raw audio callbacks are disabled."] } };
+        return { id: request.id, ok: true, zoom: { ...snapshot, warnings: [rawAudioUnavailableWarning] } };
       }
     };
 
     const result = await executeZoomMediaSpineServicePlan(
       plan({
         blocked: true,
-        warnings: ["Raw audio callbacks are disabled."],
+        warnings: [rawAudioUnavailableWarning],
         summary: "Zoom media spine service plan blocked; 1 warning requires attention."
       }),
       transport
@@ -185,7 +188,7 @@ describe("executeZoomMediaSpineServicePlan", () => {
       ok: false,
       blocked: true,
       summary: "Zoom media spine service plan blocked; 1 warning requires attention.",
-      warnings: ["Raw audio callbacks are disabled.", "Raw audio callbacks are disabled."]
+      warnings: [rawAudioUnavailableWarning, rawAudioUnavailableWarning]
     });
   });
 

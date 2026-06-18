@@ -40,7 +40,7 @@ describe("assessZoomSdkReadiness", () => {
       "Zoom Meeting SDK runtime is missing from the packaged helper process.",
       "Meeting SDK app key is missing.",
       "SDK JWT broker is not configured.",
-      "Raw audio callbacks are disabled."
+      "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
     ]);
   });
 

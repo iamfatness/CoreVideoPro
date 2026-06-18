@@ -1152,6 +1152,18 @@ button:disabled {
   line-height: 1.25;
 }
 
+.video-tile .video-frame-diagnostic {
+  color: #d5dfd8;
+}
+
+.video-tile.backing-native-frame {
+  border-color: rgba(68, 193, 161, 0.58);
+}
+
+.video-tile.frame-stale {
+  border-color: rgba(240, 168, 92, 0.72);
+}
+
 .video-tile.health-low-resolution {
   border-color: rgba(240, 168, 92, 0.58);
 }

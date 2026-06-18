@@ -50,7 +50,7 @@ import { planMultitrackAudio } from "./engine/multitrackAudio";
 import { describeTransition, recommendedTransitionDuration, transitionStyles, transitionUsesWipe } from "./engine/transitions";
 import { describeVirtualCamera } from "./engine/virtualCamera";
 import { getFrameForParticipant } from "./engine/mediaFrames";
-import { ParticipantVideoCanvas } from "./ParticipantVideoCanvas";
+import { ParticipantVideoCanvas, useZoomVideoFrameDiagnostics } from "./ParticipantVideoCanvas";
 import { summarizeArming } from "./engine/outputArming";
 import { computeOutputProfileReadout, isUltraHdProfile } from "./engine/outputProfile";
 import { runOutputPreflight, runRecordingPreflight } from "./engine/outputPreflight";
@@ -5074,21 +5074,31 @@ function ParticipantTile({
   variant?: "stack" | "large" | "grid" | "hero";
 }) {
   const initials = participant.name.split(" ").map((part) => part[0]).join("");
+  const frameDiagnostics = useZoomVideoFrameDiagnostics(participant.id);
   const frameLabel = frame ? `${frame.width}x${frame.height} ${frame.fps}fps` : "Waiting for frame";
   const cropLabel = frame
     ? `crop ${Math.round(frame.crop.width * 100)}% / ${Math.round(frame.ageMs)}ms`
     : "no crop";
+  const backingLabel =
+    frameDiagnostics.backing === "native-frame"
+      ? `native frame ${frameDiagnostics.latestFrameId ?? "?"}`
+      : "fallback simulated";
+  const deliveryLabel = `delivered ${frameDiagnostics.deliveredFrameCount}; ${frameDiagnostics.stale ? "stale" : "fresh"}`;
 
   return (
     <div
-      className={`video-tile tile-${index + 1} tile-${variant} health-${frame?.health ?? "recovering"}`}
+      className={`video-tile tile-${index + 1} tile-${variant} health-${frame?.health ?? "recovering"} backing-${frameDiagnostics.backing} ${frameDiagnostics.stale ? "frame-stale" : "frame-fresh"}`}
       style={frame ? { "--tile-accent": frame.dominantColor } as React.CSSProperties : undefined}
+      data-video-backing={frameDiagnostics.backing}
+      data-video-stale={frameDiagnostics.stale ? "true" : "false"}
     >
       <ParticipantVideoCanvas participantId={participant.id} />
       <div className="avatar">{initials}</div>
       <span>{participant.name}</span>
       <small>{frameLabel}</small>
       <em>{cropLabel}</em>
+      <em className="video-frame-diagnostic">{backingLabel}</em>
+      <em className="video-frame-diagnostic">{deliveryLabel}</em>
       <em>{effect.cropMode === "manual" ? `manual ${effect.manualZoom.toFixed(2)}x` : "auto crop"}</em>
       {effect.chromaKeyEnabled && <b>Chroma key</b>}
       {participant.isActiveSpeaker && <strong>Active speaker</strong>}

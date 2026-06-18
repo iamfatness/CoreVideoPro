@@ -116,7 +116,7 @@ describe("buildZoomMediaSpineServicePlan", () => {
     expect(plan.summary).toBe("Zoom media spine service plan blocked; 2 warnings require attention.");
     expect(plan.warnings).toEqual([
       "Zoom Meeting SDK runtime is missing from the packaged helper process.",
-      "Raw audio callbacks are disabled."
+      "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
     ]);
     expect(plan.requests.map((request) => request.type)).toEqual(["zoom-configure", "zoom-roster", "zoom-subscriptions", "zoom-tick"]);
   });

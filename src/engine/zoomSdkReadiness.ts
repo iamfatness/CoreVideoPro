@@ -113,7 +113,9 @@ export function assessZoomSdkReadiness(input: ZoomSdkReadinessInput): ZoomSdkRea
       "raw-audio",
       input.rawAudioEnabled,
       "Raw mixed and isolated audio",
-      input.rawAudioEnabled ? "Raw audio callbacks are enabled." : "Raw audio callbacks are disabled."
+      input.rawAudioEnabled
+        ? "Raw mixed and isolated audio callbacks are enabled."
+        : "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
     ),
     buildCheck(
       "raw-share",

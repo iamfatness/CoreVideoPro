@@ -19,6 +19,14 @@ struct ZoomEngineSubscriptionStats {
   std::uint32_t height = 0;
   std::uint32_t framesReceived = 0;
   std::uint32_t audioPacketsReceived = 0;
+  std::uint32_t lastFrameId = 0;
+  std::uint32_t staleFrameCount = 0;
+  std::uint32_t malformedFrameCount = 0;
+  double firstFrameAtMs = -1.0;
+  double lastFrameAtMs = -1.0;
+  double firstFrameDelayMs = -1.0;
+  double lastFrameAgeMs = -1.0;
+  bool frameFresh = false;
 };
 
 struct ZoomEngineRuntimeSnapshot {
@@ -41,8 +49,20 @@ class ZoomEngineRuntimeState {
   [[nodiscard]] rpc::Json::Array participantsJson() const;
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs) const;
   [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs) const;
+  void recordFrameIngestSuccess(const std::string& sourceUuid,
+                                std::uint32_t participantId,
+                                std::uint32_t width,
+                                std::uint32_t height,
+                                std::uint32_t frameId,
+                                double observedAtMs);
+  void recordFrameIngestFailure(const std::string& sourceUuid,
+                                std::uint32_t participantId,
+                                const std::string& reason);
+  void refreshFrameFreshness(double nowMs, double staleAfterMs);
 
  private:
+  void addWarning(const std::string& warning);
+
   std::string meetingState_ = "idle";
   bool sdkAuthenticated_ = false;
   std::uint32_t activeSpeakerId_ = 0;

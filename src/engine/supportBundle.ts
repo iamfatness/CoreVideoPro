@@ -108,6 +108,10 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: Prod
       kind: snapshot.sourceSnapshot.kind,
       status: snapshot.sourceSnapshot.status,
       subscribedSourceCount: snapshot.sourceSnapshot.subscribedSourceCount,
+      deliveredFrameCount: snapshot.frameCount,
+      liveFrameCount: snapshot.sourceSnapshot.liveFrameCount,
+      staleFrameCount: snapshot.sourceSnapshot.staleFrameCount,
+      backing: sourceBacking(snapshot),
       droppedFrameCount: snapshot.sourceSnapshot.droppedFrameCount,
       lowResolutionFrameCount: snapshot.sourceSnapshot.lowResolutionFrameCount,
       issues: (snapshot.sourceSnapshot.issues ?? []).map((issue) => ({
@@ -216,6 +220,12 @@ function summarizeMediaCore(snapshot: NativeMediaCoreStateSnapshot, state?: Prod
   };
 }
 
+function sourceBacking(snapshot: NativeMediaCoreStateSnapshot): SupportBundleMediaCore["source"]["backing"] {
+  return snapshot.sourceSnapshot.kind === "zoom-sdk" && !snapshot.sourceSnapshot.adapterId.startsWith("renderer-")
+    ? "native-frame"
+    : "fallback-simulated";
+}
+
 function getDestinationStates(state: ProductionState): OutputDestinationState[] {
   return state.outputDestinations.map((destination) => {
     const sessionDestination = state.outputSession.destinations.find((item) => item.id === destination.id);
@@ -298,6 +308,10 @@ function buildTriageLines(
   }
 
   if (mediaCore) {
+    const backing = sourceBacking(mediaCore);
+    lines.push(
+      `Video source: ${backing}; subscribed ${mediaCore.sourceSnapshot.subscribedSourceCount}; delivered ${mediaCore.frameCount}; stale ${mediaCore.sourceSnapshot.staleFrameCount}`
+    );
     const audio = summarizeAudioDiagnostics(mediaCore.audioMixSession);
     if (audio.status === "warning" || audio.warningCount > 0 || audio.limiterActive) {
       lines.push(

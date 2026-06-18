@@ -72,6 +72,8 @@ let activeSpeakerSeen = false;
 let maxParticipantCount = 0;
 const participantsById = new Map();
 const frameCountsByParticipant = new Map();
+const audioPacketsByParticipant = new Map();
+const rawAudioStatusByParticipant = new Map();
 const pending = new Map();
 const warnings = [];
 const stderrLines = [];
@@ -282,6 +284,40 @@ function recordSpineSnapshot(snapshot) {
         firstFrameAtMs = Date.now() - startedAt;
       }
     }
+    if (subscription.kind === "participant-audio") {
+      audioPacketsByParticipant.set(
+        subscription.participantId,
+        Math.max(audioPacketsByParticipant.get(subscription.participantId) ?? 0, subscription.audioPacketsReceived ?? 0)
+      );
+      rawAudioStatusByParticipant.set(subscription.participantId, {
+        status: subscription.status ?? "failed",
+        lastResultCode: subscription.lastResultCode ?? "unknown",
+        warning: subscription.warning,
+      });
+      if (subscription.lastResultCode === "raw-audio-unavailable") {
+        warnings.push(
+          subscription.warning ??
+            "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
+        );
+      }
+    }
+  }
+  for (const evidence of snapshot.recording?.evidence?.rawAudioByParticipant ?? []) {
+    audioPacketsByParticipant.set(
+      evidence.participantId,
+      Math.max(audioPacketsByParticipant.get(evidence.participantId) ?? 0, evidence.audioPacketsReceived ?? 0)
+    );
+    rawAudioStatusByParticipant.set(evidence.participantId, {
+      status: evidence.status ?? "failed",
+      lastResultCode: evidence.lastResultCode ?? "unknown",
+      warning: evidence.warning,
+    });
+    if (evidence.lastResultCode === "raw-audio-unavailable") {
+      warnings.push(
+        evidence.warning ??
+          "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
+      );
+    }
   }
   for (const warning of snapshot.warnings ?? []) {
     warnings.push(warning);
@@ -361,6 +397,11 @@ function buildReport(status, failureReason) {
     muted: participant.muted,
     talking: participant.talking,
     frames: frameCountsByParticipant.get(participant.id) ?? 0,
+    audioPackets: audioPacketsByParticipant.get(participant.id) ?? 0,
+    rawAudio: rawAudioStatusByParticipant.get(participant.id) ?? {
+      status: "not-observed",
+      lastResultCode: "no-participant-audio-subscription",
+    },
   }));
 
   return {
@@ -372,6 +413,7 @@ function buildReport(status, failureReason) {
     activeSpeakerSeen,
     firstFrameMs: firstFrameAtMs ?? null,
     videoParticipantsWithFrames: participantsWithFrames(),
+    audioParticipantsWithPackets: participantsWithAudioPackets(),
     criteria: {
       minParticipants,
       minVideoFeeds,
@@ -406,6 +448,10 @@ function usableParticipants(snapshot) {
 
 function participantsWithFrames() {
   return [...frameCountsByParticipant.entries()].filter(([, count]) => count > 0).map(([participantId]) => participantId);
+}
+
+function participantsWithAudioPackets() {
+  return [...audioPacketsByParticipant.entries()].filter(([, count]) => count > 0).map(([participantId]) => participantId);
 }
 
 function participantCount(snapshot) {

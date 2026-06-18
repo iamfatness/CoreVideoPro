@@ -94,7 +94,7 @@ describe("buildZoomMediaSpineSyncPayload", () => {
     expect(payload.recording).toBeUndefined();
     expect(payload.warnings).toEqual([
       "Zoom Meeting SDK runtime is missing from the packaged helper process.",
-      "Raw audio callbacks are disabled."
+      "Raw mixed and isolated audio callbacks are disabled; enable raw audio in the Zoom SDK helper before live audio validation."
     ]);
   });
 

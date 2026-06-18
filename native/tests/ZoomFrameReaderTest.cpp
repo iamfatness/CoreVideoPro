@@ -59,6 +59,15 @@ TEST(ShmFrameReader, ReportsMalformedWhenPlanesTruncated) {
   EXPECT_EQ(tryReadFrame(buf.data(), buf.size(), frame), FrameReadStatus::Malformed);
 }
 
+TEST(ShmFrameReader, ReportsMalformedForOddI420Dimensions) {
+  auto buf = makeFrameBuffer(/*sequence=*/2, 6, 2);
+  writeU32(buf, 8, 3);
+  writeU32(buf, 12, 18);
+  buf.resize(corevideo::zoom::kShmFrameHeaderBytes + 18 + 18 / 2u);
+  DecodedI420Frame frame;
+  EXPECT_EQ(tryReadFrame(buf.data(), buf.size(), frame), FrameReadStatus::Malformed);
+}
+
 TEST(ShmFrameReader, ReportsMalformedForUndersizedBuffer) {
   std::vector<uint8_t> buf(4, 0);
   DecodedI420Frame frame;

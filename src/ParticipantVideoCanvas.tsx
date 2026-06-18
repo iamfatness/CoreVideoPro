@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { zoomVideoFrameStore, type ZoomVideoFrame } from "./engine/zoomVideoFrames";
+import {
+  ZOOM_VIDEO_FRAME_STALE_MS,
+  zoomVideoFrameStore,
+  type ZoomVideoFrame,
+  type ZoomVideoFrameDiagnostics
+} from "./engine/zoomVideoFrames";
 
 /**
  * Subscribe to the latest live frame for a participant from the global store.
@@ -17,6 +22,25 @@ export function useZoomVideoFrame(participantId: string): ZoomVideoFrame | undef
   }, [participantId]);
 
   return frame;
+}
+
+export function useZoomVideoFrameDiagnostics(participantId: string): ZoomVideoFrameDiagnostics {
+  const [diagnostics, setDiagnostics] = useState<ZoomVideoFrameDiagnostics>(() =>
+    zoomVideoFrameStore.getDiagnostics(participantId)
+  );
+
+  useEffect(() => {
+    const update = () => setDiagnostics(zoomVideoFrameStore.getDiagnostics(participantId));
+    update();
+    const unsubscribe = zoomVideoFrameStore.subscribe(participantId, update);
+    const interval = window.setInterval(update, ZOOM_VIDEO_FRAME_STALE_MS);
+    return () => {
+      unsubscribe();
+      window.clearInterval(interval);
+    };
+  }, [participantId]);
+
+  return diagnostics;
 }
 
 /**
@@ -49,5 +73,5 @@ export function ParticipantVideoCanvas({ participantId }: { participantId: strin
     return null;
   }
 
-  return <canvas ref={canvasRef} className="video-tile-canvas" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="video-tile-canvas" aria-hidden="true" data-video-backing="native-frame" />;
 }

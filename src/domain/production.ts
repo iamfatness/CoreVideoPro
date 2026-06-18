@@ -385,6 +385,10 @@ export type SupportBundleMediaCore = {
     kind: "zoom-sdk" | "local-camera" | "test-pattern";
     status: "idle" | "subscribed" | "degraded" | "failed";
     subscribedSourceCount: number;
+    deliveredFrameCount: number;
+    liveFrameCount: number;
+    staleFrameCount: number;
+    backing: "native-frame" | "fallback-simulated";
     droppedFrameCount: number;
     lowResolutionFrameCount: number;
     issues: Array<{

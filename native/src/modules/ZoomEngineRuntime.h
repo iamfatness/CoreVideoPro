@@ -4,6 +4,7 @@
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -53,6 +54,7 @@ class ZoomEngineRuntime {
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
   bool ensureMediaStartedLocked();
   void applyJoinCredentialsFromPayload(const rpc::Json& payload);
+  [[nodiscard]] double runtimeElapsedMs() const;
 
   Config config_;
   std::unique_ptr<ZoomEngineProcessClient> process_;
@@ -63,6 +65,7 @@ class ZoomEngineRuntime {
   bool initialized_ = false;
   bool mediaStarted_ = false;
   int fallbackTick_ = 0;
+  std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;
 };
 
