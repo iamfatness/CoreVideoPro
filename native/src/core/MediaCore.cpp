@@ -1000,6 +1000,9 @@ rpc::Json MediaCore::outputSenderSessionState() const {
       senderJson.emplace("sendArtifactPath", sender.sendArtifactPath);
       senderJson.emplace("sendBytesWritten", static_cast<double>(sender.sendBytesWritten));
     }
+    if (!sender.runtimeDetail.empty()) {
+      senderJson.emplace("runtimeDetail", sender.runtimeDetail);
+    }
     senders.emplace_back(std::move(senderJson));
   }
 

@@ -112,6 +112,7 @@ struct OutputSender {
   std::string warning;
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
+  std::string runtimeDetail;
 };
 
 struct OutputSenderSession {
