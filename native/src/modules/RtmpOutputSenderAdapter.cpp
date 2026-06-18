@@ -6,6 +6,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
 #if defined(_WIN32)
@@ -20,31 +21,36 @@ namespace corevideo::modules {
 namespace {
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
-bool libavformatRuntimeAvailable() {
+std::string libavformatRuntimeDetail() {
 #if defined(_WIN32)
   const char* candidates[] = {"avformat-61.dll", "avformat-60.dll", "avformat-59.dll", "avformat.dll"};
   for (const auto* candidate : candidates) {
     if (HMODULE module = LoadLibraryA(candidate)) {
       FreeLibrary(module);
-      return true;
+      return std::string("available:") + candidate;
     }
   }
-  return false;
+  return "missing:avformat-61.dll,avformat-60.dll,avformat-59.dll,avformat.dll";
 #else
   const char* candidates[] = {"libavformat.so.61", "libavformat.so.60", "libavformat.so.59", "libavformat.so"};
   for (const auto* candidate : candidates) {
     if (void* module = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL)) {
       dlclose(module);
-      return true;
+      return std::string("available:") + candidate;
     }
   }
-  return false;
+  return "missing:libavformat.so.61,libavformat.so.60,libavformat.so.59,libavformat.so";
 #endif
+}
+
+bool libavformatRuntimeAvailable(const std::string& detail) {
+  return detail.rfind("available:", 0) == 0;
 }
 
 class RtmpOutputSender final : public IOutputSender {
  public:
-  explicit RtmpOutputSender(bool runtimeAvailable) : runtimeAvailable_(runtimeAvailable) {}
+  explicit RtmpOutputSender(std::string runtimeDetail)
+      : runtimeDetail_(std::move(runtimeDetail)), runtimeAvailable_(libavformatRuntimeAvailable(runtimeDetail_)) {}
 
   OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) override {
     const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
@@ -61,7 +67,8 @@ class RtmpOutputSender final : public IOutputSender {
     openSendProofIfNeeded();
     if (!runtimeAvailable_) {
       sender_.status = "warning";
-      sender_.warning = "RTMP sender requires libavformat runtime on the dev machine.";
+      sender_.warning = "RTMP sender requires libavformat runtime on the dev machine (" + runtimeDetail_ + ").";
+      sender_.runtimeDetail = runtimeDetail_;
       appendSendProof(nullptr, "runtime-missing");
       return snapshot();
     }
@@ -74,6 +81,7 @@ class RtmpOutputSender final : public IOutputSender {
 
     sender_.status = "live";
     sender_.warning.clear();
+    sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
     appendSendProof(frame, "sent");
@@ -96,12 +104,14 @@ class RtmpOutputSender final : public IOutputSender {
     if (destination != "rtmp") {
       return snapshot();
     }
-    runtimeAvailable_ = libavformatRuntimeAvailable();
+    runtimeDetail_ = libavformatRuntimeDetail();
+    runtimeAvailable_ = libavformatRuntimeAvailable(runtimeDetail_);
     ensureSender(elapsedMs);
     sender_.status = runtimeAvailable_ ? "starting" : "warning";
     sender_.startedAtMs = elapsedMs;
     sender_.stoppedAtMs = 0;
     sender_.warning = reason.empty() ? "RTMP sender recovered." : reason;
+    sender_.runtimeDetail = runtimeDetail_;
     return snapshot();
   }
 
@@ -118,6 +128,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.startedAtMs = elapsedMs;
     sender_.latencyMs = 2100;
     sender_.bitrateMbps = 6.0;
+    sender_.runtimeDetail = runtimeDetail_;
   }
 
   void openSendProofIfNeeded() {
@@ -132,7 +143,8 @@ class RtmpOutputSender final : public IOutputSender {
       return;
     }
     sender_.sendArtifactPath = path.string();
-    writeLine("{\"type\":\"rtmp-send-proof-start\",\"runtimeAvailable\":" + std::string(runtimeAvailable_ ? "true" : "false") + "}");
+    writeLine("{\"type\":\"rtmp-send-proof-start\",\"runtimeAvailable\":" + std::string(runtimeAvailable_ ? "true" : "false") +
+              ",\"runtimeDetail\":\"" + runtimeDetail_ + "\"}");
   }
 
   void appendSendProof(const ProgramFrame* frame, const std::string& status) {
@@ -171,6 +183,7 @@ class RtmpOutputSender final : public IOutputSender {
     return session;
   }
 
+  std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
   OutputSender sender_;
   std::ofstream sendProof_;
@@ -183,7 +196,7 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   // REQUIRES DEV MACHINE: real RTMP packet muxing belongs behind this libavformat
   // sender. The scaffold verifies runtime availability without affecting stubs.
-  return std::make_unique<RtmpOutputSender>(libavformatRuntimeAvailable());
+  return std::make_unique<RtmpOutputSender>(libavformatRuntimeDetail());
 #else
   return nullptr;
 #endif

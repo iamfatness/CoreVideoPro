@@ -327,11 +327,28 @@ function rtmpEvidence() {
   }
 
   let sendProofSeen = false;
+  let sendProofRuntimeAvailable = null;
+  let sendProofRuntimeDetail = null;
+  let sendProofAttemptCount = 0;
   if (sender.sendArtifactPath && existsSync(sender.sendArtifactPath)) {
     try {
       const content = readFileSync(sender.sendArtifactPath, "utf8");
       sendProofSeen =
         content.includes("rtmp-send-proof-start") || content.includes("rtmp-send-attempt") || content.length > 0;
+      for (const line of content.split(/\r?\n/).filter(Boolean)) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "rtmp-send-proof-start") {
+            sendProofRuntimeAvailable = Boolean(event.runtimeAvailable);
+            sendProofRuntimeDetail = event.runtimeDetail ?? null;
+          }
+          if (event.type === "rtmp-send-attempt") {
+            sendProofAttemptCount += 1;
+          }
+        } catch {
+          // Keep sendProofSeen true even if an older proof line is not JSON.
+        }
+      }
     } catch {
       sendProofSeen = false;
     }
@@ -342,9 +359,16 @@ function rtmpEvidence() {
     status: sender.status ?? null,
     sendArtifactPath: sender.sendArtifactPath ?? null,
     sendProofSeen,
+    sendProofRuntimeAvailable,
+    sendProofRuntimeDetail,
+    sendProofAttemptCount,
     framesSent: numberOrZero(sender.framesSent),
     sendBytesWritten: numberOrZero(sender.sendBytesWritten),
     warning: sender.warning ?? null,
+    runtimeDetail: sender.runtimeDetail ?? sendProofRuntimeDetail,
+    runtimeMissing:
+      sender.status === "warning" &&
+      Boolean(sender.warning?.toLowerCase().includes("libavformat") || String(sender.runtimeDetail ?? sendProofRuntimeDetail ?? "").startsWith("missing:")),
     sessionStatus: senderSession.status ?? null,
   };
 }
@@ -410,9 +434,24 @@ function buildReport(status, failureReason) {
       minProgramFrames,
       allowRtmpWarning,
     },
+    recommendations: buildRecommendations(recording, rtmp),
     warnings: collectWarnings(),
     recentStderr: stderrLines.slice(-10),
   };
+}
+
+function buildRecommendations(recording, rtmp) {
+  const recommendations = [];
+  if (destinations.includes("recording") && !recording.artifactExists && recording.bytesWritten === 0) {
+    recommendations.push("Recording did not produce artifact bytes; rerun build-native-dev and confirm Media Foundation encoder is active.");
+  }
+  if (destinations.includes("rtmp") && rtmp.runtimeMissing) {
+    recommendations.push("RTMP runtime is missing. Install FFmpeg or set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing avformat*.dll before packaging or validation.");
+  }
+  if (destinations.includes("rtmp") && rtmp.present && !rtmp.sendProofSeen) {
+    recommendations.push("RTMP sender was present but no send-proof artifact was readable; check temp directory permissions.");
+  }
+  return recommendations;
 }
 
 function printReport(report) {

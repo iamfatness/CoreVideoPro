@@ -407,6 +407,7 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   const auto session = sender->sync({"rtmp"}, &frame, 33);
   ASSERT_FALSE(session.senders.empty());
   ASSERT_FALSE(session.senders[0].sendArtifactPath.empty());
+  EXPECT_FALSE(session.senders[0].runtimeDetail.empty());
   EXPECT_TRUE(session.senders[0].sendBytesWritten > 0);
   ASSERT_TRUE(std::filesystem::exists(session.senders[0].sendArtifactPath));
 
@@ -415,6 +416,7 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   buffer << input.rdbuf();
   const auto content = buffer.str();
   EXPECT_NE(content.find("rtmp-send-proof-start"), std::string::npos);
+  EXPECT_NE(content.find("runtimeDetail"), std::string::npos);
   EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
   input.close();
   const auto artifactPath = session.senders[0].sendArtifactPath;

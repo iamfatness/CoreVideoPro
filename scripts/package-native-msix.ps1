@@ -147,6 +147,14 @@ function Stage-ZoomRuntimePayload {
   }
 }
 
+function Stage-FfmpegRuntimePayload {
+  Write-Host "[pack:native:msix] syncing optional FFmpeg runtime for RTMP..." -ForegroundColor Cyan
+  & (Join-Path $repoRoot "scripts\sync-ffmpeg-runtime-to-app.ps1") -AppDir $payloadDir
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+
 function Assert-MsixPayloadReady {
   param([bool]$StagedNative)
 
@@ -317,6 +325,7 @@ try {
 
 $stagedNative = Stage-MsixPayload
 Stage-ZoomRuntimePayload
+Stage-FfmpegRuntimePayload
 Assert-MsixPayloadReady -StagedNative $stagedNative
 
 $publishArgs = @(

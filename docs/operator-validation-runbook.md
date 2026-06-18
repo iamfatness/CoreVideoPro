@@ -11,6 +11,7 @@ Use this checklist on a **Windows 10/11 x64 dev machine** before demoing CoreVid
 | Node.js 22+ | `node --version` |
 | Visual Studio 2022+ (C++ workload) | `scripts/test-native.ps1` finds `VsDevCmd.bat` |
 | Zoom Meeting SDK **7.0.5** x64 | Archive with `x64/h/zoom_sdk.h` and `x64/lib/sdk.lib` |
+| FFmpeg runtime for RTMP | `ffmpeg.exe` on `PATH`, or `COREVIDEO_FFMPEG_BIN_DIR` points to a `bin` folder with `avformat*.dll` |
 
 ## 2. Stage Zoom SDK
 
@@ -114,6 +115,8 @@ npm run validate:record-stream
 # Optional: node ./scripts/validate-record-stream.mjs --timeout-ms 30000 --destinations recording,rtmp
 ```
 
+The report includes RTMP runtime diagnostics (`rtmp.runtimeDetail` / `sendProofRuntimeDetail`), such as `available:avformat-61.dll` or the missing DLL list. When using a portable FFmpeg install, set `COREVIDEO_FFMPEG_BIN_DIR` before validation.
+
 The harness launches `native/build-dev/corevideo-native.exe`, arms `load-scene-graph` + `start-program-output` + `start-recording-session`, then polls snapshot/`get-output-health` until:
 
 - **Recording:** MP4 artifact path on disk, or `recordingBytesWritten` / `totalBytesWritten` > 0 (Media Foundation dev adapter or stub counters).
@@ -128,6 +131,7 @@ npm run pack:native
 ```
 
 Output: `artifacts/native/win-unpacked/CoreVideo Pro.exe`. Pack prefers `native/build-dev/` over CI stub. Confirm `corevideo-native.exe` is beside the app (not stub-only).
+If FFmpeg is available, confirm `corevideo-ffmpeg-runtime.json` and `avformat*.dll` are beside the app for RTMP runtime loading. `npm run pack:native` and `npm run pack:native:msix` copy FFmpeg runtime DLLs when they can find them.
 
 For MSIX: `npm run pack:native:msix` then `Add-AppxPackage -Path artifacts/native/CoreVideoPro.msix -AllowUnsigned`.
 
