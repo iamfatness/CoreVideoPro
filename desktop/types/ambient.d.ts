@@ -61,6 +61,8 @@ interface NodeJS_ReadableStream {
 
 interface NodeJS_WritableStream {
   write(chunk: string): boolean;
+  write(chunk: string, callback: (error?: Error | null) => void): boolean;
+  on(event: "error", listener: (error: Error) => void): this;
   end(): void;
   destroyed: boolean;
 }

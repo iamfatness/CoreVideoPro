@@ -259,6 +259,7 @@ export class MediaCoreSupervisor {
     this.child = child;
     this.lines = createInterface({ input: child.stdout });
     this.lines.on("line", (line: string) => this.onLine(line));
+    child.stdin.on("error", (error: Error) => this.rejectAll(error));
     child.once("exit", (code) => this.onExit(code));
   }
 
@@ -332,7 +333,24 @@ export class MediaCoreSupervisor {
         reject(new Error(`media core request ${request.id} timed out.`));
       }, this.requestTimeoutMs);
       this.pending.set(request.id, { resolve, reject, timer });
-      child.stdin.write(`${JSON.stringify(request)}\n`);
+      const rejectWrite = (error: Error) => {
+        const pending = this.pending.get(request.id);
+        if (!pending) {
+          return;
+        }
+        this.pending.delete(request.id);
+        clearTimeout(pending.timer);
+        pending.reject(error);
+      };
+      try {
+        child.stdin.write(`${JSON.stringify(request)}\n`, (error?: Error | null) => {
+          if (error) {
+            rejectWrite(error);
+          }
+        });
+      } catch (error) {
+        rejectWrite(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
