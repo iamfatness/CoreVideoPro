@@ -36,7 +36,12 @@ struct AudioParticipantMixMetrics {
   double noiseFloorDb = -60.0;
   bool noiseSuppressionActive = false;
   bool limiterActive = false;
+  bool underrunDetected = false;
+  bool clippingDetected = false;
+  bool silenceDetected = false;
   bool muted = false;
+  int64_t avSyncOffsetMs = 0;
+  int64_t timingDriftMs = 0;
   int64_t framesMixed = 0;
   std::string status = "idle";
 };
@@ -48,6 +53,10 @@ struct AudioMixMetrics {
   bool limiterActive = false;
   int64_t mixedFrameCount = 0;
   int participantCount = 0;
+  int underrunCount = 0;
+  int clippingCount = 0;
+  int silenceCount = 0;
+  int64_t maxAbsAvSyncOffsetMs = 0;
   std::vector<AudioParticipantMixMetrics> participants;
   std::vector<std::string> warnings;
   std::string summary = "Audio mix idle.";

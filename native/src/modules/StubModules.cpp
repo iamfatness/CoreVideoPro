@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <utility>
 
 namespace corevideo::modules {
@@ -31,22 +32,6 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
  private:
   int64_t frameNumber_ = 0;
 };
-
-CompositorRenderPlan sortedRenderPlan(CompositorRenderPlan renderPlan) {
-  std::stable_sort(
-      renderPlan.layers.begin(),
-      renderPlan.layers.end(),
-      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
-        if (left.order != right.order) {
-          return left.order < right.order;
-        }
-        if (left.layerId != right.layerId) {
-          return left.layerId < right.layerId;
-        }
-        return left.sourceId < right.sourceId;
-      });
-  return renderPlan;
-}
 
 uint32_t programPreviewSignature(const ProgramFramePreviewPixels& preview) {
   if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
@@ -74,7 +59,7 @@ class CpuNoopCompositor final : public ICompositor {
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
-    const auto deterministicPlan = sortedRenderPlan(renderPlan);
+    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     const int layerCount = deterministicPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(deterministicPlan.layers.size());
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -106,8 +91,26 @@ class DevSafeAudioMixer final : public IAudioMixer {
     mixedFrameCount_ += static_cast<int64_t>(frames.size());
     std::vector<AudioParticipantMixMetrics> participants;
     participants.reserve(frames.size());
+    std::optional<int64_t> mixReferenceTimestamp;
     for (const auto& frame : frames) {
-      participants.push_back(analyzeAudioParticipantFrame(frame));
+      const auto bounded = boundAudioFrame(frame);
+      if (!mixReferenceTimestamp || bounded.timestampMs < *mixReferenceTimestamp) {
+        mixReferenceTimestamp = bounded.timestampMs;
+      }
+    }
+    for (const auto& frame : frames) {
+      const auto bounded = boundAudioFrame(frame);
+      AudioDspTimingReference timing;
+      if (const auto previous = lastParticipantTimestamps_.find(bounded.participantId); previous != lastParticipantTimestamps_.end()) {
+        timing.hasPreviousTimestamp = true;
+        timing.previousTimestampMs = previous->second;
+      }
+      if (mixReferenceTimestamp) {
+        timing.hasMixReferenceTimestamp = true;
+        timing.mixReferenceTimestampMs = *mixReferenceTimestamp;
+      }
+      participants.push_back(analyzeAudioParticipantFrame(frame, timing));
+      lastParticipantTimestamps_[bounded.participantId] = bounded.timestampMs;
     }
     session_ = summarizeAudioMixMetrics(std::move(participants), mixedFrameCount_);
     return mixedFrameCount_;
@@ -117,6 +120,7 @@ class DevSafeAudioMixer final : public IAudioMixer {
 
  private:
   int64_t mixedFrameCount_ = 0;
+  std::map<std::string, int64_t> lastParticipantTimestamps_;
   AudioMixMetrics session_;
 };
 

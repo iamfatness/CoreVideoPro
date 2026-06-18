@@ -50,10 +50,12 @@ let stdoutBuffer = "";
 let handshake;
 let latestSnapshot;
 let latestHealth;
+let latestProgramFramePreview;
 let programPreviewSeen = false;
 const warnings = [];
 const stderrLines = [];
 const pending = new Map();
+let lastProofSummary;
 
 child.stdout.on("data", (chunk) => {
   stdoutBuffer += chunk.toString();
@@ -87,7 +89,9 @@ child.once("exit", (code) => {
 try {
   console.log(`Native core   : ${nativeCore}`);
   console.log(`Destinations  : ${destinations.join(", ")}`);
-  console.log(`Criteria      : recordingBytes>=${minRecordingBytes}, programFrames>=${minProgramFrames}, rtmpProof=${allowRtmpWarning ? "artifact|warning|live" : "artifact|live"}`);
+  console.log(
+    `Criteria      : compositorFrames>=${minProgramFrames}, encodedFrames>=${minProgramFrames}, recordingBytes>=${minRecordingBytes}, rtmpProof=${allowRtmpWarning ? "artifact|warning|live" : "artifact|live"}`
+  );
 
   handshake = await waitForHandshake();
   console.log(`Handshake     : ${handshake.profile?.name ?? "unknown"} (${(handshake.profile?.capabilities ?? []).join(", ")})`);
@@ -196,6 +200,9 @@ function onLine(line) {
 
   if (message.type === "program-frame-preview") {
     programPreviewSeen = true;
+    if (message.preview) {
+      latestProgramFramePreview = message.preview;
+    }
     return;
   }
 
@@ -251,6 +258,10 @@ function recordSnapshot(snapshot) {
   if (!snapshot) {
     return;
   }
+  if (snapshot.programFramePreview) {
+    latestProgramFramePreview = snapshot.programFramePreview;
+    programPreviewSeen = true;
+  }
   for (const warning of [
     ...(snapshot.warnings ?? []),
     ...(snapshot.encoderSession?.warnings ?? []),
@@ -260,6 +271,75 @@ function recordSnapshot(snapshot) {
   ]) {
     warnings.push(warning);
   }
+}
+
+function compositorEvidence() {
+  const snapshot = latestSnapshot ?? {};
+  const health = latestHealth ?? snapshot.health ?? {};
+  const programFrame = snapshot.programFrame ?? {};
+  const preview = latestProgramFramePreview ?? snapshot.programFramePreview ?? null;
+  const frameCount = Math.max(
+    numberOrZero(snapshot.programFrameCount),
+    numberOrZero(health.frameCount),
+    numberOrZero(programFrame.frameNumber),
+    numberOrZero(preview?.frameNumber)
+  );
+  const previewPixelBytes = Math.max(
+    numberOrZero(preview?.pixelBytes),
+    numberOrZero(preview?.rgbaByteLength),
+    numberOrZero(preview?.data?.length),
+    numberOrZero(preview?.bgraBase64?.length)
+  );
+
+  return {
+    pass: frameCount >= minProgramFrames && (programPreviewSeen || Boolean(preview) || Boolean(programFrame.frameNumber)),
+    frameCount,
+    previewSeen: programPreviewSeen || Boolean(preview),
+    renderPlanId: programFrame.renderPlanId ?? preview?.renderPlanId ?? null,
+    frameNumber: numberOrNull(programFrame.frameNumber ?? preview?.frameNumber),
+    health: programFrame.health ?? preview?.health ?? null,
+    renderer: health.renderer ?? snapshot.renderer ?? programFrame.renderer ?? preview?.renderer ?? null,
+    width: numberOrNull(programFrame.width ?? preview?.width),
+    height: numberOrNull(programFrame.height ?? preview?.height),
+    previewPayloadBytes: previewPixelBytes,
+    previewPixelFormat: preview?.pixelFormat ?? null,
+    sharedTexture: preview?.sharedTexture ?? null,
+    warning: programFrame.warning ?? null,
+  };
+}
+
+function encodedFrameEvidence() {
+  const snapshot = latestSnapshot ?? {};
+  const health = latestHealth ?? snapshot.health ?? {};
+  const encoderSession = snapshot.encoderSession ?? {};
+  const targets = encoderSession.targets ?? [];
+  const attachedFrameCount = Math.max(...targets.map((target) => numberOrZero(target.attachedFrameCount)), 0);
+  const encodedFrameCount = Math.max(
+    numberOrZero(health.encodedFrameCount),
+    numberOrZero(encoderSession.encodedFrameCount),
+    numberOrZero(encoderSession.programFrameCount),
+    attachedFrameCount
+  );
+
+  return {
+    pass: encodedFrameCount >= minProgramFrames,
+    encodedFrameCount,
+    attachedFrameCount,
+    status: encoderSession.status ?? null,
+    lifecycle: encoderSession.lifecycle?.status ?? null,
+    name: health.encoder ?? latestSnapshot?.encoder ?? null,
+    codec: health.codec ?? latestSnapshot?.codec ?? null,
+    hardwareEncoder: Boolean(health.hardwareEncoder ?? latestSnapshot?.hardwareEncoder),
+    targets: targets.map((target) => ({
+      targetId: target.targetId ?? null,
+      destination: target.destination ?? null,
+      streamKind: target.streamKind ?? null,
+      status: target.status ?? null,
+      attachedFrameCount: numberOrZero(target.attachedFrameCount),
+      warning: target.warning ?? null,
+    })),
+    warnings: encoderSession.warnings ?? [],
+  };
 }
 
 function recordingEvidence() {
@@ -292,21 +372,26 @@ function recordingEvidence() {
   );
 
   const framesWritten = Math.max(
-    numberOrZero(snapshot.programFrameCount),
+    numberOrZero(recording.programFramesWritten),
     numberOrZero(health.frameCount),
     numberOrZero(health.encodedFrameCount),
     numberOrZero(encoderSession.programFrameCount),
-    numberOrZero(recording.totalFramesWritten)
+    numberOrZero(recording.totalFramesWritten),
+    numberOrZero(recording.evidence?.programFramesWritten),
+    ...((recording.streams ?? []).map((stream) => stream.kind === "program" ? numberOrZero(stream.framesWritten) : 0))
   );
 
   return {
+    pass: artifactBytes >= minRecordingBytes || bytesWritten >= minRecordingBytes,
     artifactPath: artifactPath ?? artifactCandidates[0] ?? null,
     artifactExists: Boolean(artifactPath),
+    artifactBytes,
     bytesWritten,
     framesWritten,
     status: recording.status ?? null,
     writerStatus: recording.writerStatus ?? null,
     active: Boolean(recording.active ?? snapshot.active),
+    warning: recording.warning ?? null,
   };
 }
 
@@ -317,21 +402,31 @@ function rtmpEvidence() {
 
   if (!sender) {
     return {
+      pass: false,
       present: false,
       status: null,
       sendArtifactPath: null,
+      sendArtifactExists: false,
+      sendArtifactBytes: 0,
       sendProofSeen: false,
+      sendProofRuntimeAvailable: null,
+      sendProofRuntimeDetail: null,
       framesSent: 0,
       warning: null,
     };
   }
 
   let sendProofSeen = false;
+  let sendArtifactExists = false;
+  let sendArtifactBytes = 0;
   let sendProofRuntimeAvailable = null;
   let sendProofRuntimeDetail = null;
   let sendProofAttemptCount = 0;
+  const sendProofStatuses = new Set();
   if (sender.sendArtifactPath && existsSync(sender.sendArtifactPath)) {
     try {
+      sendArtifactExists = true;
+      sendArtifactBytes = statSync(sender.sendArtifactPath).size;
       const content = readFileSync(sender.sendArtifactPath, "utf8");
       sendProofSeen =
         content.includes("rtmp-send-proof-start") || content.includes("rtmp-send-attempt") || content.length > 0;
@@ -344,6 +439,9 @@ function rtmpEvidence() {
           }
           if (event.type === "rtmp-send-attempt") {
             sendProofAttemptCount += 1;
+            if (event.status) {
+              sendProofStatuses.add(event.status);
+            }
           }
         } catch {
           // Keep sendProofSeen true even if an older proof line is not JSON.
@@ -354,21 +452,33 @@ function rtmpEvidence() {
     }
   }
 
+  const runtimeDetail = sender.runtimeDetail ?? sendProofRuntimeDetail ?? null;
+  const runtimeMissing =
+    sender.status === "warning" &&
+    Boolean(sender.warning?.toLowerCase().includes("libavformat") || String(runtimeDetail ?? "").startsWith("missing:"));
+  const pass =
+    sendProofSeen ||
+    sender.status === "live" ||
+    numberOrZero(sender.framesSent) >= minProgramFrames ||
+    (allowRtmpWarning && (sender.status === "warning" || senderSession.status === "warning"));
+
   return {
+    pass,
     present: true,
     status: sender.status ?? null,
     sendArtifactPath: sender.sendArtifactPath ?? null,
+    sendArtifactExists,
+    sendArtifactBytes,
     sendProofSeen,
     sendProofRuntimeAvailable,
     sendProofRuntimeDetail,
     sendProofAttemptCount,
+    sendProofStatuses: [...sendProofStatuses],
     framesSent: numberOrZero(sender.framesSent),
     sendBytesWritten: numberOrZero(sender.sendBytesWritten),
     warning: sender.warning ?? null,
-    runtimeDetail: sender.runtimeDetail ?? sendProofRuntimeDetail,
-    runtimeMissing:
-      sender.status === "warning" &&
-      Boolean(sender.warning?.toLowerCase().includes("libavformat") || String(sender.runtimeDetail ?? sendProofRuntimeDetail ?? "").startsWith("missing:")),
+    runtimeDetail,
+    runtimeMissing,
     sessionStatus: senderSession.status ?? null,
   };
 }
@@ -389,36 +499,47 @@ function criteriaMet() {
     return false;
   }
 
+  const compositor = compositorEvidence();
+  const encoder = encodedFrameEvidence();
   const recording = recordingEvidence();
+  const rtmp = rtmpEvidence();
+  const compositorOk = compositor.pass;
+  const encoderOk = encoder.pass;
   const recordingOk =
     !wantsRecording ||
-    recording.artifactExists ||
-    recording.bytesWritten >= minRecordingBytes ||
-    (recording.status === "recording" && recording.framesWritten >= minProgramFrames);
+    recording.pass;
 
-  const rtmp = rtmpEvidence();
   const rtmpOk =
     !wantsRtmp ||
-    rtmp.sendProofSeen ||
-    (allowRtmpWarning && (rtmp.status === "warning" || rtmp.sessionStatus === "warning")) ||
-    rtmp.status === "live" ||
-    rtmp.framesSent >= minProgramFrames;
+    rtmp.pass;
 
-  return recordingOk && rtmpOk;
+  lastProofSummary = { compositorOk, encoderOk, recordingOk, rtmpOk };
+  return compositorOk && encoderOk && recordingOk && rtmpOk;
 }
 
 function buildReport(status, failureReason) {
+  const compositor = compositorEvidence();
+  const encodedFrames = encodedFrameEvidence();
   const recording = recordingEvidence();
   const rtmp = rtmpEvidence();
+  const proof = {
+    compositor: compositor.pass,
+    encodedFrames: encodedFrames.pass,
+    recordingBytes: !destinations.includes("recording") || recording.pass,
+    rtmpSendProof: !destinations.includes("rtmp") || rtmp.pass,
+  };
 
   return {
     status,
-    failureReason,
+    failureReason: failureReason ?? null,
     elapsedMs: Date.now() - startedAt,
     sceneId: latestSnapshot?.sceneId ?? sceneId,
     outputs: latestSnapshot?.outputs ?? [],
     active: Boolean(latestSnapshot?.active),
-    programPreviewSeen,
+    proof,
+    lastProofSummary: lastProofSummary ?? proof,
+    compositor,
+    encodedFrames,
     recording,
     rtmp,
     encoder: {
@@ -434,14 +555,20 @@ function buildReport(status, failureReason) {
       minProgramFrames,
       allowRtmpWarning,
     },
-    recommendations: buildRecommendations(recording, rtmp),
+    recommendations: buildRecommendations(compositor, encodedFrames, recording, rtmp),
     warnings: collectWarnings(),
     recentStderr: stderrLines.slice(-10),
   };
 }
 
-function buildRecommendations(recording, rtmp) {
+function buildRecommendations(compositor, encodedFrames, recording, rtmp) {
   const recommendations = [];
+  if (!compositor.pass) {
+    recommendations.push("Compositor did not publish enough program-frame evidence; confirm the scene graph loads and the native core is emitting program-frame-preview events.");
+  }
+  if (!encodedFrames.pass) {
+    recommendations.push("Encoder did not attach enough program frames; run build-native-dev and confirm the D3D11 compositor and Media Foundation encoder adapters are enabled.");
+  }
   if (destinations.includes("recording") && !recording.artifactExists && recording.bytesWritten === 0) {
     recommendations.push("Recording did not produce artifact bytes; rerun build-native-dev and confirm Media Foundation encoder is active.");
   }
@@ -498,6 +625,11 @@ function numberArg(value, fallback) {
 function numberOrZero(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function numberOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function booleanArg(value) {

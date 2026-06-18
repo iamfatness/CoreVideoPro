@@ -134,22 +134,6 @@ uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
   return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
 }
 
-CompositorRenderPlan sortedRenderPlan(CompositorRenderPlan renderPlan) {
-  std::stable_sort(
-      renderPlan.layers.begin(),
-      renderPlan.layers.end(),
-      [](const CompositorRenderPlanLayer& left, const CompositorRenderPlanLayer& right) {
-        if (left.order != right.order) {
-          return left.order < right.order;
-        }
-        if (left.layerId != right.layerId) {
-          return left.layerId < right.layerId;
-        }
-        return left.sourceId < right.sourceId;
-      });
-  return renderPlan;
-}
-
 std::string handleToHex(HANDLE handle) {
   if (!handle) {
     return {};
@@ -170,7 +154,7 @@ class D3D11Compositor final : public ICompositor {
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
-    const auto deterministicPlan = sortedRenderPlan(renderPlan);
+    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
     frame.height = deterministicPlan.height;
@@ -320,14 +304,14 @@ class D3D11Compositor final : public ICompositor {
       const int videoLayerCount = static_cast<int>(std::count_if(
           renderPlan.layers.begin(),
           renderPlan.layers.end(),
-          [](const CompositorRenderPlanLayer& layer) { return layer.kind != "overlay"; }));
+          [](const CompositorRenderPlanLayer& layer) { return !compositorLayerIsOverlay(layer); }));
       for (auto planLayer : renderPlan.layers) {
         ResolvedLayer layer;
         layer.plan = std::move(planLayer);
         if (layer.plan.rect.width <= 0.f || layer.plan.rect.height <= 0.f) {
-          if (layer.plan.kind == "overlay") {
-            const auto layout = layer.plan.layerId.find("lower") != std::string::npos ? compositor::lowerThirdOverlay()
-                                                                                        : compositor::topRightOverlay();
+          if (compositorLayerIsOverlay(layer.plan)) {
+            const auto layout = compositorLayerIsLowerThird(layer.plan) ? compositor::lowerThirdOverlay()
+                                                                        : compositor::topRightOverlay();
             layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
           } else {
             const auto layout = compositor::gridCell((std::max)(1, videoLayerCount), videoIndex);
@@ -335,7 +319,7 @@ class D3D11Compositor final : public ICompositor {
             ++videoIndex;
           }
         }
-        if (layer.plan.kind == "overlay") {
+        if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
           layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
@@ -384,7 +368,7 @@ class D3D11Compositor final : public ICompositor {
     constants->color[0] = static_cast<float>((layer.color >> 16) & 0xff) / 255.f;
     constants->color[1] = static_cast<float>((layer.color >> 8) & 0xff) / 255.f;
     constants->color[2] = static_cast<float>(layer.color & 0xff) / 255.f;
-    constants->color[3] = layer.plan.opacity;
+    constants->color[3] = compositorLayerOpacity(layer.plan);
     constants->exposure = renderPlan.colorGrade.exposure * 0.1f;
     constants->contrast = renderPlan.colorGrade.contrast * 0.1f;
     constants->saturation = renderPlan.colorGrade.saturation * 0.1f;

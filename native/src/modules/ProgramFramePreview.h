@@ -13,6 +13,16 @@ inline constexpr int kProgramFramePreviewMaxHeight = 180;
 
 void computeProgramFramePreviewSize(int sourceWidth, int sourceHeight, int& outWidth, int& outHeight);
 
+[[nodiscard]] bool compositorLayerIsOverlay(const CompositorRenderPlanLayer& layer);
+
+[[nodiscard]] bool compositorLayerIsLowerThird(const CompositorRenderPlanLayer& layer);
+
+[[nodiscard]] bool compositorLayerIsChromaKey(const CompositorRenderPlanLayer& layer);
+
+[[nodiscard]] float compositorLayerOpacity(const CompositorRenderPlanLayer& layer);
+
+[[nodiscard]] CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan);
+
 void fillSyntheticProgramFramePreview(
     ProgramFramePreviewPixels& preview,
     const CompositorRenderPlan& renderPlan,
