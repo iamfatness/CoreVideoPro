@@ -5,6 +5,7 @@ desktop/main-e2e.mjs
 desktop/main-packaged.mjs
 artifacts/
 native-core/zoom-runtime/
+ZoomSDK/
 native-shell/**/bin/
 native-shell/**/obj/
 native-shell/**/AppPackages/

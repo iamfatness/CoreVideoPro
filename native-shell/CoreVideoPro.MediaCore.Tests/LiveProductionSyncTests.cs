@@ -142,7 +142,31 @@ public sealed class LiveProductionSyncTests
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context);
 
         Assert.Equal("in_meeting", patch.MeetingStateLabel);
-        Assert.Equal("Zoom Connected", patch.ZoomStatus);
+        Assert.Equal("Zoom Live", patch.ZoomStatus);
+    }
+
+    [Fact]
+    public void MapSnapshotParticipantsAcceptsHyphenatedInMeetingState()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            MeetingState = "in-meeting",
+            Participants =
+            [
+                new RawParticipantEvent
+                {
+                    UserId = "42",
+                    DisplayName = "Alex Host",
+                    Role = "Host"
+                }
+            ]
+        };
+
+        var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
+
+        Assert.NotNull(participants);
+        Assert.Single(participants!);
+        Assert.Equal("Alex Host", participants![0].Name);
     }
 
     [Fact]
@@ -346,16 +370,19 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
-    public void CreateDemoFallbackPatchRestoresIdleDemoReadouts()
+    public void CreateIdleProductionPatchReturnsNeutralReadouts()
     {
-        var patch = LiveProductionSync.CreateDemoFallbackPatch();
+        var patch = LiveProductionSync.CreateIdleProductionPatch();
 
-        Assert.Equal(LiveProductionSync.DemoDefaults.CaptionSpeaker, patch.CaptionSpeaker);
-        Assert.Equal(LiveProductionSync.DemoDefaults.CaptionText, patch.CaptionText);
-        Assert.Equal(LiveProductionSync.DemoDefaults.LowerThirdName, patch.LowerThirdName);
+        Assert.Null(patch.CaptionSpeaker);
+        Assert.Null(patch.CaptionText);
+        Assert.Null(patch.LowerThirdName);
         Assert.False(patch.Recording);
         Assert.False(patch.Streaming);
-        Assert.Equal(LiveProductionSync.DemoDefaults.OutputStatus, patch.OutputStatus);
+        Assert.Equal("Outputs idle", patch.OutputStatus);
+        Assert.Equal("Outputs idle", patch.OutputSessionStatus);
+        Assert.Equal("Zoom Offline", patch.ZoomStatus);
+        Assert.Equal("idle", patch.MeetingStateLabel);
         Assert.Null(patch.BreakoutRoomChangeHint);
     }
 

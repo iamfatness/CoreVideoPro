@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CaptureDeviceState } from "../domain/production";
-import { SimulatedCaptureDeviceSession } from "./captureDevices";
+import { createTestCaptureDevices, SimulatedCaptureDeviceSession } from "./captureDevices";
 import { NativeCaptureDeviceEngineAdapter } from "./nativeCaptureDeviceEngineAdapter";
 import {
   NativeZoomBridgeError,
@@ -12,6 +12,10 @@ import {
 class MemoryNativeCaptureTransport implements NativeZoomTransport {
   public readonly commands: NativeBridgeCommand[] = [];
   private readonly session = new SimulatedCaptureDeviceSession();
+
+  constructor() {
+    this.session.seedDevices(createTestCaptureDevices());
+  }
   private failNext: NativeBridgeResponse | null = null;
 
   failOnce(response: NativeBridgeResponse) {

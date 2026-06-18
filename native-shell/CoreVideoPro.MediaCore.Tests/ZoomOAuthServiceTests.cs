@@ -93,6 +93,14 @@ public sealed class ZoomOAuthServiceTests
 
         var handler = new StubHttpHandler(request =>
         {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/users/me", StringComparison.Ordinal) == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":"user-1"}""", Encoding.UTF8, "application/json")
+                };
+            }
+
             if (request.RequestUri?.AbsolutePath.EndsWith("/oauth/sdk-jwt", StringComparison.Ordinal) == true)
             {
                 return new HttpResponseMessage(HttpStatusCode.OK)
@@ -128,6 +136,49 @@ public sealed class ZoomOAuthServiceTests
         Assert.Equal("sdk-jwt-1", creds.SdkJwt);
         Assert.Equal("zak-1", creds.UserZak);
         Assert.False(creds.UsePublicAppKey);
+    }
+
+    [Fact]
+    public async Task EnsureJoinCredentials_ClearsTokensWhenAccessTokenMissingRequiredScopes()
+    {
+        var store = new MemoryZoomTokenStore();
+        await store.SaveAsync(new ZoomOAuthTokens
+        {
+            AccessToken = "access-1",
+            RefreshToken = "refresh-1",
+            ExpiresAt = 9_999
+        });
+
+        var handler = new StubHttpHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/users/me", StringComparison.Ordinal) == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        """{"code":4711,"message":"Invalid access token, does not contain scopes:[user:read:user]."}""",
+                        Encoding.UTF8,
+                        "application/json")
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request {request.RequestUri}");
+        });
+
+        var service = new ZoomOAuthService(
+            store,
+            new ZoomOAuthManifest
+            {
+                BrokerStartUrl = "https://corevideo.iamfatness.us/oauth/start",
+                BrokerCallbackUrl = "https://corevideo.iamfatness.us/oauth/callback",
+                RedirectUri = "corevideo://oauth/callback"
+            },
+            new HttpClient(handler),
+            nowSeconds: () => 1_000);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.EnsureJoinCredentialsAsync());
+        Assert.Contains("user:read:user", error.Message, StringComparison.Ordinal);
+        Assert.Null(await store.LoadAsync());
     }
 
     private sealed class MemoryZoomTokenStore : IZoomTokenStore

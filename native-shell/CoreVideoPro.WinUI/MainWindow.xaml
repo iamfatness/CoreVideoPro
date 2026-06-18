@@ -6,9 +6,5 @@
     xmlns:views="using:CoreVideoPro.WinUI.Views"
     Title="CoreVideo Pro">
 
-    <Window.SystemBackdrop>
-        <MicaBackdrop Kind="Base" />
-    </Window.SystemBackdrop>
-
     <views:StudioWorkspace x:Name="RootContent" />
 </Window>

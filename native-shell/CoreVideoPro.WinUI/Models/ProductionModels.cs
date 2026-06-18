@@ -289,153 +289,16 @@ public sealed class AutoProductionState
     public required string Action { get; init; }
 }
 
-public static class DemoProduction
+/// <summary>Static production templates and UI defaults — no fabricated meeting or device data.</summary>
+public static class ProductionCatalog
 {
-    public static IReadOnlyList<Participant> Participants { get; } =
-    [
-        new()
-        {
-            Id = "p1",
-            Name = "Sophia Martinez",
-            Title = "Host",
-            Role = ParticipantRole.Host,
-            BreakoutRoomId = "main",
-            BreakoutRoomName = "Main room",
-            IsActiveSpeaker = false,
-            IsMuted = false,
-            IsScreenSharing = false,
-            AudioLevel = 54,
-            Health = FeedHealth.Live
-        },
-        new()
-        {
-            Id = "p2",
-            Name = "David Chen",
-            Title = "Chief Product Officer",
-            Role = ParticipantRole.Presenter,
-            BreakoutRoomId = "main",
-            BreakoutRoomName = "Main room",
-            IsActiveSpeaker = true,
-            IsMuted = false,
-            IsScreenSharing = true,
-            AudioLevel = 82,
-            Health = FeedHealth.Live
-        },
-        new()
-        {
-            Id = "p3",
-            Name = "Jeremy Collins",
-            Title = "Engineering Panelist",
-            Role = ParticipantRole.Panelist,
-            BreakoutRoomId = "main",
-            BreakoutRoomName = "Main room",
-            IsActiveSpeaker = false,
-            IsMuted = false,
-            IsScreenSharing = false,
-            AudioLevel = 38,
-            Health = FeedHealth.Live
-        },
-        new()
-        {
-            Id = "p4",
-            Name = "Ava Patel",
-            Title = "Customer Panelist",
-            Role = ParticipantRole.Panelist,
-            BreakoutRoomId = "main",
-            BreakoutRoomName = "Main room",
-            IsActiveSpeaker = false,
-            IsMuted = false,
-            IsScreenSharing = false,
-            AudioLevel = 34,
-            Health = FeedHealth.Live
-        },
-        new()
-        {
-            Id = "p5",
-            Name = "Michael Thompson",
-            Title = "Attendee",
-            Role = ParticipantRole.Guest,
-            BreakoutRoomId = "main",
-            BreakoutRoomName = "Main room",
-            IsActiveSpeaker = false,
-            IsMuted = true,
-            IsScreenSharing = false,
-            AudioLevel = 8,
-            Health = FeedHealth.Live
-        }
-    ];
-
     public static IReadOnlyList<Scene> Scenes { get; } =
     [
-        new() { Id = "intro", Name = "Intro", Layout = "host-focus", Automation = "Host lower-third + countdown", DurationLabel = "0:30" },
-        new() { Id = "interview", Name = "Interview", Layout = "two-up", Automation = "Two-up speaker hold", DurationLabel = "4:00" },
-        new() { Id = "speaker-slides", Name = "Speaker + Slides", Layout = "speaker-slides", Automation = "Presenter priority + captions", DurationLabel = "12:00" },
-        new() { Id = "panel", Name = "Panel", Layout = "smart-grid", Automation = "Active speaker plus gallery", DurationLabel = "8:00" },
-        new() { Id = "closing", Name = "Closing", Layout = "outro", Automation = "Host outro + CTA", DurationLabel = "1:00" }
-    ];
-
-    public static IReadOnlyList<CaptureDevice> CaptureDevices { get; } =
-    [
-        new()
-        {
-            Id = "decklink-1",
-            Vendor = "blackmagic",
-            Name = "DeckLink Mini Recorder 4K",
-            Inputs =
-            [
-                new() { Id = "sdi-1", Label = "SDI 1" },
-                new() { Id = "hdmi-1", Label = "HDMI" }
-            ],
-            SelectedInputId = "sdi-1",
-            Width = 1920,
-            Height = 1080,
-            FrameRate = 60,
-            ConnectionState = CaptureConnectionState.Connected,
-            SignalPresent = true,
-            AudioSyncOffsetMs = 0
-        },
-        new()
-        {
-            Id = "aja-io-1",
-            Vendor = "aja",
-            Name = "AJA Io 4K Plus",
-            Inputs =
-            [
-                new() { Id = "sdi-1", Label = "SDI 1" },
-                new() { Id = "sdi-2", Label = "SDI 2" }
-            ],
-            SelectedInputId = "sdi-1",
-            Width = 1920,
-            Height = 1080,
-            FrameRate = 30,
-            ConnectionState = CaptureConnectionState.Detected,
-            SignalPresent = false,
-            AudioSyncOffsetMs = 0
-        },
-        new()
-        {
-            Id = "uvc-webcam-1",
-            Vendor = "uvc",
-            Name = "Logitech Brio 4K",
-            Inputs =
-            [
-                new() { Id = "usb-1", Label = "USB" }
-            ],
-            SelectedInputId = "usb-1",
-            Width = 1920,
-            Height = 1080,
-            FrameRate = 30,
-            ConnectionState = CaptureConnectionState.Detected,
-            SignalPresent = true,
-            AudioSyncOffsetMs = 0
-        }
-    ];
-
-    public static IReadOnlyList<GraphicOverlay> Graphics { get; } =
-    [
-        new() { Id = "brand-bug", Name = "Brand bug", Kind = "bug", Position = "top-right", Accent = "#44c1a1", Enabled = true },
-        new() { Id = "live-banner", Name = "Live banner", Kind = "banner", Position = "bottom-right", Accent = "#ec5757", Enabled = false },
-        new() { Id = "question-cta", Name = "Question CTA", Kind = "cta", Position = "center", Accent = "#f0a85c", Enabled = false }
+        new() { Id = "intro", Name = "Intro", Layout = "host-focus", Automation = "Host lower-third + countdown" },
+        new() { Id = "interview", Name = "Interview", Layout = "two-up", Automation = "Two-up speaker hold" },
+        new() { Id = "speaker-slides", Name = "Speaker + Slides", Layout = "speaker-slides", Automation = "Presenter priority + captions" },
+        new() { Id = "panel", Name = "Panel", Layout = "smart-grid", Automation = "Active speaker plus gallery" },
+        new() { Id = "closing", Name = "Closing", Layout = "outro", Automation = "Host outro + CTA" }
     ];
 
     public static BrandKit BrandKit { get; } = new()
@@ -457,41 +320,6 @@ public static class DemoProduction
         Uppercase = false
     };
 
-    public static IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript { get; } =
-    [
-        new()
-        {
-            Id = "cc-1",
-            SpeakerName = "Sophia Martinez",
-            Role = "Host",
-            Text = "Welcome to the Q2 Product Update.",
-            Confidence = 96
-        },
-        new()
-        {
-            Id = "cc-2",
-            SpeakerName = "David Chen",
-            Role = "Presenter",
-            Text = "Let me walk through what we are building next.",
-            Confidence = 93
-        }
-    ];
-
-    public static AudioMixState AudioMix { get; } = new()
-    {
-        Participants =
-        [
-            new() { ParticipantId = "p1", OutputLevel = 54, GainDb = 0, ManualGainDb = 0, NoiseSuppression = true, Status = "balanced" },
-            new() { ParticipantId = "p2", OutputLevel = 82, GainDb = 2, ManualGainDb = 0, NoiseSuppression = true, Status = "boosting" },
-            new() { ParticipantId = "p3", OutputLevel = 38, GainDb = -1, ManualGainDb = 0, NoiseSuppression = true, Status = "balanced" },
-            new() { ParticipantId = "p4", OutputLevel = 34, GainDb = -1, ManualGainDb = 0, NoiseSuppression = true, Status = "balanced" },
-            new() { ParticipantId = "p5", OutputLevel = 8, GainDb = -6, ManualGainDb = 0, NoiseSuppression = true, Muted = true, Status = "muted" }
-        ],
-        LoudnessLufs = -16,
-        LimiterActive = false,
-        Summary = "Smart audio leveling ready"
-    };
-
     public static ColorGrade ColorGrade { get; } = new()
     {
         Lut = "none",
@@ -501,55 +329,75 @@ public static class DemoProduction
         Temperature = 0
     };
 
-    public static IReadOnlyList<MediaAsset> MediaBin { get; } =
+    public static IReadOnlyList<GraphicOverlay> DefaultGraphics { get; } =
     [
-        new() { Id = "stinger-1", Name = "Brand stinger", Kind = "stinger", DurationMs = 900 },
-        new() { Id = "lower-third-1", Name = "Host lower-third", Kind = "lower-third" },
-        new() { Id = "audio-bed-1", Name = "Intro bed", Kind = "audio-bed", DurationMs = 30000 }
+        new()
+        {
+            Id = "brand-bug",
+            Name = "CoreVideo",
+            Kind = "bug",
+            Position = "top-right",
+            Accent = BrandKit.BrandColor,
+            Enabled = true
+        },
+        new()
+        {
+            Id = "live-banner",
+            Name = "Live",
+            Kind = "banner",
+            Position = "bottom-right",
+            Accent = "#ec5757",
+            Enabled = false
+        },
+        new()
+        {
+            Id = "question-cta",
+            Name = "Submit questions",
+            Kind = "cta",
+            Position = "center",
+            Accent = BrandKit.AccentColor,
+            Enabled = false
+        }
     ];
+}
 
-    public static AutoProductionState AutoProduction { get; } = new()
+public static class ProductionStateHelper
+{
+    public static string CaptureFleetSummary(IReadOnlyList<CaptureDevice> devices)
     {
-        RecommendedSceneId = "speaker-slides",
-        Confidence = 92,
-        Reason = "David Chen is sharing slides, so keep speaker plus slides live.",
-        Action = "hold"
-    };
+        if (devices.Count == 0)
+        {
+            return "No capture devices detected";
+        }
 
-    public static string MagicSceneStatus { get; } =
-        "Ready to rebuild from 7 participants, 1 presenter, screen share active";
-
-    public static ProductionMode Mode { get; set; } = ProductionMode.SetAndForget;
-
-    public static (string Id, string Name) CurrentRoom()
-    {
-        var host = Participants.FirstOrDefault(p => p.Role == ParticipantRole.Host);
-        return host is not null
-            ? (host.BreakoutRoomId, host.BreakoutRoomName)
-            : ("main", "Main room");
+        var connected = devices.Count(d => d.ConnectionState == CaptureConnectionState.Connected);
+        var detected = devices.Count(d => d.ConnectionState == CaptureConnectionState.Detected);
+        return $"{connected} connected · {detected} detected";
     }
 
-    public static IReadOnlyList<Participant> VideoParticipantsInRoom(string roomId) =>
-        Participants
-            .Where(p => p.BreakoutRoomId == roomId && p.Health != FeedHealth.VideoOff)
-            .ToList();
+    public static bool DualCaptureLive(IReadOnlyList<CaptureDevice> devices) =>
+        devices.Count(d => d.ConnectionState == CaptureConnectionState.Connected) >= 2;
 
-    public static string CaptureFleetSummary =>
-        $"{CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Connected)} connected · " +
-        $"{CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Detected)} detected";
+    public static string FeedHealthSummary(IReadOnlyList<Participant> participants)
+    {
+        if (participants.Count == 0)
+        {
+            return "No Zoom feeds — join a meeting";
+        }
 
-    public static bool DualCaptureLive =>
-        CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Connected) >= 2;
+        var attention = participants.Count(p =>
+            p.Health is FeedHealth.Recovering or FeedHealth.LowResolution or FeedHealth.VideoOff);
+        return attention == 0
+            ? $"{participants.Count} feeds · all healthy"
+            : $"{participants.Count} feeds · {attention} need attention";
+    }
 
-    public static string FeedHealthSummary =>
-        $"{VideoParticipantsInRoom(CurrentRoom().Id).Count} feeds · all healthy";
-
-    public static IReadOnlyList<FeedHealthRow> FeedHealthRows() =>
-        VideoParticipantsInRoom(CurrentRoom().Id).Select(p =>
+    public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(IReadOnlyList<Participant> participants) =>
+        participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
             {
-                FeedHealth.Recovering => ("Reconnecting", "amber", "No frames for 6s", true),
+                FeedHealth.Recovering => ("Reconnecting", "amber", "No frames recently", true),
                 FeedHealth.LowResolution => ("Low res", "amber", "Bitrate constrained", true),
                 FeedHealth.VideoOff => ("Video off", "red", "Camera disabled", true),
                 _ when p.IsMuted => ("Muted", "muted", null, false),
@@ -568,23 +416,142 @@ public static class DemoProduction
             };
         }).ToList();
 
-    public static string MediaBinSummary =>
-        $"{MediaBin.Count} assets · stinger, lower-third, audio bed ready";
+    public static string MediaBinSummary(int assetCount) =>
+        assetCount == 0 ? "No media assets loaded" : $"{assetCount} assets in bin";
 
-    public static IReadOnlyList<MediaBinGroup> MediaBinGroups() =>
-        MediaBin
-            .GroupBy(asset => asset.Kind)
-            .Select(group => new MediaBinGroup
+    public static string CaptionQualitySummary(bool hasCaptions, int entryCount) =>
+        hasCaptions
+            ? $"{entryCount} caption lines · live"
+            : "No captions yet";
+
+    public static AutoProductionState BuildAutomationRecommendation(
+        IReadOnlyList<Participant> participants,
+        IReadOnlyList<Scene> scenes)
+    {
+        if (participants.Count == 0)
+        {
+            return new AutoProductionState
             {
-                Kind = group.Key,
-                Label = group.Key.Replace('-', ' '),
-                Assets = group.ToList()
-            })
-            .ToList();
+                RecommendedSceneId = "intro",
+                Confidence = 0,
+                Reason = "Join a Zoom meeting to enable scene recommendations.",
+                Action = "idle"
+            };
+        }
 
-    public static string SceneIntelligenceSummary =>
-        "Presenter sharing slides · active speaker detected · automation holding current scene";
+        var screenSharer = participants.FirstOrDefault(p => p.IsScreenSharing);
+        if (screenSharer is not null)
+        {
+            return new AutoProductionState
+            {
+                RecommendedSceneId = "speaker-slides",
+                Confidence = 88,
+                Reason = $"{screenSharer.Name} is sharing — speaker + slides fits best.",
+                Action = "hold"
+            };
+        }
 
-    public static string RecommendedSceneName =>
-        Scenes.FirstOrDefault(s => s.Id == AutoProduction.RecommendedSceneId)?.Name ?? "Speaker + Slides";
+        if (participants.Count >= 4)
+        {
+            return new AutoProductionState
+            {
+                RecommendedSceneId = "panel",
+                Confidence = 76,
+                Reason = $"{participants.Count} participants — panel layout keeps everyone visible.",
+                Action = "suggest"
+            };
+        }
+
+        if (participants.Count >= 2)
+        {
+            return new AutoProductionState
+            {
+                RecommendedSceneId = "interview",
+                Confidence = 72,
+                Reason = $"{participants.Count} participants — two-up interview layout.",
+                Action = "suggest"
+            };
+        }
+
+        return new AutoProductionState
+        {
+            RecommendedSceneId = "intro",
+            Confidence = 64,
+            Reason = "Single participant — host-focus intro works well.",
+            Action = "suggest"
+        };
+    }
+
+    public static string BuildSceneIntelligenceSummary(
+        IReadOnlyList<Participant> participants,
+        ProductionMode mode)
+    {
+        if (participants.Count == 0)
+        {
+            return "No meeting activity — scene intelligence idle";
+        }
+
+        var speaker = participants.FirstOrDefault(p => p.IsActiveSpeaker);
+        var sharing = participants.Any(p => p.IsScreenSharing);
+        var modeLabel = mode == ProductionMode.SetAndForget ? "automation on" : "manual control";
+        var speakerLabel = speaker?.Name ?? "No active speaker";
+        var shareLabel = sharing ? "screen share active" : "no screen share";
+        return $"{speakerLabel} · {shareLabel} · {modeLabel}";
+    }
+
+    public static string BuildMagicSceneStatus(IReadOnlyList<Participant> participants)
+    {
+        if (participants.Count == 0)
+        {
+            return "Join a meeting to enable Magic Scene";
+        }
+
+        var cameras = participants.Count(p => p.Health != FeedHealth.VideoOff);
+        var sharing = participants.Count(p => p.IsScreenSharing);
+        return $"Monitoring {participants.Count} participants · {cameras} on camera · {sharing} sharing";
+    }
+
+    public static IReadOnlyList<ParticipantAudioMix> BuildAudioMixChannels(
+        IReadOnlyList<Participant> participants,
+        IReadOnlyDictionary<string, ParticipantAudioMix>? existing = null)
+    {
+        return participants.Select(participant =>
+        {
+            if (existing is not null && existing.TryGetValue(participant.Id, out var prior))
+            {
+                return new ParticipantAudioMix
+                {
+                    ParticipantId = prior.ParticipantId,
+                    OutputLevel = participant.AudioLevel,
+                    GainDb = prior.GainDb,
+                    ManualGainDb = prior.ManualGainDb,
+                    NoiseSuppression = prior.NoiseSuppression,
+                    Muted = prior.Muted,
+                    Status = prior.Status
+                };
+            }
+
+            return new ParticipantAudioMix
+            {
+                ParticipantId = participant.Id,
+                OutputLevel = participant.AudioLevel,
+                GainDb = 0,
+                ManualGainDb = 0,
+                NoiseSuppression = true,
+                Muted = participant.IsMuted,
+                Status = participant.IsMuted ? "muted" : "balanced"
+            };
+        }).ToList();
+    }
+
+    public static string BuildAudioMixSummary(IReadOnlyList<Participant> participants) =>
+        participants.Count == 0
+            ? "No meeting audio"
+            : $"{participants.Count} sources in mix";
+
+    public static string RecommendedSceneName(IReadOnlyList<Scene> scenes, string sceneId) =>
+        scenes.FirstOrDefault(scene => scene.Id == sceneId)?.Name ?? "—";
+
+    public static string RecommendedLayout(IReadOnlyList<Scene> scenes, string sceneId) =>
+        scenes.FirstOrDefault(scene => scene.Id == sceneId)?.Layout ?? "—";
 }

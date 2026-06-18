@@ -37,12 +37,14 @@ class ZoomEngineRuntimeState {
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
+  [[nodiscard]] bool sdkAuthenticated() const { return sdkAuthenticated_; }
   [[nodiscard]] rpc::Json::Array participantsJson() const;
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs) const;
   [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs) const;
 
  private:
   std::string meetingState_ = "idle";
+  bool sdkAuthenticated_ = false;
   std::uint32_t activeSpeakerId_ = 0;
   std::uint32_t screenShareParticipantId_ = 0;
   std::map<std::uint32_t, ZoomEngineParticipant> participants_;

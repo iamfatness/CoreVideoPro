@@ -113,13 +113,13 @@ describe("native media core command builder", () => {
     expect(commands).toContainEqual({
       type: "set-overlay-asset",
       overlayId: "brand-bug",
-      text: "CoreVideo Pro",
+      text: "CoreVideo",
       position: "top-right"
     });
     expect(commands).toContainEqual({
       type: "set-overlay-asset",
       overlayId: "live-banner",
-      text: "Live webinar",
+      text: "Live",
       position: "bottom-right"
     });
     expect(commands).toContainEqual({

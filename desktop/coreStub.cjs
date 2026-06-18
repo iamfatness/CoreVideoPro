@@ -30,45 +30,8 @@ var import_node_process = require("node:process");
 var import_node_buffer = require("node:buffer");
 
 // desktop/captureDeviceStub.ts
-var INITIAL_DEVICES = [
-  {
-    id: "decklink-1",
-    vendor: "blackmagic",
-    name: "DeckLink Mini Recorder 4K",
-    inputs: [
-      { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
-      { id: "hdmi-1", label: "HDMI", hasEmbeddedAudio: true }
-    ],
-    selectedInputId: "sdi-1",
-    resolution: { width: 1920, height: 1080 },
-    frameRate: 60,
-    connectionState: "connected",
-    signalPresent: true,
-    droppedFrames: 0,
-    audioSyncOffsetMs: 0
-  },
-  {
-    id: "aja-io-1",
-    vendor: "aja",
-    name: "AJA Io 4K Plus",
-    inputs: [
-      { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
-      { id: "sdi-2", label: "SDI 2", hasEmbeddedAudio: false }
-    ],
-    selectedInputId: "sdi-1",
-    resolution: { width: 1920, height: 1080 },
-    frameRate: 30,
-    connectionState: "detected",
-    signalPresent: false,
-    droppedFrames: 0,
-    audioSyncOffsetMs: 0
-  }
-];
 var CaptureDeviceSession = class {
-  devices = INITIAL_DEVICES.map((device) => ({
-    ...device,
-    inputs: device.inputs.map((input) => ({ ...input }))
-  }));
+  devices = [];
   list() {
     return this.devices.map((device) => ({ ...device, inputs: device.inputs.map((input) => ({ ...input })) }));
   }

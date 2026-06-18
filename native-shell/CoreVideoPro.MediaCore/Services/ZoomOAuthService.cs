@@ -200,17 +200,16 @@ public sealed class ZoomOAuthService
             return new ZoomJoinCredentials { UsePublicAppKey = true };
         }
 
-        await EnsureAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-        var refreshed = await _tokenStore.LoadAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(refreshed?.AccessToken))
+        var accessToken = await ResolveValidatedAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(accessToken))
         {
             return new ZoomJoinCredentials { UsePublicAppKey = true };
         }
 
         if (_manifest.BrokerConfigured)
         {
-            var sdkJwt = await FetchSdkJwtAsync(refreshed.AccessToken, cancellationToken).ConfigureAwait(false);
-            var userZak = await FetchZakAsync(refreshed.AccessToken, cancellationToken).ConfigureAwait(false);
+            var sdkJwt = await FetchSdkJwtAsync(accessToken, cancellationToken).ConfigureAwait(false);
+            var userZak = await FetchZakAsync(accessToken, cancellationToken).ConfigureAwait(false);
             return new ZoomJoinCredentials
             {
                 SdkJwt = sdkJwt,
@@ -219,8 +218,127 @@ public sealed class ZoomOAuthService
             };
         }
 
-        var zakOnly = await FetchZakAsync(refreshed.AccessToken, cancellationToken).ConfigureAwait(false);
+        var zakOnly = await FetchZakAsync(accessToken, cancellationToken).ConfigureAwait(false);
         return new ZoomJoinCredentials { UserZak = zakOnly, UsePublicAppKey = true };
+    }
+
+    private async Task<string?> ResolveValidatedAccessTokenAsync(CancellationToken cancellationToken)
+    {
+        await EnsureAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+        var tokens = await _tokenStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(tokens?.AccessToken))
+        {
+            return null;
+        }
+
+        var validation = await ValidateAccessTokenAsync(tokens.AccessToken, cancellationToken).ConfigureAwait(false);
+        if (validation == AccessTokenValidationResult.Valid)
+        {
+            return tokens.AccessToken;
+        }
+
+        if (validation == AccessTokenValidationResult.MissingScopes)
+        {
+            _pending = null;
+            await _tokenStore.ClearAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                "Zoom sign-in is missing required permissions (user:read:user). Sign out and sign in again.");
+        }
+
+        if (string.IsNullOrWhiteSpace(tokens.RefreshToken))
+        {
+            throw new InvalidOperationException("Zoom OAuth session expired. Sign in again.");
+        }
+
+        await RefreshAccessTokenAsync(tokens.RefreshToken, cancellationToken).ConfigureAwait(false);
+        var refreshed = await _tokenStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(refreshed?.AccessToken))
+        {
+            throw new InvalidOperationException("Zoom OAuth session expired. Sign in again.");
+        }
+
+        validation = await ValidateAccessTokenAsync(refreshed.AccessToken, cancellationToken).ConfigureAwait(false);
+        if (validation == AccessTokenValidationResult.Valid)
+        {
+            return refreshed.AccessToken;
+        }
+
+        if (validation == AccessTokenValidationResult.MissingScopes)
+        {
+            _pending = null;
+            await _tokenStore.ClearAsync(cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                "Zoom sign-in is missing required permissions (user:read:user). Sign out and sign in again.");
+        }
+
+        throw new InvalidOperationException("Zoom OAuth access token could not be validated. Sign in again.");
+    }
+
+    private enum AccessTokenValidationResult
+    {
+        Valid,
+        Unauthorized,
+        MissingScopes,
+        Failed
+    }
+
+    private async Task<AccessTokenValidationResult> ValidateAccessTokenAsync(
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.zoom.us/v2/users/me");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (response.IsSuccessStatusCode)
+        {
+            return AccessTokenValidationResult.Valid;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (IsMissingScopeResponse(body, (int)response.StatusCode))
+        {
+            return AccessTokenValidationResult.MissingScopes;
+        }
+
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return AccessTokenValidationResult.Unauthorized;
+        }
+
+        return AccessTokenValidationResult.Failed;
+    }
+
+    private static bool IsMissingScopeResponse(string body, int statusCode)
+    {
+        if (statusCode != 400 || string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.TryGetProperty("code", out var codeElement) &&
+                codeElement.TryGetInt32(out var code) &&
+                code == 4711)
+            {
+                return true;
+            }
+
+            if (root.TryGetProperty("message", out var messageElement))
+            {
+                var message = messageElement.GetString() ?? string.Empty;
+                return message.Contains("does not contain scopes", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return body.Contains("does not contain scopes", StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsBrokerStartUrl(string url)
@@ -388,6 +506,17 @@ public sealed class ZoomOAuthService
             if (root.TryGetProperty("reason", out var reasonElement) && !string.IsNullOrWhiteSpace(reasonElement.GetString()))
             {
                 return reasonElement.GetString()!;
+            }
+
+            if (root.TryGetProperty("error", out var brokerErrorElement) &&
+                string.Equals(brokerErrorElement.GetString(), "Zoom OAuth access token could not be validated.", StringComparison.Ordinal) &&
+                root.TryGetProperty("zoom_response", out var zoomResponseElement))
+            {
+                var zoomResponse = zoomResponseElement.GetString() ?? string.Empty;
+                if (IsMissingScopeResponse(zoomResponse, 400))
+                {
+                    return "Zoom sign-in is missing required permissions (user:read:user). Sign out and sign in again.";
+                }
             }
 
             if (root.TryGetProperty("message", out var messageElement) && !string.IsNullOrWhiteSpace(messageElement.GetString()))

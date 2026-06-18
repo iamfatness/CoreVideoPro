@@ -45,4 +45,15 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!-- Unpackaged publish drops compiled XAML (.xbf); copy it beside the app host. -->
+  <Target Name="CopyXbfToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <_XbfToPublish Include="$(TargetDir)**\*.xbf" Exclude="$(TargetDir)publish\**" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(_XbfToPublish)"
+      DestinationFiles="@(_XbfToPublish->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
 </Project>

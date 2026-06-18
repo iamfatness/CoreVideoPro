@@ -1,43 +1,50 @@
 import type { CaptureDeviceEngine } from "./contracts";
 import type { CaptureDeviceState } from "../domain/production";
 
-const INITIAL_DEVICES: CaptureDeviceState[] = [
-  {
-    id: "decklink-1",
-    vendor: "blackmagic",
-    name: "DeckLink Mini Recorder 4K",
-    inputs: [
-      { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
-      { id: "hdmi-1", label: "HDMI", hasEmbeddedAudio: true }
-    ],
-    selectedInputId: "sdi-1",
-    resolution: { width: 1920, height: 1080 },
-    frameRate: 60,
-    connectionState: "connected",
-    signalPresent: true,
-    droppedFrames: 0,
-    audioSyncOffsetMs: 0
-  },
-  {
-    id: "aja-io-1",
-    vendor: "aja",
-    name: "AJA Io 4K Plus",
-    inputs: [
-      { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
-      { id: "sdi-2", label: "SDI 2", hasEmbeddedAudio: false }
-    ],
-    selectedInputId: "sdi-1",
-    resolution: { width: 1920, height: 1080 },
-    frameRate: 30,
-    connectionState: "detected",
-    signalPresent: false,
-    droppedFrames: 0,
-    audioSyncOffsetMs: 0
-  }
-];
+/** Test-only fixtures — production sessions start with no fabricated hardware. */
+export function createTestCaptureDevices(): CaptureDeviceState[] {
+  return [
+    {
+      id: "decklink-1",
+      vendor: "blackmagic",
+      name: "DeckLink Mini Recorder 4K",
+      inputs: [
+        { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
+        { id: "hdmi-1", label: "HDMI", hasEmbeddedAudio: true }
+      ],
+      selectedInputId: "sdi-1",
+      resolution: { width: 1920, height: 1080 },
+      frameRate: 60,
+      connectionState: "connected",
+      signalPresent: true,
+      droppedFrames: 0,
+      audioSyncOffsetMs: 0
+    },
+    {
+      id: "aja-io-1",
+      vendor: "aja",
+      name: "AJA Io 4K Plus",
+      inputs: [
+        { id: "sdi-1", label: "SDI 1", hasEmbeddedAudio: true },
+        { id: "sdi-2", label: "SDI 2", hasEmbeddedAudio: false }
+      ],
+      selectedInputId: "sdi-1",
+      resolution: { width: 1920, height: 1080 },
+      frameRate: 30,
+      connectionState: "detected",
+      signalPresent: false,
+      droppedFrames: 0,
+      audioSyncOffsetMs: 0
+    }
+  ];
+}
 
 export class SimulatedCaptureDeviceSession {
-  private devices: CaptureDeviceState[] = INITIAL_DEVICES.map((device) => ({ ...device, inputs: [...device.inputs] }));
+  private devices: CaptureDeviceState[] = [];
+
+  seedDevices(devices: CaptureDeviceState[]): void {
+    this.devices = devices.map((device) => ({ ...device, inputs: [...device.inputs] }));
+  }
 
   listDevices(): CaptureDeviceState[] {
     return this.devices.map((device) => ({ ...device }));
@@ -82,6 +89,10 @@ export class SimulatedCaptureDeviceSession {
 
 export class MockCaptureDeviceEngine implements CaptureDeviceEngine {
   private session = new SimulatedCaptureDeviceSession();
+
+  seedDevices(devices: CaptureDeviceState[]): void {
+    this.session.seedDevices(devices);
+  }
 
   async listDevices(): Promise<CaptureDeviceState[]> {
     return this.session.listDevices();

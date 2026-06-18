@@ -8,21 +8,6 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class LiveProductionSync
 {
-    /// <summary>
-    /// Demo overlay defaults used when the engine is off.
-    /// </summary>
-    public static class DemoDefaults
-    {
-        public const string CaptionSpeaker = "David Chen";
-        public const string CaptionText =
-            "and the feedback from our customers continues to shape everything we build. Thank you for being here.";
-        public const string LowerThirdName = "David Chen";
-        public const string LowerThirdTitle = "Chief Product Officer";
-        public const string LowerThirdOrg = "CoreVideo";
-        public const string OutputStatus = "Outputs idle";
-        public const string ZoomStatus = "Zoom Connected";
-    }
-
     public sealed record LiveProductionParticipantContext
     {
         public required string Id { get; init; }
@@ -85,7 +70,7 @@ public static class LiveProductionSync
         var meetingStateLabel = ResolveMeetingStateLabel(snapshot);
         var zoomStatus = meetingStateLabel switch
         {
-            "in_meeting" => "Zoom Connected",
+            "in_meeting" => "Zoom Live",
             "idle" or "leaving" => "Zoom Offline",
             _ => null
         };
@@ -122,7 +107,7 @@ public static class LiveProductionSync
         }
 
         var meetingState = ResolveMeetingStateLabel(snapshot);
-        if (!string.Equals(meetingState, "in_meeting", StringComparison.Ordinal))
+        if (!string.Equals(meetingState, "in_meeting", StringComparison.OrdinalIgnoreCase))
         {
             return [];
         }
@@ -181,22 +166,23 @@ public static class LiveProductionSync
             ? MapRawParticipants(snapshot.Participants, snapshot.ActiveSpeakerId)
             : [];
 
-    public static StudioLiveProductionPatch CreateDemoFallbackPatch() =>
+    /// <summary>
+    /// Idle production readouts when no snapshot or engine context is available.
+    /// </summary>
+    public static StudioLiveProductionPatch CreateIdleProductionPatch() =>
         new()
         {
-            CaptionSpeaker = DemoDefaults.CaptionSpeaker,
-            CaptionText = DemoDefaults.CaptionText,
-            LowerThirdName = DemoDefaults.LowerThirdName,
-            LowerThirdTitle = DemoDefaults.LowerThirdTitle,
-            LowerThirdOrg = DemoDefaults.LowerThirdOrg,
             Recording = false,
             Streaming = false,
-            OutputStatus = DemoDefaults.OutputStatus,
-            OutputSessionStatus = DemoDefaults.OutputStatus,
-            ZoomStatus = DemoDefaults.ZoomStatus,
-            MeetingStateLabel = "in_meeting",
+            OutputStatus = "Outputs idle",
+            OutputSessionStatus = "Outputs idle",
+            ZoomStatus = "Zoom Offline",
+            MeetingStateLabel = "idle",
             BreakoutRoomChangeHint = null
         };
+
+    [Obsolete("Use CreateIdleProductionPatch instead.")]
+    public static StudioLiveProductionPatch CreateDemoFallbackPatch() => CreateIdleProductionPatch();
 
     public static ProgramLowerThird ResolveProgramLowerThird(
         NativeMediaCoreStateSnapshot snapshot,
@@ -402,7 +388,7 @@ public static class LiveProductionSync
             return "Streaming live";
         }
 
-        return DemoDefaults.OutputStatus;
+        return "Outputs idle";
     }
 
     public static string SummarizeOutputSession(NativeMediaCoreStateSnapshot snapshot)
@@ -493,7 +479,7 @@ public static class LiveProductionSync
     {
         if (!string.IsNullOrWhiteSpace(snapshot.MeetingState))
         {
-            return snapshot.MeetingState;
+            return ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState);
         }
 
         // Stub: infer meeting connectivity from the frame-source adapter until meetingState is on the wire.

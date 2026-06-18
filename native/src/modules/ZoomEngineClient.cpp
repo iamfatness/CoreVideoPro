@@ -79,10 +79,11 @@ ZoomEngineEventKind kindForCommand(const std::string& command) {
 
 std::string buildZoomEngineInitCommand(const ZoomEngineInitCommand& command) {
   Json::Object object{{"cmd", IPC_CMD_INIT}};
+  // Mirror ZoomObsEngine / ZoomEngineClient: send exactly one auth credential.
+  // If both are present the engine prefers public_app_key and ignores OAuth JWT.
   if (!command.jwt.empty()) {
     object.emplace("jwt", command.jwt);
-  }
-  if (!command.publicAppKey.empty()) {
+  } else if (!command.publicAppKey.empty()) {
     object.emplace("public_app_key", command.publicAppKey);
   }
   return commandLine(std::move(object));
@@ -158,6 +159,12 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   event.sourceUuid = parsed->getString("source_uuid");
   event.stage = parsed->getString("stage");
   event.message = parsed->getString("msg", parsed->getString("message"));
+  if (event.message == "meeting_failed") {
+    const auto reason = parsed->getString("reason");
+    if (!reason.empty()) {
+      event.message = "meeting_failed: " + reason;
+    }
+  }
   event.participantId = uintField(*parsed, "participant_id");
   event.activeSpeakerId = uintField(*parsed, "active_speaker_id");
   if (event.activeSpeakerId == 0) {

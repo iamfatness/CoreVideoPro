@@ -13,16 +13,16 @@ public sealed partial class OverlaysViewModel : ObservableObject
     private readonly StudioViewModel _studio;
 
     [ObservableProperty]
-    private string _captionFontSize = DemoProduction.CaptionStyle.FontSize;
+    private string _captionFontSize = ProductionCatalog.CaptionStyle.FontSize;
 
     [ObservableProperty]
-    private string _captionTextColor = DemoProduction.CaptionStyle.TextColor;
+    private string _captionTextColor = ProductionCatalog.CaptionStyle.TextColor;
 
     [ObservableProperty]
-    private int _captionBackgroundOpacity = DemoProduction.CaptionStyle.BackgroundOpacity;
+    private int _captionBackgroundOpacity = ProductionCatalog.CaptionStyle.BackgroundOpacity;
 
     [ObservableProperty]
-    private bool _captionUppercase = DemoProduction.CaptionStyle.Uppercase;
+    private bool _captionUppercase = ProductionCatalog.CaptionStyle.Uppercase;
 
     [ObservableProperty]
     private string _lowerThirdPosition = "lower-left";

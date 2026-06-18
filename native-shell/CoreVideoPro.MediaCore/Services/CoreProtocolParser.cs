@@ -375,7 +375,21 @@ public static class CoreProtocolParser
             return null;
         }
 
-        return JsonSerializer.Deserialize<RawCaptureSnapshot>(snapshotElement.GetRawText(), MediaCoreJson.Options);
+        var snapshot = JsonSerializer.Deserialize<RawCaptureSnapshot>(snapshotElement.GetRawText(), MediaCoreJson.Options);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        return new RawCaptureSnapshot
+        {
+            MeetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState),
+            Participants = snapshot.Participants,
+            ActiveSpeakerId = snapshot.ActiveSpeakerId,
+            Caption = snapshot.Caption,
+            Tick = snapshot.Tick,
+            Warnings = snapshot.Warnings
+        };
     }
 
     public static string? TryParseErrorMessage(JsonDocument response)

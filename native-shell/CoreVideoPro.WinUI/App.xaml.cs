@@ -85,6 +85,11 @@ public partial class App : Application
         }
 
         appWindow.Show();
+
+        if (window is MainWindow mainWindow)
+        {
+            WindowChromeService.Apply(mainWindow, appWindow);
+        }
         var displayArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary);
         if (displayArea is not null)
         {

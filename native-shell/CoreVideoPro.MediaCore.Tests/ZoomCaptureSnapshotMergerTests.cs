@@ -46,6 +46,30 @@ public sealed class ZoomCaptureSnapshotMergerTests
     }
 
     [Fact]
+    public void MergeNormalizesHyphenatedMeetingState()
+    {
+        var capture = new RawCaptureSnapshot
+        {
+            MeetingState = "in-meeting",
+            ActiveSpeakerId = "42",
+            Participants =
+            [
+                new RawParticipantEvent
+                {
+                    UserId = "42",
+                    DisplayName = "Host",
+                    Role = "Host"
+                }
+            ]
+        };
+
+        var merged = ZoomCaptureSnapshotMerger.Merge(null, capture);
+
+        Assert.Equal("in_meeting", merged.MeetingState);
+        Assert.Single(merged.Participants);
+    }
+
+    [Fact]
     public void MergeIdleCaptureSnapshotClearsRosterAndMarksSourceIdle()
     {
         var existing = ZoomCaptureSnapshotMerger.Merge(

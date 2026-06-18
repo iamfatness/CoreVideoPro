@@ -4,8 +4,8 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class ShowInputRosterService
 {
-    public const int MaxShowInputs = 8;
-    public const int MaxMultiviewBoxes = 2;
+    public const int MaxShowInputs = 10;
+    public const int MaxMultiviewBoxes = 10;
 
     public static IReadOnlyList<ShowInputKindOption> KindOptions { get; } =
     [
@@ -23,14 +23,6 @@ public static class ShowInputRosterService
         {
             slots.Add(new ShowInputSlot { SlotNumber = index });
         }
-
-        slots[0].Kind = ShowInputKind.ZoomParticipant;
-        slots[0].ParticipantId = "p2";
-        slots[0].InShow = true;
-
-        slots[1].Kind = ShowInputKind.Blackmagic;
-        slots[1].CaptureDeviceId = "decklink-1";
-        slots[1].InShow = true;
 
         return slots;
     }
@@ -66,7 +58,9 @@ public static class ShowInputRosterService
                 })
                 .ToList(),
             ShowInputKind.UvcWebcam => captureDevices
-                .Where(device => device.Vendor.Equals("uvc", StringComparison.OrdinalIgnoreCase))
+                .Where(device =>
+                    device.Vendor.Equals("uvc", StringComparison.OrdinalIgnoreCase) ||
+                    device.Vendor.Equals("windows", StringComparison.OrdinalIgnoreCase))
                 .Select(device => new ShowInputSourceOption
                 {
                     Value = device.Id,

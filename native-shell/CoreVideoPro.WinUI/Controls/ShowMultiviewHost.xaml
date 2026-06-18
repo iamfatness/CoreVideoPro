@@ -11,7 +11,7 @@
     VerticalAlignment="Stretch"
     SizeChanged="OnSizeChanged">
 
-    <Grid x:Name="LayoutSurface" Background="#020304" Padding="2" ColumnSpacing="4">
+    <Grid x:Name="LayoutSurface" Background="#020304" Padding="2" ColumnSpacing="4" RowSpacing="4">
         <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
             <TextBlock Text="Assign show inputs in Sources to populate multiview."
                        FontSize="12"

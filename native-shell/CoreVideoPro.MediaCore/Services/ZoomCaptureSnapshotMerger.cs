@@ -13,7 +13,8 @@ public static class ZoomCaptureSnapshotMerger
         RawCaptureSnapshot capture)
     {
         var baseSnapshot = existing ?? SyntheticMediaCore.SynthesizeSnapshot([], 0, 0);
-        var inMeeting = capture.MeetingState.Equals("in_meeting", StringComparison.Ordinal);
+        var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(capture.MeetingState);
+        var inMeeting = meetingState.Equals("in_meeting", StringComparison.Ordinal);
         var participantCount = capture.Participants.Count;
         var sourceStatus = inMeeting ? "subscribed" : "idle";
 
@@ -44,7 +45,7 @@ public static class ZoomCaptureSnapshotMerger
 
         return baseSnapshot with
         {
-            MeetingState = capture.MeetingState,
+            MeetingState = meetingState,
             ActiveSpeakerId = inMeeting ? capture.ActiveSpeakerId : null,
             Participants = inMeeting ? capture.Participants : [],
             SourceSnapshot = sourceSnapshot,

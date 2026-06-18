@@ -901,7 +901,7 @@ export const initialProduction: ProductionState = {
       id: "brand-bug",
       name: "Brand bug",
       kind: "bug",
-      text: "CoreVideo Pro",
+      text: "CoreVideo",
       position: "top-right",
       accent: "#44c1a1",
       enabled: true
@@ -910,7 +910,7 @@ export const initialProduction: ProductionState = {
       id: "live-banner",
       name: "Live banner",
       kind: "banner",
-      text: "Live webinar",
+      text: "Live",
       position: "bottom-right",
       accent: "#ec5757",
       enabled: false
@@ -919,7 +919,7 @@ export const initialProduction: ProductionState = {
       id: "question-cta",
       name: "Question CTA",
       kind: "cta",
-      text: "Submit questions in chat",
+      text: "Submit questions",
       position: "center",
       accent: "#f0a85c",
       enabled: false
@@ -947,11 +947,7 @@ export const initialProduction: ProductionState = {
     deviceName: "CoreVideo Pro Camera",
     mirrored: false
   },
-  mediaBin: [
-    { id: "stinger-1", name: "Brand stinger", kind: "stinger", durationMs: 900 },
-    { id: "lower-third-1", name: "Host lower-third", kind: "lower-third" },
-    { id: "audio-bed-1", name: "Intro bed", kind: "audio-bed", durationMs: 30000 }
-  ],
+  mediaBin: [],
   videoEffects: initialParticipants.map((participant) => ({
     participantId: participant.id,
     cropMode: "auto",

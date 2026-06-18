@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { createTestCaptureDevices, MockCaptureDeviceEngine } from "./engine/captureDevices";
 import { createMockEngineBundle, type EngineBundle } from "./engine/engineBundle";
 import { mapCaptureSnapshot } from "./engine/captureSnapshotMapper";
 import { InMemoryMediaCoreSyncEngine } from "./engine/mediaCoreSync";
@@ -264,15 +265,15 @@ describe("App production controls", () => {
 
     const program = screen.getByLabelText("Program preview");
 
-    expect(await within(program).findByText("CoreVideo Pro")).toBeInTheDocument();
-    expect(within(program).queryByText("Live webinar")).not.toBeInTheDocument();
+    expect(await within(program).findByText("CoreVideo")).toBeInTheDocument();
+    expect(within(program).queryByText("Live")).not.toBeInTheDocument();
 
     await goToTab(user, "Overlays");
     await user.click(screen.getByRole("button", { name: /Live banner/i }));
-    expect(within(program).getByText("Live webinar")).toBeInTheDocument();
+    expect(within(program).getByText("Live")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Question CTA/i }));
-    expect(within(program).getByText("Submit questions in chat")).toBeInTheDocument();
+    expect(within(program).getByText("Submit questions")).toBeInTheDocument();
   });
 
   it("edits the brand kit and applies it to the brand bug graphic", async () => {
@@ -280,7 +281,7 @@ describe("App production controls", () => {
     renderApp();
 
     const program = screen.getByLabelText("Program preview");
-    expect(await within(program).findByText("CoreVideo Pro")).toBeInTheDocument();
+    expect(await within(program).findByText("CoreVideo")).toBeInTheDocument();
 
     await goToTab(user, "Overlays");
 
@@ -291,7 +292,7 @@ describe("App production controls", () => {
     await user.click(screen.getByRole("button", { name: /Apply brand kit to graphics/i }));
 
     expect(within(program).getByText("Acme Live")).toBeInTheDocument();
-    expect(within(program).queryByText("CoreVideo Pro")).not.toBeInTheDocument();
+    expect(within(program).queryByText("CoreVideo")).not.toBeInTheDocument();
   });
 
   it("applies a brand background image to the program canvas", async () => {
@@ -368,12 +369,12 @@ describe("App production controls", () => {
 
     await goToTab(user, "Overlays");
     await user.click(screen.getByRole("button", { name: /Live banner/i }));
-    expect(within(program).getByText("Live webinar")).toBeInTheDocument();
+    expect(within(program).getByText("Live")).toBeInTheDocument();
 
     await goToTab(user, "Settings");
     await user.click(screen.getByRole("button", { name: /Q2 Product Update Show/i }));
     await screen.findAllByText("Q2 Product Update Show loaded");
-    expect(within(program).queryByText("Live webinar")).not.toBeInTheDocument();
+    expect(within(program).queryByText("Live")).not.toBeInTheDocument();
   });
 
   it("exports a support bundle with production triage lines", async () => {
@@ -648,16 +649,21 @@ describe("App production controls", () => {
 
     await goToTab(user, "Media");
     const bin = screen.getByLabelText("Media bin");
-    expect(within(bin).getByText("3 assets - 1 stinger, 1 lower-third, 1 audio bed")).toBeInTheDocument();
+    expect(within(bin).getByText("Empty bin")).toBeInTheDocument();
+
+    await user.selectOptions(within(bin).getByLabelText("Media asset type"), "stinger");
+    await user.click(within(bin).getByRole("button", { name: /Add asset/i }));
+    expect(within(bin).getByText("Stinger 1")).toBeInTheDocument();
+    expect(within(bin).getByText("1 assets - 1 stinger")).toBeInTheDocument();
 
     await user.selectOptions(within(bin).getByLabelText("Media asset type"), "slate");
     await user.click(within(bin).getByRole("button", { name: /Add asset/i }));
     expect(within(bin).getByText("Slate 1")).toBeInTheDocument();
-    expect(within(bin).getByText("4 assets - 1 stinger, 1 lower-third, 1 audio bed, 1 slate")).toBeInTheDocument();
+    expect(within(bin).getByText("2 assets - 1 stinger, 1 slate")).toBeInTheDocument();
 
-    await user.click(within(bin).getByRole("button", { name: "Remove Brand stinger" }));
-    expect(within(bin).queryByText("Brand stinger")).not.toBeInTheDocument();
-    expect(within(bin).getByText("3 assets - 1 lower-third, 1 audio bed, 1 slate")).toBeInTheDocument();
+    await user.click(within(bin).getByRole("button", { name: "Remove Stinger 1" }));
+    expect(within(bin).queryByText("Stinger 1")).not.toBeInTheDocument();
+    expect(within(bin).getByText("1 assets - 1 slate")).toBeInTheDocument();
   });
 
   it("uses editable recording settings when recording starts", async () => {
@@ -1006,7 +1012,9 @@ describe("App production controls", () => {
 
   it("brings a second capture device online for dual capture", async () => {
     const user = userEvent.setup();
-    renderApp();
+    const engines = createMockEngineBundle();
+    (engines.captureDevices as MockCaptureDeviceEngine).seedDevices(createTestCaptureDevices());
+    renderApp(engines);
 
     await goToTab(user, "Sources");
     const fleet = await screen.findByLabelText("Capture fleet");

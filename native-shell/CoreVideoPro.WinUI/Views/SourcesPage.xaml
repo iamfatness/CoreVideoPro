@@ -15,23 +15,38 @@
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+        <StackPanel Padding="0,0,8,16" Spacing="12">
 
-            <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
-                <StackPanel Spacing="10">
-                    <TextBlock Text="Scene slots" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
-                    <TextBlock Text="{x:Bind ViewModel.PreviewSceneParticipants, Mode=OneWay}"
-                               Style="{StaticResource OperatorSummary}" />
+            <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
+                    BorderThickness="2" CornerRadius="8" Padding="16">
+                <StackPanel Spacing="12">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE8F1;" FontSize="18" Foreground="{StaticResource StudioAccentBrush}" />
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Scene builder" FontSize="18" FontWeight="Bold"
+                                       Foreground="{StaticResource StudioTextBrush}" />
+                            <TextBlock Text="Build PGM/PVW layouts — assign route, source, and audio for each slot."
+                                       FontSize="12" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="{x:Bind ViewModel.SceneBuilderSlotSummary, Mode=OneWay}"
+                                       FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource StudioAccentBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.PreviewSceneParticipants, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Back to Studio"
+                                Style="{StaticResource OperatorGhostButton}"
+                                VerticalAlignment="Center"
+                                Command="{x:Bind ViewModel.SelectTabCommand}"
+                                CommandParameter="studio" />
+                    </Grid>
 
                     <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewRouteWarnings, Mode=OneWay}"
                                    Visibility="{x:Bind ViewModel.HasPreviewRouteWarnings, Mode=OneWay, Converter={StaticResource BoolToVis}}">
@@ -45,15 +60,20 @@
                         </ItemsRepeater.Layout>
                     </ItemsRepeater>
 
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewSlotEditors, Mode=OneWay}"
-                                   x:Name="SlotEditorsRepeater">
-                        <ItemsRepeater.ItemTemplate>
+                    <TextBlock Text="Pick a scene on the Studio tab (left rail), then edit its slots here."
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                               Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+
+                    <ListView ItemsSource="{x:Bind ViewModel.PreviewSlotEditors, Mode=OneWay}"
+                              SelectionMode="None"
+                              Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <ListView.ItemTemplate>
                             <DataTemplate x:DataType="vm:SlotEditorItemViewModel">
                                 <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,8">
+                                        BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,8">
                                     <StackPanel Spacing="8">
-                                        <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12" />
-                                        <Grid ColumnSpacing="8" RowSpacing="8">
+                                        <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="13" />
+                                        <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
@@ -88,142 +108,158 @@
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
+                        </ListView.ItemTemplate>
+                    </ListView>
                 </StackPanel>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
-                <StackPanel Spacing="10">
-                    <TextBlock Text="Zoom feed health" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
-                               Style="{StaticResource OperatorSummary}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}">
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="models:FeedHealthRow">
-                                <Grid ColumnSpacing="8" Padding="0,4">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
-                                        <TextBlock Text="{x:Bind Role}" FontSize="10"
-                                                   Foreground="{StaticResource StudioMutedBrush}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="2">
-                                        <TextBlock Text="{x:Bind StatusLabel}" FontSize="11"
-                                                   Foreground="{StaticResource StudioAccentBrush}" />
-                                        <TextBlock Text="{x:Bind Detail}" FontSize="10"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   Visibility="{x:Bind NeedsAttention, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                    </StackPanel>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                </StackPanel>
-            </Border>
+            <Grid ColumnSpacing="12" RowSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-            <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
-                <StackPanel Spacing="10">
-                    <TextBlock Text="Show inputs" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
-                               Style="{StaticResource OperatorSummary}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}">
-                        <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="6" />
-                        </ItemsRepeater.Layout>
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
-                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="10,8">
-                                    <Grid ColumnSpacing="8" RowSpacing="8">
+                <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Zoom feed health" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:FeedHealthRow">
+                                    <Grid ColumnSpacing="8" Padding="0,4">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="72" />
-                                            <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12"
-                                                   VerticalAlignment="Center" />
-                                        <StackPanel Grid.Column="1" Spacing="4">
-                                            <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox ItemsSource="{x:Bind KindOptions}"
-                                                      SelectedValue="{x:Bind Kind, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
+                                        <StackPanel>
+                                            <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
+                                            <TextBlock Text="{x:Bind Role}" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}" />
                                         </StackPanel>
-                                        <StackPanel Grid.Column="2" Spacing="4">
-                                            <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox ItemsSource="{x:Bind SourceOptions}"
-                                                      SelectedValue="{x:Bind SelectedSourceId, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
-                                                      HorizontalAlignment="Stretch" />
+                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="2">
+                                            <TextBlock Text="{x:Bind StatusLabel}" FontSize="11"
+                                                       Foreground="{StaticResource StudioAccentBrush}" />
+                                            <TextBlock Text="{x:Bind Detail}" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       Visibility="{x:Bind NeedsAttention, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                         </StackPanel>
-                                        <ToggleSwitch Grid.Column="3"
-                                                      Header="In show"
-                                                      IsOn="{x:Bind InShow, Mode=TwoWay}"
-                                                      IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}"
-                                                      VerticalAlignment="Center" />
                                     </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                </StackPanel>
-            </Border>
-
-            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Capture devices" Style="{StaticResource OperatorSectionTitle}" />
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
-                                   Style="{StaticResource OperatorSummary}" VerticalAlignment="Center" />
-                        <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="8,4"
-                                Visibility="{x:Bind ViewModel.DualCaptureLive, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Dual capture live" FontSize="11" />
-                        </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
                     </StackPanel>
+                </Border>
 
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.CaptureDevices, Mode=OneWay}">
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="models:CaptureDevice">
-                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
-                                    <StackPanel Spacing="8">
-                                        <Grid ColumnSpacing="8">
+                <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Capture devices" Style="{StaticResource OperatorSectionTitle}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" VerticalAlignment="Center" />
+                            <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="8,4"
+                                    Visibility="{x:Bind ViewModel.DualCaptureLive, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Dual capture live" FontSize="11" />
+                            </Border>
+                        </StackPanel>
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.CaptureDevices, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:CaptureDevice">
+                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                                        <StackPanel Spacing="8">
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
+                                                <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel}" FontSize="11"
+                                                           Foreground="{StaticResource StudioAccentBrush}" />
+                                            </Grid>
+                                            <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind ResolutionLabel}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind FrameRate}" />
+                                                <Run Text="fps · " />
+                                                <Run Text="{x:Bind SignalLabel}" />
+                                            </TextBlock>
+                                            <Button Content="Bring online as program source"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesRoot}"
+                                                    CommandParameter="{x:Bind Id}"
+                                                    Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Show inputs (multiview)" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Assign up to 10 sources below. Toggle In show to put them on the Studio multiview strip."
+                                   Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
+                        <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
+                        <ItemsRepeater x:Name="ShowInputEditorsRepeater"
+                                       ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
+                                       ElementPrepared="OnShowInputEditorPrepared">
+                            <ItemsRepeater.Layout>
+                                <StackLayout Orientation="Vertical" Spacing="6" />
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
+                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,8">
+                                        <Grid ColumnSpacing="8" RowSpacing="8">
                                             <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="72" />
+                                                <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
-                                            <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel}" FontSize="11"
-                                                       Foreground="{StaticResource StudioAccentBrush}" />
+                                            <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12"
+                                                       VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                <ComboBox x:Name="KindCombo"
+                                                          ItemsSource="{x:Bind KindOptions}"
+                                                          SelectedValue="{x:Bind Kind, Mode=OneWay}"
+                                                          SelectedValuePath="Value"
+                                                          DisplayMemberPath="Label"
+                                                          HorizontalAlignment="Stretch" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2" Spacing="4">
+                                                <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                <ComboBox ItemsSource="{x:Bind SourceOptions}"
+                                                          SelectedValue="{x:Bind SelectedSourceId, Mode=TwoWay}"
+                                                          SelectedValuePath="Value"
+                                                          DisplayMemberPath="Label"
+                                                          IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
+                                                          HorizontalAlignment="Stretch" />
+                                            </StackPanel>
+                                            <ToggleSwitch Grid.Column="3"
+                                                          Header="In show"
+                                                          IsOn="{x:Bind InShow, Mode=TwoWay}"
+                                                          IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}"
+                                                          VerticalAlignment="Center" />
                                         </Grid>
-                                        <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
-                                            <Run Text="{x:Bind ResolutionLabel}" />
-                                            <Run Text=" · " />
-                                            <Run Text="{x:Bind FrameRate}" />
-                                            <Run Text="fps · " />
-                                            <Run Text="{x:Bind SignalLabel}" />
-                                        </TextBlock>
-                                        <Button Content="Bring online as program source"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesRoot}"
-                                                CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                    </StackPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                </StackPanel>
-            </Border>
-        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </StackPanel>
     </ScrollViewer>
 </UserControl>

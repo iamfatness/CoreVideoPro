@@ -306,11 +306,31 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
 
         try
         {
+            if (ShouldRefreshZoomRosterWhileCaptureOff())
+            {
+                await GetZoomSnapshotAsync().ConfigureAwait(false);
+                return;
+            }
+
             await PollSnapshotAsync().ConfigureAwait(false);
         }
         catch
         {
             // Polling is best-effort; supervisor health events surface hard failures.
+        }
+    }
+
+    private bool ShouldRefreshZoomRosterWhileCaptureOff()
+    {
+        lock (_gate)
+        {
+            if (_spinePayloadFactory is not null)
+            {
+                return false;
+            }
+
+            var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(_lastSnapshot?.MeetingState);
+            return meetingState.Equals("in_meeting", StringComparison.Ordinal);
         }
     }
 

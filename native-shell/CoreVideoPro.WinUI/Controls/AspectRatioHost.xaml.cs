@@ -60,15 +60,24 @@ public sealed partial class AspectRatioHost : UserControl
 
         double width;
         double height;
-        if (heightUnbounded || availableWidth / availableHeight > ratio)
+        if (heightUnbounded)
         {
             width = availableWidth;
             height = width / ratio;
         }
         else
         {
-            height = availableHeight;
-            width = height * ratio;
+            var containerRatio = availableWidth / availableHeight;
+            if (containerRatio > ratio)
+            {
+                height = availableHeight;
+                width = height * ratio;
+            }
+            else
+            {
+                width = availableWidth;
+                height = width / ratio;
+            }
         }
 
         LetterboxRoot.Width = width;

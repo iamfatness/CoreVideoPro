@@ -17,6 +17,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
       events_.emplace_back("Zoom engine ready.");
       break;
     case ZoomEngineEventKind::AuthOk:
+      sdkAuthenticated_ = true;
       events_.emplace_back("Zoom SDK authenticated.");
       if (meetingState_ == "idle") {
         meetingState_ = "joining";
@@ -31,6 +32,12 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
       events_.emplace_back("Zoom meeting left.");
       break;
     case ZoomEngineEventKind::AuthFail:
+      sdkAuthenticated_ = false;
+      meetingState_ = "error";
+      warnings_.emplace_back(!event.message.empty() ? event.message
+                             : !event.stage.empty() ? "Zoom SDK authentication failed during " + event.stage + "."
+                                                    : "Zoom SDK authentication failed.");
+      break;
     case ZoomEngineEventKind::Error:
       meetingState_ = "error";
       warnings_.emplace_back(!event.message.empty() ? event.message
@@ -86,6 +93,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event) {
 
 void ZoomEngineRuntimeState::reset() {
   meetingState_ = "idle";
+  sdkAuthenticated_ = false;
   activeSpeakerId_ = 0;
   screenShareParticipantId_ = 0;
   participants_.clear();

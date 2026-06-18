@@ -4,6 +4,7 @@ using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using Microsoft.UI.Dispatching;
 
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -18,6 +19,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Action<string>? _zoomStatusChanged;
     private readonly Action? _drainOAuthCallback;
     private readonly Action? _onMeetingJoined;
+    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
 
     [ObservableProperty]
     private string _joinMeetingUrl = "https://zoom.us/j/123456789";
@@ -26,7 +28,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private string _displayName = "CoreVideo Producer";
 
     [ObservableProperty]
-    private bool _isWebinar = true;
+    private bool _isWebinar = false;
 
     [ObservableProperty]
     private ZoomMeetingState _meetingState = ZoomMeetingState.Idle;
@@ -186,12 +188,11 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         get
         {
-            var participantCount = _bridge.Running && LiveParticipantCount > 0
-                ? LiveParticipantCount
-                : DemoProduction.Participants.Count;
-            var room = DemoProduction.CurrentRoom();
             var stateLabel = MeetingState.ToString().Replace('_', ' ');
-            return $"{stateLabel} - {participantCount} participants - {room.Name} - Screen share active - Captions on - 1920×1080 60fps - 28:47";
+            var participantLabel = LiveParticipantCount == 1 ? "participant" : "participants";
+            return IsInMeeting
+                ? $"{stateLabel} · {LiveParticipantCount} {participantLabel}"
+                : $"{stateLabel} · not in a meeting";
         }
     }
 
@@ -200,7 +201,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     partial void OnMeetingStateChanged(ZoomMeetingState value)
     {
         NotifyMeetingUi();
-        _zoomStatusChanged?.Invoke(value == ZoomMeetingState.InMeeting ? "Zoom Connected" : "Zoom Offline");
+        _zoomStatusChanged?.Invoke(value == ZoomMeetingState.InMeeting ? "Zoom Live" : "Zoom Offline");
     }
 
     partial void OnSdkDiagnosticsExpandedChanged(bool value) => NotifySdkUi();
@@ -213,15 +214,21 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_oauth is null)
         {
-            ZoomOAuthSignedIn = false;
-            NotifyOAuthUi();
+            RunOnUiThread(() =>
+            {
+                ZoomOAuthSignedIn = false;
+                NotifyOAuthUi();
+            });
             return;
         }
 
-        var status = await _oauth.GetStatusAsync().ConfigureAwait(true);
-        ZoomOAuthSignedIn = status.SignedIn;
-        NotifyOAuthUi();
-        RefreshSdkReadiness();
+        var status = await _oauth.GetStatusAsync().ConfigureAwait(false);
+        RunOnUiThread(() =>
+        {
+            ZoomOAuthSignedIn = status.SignedIn;
+            NotifyOAuthUi();
+            RefreshSdkReadiness();
+        });
     }
 
     public void RefreshSdkReadiness()
@@ -239,25 +246,33 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (JoinBlockedBySdk)
         {
-            JoinStatus = JoinBlockedReason;
+            SetJoinFailure(JoinBlockedReason);
             LaunchLog.Write($"zoom-join: blocked ({JoinBlockedReason})");
             return;
         }
 
-        MeetingState = ZoomMeetingState.Joining;
-        JoinStatus = "Joining meeting…";
+        if (ShowZoomOAuthControls && !ZoomOAuthSignedIn)
+        {
+            SetJoinFailure("Sign in with Zoom before joining a meeting.");
+            LaunchLog.Write("zoom-join: blocked (Zoom account not signed in)");
+            return;
+        }
+
+        SetJoinProgress(ZoomMeetingState.Joining, "Joining meeting…");
         LaunchLog.Write($"zoom-join: starting url={JoinMeetingUrl.Trim()}");
 
         try
         {
             _drainOAuthCallback?.Invoke();
-            await RefreshOAuthStatusAsync().ConfigureAwait(true);
+            await RefreshOAuthStatusAsync().ConfigureAwait(false);
 
             if (!_bridge.Running)
             {
-                JoinStatus = "Starting media core…";
+                SetJoinProgress(ZoomMeetingState.Joining, "Starting media core…");
                 LaunchLog.Write("zoom-join: starting media core");
-                await _bridge.StartAsync().ConfigureAwait(true);
+                var profile = await _bridge.StartAsync().ConfigureAwait(false);
+                LaunchLog.Write(
+                    $"zoom-join: media core ready profile={(profile?.Name ?? "unknown")} renderer={(profile?.Renderer ?? "unknown")}");
             }
 
             string? sdkJwt = null;
@@ -266,54 +281,65 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 try
                 {
-                    var creds = await _oauth.EnsureJoinCredentialsAsync().ConfigureAwait(true);
+                    var creds = await _oauth.EnsureJoinCredentialsAsync().ConfigureAwait(false);
                     sdkJwt = creds.SdkJwt;
                     userZak = creds.UserZak;
                     LaunchLog.Write(
                         $"zoom-join: credentials usePublicAppKey={creds.UsePublicAppKey} jwt={(string.IsNullOrWhiteSpace(sdkJwt) ? "none" : "set")} zak={(string.IsNullOrWhiteSpace(userZak) ? "none" : "set")}");
+
+                    if (!creds.UsePublicAppKey && string.IsNullOrWhiteSpace(sdkJwt))
+                    {
+                        const string missingJwt = "Meeting SDK JWT was not returned by the OAuth broker. Sign out and sign in again.";
+                        LaunchLog.Write($"zoom-join: {missingJwt}");
+                        SetJoinFailure(missingJwt);
+                        return;
+                    }
                 }
                 catch (Exception authEx)
                 {
                     LaunchLog.Write($"zoom-join: credential error {authEx.Message}");
-                    JoinStatus = authEx.Message;
-                    MeetingState = ZoomMeetingState.Error;
-                    NotifyMeetingUi();
+                    SetJoinFailure(authEx.Message);
                     return;
                 }
             }
+            else
+            {
+                LaunchLog.Write("zoom-join: credentials oauth=unavailable (public app key only)");
+            }
 
+            SetJoinProgress(ZoomMeetingState.Joining, "Joining meeting… (up to 60s)");
             var snapshot = await _bridge.JoinZoomAsync(
                 JoinMeetingUrl.Trim(),
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
                 IsWebinar,
                 sdkJwt,
-                userZak).ConfigureAwait(true);
+                userZak).ConfigureAwait(false);
 
-            if (!snapshot.MeetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))
+            LaunchLog.Write(
+                $"zoom-join: snapshot meetingState={snapshot.MeetingState} participants={snapshot.Participants.Count} warnings={(snapshot.Warnings?.Count ?? 0)}");
+
+            if (!IsSuccessfulJoinState(snapshot.MeetingState))
             {
                 var failure = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Join");
                 LaunchLog.Write($"zoom-join: {failure}");
-                MeetingState = ZoomMeetingState.Error;
-                JoinStatus = failure;
-                NotifyMeetingUi();
+                SetJoinFailure(failure);
                 return;
             }
 
-            ApplyCaptureSnapshot(snapshot);
-            JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
-            LaunchLog.Write($"zoom-join: {JoinStatus}");
-            _zoomStatusChanged?.Invoke("Zoom Live");
-            _onMeetingJoined?.Invoke();
+            RunOnUiThread(() =>
+            {
+                ApplyCaptureSnapshot(snapshot);
+                JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
+                LaunchLog.Write($"zoom-join: {JoinStatus}");
+                _zoomStatusChanged?.Invoke("Zoom Live");
+                _onMeetingJoined?.Invoke();
+            });
         }
         catch (Exception ex)
         {
-            var message = string.IsNullOrWhiteSpace(ex.Message)
-                ? $"{ex.GetType().Name}: media core join failed."
-                : ex.Message;
+            var message = DescribeJoinException(ex);
             LaunchLog.Write($"zoom-join: failed {ex.GetType().Name}: {message}");
-            MeetingState = ZoomMeetingState.Error;
-            JoinStatus = message;
-            NotifyMeetingUi();
+            SetJoinFailure(message);
         }
     }
 
@@ -521,4 +547,49 @@ public sealed partial class SettingsViewModel : ObservableObject
             "error" => ZoomMeetingState.Error,
             _ => ZoomMeetingState.Idle
         };
+
+    private static bool IsSuccessfulJoinState(string? meetingState) =>
+        ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(meetingState)
+            .Equals("in_meeting", StringComparison.Ordinal);
+
+    private static string DescribeJoinException(Exception ex)
+    {
+        if (!string.IsNullOrWhiteSpace(ex.Message))
+        {
+            return ex.Message;
+        }
+
+        if (ex is System.Runtime.InteropServices.COMException com)
+        {
+            return $"Media core join failed (HRESULT 0x{com.HResult:X8}).";
+        }
+
+        return $"{ex.GetType().Name}: media core join failed.";
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        if (_dispatcher.HasThreadAccess)
+        {
+            action();
+            return;
+        }
+
+        _dispatcher.TryEnqueue(() => action());
+    }
+
+    private void SetJoinProgress(ZoomMeetingState state, string status) =>
+        RunOnUiThread(() =>
+        {
+            MeetingState = state;
+            JoinStatus = status;
+        });
+
+    private void SetJoinFailure(string status) =>
+        RunOnUiThread(() =>
+        {
+            MeetingState = ZoomMeetingState.Error;
+            JoinStatus = status;
+            NotifyMeetingUi();
+        });
 }

@@ -40,25 +40,51 @@ public sealed partial class TransportViewModel : ObservableObject
     private string _recordStatHealthLabel = "Idle";
 
     [ObservableProperty]
-    private string _cpuLoadLabel = "18%";
+    private string _cpuLoadLabel = "0%";
 
     [ObservableProperty]
-    private string _memoryLoadLabel = "23%";
+    private string _memoryLoadLabel = "0%";
 
     [ObservableProperty]
-    private string _diskLoadLabel = "27%";
+    private string _diskLoadLabel = "0%";
+
+    [ObservableProperty]
+    private int _cpuLoadPercent;
+
+    [ObservableProperty]
+    private int _memoryLoadPercent;
+
+    [ObservableProperty]
+    private int _diskLoadPercent;
+
+    private const double ResourceBarMaxWidth = 56;
+
+    [ObservableProperty]
+    private double _cpuLoadBarWidth;
+
+    [ObservableProperty]
+    private double _memoryLoadBarWidth;
+
+    [ObservableProperty]
+    private double _diskLoadBarWidth;
+
+    public string CpuLoadLine => $"CPU {CpuLoadLabel}";
+
+    public string MemoryLoadLine => $"Memory {MemoryLoadLabel}";
+
+    public string DiskLoadLine => $"Disk {DiskLoadLabel}";
 
     [ObservableProperty]
     private string _frameDropsLabel = "0 (0.0%)";
 
     [ObservableProperty]
-    private string _liveClockLabel = TransportFormatting.FormatElapsed(TransportFormatting.DemoElapsedSeconds);
+    private string _liveClockLabel = TransportFormatting.FormatElapsed(0);
 
     [ObservableProperty]
-    private int _masterLevelLeft = TransportFormatting.DemoMasterLevel;
+    private int _masterLevelLeft;
 
     [ObservableProperty]
-    private int _masterLevelRight = Math.Max(0, TransportFormatting.DemoMasterLevel - 4);
+    private int _masterLevelRight;
 
     [ObservableProperty]
     private string _masterVolumeLabel = "0.0 dB";
@@ -126,6 +152,34 @@ public sealed partial class TransportViewModel : ObservableObject
     partial void OnMasterLevelRightChanged(int value) =>
         OnPropertyChanged(nameof(MasterLevelRightBarWidth));
 
+    partial void OnCpuLoadLabelChanged(string value)
+    {
+        OnPropertyChanged(nameof(CpuLoadLine));
+    }
+
+    partial void OnMemoryLoadLabelChanged(string value)
+    {
+        OnPropertyChanged(nameof(MemoryLoadLine));
+    }
+
+    partial void OnDiskLoadLabelChanged(string value)
+    {
+        OnPropertyChanged(nameof(DiskLoadLine));
+    }
+
+    public void ApplySystemResourceSample(int cpuPercent, int memoryPercent, int diskPercent)
+    {
+        CpuLoadPercent = Math.Clamp(cpuPercent, 0, 100);
+        MemoryLoadPercent = Math.Clamp(memoryPercent, 0, 100);
+        DiskLoadPercent = Math.Clamp(diskPercent, 0, 100);
+        CpuLoadLabel = TransportFormatting.PercentLabel(CpuLoadPercent);
+        MemoryLoadLabel = TransportFormatting.PercentLabel(MemoryLoadPercent);
+        DiskLoadLabel = TransportFormatting.PercentLabel(DiskLoadPercent);
+        CpuLoadBarWidth = ResourceBarMaxWidth * CpuLoadPercent / 100d;
+        MemoryLoadBarWidth = ResourceBarMaxWidth * MemoryLoadPercent / 100d;
+        DiskLoadBarWidth = ResourceBarMaxWidth * DiskLoadPercent / 100d;
+    }
+
     public void ApplyAutomationState(ProductionMode mode, bool canToggle)
     {
         SetAndForgetSelected = mode == ProductionMode.SetAndForget;
@@ -135,32 +189,28 @@ public sealed partial class TransportViewModel : ObservableObject
 
     public void ApplyMeetingState(bool inMeeting) => MagicSceneEnabled = inMeeting;
 
-    public void ApplyDemoState(bool recording, bool streaming, string programResolutionLabel)
+    public void ApplyIdleState(bool recording, bool streaming, string programResolutionLabel)
     {
-        var encoderLoad = TransportFormatting.DemoEncoderLoadPercent;
-        var networkHealth = OutputHealthKind.Good;
+        ProgramStatValue = string.IsNullOrWhiteSpace(programResolutionLabel) ? "—" : programResolutionLabel;
+        ApplyHealth(ProgramStatHealthLabel, OutputHealthKind.Idle, brush => ProgramStatHealthBrush = brush);
 
-        ProgramStatValue = programResolutionLabel;
-        ApplyHealth(ProgramStatHealthLabel, networkHealth, brush => ProgramStatHealthBrush = brush);
-
-        StreamStatValue = streaming
-            ? $"{programResolutionLabel} {TransportFormatting.DemoBitrateMbps:0.#} Mbps"
-            : "Idle";
-        ApplyHealth(StreamStatHealthLabel, streaming ? networkHealth : OutputHealthKind.Idle,
+        StreamStatValue = streaming ? programResolutionLabel : "Idle";
+        ApplyHealth(
+            StreamStatHealthLabel,
+            streaming ? OutputHealthKind.Good : OutputHealthKind.Idle,
             brush => StreamStatHealthBrush = brush);
 
         RecordStatValue = recording ? programResolutionLabel : "Idle";
-        ApplyHealth(RecordStatHealthLabel, recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
+        ApplyHealth(
+            RecordStatHealthLabel,
+            recording ? OutputHealthKind.Good : OutputHealthKind.Idle,
             brush => RecordStatHealthBrush = brush);
 
-        CpuLoadLabel = TransportFormatting.PercentLabel(encoderLoad);
-        MemoryLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.MemoryLoadFromEncoder(encoderLoad));
-        DiskLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.DiskLoadFromEncoder(encoderLoad));
         FrameDropsLabel = TransportFormatting.FrameDropsLabel(0, 0);
-        LiveClockLabel = TransportFormatting.FormatElapsed(TransportFormatting.DemoElapsedSeconds);
-        MasterLevelLeft = TransportFormatting.DemoMasterLevel;
-        MasterLevelRight = Math.Max(0, TransportFormatting.DemoMasterLevel - 4);
-        MasterVolumeLabel = "0.0 dB";
+        LiveClockLabel = TransportFormatting.FormatElapsed(0);
+        MasterLevelLeft = 0;
+        MasterLevelRight = 0;
+        MasterVolumeLabel = "—";
     }
 
     public void ApplySnapshot(
@@ -170,7 +220,6 @@ public sealed partial class TransportViewModel : ObservableObject
         string programResolutionLabel)
     {
         var elapsedSeconds = (int)Math.Floor(snapshot.Diagnostics.GeneratedAtMs / 1000d);
-        var encoderLoad = EstimateEncoderLoad(snapshot, recording, streaming);
         var networkHealth = ResolveNetworkHealth(snapshot);
         var droppedFrames = ResolveDroppedFrames(snapshot);
         var totalFrames = Math.Max(snapshot.ProgramFrameCount, droppedFrames);
@@ -195,9 +244,6 @@ public sealed partial class TransportViewModel : ObservableObject
             TransportFormatting.MapNetworkHealth(transportReadouts.RecordHealthStatus),
             brush => RecordStatHealthBrush = brush);
 
-        CpuLoadLabel = TransportFormatting.PercentLabel(encoderLoad);
-        MemoryLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.MemoryLoadFromEncoder(encoderLoad));
-        DiskLoadLabel = TransportFormatting.PercentLabel(TransportFormatting.DiskLoadFromEncoder(encoderLoad));
         FrameDropsLabel = TransportFormatting.FrameDropsLabel(droppedFrames, totalFrames);
         LiveClockLabel = TransportFormatting.FormatElapsed(elapsedSeconds);
 

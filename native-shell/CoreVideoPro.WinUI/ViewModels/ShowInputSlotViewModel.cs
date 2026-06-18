@@ -81,7 +81,7 @@ public sealed class ShowInputSlotViewModel
 
     public bool IsSourcePickerEnabled => _slot.IsSourcePickerEnabled;
 
-    public bool ShowInShowToggle => _slot.IsAssigned;
+    public bool ShowInShowToggle => true;
 
     public string? SelectedSourceId
     {

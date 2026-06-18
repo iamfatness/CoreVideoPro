@@ -121,11 +121,12 @@
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="settings" />
-                    <Button Content="Sources" Style="{StaticResource GhostButton}"
+                    <Button Content="Scenes" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.SourcesTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SourcesTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SourcesTabChrome.Foreground, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="sources" />
+                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="scenes"
+                            ToolTipService.ToolTip="Build scene layouts, show inputs, and capture devices" />
                     <Button Content="Overlays" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.OverlaysTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OverlaysTabChrome.BorderBrush, Mode=OneWay}"
@@ -176,12 +177,12 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Padding="12" ColumnSpacing="10"
+        <Grid Grid.Row="1" Padding="8" ColumnSpacing="6"
               Visibility="{x:Bind ViewModel.IsStudioTab, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" MinWidth="280" />
-                <ColumnDefinition Width="*" MinWidth="640" />
-                <ColumnDefinition Width="280" MinWidth="240" />
+                <ColumnDefinition Width="2*" MinWidth="200" MaxWidth="280" />
+                <ColumnDefinition Width="5*" MinWidth="420" />
+                <ColumnDefinition Width="2*" MinWidth="180" MaxWidth="260" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -275,16 +276,26 @@
                         </ItemsRepeater>
                     </ScrollViewer>
 
-                    <TextBlock Grid.Row="3" Text="Tap a scene to queue on preview · Take promotes PVW → PGM"
-                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                    <StackPanel Grid.Row="3" Spacing="6">
+                        <TextBlock Text="Tap a scene to queue on preview · Take promotes PVW → PGM"
+                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                        <Button Content="Open Scenes tab"
+                                Style="{StaticResource GhostButton}"
+                                HorizontalAlignment="Stretch"
+                                FontSize="11"
+                                FontWeight="SemiBold"
+                                Command="{x:Bind ViewModel.OpenSceneBuilderCommand}" />
+                        <TextBlock Text="{x:Bind ViewModel.SceneBuilderHint, Mode=OneWay}"
+                                   FontSize="9" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+                    </StackPanel>
                 </Grid>
             </Border>
 
-            <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="6">
+            <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" MinHeight="220" />
+                    <RowDefinition Height="2*" MinHeight="180" />
+                    <RowDefinition Height="*" MinHeight="120" />
                 </Grid.RowDefinitions>
 
                 <Border Style="{StaticResource StudioPanelBorder}" Padding="8,6">
@@ -302,7 +313,7 @@
                     </StackPanel>
                 </Border>
 
-                <Grid Grid.Row="1" ColumnSpacing="6">
+                <Grid Grid.Row="1" ColumnSpacing="4">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="*" />
@@ -312,7 +323,7 @@
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
@@ -343,7 +354,7 @@
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
                             <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="0,0,0,1" Padding="10,6">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
@@ -379,16 +390,29 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <Grid ColumnSpacing="8">
+                        <Grid ColumnSpacing="6" RowSpacing="4">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <TextBlock Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
                                        FontWeight="SemiBold" FontSize="12"
                                        Foreground="{StaticResource StudioTextBrush}" />
-                            <TextBlock Grid.Column="1" Text="UP TO 2 LIVE" FontSize="10" FontWeight="ExtraBold"
+                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.MultiviewCapLabel, Mode=OneWay}" FontSize="10" FontWeight="ExtraBold"
                                        Foreground="#6C7A72" CharacterSpacing="80" />
+                            <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{x:Bind ViewModel.MultiviewConfigureHint, Mode=OneWay}"
+                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                <Button Content="Scenes tab"
+                                        Style="{StaticResource GhostButton}"
+                                        Padding="10,4" FontSize="10"
+                                        Command="{x:Bind ViewModel.OpenSceneBuilderCommand}" />
+                            </StackPanel>
                         </Grid>
                         <cvcontrols:ShowMultiviewHost Grid.Row="1"
                                                       Tiles="{x:Bind ViewModel.MultiviewGridTiles, Mode=OneWay}" />
@@ -518,9 +542,9 @@
             <views:AutomationPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
-        <Border Grid.Row="2" Padding="16,12" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
+        <Border Grid.Row="2" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
                 Background="#11161A">
-            <Grid ColumnSpacing="12">
+            <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -573,14 +597,14 @@
                     <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" VerticalAlignment="Center"
                                Foreground="{StaticResource StudioMutedBrush}" FontSize="11" Margin="0,0,8,0"
                                MaxWidth="220" TextTrimming="CharacterEllipsis" />
-                    <Button Style="{StaticResource TakeButton}" MinWidth="110" MinHeight="48"
+                    <Button Style="{StaticResource TakeButton}" MinWidth="96" MinHeight="44"
                             Command="{x:Bind ViewModel.TakeCommand}">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="14" />
                             <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="110" MinHeight="48" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button MinWidth="96" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="14" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
@@ -594,7 +618,7 @@
                             <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="110" MinHeight="48" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button MinWidth="96" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="14" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -645,29 +669,35 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <StackPanel Spacing="2" MinWidth="44">
-                                <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
-                                    <Run Text="CPU " />
-                                    <Run Text="{x:Bind ViewModel.Transport.CpuLoadLabel, Mode=OneWay}"
-                                         FontWeight="SemiBold" Foreground="#E8F2EC" />
-                                </TextBlock>
-                                <Border Height="16" Background="#1A2229" CornerRadius="2" />
+                            <StackPanel Spacing="2" MinWidth="56">
+                                <TextBlock Text="{x:Bind ViewModel.Transport.CpuLoadLine, Mode=OneWay}"
+                                           FontSize="10" Foreground="#E8F2EC" />
+                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
+                                    <Border HorizontalAlignment="Left"
+                                            Width="{x:Bind ViewModel.Transport.CpuLoadBarWidth, Mode=OneWay}"
+                                            Height="16"
+                                            Background="#3DDC97" CornerRadius="2" />
+                                </Border>
                             </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="44">
-                                <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
-                                    <Run Text="Memory " />
-                                    <Run Text="{x:Bind ViewModel.Transport.MemoryLoadLabel, Mode=OneWay}"
-                                         FontWeight="SemiBold" Foreground="#E8F2EC" />
-                                </TextBlock>
-                                <Border Height="16" Background="#1A2229" CornerRadius="2" />
+                            <StackPanel Spacing="2" MinWidth="56">
+                                <TextBlock Text="{x:Bind ViewModel.Transport.MemoryLoadLine, Mode=OneWay}"
+                                           FontSize="10" Foreground="#E8F2EC" />
+                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
+                                    <Border HorizontalAlignment="Left"
+                                            Width="{x:Bind ViewModel.Transport.MemoryLoadBarWidth, Mode=OneWay}"
+                                            Height="16"
+                                            Background="#5B9BD5" CornerRadius="2" />
+                                </Border>
                             </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="44">
-                                <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
-                                    <Run Text="Disk " />
-                                    <Run Text="{x:Bind ViewModel.Transport.DiskLoadLabel, Mode=OneWay}"
-                                         FontWeight="SemiBold" Foreground="#E8F2EC" />
-                                </TextBlock>
-                                <Border Height="16" Background="#1A2229" CornerRadius="2" />
+                            <StackPanel Spacing="2" MinWidth="56">
+                                <TextBlock Text="{x:Bind ViewModel.Transport.DiskLoadLine, Mode=OneWay}"
+                                           FontSize="10" Foreground="#E8F2EC" />
+                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
+                                    <Border HorizontalAlignment="Left"
+                                            Width="{x:Bind ViewModel.Transport.DiskLoadBarWidth, Mode=OneWay}"
+                                            Height="16"
+                                            Background="#F0A85C" CornerRadius="2" />
+                                </Border>
                             </StackPanel>
                             <StackPanel Spacing="2" MinWidth="72">
                                 <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />

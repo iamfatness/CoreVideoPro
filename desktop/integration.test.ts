@@ -174,7 +174,7 @@ describe("desktop integration gate", () => {
     const response = await bridge.request({ id: "capture-list", type: "list-capture-devices" });
     expect(response.ok).toBe(true);
     if (response.ok && "devices" in response) {
-      expect(response.devices.length).toBeGreaterThanOrEqual(2);
+      expect(response.devices).toEqual([]);
     }
   });
 

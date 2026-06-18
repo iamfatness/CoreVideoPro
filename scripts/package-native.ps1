@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot "native-shell\CoreVideoPro.WinUI\CoreVideoPro.WinUI.csproj"
 $outDir = Join-Path $repoRoot "artifacts\native\win-unpacked"
-$productExe = "CoreVideo Pro.exe"
+$productExe = "CoreVideoPro.WinUI.exe"
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
   throw "dotnet SDK is required on PATH (.NET 9)."
@@ -53,22 +53,26 @@ if (Test-Path $outDir) {
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 Copy-Item -Path (Join-Path $publishDir "*") -Destination $outDir -Recurse -Force
 
+# Older publishes could leave a nested publish\ tree; it breaks WinUI resource lookup.
+$nestedPublish = Join-Path $outDir "publish"
+if (Test-Path $nestedPublish) {
+  Remove-Item $nestedPublish -Recurse -Force
+}
+
+$xbfCount = (Get-ChildItem -Path $outDir -Filter "*.xbf" -Recurse -File -ErrorAction SilentlyContinue).Count
+if ($xbfCount -eq 0) {
+  Write-Warning "[pack:native] no .xbf files staged; WinUI shell may fail to launch."
+} else {
+  Write-Host "[pack:native] staged $xbfCount XAML .xbf file(s)" -ForegroundColor DarkGray
+}
+
 $launcherBat = Join-Path $outDir "CoreVideo Pro.bat"
 @(
   "@echo off",
   "setlocal",
   "cd /d ""%~dp0""",
-  "start """" ""%~dp0CoreVideo Pro.exe"" %*"
+  "start """" ""%~dp0CoreVideoPro.WinUI.exe"" %*"
 ) | Set-Content -Path $launcherBat -Encoding ASCII
-
-$builtExe = Join-Path $outDir "CoreVideoPro.WinUI.exe"
-$renamedExe = Join-Path $outDir $productExe
-if (Test-Path $builtExe) {
-  if (Test-Path $renamedExe) {
-    Remove-Item $renamedExe -Force
-  }
-  Rename-Item -Path $builtExe -NewName $productExe
-}
 
 function Test-NativeCorePresent {
   param([string]$Dir)
@@ -152,10 +156,31 @@ if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
+# Zoom SDK drops a partial Microsoft.UI.Xaml tree that shadows WinUI theme resources.
+$shadowedWinUi = Join-Path $outDir "Microsoft.UI.Xaml"
+if (Test-Path $shadowedWinUi) {
+  Remove-Item $shadowedWinUi -Recurse -Force
+  Write-Host "[pack:native] removed shadowing Microsoft.UI.Xaml folder from app root" -ForegroundColor DarkGray
+}
+
+$launcherExe = Join-Path $outDir "CoreVideoPro.WinUI.exe"
+$desktopDir = [Environment]::GetFolderPath("Desktop")
+$desktopShortcut = Join-Path $desktopDir "CoreVideo Pro.lnk"
+if ((Test-Path $launcherExe) -and (Test-Path $desktopDir)) {
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($desktopShortcut)
+  $shortcut.TargetPath = $launcherExe
+  $shortcut.WorkingDirectory = $outDir
+  $shortcut.Description = "CoreVideo Pro"
+  $shortcut.Save()
+  Write-Host "[pack:native] refreshed desktop shortcut: $desktopShortcut" -ForegroundColor DarkGray
+}
+
 Write-Host ""
 Write-Host "Native shell package ready:" -ForegroundColor Green
 Write-Host "  $outDir"
-Write-Host "  $(Join-Path $outDir $productExe)"
+Write-Host "  $launcherExe"
+Write-Host "  $(Join-Path $outDir "CoreVideo Pro.bat")"
 if ($stagedNative) {
   Write-Host "  Media core: corevideo-native.exe (+ siblings)" -ForegroundColor Green
 } else {

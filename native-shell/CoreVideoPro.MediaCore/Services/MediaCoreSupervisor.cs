@@ -694,11 +694,35 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private void TeardownChild()
     {
         RejectAll(new InvalidOperationException("Supervisor stopped."));
-        if (_process is { HasExited: false })
+
+        var stdin = _stdin;
+        var process = _process;
+        _stdin = null;
+        _process = null;
+
+        try
+        {
+            stdin?.Close();
+        }
+        catch
+        {
+            // Best effort.
+        }
+
+        if (process is { HasExited: false })
         {
             try
             {
-                _process.Kill(entireProcessTree: true);
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Best effort.
+            }
+
+            try
+            {
+                process.WaitForExit(1500);
             }
             catch
             {
@@ -706,9 +730,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
         }
 
-        _process?.Dispose();
-        _process = null;
-        _stdin = null;
+        process?.Dispose();
     }
 
     private void RejectAll(Exception error)

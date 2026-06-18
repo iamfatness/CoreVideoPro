@@ -90,6 +90,8 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
   const auto payloadZak = payload.getString("userZak");
   if (!payloadJwt.empty()) {
     config_.sdkJwt = payloadJwt;
+    // Broker JWT auth replaces embedded public-app-key auth (OBS plugin pattern).
+    config_.publicAppKey.clear();
   }
   if (!payloadZak.empty()) {
     config_.userZak = payloadZak;
@@ -129,7 +131,13 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     }
 
     if (!initialized_) {
-      const bool sent = process_->sendLine(buildZoomEngineInitCommand({config_.sdkJwt, config_.publicAppKey}));
+      ZoomEngineInitCommand initCommand;
+      if (!config_.sdkJwt.empty()) {
+        initCommand.jwt = config_.sdkJwt;
+      } else if (!config_.publicAppKey.empty()) {
+        initCommand.publicAppKey = config_.publicAppKey;
+      }
+      const bool sent = process_->sendLine(buildZoomEngineInitCommand(initCommand));
       initialized_ = sent;
       if (!sent) {
         state_.apply({ZoomEngineEventKind::Error, "error", "", "init", process_->lastError()});
@@ -145,12 +153,11 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     while (std::chrono::steady_clock::now() < authDeadline) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto snapshot = state_.snapshot();
-        if (snapshot.meetingState == "joining") {
+        if (state_.sdkAuthenticated()) {
           authReady = true;
           break;
         }
-        if (snapshot.meetingState == "error") {
+        if (state_.snapshot().meetingState == "error") {
           return rawCaptureSnapshotLocked();
         }
       }
@@ -170,7 +177,8 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
     command.passcode = payload.getString("passcode", config_.passcode);
     command.onBehalfToken = config_.onBehalfToken;
-    command.userZak = config_.userZak;
+    const auto payloadZak = payload.getString("userZak");
+    command.userZak = !payloadZak.empty() ? payloadZak : config_.userZak;
     command.appPrivilegeToken = config_.appPrivilegeToken;
     if (!process_->sendLine(buildZoomEngineJoinCommand(command))) {
       state_.apply({ZoomEngineEventKind::Error, "error", "", "join", process_->lastError()});

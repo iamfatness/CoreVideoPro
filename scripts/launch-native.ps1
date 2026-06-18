@@ -60,6 +60,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$shadowedWinUi = Join-Path $publishDir "Microsoft.UI.Xaml"
+if (Test-Path $shadowedWinUi) {
+    Remove-Item $shadowedWinUi -Recurse -Force
+    Write-Host "[launch:native] removed shadowing Microsoft.UI.Xaml folder" -ForegroundColor DarkGray
+}
+
 Sync-NativeCoreArtifacts -TargetDir $publishDir
 
 Write-Host "Launching $exe on the interactive desktop..."

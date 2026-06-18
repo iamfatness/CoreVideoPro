@@ -38,8 +38,21 @@ $packagedBin = Join-Path $packagedRuntime "bin"
 $packagedLib = Join-Path $packagedRuntime "lib"
 $packagedHeaders = Join-Path $packagedRuntime "h"
 
+$reservedNames = @(
+  "Microsoft.UI.Xaml",
+  "Microsoft.WinUI.dll",
+  "CoreVideoPro.WinUI.exe",
+  "CoreVideo Pro.exe"
+)
+
 Write-Host "[sync:zoom] copying runtime DLLs to $appDir" -ForegroundColor Cyan
-Copy-Item -Path (Join-Path $binSource "*") -Destination $appDir -Force
+Get-ChildItem -Path $binSource -Force | ForEach-Object {
+  if ($reservedNames -contains $_.Name) {
+    Write-Host "[sync:zoom] skip reserved app artifact: $($_.Name)" -ForegroundColor DarkGray
+    return
+  }
+  Copy-Item -Path $_.FullName -Destination $appDir -Recurse -Force
+}
 
 Write-Host "[sync:zoom] packaging layout at $packagedRuntime" -ForegroundColor Cyan
 if (Test-Path $packagedRuntime) {

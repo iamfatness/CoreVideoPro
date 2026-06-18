@@ -38,13 +38,21 @@ std::vector<std::uint8_t> makeI420SharedMemory(std::uint32_t width, std::uint32_
 }  // namespace
 
 TEST(ZoomEngineClient, BuildsInitJoinAndLifecycleCommands) {
-  const auto init = parseCommand(corevideo::modules::buildZoomEngineInitCommand({
+  const auto jwtInit = parseCommand(corevideo::modules::buildZoomEngineInitCommand({
       "sdk-jwt",
       "public-key",
   }));
-  EXPECT_EQ(init.getString("cmd"), "init");
-  EXPECT_EQ(init.getString("jwt"), "sdk-jwt");
-  EXPECT_EQ(init.getString("public_app_key"), "public-key");
+  EXPECT_EQ(jwtInit.getString("cmd"), "init");
+  EXPECT_EQ(jwtInit.getString("jwt"), "sdk-jwt");
+  EXPECT_TRUE(jwtInit.getString("public_app_key").empty());
+
+  const auto publicInit = parseCommand(corevideo::modules::buildZoomEngineInitCommand({
+      "",
+      "public-key",
+  }));
+  EXPECT_EQ(publicInit.getString("cmd"), "init");
+  EXPECT_TRUE(publicInit.getString("jwt").empty());
+  EXPECT_EQ(publicInit.getString("public_app_key"), "public-key");
 
   const auto join = parseCommand(corevideo::modules::buildZoomEngineJoinCommand({
       "123456789",

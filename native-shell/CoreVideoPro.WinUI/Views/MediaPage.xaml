@@ -121,11 +121,8 @@
                     <TextBlock Text="Chapter markers" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.ChapterSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="00:00 · Opening" FontSize="12" />
-                        <TextBlock Text="04:30 · Product roadmap" FontSize="12" />
-                        <TextBlock Text="12:15 · Customer stories" FontSize="12" />
-                    </StackPanel>
+                    <TextBlock Text="No chapter markers yet" FontSize="12"
+                               Foreground="{StaticResource StudioMutedBrush}" />
                 </StackPanel>
             </Border>
         </Grid>

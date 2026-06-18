@@ -5,6 +5,7 @@ using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Windows.AppLifecycle;
@@ -15,7 +16,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
 
     private readonly MediaCoreBridgeService _bridge = new();
+    private readonly MediaBinService _mediaBinService = new();
+    private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
+    private readonly SystemResourceMonitorService _resourceMonitor = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
+    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    private readonly DispatcherQueueTimer _resourceMonitorTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -43,7 +49,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _previewSceneId = "speaker-slides";
 
     [ObservableProperty]
-    private string? _selectedParticipantId = "p2";
+    private string? _selectedParticipantId;
 
     [ObservableProperty]
     private bool _recording;
@@ -52,28 +58,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streaming;
 
     [ObservableProperty]
-    private string _outputStatus = LiveProductionSync.DemoDefaults.OutputStatus;
+    private string _outputStatus = "Outputs idle";
 
     [ObservableProperty]
-    private string _outputSessionStatus = LiveProductionSync.DemoDefaults.OutputStatus;
+    private string _outputSessionStatus = "Outputs idle";
 
     [ObservableProperty]
     private string _commandStatus = "Program ready";
 
     [ObservableProperty]
-    private string _captionSpeaker = LiveProductionSync.DemoDefaults.CaptionSpeaker;
+    private string _captionSpeaker = string.Empty;
 
     [ObservableProperty]
-    private string _captionText = LiveProductionSync.DemoDefaults.CaptionText;
+    private string _captionText = string.Empty;
 
     [ObservableProperty]
-    private string _lowerThirdName = LiveProductionSync.DemoDefaults.LowerThirdName;
+    private string _lowerThirdName = string.Empty;
 
     [ObservableProperty]
-    private string _lowerThirdTitle = LiveProductionSync.DemoDefaults.LowerThirdTitle;
+    private string _lowerThirdTitle = string.Empty;
 
     [ObservableProperty]
-    private string _lowerThirdOrg = LiveProductionSync.DemoDefaults.LowerThirdOrg;
+    private string _lowerThirdOrg = string.Empty;
 
     [ObservableProperty]
     private VideoSurfaceState _programSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Program, "program", "Program");
@@ -93,36 +99,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors { get; } = [];
 
     [ObservableProperty]
-    private ProductionMode _productionMode = DemoProduction.Mode;
+    private ProductionMode _productionMode = ProductionMode.Manual;
 
     [ObservableProperty]
-    private string _magicSceneStatus = DemoProduction.MagicSceneStatus;
+    private string _magicSceneStatus = "Join a meeting to enable Magic Scene";
 
     [ObservableProperty]
-    private string _autoProductionReadout = BuildAutoProductionReadout();
+    private string _autoProductionReadout = "Join a Zoom meeting to enable scene recommendations.";
 
     [ObservableProperty]
-    private string _automationButtonLabel = "Automation enabled";
+    private string _automationButtonLabel = "Automation disabled";
 
     [ObservableProperty]
-    private ColorGrade _colorGrade = DemoProduction.ColorGrade;
+    private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
 
     [ObservableProperty]
-    private string _mediaBinSummary = DemoProduction.MediaBinSummary;
+    private string _mediaBinSummary = "No media assets loaded";
 
     [ObservableProperty]
-    private string _captureFleetSummary = DemoProduction.CaptureFleetSummary;
+    private string _captureFleetSummary = "No capture devices detected";
 
     [ObservableProperty]
-    private bool _dualCaptureLive = DemoProduction.DualCaptureLive;
+    private bool _dualCaptureLive;
 
     [ObservableProperty]
-    private string _feedHealthSummary = DemoProduction.FeedHealthSummary;
+    private string _feedHealthSummary = "No Zoom feeds — join a meeting";
 
     [ObservableProperty]
-    private string _previewSceneParticipants = "David Chen + screen share";
+    private string _previewSceneParticipants = "No sources assigned";
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
+    private bool _previewRoutingRefreshScheduled;
 
     public SettingsViewModel Settings { get; }
 
@@ -130,25 +137,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public OverlaysViewModel Overlays { get; }
 
-    public ObservableCollection<GraphicOverlay> Graphics { get; } =
-        new(DemoProduction.Graphics);
+    public ObservableCollection<GraphicOverlay> Graphics { get; } = [];
 
-    public ObservableCollection<CaptureDevice> CaptureDevices { get; } =
-        new(DemoProduction.CaptureDevices);
+    public ObservableCollection<CaptureDevice> CaptureDevices { get; } = [];
 
-    public IReadOnlyList<FeedHealthRow> FeedHealthRows { get; } = DemoProduction.FeedHealthRows();
+    public IReadOnlyList<FeedHealthRow> FeedHealthRows { get; private set; } = [];
 
-    public BrandKit BrandKit { get; } = DemoProduction.BrandKit;
+    public BrandKit BrandKit { get; } = ProductionCatalog.BrandKit;
 
-    public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript { get; } = DemoProduction.CaptionTranscript;
+    public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript { get; private set; } = [];
 
-    public AudioMixState AudioMix { get; } = DemoProduction.AudioMix;
+    private readonly List<GraphicsOverlaySync.CaptionTranscriptEntryPatch> _captionTranscriptPatches = [];
 
-    public IReadOnlyList<MediaBinGroup> MediaBinGroups { get; } = DemoProduction.MediaBinGroups();
+    public IReadOnlyList<MediaBinGroup> MediaBinGroups { get; private set; } = [];
+
+    private readonly List<ParticipantAudioMix> _audioMixChannels = [];
+    private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
     public IReadOnlyList<AudioParticipantRow> AudioParticipantRows { get; private set; } = [];
 
-    public string CaptionQualitySummary => "Avg confidence 94% · tier excellent · visibility live";
+    public string CaptionQualitySummary =>
+        ProductionStateHelper.CaptionQualitySummary(
+            !string.IsNullOrWhiteSpace(CaptionText) || CaptionTranscript.Count > 0,
+            CaptionTranscript.Count);
 
     public ObservableCollection<SlotEditorItemViewModel> PreviewSlotEditors { get; } = [];
 
@@ -162,45 +173,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string PreviewSceneSummary => PreviewScene.Name;
 
-    public string LoudnessTargetLabel => "target -16 LUFS";
+    public string LoudnessTargetLabel =>
+        $"target {(int)Math.Round(_bridge.LastSnapshot?.AudioMixSession.LoudnessLufs ?? -16)} LUFS";
 
-    public string LoudnessLevelLabel => "on target";
+    public string LoudnessLevelLabel =>
+        _bridge.LastSnapshot?.AudioMixSession.LimiterActive == true ? "limiting" : "on target";
 
-    public string TruePeakLabel => "-6.0 dBTP";
+    public string TruePeakLabel => "—";
 
-    public string GainAdjustLabel => "+0.0 dB";
+    public string GainAdjustLabel => SelectedGainLabel;
 
-    public string ClipTrimSummary => "00:00:12:00 – 00:01:45:00 · 1:33 duration";
+    public string ClipTrimSummary => "No clip selected";
 
-    public string ChapterSummary => "3 chapters · next: Product roadmap";
+    public string ChapterSummary => "No chapters";
 
-    public string SceneIntelligenceSummary => DemoProduction.SceneIntelligenceSummary;
+    public string SceneIntelligenceSummary =>
+        ProductionStateHelper.BuildSceneIntelligenceSummary(RoomVideoParticipants, ProductionMode);
 
-    public string RecommendedSceneName => DemoProduction.RecommendedSceneName;
+    public string RecommendedSceneName =>
+        ProductionStateHelper.RecommendedSceneName(Scenes, _automationRecommendation.RecommendedSceneId);
 
-    public string RecommendedLayout => "speaker-slides";
+    public string RecommendedLayout =>
+        ProductionStateHelper.RecommendedLayout(Scenes, _automationRecommendation.RecommendedSceneId);
 
-    public string RecommendedConfidence => $"{DemoProduction.AutoProduction.Confidence}%";
+    public string RecommendedConfidence =>
+        _automationRecommendation.Confidence > 0 ? $"{_automationRecommendation.Confidence}%" : "—";
 
-    public string AutoSwitchLabel => "Stable";
+    public string AutoSwitchLabel => ProductionMode == ProductionMode.SetAndForget ? "Auto" : "Manual";
 
     public int CamerasOnCount => RoomVideoParticipants.Count;
 
     public string ScreenShareLabel => RoomVideoParticipants.Any(p => p.IsScreenSharing) ? "Active" : "Off";
 
-    public string AutoProductionReason => DemoProduction.AutoProduction.Reason;
+    public string AutoProductionReason => _automationRecommendation.Reason;
+
+    public AudioMixState AudioMix => new()
+    {
+        Participants = _audioMixChannels,
+        LoudnessLufs = _bridge.LastSnapshot?.AudioMixSession.LoudnessLufs ?? -16,
+        LimiterActive = _bridge.LastSnapshot?.AudioMixSession.LimiterActive ?? false,
+        Summary = ProductionStateHelper.BuildAudioMixSummary(RoomVideoParticipants)
+    };
 
     public StudioViewModel()
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
 
-        var room = DemoProduction.CurrentRoom();
-        _currentRoomId = room.Id;
-        _currentRoomName = room.Name;
+        _currentRoomId = "main";
+        _currentRoomName = "Main room";
 
-        Scenes = DemoProduction.Scenes;
-        RoomVideoParticipants = DemoProduction.VideoParticipantsInRoom(_currentRoomId);
-        CurrentRoomLabel = _currentRoomName;
+        Scenes = ProductionCatalog.Scenes;
+        RoomVideoParticipants = [];
+        CurrentRoomLabel = "No meeting";
         _multiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
         InitializeShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -228,8 +252,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             onMeetingPresenceChanged: () =>
             {
                 OnPropertyChanged(nameof(CanToggleCapture));
+                OnPropertyChanged(nameof(CanToggleRecording));
                 OnPropertyChanged(nameof(CaptureEngineHint));
                 ToggleEngineCommand.NotifyCanExecuteChanged();
+                ToggleRecordingCommand.NotifyCanExecuteChanged();
             },
             onBeforeLeaveMeeting: () =>
             {
@@ -250,8 +276,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
         Overlays = new OverlaysViewModel(this);
+        InitializeGraphicsCatalog();
         InitializeSceneRoutes();
         RefreshPreviewRoutingState();
+        RefreshMediaBin();
+        RefreshProductionReadouts();
         RefreshTransportState();
 
         _bridge.HealthChanged += OnBridgeHealthChanged;
@@ -261,6 +290,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramFramePreviewReceived += _surfaces.OnProgramFramePreview;
         _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged += RefreshSurfaceBindings;
+
+        _ = RefreshCaptureDevicesAsync();
+
+        _resourceMonitorTimer = _dispatcher.CreateTimer();
+        _resourceMonitorTimer.Interval = TimeSpan.FromSeconds(1);
+        _resourceMonitorTimer.Tick += (_, _) => SampleSystemResources();
+        _resourceMonitor.Prime();
+        Transport.ApplySystemResourceSample(
+            _resourceMonitor.CpuLoadPercent,
+            _resourceMonitor.MemoryLoadPercent,
+            _resourceMonitor.DiskLoadPercent);
+        _resourceMonitorTimer.Start();
     }
 
     public IReadOnlyList<Scene> Scenes { get; }
@@ -281,6 +322,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string EngineRunningLabel => EngineRunning ? "Capture On" : "Capture Off";
 
     public bool CanToggleCapture => Settings.IsInMeeting;
+
+    public bool CanToggleRecording => EngineRunning && Settings.IsInMeeting;
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Starts raw Zoom ingest for the active meeting."
@@ -364,7 +407,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public Participant? SelectedParticipant =>
         SelectedParticipantId is not null
-            ? DemoProduction.Participants.FirstOrDefault(p => p.Id == SelectedParticipantId)
+            ? RoomVideoParticipants.FirstOrDefault(p => p.Id == SelectedParticipantId)
             : null;
 
     public ParticipantAudioMix? SelectedAudioMix =>
@@ -463,7 +506,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public string ShowInputSummary =>
-        $"{ShowInputRosterService.CountActiveShowInputs(ShowInputs)} assigned · multiview shows up to {ShowInputRosterService.MaxMultiviewBoxes}";
+        $"{ShowInputs.Count(slot => slot.InShow)}/{ShowInputRosterService.MaxMultiviewBoxes} in show · " +
+        $"{ShowInputRosterService.MaxShowInputs} slots — pick input type + source, then toggle In show";
+
+    public string MultiviewConfigureHint =>
+        "Build scenes in Sources · assign show inputs for multiview";
+
+    public string SceneBuilderHint =>
+        "Open the Scenes tab to assign route, source, and audio per layout slot";
+
+    public int PreviewSlotCount => PreviewSlotEditors.Count;
+
+    public bool HasPreviewSlotEditors => PreviewSlotEditors.Count > 0;
+
+    public string SceneBuilderSlotSummary =>
+        PreviewSlotEditors.Count == 0
+            ? "No layout slots yet — pick a scene on Studio first"
+            : $"{PreviewSlotEditors.Count} layout slots for {PreviewScene.Name}";
+
+    public string MultiviewCapLabel =>
+        $"UP TO {ShowInputRosterService.MaxMultiviewBoxes} LIVE";
 
     private static readonly TabChrome SelectedViewModeChrome = new()
     {
@@ -522,11 +584,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnEngineRunningChanged(bool value)
     {
         ToggleEngineCommand.NotifyCanExecuteChanged();
+        ToggleRecordingCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanToggleRecording));
         OnPropertyChanged(nameof(EngineRunningLabel));
         OnPropertyChanged(nameof(EngineToggleBackground));
         OnPropertyChanged(nameof(EngineToggleBorder));
         OnPropertyChanged(nameof(EngineToggleForeground));
-        RefreshRoomParticipants();
+        if (_bridge.LastSnapshot is { } snapshot)
+        {
+            ApplyMeetingFieldsFromSnapshot(snapshot);
+        }
+
         OnPropertyChanged(nameof(CurrentRoomHeader));
         RefreshTransportState();
     }
@@ -588,7 +656,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
-        RefreshPreviewRoutingState();
+        SchedulePreviewRoutingRefresh();
     }
 
     partial void OnSelectedParticipantIdChanged(string? value)
@@ -637,6 +705,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 await SyncActiveSceneAsync().ConfigureAwait(false);
                 RefreshSurfaceBindings();
                 RefreshTransportState();
+                ToggleRecordingCommand.NotifyCanExecuteChanged();
             }
         }
         catch (Exception ex)
@@ -647,6 +716,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Settings.RefreshSdkReadiness();
             RefreshSurfaceBindings();
             RefreshTransportState();
+            ToggleRecordingCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -655,7 +725,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         PreviewSceneId = sceneId;
         CommandStatus = $"{Scenes.First(s => s.Id == sceneId).Name} queued on preview";
-        RefreshPreviewRoutingState();
+        SchedulePreviewRoutingRefresh();
     }
 
     [RelayCommand]
@@ -680,22 +750,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanToggleRecording))]
     private async Task ToggleRecordingAsync()
     {
         Recording = !Recording;
         RefreshOutputStatus();
 
-        if (EngineRunning)
+        try
         {
-            try
-            {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                OutputStatus = ex.Message;
-            }
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            OutputStatus = ex.Message;
         }
     }
 
@@ -736,7 +803,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ActiveTab = tab switch
         {
             "settings" => StudioTab.Settings,
-            "sources" => StudioTab.Sources,
+            "sources" or "scenes" => StudioTab.Sources,
             "overlays" => StudioTab.Overlays,
             "audio" => StudioTab.Audio,
             "media" => StudioTab.Media,
@@ -746,13 +813,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void OpenSceneBuilder()
+    {
+        ActiveTab = StudioTab.Sources;
+        CommandStatus = $"Editing {PreviewScene.Name} — {PreviewSlotEditors.Count} layout slots on Scenes tab";
+        OnPropertyChanged(nameof(SceneBuilderSlotSummary));
+        OnPropertyChanged(nameof(PreviewSlotCount));
+        OnPropertyChanged(nameof(HasPreviewSlotEditors));
+    }
+
+    [RelayCommand]
     private void SelectParticipant(string participantId)
     {
         SelectedParticipantId = participantId;
     }
 
     [RelayCommand]
-    private void ToggleGraphic(string graphicId)
+    private async Task ToggleGraphicAsync(string graphicId)
     {
         var graphic = Graphics.FirstOrDefault(g => g.Id == graphicId);
         if (graphic is null)
@@ -763,6 +840,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         graphic.Enabled = !graphic.Enabled;
         CommandStatus = $"{graphic.Name} {(graphic.Enabled ? "enabled" : "disabled")} on program";
         OnPropertyChanged(nameof(EnabledGraphics));
+
+        if (EngineRunning)
+        {
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                CommandStatus = ex.Message;
+            }
+        }
     }
 
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
@@ -780,13 +869,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProductionMode = ProductionMode == ProductionMode.SetAndForget
             ? ProductionMode.Manual
             : ProductionMode.SetAndForget;
-        DemoProduction.Mode = ProductionMode;
         AutomationButtonLabel = ProductionMode == ProductionMode.SetAndForget
             ? "Automation enabled"
             : "Automation disabled";
-        AutoProductionReadout = BuildAutoProductionReadout();
+        RefreshProductionReadouts();
         CommandStatus = ProductionMode == ProductionMode.SetAndForget
-            ? $"Set & Forget enabled: {DemoProduction.AutoProduction.Reason}"
+            ? $"Set & Forget enabled: {_automationRecommendation.Reason}"
             : "Manual mode — operator controls scenes";
         RefreshTransportAutomationState();
     }
@@ -800,12 +888,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var recommendedSceneId = DemoProduction.AutoProduction.RecommendedSceneId;
+        var recommendedSceneId = _automationRecommendation.RecommendedSceneId;
         PreviewSceneId = recommendedSceneId;
-        var sceneName = DemoProduction.RecommendedSceneName;
+        var sceneName = RecommendedSceneName;
         MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
+        SchedulePreviewRoutingRefresh();
         CommandStatus = $"{sceneName} queued by Magic Scene";
         RefreshSceneItems();
+    }
+
+    [RelayCommand]
+    private void RefreshMediaBin()
+    {
+        MediaBinGroups = _mediaBinService.LoadGroups();
+        OnPropertyChanged(nameof(MediaBinGroups));
+        RefreshProductionReadouts();
     }
 
     [RelayCommand]
@@ -844,16 +941,75 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshCaptureFleetSummary()
     {
-        CaptureFleetSummary =
-            $"{CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Connected)} connected · " +
-            $"{CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Detected)} detected";
-        DualCaptureLive = CaptureDevices.Count(d => d.ConnectionState == CaptureConnectionState.Connected) >= 2;
+        CaptureFleetSummary = ProductionStateHelper.CaptureFleetSummary(CaptureDevices);
+        DualCaptureLive = ProductionStateHelper.DualCaptureLive(CaptureDevices);
     }
 
-    private static string BuildAutoProductionReadout()
+    private async Task RefreshCaptureDevicesAsync()
     {
-        var auto = DemoProduction.AutoProduction;
-        return $"Auto: {auto.Action} {auto.Confidence}% - {auto.Reason}";
+        IReadOnlyList<CaptureDevice> discovered;
+        try
+        {
+            discovered = await _captureDiscovery.DiscoverDevicesAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            discovered = [];
+        }
+
+        RunOnUiThread(() =>
+        {
+            CaptureDevices.Clear();
+            foreach (var device in discovered)
+            {
+                CaptureDevices.Add(device);
+            }
+
+            RefreshCaptureFleetSummary();
+            RefreshShowInputEditors();
+            RefreshMultiviewGridTiles();
+        });
+    }
+
+    private void RefreshProductionReadouts()
+    {
+        _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
+            RoomVideoParticipants,
+            Scenes);
+        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants);
+        FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
+        MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
+        MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
+        AutoProductionReadout = BuildAutoProductionReadout();
+        RefreshAudioMixChannels();
+        RefreshCaptureFleetSummary();
+
+        OnPropertyChanged(nameof(FeedHealthRows));
+        OnPropertyChanged(nameof(SceneIntelligenceSummary));
+        OnPropertyChanged(nameof(RecommendedSceneName));
+        OnPropertyChanged(nameof(RecommendedLayout));
+        OnPropertyChanged(nameof(RecommendedConfidence));
+        OnPropertyChanged(nameof(AutoProductionReason));
+        OnPropertyChanged(nameof(CaptionQualitySummary));
+        OnPropertyChanged(nameof(AudioMix));
+        OnPropertyChanged(nameof(LoudnessTargetLabel));
+        OnPropertyChanged(nameof(LoudnessLevelLabel));
+    }
+
+    private void RefreshAudioMixChannels()
+    {
+        var existing = _audioMixChannels.ToDictionary(channel => channel.ParticipantId);
+        _audioMixChannels.Clear();
+        _audioMixChannels.AddRange(
+            ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing));
+    }
+
+    private string BuildAutoProductionReadout()
+    {
+        var auto = _automationRecommendation;
+        return auto.Confidence > 0
+            ? $"Auto: {auto.Action} {auto.Confidence}% — {auto.Reason}"
+            : auto.Reason;
     }
 
     private Dictionary<string, object?> BuildSpinePayload()
@@ -1000,9 +1156,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ => "live"
     };
 
-    private void OnBridgeStatusChanged(string status) => EngineStatus = status;
+    private void RunOnUiThread(Action action)
+    {
+        if (_dispatcher.HasThreadAccess)
+        {
+            action();
+            return;
+        }
 
-    private void OnBridgeHealthChanged(MediaCoreHealth health)
+        _dispatcher.TryEnqueue(() => action());
+    }
+
+    private void OnBridgeStatusChanged(string status) =>
+        RunOnUiThread(() => EngineStatus = status);
+
+    private void OnBridgeHealthChanged(MediaCoreHealth health) =>
+        RunOnUiThread(() => ApplyBridgeHealthChanged(health));
+
+    private void ApplyBridgeHealthChanged(MediaCoreHealth health)
     {
         if (health.Stopped)
         {
@@ -1015,9 +1186,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
+    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) =>
+        RunOnUiThread(() => ApplySnapshotChanged(snapshot));
+
+    private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
         _surfaces.OnMediaCoreSnapshot(snapshot);
+        ApplyMeetingFieldsFromSnapshot(snapshot);
 
         if (!EngineRunning)
         {
@@ -1034,7 +1209,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext));
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext);
+        ApplyLiveProductionPatch(patch);
+        ApplyGraphicsAndCaptionStateFromSnapshot(snapshot);
         Transport.ApplySnapshot(
             snapshot,
             snapshot.Recording?.Active == true,
@@ -1067,13 +1244,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ConfigureZoomSpineSync(null);
         _surfaces.SetEngineRunning(false);
         EngineRunning = false;
+        Recording = false;
+        Streaming = false;
         EngineStatus = status;
         CommandStatus = status;
-        RestoreDemoLiveProductionState();
+        if (Settings.IsInMeeting && _bridge.LastSnapshot is { } snapshot)
+        {
+            ApplyMeetingFieldsFromSnapshot(snapshot);
+        }
+        else
+        {
+            ClearLiveProductionState();
+        }
+
         Settings.RefreshSdkReadiness();
         RefreshSurfaceBindings();
         RefreshTransportState();
         ToggleEngineCommand.NotifyCanExecuteChanged();
+        ToggleRecordingCommand.NotifyCanExecuteChanged();
     }
 
     private void StopMediaCoreSession(string status)
@@ -1089,31 +1277,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyLiveProductionPatch(LiveProductionSync.StudioLiveProductionPatch patch)
     {
-        if (patch.CaptionText is { Length: > 0 } captionText)
-        {
-            CaptionText = captionText;
-            Overlays.NotifyCaptionContentChanged();
-        }
-
-        if (patch.CaptionSpeaker is { Length: > 0 } captionSpeaker)
-        {
-            CaptionSpeaker = captionSpeaker;
-        }
-
-        if (patch.LowerThirdName is { Length: > 0 } lowerThirdName)
-        {
-            LowerThirdName = lowerThirdName;
-        }
-
-        if (patch.LowerThirdTitle is { Length: > 0 } lowerThirdTitle)
-        {
-            LowerThirdTitle = lowerThirdTitle;
-        }
-
-        if (patch.LowerThirdOrg is { Length: > 0 } lowerThirdOrg)
-        {
-            LowerThirdOrg = lowerThirdOrg;
-        }
+        ApplyCaptionAndLowerThirdPatch(patch);
 
         if (patch.Recording is { } recording)
         {
@@ -1156,9 +1320,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             ApplyLiveParticipants(participants);
         }
-        else if (patch.Participants is { Count: 0 })
+        else if (patch.Participants is { Count: 0 } && !Settings.IsInMeeting)
         {
-            RestoreDemoLiveProductionParticipants();
+            ClearLiveProductionParticipants();
         }
     }
 
@@ -1179,34 +1343,49 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(CamerasOnCount));
         OnPropertyChanged(nameof(ScreenShareLabel));
-        RefreshPreviewRoutingState();
+        SchedulePreviewRoutingRefresh();
+        RefreshProductionReadouts();
     }
 
-    private void RestoreDemoLiveProductionParticipants() => RefreshRoomParticipants();
-
-    private void RestoreDemoLiveProductionState()
+    private void ApplyMeetingFieldsFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
-        ApplyLiveProductionPatch(LiveProductionSync.CreateDemoFallbackPatch());
-        RefreshTransportState();
-    }
-
-    private void RefreshRoomParticipants()
-    {
-        if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext());
+        var meetingState = patch.MeetingStateLabel;
+        if (string.IsNullOrWhiteSpace(meetingState))
         {
-            var liveParticipants = LiveProductionSync.MapSnapshotParticipants(snapshot);
-            if (liveParticipants is { Count: > 0 })
-            {
-                ApplyLiveParticipants(liveParticipants);
-                return;
-            }
+            return;
         }
 
-        RoomVideoParticipants = DemoProduction.VideoParticipantsInRoom(_currentRoomId);
-        CurrentRoomLabel = EngineRunning
-            ? _currentRoomName
-            : $"{_currentRoomName} — engine off, feeds paused";
-        MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        if (meetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))
+        {
+            ZoomStatus = "Zoom Live";
+            CurrentRoomLabel = _currentRoomName;
+            ApplyCaptionAndLowerThirdPatch(patch);
+            ApplyCaptionTranscriptFromSnapshot(snapshot);
+            var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
+            Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
+            if (participants is { Count: > 0 })
+            {
+                ApplyLiveParticipants(participants);
+                SyncShowInputsFromMeeting(participants);
+            }
+
+            return;
+        }
+
+        if (meetingState is "idle" or "leaving")
+        {
+            ZoomStatus = "Zoom Offline";
+            Settings.ApplyMeetingStateLabel(meetingState, 0);
+            ClearLiveProductionParticipants();
+        }
+    }
+
+    private void ClearLiveProductionParticipants()
+    {
+        RoomVideoParticipants = [];
+        CurrentRoomLabel = "No meeting";
+        MultiviewTiles = [];
         OnPropertyChanged(nameof(RoomVideoParticipants));
         OnPropertyChanged(nameof(CurrentRoomHeader));
         RefreshParticipantListItems();
@@ -1215,7 +1394,167 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(CamerasOnCount));
         OnPropertyChanged(nameof(ScreenShareLabel));
-        RefreshPreviewRoutingState();
+        SchedulePreviewRoutingRefresh();
+        RefreshProductionReadouts();
+    }
+
+    private void ClearLiveProductionState()
+    {
+        ClearLiveProductionParticipants();
+        CaptionText = string.Empty;
+        CaptionSpeaker = string.Empty;
+        LowerThirdName = string.Empty;
+        LowerThirdTitle = string.Empty;
+        LowerThirdOrg = string.Empty;
+        _captionTranscriptPatches.Clear();
+        CaptionTranscript = [];
+        OnPropertyChanged(nameof(CaptionTranscript));
+        OnPropertyChanged(nameof(CaptionQualitySummary));
+        OutputStatus = "Outputs idle";
+        OutputSessionStatus = "Outputs idle";
+        ZoomStatus = "Zoom Offline";
+        RefreshTransportState();
+    }
+
+    private void InitializeGraphicsCatalog()
+    {
+        Graphics.Clear();
+        foreach (var graphic in ProductionCatalog.DefaultGraphics)
+        {
+            Graphics.Add(new GraphicOverlay
+            {
+                Id = graphic.Id,
+                Name = graphic.Name,
+                Kind = graphic.Kind,
+                Position = graphic.Position,
+                Accent = graphic.Accent,
+                Enabled = graphic.Enabled
+            });
+        }
+    }
+
+    private void ApplyCaptionAndLowerThirdPatch(LiveProductionSync.StudioLiveProductionPatch patch)
+    {
+        if (patch.CaptionText is { Length: > 0 } captionText)
+        {
+            CaptionText = captionText;
+            Overlays.NotifyCaptionContentChanged();
+        }
+
+        if (patch.CaptionSpeaker is { Length: > 0 } captionSpeaker)
+        {
+            CaptionSpeaker = captionSpeaker;
+        }
+
+        if (patch.LowerThirdName is { Length: > 0 } lowerThirdName)
+        {
+            LowerThirdName = lowerThirdName;
+        }
+
+        if (patch.LowerThirdTitle is { Length: > 0 } lowerThirdTitle)
+        {
+            LowerThirdTitle = lowerThirdTitle;
+        }
+
+        if (patch.LowerThirdOrg is { Length: > 0 } lowerThirdOrg)
+        {
+            LowerThirdOrg = lowerThirdOrg;
+        }
+    }
+
+    private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        ApplyOverlayStateFromSnapshot(snapshot);
+        ApplyCaptionTranscriptFromSnapshot(snapshot);
+    }
+
+    private void ApplyOverlayStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var enabledFlags = GraphicsOverlaySync.ResolveOverlayEnabledFlags(
+            snapshot,
+            Graphics.Select(graphic => graphic.Id),
+            EngineRunning);
+        if (enabledFlags is null)
+        {
+            return;
+        }
+
+        foreach (var graphic in Graphics)
+        {
+            if (enabledFlags.TryGetValue(graphic.Id, out var enabled))
+            {
+                graphic.Enabled = enabled;
+            }
+        }
+
+        OnPropertyChanged(nameof(EnabledGraphics));
+    }
+
+    private void ApplyCaptionTranscriptFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var speakerRoles = RoomVideoParticipants.ToDictionary(
+            participant => participant.Name,
+            participant => participant.RoleLabel,
+            StringComparer.Ordinal);
+        var nextTranscript = GraphicsOverlaySync.AppendCaptionTranscriptFromSnapshot(
+            snapshot,
+            _captionTranscriptPatches,
+            speakerRoles);
+        if (nextTranscript.Count == _captionTranscriptPatches.Count)
+        {
+            return;
+        }
+
+        _captionTranscriptPatches.Clear();
+        _captionTranscriptPatches.AddRange(nextTranscript);
+        CaptionTranscript = _captionTranscriptPatches
+            .Select(entry => new CaptionTranscriptEntry
+            {
+                Id = entry.Id,
+                SpeakerName = entry.SpeakerName,
+                Role = entry.Role,
+                Text = entry.Text,
+                Confidence = entry.Confidence
+            })
+            .ToList();
+        OnPropertyChanged(nameof(CaptionTranscript));
+        OnPropertyChanged(nameof(CaptionQualitySummary));
+    }
+
+    private void SyncShowInputsFromMeeting(
+        IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
+    {
+        var validIds = participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var slot in ShowInputs)
+        {
+            if (slot.Kind == ShowInputKind.ZoomParticipant &&
+                !string.IsNullOrWhiteSpace(slot.ParticipantId) &&
+                !validIds.Contains(slot.ParticipantId))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.ParticipantId = null;
+                slot.InShow = false;
+            }
+        }
+
+        if (!ShowInputs.Any(slot => slot.InShow && slot.IsAssigned))
+        {
+            foreach (var (participant, index) in participants.Take(ShowInputRosterService.MaxMultiviewBoxes).Select((item, i) => (item, i)))
+            {
+                if (index >= ShowInputs.Count)
+                {
+                    break;
+                }
+
+                var slot = ShowInputs[index];
+                slot.Kind = ShowInputKind.ZoomParticipant;
+                slot.ParticipantId = participant.Id;
+                slot.InShow = true;
+            }
+        }
+
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
     }
 
     private void RefreshParticipantListItems()
@@ -1231,10 +1570,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioParticipantRows()
     {
+        RefreshAudioMixChannels();
         AudioParticipantRows = RoomVideoParticipants
             .Select(participant =>
             {
-                var mix = AudioMix.Participants.FirstOrDefault(m => m.ParticipantId == participant.Id);
+                var mix = _audioMixChannels.FirstOrDefault(m => m.ParticipantId == participant.Id);
                 return new AudioParticipantRow
                 {
                     Id = participant.Id,
@@ -1280,6 +1620,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnShowInputChanged()
     {
+        EnsureAssignedSlotsForInShow();
+
         var active = ShowInputs.Where(slot => slot.InShow).ToList();
         if (active.Count > ShowInputRosterService.MaxMultiviewBoxes)
         {
@@ -1292,6 +1634,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
         CommandStatus = "Show input roster updated";
+    }
+
+    private void EnsureAssignedSlotsForInShow()
+    {
+        var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
+        var defaultCapture = CaptureDevices.FirstOrDefault()?.Id;
+
+        foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
+        {
+            if (!string.IsNullOrWhiteSpace(defaultParticipant))
+            {
+                slot.Kind = ShowInputKind.ZoomParticipant;
+                slot.ParticipantId = defaultParticipant;
+            }
+            else if (!string.IsNullOrWhiteSpace(defaultCapture))
+            {
+                slot.Kind = ShowInputKind.Blackmagic;
+                slot.CaptureDeviceId = defaultCapture;
+            }
+        }
     }
 
     private void RefreshMultiviewGridTiles()
@@ -1315,14 +1677,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!Recording && !Streaming)
         {
-            OutputStatus = LiveProductionSync.DemoDefaults.OutputStatus;
-            OutputSessionStatus = LiveProductionSync.DemoDefaults.OutputStatus;
+            OutputStatus = "Outputs idle";
+            OutputSessionStatus = "Outputs idle";
             return;
         }
 
         var localStatus = LiveProductionSync.SummarizeLocalOutputs(Recording, Streaming);
         OutputStatus = localStatus;
         OutputSessionStatus = localStatus;
+    }
+
+    private void SampleSystemResources()
+    {
+        _resourceMonitor.Sample();
+        Transport.ApplySystemResourceSample(
+            _resourceMonitor.CpuLoadPercent,
+            _resourceMonitor.MemoryLoadPercent,
+            _resourceMonitor.DiskLoadPercent);
     }
 
     private void RefreshTransportState()
@@ -1340,7 +1711,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        Transport.ApplyDemoState(Recording, Streaming, ProgramResolutionLabel);
+        Transport.ApplyIdleState(Recording, Streaming, ProgramResolutionLabel);
     }
 
     private void RefreshTransportAutomationState()
@@ -1414,6 +1785,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return routes;
     }
 
+    private void SchedulePreviewRoutingRefresh()
+    {
+        if (_previewRoutingRefreshScheduled)
+        {
+            return;
+        }
+
+        _previewRoutingRefreshScheduled = true;
+        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _previewRoutingRefreshScheduled = false;
+            RefreshPreviewRoutingState();
+        });
+    }
+
     private void RefreshPreviewRoutingState()
     {
         RefreshSceneCompositionState(PreviewScene, PreviewSceneId, isPreview: true);
@@ -1461,6 +1847,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(HasPreviewRouteWarnings));
             OnPropertyChanged(nameof(PreviewSceneTiles));
             OnPropertyChanged(nameof(PreviewSlotEditors));
+            OnPropertyChanged(nameof(PreviewSlotCount));
+            OnPropertyChanged(nameof(HasPreviewSlotEditors));
+            OnPropertyChanged(nameof(SceneBuilderSlotSummary));
         }
         else
         {
@@ -1503,7 +1892,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         routes[editor.SlotIndex] = normalized;
 
         CommandStatus = $"{PreviewScene.Name} route {editor.SlotIndex + 1} updated";
-        RefreshPreviewRoutingState();
+        SchedulePreviewRoutingRefresh();
     }
 
     private void CopyPreviewRoutesToScene(string sceneId)
@@ -1525,9 +1914,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    public Task ForceStopMediaCoreAsync()
+    {
+        ForceShutdownMediaCore();
+        return _bridge.DisposeAsync().AsTask();
+    }
+
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
+        _resourceMonitorTimer.Stop();
+        _resourceMonitor.Dispose();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.SnapshotChanged -= OnSnapshotChanged;
@@ -1536,25 +1933,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged -= RefreshSurfaceBindings;
 
-        if (Settings.IsInMeeting && _bridge.Running)
-        {
-            try
-            {
-                LaunchLog.Write("shutdown: leaving Zoom meeting");
-                using var leaveCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                var snapshot = await _bridge.LeaveZoomAsync(leaveCts.Token).ConfigureAwait(false);
-                Settings.ApplyCaptureSnapshot(snapshot);
-            }
-            catch (Exception ex)
-            {
-                LaunchLog.Write($"shutdown: leave Zoom skipped ({ex.Message})");
-            }
-        }
+        ForceShutdownMediaCore();
 
-        StopMediaCoreSession("Shutting down");
         _surfaces.Dispose();
         _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);
         LaunchLog.Write("shutdown: studio view model disposed");
+    }
+
+    private void ForceShutdownMediaCore()
+    {
+        try
+        {
+            _bridge.ConfigureZoomSpineSync(null);
+            _surfaces.SetEngineRunning(false);
+            if (_bridge.Running)
+            {
+                LaunchLog.Write("shutdown: stopping media core");
+                _bridge.Stop();
+            }
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"shutdown: media core stop failed ({ex.Message})");
+            try
+            {
+                _bridge.Stop();
+            }
+            catch
+            {
+                // Best effort.
+            }
+        }
     }
 }

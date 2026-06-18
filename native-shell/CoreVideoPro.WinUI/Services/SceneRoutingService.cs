@@ -349,12 +349,15 @@ public static class SceneRoutingService
     private static int GetRouteSlotCount(Scene scene, IReadOnlyList<Participant> participants) =>
         scene.Layout == "speaker-slides" ? 2 : GetSceneSlotCount(scene, participants);
 
+    /// <summary>
+    /// Layout slot capacity — independent of live roster so routes can be pre-built before join.
+    /// </summary>
     private static int GetSceneSlotCount(Scene scene, IReadOnlyList<Participant> participants) =>
         scene.Layout switch
         {
-            "two-up" => Math.Min(2, participants.Count),
-            "smart-grid" => Math.Min(6, participants.Count),
-            _ => Math.Min(1, participants.Count)
+            "two-up" => 2,
+            "smart-grid" => 6,
+            _ => 1
         };
 
     private static IReadOnlyList<Participant> SortParticipantsForProduction(IReadOnlyList<Participant> participants)
