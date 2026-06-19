@@ -398,6 +398,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _ = RefreshCaptureDevicesAsync();
+        _ = StartMediaCoreOnLaunchAsync();
     }
 
     private readonly ObservableCollection<Scene> _scenes;
@@ -830,14 +831,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             else
             {
-                // The media core should already be running (started on join). If it
-                // died (e.g. supervisor restart), bring it back up rather than dead-ending.
-                if (!_bridge.Running)
-                {
-                    EngineStatus = "Restarting media core…";
-                    await _bridge.StartAsync().ConfigureAwait(false);
-                    Settings.RefreshSdkReadiness();
-                }
+                // The media core should already be running from launch. If it died, bring it back up rather than dead-ending.
+                await EnsureMediaCoreRunningAsync("Restarting media core...").ConfigureAwait(false);
 
                 if (!_bridge.Running)
                 {
@@ -1391,12 +1386,55 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
+            await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
             await SyncActiveSceneAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             CommandStatus = ex.Message;
         }
+    }
+
+    private async Task StartMediaCoreOnLaunchAsync()
+    {
+        try
+        {
+            await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+            RunOnUiThread(() =>
+            {
+                EngineStatus = $"Media core ready - {_bridge.ProfileSummary}";
+                RefreshSurfaceBindings();
+                RefreshOutputStatus();
+                RefreshTransportState();
+            });
+        }
+        catch (Exception ex)
+        {
+            RunOnUiThread(() =>
+            {
+                EngineStatus = $"Media core unavailable - {ex.Message}";
+                CommandStatus = EngineStatus;
+                RefreshTransportState();
+            });
+        }
+    }
+
+    private async Task EnsureMediaCoreRunningAsync(string startingStatus)
+    {
+        if (_bridge.Running)
+        {
+            return;
+        }
+
+        RunOnUiThread(() => EngineStatus = startingStatus);
+        await _bridge.StartAsync().ConfigureAwait(false);
+        RunOnUiThread(() =>
+        {
+            Settings.RefreshSdkReadiness();
+            OnPropertyChanged(nameof(CanToggleRecording));
+            ToggleRecordingCommand.NotifyCanExecuteChanged();
+        });
     }
 
     [RelayCommand]
@@ -1641,7 +1679,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Participants = participants,
             Recording = Recording,
             Streaming = Streaming,
-            StreamDestinations = ["rtmp", "ndi"],
+            StreamDestinations = ["rtmp", "ndi", "srt"],
             RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
             {
                 IsoParticipantIds = isoParticipantIds

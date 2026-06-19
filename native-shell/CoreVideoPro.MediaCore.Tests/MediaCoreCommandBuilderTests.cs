@@ -137,7 +137,7 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             Recording = true,
             Streaming = true,
-            StreamDestinations = ["rtmp", "ndi"],
+            StreamDestinations = ["rtmp", "ndi", "srt"],
             Graphics =
             [
                 new("brand-bug", "CoreVideo Pro", "top-right", Enabled: true)
@@ -148,7 +148,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Contains(commands, command => command.Type == "start-encoder-session");
 
         var output = commands.Single(command => command.Type == "start-program-output");
-        Assert.Equal(["recording", "rtmp", "ndi"], GetStringArray(output, "destinations"));
+        Assert.Equal(["recording", "rtmp", "ndi", "srt"], GetStringArray(output, "destinations"));
         Assert.Equal(["p1", "p2"], GetStringArray(output, "isoParticipantIds"));
 
         var targets = commands.Single(command => command.Type == "set-recording-targets");

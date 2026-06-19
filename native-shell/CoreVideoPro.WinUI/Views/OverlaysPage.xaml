@@ -108,22 +108,77 @@
                                           HorizontalAlignment="Stretch" />
                             </StackPanel>
                         </Border>
-                        <Border Grid.Row="2" Style="{StaticResource OperatorReadoutBorder}">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="Brand / accent" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <TextBox Text="{x:Bind ViewModel.Overlays.BrandPrimaryColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                             PlaceholderText="#44c1a1" MinWidth="88" />
-                                    <TextBox Text="{x:Bind ViewModel.Overlays.BrandAccentColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                             PlaceholderText="#f0a85c" MinWidth="88" />
+                        <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorReadoutBorder}">
+                            <Grid ColumnSpacing="10" RowSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="Primary" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="22" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="22" Height="22" CornerRadius="4"
+                                                Background="{x:Bind ViewModel.Overlays.BrandPrimarySwatch, Mode=OneWay}" />
+                                        <TextBox Grid.Column="1"
+                                                 Text="{x:Bind ViewModel.Overlays.BrandPrimaryColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 PlaceholderText="#44C1A1" />
+                                    </Grid>
+                                    <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandPrimaryPickerColor, Mode=TwoWay}"
+                                                 IsAlphaEnabled="False"
+                                                 IsAlphaSliderVisible="False"
+                                                 IsAlphaTextInputVisible="False"
+                                                 IsColorChannelTextInputVisible="False"
+                                                 IsHexInputVisible="False"
+                                                 MinWidth="170" />
                                 </StackPanel>
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="Background" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.BackgroundColor, Mode=OneWay}" FontSize="12" />
-                            </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="6">
+                                    <TextBlock Text="Accent" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="22" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="22" Height="22" CornerRadius="4"
+                                                Background="{x:Bind ViewModel.Overlays.BrandAccentSwatch, Mode=OneWay}" />
+                                        <TextBox Grid.Column="1"
+                                                 Text="{x:Bind ViewModel.Overlays.BrandAccentColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 PlaceholderText="#F0A85C" />
+                                    </Grid>
+                                    <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandAccentPickerColor, Mode=TwoWay}"
+                                                 IsAlphaEnabled="False"
+                                                 IsAlphaSliderVisible="False"
+                                                 IsAlphaTextInputVisible="False"
+                                                 IsColorChannelTextInputVisible="False"
+                                                 IsHexInputVisible="False"
+                                                 MinWidth="170" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Spacing="6">
+                                    <TextBlock Text="Background" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="22" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="22" Height="22" CornerRadius="4"
+                                                Background="{x:Bind ViewModel.Overlays.BrandBackgroundSwatch, Mode=OneWay}" />
+                                        <TextBox Grid.Column="1"
+                                                 Text="{x:Bind ViewModel.Overlays.BrandBackgroundColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 PlaceholderText="#0C1118" />
+                                    </Grid>
+                                    <ColorPicker Color="{x:Bind ViewModel.Overlays.BrandBackgroundPickerColor, Mode=TwoWay}"
+                                                 IsAlphaEnabled="False"
+                                                 IsAlphaSliderVisible="False"
+                                                 IsAlphaTextInputVisible="False"
+                                                 IsColorChannelTextInputVisible="False"
+                                                 IsHexInputVisible="False"
+                                                 MinWidth="170" />
+                                </StackPanel>
+                            </Grid>
                         </Border>
                         <Border Grid.Row="3" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
