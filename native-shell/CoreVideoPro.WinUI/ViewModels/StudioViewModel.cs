@@ -171,6 +171,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
 
+    public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
+
     public IReadOnlyList<SourceRoute> PreviewSceneRoutes { get; private set; } = [];
 
     public IReadOnlyList<SourceRoute> ProgramSceneRoutes { get; private set; } = [];
@@ -381,6 +383,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsSourcesTab => ActiveTab == StudioTab.Sources;
 
+    public bool IsRoutingTab => ActiveTab == StudioTab.Routing;
+
     public bool IsOverlaysTab => ActiveTab == StudioTab.Overlays;
 
     public bool IsAudioTab => ActiveTab == StudioTab.Audio;
@@ -410,6 +414,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public TabChrome SettingsTabChrome => ActiveTab == StudioTab.Settings ? SelectedTabChrome : DefaultTabChrome;
 
     public TabChrome SourcesTabChrome => ActiveTab == StudioTab.Sources ? SelectedTabChrome : DefaultTabChrome;
+
+    public TabChrome RoutingTabChrome => ActiveTab == StudioTab.Routing ? SelectedTabChrome : DefaultTabChrome;
 
     public TabChrome OverlaysTabChrome => ActiveTab == StudioTab.Overlays ? SelectedTabChrome : DefaultTabChrome;
 
@@ -645,6 +651,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsStudioTab));
         OnPropertyChanged(nameof(IsSettingsTab));
         OnPropertyChanged(nameof(IsSourcesTab));
+        OnPropertyChanged(nameof(IsRoutingTab));
         OnPropertyChanged(nameof(IsOverlaysTab));
         OnPropertyChanged(nameof(IsAudioTab));
         OnPropertyChanged(nameof(IsMediaTab));
@@ -653,6 +660,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioTabChrome));
         OnPropertyChanged(nameof(SettingsTabChrome));
         OnPropertyChanged(nameof(SourcesTabChrome));
+        OnPropertyChanged(nameof(RoutingTabChrome));
         OnPropertyChanged(nameof(OverlaysTabChrome));
         OnPropertyChanged(nameof(AudioTabChrome));
         OnPropertyChanged(nameof(MediaTabChrome));
@@ -661,6 +669,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (value == StudioTab.Sources)
         {
             _ = RefreshCaptureDevicesAsync();
+        }
+        else if (value == StudioTab.Routing)
+        {
+            BuildAudioRoutingMatrix();
         }
         else if (value == StudioTab.Media)
         {
@@ -827,12 +839,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             "settings" => StudioTab.Settings,
             "sources" or "scenes" => StudioTab.Sources,
+            "routing" => StudioTab.Routing,
             "overlays" => StudioTab.Overlays,
             "audio" => StudioTab.Audio,
             "media" => StudioTab.Media,
             "automation" => StudioTab.Automation,
             _ => StudioTab.Studio
         };
+    }
+
+    private void BuildAudioRoutingMatrix()
+    {
+        var sources = new List<RoutingSource>();
+        foreach (var input in ShowInputEditors)
+        {
+            if (input.Kind != ShowInputKind.Unassigned)
+            {
+                sources.Add(new RoutingSource($"input-{input.SlotNumber:00}", input.SlotLabel));
+            }
+        }
+
+        sources.Add(new RoutingSource("zoom-mix", "Zoom program mix"));
+        sources.Add(new RoutingSource("media", "Media playback"));
+        AudioRoutingMatrix.Build(sources);
     }
 
     [RelayCommand]

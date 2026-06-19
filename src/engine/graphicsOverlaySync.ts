@@ -1,11 +1,11 @@
 import type { CaptionTranscriptEntry } from "../domain/production";
-import type { NativeMediaCoreSnapshot } from "./nativeMediaCoreProtocol";
+import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
 export const MAX_TRANSCRIPT_ENTRIES = 6;
 
 export type CaptionTranscriptEntryPatch = CaptionTranscriptEntry;
 
-export function resolveActiveOverlayIds(snapshot: NativeMediaCoreSnapshot): Set<string> {
+export function resolveActiveOverlayIds(snapshot: NativeMediaCoreStateSnapshot): Set<string> {
   return new Set(
     snapshot.renderPlan.layers
       .filter((layer) => layer.kind === "overlay" && layer.overlayId)
@@ -14,7 +14,7 @@ export function resolveActiveOverlayIds(snapshot: NativeMediaCoreSnapshot): Set<
 }
 
 export function resolveOverlayEnabledFlags(
-  snapshot: NativeMediaCoreSnapshot,
+  snapshot: NativeMediaCoreStateSnapshot,
   graphicIds: string[],
   engineRunning: boolean
 ): Record<string, boolean> | null {
@@ -31,7 +31,7 @@ export function resolveOverlayEnabledFlags(
 }
 
 export function appendCaptionTranscriptFromSnapshot(
-  snapshot: NativeMediaCoreSnapshot,
+  snapshot: NativeMediaCoreStateSnapshot,
   existing: CaptionTranscriptEntryPatch[],
   speakerRoles?: Record<string, string>
 ): CaptionTranscriptEntryPatch[] {

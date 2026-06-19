@@ -200,6 +200,11 @@ std::string Json::getString(const std::string& key, std::string fallback) const 
   return child && child->isString() ? child->asString() : std::move(fallback);
 }
 
+double Json::getNumber(const std::string& key, double fallback) const {
+  const Json* child = get(key);
+  return child && child->isNumber() ? child->asNumber() : fallback;
+}
+
 std::vector<std::string> Json::getStringArray(const std::string& key) const {
   std::vector<std::string> result;
   const Json* child = get(key);

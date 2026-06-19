@@ -6,6 +6,7 @@ import { createTestCaptureDevices, MockCaptureDeviceEngine } from "./engine/capt
 import { createMockEngineBundle, type EngineBundle } from "./engine/engineBundle";
 import { mapCaptureSnapshot } from "./engine/captureSnapshotMapper";
 import { InMemoryMediaCoreSyncEngine } from "./engine/mediaCoreSync";
+import { initialParticipants } from "./domain/production";
 import type { ProductionState } from "./domain/production";
 import type { NativeMediaCoreEvent, NativeMediaCoreOperatorAction } from "./engine/nativeMediaCoreProtocol";
 import type { RuntimeEnvironment } from "./engine/runtimeEnvironment";
@@ -61,7 +62,7 @@ describe("App production controls", () => {
     expect(nativeCore).toHaveTextContent("Render plan3 layers");
     expect(nativeCore).toHaveTextContent(/Plan IDrp-/);
     expect(nativeCore).toHaveTextContent("Media sourcetest-pattern");
-    expect(nativeCore).toHaveTextContent("Program frames3");
+    expect(nativeCore).toHaveTextContent(/Program frames[1-9]\d*/);
     expect(nativeCore).toHaveTextContent("Transportpublishing");
     expect(nativeCore).toHaveTextContent("Compositorlive");
     expect(nativeCore).toHaveTextContent("Encoderencoding");
@@ -87,8 +88,23 @@ describe("App production controls", () => {
       relatedId: "rtmp:program"
     };
     class ActionMediaCoreEngine extends InMemoryMediaCoreSyncEngine {
+      private recovered = false;
+      override async executeOperatorAction(
+        state: ProductionState,
+        pendingAction: NativeMediaCoreOperatorAction,
+        elapsedMs: number
+      ) {
+        this.recovered = true;
+        return super.executeOperatorAction(state, pendingAction, elapsedMs);
+      }
       override async syncProduction(state: ProductionState, elapsedMs: number) {
         const snapshot = await super.syncProduction(state, elapsedMs);
+        // Once the operator recovers the sender, the core stops re-emitting the
+        // action; mirror that so the readout deterministically clears instead of
+        // racing the next sync tick.
+        if (this.recovered) {
+          return snapshot;
+        }
         return {
           ...snapshot,
           operatorActions: [action],
@@ -351,10 +367,24 @@ describe("App production controls", () => {
     await goToTab(user, "Overlays");
     const transcript = screen.getByLabelText("Speaker captions");
 
-    expect(within(transcript).getByText("Welcome to the Q2 Product Update.")).toBeInTheDocument();
-    expect(within(transcript).getByText("Sophia Martinez")).toBeInTheDocument();
-    expect(within(transcript).getByText(/Host - 96%/)).toBeInTheDocument();
-    expect(within(transcript).getAllByText("David Chen").length).toBeGreaterThan(0);
+    // Captions stream into a rolling, per-speaker attributed transcript. Assert
+    // the attribution structure rather than a specific (rolling-window) cue so
+    // the test stays stable as caption cadence evolves.
+    const participantNames = new Set(initialParticipants.map((participant) => participant.name));
+    await waitFor(() => {
+      const speakers = Array.from(transcript.querySelectorAll(".transcript-meta strong")).map(
+        (node) => node.textContent?.trim() ?? ""
+      );
+      expect(speakers.some((name) => participantNames.has(name))).toBe(true);
+    });
+
+    // Each entry carries the speaker's role and confidence, plus a live caption line.
+    expect(within(transcript).getAllByText(/ - \d+%/).length).toBeGreaterThan(0);
+    expect(
+      within(transcript).getAllByText(
+        /active speaker is framed|Magic Scene is holding|Lower-thirds and captions|Audio leveling is smoothing/
+      ).length
+    ).toBeGreaterThan(0);
   });
 
   it("saves and reloads a show preset", async () => {

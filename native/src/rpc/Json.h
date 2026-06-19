@@ -39,6 +39,7 @@ class Json {
 
   [[nodiscard]] const Json* get(const std::string& key) const;
   [[nodiscard]] std::string getString(const std::string& key, std::string fallback = "") const;
+  [[nodiscard]] double getNumber(const std::string& key, double fallback = 0) const;
   [[nodiscard]] std::vector<std::string> getStringArray(const std::string& key) const;
 
   [[nodiscard]] std::string stringify() const;
