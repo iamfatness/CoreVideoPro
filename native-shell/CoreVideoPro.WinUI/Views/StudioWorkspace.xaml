@@ -213,9 +213,9 @@
         <Grid Grid.Row="1" Padding="8" ColumnSpacing="6"
               Visibility="{x:Bind ViewModel.IsStudioTab, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*" MinWidth="200" MaxWidth="280" />
+                <ColumnDefinition Width="2*" MinWidth="170" MaxWidth="240" />
                 <ColumnDefinition Width="5*" MinWidth="420" />
-                <ColumnDefinition Width="2*" MinWidth="180" MaxWidth="260" />
+                <ColumnDefinition Width="2*" MinWidth="160" MaxWidth="230" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -692,6 +692,47 @@
                             <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
                             <TextBlock Text="OUTPUTS" FontSize="11" FontWeight="ExtraBold"
                                        Foreground="#8FDCC8" CharacterSpacing="60" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="3" MinWidth="180">
+                            <TextBlock Text="STREAM DESTINATIONS" Style="{StaticResource OutputStatLabel}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <CheckBox Content="RTMP"
+                                          FontSize="11"
+                                          IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
+                                <CheckBox Content="NDI"
+                                          FontSize="11"
+                                          IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
+                                <CheckBox Content="SRT"
+                                          FontSize="11"
+                                          IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.StreamDestinationSummary, Mode=OneWay}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource StudioMutedBrush}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Spacing="3" MinWidth="260">
+                            <TextBlock Text="RECORD OPTIONS" Style="{StaticResource OutputStatLabel}" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBox Width="90"
+                                         Header="Format"
+                                         FontSize="11"
+                                         Text="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBox Width="100"
+                                         Header="Quality"
+                                         FontSize="11"
+                                         Text="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <TextBox Width="150"
+                                         Header="Filename"
+                                         FontSize="11"
+                                         Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.RecordingOptionsSummary, Mode=OneWay}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource StudioMutedBrush}"
+                                       TextTrimming="CharacterEllipsis" />
                         </StackPanel>
 
                         <StackPanel Spacing="2" MinWidth="56">

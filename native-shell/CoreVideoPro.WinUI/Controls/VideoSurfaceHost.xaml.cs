@@ -46,9 +46,13 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     public string ParticipantLine =>
         SurfaceState?.LastFrame?.ParticipantId is { Length: > 0 } participantId
             ? $"Participant {participantId}"
-            : SurfaceState?.LastFrame?.RenderPlanId is { Length: > 0 } renderPlanId
-                ? $"Render plan {renderPlanId}"
-                : "Compositor output";
+            : SurfaceState?.Kind switch
+            {
+                VideoSurfaceKind.Preview => "Preview output",
+                VideoSurfaceKind.Multiview => "Multiview output",
+                VideoSurfaceKind.Participant => "Participant output",
+                _ => "Program output"
+            };
 
     public string ResolutionLine =>
         SurfaceState?.LastFrame is { } frame

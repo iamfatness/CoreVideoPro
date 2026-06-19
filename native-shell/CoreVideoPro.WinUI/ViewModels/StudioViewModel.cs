@@ -59,6 +59,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streaming;
 
     [ObservableProperty]
+    private bool _streamRtmpEnabled = true;
+
+    [ObservableProperty]
+    private bool _streamNdiEnabled;
+
+    [ObservableProperty]
+    private bool _streamSrtEnabled;
+
+    [ObservableProperty]
+    private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
+
+    [ObservableProperty]
+    private string _recordingFilenamePrefix = MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix;
+
+    [ObservableProperty]
+    private string _recordingFormat = MediaCoreProductionSyncContext.DefaultRecordingTargets.Format;
+
+    [ObservableProperty]
+    private string _recordingQuality = MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality;
+
+    [ObservableProperty]
     private string _outputStatus = "Outputs idle";
 
     [ObservableProperty]
@@ -434,6 +455,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string StreamingLabel => Streaming ? "Streaming" : "Stream";
 
+    public string StreamDestinationSummary
+    {
+        get
+        {
+            var destinations = BuildSelectedStreamDestinations();
+            return destinations.Count == 0
+                ? "No stream destinations selected"
+                : string.Join(" + ", destinations.Select(destination => destination.ToUpperInvariant()));
+        }
+    }
+
+    public string RecordingOptionsSummary =>
+        $"{RecordingFormat.ToUpperInvariant()} · {RecordingQuality} · {RecordingFilenamePrefix}";
+
     public Brush RecordButtonBackground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 74, 32, 32));
@@ -735,6 +770,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
     }
 
+    partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamNdiEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
+
+    partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
+
+    partial void OnRecordingFilenamePrefixChanged(string value) => OnRecordingOutputOptionChanged();
+
+    partial void OnRecordingFormatChanged(string value) => OnRecordingOutputOptionChanged();
+
+    partial void OnRecordingQualityChanged(string value) => OnRecordingOutputOptionChanged();
+
     partial void OnProductionModeChanged(ProductionMode value)
     {
         RefreshTransportAutomationState();
@@ -986,6 +1035,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private async Task ToggleStreamingAsync()
     {
+        if (!Streaming && BuildSelectedStreamDestinations().Count == 0)
+        {
+            OutputStatus = "Select at least one stream destination.";
+            OutputSessionStatus = OutputStatus;
+            return;
+        }
+
         Streaming = !Streaming;
         RefreshOutputStatus();
 
@@ -1451,6 +1507,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         device.ConnectionState = CaptureConnectionState.Connected;
         device.SignalPresent = true;
+        AssignConnectedCaptureDeviceToShowInput(device);
         RefreshCaptureFleetSummary();
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -1679,11 +1736,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Participants = participants,
             Recording = Recording,
             Streaming = Streaming,
-            StreamDestinations = ["rtmp", "ndi", "srt"],
-            RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
-            {
-                IsoParticipantIds = isoParticipantIds
-            },
+            StreamDestinations = BuildSelectedStreamDestinations(),
+            RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
                     graphic.Id,
@@ -1720,6 +1774,76 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
             SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
+    }
+
+    private IReadOnlyList<string> BuildSelectedStreamDestinations()
+    {
+        var destinations = new List<string>(3);
+        if (StreamRtmpEnabled)
+        {
+            destinations.Add("rtmp");
+        }
+
+        if (StreamNdiEnabled)
+        {
+            destinations.Add("ndi");
+        }
+
+        if (StreamSrtEnabled)
+        {
+            destinations.Add("srt");
+        }
+
+        return destinations;
+    }
+
+    private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
+        new(
+            TargetFolder: NormalizeOutputText(RecordingTargetFolder, MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder),
+            FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
+            Format: NormalizeOutputText(RecordingFormat, MediaCoreProductionSyncContext.DefaultRecordingTargets.Format).ToLowerInvariant(),
+            Quality: NormalizeOutputText(RecordingQuality, MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality).ToLowerInvariant(),
+            IsoParticipantIds: isoParticipantIds);
+
+    private static string NormalizeOutputText(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private async void OnStreamOutputOptionChanged()
+    {
+        OnPropertyChanged(nameof(StreamDestinationSummary));
+
+        if (!Streaming || !_bridge.Running)
+        {
+            return;
+        }
+
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            OutputStatus = ex.Message;
+        }
+    }
+
+    private async void OnRecordingOutputOptionChanged()
+    {
+        OnPropertyChanged(nameof(RecordingOptionsSummary));
+
+        if (!Recording || !_bridge.Running)
+        {
+            return;
+        }
+
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            OutputStatus = ex.Message;
+        }
     }
 
     private static string MapParticipantHealth(FeedHealth health) => health switch
@@ -2327,7 +2451,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void EnsureAssignedSlotsForInShow()
     {
         var defaultParticipant = RoomVideoParticipants.FirstOrDefault()?.Id;
-        var defaultCapture = CaptureDevices.FirstOrDefault()?.Id;
+        var defaultCapture = CaptureDevices.FirstOrDefault(device => device.IsConnected) ??
+            CaptureDevices.FirstOrDefault();
 
         foreach (var slot in ShowInputs.Where(slot => slot.InShow && !slot.IsAssigned))
         {
@@ -2336,13 +2461,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 slot.Kind = ShowInputKind.ZoomParticipant;
                 slot.ParticipantId = defaultParticipant;
             }
-            else if (!string.IsNullOrWhiteSpace(defaultCapture))
+            else if (defaultCapture is not null)
             {
-                slot.Kind = ShowInputKind.Blackmagic;
-                slot.CaptureDeviceId = defaultCapture;
+                slot.Kind = ResolveShowInputKind(defaultCapture);
+                slot.CaptureDeviceId = defaultCapture.Id;
             }
         }
     }
+
+    private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
+    {
+        var targetKind = ResolveShowInputKind(device);
+        var existing = ShowInputs.FirstOrDefault(slot =>
+            slot.Kind == targetKind &&
+            string.Equals(slot.CaptureDeviceId, device.Id, StringComparison.Ordinal));
+        if (existing is not null)
+        {
+            existing.InShow = true;
+            return;
+        }
+
+        var slot = ShowInputs.FirstOrDefault(slot => slot.InShow && !slot.IsAssigned) ??
+            ShowInputs.FirstOrDefault(slot => !slot.InShow && !slot.IsAssigned);
+        if (slot is null)
+        {
+            return;
+        }
+
+        slot.Kind = targetKind;
+        slot.CaptureDeviceId = device.Id;
+        slot.InShow = true;
+    }
+
+    private static ShowInputKind ResolveShowInputKind(CaptureDevice device) =>
+        device.Vendor.ToLowerInvariant() switch
+        {
+            "blackmagic" => ShowInputKind.Blackmagic,
+            "aja" => ShowInputKind.Aja,
+            "uvc" or "windows" => ShowInputKind.UvcWebcam,
+            _ => ShowInputKind.UvcWebcam
+        };
 
     private void RefreshMultiviewGridTiles()
     {

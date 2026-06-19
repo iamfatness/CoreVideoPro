@@ -141,21 +141,33 @@ public sealed partial class ShowMultiviewHost : UserControl
             var tile = tiles[index];
             var row = index / columns;
             var column = index % columns;
-            var host = new AspectRatioHost
+            if (tiles.Count == 3)
             {
-                AspectWidth = 16,
-                AspectHeight = 9,
-                Margin = new Thickness(2),
-                Child = new BroadcastMultiviewTile
+                (row, column) = index switch
                 {
-                    Tile = tile,
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    VerticalAlignment = VerticalAlignment.Stretch
-                }
-            };
-            Grid.SetRow(host, row);
-            Grid.SetColumn(host, column);
-            LayoutSurface.Children.Add(host);
+                    0 => (0, 0),
+                    1 => (0, 1),
+                    _ => (1, 1)
+                };
+                AddTile(tile, row, column, index == 0 ? 2 : 1, 1);
+                continue;
+            }
+
+            if (tiles.Count == 5)
+            {
+                (row, column) = index switch
+                {
+                    0 => (0, 0),
+                    1 => (0, 1),
+                    2 => (0, 2),
+                    3 => (1, 1),
+                    _ => (1, 2)
+                };
+                AddTile(tile, row, column, index == 0 ? 2 : 1, 1);
+                continue;
+            }
+
+            AddTile(tile, row, column);
         }
     }
 
@@ -164,9 +176,27 @@ public sealed partial class ShowMultiviewHost : UserControl
         {
             1 => (1, 1),
             2 => (2, 1),
+            3 => (2, 2),
             <= 4 => (2, 2),
+            5 => (3, 2),
             <= 6 => (3, 2),
             <= 8 => (4, 2),
             _ => (5, 2)
         };
+
+    private void AddTile(ParticipantSurfaceTile tile, int row, int column, int rowSpan = 1, int columnSpan = 1)
+    {
+        var host = new BroadcastMultiviewTile
+        {
+            Tile = tile,
+            Margin = new Thickness(2),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+        Grid.SetRow(host, row);
+        Grid.SetColumn(host, column);
+        Grid.SetRowSpan(host, rowSpan);
+        Grid.SetColumnSpan(host, columnSpan);
+        LayoutSurface.Children.Add(host);
+    }
 }
