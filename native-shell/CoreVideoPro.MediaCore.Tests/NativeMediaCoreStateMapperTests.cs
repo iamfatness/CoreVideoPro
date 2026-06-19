@@ -231,4 +231,62 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("customer-panel", snapshot.BreakoutRoomId);
         Assert.Equal("Customer panel", snapshot.BreakoutRoomName);
     }
+
+    [Fact]
+    public void NativeWireStateWithoutNativeFramesWaitsForFirstCompositorFrame()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            SceneId = "interview",
+            RouteCount = 1,
+            CompositorRenderer = "software",
+            Health = new NativeMediaCoreWireHealth
+            {
+                Status = "idle",
+                Renderer = "software",
+                ProgramFrameHealth = "live",
+                FrameCount = 0
+            },
+            Profile = new NativeMediaCoreProfile
+            {
+                Name = "CoreVideo Pro Native Media Core Stub",
+                Renderer = "software",
+                MaxProgramResolution = "1920x1080",
+                MaxProgramFps = 30,
+                MaxParticipantFeeds = 6,
+                MaxIsoRecordings = 2,
+                Capabilities = ["scene-graph-rendering"]
+            }
+        });
+
+        Assert.Equal(0, snapshot.ProgramFrameCount);
+        Assert.Null(snapshot.ProgramFrame);
+        Assert.Equal("idle", snapshot.Compositor.Status);
+        Assert.Equal("idle", snapshot.ProgramTransport.Status);
+    }
+
+    [Fact]
+    public void NativeWireStateCarriesDegradedProgramFrameHealthToCompositor()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            SceneId = "interview",
+            RouteCount = 1,
+            ProgramFrameCount = 7,
+            RenderPlanId = "interview:degraded",
+            CompositorRenderer = "software",
+            Health = new NativeMediaCoreWireHealth
+            {
+                Status = "live",
+                Renderer = "software",
+                ProgramFrameHealth = "degraded",
+                FrameCount = 7
+            }
+        });
+
+        Assert.Equal(7, snapshot.ProgramFrameCount);
+        Assert.Equal("degraded", snapshot.ProgramFrame?.Health);
+        Assert.Equal("degraded", snapshot.Compositor.Status);
+        Assert.Equal("publishing", snapshot.ProgramTransport.Status);
+    }
 }

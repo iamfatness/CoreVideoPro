@@ -348,11 +348,16 @@ public sealed class NativeMediaCoreBrandKit
 {
     public required string Name { get; init; }
     public required string LogoText { get; init; }
+    public string? LogoAssetId { get; init; }
+    public string? LogoAssetName { get; init; }
+    public string? LogoAssetPath { get; init; }
     public required string BrandColor { get; init; }
     public required string AccentColor { get; init; }
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
     public required string LowerThirdStyle { get; init; }
+    public required string CaptionStyle { get; init; }
+    public required string DefaultOverlayBehavior { get; init; }
     public int AppliedOverlayCount { get; init; }
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -420,6 +425,8 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
         BackgroundColor = "#000000",
         FontFamily = "Inter",
         LowerThirdStyle = "solid",
+        CaptionStyle = "medium sentence captions",
+        DefaultOverlayBehavior = "brand-bug",
         Summary = "Idle"
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
@@ -472,6 +479,8 @@ public sealed record NativeMediaCoreStateSnapshot
         BackgroundColor = "#000000",
         FontFamily = "Inter",
         LowerThirdStyle = "solid",
+        CaptionStyle = "medium sentence captions",
+        DefaultOverlayBehavior = "brand-bug",
         Summary = "Idle"
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];

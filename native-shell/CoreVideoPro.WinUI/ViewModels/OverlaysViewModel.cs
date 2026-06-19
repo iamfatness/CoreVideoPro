@@ -33,7 +33,31 @@ public sealed partial class OverlaysViewModel : ObservableObject
     public OverlaysViewModel(StudioViewModel studio)
     {
         _studio = studio;
+        BrandName = studio.BrandKit.Name;
+        BrandLogoText = studio.BrandKit.LogoText;
+        BrandPrimaryColor = studio.BrandKit.BrandColor;
+        BrandAccentColor = studio.BrandKit.AccentColor;
+        BrandLowerThirdStyle = studio.BrandKit.LowerThirdStyle;
+        BrandDefaultOverlayBehavior = studio.BrandKit.DefaultOverlayBehavior;
     }
+
+    [ObservableProperty]
+    private string _brandName = string.Empty;
+
+    [ObservableProperty]
+    private string _brandLogoText = string.Empty;
+
+    [ObservableProperty]
+    private string _brandPrimaryColor = string.Empty;
+
+    [ObservableProperty]
+    private string _brandAccentColor = string.Empty;
+
+    [ObservableProperty]
+    private string _brandLowerThirdStyle = string.Empty;
+
+    [ObservableProperty]
+    private string _brandDefaultOverlayBehavior = string.Empty;
 
     public ObservableCollection<GraphicOverlay> Graphics => _studio.Graphics;
 
@@ -47,6 +71,10 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public IReadOnlyList<string> CaptionPositionOptions => CaptionStyleHelper.CaptionPositionOptions;
 
+    public IReadOnlyList<string> BrandLowerThirdStyleOptions { get; } = ["solid", "minimal", "gradient"];
+
+    public IReadOnlyList<string> BrandDefaultOverlayBehaviorOptions { get; } = ["brand-bug", "bug-and-live", "all-off", "manual"];
+
     public string CaptionStyleSummary => CaptionStyleHelper.Summarize(new CaptionStyleState
     {
         FontSize = CaptionFontSize,
@@ -54,6 +82,8 @@ public sealed partial class OverlaysViewModel : ObservableObject
         BackgroundOpacity = CaptionBackgroundOpacity,
         Uppercase = CaptionUppercase
     });
+
+    public string BrandColorSummary => $"{BrandKit.BrandColor} / {BrandKit.AccentColor}";
 
     public string CaptionQualitySummary => _studio.CaptionQualitySummary;
 
@@ -93,6 +123,18 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     partial void OnCaptionUppercaseChanged(bool value) => NotifyCaptionPresentationChanged();
 
+    partial void OnBrandNameChanged(string value) => UpdateBrandKit();
+
+    partial void OnBrandLogoTextChanged(string value) => UpdateBrandKit();
+
+    partial void OnBrandPrimaryColorChanged(string value) => UpdateBrandKit();
+
+    partial void OnBrandAccentColorChanged(string value) => UpdateBrandKit();
+
+    partial void OnBrandLowerThirdStyleChanged(string value) => UpdateBrandKit();
+
+    partial void OnBrandDefaultOverlayBehaviorChanged(string value) => UpdateBrandKit();
+
     partial void OnLowerThirdPositionChanged(string value)
     {
         OnPropertyChanged(nameof(LowerThirdPositionLabel));
@@ -116,6 +158,27 @@ public sealed partial class OverlaysViewModel : ObservableObject
     [RelayCommand]
     private void ToggleGraphic(string graphicId) => _studio.ToggleGraphicCommand.Execute(graphicId);
 
+    [RelayCommand]
+    private void UseSelectedMediaAsLogo()
+    {
+        if (!_studio.ApplySelectedMediaAssetAsBrandLogo())
+        {
+            _studio.CommandStatus = "Select a media asset before assigning the brand logo";
+        }
+    }
+
+    public void NotifyBrandKitChanged()
+    {
+        BrandName = BrandKit.Name;
+        BrandLogoText = BrandKit.LogoText;
+        BrandPrimaryColor = BrandKit.BrandColor;
+        BrandAccentColor = BrandKit.AccentColor;
+        BrandLowerThirdStyle = BrandKit.LowerThirdStyle;
+        BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior;
+        OnPropertyChanged(nameof(BrandKit));
+        OnPropertyChanged(nameof(BrandColorSummary));
+    }
+
     private void NotifyCaptionPresentationChanged()
     {
         OnPropertyChanged(nameof(CaptionStyleSummary));
@@ -123,5 +186,35 @@ public sealed partial class OverlaysViewModel : ObservableObject
         OnPropertyChanged(nameof(CaptionDisplayText));
         OnPropertyChanged(nameof(CaptionTextBrush));
         OnPropertyChanged(nameof(CaptionBackgroundBrush));
+        UpdateBrandKit();
+    }
+
+    private void UpdateBrandKit()
+    {
+        if (string.IsNullOrWhiteSpace(BrandName) ||
+            string.IsNullOrWhiteSpace(BrandLogoText) ||
+            string.IsNullOrWhiteSpace(BrandPrimaryColor) ||
+            string.IsNullOrWhiteSpace(BrandAccentColor) ||
+            string.IsNullOrWhiteSpace(BrandLowerThirdStyle) ||
+            string.IsNullOrWhiteSpace(BrandDefaultOverlayBehavior))
+        {
+            return;
+        }
+
+        _studio.SetBrandKit(new BrandKit
+        {
+            Name = BrandName.Trim(),
+            LogoText = BrandLogoText.Trim(),
+            LogoAssetId = BrandKit.LogoAssetId,
+            LogoAssetName = BrandKit.LogoAssetName,
+            LogoAssetPath = BrandKit.LogoAssetPath,
+            BrandColor = BrandPrimaryColor.Trim(),
+            AccentColor = BrandAccentColor.Trim(),
+            BackgroundColor = BrandKit.BackgroundColor,
+            FontFamily = BrandKit.FontFamily,
+            LowerThirdStyle = BrandLowerThirdStyle,
+            CaptionStyle = CaptionStyleSummary,
+            DefaultOverlayBehavior = BrandDefaultOverlayBehavior
+        });
     }
 }

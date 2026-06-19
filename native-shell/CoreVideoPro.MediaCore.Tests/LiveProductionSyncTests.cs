@@ -471,6 +471,8 @@ public sealed class LiveProductionSyncTests
                 BackgroundColor = "#000000",
                 FontFamily = "Inter",
                 LowerThirdStyle = "solid",
+                CaptionStyle = "medium sentence captions",
+                DefaultOverlayBehavior = "brand-bug",
                 Summary = "Brand kit live"
             },
             Recording = recording,

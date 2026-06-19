@@ -1,9 +1,10 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using System.ComponentModel;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
-public sealed class ShowInputSlotViewModel
+public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 {
     private readonly ShowInputSlot _slot;
     private readonly Action _onChanged;
@@ -108,15 +109,20 @@ public sealed class ShowInputSlotViewModel
         IReadOnlyList<CaptureDevice> captureDevices)
     {
         SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices);
-        if (Kind == ShowInputKind.ZoomParticipant && string.IsNullOrWhiteSpace(ParticipantId))
+        if (Kind == ShowInputKind.ZoomParticipant &&
+            (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
         {
             ParticipantId = SourceOptions.FirstOrDefault()?.Value;
         }
         else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
-                 string.IsNullOrWhiteSpace(CaptureDeviceId))
+                 (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
         {
             CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;
         }
+
+        OnPropertyChanged(nameof(SourceOptions));
+        OnPropertyChanged(nameof(SelectedSourceId));
+        OnPropertyChanged(nameof(IsSourcePickerEnabled));
     }
 
     private void OnSlotPropertyChanged()
@@ -131,7 +137,7 @@ public sealed class ShowInputSlotViewModel
     }
 
     private void OnPropertyChanged(string propertyName) =>
-        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
-    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    public event PropertyChangedEventHandler? PropertyChanged;
 }

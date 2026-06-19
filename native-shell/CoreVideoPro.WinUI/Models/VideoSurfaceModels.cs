@@ -77,8 +77,8 @@ public sealed record VideoSurfaceState
             SurfaceKey = surfaceKey,
             Kind = kind,
             Title = title,
-            StatusLine = "Waiting for compositor output",
-            DetailLine = "Start the engine to receive program frames."
+            StatusLine = "Waiting for video frames",
+            DetailLine = "Waiting for this source to publish frames."
         };
 
     /// <summary>
@@ -92,8 +92,18 @@ public sealed record VideoSurfaceState
             SurfaceKey = surfaceKey,
             Kind = kind,
             Title = title,
-            StatusLine = "Compositor warming up",
-            DetailLine = "Live program frames appear here from the always-on compositor."
+            StatusLine = "Waiting for media engine",
+            DetailLine = "Program output appears after media-core publishes compositor state."
+        };
+
+    public static VideoSurfaceState WaitingForFirstFrame(VideoSurfaceKind kind, string surfaceKey, string title) =>
+        new()
+        {
+            SurfaceKey = surfaceKey,
+            Kind = kind,
+            Title = title,
+            StatusLine = "Waiting for first compositor frame",
+            DetailLine = "The media engine is running; the Program monitor will update on the first rendered frame."
         };
 
     /// <summary>

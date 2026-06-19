@@ -173,11 +173,16 @@ public static class MediaCoreCommandBuilder
         {
             ["name"] = brandKit.Name,
             ["logoText"] = brandKit.LogoText,
+            ["logoAssetId"] = brandKit.LogoAssetId,
+            ["logoAssetName"] = brandKit.LogoAssetName,
+            ["logoAssetPath"] = brandKit.LogoAssetPath,
             ["brandColor"] = brandKit.BrandColor,
             ["accentColor"] = brandKit.AccentColor,
             ["backgroundColor"] = brandKit.BackgroundColor,
             ["fontFamily"] = brandKit.FontFamily,
-            ["lowerThirdStyle"] = brandKit.LowerThirdStyle
+            ["lowerThirdStyle"] = brandKit.LowerThirdStyle,
+            ["captionStyle"] = brandKit.CaptionStyle,
+            ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
         });
 
     private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels) =>
@@ -240,6 +245,8 @@ public static class MediaCoreCommandBuilder
         {
             ["mediaAssetId"] = context.SelectedMediaAssetId.Trim(),
             ["mediaAssetName"] = context.SelectedMediaAssetName?.Trim() ?? string.Empty,
+            ["mediaAssetKind"] = context.SelectedMediaAssetKind?.Trim() ?? string.Empty,
+            ["mediaAssetPath"] = context.SelectedMediaAssetPath?.Trim() ?? string.Empty,
             ["playing"] = context.SelectedMediaAssetPlaying
         });
     }

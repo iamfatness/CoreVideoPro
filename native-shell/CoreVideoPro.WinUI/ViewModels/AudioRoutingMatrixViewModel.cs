@@ -137,6 +137,11 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
         if (!cell.IsRouted)
         {
+            if (IsIsolatedAudioBus(cell.Bus.Id))
+            {
+                ClearBusColumn(cell.Bus.Id);
+            }
+
             cell.IsRouted = true;
         }
 
@@ -190,7 +195,37 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
             Rows.Add(new AudioRoutingSourceRowViewModel(source.Id, source.Label, cells));
         }
 
+        NormalizeIsolatedAudioBuses();
         SelectedCrosspoint = null;
         OnPropertyChanged(nameof(HasRows));
     }
+
+    private void ClearBusColumn(string busId)
+    {
+        foreach (var existing in Rows
+            .SelectMany(row => row.Cells)
+            .Where(existing => existing.Bus.Id == busId))
+        {
+            existing.IsRouted = false;
+        }
+    }
+
+    private void NormalizeIsolatedAudioBuses()
+    {
+        foreach (var bus in Buses.Where(bus => IsIsolatedAudioBus(bus.Id)))
+        {
+            var routedCells = Rows
+                .SelectMany(row => row.Cells)
+                .Where(cell => cell.Bus.Id == bus.Id && cell.IsRouted)
+                .ToList();
+
+            foreach (var duplicate in routedCells.Skip(1))
+            {
+                duplicate.IsRouted = false;
+            }
+        }
+    }
+
+    private static bool IsIsolatedAudioBus(string busId) =>
+        busId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase);
 }

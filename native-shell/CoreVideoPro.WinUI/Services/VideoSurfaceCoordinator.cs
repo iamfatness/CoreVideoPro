@@ -210,6 +210,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         var programFrame = snapshot.ProgramFrame;
         if (programFrame is null && snapshot.ProgramFrameCount <= 0)
         {
+            lock (_gate)
+            {
+                _programSurface = VideoSurfaceState.WaitingForFirstFrame(VideoSurfaceKind.Program, "program", "Program");
+            }
+
+            NotifyChanged();
             return;
         }
 
@@ -237,7 +243,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             TimestampMs = (long)(programFrame?.TimestampMs ?? snapshot.Diagnostics.GeneratedAtMs)
         };
 
-        var status = snapshot.Compositor.Status == "live" ? "Program compositor live" : "Program compositor";
+        var status = DescribeProgramStatus(snapshot.Compositor.Status);
         var detail = $"Frame {frameNumber} · {metadata.ResolutionLabel} · {renderer} · {metadata.FpsLabel}";
 
         lock (_gate)
@@ -248,6 +254,15 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
         NotifyChanged();
     }
+
+    private static string DescribeProgramStatus(string compositorStatus) =>
+        compositorStatus switch
+        {
+            "failed" or "error" or "dropped" => "Compositor output error",
+            "degraded" => "Program compositor degraded",
+            "live" => "Program rendering live",
+            _ => "Waiting for first compositor frame"
+        };
 
     private void ApplyProgramSharedTexture(
         ProgramSharedTexture texture,
@@ -275,6 +290,11 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         {
             var next = _programSurface
                 .WithFrame(metadata, "Program GPU surface live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · {renderer}");
+            if (health is not "live")
+            {
+                next = next.WithFrame(metadata, DescribeProgramStatus(health), next.DetailLine);
+            }
+
             if (handle.IsValid)
             {
                 next = next.WithSharedHandle(handle);
@@ -282,7 +302,6 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
             _programSurface = next;
         }
-
         NotifyChanged();
     }
 
@@ -314,6 +333,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             _programSurface = _programSurface
                 .WithFrame(metadata, "Program preview live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · {renderer}")
                 .WithPreviewPixels(bgra, width, height);
+            if (health is not "live")
+            {
+                _programSurface = _programSurface
+                    .WithFrame(metadata, DescribeProgramStatus(health), _programSurface.DetailLine)
+                    .WithPreviewPixels(bgra, width, height);
+            }
         }
 
         NotifyChanged();

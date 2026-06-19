@@ -102,7 +102,18 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
             return;
         }
 
-        cell.IsRouted = !cell.IsRouted;
+        if (cell.IsRouted)
+        {
+            cell.IsRouted = false;
+            return;
+        }
+
+        if (IsExclusiveDestination(cell.Destination.Id))
+        {
+            ClearDestinationColumn(cell.Destination.Id);
+        }
+
+        cell.IsRouted = true;
     }
 
     /// <summary>
@@ -134,6 +145,36 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
             Rows.Add(new VideoRoutingSourceRowViewModel(source.Id, source.Label, cells));
         }
 
+        NormalizeExclusiveDestinations();
         OnPropertyChanged(nameof(HasRows));
     }
+
+    private void ClearDestinationColumn(string destinationId)
+    {
+        foreach (var existing in Rows
+            .SelectMany(row => row.Cells)
+            .Where(existing => existing.Destination.Id == destinationId))
+        {
+            existing.IsRouted = false;
+        }
+    }
+
+    private void NormalizeExclusiveDestinations()
+    {
+        foreach (var destination in Destinations.Where(destination => IsExclusiveDestination(destination.Id)))
+        {
+            var routedCells = Rows
+                .SelectMany(row => row.Cells)
+                .Where(cell => cell.Destination.Id == destination.Id && cell.IsRouted)
+                .ToList();
+
+            foreach (var duplicate in routedCells.Skip(1))
+            {
+                duplicate.IsRouted = false;
+            }
+        }
+    }
+
+    private static bool IsExclusiveDestination(string destinationId) =>
+        destinationId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase);
 }

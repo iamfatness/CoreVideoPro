@@ -24,6 +24,9 @@ public partial class App : Application
 
     internal static void NotifyMainWindowClosed() => _window = null;
 
+    internal static IntPtr MainWindowHandle =>
+        _window is null ? IntPtr.Zero : WindowNative.GetWindowHandle(_window);
+
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         try

@@ -52,11 +52,16 @@ public sealed record MediaCoreColorGradeWire(
 public sealed record MediaCoreBrandKitWire(
     string Name,
     string LogoText,
+    string? LogoAssetId,
+    string? LogoAssetName,
+    string? LogoAssetPath,
     string BrandColor,
     string AccentColor,
     string BackgroundColor,
     string FontFamily,
-    string LowerThirdStyle);
+    string LowerThirdStyle,
+    string CaptionStyle,
+    string DefaultOverlayBehavior);
 
 public sealed record MediaCoreRecordingTargetsWire(
     string TargetFolder,
@@ -87,6 +92,8 @@ public sealed record MediaCoreProductionSyncContext
     public string? CaptionSpeaker { get; init; }
     public string? SelectedMediaAssetId { get; init; }
     public string? SelectedMediaAssetName { get; init; }
+    public string? SelectedMediaAssetKind { get; init; }
+    public string? SelectedMediaAssetPath { get; init; }
     public bool SelectedMediaAssetPlaying { get; init; }
 
     public static MediaCoreRecordingTargetsWire DefaultRecordingTargets { get; } = new(
@@ -106,9 +113,14 @@ public sealed record MediaCoreProductionSyncContext
     public static MediaCoreBrandKitWire DefaultBrandKit { get; } = new(
         Name: "CoreVideo",
         LogoText: "CoreVideo",
+        LogoAssetId: null,
+        LogoAssetName: null,
+        LogoAssetPath: null,
         BrandColor: "#44c1a1",
         AccentColor: "#f0a85c",
         BackgroundColor: "#0c1118",
         FontFamily: "Inter",
-        LowerThirdStyle: "gradient");
+        LowerThirdStyle: "gradient",
+        CaptionStyle: "medium sentence captions",
+        DefaultOverlayBehavior: "brand-bug");
 }

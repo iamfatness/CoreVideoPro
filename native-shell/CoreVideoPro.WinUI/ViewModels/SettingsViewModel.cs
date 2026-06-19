@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Models;
@@ -20,6 +21,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Action<string>? _zoomStatusChanged;
     private readonly Action? _drainOAuthCallback;
     private readonly Action? _onMeetingJoined;
+    private readonly IRecentZoomMeetingStore _recentMeetingStore;
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
 
     [ObservableProperty]
@@ -66,6 +68,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private FirstFrameValidationEvidence _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
     private Stopwatch? _firstFrameStopwatch;
 
+    public ObservableCollection<RecentZoomMeeting> RecentMeetings { get; } = [];
+
     public SettingsViewModel(
         MediaCoreBridgeService bridge,
         Func<bool> captureRunning,
@@ -74,7 +78,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         Action? onMeetingPresenceChanged = null,
         Func<Task>? onBeforeLeaveMeeting = null,
         Action<string>? zoomStatusChanged = null,
-        Action? onMeetingJoined = null)
+        Action? onMeetingJoined = null,
+        IRecentZoomMeetingStore? recentMeetingStore = null)
     {
         _bridge = bridge;
         _oauth = oauth;
@@ -84,7 +89,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         _onBeforeLeaveMeeting = onBeforeLeaveMeeting;
         _zoomStatusChanged = zoomStatusChanged;
         _onMeetingJoined = onMeetingJoined;
+        _recentMeetingStore = recentMeetingStore ?? new FileRecentZoomMeetingStore(FileRecentZoomMeetingStore.DefaultStorePath());
         _ = RefreshOAuthStatusAsync();
+        _ = LoadRecentMeetingsAsync();
         RefreshSdkReadiness();
     }
 
@@ -114,6 +121,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     public bool JoinBlockedBySdk => ZoomSdkReadinessService.ShouldBlockZoomJoin(_captureRunning(), _sdkReadiness);
 
     public bool CanJoinZoom => !JoinBlockedBySdk;
+
+    public bool ShowRecentMeetings => RecentMeetings.Count > 0;
 
     public string JoinBlockedReason =>
         _sdkReadiness.Blockers.FirstOrDefault() is { } blocker
@@ -377,6 +386,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 _zoomStatusChanged?.Invoke("Zoom Live");
                 _onMeetingJoined?.Invoke();
             });
+            await RememberRecentMeetingAsync(JoinMeetingUrl, DisplayName, IsWebinar).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -384,6 +394,20 @@ public sealed partial class SettingsViewModel : ObservableObject
             LaunchLog.Write($"zoom-join: failed {ex.GetType().Name}: {message}");
             SetJoinFailure(message);
         }
+    }
+
+    [RelayCommand]
+    private void UseRecentMeeting(RecentZoomMeeting? meeting)
+    {
+        if (meeting is null || IsInMeeting)
+        {
+            return;
+        }
+
+        JoinMeetingUrl = meeting.MeetingNumber;
+        DisplayName = meeting.DisplayName;
+        IsWebinar = meeting.Webinar;
+        JoinStatus = $"Ready to rejoin {meeting.MeetingNumber}";
     }
 
     [RelayCommand]
@@ -429,6 +453,33 @@ public sealed partial class SettingsViewModel : ObservableObject
         LiveParticipantCount = snapshot.Participants.Count;
         RefreshZoomEngineEvidence(_bridge.LastSnapshot);
         NotifyMeetingUi();
+    }
+
+    private async Task LoadRecentMeetingsAsync()
+    {
+        var meetings = await _recentMeetingStore.LoadAsync().ConfigureAwait(false);
+        RunOnUiThread(() => ReplaceRecentMeetings(meetings));
+    }
+
+    private async Task RememberRecentMeetingAsync(string meetingUrl, string displayName, bool webinar)
+    {
+        var meetings = await _recentMeetingStore.RememberAsync(
+            meetingUrl,
+            string.IsNullOrWhiteSpace(displayName) ? "CoreVideo Producer" : displayName.Trim(),
+            webinar).ConfigureAwait(false);
+        RunOnUiThread(() => ReplaceRecentMeetings(meetings));
+    }
+
+    private void ReplaceRecentMeetings(IEnumerable<RecentZoomMeeting> meetings)
+    {
+        RecentMeetings.Clear();
+        foreach (var meeting in meetings)
+        {
+            RecentMeetings.Add(meeting);
+        }
+
+        OnPropertyChanged(nameof(RecentMeetings));
+        OnPropertyChanged(nameof(ShowRecentMeetings));
     }
 
     public void ApplyMeetingStateLabel(string? meetingStateLabel, int participantCount = 0)

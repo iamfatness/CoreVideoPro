@@ -7,7 +7,10 @@ public sealed record MediaBinAssetDescriptor(
     string Id,
     string Name,
     string Kind,
-    int? DurationMs);
+    int? DurationMs,
+    string RelativePath,
+    string FilePath,
+    string FileType);
 
 public sealed record MediaBinGroupDescriptor(
     string Kind,
@@ -117,6 +120,12 @@ public static class MediaBinClassifier
     public static string BuildAssetName(string fileName) =>
         Path.GetFileNameWithoutExtension(fileName);
 
+    public static string BuildFileType(string fileName)
+    {
+        var extension = Path.GetExtension(fileName).TrimStart('.');
+        return string.IsNullOrWhiteSpace(extension) ? "file" : extension.ToUpperInvariant();
+    }
+
     public static string KindLabel(string kind) => kind switch
     {
         "stinger" => "Stinger",
@@ -158,7 +167,10 @@ public static class MediaBinClassifier
                         BuildAssetId(relativePath),
                         BuildAssetName(fileName),
                         kind,
-                        DurationMs: null));
+                        DurationMs: null,
+                        RelativePath: relativePath,
+                        FilePath: filePath,
+                        FileType: BuildFileType(fileName)));
                 }
                 catch
                 {

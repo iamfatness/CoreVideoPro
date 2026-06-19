@@ -41,6 +41,15 @@ public sealed partial class SourcesInputsPage : UserControl
 
         kindCombo.SelectionChanged -= OnShowInputKindChanged;
         kindCombo.SelectionChanged += OnShowInputKindChanged;
+
+        var sourceCombo = FindDescendant<ComboBox>(root, "SourceCombo");
+        if (sourceCombo is null)
+        {
+            return;
+        }
+
+        sourceCombo.SelectionChanged -= OnShowInputSourceChanged;
+        sourceCombo.SelectionChanged += OnShowInputSourceChanged;
     }
 
     private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
@@ -53,6 +62,18 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         editor.Kind = kind;
+    }
+
+    private void OnShowInputSourceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo ||
+            combo.DataContext is not ShowInputSlotViewModel editor ||
+            combo.SelectedValue is not string sourceId)
+        {
+            return;
+        }
+
+        editor.SelectedSourceId = sourceId;
     }
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement

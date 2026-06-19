@@ -193,11 +193,19 @@ public sealed class BrandKit
 {
     public required string Name { get; init; }
     public required string LogoText { get; init; }
+    public string? LogoAssetId { get; init; }
+    public string? LogoAssetName { get; init; }
+    public string? LogoAssetPath { get; init; }
     public required string BrandColor { get; init; }
     public required string AccentColor { get; init; }
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
     public required string LowerThirdStyle { get; init; }
+    public required string CaptionStyle { get; init; }
+    public required string DefaultOverlayBehavior { get; init; }
+
+    public string LogoAssetLabel =>
+        string.IsNullOrWhiteSpace(LogoAssetName) ? "No logo asset selected" : LogoAssetName;
 
     public string Summary =>
         $"{Name} · {FontFamily} · lower-third {LowerThirdStyle} · logo \"{LogoText}\"";
@@ -271,9 +279,18 @@ public sealed class MediaAsset
     public required string Name { get; init; }
     public required string Kind { get; init; }
     public int? DurationMs { get; init; }
+    public string RelativePath { get; init; } = string.Empty;
+    public string FilePath { get; init; } = string.Empty;
+    public string FileType { get; init; } = string.Empty;
+    public bool IsSelected { get; init; }
 
     public string DurationLabel =>
         DurationMs is { } ms ? $"{Math.Round(ms / 100.0) / 10.0:0.#}s" : string.Empty;
+
+    public string DetailLabel =>
+        string.Join(" - ", new[] { Kind, FileType, RelativePath }.Where(part => !string.IsNullOrWhiteSpace(part)));
+
+    public string SelectionLabel => IsSelected ? "Selected" : "Select";
 }
 
 public sealed class MediaBinGroup
@@ -311,7 +328,9 @@ public static class ProductionCatalog
         AccentColor = "#f0a85c",
         BackgroundColor = "#0c1118",
         FontFamily = "Inter",
-        LowerThirdStyle = "gradient"
+        LowerThirdStyle = "gradient",
+        CaptionStyle = "medium sentence captions",
+        DefaultOverlayBehavior = "brand-bug"
     };
 
     public static CaptionStyle CaptionStyle { get; } = new()

@@ -48,7 +48,12 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
         _ => "Unassigned"
     };
 
-    public bool IsAssigned => Kind != ShowInputKind.Unassigned;
+    public bool IsAssigned => Kind switch
+    {
+        ShowInputKind.ZoomParticipant => !string.IsNullOrWhiteSpace(ParticipantId),
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam => !string.IsNullOrWhiteSpace(CaptureDeviceId),
+        _ => false
+    };
 
     public bool IsSourcePickerEnabled =>
         Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam;

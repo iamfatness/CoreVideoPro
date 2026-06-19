@@ -342,12 +342,16 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             SelectedMediaAssetId = "clip-intro",
             SelectedMediaAssetName = "Intro Sting",
+            SelectedMediaAssetKind = "stinger",
+            SelectedMediaAssetPath = @"C:\media\intro.mp4",
             SelectedMediaAssetPlaying = true
         });
 
         var playback = withSelection.Single(command => command.Type == "set-media-playback");
         Assert.Equal("clip-intro", GetString(playback, "mediaAssetId"));
         Assert.Equal("Intro Sting", GetString(playback, "mediaAssetName"));
+        Assert.Equal("stinger", GetString(playback, "mediaAssetKind"));
+        Assert.Equal(@"C:\media\intro.mp4", GetString(playback, "mediaAssetPath"));
         Assert.NotNull(playback.ExtensionData);
         Assert.True(playback.ExtensionData!["playing"].GetBoolean());
     }

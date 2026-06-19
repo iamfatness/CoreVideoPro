@@ -70,9 +70,9 @@ public sealed class MediaBinServiceTests : IDisposable
     {
         var assets = new[]
         {
-            new MediaBinAssetDescriptor("a", "Bed", "audio-bed", 30000),
-            new MediaBinAssetDescriptor("b", "Stinger", "stinger", 900),
-            new MediaBinAssetDescriptor("c", "Overlay", "lower-third", null)
+            new MediaBinAssetDescriptor("a", "Bed", "audio-bed", 30000, "audio-bed/bed.wav", Path.Combine(_mediaRoot, "audio-bed", "bed.wav"), "WAV"),
+            new MediaBinAssetDescriptor("b", "Stinger", "stinger", 900, "stinger/stinger.mp4", Path.Combine(_mediaRoot, "stinger", "stinger.mp4"), "MP4"),
+            new MediaBinAssetDescriptor("c", "Overlay", "lower-third", null, "lower-third/overlay.png", Path.Combine(_mediaRoot, "lower-third", "overlay.png"), "PNG")
         };
 
         var groups = MediaBinClassifier.GroupAssets(assets);

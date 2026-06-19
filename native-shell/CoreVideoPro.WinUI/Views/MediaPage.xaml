@@ -78,14 +78,24 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Media bin" Style="{StaticResource OperatorSectionTitle}" />
-                        <Button Grid.Column="1" Content="Refresh"
+                        <Button Grid.Column="1" Content="Import"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.ImportMediaAssetsCommand}" />
+                        <Button Grid.Column="2" Content="Refresh"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.RefreshMediaBinCommand}" />
                     </Grid>
                     <TextBlock Text="{x:Bind ViewModel.MediaBinSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Selected asset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.SelectedMediaAssetSummary, Mode=OneWay}" FontSize="12" />
+                        </StackPanel>
+                    </Border>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="Now playing" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
@@ -111,13 +121,21 @@
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Text="{x:Bind Name}" FontSize="12"
                                                                VerticalAlignment="Center" />
-                                                    <TextBlock Grid.Column="1" Text="{x:Bind DurationLabel}" FontSize="10"
-                                                               VerticalAlignment="Center"
-                                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <Button Grid.Column="2" Content="Play"
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <TextBlock Text="{x:Bind DurationLabel}" FontSize="10"
+                                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                                        <TextBlock Text="{x:Bind DetailLabel}" FontSize="10"
+                                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                                    </StackPanel>
+                                                    <Button Grid.Column="2" Content="{x:Bind SelectionLabel}"
+                                                            Style="{StaticResource OperatorGhostButton}"
+                                                            Command="{Binding ViewModel.SelectMediaAssetCommand, ElementName=MediaRoot}"
+                                                            CommandParameter="{x:Bind Id}" />
+                                                    <Button Grid.Column="3" Content="Play"
                                                             Style="{StaticResource OperatorGhostButton}"
                                                             Command="{Binding ViewModel.PlayMediaAssetCommand, ElementName=MediaRoot}"
                                                             CommandParameter="{x:Bind Id}" />

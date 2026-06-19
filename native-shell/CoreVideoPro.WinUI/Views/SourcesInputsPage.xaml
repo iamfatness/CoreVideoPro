@@ -162,7 +162,8 @@
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" Spacing="4">
                                             <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox ItemsSource="{x:Bind SourceOptions}"
+                                            <ComboBox x:Name="SourceCombo"
+                                                      ItemsSource="{x:Bind SourceOptions}"
                                                       SelectedValue="{x:Bind SelectedSourceId, Mode=TwoWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"

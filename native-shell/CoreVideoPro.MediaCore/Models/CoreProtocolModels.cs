@@ -72,6 +72,7 @@ public sealed class NativeMediaCoreWireHealth
 {
     public string? Status { get; init; }
     public string? Renderer { get; init; }
+    public string? ProgramFrameHealth { get; init; }
     public string? Encoder { get; init; }
     public string? Codec { get; init; }
     public bool? HardwareEncoder { get; init; }

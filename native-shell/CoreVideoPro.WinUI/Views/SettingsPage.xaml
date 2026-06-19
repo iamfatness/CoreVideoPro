@@ -1,9 +1,11 @@
 <UserControl
     x:Class="CoreVideoPro.WinUI.Views.SettingsPage"
+    x:Name="SettingsRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:conv="using:CoreVideoPro.WinUI.Converters"
-    xmlns:models="using:CoreVideoPro.WinUI.Models">
+    xmlns:models="using:CoreVideoPro.WinUI.Models"
+    xmlns:services="using:CoreVideoPro.MediaCore.Services">
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
@@ -79,6 +81,19 @@
                                    Text="{x:Bind ViewModel.MeetingStatusLine, Mode=OneWay}"
                                    Style="{StaticResource StudioBody}" />
                     </Grid>
+
+                    <ComboBox Header="Recent meetings"
+                              PlaceholderText="Select a recent meeting"
+                              ItemsSource="{x:Bind ViewModel.RecentMeetings, Mode=OneWay}"
+                              IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}"
+                              Visibility="{x:Bind ViewModel.ShowRecentMeetings, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                              SelectionChanged="RecentMeetings_SelectionChanged">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="services:RecentZoomMeeting">
+                                <TextBlock Text="{x:Bind Summary}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
                     <StackPanel Spacing="10"
                                 Visibility="{x:Bind ViewModel.ShowZoomOAuthControls, Mode=OneWay, Converter={StaticResource BoolToVis}}">

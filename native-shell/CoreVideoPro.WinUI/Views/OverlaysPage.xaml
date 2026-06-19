@@ -66,21 +66,78 @@
                     <TextBlock Text="Brand kit" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.Summary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
+                    <Button Content="Use selected media as logo"
+                            Style="{StaticResource OperatorGhostButton}"
+                            Command="{x:Bind ViewModel.Overlays.UseSelectedMediaAsLogoCommand}" />
                     <Grid ColumnSpacing="8" RowSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
                         <Border Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Kit name" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.Name, Mode=OneWay}" FontSize="12" />
+                                <TextBox Text="{x:Bind ViewModel.Overlays.BrandName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         PlaceholderText="Brand name" />
                             </StackPanel>
                         </Border>
                         <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="2">
                                 <TextBlock Text="Logo text" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.LogoText, Mode=OneWay}" FontSize="12" />
+                                <TextBox Text="{x:Bind ViewModel.Overlays.BrandLogoText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         PlaceholderText="Logo text" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Logo asset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.LogoAssetLabel, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Lower third" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandLowerThirdStyleOptions, Mode=OneWay}"
+                                          SelectedItem="{x:Bind ViewModel.Overlays.BrandLowerThirdStyle, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Brand / accent" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBox Text="{x:Bind ViewModel.Overlays.BrandPrimaryColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             PlaceholderText="#44c1a1" MinWidth="88" />
+                                    <TextBox Text="{x:Bind ViewModel.Overlays.BrandAccentColor, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             PlaceholderText="#f0a85c" MinWidth="88" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Background" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.Overlays.BrandKit.BackgroundColor, Mode=OneWay}" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="3" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Caption style" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionStyleSummary, Mode=OneWay}" FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="3" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="Default overlay" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandDefaultOverlayBehaviorOptions, Mode=OneWay}"
+                                          SelectedItem="{x:Bind ViewModel.Overlays.BrandDefaultOverlayBehavior, Mode=TwoWay}"
+                                          HorizontalAlignment="Stretch" />
                             </StackPanel>
                         </Border>
                     </Grid>

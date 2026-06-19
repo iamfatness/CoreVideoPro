@@ -214,11 +214,16 @@ public static class SyntheticMediaCore
         {
             Name = "Default",
             LogoText = "CV",
+            LogoAssetId = null,
+            LogoAssetName = null,
+            LogoAssetPath = null,
             BrandColor = "#111111",
             AccentColor = "#3366ff",
             BackgroundColor = "#000000",
             FontFamily = "Inter",
             LowerThirdStyle = "solid",
+            CaptionStyle = "medium sentence captions",
+            DefaultOverlayBehavior = "brand-bug",
             AppliedOverlayCount = 0,
             Summary = "Brand kit idle",
             Warnings = []

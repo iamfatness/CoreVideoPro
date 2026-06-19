@@ -10,6 +10,8 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Windows.AppLifecycle;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
@@ -174,6 +176,62 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly List<GraphicsOverlaySync.CaptionTranscriptEntryPatch> _captionTranscriptPatches = [];
 
     public IReadOnlyList<MediaBinGroup> MediaBinGroups { get; private set; } = [];
+
+    public void SetBrandKit(BrandKit brandKit)
+    {
+        BrandKit = brandKit;
+        ApplyBrandOverlayDefaults(brandKit.DefaultOverlayBehavior);
+        Overlays?.NotifyBrandKitChanged();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public bool ApplySelectedMediaAssetAsBrandLogo()
+    {
+        if (SelectedMediaAssetId is null || FindMediaAsset(SelectedMediaAssetId) is not { } asset)
+        {
+            return false;
+        }
+
+        SetBrandKit(new BrandKit
+        {
+            Name = BrandKit.Name,
+            LogoText = BrandKit.LogoText,
+            LogoAssetId = asset.Id,
+            LogoAssetName = asset.Name,
+            LogoAssetPath = asset.FilePath,
+            BrandColor = BrandKit.BrandColor,
+            AccentColor = BrandKit.AccentColor,
+            BackgroundColor = BrandKit.BackgroundColor,
+            FontFamily = BrandKit.FontFamily,
+            LowerThirdStyle = BrandKit.LowerThirdStyle,
+            CaptionStyle = BrandKit.CaptionStyle,
+            DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
+        });
+        CommandStatus = $"{asset.Name} assigned as brand logo";
+        return true;
+    }
+
+    private void ApplyBrandOverlayDefaults(string behavior)
+    {
+        if (string.Equals(behavior, "manual", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        foreach (var graphic in Graphics)
+        {
+            graphic.Enabled = behavior switch
+            {
+                "brand-bug" => string.Equals(graphic.Id, "brand-bug", StringComparison.Ordinal),
+                "bug-and-live" => string.Equals(graphic.Id, "brand-bug", StringComparison.Ordinal) ||
+                                  string.Equals(graphic.Id, "live-banner", StringComparison.Ordinal),
+                "all-off" => false,
+                _ => graphic.Enabled
+            };
+        }
+
+        OnPropertyChanged(nameof(EnabledGraphics));
+    }
 
     private readonly List<ParticipantAudioMix> _audioMixChannels = [];
     private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
@@ -1000,7 +1058,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sources = new List<RoutingSource>();
         foreach (var input in ShowInputEditors)
         {
-            if (input.Kind != ShowInputKind.Unassigned)
+            if (input.Kind != ShowInputKind.Unassigned && !string.IsNullOrWhiteSpace(input.SelectedSourceId))
             {
                 sources.Add(new RoutingSource($"input-{input.SlotNumber:00}", input.SlotLabel));
             }
@@ -1172,6 +1230,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasMediaBinAssets => MediaBinGroups.Sum(group => group.Assets.Count) > 0;
 
+    public bool HasSelectedMediaAsset => !string.IsNullOrWhiteSpace(SelectedMediaAssetId);
+
+    public string SelectedMediaAssetSummary =>
+        HasSelectedMediaAsset
+            ? $"{SelectedMediaAssetName} selected"
+            : "No media asset selected";
+
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
     public string CaptionTranscriptEmptyGuidance =>
@@ -1180,11 +1245,118 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RefreshMediaBin()
     {
-        MediaBinGroups = _mediaBinService.LoadGroups();
+        MediaBinGroups = ApplyMediaSelection(_mediaBinService.LoadGroups());
+        if (SelectedMediaAssetId is not null && FindMediaAsset(SelectedMediaAssetId) is null)
+        {
+            SelectedMediaAssetId = null;
+            SelectedMediaAssetName = null;
+            SelectedMediaAssetPlaying = false;
+            MediaPlaybackStatus = "No media asset playing";
+        }
+
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasMediaBinAssets));
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         RefreshProductionReadouts();
+    }
+
+    [RelayCommand]
+    private async Task ImportMediaAssetsAsync()
+    {
+        var picker = new FileOpenPicker
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary,
+            ViewMode = PickerViewMode.List
+        };
+        foreach (var extension in _mediaBinService.SupportedExtensions)
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
+
+        var hwnd = App.MainWindowHandle;
+        if (hwnd != IntPtr.Zero)
+        {
+            InitializeWithWindow.Initialize(picker, hwnd);
+        }
+
+        var files = await picker.PickMultipleFilesAsync();
+        if (files.Count == 0)
+        {
+            CommandStatus = "Media import canceled";
+            return;
+        }
+
+        var imported = _mediaBinService.ImportFiles(files.Select(file => file.Path));
+        RefreshMediaBin();
+        var firstImported = imported.FirstOrDefault();
+        if (firstImported is not null)
+        {
+            SelectMediaAsset(firstImported.Id);
+            CommandStatus = imported.Count == 1
+                ? $"{firstImported.Name} imported and selected"
+                : $"{imported.Count} media assets imported";
+            return;
+        }
+
+        CommandStatus = "No supported media files imported";
+    }
+
+    [RelayCommand]
+    private void SelectMediaAsset(string assetId)
+    {
+        var asset = FindMediaAsset(assetId);
+        if (asset is null)
+        {
+            return;
+        }
+
+        SelectedMediaAssetId = asset.Id;
+        SelectedMediaAssetName = asset.Name;
+        SelectedMediaAssetPlaying = false;
+        MediaPlaybackStatus = $"{asset.Name} selected";
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
+        OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        CommandStatus = $"{asset.Name} ready for playback";
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public void UseSelectedMediaAssetAsBrandLogo()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedMediaAssetId))
+        {
+            CommandStatus = "Select a media asset before assigning a brand logo";
+            return;
+        }
+
+        var asset = FindMediaAsset(SelectedMediaAssetId);
+        if (asset is null)
+        {
+            CommandStatus = "Selected media asset is no longer available";
+            return;
+        }
+
+        BrandKit = new BrandKit
+        {
+            Name = BrandKit.Name,
+            LogoText = BrandKit.LogoText,
+            LogoAssetId = asset.Id,
+            LogoAssetName = asset.Name,
+            LogoAssetPath = asset.FilePath,
+            BrandColor = BrandKit.BrandColor,
+            AccentColor = BrandKit.AccentColor,
+            BackgroundColor = BrandKit.BackgroundColor,
+            FontFamily = BrandKit.FontFamily,
+            LowerThirdStyle = BrandKit.LowerThirdStyle,
+            CaptionStyle = BrandKit.CaptionStyle,
+            DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
+        };
+        Overlays.NotifyBrandKitChanged();
+        CommandStatus = $"{asset.Name} assigned as brand logo";
+        _ = TrySyncMediaCoreAsync();
     }
 
     public bool IsMediaAssetPlaying(string assetId) =>
@@ -1199,9 +1371,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var asset = MediaBinGroups
-            .SelectMany(group => group.Assets)
-            .FirstOrDefault(candidate => string.Equals(candidate.Id, assetId, StringComparison.Ordinal));
+        var asset = FindMediaAsset(assetId);
         if (asset is null)
         {
             return;
@@ -1212,12 +1382,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetId = asset.Id;
         SelectedMediaAssetName = asset.Name;
         SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
         MediaPlaybackStatus = SelectedMediaAssetPlaying
             ? $"Playing {asset.Name}"
             : $"{asset.Name} paused";
         CommandStatus = MediaPlaybackStatus;
 
+        OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
 
         // Push the selection through the typed boundary the same way scene takes do.
@@ -1467,6 +1641,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             isoParticipantIds = MediaCoreProductionSyncContext.DefaultRecordingTargets.IsoParticipantIds.ToList();
         }
 
+        var selectedMediaAsset = SelectedMediaAssetId is null ? null : FindMediaAsset(SelectedMediaAssetId);
+
         return new MediaCoreProductionSyncContext
         {
             ActiveSceneId = ActiveSceneId,
@@ -1495,17 +1671,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BrandKit = new MediaCoreBrandKitWire(
                 BrandKit.Name,
                 BrandKit.LogoText,
+                BrandKit.LogoAssetId,
+                BrandKit.LogoAssetName,
+                BrandKit.LogoAssetPath,
                 BrandKit.BrandColor,
                 BrandKit.AccentColor,
                 BrandKit.BackgroundColor,
                 BrandKit.FontFamily,
-                BrandKit.LowerThirdStyle),
+                BrandKit.LowerThirdStyle,
+                BrandKit.CaptionStyle,
+                BrandKit.DefaultOverlayBehavior),
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker,
             SelectedMediaAssetId = SelectedMediaAssetId,
             SelectedMediaAssetName = SelectedMediaAssetName,
+            SelectedMediaAssetKind = selectedMediaAsset?.Kind,
+            SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
             SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
     }
@@ -1861,12 +2044,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 Name = brandKitPatch.Name,
                 LogoText = brandKitPatch.LogoText,
+                LogoAssetId = BrandKit.LogoAssetId,
+                LogoAssetName = BrandKit.LogoAssetName,
+                LogoAssetPath = BrandKit.LogoAssetPath,
                 BrandColor = brandKitPatch.BrandColor,
                 AccentColor = brandKitPatch.AccentColor,
                 BackgroundColor = brandKitPatch.BackgroundColor,
                 FontFamily = brandKitPatch.FontFamily,
-                LowerThirdStyle = brandKitPatch.LowerThirdStyle
+                LowerThirdStyle = brandKitPatch.LowerThirdStyle,
+                CaptionStyle = BrandKit.CaptionStyle,
+                DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
             };
+            Overlays.NotifyBrandKitChanged();
         }
     }
 
@@ -2036,7 +2225,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
+        RefreshRoutingMatricesIfVisible();
         CommandStatus = "Show input roster updated";
+    }
+
+    private MediaAsset? FindMediaAsset(string assetId) =>
+        MediaBinGroups
+            .SelectMany(group => group.Assets)
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, assetId, StringComparison.Ordinal));
+
+    private IReadOnlyList<MediaBinGroup> ApplyMediaSelection(IReadOnlyList<MediaBinGroup> groups) =>
+        groups.Select(group => new MediaBinGroup
+        {
+            Kind = group.Kind,
+            Label = group.Label,
+            Assets = group.Assets.Select(asset => new MediaAsset
+            {
+                Id = asset.Id,
+                Name = asset.Name,
+                Kind = asset.Kind,
+                DurationMs = asset.DurationMs,
+                RelativePath = asset.RelativePath,
+                FilePath = asset.FilePath,
+                FileType = asset.FileType,
+                IsSelected = string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal)
+            }).ToList()
+        }).ToList();
+
+    private void RefreshRoutingMatricesIfVisible()
+    {
+        if (ActiveTab != StudioTab.Routing)
+        {
+            return;
+        }
+
+        BuildAudioRoutingMatrix();
+        BuildVideoRoutingMatrix();
     }
 
     private void EnsureAssignedSlotsForInShow()
