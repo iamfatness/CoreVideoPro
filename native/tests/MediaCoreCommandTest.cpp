@@ -206,6 +206,54 @@ TEST(MediaCoreCommand, SessionAndHealthExposeZoomReadinessEvidenceWithoutSdk) {
   EXPECT_TRUE(health.get("zoom")->get("evidence")->get("joined")->asBool());
 }
 
+TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
+  corevideo::core::MediaCore mediaCore;
+
+  const auto idle = mediaCore.sessionState();
+  ASSERT_NE(idle.get("mediaPlayback"), nullptr);
+  EXPECT_EQ(idle.get("mediaPlayback")->getString("status"), "idle");
+  EXPECT_FALSE(idle.get("mediaPlayback")->get("playing")->asBool());
+
+  const auto playing = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-playback"},
+      {"mediaAssetId", "clip-intro"},
+      {"mediaAssetName", "Intro Sting"},
+      {"playing", true},
+  });
+  const auto* playback = playing.get("mediaPlayback");
+  ASSERT_NE(playback, nullptr);
+  EXPECT_EQ(playback->getString("status"), "playing");
+  EXPECT_EQ(playback->getString("mediaAssetId"), "clip-intro");
+  EXPECT_EQ(playback->getString("mediaAssetName"), "Intro Sting");
+  EXPECT_TRUE(playback->get("playing")->asBool());
+  EXPECT_EQ(playback->getString("summary"), "Playing Intro Sting.");
+
+  const auto paused = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-playback"},
+      {"mediaAssetId", "clip-outro"},
+      {"mediaAssetName", "Outro Loop"},
+      {"playing", false},
+  });
+  ASSERT_NE(paused.get("mediaPlayback"), nullptr);
+  EXPECT_EQ(paused.get("mediaPlayback")->getString("status"), "paused");
+  EXPECT_FALSE(paused.get("mediaPlayback")->get("playing")->asBool());
+
+  const auto empty = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-playback"},
+      {"mediaAssetId", ""},
+      {"mediaAssetName", ""},
+      {"playing", true},
+  });
+  const auto* emptyPlayback = empty.get("mediaPlayback");
+  ASSERT_NE(emptyPlayback, nullptr);
+  EXPECT_EQ(emptyPlayback->getString("status"), "idle");
+  EXPECT_FALSE(emptyPlayback->get("playing")->asBool());
+  const auto& warnings = emptyPlayback->get("warnings")->asArray();
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("no media asset id") != std::string::npos;
+  }));
+}
+
 TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{

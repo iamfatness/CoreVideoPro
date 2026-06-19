@@ -85,6 +85,9 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];
     public string? CaptionText { get; init; }
     public string? CaptionSpeaker { get; init; }
+    public string? SelectedMediaAssetId { get; init; }
+    public string? SelectedMediaAssetName { get; init; }
+    public bool SelectedMediaAssetPlaying { get; init; }
 
     public static MediaCoreRecordingTargetsWire DefaultRecordingTargets { get; } = new(
         TargetFolder: "Recordings/CoreVideo Pro",

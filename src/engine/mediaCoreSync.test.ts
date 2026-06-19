@@ -4,7 +4,14 @@ import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_AUDIO_ROUTING_MATRIX, IDLE_N
 import { IDLE_NATIVE_BRAND_KIT } from "./nativeMediaCoreBrandKit";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import type { NativeHostBridge } from "./nativeHostBridge";
-import type { NativeMediaCoreCommand } from "./nativeMediaCoreProtocol";
+import type { NativeMediaCoreCommand, NativeMediaCoreMediaPlayback } from "./nativeMediaCoreProtocol";
+
+const IDLE_NATIVE_MEDIA_PLAYBACK: NativeMediaCoreMediaPlayback = {
+  status: "idle",
+  playing: false,
+  summary: "No media asset selected.",
+  warnings: []
+};
 
 describe("media core sync engine", () => {
   class TestMediaCoreSyncEngine extends InMemoryMediaCoreSyncEngine {
@@ -387,6 +394,7 @@ describe("media core sync engine", () => {
       audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
       captionTrack: IDLE_NATIVE_CAPTION_TRACK,
       brandKit: IDLE_NATIVE_BRAND_KIT,
+      mediaPlayback: IDLE_NATIVE_MEDIA_PLAYBACK,
       operatorActions: [],
       eventLog: [],
       programFrameCount: 0,
@@ -504,6 +512,7 @@ describe("media core sync engine", () => {
         audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
         captionTrack: IDLE_NATIVE_CAPTION_TRACK,
         brandKit: IDLE_NATIVE_BRAND_KIT,
+        mediaPlayback: IDLE_NATIVE_MEDIA_PLAYBACK,
         operatorActions: [],
         eventLog: [],
         warnings: [],

@@ -339,6 +339,7 @@ rpc::Json MediaCore::sessionState() const {
       {"audioRoutingMatrix", audioRoutingMatrixState()},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
+      {"mediaPlayback", mediaPlaybackState()},
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
@@ -581,6 +582,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setCaptionEnabled(command);
   } else if (type == "set-brand-kit") {
     setBrandKit(command);
+  } else if (type == "set-media-playback") {
+    setMediaPlayback(command);
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
   }
@@ -987,6 +990,27 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
   }
 }
 
+void MediaCore::setMediaPlayback(const rpc::Json& command) {
+  mediaPlaybackWarnings_.clear();
+  const std::string mediaAssetId = command.getString("mediaAssetId");
+  if (mediaAssetId.empty()) {
+    mediaPlaybackAssetId_.clear();
+    mediaPlaybackAssetName_.clear();
+    mediaPlaybackPlaying_ = false;
+    mediaPlaybackWarnings_.push_back("Media playback command had no media asset id.");
+    return;
+  }
+
+  const std::string mediaAssetName = command.getString("mediaAssetName");
+  if (mediaAssetName.empty()) {
+    mediaPlaybackWarnings_.push_back(mediaAssetId + " media asset has no name and may not be present in the media bin.");
+  }
+
+  mediaPlaybackAssetId_ = mediaAssetId;
+  mediaPlaybackAssetName_ = mediaAssetName.empty() ? mediaAssetId : mediaAssetName;
+  mediaPlaybackPlaying_ = command.get("playing") && command.get("playing")->asBool();
+}
+
 namespace {
 
 int clampInt(int value, int minValue, int maxValue) {
@@ -1264,6 +1288,32 @@ rpc::Json MediaCore::brandKitState() const {
       {"lowerThirdStyle", brandLowerThirdStyle_},
       {"appliedOverlayCount", appliedOverlayCount},
       {"summary", summary.str()},
+      {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::mediaPlaybackState() const {
+  rpc::Json::Array warnings;
+  for (const auto& warning : mediaPlaybackWarnings_) {
+    warnings.emplace_back(warning);
+  }
+
+  if (mediaPlaybackAssetId_.empty()) {
+    return rpc::Json::Object{
+        {"status", "idle"},
+        {"playing", false},
+        {"summary", "No media asset selected."},
+        {"warnings", warnings},
+    };
+  }
+
+  const std::string& name = mediaPlaybackAssetName_;
+  return rpc::Json::Object{
+      {"status", mediaPlaybackPlaying_ ? "playing" : "paused"},
+      {"mediaAssetId", mediaPlaybackAssetId_},
+      {"mediaAssetName", name},
+      {"playing", mediaPlaybackPlaying_},
+      {"summary", mediaPlaybackPlaying_ ? "Playing " + name + "." : name + " paused."},
       {"warnings", warnings},
   };
 }

@@ -11,6 +11,7 @@ import type {
   NativeMediaCoreEvent,
   NativeMediaCoreFrame,
   NativeMediaCoreFrameSourceSnapshot,
+  NativeMediaCoreMediaPlayback,
   NativeMediaCoreMediaSourceKind,
   NativeMediaCoreOperatorAction,
   NativeMediaCoreOutputHealth,
@@ -160,6 +161,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const captionCue = commands.find((command) => command.type === "push-caption-cue");
     const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
     const brandKitCommand = commands.find((command) => command.type === "set-brand-kit");
+    const mediaPlaybackCommand = commands.find((command) => command.type === "set-media-playback");
     if (sourceRoster) {
       this.sources = sourceRoster.sources.map((source) => ({ ...source, hasVideo: source.hasVideo && source.health !== "video-off" }));
       this.syncZoomSourceLifecycleEvents(this.sources, elapsedMs);
@@ -282,6 +284,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const audioRoutingMatrix = this.audioRoutingMatrix.snapshot();
     const captionTrack = this.captionTrack.snapshot();
     const brandKit = this.brandKit.snapshot();
+    const mediaPlayback = buildMediaPlaybackSnapshot(mediaPlaybackCommand);
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
     this.programFrame = this.composeProgramFrame(renderPlan, elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame, elapsedMs);
@@ -311,6 +314,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...audioRoutingMatrix.warnings,
         ...captionTrack.warnings,
         ...brandKit.warnings,
+        ...mediaPlayback.warnings,
         recording?.warning,
         recording?.error
       ].filter(Boolean) as string[])
@@ -347,6 +351,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       audioRoutingMatrix,
       captionTrack,
       brandKit,
+      mediaPlayback,
       operatorActions,
       eventLog: [...this.eventLog],
       diagnostics: {
@@ -370,6 +375,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         audioRoutingMatrix,
         captionTrack,
         brandKit,
+        mediaPlayback,
         operatorActions,
         eventLog: [...this.eventLog],
         warnings: allWarnings,
@@ -1058,6 +1064,37 @@ function normalizeOutputProfile(profile: NativeMediaCoreOutputProfile): NativeMe
 
 function clampRange(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function buildMediaPlaybackSnapshot(
+  command: Extract<NativeMediaCoreCommand, { type: "set-media-playback" }> | undefined
+): NativeMediaCoreMediaPlayback {
+  if (!command) {
+    return { status: "idle", playing: false, summary: "No media asset selected.", warnings: [] };
+  }
+
+  const mediaAssetId = command.mediaAssetId.trim();
+  if (!mediaAssetId) {
+    return {
+      status: "idle",
+      playing: false,
+      summary: "No media asset selected.",
+      warnings: ["Media playback command had no media asset id."]
+    };
+  }
+
+  const mediaAssetName = command.mediaAssetName.trim();
+  const warnings = mediaAssetName ? [] : [`${mediaAssetId} media asset has no name and may not be present in the media bin.`];
+  const name = mediaAssetName || mediaAssetId;
+
+  return {
+    status: command.playing ? "playing" : "paused",
+    mediaAssetId,
+    mediaAssetName: name,
+    playing: command.playing,
+    summary: command.playing ? `Playing ${name}.` : `${name} paused.`,
+    warnings
+  };
 }
 
 function normalizeTargets(targets: NativeMediaCoreRecordingTargets): NativeMediaCoreRecordingTargets {

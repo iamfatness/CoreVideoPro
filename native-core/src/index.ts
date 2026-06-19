@@ -49,6 +49,8 @@ export type {
   MediaCoreFrameSourceSnapshot,
   MediaCoreFrameSourceStatus,
   MediaCoreFrameTransportStatus,
+  MediaCoreMediaPlayback,
+  MediaCoreMediaPlaybackStatus,
   MediaCoreMediaSourceKind,
   MediaCoreOutputHealth,
   MediaCoreOutputHealthStatus,

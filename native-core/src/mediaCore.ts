@@ -10,6 +10,7 @@ import type {
   MediaCoreEventSeverity,
   MediaCoreFrame,
   MediaCoreFrameSourceSnapshot,
+  MediaCoreMediaPlayback,
   MediaCoreOutputHealth,
   MediaCoreOutputProfile,
   MediaCoreOutputSender,
@@ -40,6 +41,13 @@ type SceneGraphState = Extract<MediaCoreCommand, { type: "load-scene-graph" }>;
 type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transform" }>;
 type OverlayState = Extract<MediaCoreCommand, { type: "set-overlay-asset" }>;
 type OutputState = Extract<MediaCoreCommand, { type: "start-program-output" }>;
+type MediaPlaybackCommand = Extract<MediaCoreCommand, { type: "set-media-playback" }>;
+
+type MediaPlaybackState = {
+  mediaAssetId?: string;
+  mediaAssetName?: string;
+  playing: boolean;
+};
 
 const DEFAULT_OUTPUT_PROFILE: MediaCoreOutputProfile = {
   profileId: "1080p60",
@@ -99,6 +107,7 @@ export class MediaCoreRuntime {
   private readonly audioRoutingMatrix = new AudioRoutingMatrixModel();
   private readonly captionTrack = new CaptionTrackModel();
   private readonly brandKitState = new BrandKitStateModel();
+  private mediaPlayback: MediaPlaybackState = { playing: false };
   private frames: MediaCoreFrame[] = [];
   private sourceSnapshot: MediaCoreFrameSourceSnapshot;
   private programFrame?: MediaCoreProgramFrame;
@@ -406,9 +415,62 @@ export class MediaCoreRuntime {
           this.warn(warnings, "program", "Brand kit warning", brandKit.warnings[0], command.type);
         }
       }
+
+      if (command.type === "set-media-playback") {
+        this.applyMediaPlayback(command, warnings);
+      }
     });
 
     return warnings;
+  }
+
+  private applyMediaPlayback(command: MediaPlaybackCommand, warnings: string[]) {
+    const mediaAssetId = command.mediaAssetId?.trim() ?? "";
+    if (!mediaAssetId) {
+      this.mediaPlayback = { playing: false };
+      this.warn(warnings, "program", "Media playback ignored", "Media playback command had no media asset id.", command.type);
+      return;
+    }
+
+    const mediaAssetName = command.mediaAssetName?.trim() ?? "";
+    if (!mediaAssetName) {
+      this.warn(
+        warnings,
+        "program",
+        "Unknown media asset",
+        `${mediaAssetId} media asset has no name and may not be present in the media bin.`,
+        command.type,
+        mediaAssetId
+      );
+    }
+
+    this.mediaPlayback = {
+      mediaAssetId,
+      mediaAssetName: mediaAssetName || mediaAssetId,
+      playing: command.playing === true
+    };
+  }
+
+  private buildMediaPlaybackSnapshot(): MediaCoreMediaPlayback {
+    const playback = this.mediaPlayback;
+    if (!playback.mediaAssetId) {
+      return {
+        status: "idle",
+        playing: false,
+        summary: "No media asset selected.",
+        warnings: []
+      };
+    }
+
+    const name = playback.mediaAssetName ?? playback.mediaAssetId;
+    return {
+      status: playback.playing ? "playing" : "paused",
+      mediaAssetId: playback.mediaAssetId,
+      mediaAssetName: name,
+      playing: playback.playing,
+      summary: playback.playing ? `Playing ${name}.` : `${name} paused.`,
+      warnings: []
+    };
   }
 
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
@@ -426,6 +488,7 @@ export class MediaCoreRuntime {
     const audioRoutingMatrix = this.audioRoutingMatrix.snapshot();
     const captionTrack = this.captionTrack.snapshot();
     const brandKit = this.brandKitState.snapshot();
+    const mediaPlayback = this.buildMediaPlaybackSnapshot();
     const operatorActions = buildOperatorActions({
       sourceSnapshot: this.sourceSnapshot,
       renderPlan,
@@ -482,6 +545,7 @@ export class MediaCoreRuntime {
       audioRoutingMatrix,
       captionTrack,
       brandKit,
+      mediaPlayback,
       operatorActions,
       eventLog: [...this.eventLog],
       diagnostics: this.diagnostics(
@@ -496,6 +560,7 @@ export class MediaCoreRuntime {
         audioRoutingMatrix,
         captionTrack,
         brandKit,
+        mediaPlayback,
         operatorActions
       ),
       lastCommandTypes: this.lastCommandTypes,
@@ -620,6 +685,7 @@ export class MediaCoreRuntime {
     audioRoutingMatrix: MediaCoreStateSnapshot["audioRoutingMatrix"],
     captionTrack: MediaCoreStateSnapshot["captionTrack"],
     brandKit: MediaCoreStateSnapshot["brandKit"],
+    mediaPlayback: MediaCoreMediaPlayback,
     operatorActions: MediaCoreStateSnapshot["operatorActions"]
   ): MediaCoreDiagnosticsSnapshot {
     return {
@@ -643,6 +709,7 @@ export class MediaCoreRuntime {
       audioRoutingMatrix,
       captionTrack,
       brandKit,
+      mediaPlayback,
       operatorActions,
       eventLog: [...this.eventLog],
       warnings,
