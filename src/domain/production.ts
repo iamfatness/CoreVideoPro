@@ -99,6 +99,23 @@ export type AudioMixState = {
   summary: string;
 };
 
+export type AudioRoutingBus = "pgm-l" | "pgm-r" | "iso-1" | "iso-2" | "mon" | "stream";
+
+/** A single routed crosspoint in the audio routing gain matrix. */
+export type AudioRoutingSend = {
+  sourceId: string;
+  busId: AudioRoutingBus;
+  gainDb: number;
+};
+
+/**
+ * Producer-controlled audio routing gain matrix. Each entry is a routed
+ * crosspoint carrying a gain; unrouted crosspoints are simply absent.
+ */
+export type AudioRoutingMatrixState = {
+  sends: AudioRoutingSend[];
+};
+
 export type CaptionFontSize = "small" | "medium" | "large";
 
 export type CaptionStyle = {
@@ -333,6 +350,7 @@ export type ProductionState = {
   outputProfiles: OutputProfile[];
   outputDestinations: OutputDestination[];
   audioMix: AudioMixState;
+  audioRoutingMatrix: AudioRoutingMatrixState;
   captionOverlay: CaptionOverlayState;
   captionStyle: CaptionStyle;
   captionTranscript: CaptionTranscriptEntry[];
@@ -722,6 +740,23 @@ export function hasActiveScreenShare(participants: Participant[]) {
   return participants.some((participant) => participant.isScreenSharing);
 }
 
+/**
+ * The default audio routing gain matrix: every participant's mic is routed into
+ * the stereo program bus (PGM L/R) at unity (0 dB). Producers can add ISO/MON/
+ * STREAM sends on top of this baseline from the Routing tab.
+ */
+export function buildDefaultAudioRoutingMatrix(participants: Participant[]): AudioRoutingMatrixState {
+  const sends: AudioRoutingSend[] = participants.flatMap((participant) => {
+    const sourceId = `participant:${participant.id}`;
+    return [
+      { sourceId, busId: "pgm-l" as const, gainDb: 0 },
+      { sourceId, busId: "pgm-r" as const, gainDb: 0 }
+    ];
+  });
+
+  return { sends };
+}
+
 export function getActiveSpeaker(participants: Participant[]) {
   return participants.find((participant) => participant.isActiveSpeaker && participant.health !== "video-off");
 }
@@ -883,6 +918,7 @@ export const initialProduction: ProductionState = {
     limiterActive: false,
     summary: "Smart audio leveling ready"
   },
+  audioRoutingMatrix: buildDefaultAudioRoutingMatrix(initialParticipants),
   captionOverlay: {
     text: "and the feedback from our customers continues to shape everything we build. Thank you for being here.",
     speakerName: "David Chen",

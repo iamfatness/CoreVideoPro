@@ -1232,6 +1232,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             })
             .ToList();
 
+        var audioRoutingSends = AudioRoutingMatrix.Rows
+            .SelectMany(row => row.Cells)
+            .Where(cell => cell.IsRouted)
+            .Select(cell => new MediaCoreAudioRoutingSendWire(cell.SourceId, cell.Bus.Id, cell.GainDb))
+            .ToList();
+
         var isoParticipantIds = GetMutableRoutes(ActiveSceneId)
             .Where(route =>
                 route.AudioRole == SourceAudioRole.Isolated &&
@@ -1280,6 +1286,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.FontFamily,
                 BrandKit.LowerThirdStyle),
             AudioMixChannels = audioChannels,
+            AudioRoutingSends = audioRoutingSends,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker
         };

@@ -5,9 +5,12 @@
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <map>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -333,6 +336,7 @@ rpc::Json MediaCore::sessionState() const {
       {"health", health()},
       {"profile", profile()},
       {"audioMixSession", audioMixSessionState()},
+      {"audioRoutingMatrix", audioRoutingMatrixState()},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
       {"meetingState", resolveMeetingStateForSession()},
@@ -569,6 +573,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     recoverRecordingSession(command);
   } else if (type == "sync-participant-audio-mix") {
     syncParticipantAudioMix(command);
+  } else if (type == "sync-audio-routing-matrix") {
+    syncAudioRoutingMatrix(command);
   } else if (type == "push-caption-cue") {
     pushCaptionCue(command);
   } else if (type == "set-caption-enabled") {
@@ -861,6 +867,87 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   renderSyntheticTick();
 }
 
+namespace {
+
+constexpr double kMinAudioRoutingGainDb = -60.0;
+constexpr double kMaxAudioRoutingGainDb = 10.0;
+
+bool isAudioRoutingBus(const std::string& busId) {
+  static const std::array<std::string_view, 6> kBuses = {"pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"};
+  return std::any_of(kBuses.begin(), kBuses.end(), [&](std::string_view bus) { return bus == busId; });
+}
+
+}  // namespace
+
+void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
+  audioRoutingSends_.clear();
+  audioRoutingWarnings_.clear();
+  audioRoutingSynced_ = true;
+
+  const rpc::Json* sends = command.get("sends");
+  if (!sends || !sends->isArray()) {
+    return;
+  }
+
+  std::set<std::string> seenCrosspoints;
+  std::set<std::string> requestedSources;
+  std::set<std::string> routedSources;
+  std::set<std::string> warningSet;
+  std::vector<std::string> warnings;
+
+  auto addWarning = [&](const std::string& warning) {
+    if (warningSet.insert(warning).second) {
+      warnings.push_back(warning);
+    }
+  };
+
+  for (const auto& send : sends->asArray()) {
+    std::string sourceId = send.getString("sourceId");
+    if (!sourceId.empty()) {
+      requestedSources.insert(sourceId);
+    }
+    if (sourceId.empty()) {
+      addWarning("Audio routing send is missing a sourceId.");
+      continue;
+    }
+
+    const std::string busId = send.getString("busId");
+    if (!isAudioRoutingBus(busId)) {
+      addWarning("Audio routing send for " + sourceId + " targets unknown bus " + busId + ".");
+      continue;
+    }
+
+    const std::string key = sourceId + ":" + busId;
+    if (!seenCrosspoints.insert(key).second) {
+      addWarning("Audio routing send " + sourceId + " -> " + busId + " is duplicated; keeping the first value.");
+      continue;
+    }
+
+    const double rawGain = send.get("gainDb") ? send.get("gainDb")->asNumber() : 0.0;
+    if (rawGain < kMinAudioRoutingGainDb || rawGain > kMaxAudioRoutingGainDb) {
+      std::ostringstream gainWarning;
+      gainWarning << "Audio routing gain " << rawGain << " dB for " << sourceId << " -> " << busId
+                  << " is outside [-60, 10] dB; clamped.";
+      addWarning(gainWarning.str());
+    }
+
+    AudioRoutingSendInput input;
+    input.sourceId = sourceId;
+    input.busId = busId;
+    input.gainDb = std::max(kMinAudioRoutingGainDb, std::min(kMaxAudioRoutingGainDb, rawGain));
+    routedSources.insert(sourceId);
+    audioRoutingSends_.push_back(std::move(input));
+  }
+
+  for (const auto& sourceId : requestedSources) {
+    if (routedSources.find(sourceId) == routedSources.end()) {
+      addWarning("Audio routing source " + sourceId + " is routed to no bus.");
+    }
+  }
+
+  audioRoutingWarnings_ = std::move(warnings);
+}
+
 void MediaCore::pushCaptionCue(const rpc::Json& command) {
   captionWarnings_.clear();
   const std::string text = command.getString("text");
@@ -1044,6 +1131,70 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
       {"participants", participants},
       {"summary", summaryText},
+      {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::audioRoutingMatrixState() const {
+  static const std::array<std::string_view, 6> kBuses = {"pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"};
+
+  rpc::Json::Array warnings;
+  for (const auto& warning : audioRoutingWarnings_) {
+    warnings.emplace_back(warning);
+  }
+
+  if (!audioRoutingSynced_ || audioRoutingSends_.empty()) {
+    rpc::Json::Array busSourceCounts;
+    for (const auto& bus : kBuses) {
+      busSourceCounts.emplace_back(rpc::Json::Object{{"busId", std::string(bus)}, {"sourceCount", 0}});
+    }
+    return rpc::Json::Object{
+        {"status", audioRoutingWarnings_.empty() ? "idle" : "warning"},
+        {"routedSendCount", 0},
+        {"routedSourceCount", 0},
+        {"busSourceCounts", busSourceCounts},
+        {"sends", rpc::Json::Array{}},
+        {"summary", audioRoutingSynced_ ? "No audio crosspoints routed." : "Audio routing matrix idle."},
+        {"warnings", warnings},
+    };
+  }
+
+  std::set<std::string> routedSources;
+  std::map<std::string, std::set<std::string>> busSources;
+  rpc::Json::Array sends;
+  for (const auto& send : audioRoutingSends_) {
+    routedSources.insert(send.sourceId);
+    busSources[send.busId].insert(send.sourceId);
+    sends.emplace_back(rpc::Json::Object{
+        {"sourceId", send.sourceId},
+        {"busId", send.busId},
+        {"gainDb", send.gainDb},
+    });
+  }
+
+  rpc::Json::Array busSourceCounts;
+  int routedBusCount = 0;
+  for (const auto& bus : kBuses) {
+    const auto found = busSources.find(std::string(bus));
+    const int sourceCount = found == busSources.end() ? 0 : static_cast<int>(found->second.size());
+    if (sourceCount > 0) {
+      ++routedBusCount;
+    }
+    busSourceCounts.emplace_back(rpc::Json::Object{{"busId", std::string(bus)}, {"sourceCount", sourceCount}});
+  }
+
+  std::ostringstream summary;
+  summary << audioRoutingSends_.size() << " send" << (audioRoutingSends_.size() == 1 ? "" : "s") << " from "
+          << routedSources.size() << " source" << (routedSources.size() == 1 ? "" : "s") << " across " << routedBusCount
+          << " bus(es).";
+
+  return rpc::Json::Object{
+      {"status", audioRoutingWarnings_.empty() ? "live" : "warning"},
+      {"routedSendCount", static_cast<int>(audioRoutingSends_.size())},
+      {"routedSourceCount", static_cast<int>(routedSources.size())},
+      {"busSourceCounts", busSourceCounts},
+      {"sends", sends},
+      {"summary", summary.str()},
       {"warnings", warnings},
   };
 }

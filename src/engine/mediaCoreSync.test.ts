@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { initialProduction } from "../domain/production";
-import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
+import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_AUDIO_ROUTING_MATRIX, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
 import { IDLE_NATIVE_BRAND_KIT } from "./nativeMediaCoreBrandKit";
 import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./mediaCoreSync";
 import type { NativeHostBridge } from "./nativeHostBridge";
@@ -74,6 +74,60 @@ describe("media core sync engine", () => {
     expect(snapshot.lastCommandTypes).toEqual(
       expect.arrayContaining(["sync-participant-audio-mix", "set-caption-enabled", "push-caption-cue"])
     );
+  });
+
+  it("populates the audio routing matrix snapshot from the routing command", async () => {
+    const engine = new InMemoryMediaCoreSyncEngine();
+    const snapshot = await engine.syncProduction(
+      {
+        ...initialProduction,
+        audioRoutingMatrix: {
+          sends: [
+            { sourceId: "input-01", busId: "pgm-l", gainDb: -3 },
+            { sourceId: "input-01", busId: "pgm-r", gainDb: -3 },
+            { sourceId: "input-01", busId: "mon", gainDb: -6 },
+            { sourceId: "input-02", busId: "pgm-l", gainDb: 0 },
+            { sourceId: "input-02", busId: "pgm-r", gainDb: 0 }
+          ]
+        }
+      },
+      1200
+    );
+
+    expect(snapshot.audioRoutingMatrix).toMatchObject({
+      status: "live",
+      routedSendCount: 5,
+      routedSourceCount: 2,
+      busSourceCounts: expect.arrayContaining([
+        { busId: "pgm-l", sourceCount: 2 },
+        { busId: "mon", sourceCount: 1 },
+        { busId: "stream", sourceCount: 0 }
+      ])
+    });
+    expect(snapshot.lastCommandTypes).toEqual(expect.arrayContaining(["sync-audio-routing-matrix"]));
+  });
+
+  it("clamps and warns on invalid audio routing sends in the in-memory engine", () => {
+    const engine = new TestMediaCoreSyncEngine();
+    const snapshot = engine.runCommands(
+      [
+        {
+          type: "sync-audio-routing-matrix",
+          sends: [
+            { sourceId: "input-01", busId: "pgm-l", gainDb: 99 },
+            // an unknown bus leaves input-02 routed to nothing
+            { sourceId: "input-02", busId: "ghost" as never, gainDb: 0 }
+          ]
+        }
+      ],
+      10
+    );
+
+    expect(snapshot.audioRoutingMatrix.status).toBe("warning");
+    expect(snapshot.audioRoutingMatrix.sends.find((send) => send.sourceId === "input-01")?.gainDb).toBe(10);
+    expect(snapshot.audioRoutingMatrix.warnings.some((warning) => warning.includes("outside [-60, 10]"))).toBe(true);
+    expect(snapshot.audioRoutingMatrix.warnings.some((warning) => warning.includes("input-02 is routed to no bus"))).toBe(true);
+    expect(snapshot.warnings.length).toBeGreaterThan(0);
   });
 
   it("creates source actions and events only for routed Zoom feed health issues", () => {
@@ -330,6 +384,7 @@ describe("media core sync engine", () => {
         warnings: []
       },
       audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+      audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
       captionTrack: IDLE_NATIVE_CAPTION_TRACK,
       brandKit: IDLE_NATIVE_BRAND_KIT,
       operatorActions: [],
@@ -446,6 +501,7 @@ describe("media core sync engine", () => {
           warnings: []
         },
         audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+        audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
         captionTrack: IDLE_NATIVE_CAPTION_TRACK,
         brandKit: IDLE_NATIVE_BRAND_KIT,
         operatorActions: [],

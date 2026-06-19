@@ -145,6 +145,10 @@ export type NativeMediaCoreCommand =
       }>;
     }
   | {
+      type: "sync-audio-routing-matrix";
+      sends: NativeMediaCoreAudioRoutingSend[];
+    }
+  | {
       type: "push-caption-cue";
       text: string;
       speaker?: string;
@@ -197,6 +201,29 @@ export type NativeMediaCoreAudioMixSession = {
   limiterActive: boolean;
   mixedFrameCount: number;
   participants: NativeMediaCoreParticipantAudioChannel[];
+  summary: string;
+  warnings: string[];
+};
+
+export type NativeMediaCoreAudioRoutingBus = "pgm-l" | "pgm-r" | "iso-1" | "iso-2" | "mon" | "stream";
+
+export type NativeMediaCoreAudioRoutingSend = {
+  sourceId: string;
+  busId: NativeMediaCoreAudioRoutingBus;
+  gainDb: number;
+};
+
+export type NativeMediaCoreAudioRoutingBusSummary = {
+  busId: NativeMediaCoreAudioRoutingBus;
+  sourceCount: number;
+};
+
+export type NativeMediaCoreAudioRoutingMatrix = {
+  status: "idle" | "live" | "warning";
+  routedSendCount: number;
+  routedSourceCount: number;
+  busSourceCounts: NativeMediaCoreAudioRoutingBusSummary[];
+  sends: NativeMediaCoreAudioRoutingSend[];
   summary: string;
   warnings: string[];
 };
@@ -498,6 +525,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
   audioMixSession: NativeMediaCoreAudioMixSession;
+  audioRoutingMatrix: NativeMediaCoreAudioRoutingMatrix;
   captionTrack: NativeMediaCoreCaptionTrack;
   brandKit: NativeMediaCoreBrandKit;
   operatorActions: NativeMediaCoreOperatorAction[];
@@ -529,6 +557,7 @@ export type NativeMediaCoreStateSnapshot = {
   encoderSession: NativeMediaCoreEncoderSession;
   recording?: NativeMediaCoreRecordingSession;
   audioMixSession: NativeMediaCoreAudioMixSession;
+  audioRoutingMatrix: NativeMediaCoreAudioRoutingMatrix;
   captionTrack: NativeMediaCoreCaptionTrack;
   brandKit: NativeMediaCoreBrandKit;
   operatorActions: NativeMediaCoreOperatorAction[];

@@ -354,6 +354,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
+  audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
   operatorActions: MediaCoreOperatorAction[];
@@ -473,6 +474,10 @@ export type MediaCoreCommand =
       }>;
     }
   | {
+      type: "sync-audio-routing-matrix";
+      sends: MediaCoreAudioRoutingSend[];
+    }
+  | {
       type: "push-caption-cue";
       text: string;
       speaker?: string;
@@ -525,6 +530,29 @@ export type MediaCoreAudioMixSession = {
   limiterActive: boolean;
   mixedFrameCount: number;
   participants: MediaCoreParticipantAudioChannel[];
+  summary: string;
+  warnings: string[];
+};
+
+export type MediaCoreAudioRoutingBus = "pgm-l" | "pgm-r" | "iso-1" | "iso-2" | "mon" | "stream";
+
+export type MediaCoreAudioRoutingSend = {
+  sourceId: string;
+  busId: MediaCoreAudioRoutingBus;
+  gainDb: number;
+};
+
+export type MediaCoreAudioRoutingBusSummary = {
+  busId: MediaCoreAudioRoutingBus;
+  sourceCount: number;
+};
+
+export type MediaCoreAudioRoutingMatrix = {
+  status: "idle" | "live" | "warning";
+  routedSendCount: number;
+  routedSourceCount: number;
+  busSourceCounts: MediaCoreAudioRoutingBusSummary[];
+  sends: MediaCoreAudioRoutingSend[];
   summary: string;
   warnings: string[];
 };
@@ -589,6 +617,7 @@ export type MediaCoreStateSnapshot = {
   encoderSession: MediaCoreEncoderSession;
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
+  audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
   operatorActions: MediaCoreOperatorAction[];

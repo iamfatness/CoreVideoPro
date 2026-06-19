@@ -7,7 +7,7 @@ import {
   type NativeHostBridge
 } from "./nativeHostBridge";
 import type { NativeBridgeCommand, NativeBridgeResponse } from "./nativeBridgeProtocol";
-import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
+import { IDLE_NATIVE_AUDIO_MIX_SESSION, IDLE_NATIVE_AUDIO_ROUTING_MATRIX, IDLE_NATIVE_CAPTION_TRACK } from "./nativeMediaCoreAudioCaption";
 import { IDLE_NATIVE_BRAND_KIT } from "./nativeMediaCoreBrandKit";
 import type { NativeMediaCoreProfile, NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 
@@ -69,6 +69,7 @@ function fakeSnapshot(): NativeMediaCoreStateSnapshot {
     renderPlan,
     encoderSession,
     audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+    audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
     captionTrack: IDLE_NATIVE_CAPTION_TRACK,
     brandKit: IDLE_NATIVE_BRAND_KIT,
     operatorActions: [],
@@ -88,6 +89,7 @@ function fakeSnapshot(): NativeMediaCoreStateSnapshot {
       programTransport,
       encoderSession,
       audioMixSession: IDLE_NATIVE_AUDIO_MIX_SESSION,
+      audioRoutingMatrix: IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
       captionTrack: IDLE_NATIVE_CAPTION_TRACK,
       brandKit: IDLE_NATIVE_BRAND_KIT,
       operatorActions: [],
