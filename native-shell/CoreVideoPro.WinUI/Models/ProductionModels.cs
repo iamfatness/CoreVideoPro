@@ -99,6 +99,7 @@ public enum StudioTab
     Studio,
     Settings,
     Sources,
+    Routing,
     Overlays,
     Audio,
     Media,
