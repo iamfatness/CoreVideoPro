@@ -98,10 +98,10 @@ public sealed record MediaCoreProductionSyncContext
 
     public static MediaCoreRecordingTargetsWire DefaultRecordingTargets { get; } = new(
         TargetFolder: "Recordings/CoreVideo Pro",
-        FilenamePrefix: "Q2_Product_Update",
+        FilenamePrefix: "corevideo-recording",
         Format: "mp4",
         Quality: "high",
-        IsoParticipantIds: ["p1", "p2"]);
+        IsoParticipantIds: []);
 
     public static MediaCoreColorGradeWire NeutralColorGrade { get; } = new(
         Lut: "none",
@@ -122,5 +122,5 @@ public sealed record MediaCoreProductionSyncContext
         FontFamily: "Inter",
         LowerThirdStyle: "gradient",
         CaptionStyle: "medium sentence captions",
-        DefaultOverlayBehavior: "brand-bug");
+        DefaultOverlayBehavior: "all-off");
 }

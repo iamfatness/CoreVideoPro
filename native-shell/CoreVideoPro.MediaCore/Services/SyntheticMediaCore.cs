@@ -223,7 +223,7 @@ public static class SyntheticMediaCore
             FontFamily = "Inter",
             LowerThirdStyle = "solid",
             CaptionStyle = "medium sentence captions",
-            DefaultOverlayBehavior = "brand-bug",
+            DefaultOverlayBehavior = "all-off",
             AppliedOverlayCount = 0,
             Summary = "Brand kit idle",
             Warnings = []

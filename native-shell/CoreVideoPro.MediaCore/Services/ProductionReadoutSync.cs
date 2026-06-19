@@ -75,7 +75,7 @@ public static class ProductionReadoutSync
             string.IsNullOrWhiteSpace(brandKit.FontFamily) ? "Inter" : brandKit.FontFamily.Trim(),
             string.IsNullOrWhiteSpace(brandKit.LowerThirdStyle) ? "gradient" : brandKit.LowerThirdStyle.Trim(),
             string.IsNullOrWhiteSpace(brandKit.CaptionStyle) ? "medium sentence captions" : brandKit.CaptionStyle.Trim(),
-            string.IsNullOrWhiteSpace(brandKit.DefaultOverlayBehavior) ? "brand-bug" : brandKit.DefaultOverlayBehavior.Trim());
+            string.IsNullOrWhiteSpace(brandKit.DefaultOverlayBehavior) ? "all-off" : brandKit.DefaultOverlayBehavior.Trim());
     }
 
     private static string NormalizeColor(string? value, string fallback) =>

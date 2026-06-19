@@ -330,7 +330,7 @@ public static class ProductionCatalog
         FontFamily = "Inter",
         LowerThirdStyle = "gradient",
         CaptionStyle = "medium sentence captions",
-        DefaultOverlayBehavior = "brand-bug"
+        DefaultOverlayBehavior = "all-off"
     };
 
     public static CaptionStyle CaptionStyle { get; } = new()
@@ -350,36 +350,7 @@ public static class ProductionCatalog
         Temperature = 0
     };
 
-    public static IReadOnlyList<GraphicOverlay> DefaultGraphics { get; } =
-    [
-        new()
-        {
-            Id = "brand-bug",
-            Name = "CoreVideo",
-            Kind = "bug",
-            Position = "top-right",
-            Accent = BrandKit.BrandColor,
-            Enabled = true
-        },
-        new()
-        {
-            Id = "live-banner",
-            Name = "Live",
-            Kind = "banner",
-            Position = "bottom-right",
-            Accent = "#ec5757",
-            Enabled = false
-        },
-        new()
-        {
-            Id = "question-cta",
-            Name = "Submit questions",
-            Kind = "cta",
-            Position = "center",
-            Accent = BrandKit.AccentColor,
-            Enabled = false
-        }
-    ];
+    public static IReadOnlyList<GraphicOverlay> DefaultGraphics { get; } = [];
 }
 
 public static class ProductionStateHelper

@@ -91,7 +91,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public IReadOnlyList<string> BrandLowerThirdStyleOptions { get; } = ["solid", "minimal", "gradient"];
 
-    public IReadOnlyList<string> BrandDefaultOverlayBehaviorOptions { get; } = ["brand-bug", "bug-and-live", "all-off", "manual"];
+    public IReadOnlyList<string> BrandDefaultOverlayBehaviorOptions { get; } = ["all-off", "manual"];
 
     public string CaptionStyleSummary => CaptionStyleHelper.Summarize(new CaptionStyleState
     {

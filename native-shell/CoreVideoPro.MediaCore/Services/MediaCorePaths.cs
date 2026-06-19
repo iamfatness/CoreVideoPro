@@ -41,7 +41,7 @@ public static class MediaCorePaths
                 dir = parent.FullName;
             }
 
-            // Packaged demo layout (artifacts/native/win-unpacked) has no repo markers.
+            // Packaged layout (artifacts/native/win-unpacked) has no repo markers.
             return AppContext.BaseDirectory;
         }
     }

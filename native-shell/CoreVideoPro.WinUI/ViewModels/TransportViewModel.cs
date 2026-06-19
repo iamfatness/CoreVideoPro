@@ -249,7 +249,7 @@ public sealed partial class TransportViewModel : ObservableObject
 
         var masterLevel = snapshot.AudioMixSession.MasterLevel > 0
             ? snapshot.AudioMixSession.MasterLevel
-            : TransportFormatting.DemoMasterLevel;
+            : 0;
         MasterLevelLeft = Math.Clamp(masterLevel, 0, 100);
         MasterLevelRight = Math.Max(0, MasterLevelLeft - 4);
         MasterVolumeLabel = snapshot.AudioMixSession.LimiterActive ? "-1.0 dB" : "0.0 dB";
@@ -262,7 +262,7 @@ public sealed partial class TransportViewModel : ObservableObject
     {
         if (!recording && !streaming && snapshot.EncoderSession.Status is not "encoding")
         {
-            return Math.Max(8, snapshot.ProgramFrameCount % 12 + 8);
+            return 0;
         }
 
         var load = 14 + snapshot.ProgramFrameCount % 18;

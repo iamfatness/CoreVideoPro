@@ -243,9 +243,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             graphic.Enabled = behavior switch
             {
-                "brand-bug" => string.Equals(graphic.Id, "brand-bug", StringComparison.Ordinal),
-                "bug-and-live" => string.Equals(graphic.Id, "brand-bug", StringComparison.Ordinal) ||
-                                  string.Equals(graphic.Id, "live-banner", StringComparison.Ordinal),
                 "all-off" => false,
                 _ => graphic.Enabled
             };

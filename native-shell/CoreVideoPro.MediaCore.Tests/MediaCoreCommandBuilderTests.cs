@@ -137,11 +137,7 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             Recording = true,
             Streaming = true,
-            StreamDestinations = ["rtmp", "ndi", "srt"],
-            Graphics =
-            [
-                new("brand-bug", "CoreVideo Pro", "top-right", Enabled: true)
-            ]
+            StreamDestinations = ["rtmp", "ndi", "srt"]
         });
 
         Assert.Contains(commands, command => command.Type == "prepare-encoder-session");
@@ -149,15 +145,15 @@ public sealed class MediaCoreCommandBuilderTests
 
         var output = commands.Single(command => command.Type == "start-program-output");
         Assert.Equal(["recording", "rtmp", "ndi", "srt"], GetStringArray(output, "destinations"));
-        Assert.Equal(["p1", "p2"], GetStringArray(output, "isoParticipantIds"));
+        Assert.Empty(GetStringArray(output, "isoParticipantIds"));
 
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
-        Assert.Equal("Q2_Product_Update", GetString(targets, "filenamePrefix"));
+        Assert.Equal("corevideo-recording", GetString(targets, "filenamePrefix"));
 
         var recording = commands.Single(command => command.Type == "start-recording-session");
-        Assert.Equal("Q2_Product_Update-p1-p2", GetString(recording, "sessionId"));
-        Assert.Contains(commands, command => command.Type == "set-overlay-asset");
+        Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
+        Assert.DoesNotContain(commands, command => command.Type == "set-overlay-asset");
     }
 
     [Fact]

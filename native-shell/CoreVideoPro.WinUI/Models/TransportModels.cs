@@ -11,12 +11,6 @@ public enum OutputHealthKind
 
 public static class TransportFormatting
 {
-    public const int DemoElapsedSeconds = 1727;
-    public const int DemoEncoderLoadPercent = 18;
-    public const int DemoMasterLevel = 72;
-    public const double DemoBitrateMbps = 6;
-    public const double DemoAvailableDiskGb = 247.3;
-
     public static string FormatElapsed(int seconds)
     {
         var safeSeconds = Math.Max(0, seconds);

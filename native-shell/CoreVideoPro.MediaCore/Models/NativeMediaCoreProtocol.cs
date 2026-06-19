@@ -426,7 +426,7 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
         FontFamily = "Inter",
         LowerThirdStyle = "solid",
         CaptionStyle = "medium sentence captions",
-        DefaultOverlayBehavior = "brand-bug",
+        DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
@@ -480,7 +480,7 @@ public sealed record NativeMediaCoreStateSnapshot
         FontFamily = "Inter",
         LowerThirdStyle = "solid",
         CaptionStyle = "medium sentence captions",
-        DefaultOverlayBehavior = "brand-bug",
+        DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];

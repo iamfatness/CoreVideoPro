@@ -182,7 +182,7 @@ public static class LiveProductionSync
         };
 
     [Obsolete("Use CreateIdleProductionPatch instead.")]
-    public static StudioLiveProductionPatch CreateDemoFallbackPatch() => CreateIdleProductionPatch();
+    public static StudioLiveProductionPatch CreateIdleFallbackPatch() => CreateIdleProductionPatch();
 
     public static ProgramLowerThird ResolveProgramLowerThird(
         NativeMediaCoreStateSnapshot snapshot,

@@ -93,6 +93,12 @@ public sealed partial class ScenePreviewControl : UserControl
 
         var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
         var participants = tiles.Select(tile => tile.Participant).ToList();
+        if (participants.Count == 0)
+        {
+            BuildEmptySceneState("No live sources");
+            return;
+        }
+
         var layout = Scene?.Layout ?? "speaker-slides";
 
         switch (layout)
@@ -152,6 +158,11 @@ public sealed partial class ScenePreviewControl : UserControl
             Canvas.SetTop(layer, rect.Y * designHeight);
             canvas.Children.Add(layer);
         }
+
+        if (canvas.Children.Count == 0)
+        {
+            BuildEmptySceneState("No routed live sources");
+        }
     }
 
     private void BuildHostFocusLayout(IReadOnlyList<Participant> participants, bool isOutro)
@@ -190,12 +201,17 @@ public sealed partial class ScenePreviewControl : UserControl
     private void BuildTwoUpLayout(IReadOnlyList<Participant> participants)
     {
         LayoutRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        LayoutRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         LayoutRoot.ColumnSpacing = 14;
 
-        for (var index = 0; index < 2; index++)
+        var visibleCount = Math.Min(2, participants.Count);
+        for (var index = 1; index < visibleCount; index++)
         {
-            var tile = CreateTile(participants.ElementAtOrDefault(index), "large");
+            LayoutRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+
+        for (var index = 0; index < visibleCount; index++)
+        {
+            var tile = CreateTile(participants[index], "large");
             Grid.SetColumn(tile, index);
             LayoutRoot.Children.Add(tile);
         }
@@ -248,65 +264,36 @@ public sealed partial class ScenePreviewControl : UserControl
         speakerStack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         speakerStack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var tile0 = CreateTile(participants.ElementAtOrDefault(0), "stack");
-        Grid.SetRow(tile0, 0);
-        Grid.SetColumn(tile0, 0);
-        speakerStack.Children.Add(tile0);
+        for (var index = 0; index < Math.Min(3, participants.Count); index++)
+        {
+            var tile = CreateTile(participants[index], "stack");
+            Grid.SetRow(tile, index / 2);
+            Grid.SetColumn(tile, index % 2);
+            speakerStack.Children.Add(tile);
+        }
 
-        var tile1 = CreateTile(participants.ElementAtOrDefault(1), "stack");
-        Grid.SetRow(tile1, 0);
-        Grid.SetColumn(tile1, 1);
-        speakerStack.Children.Add(tile1);
-
-        var tile2 = CreateTile(participants.ElementAtOrDefault(2), "stack");
-        Grid.SetRow(tile2, 1);
-        Grid.SetColumn(tile2, 0);
-        speakerStack.Children.Add(tile2);
-
-        var slidePanel = BuildSlideSharePanel();
+        var slidePanel = BuildScreenSharePanel(participants.Any(participant => participant.IsScreenSharing));
         Grid.SetColumn(speakerStack, 0);
         Grid.SetColumn(slidePanel, 1);
         LayoutRoot.Children.Add(speakerStack);
         LayoutRoot.Children.Add(slidePanel);
     }
 
-    private Border BuildSlideSharePanel()
+    private Border BuildScreenSharePanel(bool hasActiveShare)
     {
-        var chart = new Grid { Margin = new Thickness(0, 12, 0, 0), MaxWidth = 360 };
-        chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        chart.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        chart.ColumnSpacing = 10;
-
-        var bar0 = new Border { Height = 72, CornerRadius = new CornerRadius(8), Background = BrushFromHex("#44C1A1") };
-        var bar1 = new Border
-        {
-            Height = 96,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            CornerRadius = new CornerRadius(8),
-            Background = BrushFromHex("#F0A85C")
-        };
-        var bar2 = new Border
-        {
-            Height = 68,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            CornerRadius = new CornerRadius(8),
-            Background = BrushFromHex("#263931")
-        };
-        Grid.SetColumn(bar1, 1);
-        Grid.SetColumn(bar2, 2);
-        chart.Children.Add(bar0);
-        chart.Children.Add(bar1);
-        chart.Children.Add(bar2);
-
         var panel = new StackPanel { Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-        panel.Children.Add(CreateLabel("Q2 PRODUCT UPDATE", 11, Microsoft.UI.Text.FontWeights.Bold, "#8FDCC8"));
-        panel.Children.Add(CreateLabel("Building what matters next", 20, Microsoft.UI.Text.FontWeights.Bold, "#EDF4EF"));
-        panel.Children.Add(chart);
-        panel.Children.Add(CreateLabel("• Customer-obsessed roadmap", 13, Microsoft.UI.Text.FontWeights.Normal, "#AEBEB5"));
-        panel.Children.Add(CreateLabel("• Platform scalability & reliability", 13, Microsoft.UI.Text.FontWeights.Normal, "#AEBEB5"));
-        panel.Children.Add(CreateLabel("• Ecosystem partnerships", 13, Microsoft.UI.Text.FontWeights.Normal, "#AEBEB5"));
-        panel.Children.Add(CreateLabel("COREVIDEO", 11, Microsoft.UI.Text.FontWeights.Bold, "#44C1A1"));
+        panel.Children.Add(CreateLabel(
+            hasActiveShare ? "Screen share active" : "No screen share",
+            14,
+            Microsoft.UI.Text.FontWeights.Bold,
+            "#8FDCC8"));
+        panel.Children.Add(CreateLabel(
+            hasActiveShare
+                ? "Zoom share frames will render here when published by the media engine."
+                : "Start a Zoom screen share to populate this region.",
+            18,
+            Microsoft.UI.Text.FontWeights.SemiBold,
+            "#EDF4EF"));
 
         return new Border
         {
@@ -326,6 +313,26 @@ public sealed partial class ScenePreviewControl : UserControl
             },
             Child = panel
         };
+    }
+
+    private void BuildEmptySceneState(string message)
+    {
+        LayoutRoot.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        LayoutRoot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var panel = new StackPanel
+        {
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        panel.Children.Add(CreateLabel(message, 22, Microsoft.UI.Text.FontWeights.Bold, "#EDF4EF"));
+        panel.Children.Add(CreateLabel(
+            "Join a meeting or connect a source to render program video.",
+            13,
+            Microsoft.UI.Text.FontWeights.Normal,
+            "#AEBEB5"));
+        LayoutRoot.Children.Add(panel);
     }
 
     private ParticipantTileControl CreateTile(Participant? participant, string variant)

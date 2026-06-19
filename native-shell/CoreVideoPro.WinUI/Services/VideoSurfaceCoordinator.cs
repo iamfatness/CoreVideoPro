@@ -21,7 +21,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private readonly Timer _uiFlushTimer;
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
     private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
-    private string _previewParticipantId = "p2";
+    private string _previewParticipantId = string.Empty;
     private string _compositorRenderer = "software";
 
     // The media core / compositor is ALWAYS ON. This flag tracks whether the operator has
@@ -118,7 +118,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     {
         lock (_gate)
         {
-            _previewParticipantId = string.IsNullOrWhiteSpace(participantId) ? "p2" : participantId;
+            _previewParticipantId = string.IsNullOrWhiteSpace(participantId) ? string.Empty : participantId;
             if (_participantSurfaces.TryGetValue(ParticipantKey(_previewParticipantId), out var participantSurface) &&
                 participantSurface.LastFrame is not null)
             {
