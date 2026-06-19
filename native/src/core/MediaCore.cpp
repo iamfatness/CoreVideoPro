@@ -3,6 +3,7 @@
 #include "compositor/CompositorLayout.h"
 #include "core/Protocol.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/RealZoomCaptureSource.h"
 
 #include <algorithm>
 #include <array>
@@ -1609,11 +1610,49 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 }
 
 void MediaCore::renderSyntheticTick() {
+  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 33;
+  // Tap the latest decoded Zoom frames (real BGRA pixels) and ingest them into
+  // the RealZoomCaptureSource so pollVideoFrames() returns pixels. Reading them
+  // here does NOT drain the stdout/event queue that feeds the multiview tiles.
+  auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
+  if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
+    for (const auto& frame : decoded) {
+      if (frame.hasPixels()) {
+        realZoom->ingestFrame(
+            frame.participantId,
+            frame.pixels->data(),
+            frame.pixelWidth,
+            frame.pixelHeight,
+            frame.frameId,
+            frame.timestampMs);
+      }
+    }
+  }
+
   auto videoFrames = modules_.zoom->pollVideoFrames();
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 33);
+    const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
     if (!engineFrames.empty()) {
-      videoFrames = engineFrames;
+      // When the engine reports subscribed video participants, they are the
+      // authoritative roster (mirrors the prior synthetic-tick behavior). Start
+      // from the engine roster and carry over real BGRA pixels for any
+      // participant that has already decoded a frame above; the rest stay
+      // metadata-only and fall back to the synthetic slate.
+      std::vector<modules::VideoFrame> merged;
+      merged.reserve(engineFrames.size());
+      for (auto engineFrame : engineFrames) {
+        const auto withPixels = std::find_if(
+            videoFrames.begin(), videoFrames.end(), [&](const modules::VideoFrame& candidate) {
+              return candidate.participantId == engineFrame.participantId && candidate.hasPixels();
+            });
+        if (withPixels != videoFrames.end()) {
+          merged.push_back(*withPixels);
+        } else {
+          merged.push_back(std::move(engineFrame));
+        }
+      }
+      videoFrames = std::move(merged);
     }
   }
   auto audioFrames = modules_.zoom->pollAudioFrames();

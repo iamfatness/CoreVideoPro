@@ -1,6 +1,7 @@
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/RealZoomCaptureSource.h"
 
 #include <algorithm>
 #include <cctype>
@@ -532,7 +533,11 @@ class CompositeCaptureDevice final : public ICaptureDevice {
 
 ModuleSet createStubModules() {
   ModuleSet modules;
-  modules.zoom = std::make_unique<SyntheticZoomCaptureSource>();
+  // Real decoded Zoom frames are ingested into RealZoomCaptureSource by the
+  // media-core tick. The synthetic source stays wired as the fallback so the
+  // program/preview keeps rendering a slate when there is no meeting or no
+  // participant video yet.
+  modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
   modules.encoder = createStubRecordingEncoderSink();

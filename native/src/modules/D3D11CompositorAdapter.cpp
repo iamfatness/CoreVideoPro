@@ -78,9 +78,17 @@ struct LayerShaderConstants {
 };
 
 constexpr char kCompositorVertexShader[] = R"(
-float4 main(uint vid : SV_VertexID) : SV_Position {
+struct VSOut {
+  float4 pos : SV_Position;
+  float2 uv : TEXCOORD0;
+};
+
+VSOut main(uint vid : SV_VertexID) {
   float2 uv = float2((vid << 1) & 2, vid & 2);
-  return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+  VSOut output;
+  output.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+  output.uv = uv;
+  return output;
 }
 )";
 
@@ -93,7 +101,7 @@ cbuffer LayerConstants : register(b0) {
   float temperature;
 };
 
-float4 main(float4 pos : SV_Position) : SV_Target {
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 rgb = color.rgb;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
@@ -101,6 +109,33 @@ float4 main(float4 pos : SV_Position) : SV_Target {
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
   return float4(saturate(rgb), color.a);
+}
+)";
+
+// Textured variant: samples a participant's decoded BGRA frame and applies the
+// same color grade, falling back implicitly to the solid-color shader when a
+// layer has no frame (the renderer binds the appropriate shader per layer).
+constexpr char kCompositorTexturedPixelShader[] = R"(
+cbuffer LayerConstants : register(b0) {
+  float4 color;
+  float exposure;
+  float contrast;
+  float saturation;
+  float temperature;
+};
+
+Texture2D layerTexture : register(t0);
+SamplerState layerSampler : register(s0);
+
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+  float4 sampled = layerTexture.Sample(layerSampler, uv);
+  float3 rgb = sampled.rgb;
+  rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
+  float luma = dot(rgb, float3(0.299, 0.587, 0.114));
+  rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
+  rgb.r += temperature * 0.05;
+  rgb.b -= temperature * 0.05;
+  return float4(saturate(rgb), sampled.a * color.a);
 }
 )";
 
@@ -201,6 +236,7 @@ class D3D11Compositor final : public ICompositor {
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
     uint32_t color = 0xff808080;
+    const VideoFrame* frame = nullptr;
   };
 
   void initializePipeline() {
@@ -222,6 +258,28 @@ class D3D11Compositor final : public ICompositor {
     }
     if (FAILED(device_->CreatePixelShader(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), nullptr, pixelShader_.put()))) {
       initError_ = "CreatePixelShader failed.";
+      return;
+    }
+    const auto texturedPixelBlob = compileShader(kCompositorTexturedPixelShader, "main", "ps_5_0", error);
+    if (!texturedPixelBlob) {
+      initError_ = "textured pixel shader: " + error;
+      return;
+    }
+    if (FAILED(device_->CreatePixelShader(texturedPixelBlob->GetBufferPointer(), texturedPixelBlob->GetBufferSize(), nullptr, texturedPixelShader_.put()))) {
+      initError_ = "CreatePixelShader (textured) failed.";
+      return;
+    }
+
+    D3D11_SAMPLER_DESC samplerDesc{};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MinLOD = 0.f;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(device_->CreateSamplerState(&samplerDesc, samplerState_.put()))) {
+      initError_ = "CreateSamplerState failed.";
       return;
     }
 
@@ -323,8 +381,13 @@ class D3D11Compositor final : public ICompositor {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
           layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+          layer.frame = frameForParticipant(frames, layer.plan.participantId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
-          layer.color = compositor::colorFromParticipantId(frames[static_cast<size_t>(videoIndex - 1)].participantId);
+          const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
+          layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
+          if (fallbackFrame.hasPixels()) {
+            layer.frame = &fallbackFrame;
+          }
         }
         layers.push_back(std::move(layer));
       }
@@ -343,9 +406,24 @@ class D3D11Compositor final : public ICompositor {
       const auto layout = compositor::gridCell((std::max)(1, count), index);
       layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
       layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+      if (frames[static_cast<size_t>(index)].hasPixels()) {
+        layer.frame = &frames[static_cast<size_t>(index)];
+      }
       layers.push_back(std::move(layer));
     }
     return layers;
+  }
+
+  static const VideoFrame* frameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId) {
+    if (participantId.empty()) {
+      return nullptr;
+    }
+    for (const auto& frame : frames) {
+      if (frame.participantId == participantId && frame.hasPixels()) {
+        return &frame;
+      }
+    }
+    return nullptr;
   }
 
   void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan) {
@@ -377,7 +455,79 @@ class D3D11Compositor final : public ICompositor {
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);
 
+    // Participant layers with a decoded BGRA frame sample the uploaded texture;
+    // everything else (overlays, undecoded participants) keeps the solid-color
+    // path as the fallback.
+    const bool textured = layer.frame != nullptr && layer.frame->hasPixels() && uploadLayerTexture(*layer.frame);
+    if (textured) {
+      context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
+      ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
+      ID3D11SamplerState* samplers[] = {samplerState_.get()};
+      context_->PSSetShaderResources(0, 1, views);
+      context_->PSSetSamplers(0, 1, samplers);
+    } else {
+      context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    }
+
     context_->Draw(3, 0);
+
+    if (textured) {
+      // Unbind the SRV so the next layer (or render-target read-back) is not
+      // blocked by a lingering shader-resource binding.
+      ID3D11ShaderResourceView* nullViews[] = {nullptr};
+      context_->PSSetShaderResources(0, 1, nullViews);
+      context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    }
+  }
+
+  bool uploadLayerTexture(const VideoFrame& frame) {
+    if (!frame.hasPixels()) {
+      return false;
+    }
+    const int width = frame.pixelWidth;
+    const int height = frame.pixelHeight;
+    if (!layerTexture_ || layerTextureWidth_ != width || layerTextureHeight_ != height) {
+      layerTexture_ = {};
+      layerTextureView_ = {};
+      layerTextureWidth_ = width;
+      layerTextureHeight_ = height;
+
+      D3D11_TEXTURE2D_DESC textureDesc{};
+      textureDesc.Width = static_cast<UINT>(width);
+      textureDesc.Height = static_cast<UINT>(height);
+      textureDesc.MipLevels = 1;
+      textureDesc.ArraySize = 1;
+      textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+      textureDesc.SampleDesc.Count = 1;
+      textureDesc.Usage = D3D11_USAGE_DYNAMIC;
+      textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+      if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, layerTexture_.put()))) {
+        layerTextureWidth_ = 0;
+        layerTextureHeight_ = 0;
+        return false;
+      }
+      if (FAILED(device_->CreateShaderResourceView(layerTexture_.get(), nullptr, layerTextureView_.put()))) {
+        layerTexture_ = {};
+        layerTextureWidth_ = 0;
+        layerTextureHeight_ = 0;
+        return false;
+      }
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(layerTexture_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      return false;
+    }
+    const auto* source = frame.pixels->data();
+    const auto sourceStride = static_cast<size_t>(frame.pixelStride);
+    auto* destination = static_cast<uint8_t*>(mapped.pData);
+    const size_t rowBytes = static_cast<size_t>(width) * 4u;
+    for (int y = 0; y < height; ++y) {
+      std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch, source + static_cast<size_t>(y) * sourceStride, rowBytes);
+    }
+    context_->Unmap(layerTexture_.get(), 0);
+    return true;
   }
 
   uint32_t readProgramPixelSignature(int x, int y) const {
@@ -488,6 +638,8 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11DeviceContext> context_;
   ComPtrLite<ID3D11VertexShader> vertexShader_;
   ComPtrLite<ID3D11PixelShader> pixelShader_;
+  ComPtrLite<ID3D11PixelShader> texturedPixelShader_;
+  ComPtrLite<ID3D11SamplerState> samplerState_;
   ComPtrLite<ID3D11Buffer> constantBuffer_;
   ComPtrLite<ID3D11BlendState> blendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;
@@ -495,6 +647,10 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
+  ComPtrLite<ID3D11Texture2D> layerTexture_;
+  ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
+  int layerTextureWidth_ = 0;
+  int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;
   int sharedWidth_ = 0;
   int sharedHeight_ = 0;

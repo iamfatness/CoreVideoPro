@@ -12,6 +12,20 @@ struct VideoFrame {
   int width = 0;
   int height = 0;
   int64_t timestampMs = 0;
+  // Optional decoded pixel payload. When present, `pixels` holds tightly packed
+  // BGRA bytes for a `pixelWidth` x `pixelHeight` image with `pixelStride` bytes
+  // per row. The buffer is shared so VideoFrame stays cheap to copy as it flows
+  // through pollVideoFrames -> render plan -> compositor. When empty, callers
+  // fall back to the synthetic solid-color slate keyed by participantId.
+  std::shared_ptr<const std::vector<uint8_t>> pixels;
+  int pixelWidth = 0;
+  int pixelHeight = 0;
+  int pixelStride = 0;
+  int64_t frameId = 0;
+  [[nodiscard]] bool hasPixels() const {
+    return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
+           pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
+  }
 };
 
 struct AudioFrame {
