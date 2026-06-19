@@ -81,6 +81,35 @@ public sealed record VideoSurfaceState
             DetailLine = "Start the engine to receive program frames."
         };
 
+    /// <summary>
+    /// Initial state for an always-on compositor surface before the first program frame
+    /// arrives. The media core is always running, so this resolves on its own within a
+    /// couple hundred milliseconds rather than requiring the operator to start anything.
+    /// </summary>
+    public static VideoSurfaceState Slate(VideoSurfaceKind kind, string surfaceKey, string title) =>
+        new()
+        {
+            SurfaceKey = surfaceKey,
+            Kind = kind,
+            Title = title,
+            StatusLine = "Compositor warming up",
+            DetailLine = "Live program frames appear here from the always-on compositor."
+        };
+
+    /// <summary>
+    /// State shown when the Zoom capture subscription is paused. The compositor keeps
+    /// rendering a program slate, so this is informational rather than a hard "waiting".
+    /// </summary>
+    public static VideoSurfaceState CapturePaused(VideoSurfaceKind kind, string surfaceKey, string title) =>
+        new()
+        {
+            SurfaceKey = surfaceKey,
+            Kind = kind,
+            Title = title,
+            StatusLine = "Capture paused",
+            DetailLine = "Showing program slate. Turn Capture on to ingest Zoom video."
+        };
+
     public VideoSurfaceState WithFrame(VideoFrameMetadata frame, string statusLine, string? detailLine = null) =>
         new()
         {
