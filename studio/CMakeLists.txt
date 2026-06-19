@@ -4,6 +4,10 @@ project(CoreVideoStudioNative LANGUAGES CXX)
 
 add_executable(CoreVideoStudio WIN32
   src/main.cpp
+  src/ProgramPreview.cpp
+  src/ProgramPreview.h
+  src/StudioState.cpp
+  src/StudioState.h
 )
 
 target_compile_features(CoreVideoStudio PRIVATE cxx_std_20)
@@ -18,4 +22,3 @@ target_compile_definitions(CoreVideoStudio PRIVATE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
 )
-

@@ -1,3 +1,6 @@
+#include "ProgramPreview.h"
+#include "StudioState.h"
+
 #include <windows.h>
 
 #include <array>
@@ -20,6 +23,10 @@ constexpr int kButtonSnapshot = 1005;
 constexpr int kButtonClear = 1006;
 constexpr int kLogEdit = 2001;
 constexpr int kStatusLabel = 2002;
+constexpr int kScenesPanel = 2003;
+constexpr int kProgramPanel = 2004;
+constexpr int kParticipantsPanel = 2005;
+constexpr int kHealthPanel = 2006;
 constexpr UINT kAppendLogMessage = WM_APP + 1;
 
 std::wstring widen(const std::string& value) {
@@ -249,6 +256,12 @@ class NativeCoreClient {
 NativeCoreClient g_core;
 HWND g_log = nullptr;
 HWND g_status = nullptr;
+HWND g_scenes = nullptr;
+HWND g_program = nullptr;
+HWND g_participants = nullptr;
+HWND g_health = nullptr;
+ProgramPreview g_preview;
+corevideo::studio::StudioState g_studioState;
 int g_requestId = 1;
 
 std::string nextId(const std::string& prefix) {
@@ -265,6 +278,63 @@ void setStatus(const wchar_t* text) {
   if (g_status) {
     SetWindowTextW(g_status, text);
   }
+}
+
+void setStudioText(HWND handle, const wchar_t* text) {
+  if (handle) {
+    SetWindowTextW(handle, text);
+  }
+}
+
+std::wstring studioStateText() {
+  std::ostringstream health;
+  health << "NATIVE CORE\r\n\r\n"
+         << "Connected: " << (g_studioState.connected ? "yes" : "no") << "\r\n"
+         << "Handshake: " << (g_studioState.handshakeSeen ? "yes" : "no") << "\r\n"
+         << "Renderer: " << (g_studioState.renderer.empty() ? "pending" : g_studioState.renderer) << "\r\n"
+         << "Encoder: " << (g_studioState.encoder.empty() ? "pending" : g_studioState.encoder) << "\r\n"
+         << "Health: " << (g_studioState.healthStatus.empty() ? "pending" : g_studioState.healthStatus) << "\r\n"
+         << "Program: " << (g_studioState.programFrameHealth.empty() ? "pending" : g_studioState.programFrameHealth) << "\r\n"
+         << "Output: " << (g_studioState.outputStatus.empty() ? "idle" : g_studioState.outputStatus) << "\r\n"
+         << "Frames: " << g_studioState.frameCount << "\r\n"
+         << "Senders: " << g_studioState.activeSenderCount;
+  if (!g_studioState.recordingArtifactPath.empty()) {
+    health << "\r\nRecording: " << g_studioState.recordingArtifactPath;
+  }
+  if (!g_studioState.lastErrorText.empty()) {
+    health << "\r\nError: " << g_studioState.lastErrorText;
+  }
+  return widen(health.str());
+}
+
+void refreshStatePanels() {
+  setStudioText(g_health, studioStateText().c_str());
+  const auto summary = corevideo::studio::summarizeStudioState(g_studioState);
+  if (!summary.empty()) {
+    setStatus(widen(summary).c_str());
+  }
+}
+
+void refreshStaticPanels() {
+  setStudioText(
+      g_scenes,
+      L"SCENES\r\n\r\n"
+      L"1  Intro\r\n"
+      L"2  Interview\r\n"
+      L"3  Speaker + Slides\r\n"
+      L"4  Panel\r\n"
+      L"5  Closing");
+  setStudioText(
+      g_program,
+      L"");
+  setStudioText(
+      g_participants,
+      L"PARTICIPANTS\r\n\r\n"
+      L"Synthetic Host        ready\r\n"
+      L"Synthetic Guest       ready\r\n"
+      L"Screen Share          standby\r\n\r\n"
+      L"Zoom-native roster will populate this panel.");
+  refreshStatePanels();
 }
 
 void sendLoadScene() {
@@ -306,6 +376,13 @@ void layout(HWND window) {
   int x = margin;
   const int y = margin;
   const int statusHeight = 28;
+  const int logHeight = 170;
+  const int top = y + buttonHeight + statusHeight + 18;
+  const int bottom = rect.bottom - margin;
+  const int contentBottom = bottom - logHeight - gap;
+  const int scenesWidth = 210;
+  const int rightWidth = 260;
+  const int healthHeight = 145;
 
   for (int id : {kButtonStartCore, kButtonLoadScene, kButtonStartOutput, kButtonHealth, kButtonSnapshot, kButtonClear}) {
     HWND child = GetDlgItem(window, id);
@@ -314,7 +391,11 @@ void layout(HWND window) {
   }
 
   MoveWindow(g_status, margin, y + buttonHeight + 10, rect.right - margin * 2, statusHeight, TRUE);
-  MoveWindow(g_log, margin, y + buttonHeight + statusHeight + 18, rect.right - margin * 2, rect.bottom - (y + buttonHeight + statusHeight + 28), TRUE);
+  MoveWindow(g_scenes, margin, top, scenesWidth, contentBottom - top, TRUE);
+  MoveWindow(g_program, margin + scenesWidth + gap, top, rect.right - (margin * 2 + scenesWidth + rightWidth + gap * 2), contentBottom - top, TRUE);
+  MoveWindow(g_participants, rect.right - margin - rightWidth, top, rightWidth, contentBottom - top - healthHeight - gap, TRUE);
+  MoveWindow(g_health, rect.right - margin - rightWidth, contentBottom - healthHeight, rightWidth, healthHeight, TRUE);
+  MoveWindow(g_log, margin, contentBottom + gap, rect.right - margin * 2, logHeight, TRUE);
 }
 
 HWND button(HWND parent, int id, const wchar_t* text) {
@@ -333,6 +414,40 @@ HWND button(HWND parent, int id, const wchar_t* text) {
       nullptr);
 }
 
+HWND panel(HWND parent, int id, const wchar_t* text) {
+  HWND handle = CreateWindowExW(
+      WS_EX_CLIENTEDGE,
+      L"EDIT",
+      text,
+      WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_READONLY,
+      0,
+      0,
+      0,
+      0,
+      parent,
+      reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
+      GetModuleHandleW(nullptr),
+      nullptr);
+  SendMessageW(handle, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+  return handle;
+}
+
+HWND programPanel(HWND parent) {
+  return CreateWindowExW(
+      WS_EX_CLIENTEDGE,
+      L"STATIC",
+      L"",
+      WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+      0,
+      0,
+      0,
+      0,
+      parent,
+      reinterpret_cast<HMENU>(static_cast<intptr_t>(kProgramPanel)),
+      GetModuleHandleW(nullptr),
+      nullptr);
+}
+
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
   switch (message) {
     case WM_CREATE:
@@ -343,6 +458,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
       button(window, kButtonSnapshot, L"Snapshot");
       button(window, kButtonClear, L"Clear Log");
       g_status = CreateWindowExW(0, L"STATIC", L"Native Studio ready. Start Core to connect.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<intptr_t>(kStatusLabel)), GetModuleHandleW(nullptr), nullptr);
+      g_scenes = panel(window, kScenesPanel, L"");
+      g_program = programPanel(window);
+      g_participants = panel(window, kParticipantsPanel, L"");
+      g_health = panel(window, kHealthPanel, L"");
       g_log = CreateWindowExW(
           WS_EX_CLIENTEDGE,
           L"EDIT",
@@ -358,6 +477,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
           nullptr);
       SendMessageW(g_log, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
       SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+      refreshStaticPanels();
       layout(window);
       g_core.start(window);
       setStatus(L"Native media core launched. Use Load Scene, Start Output, Health, Snapshot.");
@@ -394,10 +514,26 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
       }
       break;
 
+    case WM_DRAWITEM: {
+      auto* drawItem = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+      if (drawItem && drawItem->CtlID == kProgramPanel) {
+        g_preview.render(drawItem->hDC, drawItem->rcItem);
+        return TRUE;
+      }
+      break;
+    }
+
     case kAppendLogMessage: {
       auto* text = reinterpret_cast<std::wstring*>(lParam);
       if (text) {
         appendLog(g_log, *text);
+        const std::string logLine = narrow(*text);
+        const std::string payload = logLine.rfind("< ", 0) == 0 ? logLine.substr(2) : logLine;
+        if (g_preview.updateFromEventLine(payload)) {
+          InvalidateRect(g_program, nullptr, TRUE);
+        }
+        corevideo::studio::applyStudioStateLine(g_studioState, payload);
+        refreshStatePanels();
         delete text;
       }
       return 0;
