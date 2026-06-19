@@ -8,8 +8,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="mc"
     HorizontalAlignment="Stretch"
-    VerticalAlignment="Stretch"
-    SizeChanged="OnSizeChanged">
+    VerticalAlignment="Stretch">
 
     <Grid x:Name="LayoutSurface" Background="#020304" Padding="2" ColumnSpacing="4" RowSpacing="4">
         <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">

@@ -12,10 +12,14 @@ public sealed partial class ShowMultiviewHost : UserControl
         DependencyProperty.Register(nameof(Tiles), typeof(IEnumerable), typeof(ShowMultiviewHost),
             new PropertyMetadata(null, OnTilesChanged));
 
+    private bool _rebuildInProgress;
+    private bool _rebuildScheduled;
+    private IReadOnlyList<ParticipantSurfaceTile> _lastBuiltTiles = [];
+
     public ShowMultiviewHost()
     {
         InitializeComponent();
-        Loaded += (_, _) => RebuildLayout();
+        Loaded += (_, _) => ScheduleRebuildLayout();
     }
 
     public IEnumerable? Tiles
@@ -28,23 +32,89 @@ public sealed partial class ShowMultiviewHost : UserControl
     {
         if (sender is ShowMultiviewHost host)
         {
-            host.RebuildLayout();
+            host.ScheduleRebuildLayout();
         }
     }
 
-    private void OnSizeChanged(object sender, SizeChangedEventArgs e) => RebuildLayout();
+    private void ScheduleRebuildLayout()
+    {
+        if (_rebuildScheduled || _rebuildInProgress)
+        {
+            return;
+        }
+
+        _rebuildScheduled = true;
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            _rebuildScheduled = false;
+            RebuildLayout();
+        });
+    }
 
     private void RebuildLayout()
+    {
+        if (_rebuildInProgress)
+        {
+            return;
+        }
+
+        _rebuildInProgress = true;
+        try
+        {
+            var tiles = ShowInputRosterService.SelectVisibleMultiviewTiles(Tiles);
+            if (TryPatchTileSurfaces(tiles))
+            {
+                return;
+            }
+
+            RebuildLayoutCore(tiles);
+            _lastBuiltTiles = tiles;
+        }
+        finally
+        {
+            _rebuildInProgress = false;
+        }
+    }
+
+    private bool TryPatchTileSurfaces(IReadOnlyList<ParticipantSurfaceTile> tiles)
+    {
+        if (_lastBuiltTiles.Count == 0 ||
+            !ShowInputRosterService.SameMultiviewTileStructure(_lastBuiltTiles, tiles))
+        {
+            return false;
+        }
+
+        var patchIndex = 0;
+        foreach (var child in LayoutSurface.Children)
+        {
+            if (child is not AspectRatioHost aspectHost || aspectHost.Child is not BroadcastMultiviewTile multiviewTile)
+            {
+                continue;
+            }
+
+            if (patchIndex >= tiles.Count)
+            {
+                return false;
+            }
+
+            multiviewTile.Tile = tiles[patchIndex];
+            patchIndex++;
+        }
+
+        if (patchIndex != tiles.Count)
+        {
+            return false;
+        }
+
+        _lastBuiltTiles = tiles;
+        return true;
+    }
+
+    private void RebuildLayoutCore(IReadOnlyList<ParticipantSurfaceTile> tiles)
     {
         LayoutSurface.Children.Clear();
         LayoutSurface.RowDefinitions.Clear();
         LayoutSurface.ColumnDefinitions.Clear();
-
-        var tiles = (Tiles ?? Array.Empty<ParticipantSurfaceTile>())
-            .Cast<ParticipantSurfaceTile>()
-            .Where(tile => !tile.IsEmpty)
-            .Take(ShowInputRosterService.MaxMultiviewBoxes)
-            .ToList();
 
         EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (tiles.Count == 0)

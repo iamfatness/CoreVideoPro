@@ -21,10 +21,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
-    private readonly SystemResourceMonitorService _resourceMonitor = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly DispatcherQueueTimer _resourceMonitorTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -154,6 +152,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // compositing still receives the single global grade (see OpenColorGradeEditor).
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
+    private bool _showInputRefreshScheduled;
+    private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
 
     public SettingsViewModel Settings { get; }
@@ -398,16 +398,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _ = RefreshCaptureDevicesAsync();
-
-        _resourceMonitorTimer = _dispatcher.CreateTimer();
-        _resourceMonitorTimer.Interval = TimeSpan.FromSeconds(1);
-        _resourceMonitorTimer.Tick += (_, _) => SampleSystemResources();
-        _resourceMonitor.Prime();
-        Transport.ApplySystemResourceSample(
-            _resourceMonitor.CpuLoadPercent,
-            _resourceMonitor.MemoryLoadPercent,
-            _resourceMonitor.DiskLoadPercent);
-        _resourceMonitorTimer.Start();
     }
 
     private readonly ObservableCollection<Scene> _scenes;
@@ -699,7 +689,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMultiviewTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
     {
         OnPropertyChanged(nameof(MultiviewHeader));
-        RefreshMultiviewGridTiles();
     }
 
     partial void OnMultiviewGridTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
@@ -1465,28 +1454,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             discovered = [];
         }
 
-        RunOnUiThread(() =>
-        {
-            var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
-            CaptureDevices.Clear();
-            foreach (var device in discovered)
-            {
-                if (priorById.TryGetValue(device.Id, out var prior))
-                {
-                    device.ConnectionState = prior.ConnectionState;
-                    device.SignalPresent = prior.SignalPresent;
-                    device.SelectedInputId = prior.SelectedInputId;
-                    device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
-                }
+        RunOnUiThread(() => ApplyDiscoveredCaptureDevices(discovered));
+    }
 
-                CaptureDevices.Add(device);
+    private void ApplyDiscoveredCaptureDevices(IReadOnlyList<CaptureDevice> discovered)
+    {
+        var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
+        CaptureDevices.Clear();
+        foreach (var device in discovered)
+        {
+            if (priorById.TryGetValue(device.Id, out var prior))
+            {
+                device.ConnectionState = prior.ConnectionState;
+                device.SignalPresent = prior.SignalPresent;
+                device.SelectedInputId = prior.SelectedInputId;
+                device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
             }
 
-            RefreshCaptureFleetSummary();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-            OnPropertyChanged(nameof(HasCaptureDevices));
-        });
+            CaptureDevices.Add(device);
+        }
+
+        RefreshCaptureFleetSummary();
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
+        OnPropertyChanged(nameof(HasCaptureDevices));
     }
 
     private void RefreshProductionReadouts()
@@ -2185,7 +2176,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramSurface = _surfaces.ProgramSurface;
         PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
-        RefreshMultiviewGridTiles();
+        ScheduleMultiviewGridRefresh();
+    }
+
+    private void ScheduleMultiviewGridRefresh()
+    {
+        if (_multiviewGridRefreshScheduled)
+        {
+            return;
+        }
+
+        _multiviewGridRefreshScheduled = true;
+        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _multiviewGridRefreshScheduled = false;
+            RefreshMultiviewGridTiles();
+        });
     }
 
     private void InitializeShowInputEditors()
@@ -2210,7 +2216,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MultiviewHeader));
     }
 
-    private void OnShowInputChanged()
+    private void OnShowInputChanged() => ScheduleShowInputRefresh();
+
+    private void ScheduleShowInputRefresh()
+    {
+        if (_showInputRefreshScheduled)
+        {
+            return;
+        }
+
+        _showInputRefreshScheduled = true;
+        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _showInputRefreshScheduled = false;
+            ApplyShowInputRefresh();
+        });
+    }
+
+    private void ApplyShowInputRefresh()
     {
         EnsureAssignedSlotsForInShow();
 
@@ -2314,15 +2337,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var localStatus = LiveProductionSync.SummarizeLocalOutputs(Recording, Streaming);
         OutputStatus = localStatus;
         OutputSessionStatus = localStatus;
-    }
-
-    private void SampleSystemResources()
-    {
-        _resourceMonitor.Sample();
-        Transport.ApplySystemResourceSample(
-            _resourceMonitor.CpuLoadPercent,
-            _resourceMonitor.MemoryLoadPercent,
-            _resourceMonitor.DiskLoadPercent);
     }
 
     private void RefreshTransportState()
@@ -2611,8 +2625,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
-        _resourceMonitorTimer.Stop();
-        _resourceMonitor.Dispose();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.SnapshotChanged -= OnSnapshotChanged;

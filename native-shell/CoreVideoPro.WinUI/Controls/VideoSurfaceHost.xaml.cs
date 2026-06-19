@@ -17,6 +17,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private readonly Direct3D11InteropService _direct3DInterop = new();
     private nint _direct3DDevicePointer;
+    private bool _refreshingPathBindings;
 
     public VideoSurfaceHost()
     {
@@ -238,5 +239,21 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         PlaceholderPanel.Visibility = Visibility.Visible;
     }
 
-    private void RefreshPathBindings() => Bindings.Update();
+    private void RefreshPathBindings()
+    {
+        if (_refreshingPathBindings)
+        {
+            return;
+        }
+
+        _refreshingPathBindings = true;
+        try
+        {
+            Bindings.Update();
+        }
+        finally
+        {
+            _refreshingPathBindings = false;
+        }
+    }
 }

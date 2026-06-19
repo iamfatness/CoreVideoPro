@@ -47,6 +47,11 @@ public sealed partial class MainWindow : Window
 
     private void OnWindowActivated(object sender, WindowActivatedEventArgs args)
     {
+        if (_shutdownStarted || _allowWindowClose)
+        {
+            return;
+        }
+
         WindowChromeService.Apply(this, _appWindow);
     }
 

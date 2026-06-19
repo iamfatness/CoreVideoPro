@@ -79,19 +79,38 @@ function Get-LaunchLogTail {
     return (Get-Content $launchLog -Tail 8 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
 }
 
-$process = Start-Process -FilePath $exe -WorkingDirectory $publishDir -PassThru
-Start-Sleep -Seconds 3
+function Get-RunningStudioProcess {
+    Get-Process -Name "CoreVideoPro.WinUI" -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.HasExited } |
+        Sort-Object StartTime -Descending |
+        Select-Object -First 1
+}
 
-if ($process.HasExited) {
+$existing = Get-RunningStudioProcess
+if ($existing) {
+    Write-Host "[launch:native] CoreVideo Pro already running (pid $($existing.Id)). Check the taskbar if the window is hidden." -ForegroundColor Green
+    exit 0
+}
+
+$process = Start-Process -FilePath $exe -WorkingDirectory $publishDir -PassThru
+Start-Sleep -Seconds 8
+
+$running = if (-not $process.HasExited) { $process } else { Get-RunningStudioProcess }
+
+if ($null -eq $running) {
     $tail = Get-LaunchLogTail
-    Write-Host "[launch:native] CoreVideo Pro exited immediately (code $($process.ExitCode))." -ForegroundColor Red
+    Write-Host "[launch:native] CoreVideo Pro exited before the window stayed open (code $($process.ExitCode))." -ForegroundColor Red
     if ($tail) {
         Write-Host "[launch:native] Recent launch.log:" -ForegroundColor Yellow
         Write-Host $tail
     }
     Write-Host "[launch:native] Full log: $launchLog" -ForegroundColor DarkGray
-    exit $process.ExitCode
+    exit $(if ($process.ExitCode -ne 0) { $process.ExitCode } else { 1 })
 }
 
-Write-Host "[launch:native] CoreVideo Pro is running (pid $($process.Id))." -ForegroundColor Green
+if ($process.HasExited -and $running.Id -ne $process.Id) {
+    Write-Host "[launch:native] Secondary launch redirected to primary instance (pid $($running.Id))." -ForegroundColor Cyan
+}
+
+Write-Host "[launch:native] CoreVideo Pro is running (pid $($running.Id))." -ForegroundColor Green
 Start-Process -FilePath "explorer.exe" -ArgumentList $publishDir | Out-Null

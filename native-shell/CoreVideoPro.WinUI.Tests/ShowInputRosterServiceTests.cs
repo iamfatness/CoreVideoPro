@@ -52,6 +52,46 @@ public sealed class ShowInputRosterServiceTests
         Assert.Contains("signal present", tile.Surface.DetailLine, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void SameMultiviewTileStructure_MatchesParticipantAndSlotOrderOnly()
+    {
+        var first = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-uvc", InShow = true }],
+            [],
+            [Device("cam-uvc", "USB Capture", "uvc", 1280, 720, 60, connected: true)],
+            []);
+
+        var second = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-uvc", InShow = true }],
+            [],
+            [Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: false)],
+            []);
+
+        Assert.True(ShowInputRosterService.SameMultiviewTileStructure(first, second));
+        Assert.NotEqual(first[0].Surface.DetailLine, second[0].Surface.DetailLine);
+    }
+
+    [Fact]
+    public void SameMultiviewTileStructure_ReturnsFalseWhenRosterChanges()
+    {
+        var first = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-uvc", InShow = true }],
+            [],
+            [Device("cam-uvc", "USB Capture", "uvc", 1280, 720, 60)],
+            []);
+
+        var second = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-windows", InShow = true }],
+            [],
+            [
+                Device("cam-uvc", "USB Capture", "uvc", 1280, 720, 60),
+                Device("cam-windows", "Integrated Camera", "windows", 1920, 1080, 30)
+            ],
+            []);
+
+        Assert.False(ShowInputRosterService.SameMultiviewTileStructure(first, second));
+    }
+
     private static CaptureDevice Device(
         string id,
         string name,

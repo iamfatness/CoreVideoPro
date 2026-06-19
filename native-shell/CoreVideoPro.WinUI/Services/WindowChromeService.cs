@@ -26,6 +26,7 @@ public static class WindowChromeService
     private static readonly Windows.UI.Color TitleInactiveForeground = Windows.UI.Color.FromArgb(255, 148, 165, 155);
 
     private static readonly ConcurrentDictionary<IntPtr, List<DispatcherQueueTimer>> ScheduledTimers = new();
+    private static readonly ConcurrentDictionary<IntPtr, byte> ApplyInProgress = new();
 
     public static void Apply(Window window, AppWindow appWindow)
     {
@@ -110,9 +111,30 @@ public static class WindowChromeService
     private static void ApplyCore(Window window, AppWindow appWindow)
     {
         var hwnd = WindowNative.GetWindowHandle(window);
-        EnableImmersiveDarkMode(hwnd);
-        ApplyDwmCaptionColors(hwnd);
-        ApplyAppWindowTitleBar(appWindow);
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (!ApplyInProgress.TryAdd(hwnd, 0))
+        {
+            return;
+        }
+
+        try
+        {
+            EnableImmersiveDarkMode(hwnd);
+            ApplyDwmCaptionColors(hwnd);
+            ApplyAppWindowTitleBar(appWindow);
+        }
+        catch (Exception ex) when (ex is ArgumentException or COMException or ObjectDisposedException)
+        {
+            LaunchLog.Write($"chrome: skipped apply ({ex.GetType().Name}: {ex.Message})");
+        }
+        finally
+        {
+            ApplyInProgress.TryRemove(hwnd, out _);
+        }
     }
 
     private static void ApplyAppWindowTitleBar(AppWindow appWindow)

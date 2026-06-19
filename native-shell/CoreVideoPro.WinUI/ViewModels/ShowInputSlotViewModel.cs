@@ -8,12 +8,19 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 {
     private readonly ShowInputSlot _slot;
     private readonly Action _onChanged;
+    private bool _suppressChangedCallback;
 
     public ShowInputSlotViewModel(ShowInputSlot slot, Action onChanged)
     {
         _slot = slot;
         _onChanged = onChanged;
-        _slot.PropertyChanged += (_, _) => _onChanged();
+        _slot.PropertyChanged += (_, _) =>
+        {
+            if (!_suppressChangedCallback)
+            {
+                _onChanged();
+            }
+        };
     }
 
     public int SlotNumber => _slot.SlotNumber;
@@ -108,16 +115,24 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices)
     {
-        SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices);
-        if (Kind == ShowInputKind.ZoomParticipant &&
-            (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
+        _suppressChangedCallback = true;
+        try
         {
-            ParticipantId = SourceOptions.FirstOrDefault()?.Value;
+            SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices);
+            if (Kind == ShowInputKind.ZoomParticipant &&
+                (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
+            {
+                ParticipantId = SourceOptions.FirstOrDefault()?.Value;
+            }
+            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
+                     (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
+            {
+                CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;
+            }
         }
-        else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
-                 (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
+        finally
         {
-            CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;
+            _suppressChangedCallback = false;
         }
 
         OnPropertyChanged(nameof(SourceOptions));

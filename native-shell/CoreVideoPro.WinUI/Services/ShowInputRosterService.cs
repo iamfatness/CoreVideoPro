@@ -1,3 +1,4 @@
+using System.Collections;
 using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -90,6 +91,34 @@ public static class ShowInputRosterService
 
     public static int CountActiveShowInputs(IReadOnlyList<ShowInputSlot> slots) =>
         slots.Count(slot => slot.InShow && slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned);
+
+    public static IReadOnlyList<ParticipantSurfaceTile> SelectVisibleMultiviewTiles(IEnumerable? tiles) =>
+        (tiles ?? Array.Empty<ParticipantSurfaceTile>())
+            .OfType<ParticipantSurfaceTile>()
+            .Where(tile => !tile.IsEmpty)
+            .Take(MaxMultiviewBoxes)
+            .ToList();
+
+    public static bool SameMultiviewTileStructure(
+        IReadOnlyList<ParticipantSurfaceTile> current,
+        IReadOnlyList<ParticipantSurfaceTile> next)
+    {
+        if (current.Count != next.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < current.Count; index++)
+        {
+            if (current[index].Participant.Id != next[index].Participant.Id ||
+                current[index].SourceIndex != next[index].SourceIndex)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool HasResolvedSource(
         ShowInputSlot slot,
