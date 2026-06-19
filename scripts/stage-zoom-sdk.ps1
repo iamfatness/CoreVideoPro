@@ -28,7 +28,9 @@ function Resolve-DefaultZoomSdkDir {
 
   $repoSdkCandidates = @(
     (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292"),
     (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\x64"),
+    (Join-Path $repoRoot "ZoomSDK\zoom-sdk-windows-7.0.5.39292\zoom-sdk-windows-7.0.5.39292\x64"),
     (Join-Path $repoRoot "ZoomSDK")
   )
   foreach ($candidate in $repoSdkCandidates) {

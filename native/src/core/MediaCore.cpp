@@ -203,6 +203,7 @@ rpc::Json MediaCore::health() const {
       {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
       {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
       {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
+      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
       {"messages", messages},
   };
 }
@@ -256,6 +257,8 @@ rpc::Json MediaCore::zoomSnapshot() const {
   if (!zoomJoined_) {
     return rpc::Json::Object{
         {"meetingState", "idle"},
+        {"readiness", zoomReadinessState()},
+        {"evidence", zoomEvidenceState()},
         {"participants", rpc::Json::Array{}},
         {"tick", zoomSnapshotTick_},
     };
@@ -265,6 +268,8 @@ rpc::Json MediaCore::zoomSnapshot() const {
       {"meetingState", "in_meeting"},
       {"activeSpeakerId", "operator-1"},
       {"caption", ""},
+      {"readiness", zoomReadinessState()},
+      {"evidence", zoomEvidenceState()},
       {"tick", zoomSnapshotTick_},
       {"participants",
        rpc::Json::Array{
@@ -333,6 +338,7 @@ rpc::Json MediaCore::sessionState() const {
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
+      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
   };
   const auto zoomCapture = zoomSnapshot();
   if (zoomCapture.get("participants")) {
@@ -566,6 +572,65 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     simulateBreakoutRoomChange(command);
   }
   return sessionState();
+}
+
+rpc::Json MediaCore::zoomReadinessState() const {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto capture = zoomEngineRuntime_->snapshot();
+    const std::string meetingState = capture.getString("meetingState", "unknown");
+    const std::string sdkVersion = capture.getString("sdkVersion", "external");
+    return rpc::Json::Object{
+        {"status", meetingState == "error" ? "blocked" : "ready"},
+        {"mode", "runtime"},
+        {"sdkAvailable", true},
+        {"sdkVersion", sdkVersion},
+        {"meetingState", meetingState},
+        {"checks",
+         rpc::Json::Array{
+             rpc::Json::Object{{"id", "zoom-engine-runtime"}, {"status", "ready"}, {"label", "Zoom engine runtime configured"}},
+         }},
+    };
+  }
+
+  return rpc::Json::Object{
+      {"status", "ready"},
+      {"mode", "stub"},
+      {"sdkAvailable", false},
+      {"sdkVersion", "stub"},
+      {"meetingState", zoomJoined_ ? "in_meeting" : "idle"},
+      {"checks",
+       rpc::Json::Array{
+           rpc::Json::Object{{"id", "zoom-sdk"}, {"status", "stubbed"}, {"label", "Real Zoom SDK not required for native-core Studio readiness"}},
+           rpc::Json::Object{{"id", "raw-video"}, {"status", "synthetic"}, {"label", "Synthetic participant video evidence available"}},
+           rpc::Json::Object{{"id", "raw-audio"}, {"status", "synthetic"}, {"label", "Synthetic participant audio evidence available"}},
+       }},
+  };
+}
+
+rpc::Json MediaCore::zoomEvidenceState() const {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto capture = zoomEngineRuntime_->snapshot();
+    const auto* participants = capture.get("participants");
+    const auto participantCount = participants && participants->isArray() ? static_cast<int>(participants->asArray().size()) : 0;
+    return rpc::Json::Object{
+        {"source", "zoom-engine-runtime"},
+        {"synthetic", false},
+        {"joined", capture.getString("meetingState") == "in-meeting" || capture.getString("meetingState") == "in_meeting"},
+        {"participantCount", participantCount},
+        {"snapshotTick", capture.get("tick") ? *capture.get("tick") : rpc::Json(0)},
+    };
+  }
+
+  return rpc::Json::Object{
+      {"source", "native-core-stub"},
+      {"synthetic", true},
+      {"joined", zoomJoined_},
+      {"participantCount", zoomJoined_ ? 2 : 0},
+      {"videoFeeds", zoomJoined_ ? 2 : 0},
+      {"audioFeeds", zoomJoined_ ? 2 : 0},
+      {"activeSpeakerId", zoomJoined_ ? "operator-1" : ""},
+      {"snapshotTick", zoomSnapshotTick_},
+  };
 }
 
 std::string MediaCore::resolveMeetingStateForSession() const {

@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit",
     "launch:native": "powershell -ExecutionPolicy Bypass -File scripts/launch-native.ps1",
     "run:studio": "powershell -ExecutionPolicy Bypass -File scripts/run-studio.ps1",
+    "run:studio:dev": "powershell -ExecutionPolicy Bypass -File scripts/run-studio.ps1 -UseDevNativeCore",
     "deploy:staging-workers": "powershell -ExecutionPolicy Bypass -File scripts/deploy-staging-workers.ps1",
     "smoke:staging-services": "powershell -ExecutionPolicy Bypass -File scripts/smoke-staging-services.ps1",
     "pack:native": "powershell -ExecutionPolicy Bypass -File scripts/package-native.ps1",

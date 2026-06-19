@@ -152,6 +152,29 @@ TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {
 #endif
 }
 
+TEST(MediaCoreCommand, SessionAndHealthExposeZoomReadinessEvidenceWithoutSdk) {
+  corevideo::core::MediaCore mediaCore;
+
+  const auto state = mediaCore.sessionState();
+  const auto* zoom = state.get("zoom");
+  ASSERT_NE(zoom, nullptr);
+  EXPECT_EQ(zoom->get("readiness")->getString("status"), "ready");
+  EXPECT_EQ(zoom->get("readiness")->getString("mode"), "stub");
+  EXPECT_FALSE(zoom->get("readiness")->get("sdkAvailable")->asBool());
+  EXPECT_EQ(zoom->get("evidence")->getString("source"), "native-core-stub");
+  EXPECT_TRUE(zoom->get("evidence")->get("synthetic")->asBool());
+  EXPECT_FALSE(zoom->get("evidence")->get("joined")->asBool());
+
+  const auto joined = mediaCore.joinZoom(corevideo::rpc::Json::Object{{"displayName", "Operator"}});
+  EXPECT_EQ(joined.get("evidence")->get("participantCount")->asNumber(), 2);
+  EXPECT_EQ(joined.get("evidence")->getString("activeSpeakerId"), "operator-1");
+
+  const auto health = mediaCore.health();
+  ASSERT_NE(health.get("zoom"), nullptr);
+  EXPECT_EQ(health.get("zoom")->get("readiness")->getString("mode"), "stub");
+  EXPECT_TRUE(health.get("zoom")->get("evidence")->get("joined")->asBool());
+}
+
 TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -89,9 +90,155 @@ std::wstring currentDirectory() {
   return std::wstring(buffer.data(), buffer.data() + length);
 }
 
+std::filesystem::path repoRoot() {
+  return std::filesystem::path(currentDirectory());
+}
+
+bool fileExists(const std::filesystem::path& path) {
+  std::error_code error;
+  return std::filesystem::exists(path, error) && std::filesystem::is_regular_file(path, error);
+}
+
+bool directoryExists(const std::filesystem::path& path) {
+  std::error_code error;
+  return std::filesystem::exists(path, error) && std::filesystem::is_directory(path, error);
+}
+
+std::optional<std::filesystem::path> normalizeZoomSdkRoot(const std::filesystem::path& candidate) {
+  if (candidate.empty()) {
+    return std::nullopt;
+  }
+  if (fileExists(candidate / L"h" / L"zoom_sdk.h")) {
+    return candidate;
+  }
+  const auto x64 = candidate / L"x64";
+  if (fileExists(x64 / L"h" / L"zoom_sdk.h")) {
+    return x64;
+  }
+  return std::nullopt;
+}
+
+std::filesystem::path envPath(const wchar_t* name) {
+  std::array<wchar_t, 4096> buffer{};
+  const DWORD length = GetEnvironmentVariableW(name, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) {
+    return {};
+  }
+  return std::filesystem::path(std::wstring(buffer.data(), buffer.data() + length));
+}
+
+bool envEnabled(const wchar_t* name) {
+  std::array<wchar_t, 64> buffer{};
+  const DWORD length = GetEnvironmentVariableW(name, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) {
+    return false;
+  }
+  std::wstring value(buffer.data(), buffer.data() + length);
+  std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+    return static_cast<wchar_t>(towlower(ch));
+  });
+  return value == L"1" || value == L"true" || value == L"yes" || value == L"on";
+}
+
+std::filesystem::path findZoomSdkRoot() {
+  const auto root = repoRoot();
+  std::vector<std::filesystem::path> candidates{
+      envPath(L"COREVIDEO_ZOOM_RUNTIME_DIR"),
+      envPath(L"ZOOM_SDK_DIR"),
+      root / L"native-core" / L"zoom-runtime" / L"windows" / L"x64",
+      root / L"ZoomSDK" / L"zoom-sdk-windows-7.0.5.39292" / L"zoom-sdk-windows-7.0.5.39292" / L"x64",
+      root / L"ZoomSDK" / L"zoom-sdk-windows-7.0.5.39292" / L"zoom-sdk-windows-7.0.5.39292",
+      root / L"ZoomSDK" / L"zoom-sdk-windows-7.0.5.39292" / L"x64",
+      root / L"ZoomSDK" / L"zoom-sdk-windows-7.0.5.39292",
+      root / L"ZoomSDK" / L"x64",
+      root / L"ZoomSDK",
+  };
+  for (const auto& candidate : candidates) {
+    if (auto normalized = normalizeZoomSdkRoot(candidate)) {
+      return *normalized;
+    }
+  }
+  return {};
+}
+
+std::filesystem::path findZoomEngine() {
+  const auto root = repoRoot();
+  const std::vector<std::filesystem::path> candidates{
+      envPath(L"COREVIDEO_ZOOM_ENGINE_PATH"),
+      root / L"native" / L"build-dev" / L"corevideo-zoom-engine.exe",
+      root / L"native" / L"build-dev" / L"Release" / L"corevideo-zoom-engine.exe",
+      root / L"native" / L"build" / L"corevideo-zoom-engine.exe",
+      root / L"native" / L"build" / L"Release" / L"corevideo-zoom-engine.exe",
+  };
+  for (const auto& candidate : candidates) {
+    if (fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+std::wstring zoomReadinessText() {
+  const auto sdkRoot = findZoomSdkRoot();
+  const auto zoomEngine = findZoomEngine();
+  std::wostringstream out;
+  out << L"ZOOM SDK\r\n";
+  if (sdkRoot.empty()) {
+    out << L"SDK: missing\r\n"
+        << L"Put SDK at ZoomSDK\\zoom-sdk-windows-7.0.5.39292\\x64 or set ZOOM_SDK_DIR.\r\n"
+        << L"Then run scripts\\stage-zoom-sdk.ps1 and scripts\\build-native-dev.ps1.";
+    return out.str();
+  }
+
+  const std::vector<std::pair<const wchar_t*, std::filesystem::path>> required{
+      {L"sdk.dll", sdkRoot / L"bin" / L"sdk.dll"},
+      {L"sdk.lib", sdkRoot / L"lib" / L"sdk.lib"},
+      {L"zoom_sdk.h", sdkRoot / L"h" / L"zoom_sdk.h"},
+      {L"raw video", sdkRoot / L"h" / L"rawdata" / L"zoom_rawdata_api.h"},
+      {L"raw renderer", sdkRoot / L"h" / L"rawdata" / L"rawdata_renderer_interface.h"},
+      {L"raw audio", sdkRoot / L"h" / L"rawdata" / L"rawdata_audio_helper_interface.h"},
+  };
+  int missing = 0;
+  for (const auto& [label, path] : required) {
+    if (!fileExists(path)) {
+      ++missing;
+    }
+  }
+
+  const auto binDir = sdkRoot / L"bin";
+  int dllCount = 0;
+  if (directoryExists(binDir)) {
+    for (const auto& entry : std::filesystem::directory_iterator(binDir)) {
+      if (entry.path().extension() == L".dll") {
+        ++dllCount;
+      }
+    }
+  }
+
+  out << L"SDK: " << (missing == 0 ? L"ready" : L"blocked") << L"\r\n"
+      << L"Root: " << sdkRoot.wstring() << L"\r\n"
+      << L"DLLs: " << dllCount << L"\r\n"
+      << L"Zoom engine: " << (zoomEngine.empty() ? L"missing" : zoomEngine.wstring()) << L"\r\n";
+  if (missing > 0) {
+    out << L"Missing required files: " << missing << L"\r\n";
+  }
+  if (zoomEngine.empty()) {
+    out << L"Run scripts\\build-native-dev.ps1 to build real Zoom join/media helper.\r\n";
+  }
+  if (missing == 0 && !zoomEngine.empty()) {
+    out << L"Real Zoom path can be used by native media core.";
+  }
+  return out.str();
+}
+
 std::vector<std::filesystem::path> nativeCoreCandidates() {
-  const auto cwd = std::filesystem::path(currentDirectory());
+  const auto cwd = repoRoot();
   std::vector<std::filesystem::path> candidates;
+  if (envEnabled(L"COREVIDEO_STUDIO_USE_DEV_CORE")) {
+    candidates.push_back(cwd / L"native" / L"build-dev" / L"corevideo-native.exe");
+    candidates.push_back(cwd / L"native" / L"build-dev" / L"Release" / L"corevideo-native.exe");
+    candidates.push_back(cwd / L"native" / L"build-dev" / L"Debug" / L"corevideo-native.exe");
+  }
   candidates.push_back(cwd / L"native" / L"build" / L"corevideo-native.exe");
   candidates.push_back(cwd / L"native" / L"build" / L"Release" / L"corevideo-native.exe");
   candidates.push_back(cwd / L"native" / L"build" / L"Debug" / L"corevideo-native.exe");
@@ -120,6 +267,34 @@ std::filesystem::path findNativeCore() {
   return {};
 }
 
+void configureNativeCoreEnvironment() {
+  if (envEnabled(L"COREVIDEO_STUDIO_USE_DEV_CORE")) {
+    const auto zoomEngine = findZoomEngine();
+    if (!zoomEngine.empty()) {
+      SetEnvironmentVariableW(L"COREVIDEO_ZOOM_ENGINE_PATH", zoomEngine.wstring().c_str());
+    }
+  } else {
+    SetEnvironmentVariableW(L"COREVIDEO_ZOOM_ENGINE_PATH", nullptr);
+  }
+
+  const auto sdkRoot = findZoomSdkRoot();
+  if (!sdkRoot.empty()) {
+    SetEnvironmentVariableW(L"COREVIDEO_ZOOM_RUNTIME_DIR", sdkRoot.wstring().c_str());
+    const auto binDir = sdkRoot / L"bin";
+    if (directoryExists(binDir)) {
+      std::array<wchar_t, 32767> pathBuffer{};
+      const DWORD length = GetEnvironmentVariableW(L"PATH", pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+      std::wstring updated = binDir.wstring();
+      updated += L";";
+      if (length > 0 && length < pathBuffer.size()) {
+        updated.append(pathBuffer.data(), pathBuffer.data() + length);
+      }
+      SetEnvironmentVariableW(L"PATH", updated.c_str());
+    }
+  }
+  SetEnvironmentVariableW(L"COREVIDEO_ZOOM_JOIN_WAIT_MS", L"45000");
+}
+
 class NativeCoreClient {
  public:
   ~NativeCoreClient() {
@@ -138,6 +313,7 @@ class NativeCoreClient {
       append(window, "Could not find native/build/corevideo-native.exe. Build native first.");
       return false;
     }
+    configureNativeCoreEnvironment();
 
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
@@ -360,7 +536,10 @@ std::wstring studioStateText() {
   if (!g_studioState.lastErrorText.empty()) {
     health << "\r\nError: " << g_studioState.lastErrorText;
   }
-  return widen(health.str());
+  auto text = widen(health.str());
+  text += L"\r\n\r\n";
+  text += zoomReadinessText();
+  return text;
 }
 
 std::wstring participantsText() {

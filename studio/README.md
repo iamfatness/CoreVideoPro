@@ -32,6 +32,14 @@ npm run build:studio
 npm run run:studio
 ```
 
+Use the real Zoom SDK dev build after staging the SDK and building dev adapters:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\stage-zoom-sdk.ps1
+powershell -ExecutionPolicy Bypass -File scripts\build-native-dev.ps1
+npm run run:studio:dev
+```
+
 The build script creates:
 
 - `native/build/corevideo-native.exe`

@@ -62,6 +62,8 @@ class MediaCore {
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
+  [[nodiscard]] rpc::Json zoomReadinessState() const;
+  [[nodiscard]] rpc::Json zoomEvidenceState() const;
   [[nodiscard]] std::string resolveMeetingStateForSession() const;
 
   struct SceneRouteState {

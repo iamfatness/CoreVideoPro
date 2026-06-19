@@ -118,7 +118,12 @@ TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {
   ASSERT_TRUE(response.has_value());
   EXPECT_EQ(response->getString("id"), "one");
   EXPECT_TRUE(response->get("ok")->asBool());
-  EXPECT_NE(response->get("health"), nullptr);
+  const auto* health = response->get("health");
+  ASSERT_NE(health, nullptr);
+  ASSERT_NE(health->get("zoom"), nullptr);
+  EXPECT_EQ(health->get("zoom")->get("readiness")->getString("status"), "ready");
+  EXPECT_EQ(health->get("zoom")->get("readiness")->getString("mode"), "stub");
+  EXPECT_TRUE(health->get("zoom")->get("evidence")->get("synthetic")->asBool());
 }
 
 TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
@@ -212,6 +217,11 @@ TEST(JsonRpcServer, HandlesZoomLifecycleRequests) {
   EXPECT_TRUE(snapshot.get("ok")->asBool());
   EXPECT_EQ(snapshot.getString("type"), "zoom-snapshot");
   EXPECT_EQ(snapshot.get("snapshot")->getString("meetingState"), "in_meeting");
+  EXPECT_EQ(snapshot.get("snapshot")->get("readiness")->getString("status"), "ready");
+  EXPECT_EQ(snapshot.get("snapshot")->get("readiness")->getString("mode"), "stub");
+  EXPECT_FALSE(snapshot.get("snapshot")->get("readiness")->get("sdkAvailable")->asBool());
+  EXPECT_TRUE(snapshot.get("snapshot")->get("evidence")->get("synthetic")->asBool());
+  EXPECT_EQ(snapshot.get("snapshot")->get("evidence")->get("participantCount")->asNumber(), 2);
 
   const auto left = server.handle(corevideo::rpc::Json::Object{
       {"id", "zoom-leave-1"},

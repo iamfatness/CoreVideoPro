@@ -1,6 +1,7 @@
 param(
   [string]$Config = "Debug",
-  [switch]$NoBuild
+  [switch]$NoBuild,
+  [switch]$UseDevNativeCore
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +21,18 @@ if (-not (Test-Path $nativeExe)) {
 }
 if (-not (Test-Path $studioExe)) {
   throw "Missing native Studio shell at $studioExe. Run .\scripts\build-studio.ps1 from the repository root."
+}
+
+if ($UseDevNativeCore) {
+  $devNativeExe = Join-Path $repoRoot "native\build-dev\corevideo-native.exe"
+  $devZoomEngine = Join-Path $repoRoot "native\build-dev\corevideo-zoom-engine.exe"
+  if (-not (Test-Path $devNativeExe) -or -not (Test-Path $devZoomEngine)) {
+    throw "Missing dev native Zoom build. Run .\scripts\build-native-dev.ps1 first."
+  }
+  $env:COREVIDEO_STUDIO_USE_DEV_CORE = "1"
+  $env:COREVIDEO_ZOOM_ENGINE_PATH = $devZoomEngine
+  Write-Host "[run-studio] using dev native core: $devNativeExe" -ForegroundColor Cyan
+  Write-Host "[run-studio] using Zoom engine: $devZoomEngine" -ForegroundColor Cyan
 }
 
 Write-Host "[run-studio] launching $studioExe" -ForegroundColor Cyan
