@@ -176,6 +176,10 @@
                                                               DisplayMemberPath="Label"
                                                               HorizontalAlignment="Stretch" />
                                                 </StackPanel>
+                                                <Button Content="Color grade"
+                                                        Style="{StaticResource OperatorGhostButton}"
+                                                        Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesRoot}"
+                                                        CommandParameter="{x:Bind ParticipantId, Mode=OneWay}" />
                                             </StackPanel>
                                         </Border>
                                     </DataTemplate>
