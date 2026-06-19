@@ -1,13 +1,8 @@
 # Simple integration smoke test for the media-core stdio bridge.
-# Prefers corevideo-native.exe when built; falls back to desktop/coreStub.cjs via Node.
+# Requires corevideo-native.exe; the old Electron/Node core stub has been removed.
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$stub = Join-Path $repoRoot "desktop\coreStub.cjs"
-
-if (-not (Test-Path $stub)) {
-    Write-Error "coreStub.cjs not found at $stub"
-}
 
 $nativeCandidates = @(
     (Join-Path $repoRoot "native\build-dev\corevideo-native.exe"),
@@ -16,31 +11,13 @@ $nativeCandidates = @(
 )
 $nativeExe = $nativeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-$usingNativeCore = $false
 if ($nativeExe) {
     $runner = $nativeExe
     $runnerArgs = ""
-    $usingNativeCore = $true
     Write-Host "Using packaged native core: $runner"
 }
 else {
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $node) {
-        $electron = Join-Path $repoRoot "node_modules\electron\dist\electron.exe"
-        if (Test-Path $electron) {
-            $env:ELECTRON_RUN_AS_NODE = "1"
-            $runner = $electron
-        }
-        else {
-            Write-Error "Node.js is required to run the integration script when corevideo-native.exe is not built."
-        }
-    }
-    else {
-        $runner = $node.Source
-    }
-
-    $runnerArgs = "`"$stub`""
-    Write-Host "Using Node stub: $stub"
+    Write-Error "corevideo-native.exe is required. Run npm run test:native-media-core or scripts/build-studio.ps1 first."
 }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -126,7 +103,7 @@ Write-Host "media-core-sync ok: scene=$($sync.snapshot.sceneId) frames=$($sync.s
 if ($sync.snapshot.breakoutRoomId -ne "main") {
     throw "Expected default breakoutRoomId 'main', got '$($sync.snapshot.breakoutRoomId)'."
 }
-$expectedBaselineMeetingState = if ($usingNativeCore) { "idle" } else { "in_meeting" }
+$expectedBaselineMeetingState = "idle"
 if ($sync.snapshot.meetingState -ne $expectedBaselineMeetingState) {
     throw "Expected baseline meetingState '$expectedBaselineMeetingState', got '$($sync.snapshot.meetingState)'."
 }

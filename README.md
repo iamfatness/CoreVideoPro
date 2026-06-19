@@ -1,10 +1,10 @@
 # CoreVideo Pro
 
-CoreVideo Pro is a standalone cross-platform desktop production app for producing high-quality online conversations and building polished live and recorded shows directly from Zoom participants. This repository currently contains the first MVP execution slice: a desktop-ready production-console renderer, typed product state, and engine contracts for the native Zoom capture, AI production, and output layers.
+CoreVideo Pro is a standalone native desktop production app for producing high-quality online conversations and building polished live and recorded shows directly from Zoom participants. This repository contains the native Studio shell, WinUI shell, C++ media core, typed product state, and engine contracts for Zoom capture, AI production, and output layers.
 
-This is not intended to ship as a browser-hosted SPA. The React/Vite surface is the desktop operator renderer that should run inside a native Mac/Windows shell, with media capture, compositing, recording, streaming, diagnostics, and packaging handled by native desktop processes behind typed IPC contracts.
+This is not intended to ship as a browser-hosted SPA, and the Electron app has been removed. The active app paths are the native C++ Studio in `studio/` and the WinUI native shell in `native-shell/`, with media capture, compositing, recording, streaming, diagnostics, and packaging handled by native desktop processes behind typed IPC contracts.
 
-The shell choice must stay replaceable. Electron, Tauri, or a custom native shell can host the renderer, but the end-state product depends on a native media core for real-time Zoom ingest, GPU compositing, chroma key, overlays, audio mixing, recording, ISO capture, and streaming.
+The product depends on a native media core for real-time Zoom ingest, GPU compositing, chroma key, overlays, audio mixing, recording, ISO capture, and streaming. Do not add new Electron work; use the native Studio/WinUI paths.
 
 **Roadmap:** the demo-driven, sprint-by-sprint path to the first live demo lives in [`docs/roadmap/index.html`](docs/roadmap/index.html) — open it in a browser.
 
@@ -71,7 +71,7 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Multi-destination and recording preflight tests for arming targets, output readiness, live target health, aggregate bitrate, and network warning behavior.
 - ISO recording tests for selected participant feeds, output-session status, native bridge payloads, support-bundle runway, and UI controls.
 - Native host and media-core protocol tests proving the UI shell is not the real-time video engine.
-- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to Electron, OBS, or browser capture APIs.
+- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to OBS or browser capture APIs.
 - Native audio-mix and caption-track tests in `native-core` and the renderer sync/mapper layers proving participant leveling and live caption cues round-trip through the media-core snapshot contract.
 - Auto-director hold tests and brand-kit command tests proving unattended production stays stable and on-brand through the media-core snapshot contract.
 - Diagnostics tests for support bundle redaction, low-quality feed guidance, duplicate assignments, missing screen share, and UI export flow.
@@ -86,13 +86,13 @@ The shell choice must stay replaceable. Electron, Tauri, or a custom native shel
 - Preset tests for serializing repeatable show setup, listing summaries, loading presets, and restoring UI state.
 - Video-effects tests for chroma key toggles, manual crop zoom, and preview badges.
 
-## Planned Desktop Runtime Shape
+## Planned Native Runtime Shape
 
-The operator renderer should talk to native desktop engines through a narrow bridge:
+The operator surface talks to native desktop engines through a narrow bridge:
 
 ```text
-CoreVideo Pro Desktop Shell
-  -> React Operator Renderer
+CoreVideo Pro Native Studio / WinUI Shell
+  -> Operator Surface
   -> EngineBundle
   -> ZoomCaptureEngine
   -> NativeZoomTransport
@@ -135,6 +135,8 @@ npm run test:native-core
 npm run typecheck
 npm run build
 npm run build:native-core
+npm run build:studio
+npm run run:studio
 ```
 
 ## MVP North Star

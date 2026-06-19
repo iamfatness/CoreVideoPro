@@ -28,7 +28,7 @@ describe("mapDesktopEntitlementsToLicenseState", () => {
 });
 
 describe("RemoteLicenseClient", () => {
-  it("refreshes license state from the electron bridge", async () => {
+  it("refreshes license state from the native bridge", async () => {
     const client = new RemoteLicenseClient({
       async getLicenseEntitlements() {
         return { tier: "pro", status: "active", expiresAt: null, email: "ops@example.com" };

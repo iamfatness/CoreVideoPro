@@ -44,7 +44,7 @@ helper target or `COREVIDEO_WITH_ZOOM`.
 
 ## Dev runtime wiring
 
-The Electron app uses the Node stub by default. To exercise the native media
+The native Studio and WinUI shells use the C++ media core. To exercise the native media
 core and have that core supervise the vendored Zoom engine, set both layers:
 
 ```

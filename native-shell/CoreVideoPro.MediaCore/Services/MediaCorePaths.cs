@@ -26,7 +26,8 @@ public static class MediaCorePaths
             {
                 if (File.Exists(Path.Combine(dir, "package.json")) &&
                     Directory.Exists(Path.Combine(dir, "native")) &&
-                    Directory.Exists(Path.Combine(dir, "desktop")))
+                    (Directory.Exists(Path.Combine(dir, "studio")) ||
+                     Directory.Exists(Path.Combine(dir, "native-shell"))))
                 {
                     return dir;
                 }
@@ -238,22 +239,4 @@ public static class MediaCorePaths
     public static ZoomOAuthManifest LoadZoomOAuthManifest() => ZoomOAuthManifest.Load();
 
     public static bool IsZoomOAuthBrokerConfigured() => LoadZoomOAuthManifest().BrokerConfigured;
-
-    public static string? ResolveNodeCoreStub()
-    {
-        var appRoot = RepoRoot;
-        var stubCandidates = new[]
-        {
-            Path.Combine(appRoot, "desktop", "coreStub.cjs"),
-            Path.Combine(AppContext.BaseDirectory, "desktop", "coreStub.cjs")
-        };
-
-        if (stubCandidates.All(path => !File.Exists(path)))
-        {
-            return null;
-        }
-
-        var electron = Path.Combine(appRoot, "node_modules", "electron", "dist", "electron.exe");
-        return File.Exists(electron) ? electron : "node";
-    }
 }

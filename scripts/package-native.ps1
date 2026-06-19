@@ -16,16 +16,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw "node is required on PATH (coreStub fallback bundling)."
-}
-
-Write-Host "[pack:native] bundling coreStub fallback..." -ForegroundColor Cyan
-Push-Location $repoRoot
-try {
-  node --input-type=module -e "import { ensureCoreStubBundle } from './desktop/scripts/desktopRuntime.mjs'; ensureCoreStubBundle();"
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-} finally {
-  Pop-Location
+  throw "node is required on PATH for packaging helpers."
 }
 
 Write-Host "[pack:native] publishing WinUI shell (Release, win-x64)..." -ForegroundColor Cyan
@@ -144,10 +135,7 @@ if ($nativeSource) {
 }
 
 if (-not (Test-Path (Join-Path $outDir "corevideo-native.exe"))) {
-  $desktopOut = Join-Path $outDir "desktop"
-  New-Item -ItemType Directory -Path $desktopOut -Force | Out-Null
-  Copy-Item -Path (Join-Path $repoRoot "desktop\coreStub.cjs") -Destination (Join-Path $desktopOut "coreStub.cjs") -Force
-  Write-Host "[pack:native] staged desktop/coreStub.cjs (stub fallback)" -ForegroundColor DarkGray
+  throw "corevideo-native.exe was not staged. Run npm run test:native-media-core or set COREVIDEO_NATIVE_BUILD_DIR to a native build output."
 }
 
 Write-Host "[pack:native] syncing Zoom SDK runtime beside packaged app..." -ForegroundColor Cyan
@@ -190,5 +178,5 @@ Write-Host "  $(Join-Path $outDir "CoreVideo Pro.bat")"
 if ($stagedNative) {
   Write-Host "  Media core: corevideo-native.exe (+ siblings)" -ForegroundColor Green
 } else {
-  Write-Host "  Media core: Node stub (requires Node.js on PATH)" -ForegroundColor Yellow
+  Write-Host "  Media core: missing" -ForegroundColor Red
 }

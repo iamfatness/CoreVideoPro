@@ -134,7 +134,7 @@ describe("native host bridge", () => {
   it("routes buildNativeMediaCoreCommands batches through the request RPC", async () => {
     const seen: NativeBridgeCommand[] = [];
     const bridge: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request(command): Promise<NativeBridgeResponse> {
         seen.push(command);
@@ -150,7 +150,7 @@ describe("native host bridge", () => {
 
   it("returns the announced profile from a handshake", async () => {
     const bridge: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request(command): Promise<NativeBridgeResponse> {
         return { id: command.id, ok: true, profile };
@@ -162,7 +162,7 @@ describe("native host bridge", () => {
 
   it("yields undefined when the handshake is declined or throws", async () => {
     const declining: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request(command): Promise<NativeBridgeResponse> {
         return { id: command.id, ok: false, error: { code: "native-unavailable", message: "no core" } };
@@ -171,7 +171,7 @@ describe("native host bridge", () => {
     expect(await handshakeMediaCoreThroughBridge(declining)).toBeUndefined();
 
     const throwing: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request() {
         throw new Error("ipc down");
@@ -182,7 +182,7 @@ describe("native host bridge", () => {
 
   it("attachBridgeMediaCoreSync backs syncMediaCore with the request RPC", async () => {
     const bridge: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request(command): Promise<NativeBridgeResponse> {
         return { id: command.id, ok: true, snapshot: fakeSnapshot() };
@@ -198,7 +198,7 @@ describe("native host bridge", () => {
   it("attachBridgeMediaCoreSync preserves a host-provided syncMediaCore", () => {
     const provided = async () => fakeSnapshot();
     const bridge: NativeHostBridge = {
-      host: "electron",
+      host: "native-shell",
       platform: "linux",
       async request(command): Promise<NativeBridgeResponse> {
         return { id: command.id, ok: false, error: { code: "native-unavailable", message: "x" } };

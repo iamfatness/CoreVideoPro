@@ -402,16 +402,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             }
             else
             {
-                var node = MediaCorePaths.ResolveNodeCoreStub()
-                           ?? throw new InvalidOperationException(
-                               "No media core binary or Node stub found. Build native/ or run npm install.");
-                var stub = Path.Combine(MediaCorePaths.RepoRoot, "desktop", "coreStub.cjs");
-                fileName = node;
-                arguments = $"\"{stub}\"";
-                if (node.EndsWith("electron.exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    env["ELECTRON_RUN_AS_NODE"] = "1";
-                }
+                throw new InvalidOperationException(
+                    "No native media core binary found. Run npm run test:native-media-core or scripts/build-studio.ps1.");
             }
         }
 

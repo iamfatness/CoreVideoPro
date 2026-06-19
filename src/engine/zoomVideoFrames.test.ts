@@ -144,7 +144,7 @@ describe("connectFrameStoreToBridge", () => {
     const bridge = {
       request: vi.fn(),
       platform: "darwin",
-      host: "electron",
+      host: "native-shell",
       onZoomVideoFrame: (listener: (frame: ZoomVideoFrame) => void) => {
         captured = listener;
         return unsubscribe;

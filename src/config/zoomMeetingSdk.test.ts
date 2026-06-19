@@ -31,7 +31,7 @@ describe("zoomMeetingSdk", () => {
     const input = deriveZoomSdkReadinessInputForRuntime({
       status: "ready",
       label: "Native media ready",
-      host: "electron",
+      host: "native-shell",
       platform: "win32",
       warnings: [],
       capabilities: ["audio-mixer"]
@@ -44,12 +44,12 @@ describe("zoomMeetingSdk", () => {
 
   it("reflects OAuth sign-in in readiness overrides", () => {
     const signedOut = deriveZoomSdkReadinessInputForRuntime(
-      { status: "ready", label: "Native", host: "electron", platform: "win32", warnings: [], capabilities: [] },
+      { status: "ready", label: "Native", host: "native-shell", platform: "win32", warnings: [], capabilities: [] },
       {},
       { signedIn: false }
     );
     const signedIn = deriveZoomSdkReadinessInputForRuntime(
-      { status: "ready", label: "Native", host: "electron", platform: "win32", warnings: [], capabilities: [] },
+      { status: "ready", label: "Native", host: "native-shell", platform: "win32", warnings: [], capabilities: [] },
       {},
       { signedIn: true }
     );

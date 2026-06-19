@@ -61,7 +61,7 @@ npm run test:native-shell-smoke  # WinUI publish + brief launch smoke
 
 Expected evidence:
 
-- `test:native-media-core` reports `program-frame-preview smoke ok` for both `corevideo-native.exe` and `desktop/coreStub.cjs`.
+- `test:native-media-core` reports `program-frame-preview smoke ok` for both `corevideo-native.exe` and `corevideo-native.exe`.
 - Native unit tests cover deterministic render-plan IDs, program preview events, shared texture handle shape, audio DSP session metrics, encoder metadata, RTMP send-proof artifacts, and dev-adapter gates.
 - Bridge smoke should report `Using packaged native core: ...\native\build-dev\corevideo-native.exe` when the dev build is present.
 - Native shell smoke should either launch briefly or skip with an explicit Windows App Runtime / GUI-session reason.

@@ -1814,7 +1814,7 @@ describe("Zoom SDK pre-flight", () => {
     const nativeRuntime: RuntimeEnvironment = {
       status: "ready",
       label: "Native media ready",
-      host: "electron",
+      host: "native-shell",
       platform: "win32",
       warnings: [],
       capabilities: ["zoom-raw-video"]
@@ -1842,7 +1842,7 @@ describe("supervisor health recovery", () => {
   it("describeRuntimeEnvironment returns degraded when health shows core is recovering", async () => {
     const { describeRuntimeEnvironment } = await import("./engine/runtimeEnvironment");
     const mockBridge = {
-      host: "electron" as const,
+      host: "native-shell" as const,
       platform: "win32" as const,
       request: async () => ({ id: "x", ok: false as const, error: { code: "protocol-error" as const, message: "stub" } })
     };

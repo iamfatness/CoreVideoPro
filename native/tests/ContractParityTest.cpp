@@ -61,27 +61,20 @@ TEST(ContractParity, ZoomMediaSpineSyncMirrorsTypeScriptProtocolNames) {
   expectAllStringsPresent(payloadSource + snapshotSource, corevideo::core::kZoomMediaSpineSyncTypeNames);
 }
 
-TEST(ContractParity, CoreEventTypesMatchDesktopProtocol) {
-  const std::string desktopProtocol = readRepoFile("desktop/coreProtocol.ts");
-  ASSERT_FALSE(desktopProtocol.empty());
-  expectAllStringsPresent(desktopProtocol, corevideo::core::kCoreEventTypes);
-  EXPECT_NE(desktopProtocol.find("participantId"), std::string::npos);
-  EXPECT_NE(desktopProtocol.find("frameId"), std::string::npos);
+TEST(ContractParity, CoreEventTypesMatchNativeProtocolMirror) {
+  const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
+  ASSERT_FALSE(nodeProtocol.empty());
+  expectAllStringsPresent(nodeProtocol, corevideo::core::kCoreEventTypes);
+  EXPECT_NE(nodeProtocol.find("participantId"), std::string::npos);
+  EXPECT_NE(nodeProtocol.find("frameId"), std::string::npos);
 }
 
 TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
-  const std::string desktopProtocol = readRepoFile("desktop/coreProtocol.ts");
   const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
-  const std::string milestoneBrief = readRepoFile("docs/agent-briefs/04-track-b-next-milestones.md");
   ASSERT_FALSE(nodeProtocol.empty());
-  ASSERT_FALSE(milestoneBrief.empty());
 
   expectAllStringsPresent(nodeProtocol, corevideo::core::kCoreRequestTypes);
-  if (desktopProtocol.find("ZoomMediaSpineSyncPayload") != std::string::npos) {
-    expectAllStringsPresent(desktopProtocol, corevideo::core::kCoreRequestTypes);
-  } else {
-    expectAllStringsPresent(milestoneBrief, corevideo::core::kCoreRequestTypes);
-  }
+  EXPECT_NE(nodeProtocol.find("zoom-media-spine-sync"), std::string::npos);
 }
 
 TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContracts) {

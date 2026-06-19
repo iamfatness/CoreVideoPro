@@ -85,7 +85,7 @@ describe("shouldBlockZoomJoin", () => {
   const nativeRuntime: RuntimeEnvironment = {
     status: "ready",
     label: "Native media ready",
-    host: "electron",
+    host: "native-shell",
     platform: "win32",
     warnings: [],
     capabilities: ["zoom-raw-video"]

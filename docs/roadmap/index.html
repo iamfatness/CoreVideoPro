@@ -96,11 +96,11 @@
   </header>
 
   <h2><span class="lead">The ritual.</span> How we run each week</h2>
-  <p class="sub">Demos are the heartbeat. Each sprint targets one capability that we can show working in the real Electron app — not a slide, not a passing test.</p>
+  <p class="sub">Demos are the heartbeat. Each sprint targets one capability that we can show working in the real native app — not a slide, not a passing test.</p>
   <div class="ritual">
     <div><h3>🎯 One demoable goal</h3><p>Each sprint commits to a single capability with a written demo script and exit criteria, agreed Monday.</p></div>
     <div><h3>📺 Friday demo</h3><p>15-minute live run-through against a real (or realistic) scenario. If it can't be demoed live, it isn't done.</p></div>
-    <div><h3>✅ Definition of done</h3><p>Works in the packaged/dev Electron app, reviewed, merged. Tests are necessary but not sufficient.</p></div>
+    <div><h3>✅ Definition of done</h3><p>Works in the packaged/dev native app, reviewed, merged. Tests are necessary but not sufficient.</p></div>
     <div><h3>🔁 Adjust &amp; commit</h3><p>Re-scope from what we learned, then lock the next sprint's single goal.</p></div>
   </div>
 
@@ -112,7 +112,7 @@
       <div><h4>What's in</h4>
         <ul>
           <li>Full operator console UI on simulated data</li>
-          <li>Electron shell + typed IPC bridge + <code>MediaCoreSupervisor</code> (A-series)</li>
+          <li>Native shell + typed IPC bridge + <code>MediaCoreSupervisor</code> (A-series)</li>
           <li>Native core skeleton + JSON-RPC + stub modules; gated dev adapters: Zoom SDK, D3D11 compositor, MF encoder, RTMP (B-series)</li>
           <li>Vendored <b>proven OBS-free Zoom capture engine</b> + renderer frame path (canvas tiles)</li>
           <li>Zoom media spine orchestration, SDK readiness, capability-gated outputs</li>
@@ -144,7 +144,7 @@
       <div><h4>Exit criteria</h4><ul>
         <li>Live video for ≥3 participants, &lt;1s to first frame</li>
         <li>Roster + active-speaker correct against the real call</li>
-        <li>Runs in the dev Electron app end-to-end</li>
+        <li>Runs in the dev native app end-to-end</li>
       </ul></div>
     </div>
     <div class="foot"><span class="pill owner">Codex B + dev-machine</span><span class="pill risk">Risk: SDK raw-data privilege; first dev build</span></div>

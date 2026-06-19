@@ -2,9 +2,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const integrationFiles = [
-  "src/App.test.tsx",
-  "desktop/integration.test.ts",
-  "desktop/mediaCoreClient.test.ts"
+  "src/App.test.tsx"
 ];
 
 export default defineConfig({

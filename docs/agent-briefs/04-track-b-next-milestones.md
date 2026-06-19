@@ -14,7 +14,7 @@ loop for in-container runtime. The stubs work end-to-end.
 stub-only and green. Order by MVP capability gates.
 
 - **B1 — Zoom media spine handler.** Implement the `zoom-media-spine-sync`
-  request (added by Agent A in `desktop/coreProtocol.ts`) in both the C++ core
+  request (added by Agent A in `native shell protocol`) in both the C++ core
   and the Node `native-core/src/zoomMediaSpine.ts` runtime: consume
   `ZoomMediaSpineSyncPayload`, return `ZoomMediaSpineNativeSnapshot`. Stub path
   returns synthetic; dev path calls the real SDK. *Gate:* parity test covers the

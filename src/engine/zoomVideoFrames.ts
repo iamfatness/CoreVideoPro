@@ -43,7 +43,7 @@ export type ZoomVideoFrameStoreDiagnostics = {
 /**
  * Holds the latest RGBA frame per participant and fans out push notifications to
  * per-participant subscribers (the canvas tiles). Pure and host-agnostic so it
- * is fully unit-testable without Electron, a canvas, or the Zoom engine.
+ * is fully unit-testable without a native shell, a canvas, or the Zoom engine.
  */
 export class ZoomVideoFrameStore {
   private readonly latest = new Map<string, ZoomVideoFrame>();

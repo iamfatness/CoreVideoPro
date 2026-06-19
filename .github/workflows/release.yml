@@ -52,43 +52,6 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-  pack-windows:
-    needs: [validate]
-    if: >-
-      always() &&
-      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
-      (github.event_name == 'push' ||
-      github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == 'win')
-    runs-on: windows-latest
-    env:
-      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Install packaging deps
-        run: npm install --no-save electron@latest electron-builder@latest electron-updater@latest
-      - name: Download Electron binary
-        run: node node_modules/electron/install.js
-      - name: Package Windows installer
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          COREVIDEO_PACK_TARGET: --win
-        run: npm run pack:desktop
-      - name: Upload Windows artifacts
-        if: env.COREVIDEO_PUBLISH == 'never'
-        uses: actions/upload-artifact@v4
-        with:
-          name: corevideo-desktop-win
-          path: artifacts/desktop/*
-          if-no-files-found: error
-
   pack-native-windows:
     needs: [validate]
     if: >-
@@ -122,42 +85,3 @@ jobs:
           path: artifacts/native/win-unpacked
           if-no-files-found: error
 
-  pack-macos:
-    needs: [validate]
-    if: >-
-      always() &&
-      (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
-      (github.event_name == 'push' ||
-      github.event.inputs.platform == 'all' ||
-      github.event.inputs.platform == 'mac')
-    runs-on: macos-latest
-    env:
-      COREVIDEO_PUBLISH: ${{ github.event_name == 'push' && 'always' || (github.event.inputs.publish && 'always' || 'never') }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Install packaging deps
-        run: npm install --no-save electron@latest electron-builder@latest electron-updater@latest
-      - name: Download Electron binary
-        run: node node_modules/electron/install.js
-      - name: Package macOS disk image
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          COREVIDEO_PACK_TARGET: --mac
-        run: npm run pack:desktop
-      - name: Upload macOS artifacts
-        if: env.COREVIDEO_PUBLISH == 'never'
-        uses: actions/upload-artifact@v4
-        with:
-          name: corevideo-desktop-mac
-          path: artifacts/desktop/*
-          if-no-files-found: error

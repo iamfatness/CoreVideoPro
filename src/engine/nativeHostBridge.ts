@@ -21,7 +21,7 @@ import type { ZoomVideoFrame } from "./zoomVideoFrames";
 export type NativeHostBridge = {
   request(command: NativeBridgeCommand): Promise<NativeBridgeResponse>;
   platform: "win32" | "darwin" | "linux" | string;
-  host: "native-shell" | "tauri" | "electron" | "test-host" | string;
+  host: "native-shell" | "tauri" | "native-shell" | "test-host" | string;
   mediaCoreProfile?: NativeMediaCoreProfile;
   syncMediaCore?(commands: NativeMediaCoreCommand[], elapsedMs: number): Promise<NativeMediaCoreStateSnapshot>;
   syncZoomMediaSpine?(payload: ZoomMediaSpineSyncPayload, elapsedMs: number): Promise<ZoomMediaSpineNativeSnapshot>;

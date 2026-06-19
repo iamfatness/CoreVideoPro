@@ -1,6 +1,6 @@
 # CI gate for the portable C++ media-core stub (COREVIDEO_STUB=ON).
 # Builds native binaries, runs unit tests, stages corevideo-native.exe to the
-# paths the WinUI shell and desktop supervisor probe, and smoke-tests
+# paths the native shells probe, and smoke-tests
 # program-frame-preview parity on the built binary.
 param(
   [string]$NativeDir = (Join-Path $PSScriptRoot "..\native"),
@@ -161,23 +161,12 @@ finally {
 
 Stage-NativeArtifacts -SourceDir $artifactDir
 
-Write-Host "[test-native] bundling desktop/coreStub.cjs..." -ForegroundColor Cyan
-Push-Location $repoRoot
-try {
-  node --input-type=module -e "import { ensureCoreStubBundle } from './desktop/scripts/desktopRuntime.mjs'; ensureCoreStubBundle();"
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-finally {
-  Pop-Location
-}
-
 $nativeExe = Join-Path $artifactDir "corevideo-native.exe"
 if (-not (Test-Path $nativeExe)) {
   throw "corevideo-native.exe not found at $nativeExe"
 }
 
 Invoke-NativeSmokeTest -Runner $nativeExe -RunnerArgs @() -Label "native"
-Invoke-NativeSmokeTest -Runner "node" -RunnerArgs @((Join-Path $repoRoot "desktop\coreStub.cjs")) -Label "coreStub"
 
 Write-Host ""
 Write-Host "[test-native] native media-core CI gate passed." -ForegroundColor Green

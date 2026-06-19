@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve } from "node:path";
 
 export default defineConfig({
   // Relative "./" is required for Electron loadFile (file://); absolute "/assets/…"
@@ -14,9 +13,6 @@ export default defineConfig({
     strictPort: false
   },
   test: {
-    alias: {
-      electron: resolve(__dirname, "desktop/test/electronMock.ts")
-    },
     name: "unit",
     environment: "jsdom",
     globals: true,
@@ -26,9 +22,7 @@ export default defineConfig({
       "**/dist/**",
       "native-core/**",
       "tests/e2e/**",
-      "src/App.test.tsx",
-      "desktop/integration.test.ts",
-      "desktop/mediaCoreClient.test.ts"
+      "src/App.test.tsx"
     ],
     testTimeout: 15_000,
     pool: "forks"

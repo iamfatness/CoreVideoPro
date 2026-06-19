@@ -18,20 +18,29 @@ $layoutDir = Join-Path $artifactsDir "msix-layout"
 $productExe = "CoreVideo Pro.exe"
 
 function Ensure-MsixAssets {
-  $sourceIcon = Join-Path $repoRoot "desktop/build/icon.png"
+  $sourceIcon = Join-Path $assetsDir "SourceIcon.png"
   if (-not (Test-Path $sourceIcon)) {
-    Write-Host "[pack:native:msix] generating desktop icons..." -ForegroundColor DarkGray
-    Push-Location $repoRoot
+    Write-Host "[pack:native:msix] SourceIcon.png not found; generating simple native placeholder." -ForegroundColor DarkGray
+    New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
+    Add-Type -AssemblyName System.Drawing
+    $placeholder = New-Object System.Drawing.Bitmap 512, 512
     try {
-      node desktop/scripts/generate-icons.mjs
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $graphics = [System.Drawing.Graphics]::FromImage($placeholder)
+      try {
+        $graphics.Clear([System.Drawing.Color]::FromArgb(7, 18, 24))
+        $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(44, 226, 206))
+        try {
+          $graphics.FillRectangle($brush, 128, 128, 256, 256)
+        } finally {
+          $brush.Dispose()
+        }
+      } finally {
+        $graphics.Dispose()
+      }
+      $placeholder.Save($sourceIcon, [System.Drawing.Imaging.ImageFormat]::Png)
     } finally {
-      Pop-Location
+      $placeholder.Dispose()
     }
-  }
-
-  if (-not (Test-Path $sourceIcon)) {
-    throw "Missing desktop/build/icon.png (run npm run generate:icons)."
   }
 
   New-Item -ItemType Directory -Path $assetsDir -Force | Out-Null
@@ -122,10 +131,7 @@ function Stage-MsixPayload {
   }
 
   if (-not (Test-Path (Join-Path $payloadDir "corevideo-native.exe"))) {
-    $desktopOut = Join-Path $payloadDir "desktop"
-    New-Item -ItemType Directory -Path $desktopOut -Force | Out-Null
-    Copy-Item -Path (Join-Path $repoRoot "desktop/coreStub.cjs") -Destination (Join-Path $desktopOut "coreStub.cjs") -Force
-    Write-Host "[pack:native:msix] staged desktop/coreStub.cjs (stub fallback)" -ForegroundColor DarkGray
+    throw "corevideo-native.exe was not staged. Run npm run test:native-media-core or set COREVIDEO_NATIVE_BUILD_DIR to a native build output."
   }
 
   return $stagedNative
@@ -306,22 +312,13 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw "node is required on PATH (coreStub fallback bundling)."
+  throw "node is required on PATH for packaging helpers."
 }
 
 New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 
 Write-Host "[pack:native:msix] preparing MSIX assets..." -ForegroundColor Cyan
 Ensure-MsixAssets
-
-Write-Host "[pack:native:msix] bundling coreStub fallback..." -ForegroundColor Cyan
-Push-Location $repoRoot
-try {
-  node --input-type=module -e "import { ensureCoreStubBundle } from './desktop/scripts/desktopRuntime.mjs'; ensureCoreStubBundle();"
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-} finally {
-  Pop-Location
-}
 
 $stagedNative = Stage-MsixPayload
 Stage-ZoomRuntimePayload
@@ -394,7 +391,7 @@ if ($resultKind -eq "msix") {
 if ($stagedNative) {
   Write-Host "  Media core: corevideo-native.exe (+ siblings)" -ForegroundColor Green
 } else {
-  Write-Host "  Media core: Node stub (requires Node.js on PATH)" -ForegroundColor Yellow
+  Write-Host "  Media core: missing" -ForegroundColor Red
 }
 Write-Host ""
 Write-Host "Signing: unsigned demo package (AppxPackageSigningEnabled=false)." -ForegroundColor Yellow

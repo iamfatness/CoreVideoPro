@@ -34,7 +34,7 @@ describe("createSupportBundle", () => {
       runtime: {
         status: "degraded",
         label: "Media core recovering (1 restart)",
-        host: "electron",
+        host: "native-shell",
         platform: "win32",
         restartCount: 1,
         recovering: true,
