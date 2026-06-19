@@ -498,6 +498,41 @@ std::vector<std::string> extractJsonStringArray(const std::string& json, const s
   return result;
 }
 
+std::vector<std::string> extractJsonObjectArray(const std::string& json, const std::string& key) {
+  std::vector<std::string> result;
+  auto array = extractJsonArray(json, key);
+  if (!array) {
+    return result;
+  }
+
+  std::size_t pos = 1;
+  while (pos < array->size()) {
+    skipSpace(*array, pos);
+    if (pos >= array->size() || (*array)[pos] == ']') {
+      break;
+    }
+    if ((*array)[pos] == '{') {
+      const std::size_t end = skipJsonBracketed(*array, pos, '{', '}');
+      if (end == std::string::npos) {
+        break;
+      }
+      result.push_back(array->substr(pos, end - pos));
+      pos = end;
+    } else {
+      const std::size_t valueEnd = skipJsonValue(*array, pos);
+      if (valueEnd == std::string::npos || valueEnd == pos) {
+        break;
+      }
+      pos = valueEnd;
+    }
+    skipSpace(*array, pos);
+    if (pos < array->size() && (*array)[pos] == ',') {
+      ++pos;
+    }
+  }
+  return result;
+}
+
 std::optional<std::string> extractJsonObject(const std::string& json, const std::string& key) {
   return extractJsonBracketed(json, key, '{', '}');
 }
@@ -547,6 +582,34 @@ void applyStudioStateLine(StudioState& state, const std::string& line) {
     applySnapshotLikeObject(state, *snapshot);
   }
 
+  const auto snapshotObject = firstObject(json, {"snapshot", "session"});
+  const std::string& participantSource = snapshotObject ? *snapshotObject : json;
+  auto participants = extractJsonObjectArray(participantSource, "participants");
+  if (!participants.empty()) {
+    state.participantIds.clear();
+    state.participantLines.clear();
+    for (const auto& participant : participants) {
+      const auto participantId = firstString(participant, {"userId", "sdkUserId", "participantId"}).value_or("");
+      const auto name = extractJsonString(participant, "displayName").value_or(participantId.empty() ? "Participant" : participantId);
+      const auto role = extractJsonString(participant, "role").value_or("Guest");
+      const auto muted = extractJsonBool(participant, "muted").value_or(false);
+      const auto videoOn = extractJsonBool(participant, "videoOn").value_or(true);
+      const auto talking = extractJsonBool(participant, "talking").value_or(false);
+      const auto level = extractJsonNumber(participant, "audioLevel").value_or(0);
+      if (!participantId.empty()) {
+        state.participantIds.push_back(participantId);
+      }
+      std::ostringstream lineOut;
+      lineOut << name << "  [" << role << "]  "
+              << (videoOn ? "video" : "video off") << "  "
+              << (muted ? "muted" : "audio " + std::to_string(static_cast<int>(level)));
+      if (talking) {
+        lineOut << "  speaking";
+      }
+      state.participantLines.push_back(lineOut.str());
+    }
+  }
+
   if (auto programFrame = extractJsonObject(json, "programFrame")) {
     applyProgramFrame(state, *programFrame);
   }
@@ -558,6 +621,8 @@ void applyStudioStateLine(StudioState& state, const std::string& line) {
   if (auto status = firstString(json, {"status", "healthStatus"}); status && state.healthStatus.empty()) {
     state.healthStatus = *status;
   }
+  assignIfPresent(state.meetingState, firstString(participantSource, {"meetingState"}));
+  assignIfPresent(state.activeSpeakerId, firstString(participantSource, {"activeSpeakerId"}));
   assignIfPresent(state.renderer, extractJsonString(json, "renderer"));
   assignIfPresent(state.encoder, extractJsonString(json, "encoder"));
   assignIfPresent(state.programFrameHealth, extractJsonString(json, "programFrameHealth"));
@@ -578,6 +643,9 @@ std::string summarizeStudioState(const StudioState& state) {
 
   std::ostringstream out;
   out << (state.connected ? "Connected" : "Disconnected");
+  if (!state.meetingState.empty()) {
+    out << ", Zoom " << state.meetingState;
+  }
   if (state.handshakeSeen) {
     out << ", handshake";
   }

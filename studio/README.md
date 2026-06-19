@@ -8,8 +8,9 @@ Current scope:
 - Win32 native window.
 - Launches `native/build/corevideo-native.exe`.
 - Talks line-delimited JSON-RPC over stdio.
-- Shows native media-core handshake, health, snapshot, and command responses.
-- Sends a basic scene graph and starts stub program output.
+- Joins a Zoom meeting through the native core contract.
+- Shows the current Zoom roster, active speaker, native-core health, output state, and recording artifact path.
+- Builds a Magic Scene from the current roster and starts program recording/output through the C++ media core.
 
 Build the native media core and native Studio shell from the repository root on
 Windows:
@@ -24,6 +25,13 @@ Run Studio from the repository root:
 .\scripts\run-studio.ps1
 ```
 
+Or through npm:
+
+```powershell
+npm run build:studio
+npm run run:studio
+```
+
 The build script creates:
 
 - `native/build/corevideo-native.exe`
@@ -33,4 +41,11 @@ The build script creates:
 `studio/build-clean/Debug/CoreVideoStudio.exe` with the repository root as the
 working directory so the shell can find `native/build/corevideo-native.exe`.
 
-This is a first native test harness, not the final production UI.
+Smoke-test the working operator flow:
+
+```powershell
+npm run test:studio-workflow
+```
+
+That launches the real Win32 app, clicks Join Zoom, Magic Scene, Record Program,
+Health, and Snapshot, then verifies the roster and live recording state.

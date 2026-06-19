@@ -22,6 +22,7 @@
     "test:native-media-core": "powershell -ExecutionPolicy Bypass -File scripts/test-native.ps1",
     "test:native-shell": "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj && powershell -ExecutionPolicy Bypass -File native-shell/test-media-core-bridge.ps1",
     "test:native-shell-smoke": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-smoke.ps1",
+    "test:studio-workflow": "powershell -ExecutionPolicy Bypass -File scripts/test-studio-workflow.ps1",
     "typecheck": "tsc --noEmit",
     "launch:native": "powershell -ExecutionPolicy Bypass -File scripts/launch-native.ps1",
     "run:studio": "powershell -ExecutionPolicy Bypass -File scripts/run-studio.ps1",

@@ -16,17 +16,23 @@
 namespace {
 
 constexpr int kButtonStartCore = 1001;
-constexpr int kButtonLoadScene = 1002;
-constexpr int kButtonStartOutput = 1003;
+constexpr int kButtonJoinZoom = 1002;
+constexpr int kButtonLeaveZoom = 1003;
 constexpr int kButtonHealth = 1004;
 constexpr int kButtonSnapshot = 1005;
 constexpr int kButtonClear = 1006;
+constexpr int kButtonMagicScene = 1007;
+constexpr int kButtonRecord = 1008;
 constexpr int kLogEdit = 2001;
 constexpr int kStatusLabel = 2002;
 constexpr int kScenesPanel = 2003;
 constexpr int kProgramPanel = 2004;
 constexpr int kParticipantsPanel = 2005;
 constexpr int kHealthPanel = 2006;
+constexpr int kMeetingUrlEdit = 2007;
+constexpr int kDisplayNameEdit = 2008;
+constexpr int kMeetingLabel = 2009;
+constexpr int kNameLabel = 2010;
 constexpr UINT kAppendLogMessage = WM_APP + 1;
 
 std::wstring widen(const std::string& value) {
@@ -51,6 +57,30 @@ std::string narrow(const std::wstring& value) {
 
 std::wstring quotePath(const std::wstring& value) {
   return L"\"" + value + L"\"";
+}
+
+std::string jsonEscape(const std::string& value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          out += "?";
+        } else {
+          out.push_back(ch);
+        }
+        break;
+    }
+  }
+  return out;
 }
 
 std::wstring currentDirectory() {
@@ -260,6 +290,10 @@ HWND g_scenes = nullptr;
 HWND g_program = nullptr;
 HWND g_participants = nullptr;
 HWND g_health = nullptr;
+HWND g_meetingUrl = nullptr;
+HWND g_displayName = nullptr;
+HWND g_meetingLabel = nullptr;
+HWND g_nameLabel = nullptr;
 ProgramPreview g_preview;
 corevideo::studio::StudioState g_studioState;
 int g_requestId = 1;
@@ -286,10 +320,32 @@ void setStudioText(HWND handle, const wchar_t* text) {
   }
 }
 
+std::string editText(HWND handle) {
+  if (!handle) {
+    return {};
+  }
+  const int length = GetWindowTextLengthW(handle);
+  std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+  if (length > 0) {
+    GetWindowTextW(handle, value.data(), length + 1);
+  }
+  value.resize(static_cast<size_t>(length));
+  return narrow(value);
+}
+
+std::string participantIdOrFallback(size_t index, const std::string& fallback) {
+  if (index < g_studioState.participantIds.size() && !g_studioState.participantIds[index].empty()) {
+    return g_studioState.participantIds[index];
+  }
+  return fallback;
+}
+
 std::wstring studioStateText() {
   std::ostringstream health;
   health << "NATIVE CORE\r\n\r\n"
          << "Connected: " << (g_studioState.connected ? "yes" : "no") << "\r\n"
+         << "Zoom: " << (g_studioState.meetingState.empty() ? "idle" : g_studioState.meetingState) << "\r\n"
+         << "Active speaker: " << (g_studioState.activeSpeakerId.empty() ? "pending" : g_studioState.activeSpeakerId) << "\r\n"
          << "Handshake: " << (g_studioState.handshakeSeen ? "yes" : "no") << "\r\n"
          << "Renderer: " << (g_studioState.renderer.empty() ? "pending" : g_studioState.renderer) << "\r\n"
          << "Encoder: " << (g_studioState.encoder.empty() ? "pending" : g_studioState.encoder) << "\r\n"
@@ -307,8 +363,28 @@ std::wstring studioStateText() {
   return widen(health.str());
 }
 
+std::wstring participantsText() {
+  std::ostringstream out;
+  out << "PARTICIPANTS";
+  if (!g_studioState.meetingState.empty()) {
+    out << "  (" << g_studioState.meetingState << ")";
+  }
+  out << "\r\n\r\n";
+  if (g_studioState.participantLines.empty()) {
+    out << "No Zoom participants yet.\r\n\r\n"
+        << "Use Join Zoom to create the current native-core roster.\r\n"
+        << "With Zoom SDK adapters configured, this becomes the live meeting roster.";
+  } else {
+    for (const auto& participant : g_studioState.participantLines) {
+      out << participant << "\r\n";
+    }
+  }
+  return widen(out.str());
+}
+
 void refreshStatePanels() {
   setStudioText(g_health, studioStateText().c_str());
+  setStudioText(g_participants, participantsText().c_str());
   const auto summary = corevideo::studio::summarizeStudioState(g_studioState);
   if (!summary.empty()) {
     setStatus(widen(summary).c_str());
@@ -319,41 +395,69 @@ void refreshStaticPanels() {
   setStudioText(
       g_scenes,
       L"SCENES\r\n\r\n"
-      L"1  Intro\r\n"
-      L"2  Interview\r\n"
-      L"3  Speaker + Slides\r\n"
-      L"4  Panel\r\n"
-      L"5  Closing");
+      L"Magic Scene builds the show from the current Zoom roster.\r\n\r\n"
+      L"1  Interview\r\n"
+      L"2  Speaker + Slides\r\n"
+      L"3  Panel\r\n"
+      L"4  Lower Third\r\n"
+      L"5  Program Recording");
   setStudioText(
       g_program,
       L"");
-  setStudioText(
-      g_participants,
-      L"PARTICIPANTS\r\n\r\n"
-      L"Synthetic Host        ready\r\n"
-      L"Synthetic Guest       ready\r\n"
-      L"Screen Share          standby\r\n\r\n"
-      L"Zoom-native roster will populate this panel.");
   refreshStatePanels();
 }
 
-void sendLoadScene() {
+void sendJoinZoom() {
+  std::string meetingUrl = editText(g_meetingUrl);
+  std::string displayName = editText(g_displayName);
+  if (meetingUrl.empty()) {
+    meetingUrl = "https://zoom.us/j/123456789";
+  }
+  if (displayName.empty()) {
+    displayName = "CoreVideo Producer";
+  }
+  g_core.send(
+      "{\"id\":\"" + nextId("join") +
+      "\",\"type\":\"zoom-join\",\"payload\":{"
+      "\"meetingUrl\":\"" + jsonEscape(meetingUrl) + "\","
+      "\"displayName\":\"" + jsonEscape(displayName) + "\","
+      "\"webinar\":false"
+      "}}");
+}
+
+void sendLeaveZoom() {
+  g_core.send("{\"id\":\"" + nextId("leave") + "\",\"type\":\"zoom-leave\"}");
+}
+
+void sendMagicScene() {
+  const std::string host = jsonEscape(participantIdOrFallback(0, "synthetic-speaker-1"));
+  const std::string guest = jsonEscape(participantIdOrFallback(1, "synthetic-speaker-2"));
   g_core.send(
       "{\"id\":\"" + nextId("scene") +
       "\",\"type\":\"media-core-sync\",\"commands\":["
-      "{\"type\":\"load-scene-graph\",\"sceneId\":\"native-test\",\"routes\":["
-      "{\"routeId\":\"host\",\"mode\":\"fixed\",\"participantId\":\"synthetic-speaker-1\",\"audioRole\":\"mix\"},"
-      "{\"routeId\":\"guest\",\"mode\":\"active-speaker\",\"participantId\":\"synthetic-speaker-2\",\"audioRole\":\"mix\"}"
+      "{\"type\":\"load-scene-graph\",\"sceneId\":\"magic-interview\",\"routes\":["
+      "{\"routeId\":\"host\",\"mode\":\"fixed\",\"participantId\":\"" + host + "\",\"audioRole\":\"mix\"},"
+      "{\"routeId\":\"guest\",\"mode\":\"active-speaker\",\"participantId\":\"" + guest + "\",\"audioRole\":\"mix\"}"
       "]},"
-      "{\"type\":\"set-overlay-asset\",\"overlayId\":\"lower-third\",\"text\":\"CoreVideo Native Studio\",\"position\":\"lower-third\"}"
+      "{\"type\":\"set-overlay-asset\",\"overlayId\":\"lower-third\",\"text\":\"CoreVideo Pro Interview\",\"position\":\"lower-third\"},"
+      "{\"type\":\"sync-participant-audio-mix\",\"channels\":["
+      "{\"participantId\":\"" + host + "\",\"inputLevel\":72,\"muted\":false,\"noiseSuppression\":true},"
+      "{\"participantId\":\"" + guest + "\",\"inputLevel\":48,\"muted\":false,\"noiseSuppression\":true}"
+      "]},"
+      "{\"type\":\"set-caption-enabled\",\"enabled\":true},"
+      "{\"type\":\"push-caption-cue\",\"text\":\"CoreVideo Pro native Studio is producing this Zoom show.\",\"speaker\":\"Producer\",\"atMs\":0}"
       "]}");
 }
 
-void sendStartOutput() {
+void sendRecordProgram() {
+  const std::string host = jsonEscape(participantIdOrFallback(0, "synthetic-speaker-1"));
   g_core.send(
       "{\"id\":\"" + nextId("output") +
       "\",\"type\":\"media-core-sync\",\"commands\":["
-      "{\"type\":\"start-program-output\",\"destinations\":[\"recording\",\"rtmp\"],\"isoParticipantIds\":[\"synthetic-speaker-1\"]},"
+      "{\"type\":\"set-recording-targets\",\"targetFolder\":\"artifacts/native-recordings\",\"filenamePrefix\":\"corevideo-studio\",\"format\":\"mp4\",\"quality\":\"high\",\"isoParticipantIds\":[\"" + host + "\"]},"
+      "{\"type\":\"prepare-encoder-session\",\"preparedAtMs\":0,\"reason\":\"native-studio\"},"
+      "{\"type\":\"start-encoder-session\",\"startedAtMs\":0},"
+      "{\"type\":\"start-program-output\",\"destinations\":[\"recording\",\"rtmp\"],\"isoParticipantIds\":[\"" + host + "\"]},"
       "{\"type\":\"start-recording-session\",\"sessionId\":\"native-studio-test\",\"startedAtMs\":0}"
       "]}");
 }
@@ -377,20 +481,28 @@ void layout(HWND window) {
   const int y = margin;
   const int statusHeight = 28;
   const int logHeight = 170;
-  const int top = y + buttonHeight + statusHeight + 18;
+  const int inputTop = y + buttonHeight + 10;
+  const int inputHeight = 26;
+  const int top = inputTop + inputHeight + statusHeight + 20;
   const int bottom = rect.bottom - margin;
   const int contentBottom = bottom - logHeight - gap;
   const int scenesWidth = 210;
   const int rightWidth = 260;
   const int healthHeight = 145;
 
-  for (int id : {kButtonStartCore, kButtonLoadScene, kButtonStartOutput, kButtonHealth, kButtonSnapshot, kButtonClear}) {
+  for (int id : {kButtonStartCore, kButtonJoinZoom, kButtonLeaveZoom, kButtonMagicScene, kButtonRecord, kButtonHealth, kButtonSnapshot, kButtonClear}) {
     HWND child = GetDlgItem(window, id);
     MoveWindow(child, x, y, buttonWidth, buttonHeight, TRUE);
     x += buttonWidth + gap;
   }
 
-  MoveWindow(g_status, margin, y + buttonHeight + 10, rect.right - margin * 2, statusHeight, TRUE);
+  const int labelWidth = 70;
+  const int nameWidth = 180;
+  MoveWindow(g_meetingLabel, margin, inputTop + 5, labelWidth, inputHeight, TRUE);
+  MoveWindow(g_meetingUrl, margin + labelWidth, inputTop, rect.right - margin * 2 - labelWidth - nameWidth - labelWidth - gap * 2, inputHeight, TRUE);
+  MoveWindow(g_nameLabel, rect.right - margin - nameWidth - labelWidth, inputTop + 5, labelWidth, inputHeight, TRUE);
+  MoveWindow(g_displayName, rect.right - margin - nameWidth, inputTop, nameWidth, inputHeight, TRUE);
+  MoveWindow(g_status, margin, inputTop + inputHeight + 8, rect.right - margin * 2, statusHeight, TRUE);
   MoveWindow(g_scenes, margin, top, scenesWidth, contentBottom - top, TRUE);
   MoveWindow(g_program, margin + scenesWidth + gap, top, rect.right - (margin * 2 + scenesWidth + rightWidth + gap * 2), contentBottom - top, TRUE);
   MoveWindow(g_participants, rect.right - margin - rightWidth, top, rightWidth, contentBottom - top - healthHeight - gap, TRUE);
@@ -412,6 +524,24 @@ HWND button(HWND parent, int id, const wchar_t* text) {
       reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
       GetModuleHandleW(nullptr),
       nullptr);
+}
+
+HWND edit(HWND parent, int id, const wchar_t* text) {
+  HWND handle = CreateWindowExW(
+      WS_EX_CLIENTEDGE,
+      L"EDIT",
+      text,
+      WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL,
+      0,
+      0,
+      0,
+      0,
+      parent,
+      reinterpret_cast<HMENU>(static_cast<intptr_t>(id)),
+      GetModuleHandleW(nullptr),
+      nullptr);
+  SendMessageW(handle, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+  return handle;
 }
 
 HWND panel(HWND parent, int id, const wchar_t* text) {
@@ -452,11 +582,17 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
   switch (message) {
     case WM_CREATE:
       button(window, kButtonStartCore, L"Start Core");
-      button(window, kButtonLoadScene, L"Load Scene");
-      button(window, kButtonStartOutput, L"Start Output");
+      button(window, kButtonJoinZoom, L"Join Zoom");
+      button(window, kButtonLeaveZoom, L"Leave Zoom");
+      button(window, kButtonMagicScene, L"Magic Scene");
+      button(window, kButtonRecord, L"Record Program");
       button(window, kButtonHealth, L"Health");
       button(window, kButtonSnapshot, L"Snapshot");
       button(window, kButtonClear, L"Clear Log");
+      g_meetingLabel = CreateWindowExW(0, L"STATIC", L"Meeting", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<intptr_t>(kMeetingLabel)), GetModuleHandleW(nullptr), nullptr);
+      g_nameLabel = CreateWindowExW(0, L"STATIC", L"Name", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<intptr_t>(kNameLabel)), GetModuleHandleW(nullptr), nullptr);
+      g_meetingUrl = edit(window, kMeetingUrlEdit, L"https://zoom.us/j/123456789");
+      g_displayName = edit(window, kDisplayNameEdit, L"CoreVideo Producer");
       g_status = CreateWindowExW(0, L"STATIC", L"Native Studio ready. Start Core to connect.", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window, reinterpret_cast<HMENU>(static_cast<intptr_t>(kStatusLabel)), GetModuleHandleW(nullptr), nullptr);
       g_scenes = panel(window, kScenesPanel, L"");
       g_program = programPanel(window);
@@ -477,10 +613,12 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
           nullptr);
       SendMessageW(g_log, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
       SendMessageW(g_status, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+      SendMessageW(g_meetingLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+      SendMessageW(g_nameLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
       refreshStaticPanels();
       layout(window);
       g_core.start(window);
-      setStatus(L"Native media core launched. Use Load Scene, Start Output, Health, Snapshot.");
+      setStatus(L"Native media core launched. Join Zoom, then use Magic Scene and Record Program.");
       return 0;
 
     case WM_SIZE:
@@ -494,11 +632,17 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             setStatus(L"Native media core running.");
           }
           return 0;
-        case kButtonLoadScene:
-          sendLoadScene();
+        case kButtonJoinZoom:
+          sendJoinZoom();
           return 0;
-        case kButtonStartOutput:
-          sendStartOutput();
+        case kButtonLeaveZoom:
+          sendLeaveZoom();
+          return 0;
+        case kButtonMagicScene:
+          sendMagicScene();
+          return 0;
+        case kButtonRecord:
+          sendRecordProgram();
           return 0;
         case kButtonHealth:
           sendHealth();

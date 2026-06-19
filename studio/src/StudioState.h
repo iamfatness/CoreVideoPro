@@ -25,6 +25,11 @@ struct StudioState {
   std::string outputStatus;
   int activeSenderCount = 0;
 
+  std::string meetingState;
+  std::string activeSpeakerId;
+  std::vector<std::string> participantIds;
+  std::vector<std::string> participantLines;
+
   std::string lastErrorText;
   std::string lastSummaryText;
 };
@@ -35,6 +40,7 @@ struct StudioState {
 [[nodiscard]] std::vector<std::string> extractJsonStringArray(const std::string& json, const std::string& key);
 [[nodiscard]] std::optional<std::string> extractJsonObject(const std::string& json, const std::string& key);
 [[nodiscard]] std::optional<std::string> extractJsonArray(const std::string& json, const std::string& key);
+[[nodiscard]] std::vector<std::string> extractJsonObjectArray(const std::string& json, const std::string& key);
 
 [[nodiscard]] StudioState parseStudioStateLine(const std::string& line);
 void applyStudioStateLine(StudioState& state, const std::string& line);
