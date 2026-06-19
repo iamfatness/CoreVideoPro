@@ -61,6 +61,35 @@ TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   EXPECT_EQ(state.get("health")->getString("status"), "live");
 }
 
+TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", ""},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", ""}, {"mode", "teleport"}},
+                     }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"recording"}},
+          {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+      },
+  });
+
+  const auto* frame = state.get("programFrame");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_EQ(frame->getString("health"), "degraded");
+  EXPECT_EQ(frame->getString("renderer"), "software");
+  EXPECT_GE(frame->get("frameNumber")->asNumber(), 1);
+  EXPECT_NE(frame->get("programPixelSignature")->asNumber(), 0);
+  EXPECT_NE(frame->get("renderPlanSignature")->asNumber(), 0);
+  EXPECT_GE(frame->get("warnings")->asArray().size(), 2u);
+  EXPECT_EQ(state.get("health")->getString("programFrameHealth"), "degraded");
+  EXPECT_NE(state.get("health")->get("messages")->asArray().back().asString().find("Compositor warning"), std::string::npos);
+}
+
 TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   corevideo::core::MediaCore mediaCore;
   const auto profile = mediaCore.profile();
@@ -409,6 +438,9 @@ TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
 #else
   EXPECT_EQ(sender.getString("status"), "live");
   EXPECT_GE(sender.get("framesSent")->asNumber(), 1);
+  EXPECT_EQ(sender.getString("destinationHealth"), "ok");
+  EXPECT_EQ(sender.getString("lastResultCode"), "ok");
+  EXPECT_GE(sender.get("bytesSent")->asNumber(), 1);
 #endif
 }
 
@@ -432,6 +464,9 @@ TEST(MediaCoreCommand, AppliesOutputSenderFailureAndRecoveryCommands) {
   ASSERT_TRUE(failedSession->get("senders")->asArray().size() == 1);
   EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("status"), "failed");
   EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("warning"), "RTMP ingest rejected credentials.");
+  EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("destinationHealth"), "failed");
+  EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("lastResultCode"), "failed");
+  EXPECT_EQ(failedSession->get("senders")->asArray()[0].getString("lastError"), "RTMP ingest rejected credentials.");
 
   const auto recovered = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "recover-output-sender"},
@@ -450,6 +485,55 @@ TEST(MediaCoreCommand, AppliesOutputSenderFailureAndRecoveryCommands) {
   EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("status"), "starting");
 #endif
   EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("warning"), "RTMP sender recovered.");
+  EXPECT_EQ(recoveredSession->get("senders")->asArray()[0].getString("lastResultCode"), "recovered");
+}
+
+TEST(OutputSenderAdapter, StubKeepsMultiDestinationDiagnosticsIsolated) {
+  auto modules = corevideo::modules::createStubModules();
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 1920;
+  frame.height = 1080;
+  frame.layerCount = 2;
+  frame.frameNumber = 7;
+  frame.renderPlanId = "multi-destination-plan";
+
+  auto session = modules.outputSender->sync({"rtmp", "srt"}, &frame, 33);
+  ASSERT_TRUE(session.senders.size() == 2);
+  EXPECT_EQ(session.senders[0].destination, "rtmp");
+  EXPECT_EQ(session.senders[0].destinationHealth, "ok");
+  EXPECT_EQ(session.senders[0].lastResultCode, "ok");
+  EXPECT_EQ(session.senders[1].destination, "srt");
+  EXPECT_EQ(session.senders[1].destinationHealth, "ok");
+  EXPECT_EQ(session.senders[1].lastResultCode, "ok");
+
+  session = modules.outputSender->fail("rtmp", "RTMP ingest rejected credentials.", 66);
+  ASSERT_TRUE(session.senders.size() == 2);
+  EXPECT_EQ(session.status, "failed");
+  EXPECT_EQ(session.activeSenderCount, 1);
+  EXPECT_EQ(session.senders[0].destination, "rtmp");
+  EXPECT_EQ(session.senders[0].status, "failed");
+  EXPECT_EQ(session.senders[0].destinationHealth, "failed");
+  EXPECT_EQ(session.senders[0].lastResultCode, "failed");
+  EXPECT_EQ(session.senders[0].lastError, "RTMP ingest rejected credentials.");
+  EXPECT_EQ(session.senders[1].destination, "srt");
+  EXPECT_EQ(session.senders[1].status, "live");
+  EXPECT_EQ(session.senders[1].destinationHealth, "ok");
+  EXPECT_EQ(session.senders[1].lastResultCode, "ok");
+
+  frame.frameNumber = 8;
+  session = modules.outputSender->sync({"rtmp", "srt", "ndi"}, &frame, 99);
+  ASSERT_TRUE(session.senders.size() == 3);
+  EXPECT_EQ(session.activeSenderCount, 2);
+  EXPECT_EQ(session.senders[0].destination, "ndi");
+  EXPECT_EQ(session.senders[0].framesSent, 1);
+  EXPECT_EQ(session.senders[0].destinationHealth, "ok");
+  EXPECT_EQ(session.senders[1].destination, "rtmp");
+  EXPECT_EQ(session.senders[1].status, "failed");
+  EXPECT_EQ(session.senders[1].framesSent, 1);
+  EXPECT_EQ(session.senders[2].destination, "srt");
+  EXPECT_EQ(session.senders[2].status, "live");
+  EXPECT_EQ(session.senders[2].framesSent, 2);
+  EXPECT_TRUE(session.senders[2].bytesSent > session.senders[1].bytesSent);
 }
 
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {

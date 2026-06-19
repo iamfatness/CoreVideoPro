@@ -86,6 +86,8 @@ struct ProgramFrame {
   bool gpuComposed = false;
   std::string health = "live";
   uint32_t programPixelSignature = 0;
+  uint32_t renderPlanSignature = 0;
+  std::vector<std::string> warnings;
   ProgramFramePreviewPixels preview;
   ProgramFrameSharedTexture sharedTexture;
 };
@@ -134,10 +136,17 @@ struct OutputSession {
   std::string codec = "h264";
   int targetBitrateMbps = 10;
   bool hardwareAccelerated = false;
+  std::string recordingSessionId;
+  std::string recordingStatus = "idle";
+  std::string recordingTargetFolder;
+  std::string recordingFilenamePrefix;
+  std::string recordingFormat;
+  std::string recordingQuality;
   std::string recordingArtifactPath;
   int64_t recordingBytesWritten = 0;
   int64_t recordingDurationMs = 0;
   int64_t recordingVideoFrameCount = 0;
+  int64_t recordingLastFrameNumber = 0;
   int recordingWidth = 0;
   int recordingHeight = 0;
   int recordingFps = 0;
@@ -146,6 +155,22 @@ struct OutputSession {
   std::string recordingAudioCodec;
   bool recordingMetadataValid = false;
   std::string recordingWarning;
+  std::string recordingError;
+};
+
+struct RecordingSessionRequest {
+  std::string sessionId = "native-recording-session";
+  std::string targetFolder = "Recordings/CoreVideo Pro/native-core";
+  std::string filenamePrefix = "program";
+  std::string format = "mp4";
+  std::string quality = "high";
+  std::vector<std::string> isoParticipantIds;
+  int width = 1920;
+  int height = 1080;
+  int fps = 30;
+  std::string videoCodec = "h264";
+  std::string audioCodec = "aac";
+  int targetBitrateMbps = 10;
 };
 
 struct OutputSender {
@@ -160,6 +185,10 @@ struct OutputSender {
   int latencyMs = 2100;
   double bitrateMbps = 6.0;
   std::string warning;
+  std::string destinationHealth = "starting";
+  std::string lastResultCode = "waiting-for-frame";
+  std::string lastError;
+  int64_t bytesSent = 0;
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;
@@ -215,6 +244,7 @@ class IAudioMixer {
 class IEncoderSink {
  public:
   virtual ~IEncoderSink() = default;
+  virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;
   virtual void submit(const ProgramFrame& frame) = 0;
   virtual OutputSession session() const = 0;
@@ -250,6 +280,7 @@ struct ModuleSet {
 ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();

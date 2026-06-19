@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -130,6 +131,39 @@ TEST(StubCompositor, MarksWarnedRenderPlansDegraded) {
   const auto frame = modules.compositor->render(renderPlan, {{"front", 1280, 720, 16}, {"back", 1280, 720, 16}});
   EXPECT_EQ(frame.health, "degraded");
   EXPECT_NE(frame.programPixelSignature, 0u);
+}
+
+TEST(StubCompositor, ValidatesInvalidRenderPlansButStillProducesDeterministicFrame) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.width = -1;
+  renderPlan.height = 0;
+  renderPlan.fps = 0;
+  renderPlan.layers.push_back({
+      "",
+      "unknown-layer-kind",
+      "",
+      "",
+      0,
+      {0.f, 0.f, -1.f, 1.f},
+      std::numeric_limits<float>::quiet_NaN(),
+  });
+
+  const auto first = modules.compositor->render(renderPlan, {});
+  const auto second = modules.compositor->render(renderPlan, {});
+
+  EXPECT_EQ(first.renderer, "software");
+  EXPECT_EQ(first.health, "degraded");
+  EXPECT_EQ(first.width, 1920);
+  EXPECT_EQ(first.height, 1080);
+  EXPECT_EQ(first.renderPlanId, "invalid-render-plan");
+  EXPECT_GE(first.warnings.size(), 5u);
+  EXPECT_NE(first.programPixelSignature, 0u);
+  EXPECT_NE(first.renderPlanSignature, 0u);
+  EXPECT_EQ(first.programPixelSignature, second.programPixelSignature);
+  EXPECT_EQ(first.renderPlanSignature, second.renderPlanSignature);
 }
 
 TEST(StubCompositor, AppliesSemanticOverlayDepthAndOpacity) {

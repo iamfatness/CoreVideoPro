@@ -46,6 +46,7 @@ class MediaCore {
   void stopRecordingSession(const rpc::Json& command);
   void failRecordingSession(const rpc::Json& command);
   void recoverRecordingSession(const rpc::Json& command);
+  void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
@@ -78,6 +79,7 @@ class MediaCore {
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
+  std::vector<std::string> sceneValidationWarnings_;
   int64_t mixedAudioFrameCount_ = 0;
   modules::ProgramFrame lastProgramFrame_;
   std::string encoderLifecycleStatus_ = "idle";

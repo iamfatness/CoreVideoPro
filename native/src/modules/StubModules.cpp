@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 
 namespace corevideo::modules {
@@ -53,13 +55,124 @@ uint32_t programPreviewSignature(const ProgramFramePreviewPixels& preview) {
   return hash == 0 ? 1u : hash;
 }
 
+void mixHash(uint32_t& hash, uint8_t value) {
+  hash ^= value;
+  hash *= 16777619u;
+}
+
+void mixHash(uint32_t& hash, int value) {
+  for (int shift = 0; shift < 32; shift += 8) {
+    mixHash(hash, static_cast<uint8_t>((static_cast<uint32_t>(value) >> shift) & 0xffu));
+  }
+}
+
+void mixHash(uint32_t& hash, float value) {
+  const int quantized = static_cast<int>(std::lround(value * 10000.f));
+  mixHash(hash, quantized);
+}
+
+void mixHash(uint32_t& hash, const std::string& value) {
+  for (const unsigned char ch : value) {
+    mixHash(hash, ch);
+  }
+  mixHash(hash, static_cast<uint8_t>(0xffu));
+}
+
+uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
+  uint32_t hash = 2166136261u;
+  mixHash(hash, renderPlan.renderPlanId);
+  mixHash(hash, renderPlan.sceneId);
+  mixHash(hash, renderPlan.width);
+  mixHash(hash, renderPlan.height);
+  mixHash(hash, renderPlan.fps);
+  for (const auto& layer : renderPlan.layers) {
+    mixHash(hash, layer.layerId);
+    mixHash(hash, layer.kind);
+    mixHash(hash, layer.sourceId);
+    mixHash(hash, layer.participantId);
+    mixHash(hash, layer.order);
+    mixHash(hash, layer.rect.x);
+    mixHash(hash, layer.rect.y);
+    mixHash(hash, layer.rect.width);
+    mixHash(hash, layer.rect.height);
+    mixHash(hash, compositorLayerOpacity(layer));
+  }
+  return hash == 0 ? 1u : hash;
+}
+
+bool isFiniteRect(const CompositorLayerRect& rect) {
+  return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) && std::isfinite(rect.height);
+}
+
+bool isKnownLayerKind(const std::string& kind) {
+  return kind.empty() || kind == "participant-video" || kind == "screen-share" || kind == "overlay" || kind == "chroma-key";
+}
+
+void addWarning(std::vector<std::string>& warnings, const std::string& warning) {
+  if (std::find(warnings.begin(), warnings.end(), warning) == warnings.end()) {
+    warnings.push_back(warning);
+  }
+}
+
+CompositorRenderPlan validateRenderPlan(CompositorRenderPlan renderPlan) {
+  std::vector<std::string> warnings = renderPlan.warnings;
+  if (renderPlan.renderPlanId.empty()) {
+    addWarning(warnings, "Render plan id is empty.");
+    renderPlan.renderPlanId = "invalid-render-plan";
+  }
+  if (renderPlan.width <= 0 || renderPlan.height <= 0) {
+    addWarning(warnings, "Render plan dimensions must be positive.");
+    renderPlan.width = 1920;
+    renderPlan.height = 1080;
+  }
+  if (renderPlan.fps <= 0 || renderPlan.fps > 240) {
+    addWarning(warnings, "Render plan fps is outside the supported range.");
+    renderPlan.fps = 30;
+  }
+
+  std::set<std::string> layerIds;
+  for (size_t index = 0; index < renderPlan.layers.size(); ++index) {
+    auto& layer = renderPlan.layers[index];
+    const std::string layerLabel = layer.layerId.empty() ? "layer " + std::to_string(index) : layer.layerId;
+    if (layer.layerId.empty()) {
+      addWarning(warnings, "Scene layer " + std::to_string(index) + " is missing layerId.");
+      layer.layerId = "invalid-layer:" + std::to_string(index);
+    } else if (!layerIds.insert(layer.layerId).second) {
+      addWarning(warnings, "Scene layer " + layer.layerId + " is duplicated.");
+      layer.layerId += ":" + std::to_string(index);
+    }
+    if (!isKnownLayerKind(layer.kind)) {
+      addWarning(warnings, "Scene layer " + layerLabel + " has unsupported kind " + layer.kind + ".");
+      layer.kind = "overlay";
+    }
+    if (!std::isfinite(layer.opacity)) {
+      addWarning(warnings, "Scene layer " + layerLabel + " opacity is not finite.");
+      layer.opacity = 1.f;
+    }
+    if (!isFiniteRect(layer.rect)) {
+      addWarning(warnings, "Scene layer " + layerLabel + " rect is not finite.");
+      layer.rect = {};
+    }
+    if (layer.rect.width < 0.f || layer.rect.height < 0.f) {
+      addWarning(warnings, "Scene layer " + layerLabel + " rect size is negative.");
+      layer.rect.width = 0.f;
+      layer.rect.height = 0.f;
+    }
+    if (!compositorLayerIsOverlay(layer) && layer.participantId.empty() && layer.sourceId.empty()) {
+      addWarning(warnings, "Scene layer " + layerLabel + " has no source binding.");
+    }
+  }
+  renderPlan.warnings = std::move(warnings);
+  return renderPlan;
+}
+
 class CpuNoopCompositor final : public ICompositor {
  public:
   std::string rendererName() const override { return "software"; }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
     ++frameNumber_;
-    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    const auto deterministicPlan = sortCompositorRenderPlan(validateRenderPlan(renderPlan));
     const int layerCount = deterministicPlan.layers.empty() ? static_cast<int>(frames.size()) : static_cast<int>(deterministicPlan.layers.size());
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -69,6 +182,8 @@ class CpuNoopCompositor final : public ICompositor {
     frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "software";
     frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
+    frame.warnings = deterministicPlan.warnings;
+    frame.renderPlanSignature = renderPlanSignature(deterministicPlan);
     fillSyntheticProgramFramePreview(frame.preview, deterministicPlan, frames, frame);
     frame.programPixelSignature = programPreviewSignature(frame.preview);
 #if COREVIDEO_STUB
@@ -124,59 +239,6 @@ class DevSafeAudioMixer final : public IAudioMixer {
   AudioMixMetrics session_;
 };
 
-class CountingEncoderSink final : public IEncoderSink {
- public:
-  OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
-    session_.active = true;
-    session_.destinations = destinations;
-    session_.isoParticipantIds = isoParticipantIds;
-    session_.encodedFrameCount = 0;
-    session_.encoderName = "software-counting";
-    session_.codec = "h264";
-    session_.targetBitrateMbps = 10;
-    session_.hardwareAccelerated = false;
-    session_.recordingArtifactPath.clear();
-    session_.recordingBytesWritten = 0;
-    session_.recordingDurationMs = 0;
-    session_.recordingVideoFrameCount = 0;
-    session_.recordingWidth = 0;
-    session_.recordingHeight = 0;
-    session_.recordingFps = 0;
-    session_.recordingContainerFormat.clear();
-    session_.recordingVideoCodec.clear();
-    session_.recordingAudioCodec.clear();
-    session_.recordingMetadataValid = false;
-    session_.recordingWarning.clear();
-    if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
-      session_.recordingContainerFormat = "mp4";
-      session_.recordingVideoCodec = session_.codec;
-      session_.recordingAudioCodec = "aac";
-      session_.recordingFps = 30;
-    }
-    return session_;
-  }
-
-  void submit(const ProgramFrame& frame) override {
-    if (session_.active) {
-      ++session_.encodedFrameCount;
-      if (std::find(session_.destinations.begin(), session_.destinations.end(), "recording") != session_.destinations.end()) {
-        ++session_.recordingVideoFrameCount;
-        session_.recordingDurationMs = session_.recordingVideoFrameCount * 33;
-        session_.recordingWidth = frame.width;
-        session_.recordingHeight = frame.height;
-        session_.recordingBytesWritten = session_.recordingVideoFrameCount * 260000;
-        session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
-                                          !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty();
-      }
-    }
-  }
-
-  OutputSession session() const override { return session_; }
-
- private:
-  OutputSession session_;
-};
-
 bool isNetworkDestination(const std::string& destination) {
   return destination == "rtmp" || destination == "ndi" || destination == "srt" || destination == "webrtc";
 }
@@ -204,6 +266,10 @@ double bitrateFor(const std::string& destination) {
   return 6.0;
 }
 
+int64_t estimatedFrameBytes(double bitrateMbps) {
+  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / 30.0) + 0.5);
+}
+
 class SyntheticOutputSender final : public IOutputSender {
  public:
   OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) override {
@@ -219,6 +285,8 @@ class SyntheticOutputSender final : public IOutputSender {
         sender.status = "stopped";
         sender.stoppedAtMs = elapsedMs;
         sender.warning.clear();
+        sender.destinationHealth = "stopped";
+        sender.lastResultCode = "stopped";
       }
     }
 
@@ -230,6 +298,8 @@ class SyntheticOutputSender final : public IOutputSender {
         sender.startedAtMs = elapsedMs;
         sender.latencyMs = latencyFor(destination);
         sender.bitrateMbps = bitrateFor(destination);
+        sender.destinationHealth = "starting";
+        sender.lastResultCode = "waiting-for-frame";
       }
 
       if (sender.status == "failed") {
@@ -239,6 +309,18 @@ class SyntheticOutputSender final : public IOutputSender {
       if (!frame || frame->frameNumber == 0) {
         sender.status = "starting";
         sender.warning = uppercase(destination) + " sender is waiting for a program frame.";
+        sender.destinationHealth = "starting";
+        sender.lastResultCode = "waiting-for-frame";
+        continue;
+      }
+
+      if (frame->health == "dropped") {
+        sender.status = "warning";
+        sender.warning = uppercase(destination) + " sender skipped a dropped program frame.";
+        sender.destinationHealth = "warning";
+        sender.lastResultCode = "dropped-frame";
+        sender.lastError = sender.warning;
+        ++sender.retryCount;
         continue;
       }
 
@@ -246,6 +328,17 @@ class SyntheticOutputSender final : public IOutputSender {
       sender.warning.clear();
       sender.lastFrameNumber = frame->frameNumber;
       ++sender.framesSent;
+      sender.bytesSent += estimatedFrameBytes(sender.bitrateMbps);
+      if (frame->health == "degraded") {
+        sender.status = "warning";
+        sender.warning = uppercase(destination) + " sender is publishing degraded program frames.";
+        sender.destinationHealth = "warning";
+        sender.lastResultCode = "degraded-frame";
+        sender.lastError = sender.warning;
+      } else {
+        sender.destinationHealth = "ok";
+        sender.lastResultCode = "ok";
+      }
     }
 
     return snapshot();
@@ -266,6 +359,9 @@ class SyntheticOutputSender final : public IOutputSender {
     sender.stoppedAtMs = elapsedMs;
     ++sender.retryCount;
     sender.warning = message;
+    sender.destinationHealth = "failed";
+    sender.lastResultCode = "failed";
+    sender.lastError = message;
     return snapshot();
   }
 
@@ -284,6 +380,8 @@ class SyntheticOutputSender final : public IOutputSender {
     sender.startedAtMs = elapsedMs;
     sender.stoppedAtMs = 0;
     sender.warning = reason.empty() ? uppercase(destination) + " sender recovered." : reason;
+    sender.destinationHealth = "starting";
+    sender.lastResultCode = "recovered";
     return snapshot();
   }
 
@@ -437,7 +535,7 @@ ModuleSet createStubModules() {
   modules.zoom = std::make_unique<SyntheticZoomCaptureSource>();
   modules.compositor = std::make_unique<CpuNoopCompositor>();
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
-  modules.encoder = std::make_unique<CountingEncoderSink>();
+  modules.encoder = createStubRecordingEncoderSink();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
   modules.captureDevice = std::make_unique<FakeCaptureDevice>();
   return modules;

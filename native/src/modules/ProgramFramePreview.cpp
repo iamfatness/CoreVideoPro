@@ -308,9 +308,19 @@ rpc::Json programFramePreviewJson(const ProgramFrame& frame) {
       {"renderPlanId", frame.renderPlanId},
       {"renderer", frame.renderer},
       {"health", frame.health},
+      {"layerCount", frame.layerCount},
+      {"programPixelSignature", static_cast<double>(frame.programPixelSignature)},
+      {"renderPlanSignature", static_cast<double>(frame.renderPlanSignature)},
       {"pixelFormat", "bgra"},
       {"bgraBase64", base64Encode(frame.preview.bgra.data(), frame.preview.bgra.size())},
   };
+  if (!frame.warnings.empty()) {
+    rpc::Json::Array warnings;
+    for (const auto& warning : frame.warnings) {
+      warnings.emplace_back(warning);
+    }
+    preview.emplace("warnings", warnings);
+  }
   const auto sharedTexture = programSharedTextureJson(frame);
   if (!sharedTexture.isNull()) {
     preview.emplace("sharedTexture", sharedTexture);

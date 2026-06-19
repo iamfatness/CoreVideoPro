@@ -25,9 +25,14 @@ const IDLE_SESSION: MediaCoreAudioMixSession = {
 export class AudioMixSessionModel {
   private channels: AudioMixChannelInput[] = [];
   private mixedFrameCount = 0;
+  private hasSyncedRawAudio = false;
+  private syncWarnings: string[] = [];
 
   sync(channels: AudioMixChannelInput[]) {
-    this.channels = channels.map((channel) => ({ ...channel }));
+    this.hasSyncedRawAudio = true;
+    const { channels: normalizedChannels, warnings } = normalizeChannels(channels);
+    this.channels = normalizedChannels;
+    this.syncWarnings = warnings;
     return this.snapshot();
   }
 
@@ -40,23 +45,35 @@ export class AudioMixSessionModel {
 
   snapshot(): MediaCoreAudioMixSession {
     if (this.channels.length === 0) {
-      return { ...IDLE_SESSION, mixedFrameCount: this.mixedFrameCount };
+      const warnings = this.hasSyncedRawAudio ? ["Raw participant audio is missing from the mix session.", ...this.syncWarnings] : [];
+      return {
+        ...IDLE_SESSION,
+        status: warnings.length > 0 ? "warning" : IDLE_SESSION.status,
+        mixedFrameCount: this.mixedFrameCount,
+        warnings
+      };
     }
 
     const participants = this.channels.map(buildParticipantChannel);
     const audible = participants.filter((channel) => !channel.muted);
-    const masterLevel = Math.min(
-      100,
-      Math.round(audible.reduce((total, channel) => total + channel.outputLevel, 0) / Math.max(1, audible.length) + 8)
-    );
+    const masterLevel =
+      audible.length > 0
+        ? Math.min(100, Math.round(audible.reduce((total, channel) => total + channel.outputLevel, 0) / audible.length + 8))
+        : 0;
     const limiterActive = participants.some((channel) => channel.limiterActive) || masterLevel >= LIMITER_THRESHOLD;
     const boostingCount = participants.filter((channel) => channel.status === "boosting").length;
     const duckingCount = participants.filter((channel) => channel.status === "ducking").length;
     const mutedCount = participants.filter((channel) => channel.muted).length;
     const manualCount = participants.filter((channel) => channel.manualGainDb !== undefined && channel.manualGainDb !== 0).length;
-    const warnings: string[] = [];
+    const warnings = [...this.syncWarnings];
     if (participants.some((channel) => channel.noiseSuppression && channel.inputLevel < 35)) {
       warnings.push("Noise suppression active on low-level sources.");
+    }
+    if (audible.length === 0) {
+      warnings.push("All synced participant audio channels are muted.");
+    }
+    if (limiterActive) {
+      warnings.push("Limiter active in participant audio mix.");
     }
 
     return {
@@ -70,6 +87,42 @@ export class AudioMixSessionModel {
       warnings
     };
   }
+}
+
+function normalizeChannels(channels: AudioMixChannelInput[]) {
+  const normalizedChannels: AudioMixChannelInput[] = [];
+  const warnings: string[] = [];
+  const seenParticipantIds = new Set<string>();
+  let boundedValueCount = 0;
+
+  channels.forEach((channel, index) => {
+    const participantId = channel.participantId.trim() || `unknown-audio-source-${index + 1}`;
+    if (seenParticipantIds.has(participantId)) {
+      warnings.push(`Participant ${participantId} has duplicated isolated audio channels; using the first channel for deterministic mix.`);
+      return;
+    }
+    seenParticipantIds.add(participantId);
+
+    const inputLevel = clampFinite(channel.inputLevel, 0, 100);
+    const manualGainDb = channel.manualGainDb === undefined ? undefined : clampFinite(channel.manualGainDb, -12, 12);
+    if (inputLevel !== channel.inputLevel || manualGainDb !== channel.manualGainDb) {
+      boundedValueCount += 1;
+    }
+
+    normalizedChannels.push({
+      participantId,
+      inputLevel,
+      muted: channel.muted,
+      noiseSuppression: channel.noiseSuppression,
+      manualGainDb
+    });
+  });
+
+  if (boundedValueCount > 0) {
+    warnings.push("Audio mix channel levels were bounded to DSP readiness limits.");
+  }
+
+  return { channels: normalizedChannels, warnings };
 }
 
 function buildParticipantChannel(channel: AudioMixChannelInput): MediaCoreParticipantAudioChannel {
@@ -120,4 +173,8 @@ function buildSummary(boostingCount: number, duckingCount: number, mutedCount: n
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function clampFinite(value: number, min: number, max: number) {
+  return Number.isFinite(value) ? clamp(value, min, max) : min;
 }

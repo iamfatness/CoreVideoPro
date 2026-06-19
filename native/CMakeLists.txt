@@ -29,6 +29,7 @@ add_library(corevideo_native
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
+  src/modules/StubRecordingEncoder.cpp
   src/modules/StubModules.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
@@ -213,6 +214,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/ContractParityTest.cpp
     tests/D3D11CompositorTest.cpp
+    tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/ZoomFrameReaderTest.cpp

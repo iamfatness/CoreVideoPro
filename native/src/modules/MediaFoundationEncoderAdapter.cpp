@@ -80,15 +80,33 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
   }
 
+  void configureRecording(const RecordingSessionRequest& request) override {
+    request_ = request;
+    session_.recordingSessionId = request.sessionId;
+    session_.recordingTargetFolder = request.targetFolder;
+    session_.recordingFilenamePrefix = request.filenamePrefix;
+    session_.recordingFormat = request.format;
+    session_.recordingQuality = request.quality;
+    session_.recordingContainerFormat = request.format;
+    session_.recordingVideoCodec = request.videoCodec;
+    session_.recordingAudioCodec = request.audioCodec;
+    session_.recordingFps = request.fps;
+    session_.targetBitrateMbps = request.targetBitrateMbps;
+    if (!request.isoParticipantIds.empty()) {
+      session_.isoParticipantIds = request.isoParticipantIds;
+    }
+  }
+
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     closeRecordingWriter();
     session_.active = true;
     session_.destinations = destinations;
-    session_.isoParticipantIds = isoParticipantIds;
+    session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.recordingArtifactPath.clear();
     session_.recordingBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
+    session_.recordingLastFrameNumber = 0;
     session_.recordingWidth = 0;
     session_.recordingHeight = 0;
     session_.recordingFps = 0;
@@ -97,7 +115,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingAudioCodec.clear();
     session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
+    session_.recordingError.clear();
+    session_.recordingSessionId = request_.sessionId;
+    session_.recordingTargetFolder = request_.targetFolder;
+    session_.recordingFilenamePrefix = request_.filenamePrefix;
+    session_.recordingFormat = request_.format;
+    session_.recordingQuality = request_.quality;
+    session_.recordingStatus = "encoding";
     if (std::find(destinations.begin(), destinations.end(), "recording") != destinations.end()) {
+      session_.recordingStatus = "recording";
       openRecordingWriter();
     }
     return session_;
@@ -106,6 +132,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   void submit(const ProgramFrame& frame) override {
     if (session_.active) {
       ++session_.encodedFrameCount;
+      session_.recordingLastFrameNumber = frame.frameNumber;
       writeSyntheticProgramSample(frame);
     }
   }
@@ -257,11 +284,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void setRecordingFailure(const std::string& message, HRESULT result) {
     session_.recordingWarning = message + ": " + hresultString(result) + ".";
+    session_.recordingError = session_.recordingWarning;
+    session_.recordingStatus = "warning";
     writerOpen_ = false;
     sinkWriter_.Reset();
   }
 
   OutputSession session_;
+  RecordingSessionRequest request_;
   ComPtr<IMFSinkWriter> sinkWriter_;
   DWORD streamIndex_ = 0;
   LONGLONG frameTime100ns_ = 0;

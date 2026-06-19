@@ -9,9 +9,20 @@ import type {
 type NetworkDestination = Exclude<MediaCoreDestination, "recording">;
 
 const NETWORK_DESTINATIONS = new Set<MediaCoreDestination>(["rtmp", "ndi", "srt", "webrtc"]);
+const DEFAULT_FPS = 30;
+
+type SenderResultCode = "ok" | "waiting-for-frame" | "degraded-frame" | "dropped-frame" | "failed" | "recovered" | "stopped";
+type DestinationHealth = "ok" | "starting" | "warning" | "failed" | "stopped";
+
+type DiagnosticOutputSender = MediaCoreOutputSender & {
+  destinationHealth: DestinationHealth;
+  lastResultCode: SenderResultCode;
+  lastError?: string;
+  bytesSent: number;
+};
 
 export class OutputSenderSessionModel {
-  private readonly senders = new Map<NetworkDestination, MediaCoreOutputSender>();
+  private readonly senders = new Map<NetworkDestination, DiagnosticOutputSender>();
 
   fail(destination: NetworkDestination, message: string, elapsedMs: number) {
     const existing = this.senders.get(destination);
@@ -26,7 +37,11 @@ export class OutputSenderSessionModel {
       retryCount: (existing?.retryCount ?? 0) + 1,
       latencyMs: existing?.latencyMs ?? latencyFor(destination),
       bitrateMbps: existing?.bitrateMbps ?? 0,
-      warning: message
+      warning: message,
+      destinationHealth: "failed",
+      lastResultCode: "failed",
+      lastError: message,
+      bytesSent: existing?.bytesSent ?? 0
     });
     return this.snapshot();
   }
@@ -44,7 +59,11 @@ export class OutputSenderSessionModel {
       retryCount: existing?.retryCount ?? 0,
       latencyMs: existing?.latencyMs ?? latencyFor(destination),
       bitrateMbps: existing?.bitrateMbps ?? 0,
-      warning: reason
+      warning: reason,
+      destinationHealth: "starting",
+      lastResultCode: "recovered",
+      lastError: existing?.lastError,
+      bytesSent: existing?.bytesSent ?? 0
     });
     return this.snapshot();
   }
@@ -59,7 +78,9 @@ export class OutputSenderSessionModel {
           ...sender,
           status: "stopped",
           stoppedAtMs: elapsedMs,
-          warning: undefined
+          warning: undefined,
+          destinationHealth: "stopped",
+          lastResultCode: "stopped"
         });
       }
     });
@@ -89,22 +110,24 @@ export class OutputSenderSessionModel {
 
   private nextSender(
     destination: NetworkDestination,
-    existing: MediaCoreOutputSender | undefined,
+    existing: DiagnosticOutputSender | undefined,
     programFrame: MediaCoreProgramFrame | undefined,
     outputProfile: MediaCoreOutputProfile,
     elapsedMs: number
-  ): MediaCoreOutputSender {
+  ): DiagnosticOutputSender {
     const startedAtMs = existing?.startedAtMs ?? elapsedMs;
     const senderId = existing?.senderId ?? `${destination}:program`;
+    const bitrateMbps = bitrateFor(destination, outputProfile);
     const base = {
       senderId,
       destination,
       startedAtMs,
       stoppedAtMs: undefined,
       latencyMs: latencyFor(destination),
-      bitrateMbps: bitrateFor(destination, outputProfile),
+      bitrateMbps,
       retryCount: existing?.retryCount ?? 0,
-      framesSent: existing?.framesSent ?? 0
+      framesSent: existing?.framesSent ?? 0,
+      bytesSent: existing?.bytesSent ?? 0
     };
 
     if (existing?.status === "failed") {
@@ -114,7 +137,10 @@ export class OutputSenderSessionModel {
         stoppedAtMs: existing.stoppedAtMs,
         lastFrameNumber: existing.lastFrameNumber,
         retryCount: existing.retryCount,
-        warning: existing.warning
+        warning: existing.warning,
+        destinationHealth: "failed",
+        lastResultCode: existing.lastResultCode,
+        lastError: existing.lastError
       };
     }
 
@@ -122,7 +148,10 @@ export class OutputSenderSessionModel {
       return {
         ...base,
         status: "starting",
-        warning: `${destination.toUpperCase()} sender is waiting for a program frame.`
+        warning: `${destination.toUpperCase()} sender is waiting for a program frame.`,
+        destinationHealth: "starting",
+        lastResultCode: "waiting-for-frame",
+        lastError: existing?.lastError
       };
     }
 
@@ -132,17 +161,25 @@ export class OutputSenderSessionModel {
         status: "warning",
         lastFrameNumber: existing?.lastFrameNumber,
         retryCount: (existing?.retryCount ?? 0) + 1,
-        warning: `${destination.toUpperCase()} sender skipped a dropped program frame.`
+        warning: `${destination.toUpperCase()} sender skipped a dropped program frame.`,
+        destinationHealth: "warning",
+        lastResultCode: "dropped-frame",
+        lastError: `${destination.toUpperCase()} sender skipped a dropped program frame.`
       };
     }
 
+    const framesSent = (existing?.framesSent ?? 0) + 1;
     return {
       ...base,
       status: programFrame.health === "degraded" ? "warning" : "live",
       lastFrameNumber: programFrame.frameNumber,
-      framesSent: (existing?.framesSent ?? 0) + 1,
+      framesSent,
       retryCount: existing?.retryCount ?? 0,
-      warning: programFrame.health === "degraded" ? `${destination.toUpperCase()} sender is publishing degraded program frames.` : undefined
+      warning: programFrame.health === "degraded" ? `${destination.toUpperCase()} sender is publishing degraded program frames.` : undefined,
+      destinationHealth: programFrame.health === "degraded" ? "warning" : "ok",
+      lastResultCode: programFrame.health === "degraded" ? "degraded-frame" : "ok",
+      lastError: programFrame.health === "degraded" ? `${destination.toUpperCase()} sender is publishing degraded program frames.` : existing?.lastError,
+      bytesSent: (existing?.bytesSent ?? 0) + estimatedFrameBytes(bitrateMbps, outputProfile.fps)
     };
   }
 }
@@ -163,4 +200,9 @@ function latencyFor(destination: NetworkDestination) {
 function bitrateFor(destination: NetworkDestination, outputProfile: MediaCoreOutputProfile) {
   const multiplier = destination === "ndi" ? 1.6 : destination === "webrtc" ? 0.8 : 1;
   return Number((outputProfile.targetBitrateMbps * multiplier).toFixed(1));
+}
+
+function estimatedFrameBytes(bitrateMbps: number, fps: number) {
+  const frameRate = fps > 0 ? fps : DEFAULT_FPS;
+  return Math.round((bitrateMbps * 1_000_000) / 8 / frameRate);
 }

@@ -116,6 +116,10 @@ RuntimeProbe probeLibavformatRuntime() {
   return probe;
 }
 
+int64_t estimatedFrameBytes(double bitrateMbps) {
+  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / 30.0) + 0.5);
+}
+
 class RtmpOutputSender final : public IOutputSender {
  public:
   explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
@@ -128,6 +132,8 @@ class RtmpOutputSender final : public IOutputSender {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
         sender_.warning.clear();
+        sender_.destinationHealth = "stopped";
+        sender_.lastResultCode = "stopped";
       }
       return snapshot();
     }
@@ -138,12 +144,17 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.status = "warning";
       sender_.warning = "RTMP sender requires libavformat runtime on the dev machine (" + runtimeDetail_ + ").";
       sender_.runtimeDetail = runtimeDetail_;
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "runtime-missing";
+      sender_.lastError = sender_.warning;
       appendSendProof(nullptr, "runtime-missing");
       return snapshot();
     }
     if (!frame || frame->frameNumber == 0) {
       sender_.status = "starting";
       sender_.warning = "RTMP sender is waiting for a program frame.";
+      sender_.destinationHealth = "starting";
+      sender_.lastResultCode = "waiting-for-frame";
       appendSendProof(frame, "waiting-for-frame");
       return snapshot();
     }
@@ -153,6 +164,9 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
+    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps);
+    sender_.destinationHealth = "ok";
+    sender_.lastResultCode = "ok";
     appendSendProof(frame, "sent");
     return snapshot();
   }
@@ -166,6 +180,9 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.stoppedAtMs = elapsedMs;
     ++sender_.retryCount;
     sender_.warning = message;
+    sender_.destinationHealth = "failed";
+    sender_.lastResultCode = "failed";
+    sender_.lastError = message;
     return snapshot();
   }
 
@@ -182,6 +199,8 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.stoppedAtMs = 0;
     sender_.warning = reason.empty() ? "RTMP sender recovered." : reason;
     sender_.runtimeDetail = runtimeDetail_;
+    sender_.destinationHealth = runtimeAvailable_ ? "starting" : "warning";
+    sender_.lastResultCode = "recovered";
     return snapshot();
   }
 
@@ -199,6 +218,8 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.latencyMs = 2100;
     sender_.bitrateMbps = 6.0;
     sender_.runtimeDetail = runtimeDetail_;
+    sender_.destinationHealth = "starting";
+    sender_.lastResultCode = "waiting-for-frame";
   }
 
   void openSendProofIfNeeded() {

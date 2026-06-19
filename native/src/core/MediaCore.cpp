@@ -181,9 +181,13 @@ rpc::Json MediaCore::health() const {
   if (session.hardwareAccelerated) {
     messages.emplace_back("Hardware encoder active: " + session.encoderName);
   }
+  for (const auto& warning : lastProgramFrame_.warnings) {
+    messages.emplace_back("Compositor warning: " + warning);
+  }
   return rpc::Json::Object{
       {"status", session.active ? "live" : "idle"},
       {"renderer", modules_.compositor->rendererName()},
+      {"programFrameHealth", lastProgramFrame_.health},
       {"encoder", session.encoderName},
       {"codec", session.codec},
       {"targetBitrateMbps", session.targetBitrateMbps},
@@ -196,6 +200,8 @@ rpc::Json MediaCore::health() const {
       {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
       {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
+      {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
+      {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
       {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
       {"messages", messages},
   };
@@ -302,6 +308,20 @@ rpc::Json MediaCore::sessionState() const {
       {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
       {"renderPlanId", lastProgramFrame_.renderPlanId},
       {"compositorRenderer", lastProgramFrame_.renderer},
+      {"programFrame",
+       rpc::Json::Object{
+           {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
+           {"renderPlanId", lastProgramFrame_.renderPlanId},
+           {"renderer", lastProgramFrame_.renderer},
+           {"health", lastProgramFrame_.health},
+           {"width", lastProgramFrame_.width},
+           {"height", lastProgramFrame_.height},
+           {"layerCount", lastProgramFrame_.layerCount},
+           {"gpuComposed", lastProgramFrame_.gpuComposed},
+           {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
+           {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
+           {"warnings", stringArray(lastProgramFrame_.warnings)},
+       }},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
       {"captureDevices", captureDevicesState()},
@@ -576,17 +596,37 @@ void MediaCore::simulateBreakoutRoomChange(const rpc::Json& command) {
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
+  sceneValidationWarnings_.clear();
+  if (sceneId_.empty() || sceneId_ == "unloaded") {
+    sceneId_ = "unloaded";
+    sceneValidationWarnings_.push_back("Scene graph command is missing sceneId.");
+  }
   sceneRoutes_.clear();
   const rpc::Json* routes = command.get("routes");
   if (routes && routes->isArray()) {
+    int routeIndex = 0;
     for (const auto& route : routes->asArray()) {
       SceneRouteState state;
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
       state.audioRole = route.getString("audioRole");
+      if (state.routeId.empty()) {
+        sceneValidationWarnings_.push_back("Scene route " + std::to_string(routeIndex) + " is missing routeId.");
+        state.routeId = "invalid-route-" + std::to_string(routeIndex);
+      }
+      if (state.mode.empty()) {
+        sceneValidationWarnings_.push_back("Scene route " + state.routeId + " is missing mode.");
+        state.mode = "fixed";
+      } else if (state.mode != "fixed" && state.mode != "active-speaker" && state.mode != "screen-share") {
+        sceneValidationWarnings_.push_back("Scene route " + state.routeId + " has unsupported mode " + state.mode + ".");
+        state.mode = "fixed";
+      }
       sceneRoutes_.push_back(std::move(state));
+      ++routeIndex;
     }
+  } else if (routes) {
+    sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
 }
@@ -600,6 +640,7 @@ void MediaCore::setOverlayAsset(const rpc::Json&) {
 }
 
 void MediaCore::startProgramOutput(const rpc::Json& command) {
+  configureEncoderRecordingRequest();
   modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
@@ -642,6 +683,7 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   if (command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
   }
+  configureEncoderRecordingRequest();
 }
 
 void MediaCore::startRecordingSession(const rpc::Json& command) {
@@ -661,6 +703,13 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   recordingWarning_.clear();
   recordingLastFailure_.clear();
   recordingLastRecovery_.clear();
+  configureEncoderRecordingRequest();
+  auto encoderSession = modules_.encoder->session();
+  auto destinations = encoderSession.destinations;
+  if (std::find(destinations.begin(), destinations.end(), "recording") == destinations.end()) {
+    destinations.push_back("recording");
+  }
+  modules_.encoder->start(destinations, recordingIsoParticipantIds_);
   if (encoderLifecycleStatus_ != "encoding") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Recording session started encoder.";
@@ -689,6 +738,23 @@ void MediaCore::recoverRecordingSession(const rpc::Json& command) {
   recordingWarning_ = command.getString("reason", recordingWarning_);
   recordingLastRecovery_ = recordingWarning_;
   ++recordingRecoveryCount_;
+}
+
+void MediaCore::configureEncoderRecordingRequest() {
+  modules::RecordingSessionRequest request;
+  request.sessionId = recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_;
+  request.targetFolder = recordingTargetFolder_;
+  request.filenamePrefix = recordingFilenamePrefix_;
+  request.format = recordingFormat_;
+  request.quality = recordingQuality_;
+  request.isoParticipantIds = recordingIsoParticipantIds_;
+  request.width = lastProgramFrame_.width > 0 ? lastProgramFrame_.width : 1920;
+  request.height = lastProgramFrame_.height > 0 ? lastProgramFrame_.height : 1080;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.targetBitrateMbps = 10;
+  modules_.encoder->configureRecording(request);
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
@@ -1043,6 +1109,9 @@ rpc::Json MediaCore::outputSenderSessionState() const {
         {"retryCount", sender.retryCount},
         {"latencyMs", sender.latencyMs},
         {"bitrateMbps", sender.bitrateMbps},
+        {"destinationHealth", sender.destinationHealth},
+        {"lastResultCode", sender.lastResultCode},
+        {"bytesSent", static_cast<double>(sender.bytesSent)},
     };
     if (sender.startedAtMs > 0) {
       senderJson.emplace("startedAtMs", sender.startedAtMs);
@@ -1055,6 +1124,9 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     }
     if (!sender.warning.empty()) {
       senderJson.emplace("warning", sender.warning);
+    }
+    if (!sender.lastError.empty()) {
+      senderJson.emplace("lastError", sender.lastError);
     }
     if (!sender.sendArtifactPath.empty()) {
       senderJson.emplace("sendArtifactPath", sender.sendArtifactPath);
@@ -1196,6 +1268,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   renderPlan.width = 1920;
   renderPlan.height = 1080;
   renderPlan.fps = 30;
+  renderPlan.warnings = sceneValidationWarnings_;
 
   int videoLayerIndex = 0;
   const int videoLayerCount = routeCount_ > 0 ? routeCount_ : static_cast<int>(videoFrames.size());
