@@ -362,7 +362,8 @@
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch"
                                             Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
-                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}" />
+                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
+                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}" />
                                         <cvcontrols:VideoSurfaceHost
                                             VerticalAlignment="Top" HorizontalAlignment="Right"
                                             MaxWidth="160" MaxHeight="92" Margin="8" Opacity="0.88"
@@ -395,6 +396,7 @@
                                             VerticalAlignment="Stretch"
                                             Scene="{x:Bind ViewModel.PreviewScene, Mode=OneWay}"
                                             Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
+                                            Routes="{x:Bind ViewModel.PreviewSceneRoutes, Mode=OneWay}"
                                             IsPreview="True" />
                                         <cvcontrols:VideoSurfaceHost
                                             VerticalAlignment="Top" HorizontalAlignment="Right"

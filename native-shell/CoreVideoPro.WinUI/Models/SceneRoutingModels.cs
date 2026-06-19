@@ -23,6 +23,8 @@ public sealed class SourceRoute
     public string? ParticipantId { get; set; }
     public int? SpotlightIndex { get; set; }
     public SourceAudioRole AudioRole { get; set; }
+    public NormalizedCanvasRect? CanvasRect { get; set; }
+    public int ZIndex { get; set; }
 
     public SourceRoute Clone() =>
         new()
@@ -31,7 +33,9 @@ public sealed class SourceRoute
             Mode = Mode,
             ParticipantId = ParticipantId,
             SpotlightIndex = SpotlightIndex,
-            AudioRole = AudioRole
+            AudioRole = AudioRole,
+            CanvasRect = CanvasRect?.Clone(),
+            ZIndex = ZIndex
         };
 }
 

@@ -683,6 +683,15 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
       state.audioRole = route.getString("audioRole");
+      state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
+      const rpc::Json* rect = route.get("rect");
+      if (rect && rect->isObject()) {
+        state.rectX = static_cast<float>(rect->getNumber("x", 0.0));
+        state.rectY = static_cast<float>(rect->getNumber("y", 0.0));
+        state.rectWidth = static_cast<float>(rect->getNumber("width", 1.0));
+        state.rectHeight = static_cast<float>(rect->getNumber("height", 1.0));
+        state.hasRect = state.rectWidth > 0.f && state.rectHeight > 0.f;
+      }
       if (state.routeId.empty()) {
         sceneValidationWarnings_.push_back("Scene route " + std::to_string(routeIndex) + " is missing routeId.");
         state.routeId = "invalid-route-" + std::to_string(routeIndex);
@@ -1358,8 +1367,14 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
         layer.participantId = videoFrames[static_cast<size_t>(videoLayerIndex)].participantId;
         layer.sourceId = "zoom:" + layer.participantId;
       }
-      const auto layout = compositor::gridCell((std::max)(1, videoLayerCount), videoLayerIndex);
-      layer.rect = {layout.x, layout.y, layout.width, layout.height};
+      if (route.hasRect) {
+        layer.rect = {route.rectX, route.rectY, route.rectWidth, route.rectHeight};
+        layer.order = route.zIndex;
+      } else {
+        const auto layout = compositor::gridCell((std::max)(1, videoLayerCount), videoLayerIndex);
+        layer.rect = {layout.x, layout.y, layout.width, layout.height};
+        layer.order = videoLayerIndex;
+      }
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }

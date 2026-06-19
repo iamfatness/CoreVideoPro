@@ -2,7 +2,6 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -11,13 +10,14 @@ namespace CoreVideoPro.WinUI.Views;
 
 public sealed partial class SourcesPage : UserControl
 {
-    private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private StudioViewModel? _boundViewModel;
-    private bool _previewSlotListRefreshScheduled;
 
     public SourcesPage()
     {
         InitializeComponent();
+        SceneCanvasEditor.PresetRequested += OnCanvasPresetRequested;
+        SceneCanvasEditor.LayerChanged += OnCanvasLayerChanged;
+        SceneCanvasEditor.InteractionChanged += OnCanvasInteractionChanged;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -41,7 +41,7 @@ public sealed partial class SourcesPage : UserControl
             (StudioViewModel?)args.OldValue);
 
     private void OnLoaded(object sender, RoutedEventArgs e) =>
-        SchedulePreviewSlotListRefresh();
+        RefreshSceneCanvasEditor();
 
     private void OnUnloaded(object sender, RoutedEventArgs e) =>
         BindViewModel(null, _boundViewModel);
@@ -56,7 +56,7 @@ public sealed partial class SourcesPage : UserControl
         if (previous is not null)
         {
             previous.PropertyChanged -= OnViewModelPropertyChanged;
-            previous.PreviewSlotEditors.CollectionChanged -= OnPreviewSlotEditorsChanged;
+            previous.PreviewCanvasLayers.CollectionChanged -= OnPreviewCanvasLayersChanged;
         }
 
         _boundViewModel = next;
@@ -64,41 +64,54 @@ public sealed partial class SourcesPage : UserControl
         if (next is not null)
         {
             next.PropertyChanged += OnViewModelPropertyChanged;
-            next.PreviewSlotEditors.CollectionChanged += OnPreviewSlotEditorsChanged;
+            next.PreviewCanvasLayers.CollectionChanged += OnPreviewCanvasLayersChanged;
         }
 
-        SchedulePreviewSlotListRefresh();
+        RefreshSceneCanvasEditor();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(StudioViewModel.PreviewSlotEditors)
+        if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers)
             or nameof(StudioViewModel.HasPreviewSlotEditors))
         {
-            SchedulePreviewSlotListRefresh();
+            RefreshSceneCanvasEditor();
         }
     }
 
-    private void OnPreviewSlotEditorsChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
-        SchedulePreviewSlotListRefresh();
-
-    private void SchedulePreviewSlotListRefresh()
+    private void OnPreviewCanvasLayersChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (_previewSlotListRefreshScheduled || _dispatcher is null)
+        if (SceneCanvasEditor.IsInteracting)
         {
             return;
         }
 
-        _previewSlotListRefreshScheduled = true;
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        if (e.Action is NotifyCollectionChangedAction.Reset or NotifyCollectionChangedAction.Add
+            or NotifyCollectionChangedAction.Remove or NotifyCollectionChangedAction.Replace)
         {
-            _previewSlotListRefreshScheduled = false;
-            PreviewSlotListView.ItemsSource = null;
-            _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () =>
-            {
-                PreviewSlotListView.ItemsSource = ViewModel?.PreviewSlotEditors;
-            });
-        });
+            RefreshSceneCanvasEditor();
+        }
+    }
+
+    private void RefreshSceneCanvasEditor()
+    {
+        var layers = ViewModel?.PreviewCanvasLayers.ToList();
+        SceneCanvasEditor.SetLayers(layers, layers?.FirstOrDefault());
+    }
+
+    private void OnCanvasPresetRequested(object? sender, string preset) =>
+        ViewModel?.ApplyCanvasPreset(preset);
+
+    private void OnCanvasLayerChanged(object? sender, SceneCanvasLayerViewModel layer) =>
+        ViewModel?.CommitPreviewCanvasLayer(layer);
+
+    private void OnCanvasInteractionChanged(object? sender, bool isInteracting)
+    {
+        ViewModel?.SetCanvasInteractionActive(isInteracting);
+        if (!isInteracting)
+        {
+            RefreshSceneCanvasEditor();
+        }
     }
 
     private void OnShowInputEditorPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)

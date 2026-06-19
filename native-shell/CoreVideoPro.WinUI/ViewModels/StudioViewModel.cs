@@ -136,6 +136,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
+    private bool _canvasInteractionActive;
 
     public SettingsViewModel Settings { get; }
 
@@ -168,7 +169,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             !string.IsNullOrWhiteSpace(CaptionText) || CaptionTranscript.Count > 0,
             CaptionTranscript.Count);
 
-    public ObservableCollection<SlotEditorItemViewModel> PreviewSlotEditors { get; } = [];
+    public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
+
+    public IReadOnlyList<SourceRoute> PreviewSceneRoutes { get; private set; } = [];
+
+    public IReadOnlyList<SourceRoute> ProgramSceneRoutes { get; private set; } = [];
 
     public IReadOnlyList<string> PreviewRouteWarnings { get; private set; } = [];
 
@@ -522,16 +527,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         "Build scenes in Sources · assign show inputs for multiview";
 
     public string SceneBuilderHint =>
-        "Open the Scenes tab to assign route, source, and audio per layout slot";
+        "Open the Scenes tab to drag sources on the 16:9 canvas like OBS";
 
-    public int PreviewSlotCount => PreviewSlotEditors.Count;
+    public int PreviewSlotCount => PreviewCanvasLayers.Count;
 
-    public bool HasPreviewSlotEditors => PreviewSlotEditors.Count > 0;
+    public bool HasPreviewSlotEditors => PreviewCanvasLayers.Count > 0;
 
     public string SceneBuilderSlotSummary =>
-        PreviewSlotEditors.Count == 0
-            ? "No layout slots yet — pick a scene on Studio first"
-            : $"{PreviewSlotEditors.Count} layout slots for {PreviewScene.Name}";
+        PreviewCanvasLayers.Count == 0
+            ? "No sources on canvas — pick a scene on Studio first"
+            : $"{PreviewCanvasLayers.Count} sources on canvas for {PreviewScene.Name}";
 
     public string MultiviewCapLabel =>
         $"UP TO {ShowInputRosterService.MaxMultiviewBoxes} LIVE";
@@ -834,7 +839,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OpenSceneBuilder()
     {
         ActiveTab = StudioTab.Sources;
-        CommandStatus = $"Editing {PreviewScene.Name} — {PreviewSlotEditors.Count} layout slots on Scenes tab";
+        CommandStatus = $"Editing {PreviewScene.Name} — drag sources on the Scenes canvas";
         OnPropertyChanged(nameof(SceneBuilderSlotSummary));
         OnPropertyChanged(nameof(PreviewSlotCount));
         OnPropertyChanged(nameof(HasPreviewSlotEditors));
@@ -1109,7 +1114,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 route.Id,
                 SceneRoutingService.ModeToWire(route.Mode),
                 SceneRoutingService.AudioRoleToWire(route.AudioRole),
-                route.ParticipantId))
+                route.ParticipantId,
+                route.CanvasRect?.X,
+                route.CanvasRect?.Y,
+                route.CanvasRect?.Width,
+                route.CanvasRect?.Height,
+                route.ZIndex))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -1885,56 +1895,105 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneCompositionState(ProgramScene, ActiveSceneId, isPreview: false);
     }
 
+    public void SetCanvasInteractionActive(bool isActive) =>
+        _canvasInteractionActive = isActive;
+
     private void RefreshSceneCompositionState(Scene scene, string sceneId, bool isPreview)
     {
-        var routes = SceneRoutingService.GetRouteDefaults(
+        var mutableRoutes = GetMutableRoutes(sceneId);
+        var defaults = SceneRoutingService.GetRouteDefaults(
             scene,
-            GetMutableRoutes(sceneId),
+            mutableRoutes,
             RoomVideoParticipants);
 
-        GetMutableRoutes(sceneId).Clear();
-        GetMutableRoutes(sceneId).AddRange(routes.Select(route => route.Clone()));
+        ReconcileRoutes(mutableRoutes, defaults);
+        SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
+        var workingRoutes = mutableRoutes.Select(route => route.Clone()).ToList();
 
         if (isPreview)
         {
-            PreviewSlotEditors.Clear();
-            for (var index = 0; index < routes.Count; index++)
-            {
-                PreviewSlotEditors.Add(new SlotEditorItemViewModel(
-                    index,
-                    routes[index],
-                    RoomVideoParticipants,
-                    OnPreviewSlotEditorChanged));
-            }
-
-            PreviewSceneParticipants = SceneRoutingService.DescribeRouteAssignments(
-                scene,
-                routes,
-                RoomVideoParticipants);
-
-            PreviewRouteWarnings = SceneRoutingService
-                .GetRouteWarnings(scene, routes, RoomVideoParticipants)
-                .Take(3)
-                .ToList();
-        }
-
-        var sceneTiles = BuildSceneTiles(scene, routes);
-        if (isPreview)
-        {
-            PreviewSceneTiles = sceneTiles;
-            OnPropertyChanged(nameof(PreviewRouteWarnings));
-            OnPropertyChanged(nameof(HasPreviewRouteWarnings));
-            OnPropertyChanged(nameof(PreviewSceneTiles));
-            OnPropertyChanged(nameof(PreviewSlotEditors));
-            OnPropertyChanged(nameof(PreviewSlotCount));
-            OnPropertyChanged(nameof(HasPreviewSlotEditors));
-            OnPropertyChanged(nameof(SceneBuilderSlotSummary));
+            SyncPreviewCanvasLayers(mutableRoutes);
+            PublishPreviewCompositionState(scene, workingRoutes);
         }
         else
         {
+            var sceneTiles = BuildSceneTiles(scene, workingRoutes);
+            ProgramSceneRoutes = workingRoutes;
             ProgramSceneTiles = sceneTiles;
+            OnPropertyChanged(nameof(ProgramSceneRoutes));
             OnPropertyChanged(nameof(ProgramSceneTiles));
         }
+    }
+
+    private static void ReconcileRoutes(List<SourceRoute> mutableRoutes, IReadOnlyList<SourceRoute> defaults)
+    {
+        while (mutableRoutes.Count > defaults.Count)
+        {
+            mutableRoutes.RemoveAt(mutableRoutes.Count - 1);
+        }
+
+        while (mutableRoutes.Count < defaults.Count)
+        {
+            mutableRoutes.Add(defaults[mutableRoutes.Count].Clone());
+        }
+
+        for (var index = 0; index < defaults.Count; index++)
+        {
+            SceneRoutingService.ApplyRouteValues(mutableRoutes[index], defaults[index]);
+        }
+    }
+
+    private void SyncPreviewCanvasLayers(IReadOnlyList<SourceRoute> routes)
+    {
+        if (_canvasInteractionActive)
+        {
+            return;
+        }
+
+        if (PreviewCanvasLayers.Count == routes.Count)
+        {
+            for (var index = 0; index < routes.Count; index++)
+            {
+                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants);
+            }
+
+            OnPropertyChanged(nameof(PreviewCanvasLayers));
+            return;
+        }
+
+        PreviewCanvasLayers.Clear();
+        for (var index = 0; index < routes.Count; index++)
+        {
+            PreviewCanvasLayers.Add(new SceneCanvasLayerViewModel(
+                index,
+                routes[index],
+                RoomVideoParticipants,
+                OnPreviewCanvasLayerChanged));
+        }
+    }
+
+    private void PublishPreviewCompositionState(Scene scene, IReadOnlyList<SourceRoute> workingRoutes)
+    {
+        PreviewSceneParticipants = SceneRoutingService.DescribeRouteAssignments(
+            scene,
+            workingRoutes,
+            RoomVideoParticipants);
+
+        PreviewRouteWarnings = SceneRoutingService
+            .GetRouteWarnings(scene, workingRoutes, RoomVideoParticipants)
+            .Take(3)
+            .ToList();
+
+        PreviewSceneRoutes = workingRoutes;
+        PreviewSceneTiles = BuildSceneTiles(scene, workingRoutes);
+        OnPropertyChanged(nameof(PreviewRouteWarnings));
+        OnPropertyChanged(nameof(HasPreviewRouteWarnings));
+        OnPropertyChanged(nameof(PreviewSceneTiles));
+        OnPropertyChanged(nameof(PreviewSceneRoutes));
+        OnPropertyChanged(nameof(PreviewSceneParticipants));
+        OnPropertyChanged(nameof(PreviewSlotCount));
+        OnPropertyChanged(nameof(HasPreviewSlotEditors));
+        OnPropertyChanged(nameof(SceneBuilderSlotSummary));
     }
 
     private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(Scene scene, IReadOnlyList<SourceRoute> routes)
@@ -1956,22 +2015,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
     }
 
-    private void OnPreviewSlotEditorChanged(SlotEditorItemViewModel editor)
+    public void ApplyCanvasPreset(string presetWire)
     {
         var routes = GetMutableRoutes(PreviewSceneId);
-        if (editor.SlotIndex < 0 || editor.SlotIndex >= routes.Count)
+        SceneCanvasLayoutService.ApplyPreset(presetWire, routes);
+        CommandStatus = $"{PreviewScene.Name} canvas preset applied ({presetWire})";
+        SchedulePreviewRoutingRefresh();
+    }
+
+    public void CommitPreviewCanvasLayer(SceneCanvasLayerViewModel layer) =>
+        OnPreviewCanvasLayerChanged(layer);
+
+    private void OnPreviewCanvasLayerChanged(SceneCanvasLayerViewModel layer)
+    {
+        var routes = GetMutableRoutes(PreviewSceneId);
+        if (layer.LayerIndex < 0 || layer.LayerIndex >= routes.Count)
         {
             return;
         }
 
-        editor.ApplyTo(routes[editor.SlotIndex]);
-        var normalized = SceneRoutingService.NormalizeRouteUpdate(
-            routes[editor.SlotIndex],
-            RoomVideoParticipants);
-        routes[editor.SlotIndex] = normalized;
+        layer.ApplyRoute();
+        SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
 
-        CommandStatus = $"{PreviewScene.Name} route {editor.SlotIndex + 1} updated";
-        SchedulePreviewRoutingRefresh();
+        CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(route => route.Clone()).ToList());
     }
 
     private void CopyPreviewRoutesToScene(string sceneId)

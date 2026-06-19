@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -30,6 +31,13 @@ public sealed partial class ScenePreviewControl : UserControl
             typeof(ScenePreviewControl),
             new PropertyMetadata(false, OnIsPreviewChanged));
 
+    public static readonly DependencyProperty RoutesProperty =
+        DependencyProperty.Register(
+            nameof(Routes),
+            typeof(IReadOnlyList<SourceRoute>),
+            typeof(ScenePreviewControl),
+            new PropertyMetadata(null, OnLayoutInputsChanged));
+
     public ScenePreviewControl()
     {
         InitializeComponent();
@@ -53,6 +61,12 @@ public sealed partial class ScenePreviewControl : UserControl
         set => SetValue(IsPreviewProperty, value);
     }
 
+    public IReadOnlyList<SourceRoute>? Routes
+    {
+        get => (IReadOnlyList<SourceRoute>?)GetValue(RoutesProperty);
+        set => SetValue(RoutesProperty, value);
+    }
+
     private static void OnLayoutInputsChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
         ((ScenePreviewControl)sender).ApplyLayout();
 
@@ -69,6 +83,13 @@ public sealed partial class ScenePreviewControl : UserControl
         LayoutRoot.Children.Clear();
         LayoutRoot.RowDefinitions.Clear();
         LayoutRoot.ColumnDefinitions.Clear();
+
+        var routes = Routes ?? Array.Empty<SourceRoute>();
+        if (routes.Count > 0 && routes.All(route => route.CanvasRect is not null))
+        {
+            BuildCanvasLayout(routes);
+            return;
+        }
 
         var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
         var participants = tiles.Select(tile => tile.Participant).ToList();
@@ -91,6 +112,45 @@ public sealed partial class ScenePreviewControl : UserControl
             default:
                 BuildSpeakerSlidesLayout(participants);
                 break;
+        }
+    }
+
+    private void BuildCanvasLayout(IReadOnlyList<SourceRoute> routes)
+    {
+        const double designWidth = 1600;
+        const double designHeight = 900;
+        var canvas = new Canvas
+        {
+            Width = designWidth,
+            Height = designHeight
+        };
+        LayoutRoot.Children.Add(canvas);
+
+        var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
+        var participants = tiles.Select(tile => tile.Participant).ToList();
+
+        foreach (var route in routes.OrderBy(route => route.ZIndex))
+        {
+            var rect = route.CanvasRect;
+            if (rect is null)
+            {
+                continue;
+            }
+
+            var participant = SceneRoutingService.ResolveRouteParticipant(route, participants);
+            var tile = tiles.FirstOrDefault(entry => entry.Participant.Id == participant?.Id);
+            var layer = new ParticipantTileControl
+            {
+                Participant = participant,
+                TileVariant = "canvas",
+                SurfaceState = tile?.Surface,
+                Width = rect.Width * designWidth,
+                Height = rect.Height * designHeight
+            };
+
+            Canvas.SetLeft(layer, rect.X * designWidth);
+            Canvas.SetTop(layer, rect.Y * designHeight);
+            canvas.Children.Add(layer);
         }
     }
 

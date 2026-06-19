@@ -86,7 +86,7 @@ public static class SceneRoutingService
     {
         var sorted = SortParticipantsForProduction(participants);
         var routeParticipants = routes
-            .Select(route => ResolveRouteParticipant(route, sorted))
+            .Select(route => ResolveRouteParticipantInternal(route, sorted))
             .Where(participant => participant is not null)
             .Cast<Participant>()
             .ToList();
@@ -200,9 +200,10 @@ public static class SceneRoutingService
 
     public static SourceRoute NormalizeRouteUpdate(SourceRoute route, IReadOnlyList<Participant> participants)
     {
+        SourceRoute normalized;
         if (route.Mode == SourceRouteMode.Fixed)
         {
-            return new SourceRoute
+            normalized = new SourceRoute
             {
                 Id = route.Id,
                 Mode = route.Mode,
@@ -213,11 +214,10 @@ public static class SceneRoutingService
                     : route.AudioRole
             };
         }
-
-        if (route.Mode == SourceRouteMode.Spotlight)
+        else if (route.Mode == SourceRouteMode.Spotlight)
         {
             var spotlightIndex = route.SpotlightIndex ?? 0;
-            return new SourceRoute
+            normalized = new SourceRoute
             {
                 Id = route.Id,
                 Mode = route.Mode,
@@ -228,10 +228,9 @@ public static class SceneRoutingService
                     : route.AudioRole
             };
         }
-
-        if (route.Mode is SourceRouteMode.ScreenShare or SourceRouteMode.None)
+        else if (route.Mode is SourceRouteMode.ScreenShare or SourceRouteMode.None)
         {
-            return new SourceRoute
+            normalized = new SourceRoute
             {
                 Id = route.Id,
                 Mode = route.Mode,
@@ -240,17 +239,44 @@ public static class SceneRoutingService
                 AudioRole = SourceAudioRole.Audience
             };
         }
-
-        return new SourceRoute
+        else
         {
-            Id = route.Id,
-            Mode = route.Mode,
-            ParticipantId = null,
-            SpotlightIndex = route.SpotlightIndex,
-            AudioRole = route.AudioRole == SourceAudioRole.Isolated
-                ? SourceAudioRole.Mix
-                : route.AudioRole
-        };
+            normalized = new SourceRoute
+            {
+                Id = route.Id,
+                Mode = route.Mode,
+                ParticipantId = null,
+                SpotlightIndex = route.SpotlightIndex,
+                AudioRole = route.AudioRole == SourceAudioRole.Isolated
+                    ? SourceAudioRole.Mix
+                    : route.AudioRole
+            };
+        }
+
+        normalized.CanvasRect = route.CanvasRect?.Clone();
+        normalized.ZIndex = route.ZIndex;
+        return normalized;
+    }
+
+    public static void ApplyNormalizeRouteUpdate(SourceRoute route, IReadOnlyList<Participant> participants)
+    {
+        var normalized = NormalizeRouteUpdate(route, participants);
+        route.Mode = normalized.Mode;
+        route.ParticipantId = normalized.ParticipantId;
+        route.SpotlightIndex = normalized.SpotlightIndex;
+        route.AudioRole = normalized.AudioRole;
+        route.CanvasRect = normalized.CanvasRect?.Clone();
+        route.ZIndex = normalized.ZIndex;
+    }
+
+    public static void ApplyRouteValues(SourceRoute target, SourceRoute source)
+    {
+        target.Mode = source.Mode;
+        target.ParticipantId = source.ParticipantId;
+        target.SpotlightIndex = source.SpotlightIndex;
+        target.AudioRole = source.AudioRole;
+        target.CanvasRect = source.CanvasRect?.Clone();
+        target.ZIndex = source.ZIndex;
     }
 
     public static string? RouteToSlot(SourceRoute route)
@@ -272,7 +298,10 @@ public static class SceneRoutingService
             _ => ResolveRouteParticipant(route, participants)?.Name
         };
 
-    private static Participant? ResolveRouteParticipant(SourceRoute route, IReadOnlyList<Participant> participants)
+    public static Participant? ResolveRouteParticipant(SourceRoute route, IReadOnlyList<Participant> participants) =>
+        ResolveRouteParticipantInternal(route, participants);
+
+    private static Participant? ResolveRouteParticipantInternal(SourceRoute route, IReadOnlyList<Participant> participants)
     {
         if (route.Mode == SourceRouteMode.Fixed)
         {

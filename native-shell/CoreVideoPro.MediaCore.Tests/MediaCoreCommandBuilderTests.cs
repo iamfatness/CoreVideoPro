@@ -71,6 +71,31 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesCanvasRectsForSceneGraphRoutes()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "custom-canvas",
+            SceneRoutes =
+            [
+                new("canvas-1", "fixed", "mix", "p1", 0.05, 0.1, 0.4, 0.45, 0),
+                new("canvas-2", "active-speaker", "mix", null, 0.55, 0.2, 0.35, 0.6, 1)
+            ],
+            Participants = Participants
+        });
+
+        var sceneGraph = commands.Single(command => command.Type == "load-scene-graph");
+        Assert.NotNull(sceneGraph.ExtensionData);
+        var routes = sceneGraph.ExtensionData!["routes"].EnumerateArray().ToList();
+
+        Assert.Equal(0.05, routes[0].GetProperty("rect").GetProperty("x").GetDouble());
+        Assert.Equal(0.1, routes[0].GetProperty("rect").GetProperty("y").GetDouble());
+        Assert.Equal(0.4, routes[0].GetProperty("rect").GetProperty("width").GetDouble());
+        Assert.Equal(0.45, routes[0].GetProperty("rect").GetProperty("height").GetDouble());
+        Assert.Equal(1, routes[1].GetProperty("zIndex").GetInt32());
+    }
+
+    [Fact]
     public void BuildsSpeakerSlidesRoutesFromPreviewSlotEditors()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

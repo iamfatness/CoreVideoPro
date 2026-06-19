@@ -62,12 +62,34 @@ public static class MediaCoreCommandBuilder
         Command("load-scene-graph", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
-            ["routes"] = routes.Select(route => new
+            ["routes"] = routes.Select(route =>
             {
-                routeId = route.RouteId,
-                mode = route.Mode,
-                audioRole = route.AudioRole,
-                participantId = route.ParticipantId
+                var payload = new Dictionary<string, object?>
+                {
+                    ["routeId"] = route.RouteId,
+                    ["mode"] = route.Mode,
+                    ["audioRole"] = route.AudioRole,
+                    ["participantId"] = route.ParticipantId
+                };
+
+                if (route.RectX is not null && route.RectY is not null &&
+                    route.RectWidth is not null && route.RectHeight is not null)
+                {
+                    payload["rect"] = new Dictionary<string, object?>
+                    {
+                        ["x"] = route.RectX,
+                        ["y"] = route.RectY,
+                        ["width"] = route.RectWidth,
+                        ["height"] = route.RectHeight
+                    };
+                }
+
+                if (route.ZIndex is not null)
+                {
+                    payload["zIndex"] = route.ZIndex;
+                }
+
+                return payload;
             }).ToList()
         });
 

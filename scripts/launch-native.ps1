@@ -68,43 +68,30 @@ if (Test-Path $shadowedWinUi) {
 
 Sync-NativeCoreArtifacts -TargetDir $publishDir
 
-Write-Host "Launching $exe on the interactive desktop..."
-function Start-InteractiveApp {
-    param(
-        [string]$Executable,
-        [string]$WorkingDirectory
-    )
+Write-Host "Launching $exe..."
+$launchLog = Join-Path $env:LOCALAPPDATA "CoreVideoPro\launch.log"
 
-    try {
-        $shell = New-Object -ComObject Shell.Application
-        $null = $shell.ShellExecute($Executable, "", $WorkingDirectory, "open", 1)
-        return $true
-    }
-    catch {
-        Write-Host "[launch:native] ShellExecute failed: $($_.Exception.Message)" -ForegroundColor Yellow
+function Get-LaunchLogTail {
+    if (-not (Test-Path $launchLog)) {
+        return $null
     }
 
-    try {
-        $shortcut = Join-Path $env:USERPROFILE "OneDrive\Desktop\CoreVideo Pro.lnk"
-        if (-not (Test-Path $shortcut)) {
-            $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "CoreVideo Pro.lnk"
-        }
-        if (Test-Path $shortcut) {
-            $wsh = New-Object -ComObject WScript.Shell
-            $null = $wsh.Run("`"$shortcut`"", 1, $false)
-            return $true
-        }
-    }
-    catch {
-        Write-Host "[launch:native] shortcut launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    Start-Process -FilePath "explorer.exe" -ArgumentList "`"$Executable`"" -WorkingDirectory $WorkingDirectory
-    return $true
+    return (Get-Content $launchLog -Tail 8 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
 }
 
-if (-not (Start-InteractiveApp -Executable $exe -WorkingDirectory $publishDir)) {
-    throw "Failed to launch $exe on the interactive desktop."
+$process = Start-Process -FilePath $exe -WorkingDirectory $publishDir -PassThru
+Start-Sleep -Seconds 3
+
+if ($process.HasExited) {
+    $tail = Get-LaunchLogTail
+    Write-Host "[launch:native] CoreVideo Pro exited immediately (code $($process.ExitCode))." -ForegroundColor Red
+    if ($tail) {
+        Write-Host "[launch:native] Recent launch.log:" -ForegroundColor Yellow
+        Write-Host $tail
+    }
+    Write-Host "[launch:native] Full log: $launchLog" -ForegroundColor DarkGray
+    exit $process.ExitCode
 }
 
+Write-Host "[launch:native] CoreVideo Pro is running (pid $($process.Id))." -ForegroundColor Green
 Start-Process -FilePath "explorer.exe" -ArgumentList $publishDir | Out-Null

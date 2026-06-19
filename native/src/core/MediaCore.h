@@ -71,6 +71,12 @@ class MediaCore {
     std::string mode;
     std::string participantId;
     std::string audioRole;
+    float rectX = 0.f;
+    float rectY = 0.f;
+    float rectWidth = 0.f;
+    float rectHeight = 0.f;
+    int zIndex = 0;
+    bool hasRect = false;
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;

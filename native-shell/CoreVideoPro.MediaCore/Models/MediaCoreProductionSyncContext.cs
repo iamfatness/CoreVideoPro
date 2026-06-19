@@ -4,7 +4,12 @@ public sealed record MediaCoreSceneRouteWire(
     string RouteId,
     string Mode,
     string AudioRole,
-    string? ParticipantId);
+    string? ParticipantId,
+    double? RectX = null,
+    double? RectY = null,
+    double? RectWidth = null,
+    double? RectHeight = null,
+    int? ZIndex = null);
 
 public sealed record MediaCoreParticipantWire(
     string Id,
