@@ -383,6 +383,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsSourcesTab => ActiveTab == StudioTab.Sources;
 
+    public bool IsInputsTab => ActiveTab == StudioTab.Inputs;
+
     public bool IsRoutingTab => ActiveTab == StudioTab.Routing;
 
     public bool IsOverlaysTab => ActiveTab == StudioTab.Overlays;
@@ -414,6 +416,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public TabChrome SettingsTabChrome => ActiveTab == StudioTab.Settings ? SelectedTabChrome : DefaultTabChrome;
 
     public TabChrome SourcesTabChrome => ActiveTab == StudioTab.Sources ? SelectedTabChrome : DefaultTabChrome;
+
+    public TabChrome InputsTabChrome => ActiveTab == StudioTab.Inputs ? SelectedTabChrome : DefaultTabChrome;
 
     public TabChrome RoutingTabChrome => ActiveTab == StudioTab.Routing ? SelectedTabChrome : DefaultTabChrome;
 
@@ -651,6 +655,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsStudioTab));
         OnPropertyChanged(nameof(IsSettingsTab));
         OnPropertyChanged(nameof(IsSourcesTab));
+        OnPropertyChanged(nameof(IsInputsTab));
         OnPropertyChanged(nameof(IsRoutingTab));
         OnPropertyChanged(nameof(IsOverlaysTab));
         OnPropertyChanged(nameof(IsAudioTab));
@@ -660,13 +665,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioTabChrome));
         OnPropertyChanged(nameof(SettingsTabChrome));
         OnPropertyChanged(nameof(SourcesTabChrome));
+        OnPropertyChanged(nameof(InputsTabChrome));
         OnPropertyChanged(nameof(RoutingTabChrome));
         OnPropertyChanged(nameof(OverlaysTabChrome));
         OnPropertyChanged(nameof(AudioTabChrome));
         OnPropertyChanged(nameof(MediaTabChrome));
         OnPropertyChanged(nameof(AutomationTabChrome));
 
-        if (value == StudioTab.Sources)
+        if (value == StudioTab.Inputs)
         {
             _ = RefreshCaptureDevicesAsync();
         }
@@ -839,6 +845,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             "settings" => StudioTab.Settings,
             "sources" or "scenes" => StudioTab.Sources,
+            "inputs" => StudioTab.Inputs,
             "routing" => StudioTab.Routing,
             "overlays" => StudioTab.Overlays,
             "audio" => StudioTab.Audio,
