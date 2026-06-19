@@ -61,6 +61,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private bool _zoomOAuthSignedIn;
 
     private ZoomSdkReadinessReport _sdkReadiness = CreateDefaultReport();
+    private IReadOnlyList<ZoomEngineEvidenceItem> _zoomEngineEvidence = [];
+    private FirstFrameValidationEvidence _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
 
     public SettingsViewModel(
         MediaCoreBridgeService bridge,
@@ -95,6 +97,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     public IReadOnlyList<ZoomSdkReadinessCheck> SdkChecks => _sdkReadiness.Checks;
 
     public IReadOnlyList<string> SdkBlockers => _sdkReadiness.Blockers;
+
+    public IReadOnlyList<ZoomEngineEvidenceItem> ZoomEngineEvidence => _zoomEngineEvidence;
 
     public bool IsInMeeting => MeetingState == ZoomMeetingState.InMeeting;
 
@@ -235,10 +239,40 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         var input = ZoomSdkReadinessService.DeriveInputForEngine(_bridge.Running, ZoomOAuthSignedIn);
         _sdkReadiness = ZoomSdkReadinessService.Assess(input);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
         NotifySdkUi();
         OnPropertyChanged(nameof(JoinBlockedBySdk));
         OnPropertyChanged(nameof(CanJoinZoom));
         OnPropertyChanged(nameof(JoinBlockedReason));
+    }
+
+    public void RefreshZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot = null)
+    {
+        if (snapshot is not null)
+        {
+            _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
+                existing: _firstFrameEvidence,
+                snapshot: snapshot);
+        }
+
+        _zoomEngineEvidence = BuildZoomEngineEvidence(snapshot ?? _bridge.LastSnapshot);
+        OnPropertyChanged(nameof(ZoomEngineEvidence));
+    }
+
+    public void ObserveZoomVideoFrame(ZoomVideoFrame frame)
+    {
+        _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
+            existing: _firstFrameEvidence,
+            zoomVideoFrame: frame);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
+    }
+
+    public void ObserveProgramPreviewFrame(ProgramFramePreview preview)
+    {
+        _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
+            existing: _firstFrameEvidence,
+            programPreviewFrame: preview);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
     }
 
     [RelayCommand]
@@ -382,6 +416,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         MeetingState = ParseMeetingState(snapshot.MeetingState);
         LiveParticipantCount = snapshot.Participants.Count;
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
         NotifyMeetingUi();
     }
 
@@ -398,6 +433,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             LiveParticipantCount = participantCount;
         }
 
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
         NotifyMeetingUi();
     }
 
@@ -518,6 +554,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowSdkChecklist));
         OnPropertyChanged(nameof(ShowSdkDetailsButton));
         OnPropertyChanged(nameof(SdkDetailsButtonLabel));
+        OnPropertyChanged(nameof(ZoomEngineEvidence));
     }
 
     private void NotifyLicenseUi()
@@ -537,6 +574,126 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private static ZoomSdkReadinessReport CreateDefaultReport() =>
         ZoomSdkReadinessService.Assess(ZoomSdkReadinessService.CreateEmbeddedInput());
+
+    private IReadOnlyList<ZoomEngineEvidenceItem> BuildZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot)
+    {
+        var nativeCorePath = MediaCorePaths.ResolveNativeCoreExecutable();
+        var zoomEnginePath = MediaCorePaths.ResolveZoomEngineExecutable();
+        var sdkRuntimePath = MediaCorePaths.ResolvePackagedZoomRuntimeDirectory()
+                             ?? MediaCorePaths.ResolveZoomSdkArchitectureRoot();
+        var stagedRuntimePath = MediaCorePaths.ResolveStagedZoomRuntimeTarget();
+        var meetingState = !string.IsNullOrWhiteSpace(snapshot?.MeetingState)
+            ? snapshot.MeetingState!
+            : MeetingState.ToString().ToLowerInvariant();
+        var participantCount = Math.Max(LiveParticipantCount, snapshot?.Participants.Count ?? 0);
+        var source = snapshot?.SourceSnapshot;
+        var lastFrameHint = DescribeLastFrameHint();
+        var readinessHint = ResolveReadinessHint();
+
+        return
+        [
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Native core",
+                Value = nativeCorePath is null ? "missing" : "found",
+                Detail = nativeCorePath ?? "Build native/build-dev/corevideo-native.exe.",
+                Status = nativeCorePath is null ? ZoomSdkReadinessStatus.Blocked : ZoomSdkReadinessStatus.Ready
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Zoom engine",
+                Value = zoomEnginePath is null ? "missing" : "found",
+                Detail = zoomEnginePath ?? "Build native/build-dev/corevideo-zoom-engine.exe.",
+                Status = zoomEnginePath is null ? ZoomSdkReadinessStatus.Blocked : ZoomSdkReadinessStatus.Ready
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "SDK runtime",
+                Value = sdkRuntimePath is null ? "missing" : "found",
+                Detail = sdkRuntimePath ?? $"Expected staged runtime at {stagedRuntimePath}.",
+                Status = sdkRuntimePath is null ? ZoomSdkReadinessStatus.Blocked : ZoomSdkReadinessStatus.Ready
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "SDK status",
+                Value = $"{_sdkReadiness.Status.ToString().ToLowerInvariant()} | {_sdkReadiness.SdkVersion}",
+                Detail = _sdkReadiness.Summary,
+                Status = _sdkReadiness.Status
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Media core",
+                Value = _bridge.Running ? "running" : "stopped",
+                Detail = _bridge.Running ? _bridge.ProfileSummary : "Start or join Zoom to launch the media core.",
+                Status = _bridge.Running ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Meeting",
+                Value = $"{meetingState} | {participantCount} participant{(participantCount == 1 ? "" : "s")}",
+                Detail = snapshot?.ActiveSpeakerId is { Length: > 0 } activeSpeaker
+                    ? $"Active speaker: {activeSpeaker}"
+                    : "Active speaker not reported yet.",
+                Status = IsInMeeting ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Frame evidence",
+                Value = lastFrameHint.Value,
+                Detail = lastFrameHint.Detail,
+                Status = lastFrameHint.Status
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Readiness hint",
+                Value = readinessHint.Value,
+                Detail = readinessHint.Detail,
+                Status = readinessHint.Status
+            },
+            new ZoomEngineEvidenceItem
+            {
+                Label = "Source adapter",
+                Value = source is null ? "unknown" : $"{source.Kind} | {source.Status}",
+                Detail = source is null
+                    ? "No source snapshot has been published yet."
+                    : $"adapter={source.AdapterId}; subscribed={source.SubscribedSourceCount}; live={source.LiveFrameCount}; stale={source.StaleFrameCount}; dropped={source.DroppedFrameCount}",
+                Status = source?.Status is "live" or "subscribed" ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning
+            }
+        ];
+    }
+
+    private (string Value, string Detail, ZoomSdkReadinessStatus Status) DescribeLastFrameHint()
+    {
+        if (_firstFrameEvidence.Evidence.Count == 0 && _firstFrameEvidence.Missing.Count == 0)
+        {
+            return ("no evidence", "No native media-core snapshot or frame event has been received yet.", ZoomSdkReadinessStatus.Warning);
+        }
+
+        return (
+            _firstFrameEvidence.Ready ? "first-frame ready" : "waiting for first-frame proof",
+            $"observed: {string.Join(", ", _firstFrameEvidence.Evidence.DefaultIfEmpty("none"))}; missing: {string.Join(", ", _firstFrameEvidence.Missing.DefaultIfEmpty("none"))}; zoom={_firstFrameEvidence.LiveZoomFrameCount}; program={_firstFrameEvidence.ProgramFrameCount}; audio={_firstFrameEvidence.AudioPacketCount}",
+            _firstFrameEvidence.Ready ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning);
+    }
+
+    private (string Value, string Detail, ZoomSdkReadinessStatus Status) ResolveReadinessHint()
+    {
+        if (_sdkReadiness.Blockers.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item)) is { } blocker)
+        {
+            return ("blocked", blocker, ZoomSdkReadinessStatus.Blocked);
+        }
+
+        if (_sdkReadiness.Warnings.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item)) is { } warning)
+        {
+            return ("warning", warning, ZoomSdkReadinessStatus.Warning);
+        }
+
+        if (ShowZoomOAuthControls && !ZoomOAuthSignedIn)
+        {
+            return ("sign-in recommended", "Sign in with Zoom before joining external-account meetings.", ZoomSdkReadinessStatus.Warning);
+        }
+
+        return ("ready", "Runtime, auth path, and raw-media readiness checks are clear.", ZoomSdkReadinessStatus.Ready);
+    }
 
     private static ZoomMeetingState ParseMeetingState(string? meetingState) =>
         meetingState?.Trim().ToLowerInvariant() switch

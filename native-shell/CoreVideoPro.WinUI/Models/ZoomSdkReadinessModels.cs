@@ -52,6 +52,16 @@ public sealed class ZoomSdkReadinessReport
     public required string Summary { get; init; }
 }
 
+public sealed class ZoomEngineEvidenceItem
+{
+    public required string Label { get; init; }
+    public required string Value { get; init; }
+    public string? Detail { get; init; }
+    public ZoomSdkReadinessStatus Status { get; init; } = ZoomSdkReadinessStatus.Ready;
+
+    public bool ShowDetail => !string.IsNullOrWhiteSpace(Detail);
+}
+
 public enum ZoomMeetingState
 {
     Idle,

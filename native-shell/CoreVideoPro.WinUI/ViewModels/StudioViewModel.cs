@@ -286,8 +286,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.HealthChanged += OnBridgeHealthChanged;
         _bridge.StatusChanged += OnBridgeStatusChanged;
         _bridge.SnapshotChanged += OnSnapshotChanged;
-        _bridge.ZoomVideoFrameReceived += _surfaces.OnZoomVideoFrame;
-        _bridge.ProgramFramePreviewReceived += _surfaces.OnProgramFramePreview;
+        _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
+        _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged += RefreshSurfaceBindings;
 
@@ -1928,8 +1928,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.SnapshotChanged -= OnSnapshotChanged;
-        _bridge.ZoomVideoFrameReceived -= _surfaces.OnZoomVideoFrame;
-        _bridge.ProgramFramePreviewReceived -= _surfaces.OnProgramFramePreview;
+        _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
+        _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged -= RefreshSurfaceBindings;
 
@@ -1965,5 +1965,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 // Best effort.
             }
         }
+    }
+
+    private void OnZoomVideoFrameReceived(ZoomVideoFrame frame)
+    {
+        _surfaces.OnZoomVideoFrame(frame);
+        Settings.ObserveZoomVideoFrame(frame);
+    }
+
+    private void OnProgramFramePreviewReceived(ProgramFramePreview preview)
+    {
+        _surfaces.OnProgramFramePreview(preview);
+        Settings.ObserveProgramPreviewFrame(preview);
     }
 }

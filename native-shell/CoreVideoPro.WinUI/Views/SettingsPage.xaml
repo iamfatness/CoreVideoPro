@@ -252,6 +252,35 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </StackPanel>
+
+                    <StackPanel Spacing="8" Margin="0,4,0,0">
+                        <TextBlock Text="Zoom engine evidence" Style="{StaticResource StudioSectionTitle}" FontSize="12" />
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.ZoomEngineEvidence, Mode=OneWay}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:ZoomEngineEvidenceItem">
+                                    <Border Background="{StaticResource StudioFieldBrush}"
+                                            BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                                        <StackPanel Spacing="4">
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="0.36*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind Label}" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                                <TextBlock Grid.Column="1" Text="{x:Bind Value}" FontSize="12"
+                                                           Foreground="{StaticResource StudioTextBrush}"
+                                                           TextWrapping="Wrap" />
+                                            </Grid>
+                                            <TextBlock Text="{x:Bind Detail}" Style="{StaticResource StudioBody}"
+                                                       Visibility="{x:Bind ShowDetail, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                    </StackPanel>
                 </StackPanel>
             </Border>
         </StackPanel>

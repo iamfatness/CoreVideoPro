@@ -36,6 +36,7 @@ CI gates:
 ```powershell
 npm run test:native-media-core
 npm run test:native-shell-smoke
+npm run test:native-shell-dev-readiness
 ```
 
 For a full dev-machine build with Zoom SDK, D3D11 compositor, and hardware adapters, use `scripts/build-native-dev.ps1` instead (`COREVIDEO_STUB=OFF`).
