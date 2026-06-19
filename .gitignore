@@ -19,6 +19,9 @@ electron-out.txt
 packaged-err.txt
 native/build*/
 native/build-ci/
+studio/build*/
+.electron-cache/
+.npm-cache/
 *.tsbuildinfo
 .DS_Store
 .claude/worktrees/
