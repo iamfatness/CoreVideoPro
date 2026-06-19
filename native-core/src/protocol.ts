@@ -357,6 +357,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
+  mediaPlayback: MediaCoreMediaPlayback;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   warnings: string[];
@@ -496,7 +497,24 @@ export type MediaCoreCommand =
       backgroundColor: string;
       fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
       lowerThirdStyle: "solid" | "minimal" | "gradient";
+    }
+  | {
+      type: "set-media-playback";
+      mediaAssetId: string;
+      mediaAssetName: string;
+      playing: boolean;
     };
+
+export type MediaCoreMediaPlaybackStatus = "idle" | "playing" | "paused";
+
+export type MediaCoreMediaPlayback = {
+  status: MediaCoreMediaPlaybackStatus;
+  mediaAssetId?: string;
+  mediaAssetName?: string;
+  playing: boolean;
+  summary: string;
+  warnings: string[];
+};
 
 export type MediaCoreBrandKit = {
   name: string;
@@ -620,6 +638,7 @@ export type MediaCoreStateSnapshot = {
   audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
+  mediaPlayback: MediaCoreMediaPlayback;
   operatorActions: MediaCoreOperatorAction[];
   eventLog: MediaCoreEvent[];
   diagnostics: MediaCoreDiagnosticsSnapshot;

@@ -323,6 +323,35 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Empty(routing.ExtensionData!["sends"].EnumerateArray());
     }
 
+    [Fact]
+    public void PushesMediaPlaybackCommandOnlyWhenAnAssetIsSelected()
+    {
+        var withoutSelection = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants
+        });
+
+        Assert.DoesNotContain(withoutSelection, command => command.Type == "set-media-playback");
+
+        var withSelection = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants,
+            SelectedMediaAssetId = "clip-intro",
+            SelectedMediaAssetName = "Intro Sting",
+            SelectedMediaAssetPlaying = true
+        });
+
+        var playback = withSelection.Single(command => command.Type == "set-media-playback");
+        Assert.Equal("clip-intro", GetString(playback, "mediaAssetId"));
+        Assert.Equal("Intro Sting", GetString(playback, "mediaAssetName"));
+        Assert.NotNull(playback.ExtensionData);
+        Assert.True(playback.ExtensionData!["playing"].GetBoolean());
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||

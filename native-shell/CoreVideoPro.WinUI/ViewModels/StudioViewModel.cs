@@ -121,6 +121,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _mediaBinGuidance = string.Empty;
 
     [ObservableProperty]
+    private string? _selectedMediaAssetId;
+
+    [ObservableProperty]
+    private string? _selectedMediaAssetName;
+
+    [ObservableProperty]
+    private bool _selectedMediaAssetPlaying;
+
+    [ObservableProperty]
+    private string _mediaPlaybackStatus = "No media asset playing";
+
+    [ObservableProperty]
     private string _captureFleetSummary = "No video capture devices detected";
 
     [ObservableProperty]
@@ -1175,6 +1187,55 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshProductionReadouts();
     }
 
+    public bool IsMediaAssetPlaying(string assetId) =>
+        SelectedMediaAssetPlaying &&
+        string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
+
+    [RelayCommand]
+    private void PlayMediaAsset(string assetId)
+    {
+        if (string.IsNullOrWhiteSpace(assetId))
+        {
+            return;
+        }
+
+        var asset = MediaBinGroups
+            .SelectMany(group => group.Assets)
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, assetId, StringComparison.Ordinal));
+        if (asset is null)
+        {
+            return;
+        }
+
+        // Re-pressing the asset that is already playing pauses it; otherwise select and play.
+        var resumeSameAsset = string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
+        SelectedMediaAssetId = asset.Id;
+        SelectedMediaAssetName = asset.Name;
+        SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
+
+        MediaPlaybackStatus = SelectedMediaAssetPlaying
+            ? $"Playing {asset.Name}"
+            : $"{asset.Name} paused";
+        CommandStatus = MediaPlaybackStatus;
+
+        OnPropertyChanged(nameof(IsMediaAssetPlaying));
+
+        // Push the selection through the typed boundary the same way scene takes do.
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private async Task TrySyncMediaCoreAsync()
+    {
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = ex.Message;
+        }
+    }
+
     [RelayCommand]
     private void RefreshCaptureDevices() => _ = RefreshCaptureDevicesAsync();
 
@@ -1442,7 +1503,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
             CaptionText = CaptionText,
-            CaptionSpeaker = CaptionSpeaker
+            CaptionSpeaker = CaptionSpeaker,
+            SelectedMediaAssetId = SelectedMediaAssetId,
+            SelectedMediaAssetName = SelectedMediaAssetName,
+            SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
     }
 

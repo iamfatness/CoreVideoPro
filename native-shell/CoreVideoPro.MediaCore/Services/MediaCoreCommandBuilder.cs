@@ -35,6 +35,12 @@ public static class MediaCoreCommandBuilder
         commands.AddRange(BuildOverlayCommands(context.Graphics));
         commands.AddRange(BuildCaptionCommands(context.CaptionText, context.CaptionSpeaker));
 
+        var mediaPlaybackCommand = BuildMediaPlaybackCommand(context);
+        if (mediaPlaybackCommand is not null)
+        {
+            commands.Add(mediaPlaybackCommand);
+        }
+
         var outputCommand = BuildOutputCommand(context);
         if (outputCommand is not null)
         {
@@ -221,6 +227,21 @@ public static class MediaCoreCommandBuilder
                 ["atMs"] = 0
             });
         }
+    }
+
+    public static NativeMediaCoreCommand? BuildMediaPlaybackCommand(MediaCoreProductionSyncContext context)
+    {
+        if (string.IsNullOrWhiteSpace(context.SelectedMediaAssetId))
+        {
+            return null;
+        }
+
+        return Command("set-media-playback", new Dictionary<string, object?>
+        {
+            ["mediaAssetId"] = context.SelectedMediaAssetId.Trim(),
+            ["mediaAssetName"] = context.SelectedMediaAssetName?.Trim() ?? string.Empty,
+            ["playing"] = context.SelectedMediaAssetPlaying
+        });
     }
 
     private static NativeMediaCoreCommand? BuildOutputCommand(MediaCoreProductionSyncContext context)

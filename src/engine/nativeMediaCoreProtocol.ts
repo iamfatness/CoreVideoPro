@@ -167,7 +167,24 @@ export type NativeMediaCoreCommand =
       backgroundColor: string;
       fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
       lowerThirdStyle: "solid" | "minimal" | "gradient";
+    }
+  | {
+      type: "set-media-playback";
+      mediaAssetId: string;
+      mediaAssetName: string;
+      playing: boolean;
     };
+
+export type NativeMediaCoreMediaPlaybackStatus = "idle" | "playing" | "paused";
+
+export type NativeMediaCoreMediaPlayback = {
+  status: NativeMediaCoreMediaPlaybackStatus;
+  mediaAssetId?: string;
+  mediaAssetName?: string;
+  playing: boolean;
+  summary: string;
+  warnings: string[];
+};
 
 export type NativeMediaCoreBrandKit = {
   name: string;
@@ -528,6 +545,7 @@ export type NativeMediaCoreDiagnosticsSnapshot = {
   audioRoutingMatrix: NativeMediaCoreAudioRoutingMatrix;
   captionTrack: NativeMediaCoreCaptionTrack;
   brandKit: NativeMediaCoreBrandKit;
+  mediaPlayback: NativeMediaCoreMediaPlayback;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   warnings: string[];
@@ -560,6 +578,7 @@ export type NativeMediaCoreStateSnapshot = {
   audioRoutingMatrix: NativeMediaCoreAudioRoutingMatrix;
   captionTrack: NativeMediaCoreCaptionTrack;
   brandKit: NativeMediaCoreBrandKit;
+  mediaPlayback: NativeMediaCoreMediaPlayback;
   operatorActions: NativeMediaCoreOperatorAction[];
   eventLog: NativeMediaCoreEvent[];
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;

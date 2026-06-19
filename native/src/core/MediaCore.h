@@ -52,6 +52,7 @@ class MediaCore {
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
+  void setMediaPlayback(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick();
   void enqueueProgramFramePreviewEvent();
@@ -61,6 +62,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json brandKitState() const;
+  [[nodiscard]] rpc::Json mediaPlaybackState() const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
@@ -154,6 +156,10 @@ class MediaCore {
   std::string brandFontFamily_ = "Inter";
   std::string brandLowerThirdStyle_ = "gradient";
   std::vector<std::string> brandWarnings_;
+  std::string mediaPlaybackAssetId_;
+  std::string mediaPlaybackAssetName_;
+  bool mediaPlaybackPlaying_ = false;
+  std::vector<std::string> mediaPlaybackWarnings_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
 };

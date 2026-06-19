@@ -1370,4 +1370,63 @@ describe("MediaCoreRuntime", () => {
     expect(routing.warnings.some((warning) => warning.includes("input-02 is routed to no bus"))).toBe(true);
     expect(response.state.warnings.length).toBeGreaterThan(0);
   });
+
+  it("plays a media asset and reports the playback state in the snapshot", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "media-playback-play",
+      type: "sync",
+      commands: [
+        {
+          type: "set-media-playback",
+          mediaAssetId: "clip-intro",
+          mediaAssetName: "Intro Sting",
+          playing: true
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        mediaPlayback: {
+          status: "playing",
+          mediaAssetId: "clip-intro",
+          mediaAssetName: "Intro Sting",
+          playing: true,
+          summary: "Playing Intro Sting."
+        },
+        lastCommandTypes: expect.arrayContaining(["set-media-playback"])
+      }
+    });
+  });
+
+  it("pauses a media asset and warns when no media asset id is supplied", () => {
+    const runtime = new MediaCoreRuntime();
+
+    const paused = runtime.handle({
+      id: "media-playback-pause",
+      type: "sync",
+      commands: [
+        { type: "set-media-playback", mediaAssetId: "clip-outro", mediaAssetName: "Outro Loop", playing: false }
+      ]
+    });
+    expect(paused.ok).toBe(true);
+    if (!paused.ok) {
+      return;
+    }
+    expect(paused.state.mediaPlayback).toMatchObject({ status: "paused", playing: false, summary: "Outro Loop paused." });
+
+    const empty = runtime.handle({
+      id: "media-playback-empty",
+      type: "sync",
+      commands: [{ type: "set-media-playback", mediaAssetId: "", mediaAssetName: "", playing: true }]
+    });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) {
+      return;
+    }
+    expect(empty.state.mediaPlayback).toMatchObject({ status: "idle", playing: false });
+    expect(empty.state.warnings.some((warning) => warning.includes("no media asset id"))).toBe(true);
+  });
 });
