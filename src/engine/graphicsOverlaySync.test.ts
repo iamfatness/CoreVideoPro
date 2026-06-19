@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { NativeMediaCoreSnapshot } from "./nativeMediaCoreProtocol";
+import type { NativeMediaCoreStateSnapshot } from "./nativeMediaCoreProtocol";
 import {
   appendCaptionTranscriptFromSnapshot,
   MAX_TRANSCRIPT_ENTRIES,
   resolveOverlayEnabledFlags
 } from "./graphicsOverlaySync";
 
-function buildSnapshot(overlayIds: string[]): NativeMediaCoreSnapshot {
+function buildSnapshot(overlayIds: string[]): NativeMediaCoreStateSnapshot {
   return {
     overlayCount: overlayIds.length,
     renderPlan: {
@@ -19,7 +19,7 @@ function buildSnapshot(overlayIds: string[]): NativeMediaCoreSnapshot {
       })),
       routes: []
     }
-  } as NativeMediaCoreSnapshot;
+  } as unknown as NativeMediaCoreStateSnapshot;
 }
 
 describe("resolveOverlayEnabledFlags", () => {
@@ -48,7 +48,7 @@ describe("appendCaptionTranscriptFromSnapshot", () => {
           confidence: 94
         }
       }
-    } as NativeMediaCoreSnapshot;
+    } as unknown as NativeMediaCoreStateSnapshot;
 
     const first = appendCaptionTranscriptFromSnapshot(snapshot, [], { "Sophia Martinez": "Host" });
     const second = appendCaptionTranscriptFromSnapshot(snapshot, first, { "Sophia Martinez": "Host" });
@@ -77,7 +77,7 @@ describe("appendCaptionTranscriptFromSnapshot", () => {
               confidence: 90
             }
           }
-        } as NativeMediaCoreSnapshot,
+        } as unknown as NativeMediaCoreStateSnapshot,
         transcript
       );
     }
