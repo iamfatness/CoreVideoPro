@@ -15,111 +15,163 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Padding="0,0,8,16" Spacing="12">
+    <!--
+        OBS-style Scenes screen. The 16:9 canvas lives in a viewport-bounded
+        region (Row 0, star-sized) so it is always fully visible and scales with
+        the window — no scroll-to-build. Operational panels scroll within their
+        own share (Row 1). Do not wrap this whole page in a ScrollViewer: that
+        unbounds the canvas height and reintroduces the scroll-around problem.
+    -->
+    <Grid RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="3*" MinHeight="320" />
+            <RowDefinition Height="2*" MinHeight="180" />
+        </Grid.RowDefinitions>
 
-            <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
-                    BorderThickness="2" CornerRadius="8" Padding="16">
-                <StackPanel Spacing="12">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <FontIcon Glyph="&#xE8F1;" FontSize="18" Foreground="{StaticResource StudioAccentBrush}" />
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="Scene builder" FontSize="18" FontWeight="Bold"
-                                       Foreground="{StaticResource StudioTextBrush}" />
-                            <TextBlock Text="OBS-style canvas — drag sources anywhere on the 16:9 frame. Presets are starting points."
-                                       FontSize="12" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
-                        </StackPanel>
+        <!-- ===== Scene builder workspace: canvas (left) + sources-in-scene dock (right) ===== -->
+        <Border Grid.Row="0" Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
+                BorderThickness="2" CornerRadius="8" Padding="16">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="300" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Canvas column -->
+                <Grid Grid.Column="0" RowSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Spacing="8">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE8F1;" FontSize="18" Foreground="{StaticResource StudioAccentBrush}" />
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="Scene builder" FontSize="18" FontWeight="Bold"
+                                               Foreground="{StaticResource StudioTextBrush}" />
+                                    <TextBlock Text="OBS-style canvas — drag sources anywhere on the 16:9 frame. Presets are starting points."
+                                               FontSize="12" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="Back to Studio"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    VerticalAlignment="Center"
+                                    Command="{x:Bind ViewModel.SelectTabCommand}"
+                                    CommandParameter="studio" />
+                        </Grid>
+
+                        <TextBlock Text="{x:Bind ViewModel.SceneBuilderSlotSummary, Mode=OneWay}"
+                                   FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource StudioAccentBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.PreviewSceneParticipants, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewRouteWarnings, Mode=OneWay}"
+                                       Visibility="{x:Bind ViewModel.HasPreviewRouteWarnings, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontSize="10" Foreground="#F0A85C" TextWrapping="WrapWholeWords" />
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                            <ItemsRepeater.Layout>
+                                <StackLayout Orientation="Vertical" Spacing="4" />
+                            </ItemsRepeater.Layout>
+                        </ItemsRepeater>
                     </StackPanel>
 
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="{x:Bind ViewModel.SceneBuilderSlotSummary, Mode=OneWay}"
-                                       FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource StudioAccentBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.PreviewSceneParticipants, Mode=OneWay}"
-                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
-                        </StackPanel>
-                        <Button Grid.Column="1" Content="Back to Studio"
-                                Style="{StaticResource OperatorGhostButton}"
-                                VerticalAlignment="Center"
-                                Command="{x:Bind ViewModel.SelectTabCommand}"
-                                CommandParameter="studio" />
+                    <!-- Canvas cell: editor fills/letterboxes; empty-state shows when no scene is staged -->
+                    <Grid Grid.Row="1">
+                        <cvcontrols:SceneCanvasEditorControl x:Name="SceneCanvasEditor"
+                            Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+
+                        <Border Background="#0A1016" BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1" CornerRadius="8"
+                                Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" MaxWidth="380">
+                                <FontIcon Glyph="&#xE8F1;" FontSize="30" Foreground="{StaticResource StudioMutedBrush}"
+                                          HorizontalAlignment="Center" />
+                                <TextBlock Text="Pick a scene on the Studio tab (left rail), then arrange sources on the canvas."
+                                           FontSize="12" Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" TextAlignment="Center" />
+                            </StackPanel>
+                        </Border>
                     </Grid>
+                </Grid>
 
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewRouteWarnings, Mode=OneWay}"
-                                   Visibility="{x:Bind ViewModel.HasPreviewRouteWarnings, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                                <TextBlock Text="{x:Bind}" FontSize="10" Foreground="#F0A85C" TextWrapping="WrapWholeWords" />
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                        <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="4" />
-                        </ItemsRepeater.Layout>
-                    </ItemsRepeater>
+                <!-- Sources-in-scene dock (per-layer routing; moves to the Routing tab in the IA rework) -->
+                <Grid Grid.Column="1" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
 
-                    <TextBlock Text="Pick a scene on the Studio tab (left rail), then arrange sources on the canvas below."
-                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
-                               Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="Sources in scene" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Route and audio role for each source on the canvas."
+                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                    </StackPanel>
 
-                    <cvcontrols:SceneCanvasEditorControl x:Name="SceneCanvasEditor"
-                        Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Pick a scene on the Studio tab to populate sources."
+                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"
+                                       Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
 
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewCanvasLayers, Mode=OneWay}"
-                                   Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
-                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,8">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="{x:Bind LayerLabel}" FontWeight="SemiBold" FontSize="13" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Spacing="4">
-                                                <TextBlock Text="Route" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                <ComboBox ItemsSource="{x:Bind ModeOptions}"
-                                                          SelectedValue="{x:Bind Mode, Mode=TwoWay}"
-                                                          SelectedValuePath="Value"
-                                                          DisplayMemberPath="Label"
-                                                          HorizontalAlignment="Stretch" />
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewCanvasLayers, Mode=OneWay}"
+                                           Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
+                                        <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                                BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,8">
+                                            <StackPanel Spacing="6">
+                                                <TextBlock Text="{x:Bind LayerLabel}" FontWeight="SemiBold" FontSize="13" />
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="Route" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <ComboBox ItemsSource="{x:Bind ModeOptions}"
+                                                              SelectedValue="{x:Bind Mode, Mode=TwoWay}"
+                                                              SelectedValuePath="Value"
+                                                              DisplayMemberPath="Label"
+                                                              HorizontalAlignment="Stretch" />
+                                                </StackPanel>
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <ComboBox ItemsSource="{x:Bind ParticipantOptions}"
+                                                              SelectedValue="{x:Bind ParticipantId, Mode=TwoWay}"
+                                                              SelectedValuePath="Value"
+                                                              DisplayMemberPath="Label"
+                                                              IsEnabled="{x:Bind IsParticipantPickerEnabled, Mode=OneWay}"
+                                                              HorizontalAlignment="Stretch" />
+                                                </StackPanel>
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="Audio" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <ComboBox ItemsSource="{x:Bind AudioRoleOptions}"
+                                                              SelectedValue="{x:Bind AudioRole, Mode=TwoWay}"
+                                                              SelectedValuePath="Value"
+                                                              DisplayMemberPath="Label"
+                                                              HorizontalAlignment="Stretch" />
+                                                </StackPanel>
                                             </StackPanel>
-                                            <StackPanel Grid.Column="1" Spacing="4">
-                                                <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                <ComboBox ItemsSource="{x:Bind ParticipantOptions}"
-                                                          SelectedValue="{x:Bind ParticipantId, Mode=TwoWay}"
-                                                          SelectedValuePath="Value"
-                                                          DisplayMemberPath="Label"
-                                                          IsEnabled="{x:Bind IsParticipantPickerEnabled, Mode=OneWay}"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="2" Spacing="4">
-                                                <TextBlock Text="Audio" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                <ComboBox ItemsSource="{x:Bind AudioRoleOptions}"
-                                                          SelectedValue="{x:Bind AudioRole, Mode=TwoWay}"
-                                                          SelectedValuePath="Value"
-                                                          DisplayMemberPath="Label"
-                                                          HorizontalAlignment="Stretch" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </StackPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                        <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="4" />
-                        </ItemsRepeater.Layout>
-                    </ItemsRepeater>
-                </StackPanel>
-            </Border>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                                <ItemsRepeater.Layout>
+                                    <StackLayout Orientation="Vertical" Spacing="4" />
+                                </ItemsRepeater.Layout>
+                            </ItemsRepeater>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
+        </Border>
 
-            <Grid ColumnSpacing="12" RowSpacing="12">
+        <!-- ===== Operations docks: feed health, capture devices, show inputs (scroll within their share) ===== -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid ColumnSpacing="12" RowSpacing="12" Padding="0,0,8,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
@@ -281,6 +333,6 @@
                     </StackPanel>
                 </Border>
             </Grid>
-        </StackPanel>
-    </ScrollViewer>
+        </ScrollViewer>
+    </Grid>
 </UserControl>
