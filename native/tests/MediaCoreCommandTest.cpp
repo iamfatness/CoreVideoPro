@@ -3,15 +3,19 @@
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/RealZoomCaptureSource.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
 #include "rpc/Json.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <vector>
 
 namespace {
 
@@ -1106,4 +1110,79 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
 #else
   GTEST_SKIP() << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
 #endif
+}
+
+TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
+  // Build the stub module set so the zoom source is a RealZoomCaptureSource
+  // (synthetic fallback). Capture the raw pointer before moving the modules
+  // into the media core so the test can ingest a real frame.
+  auto modules = corevideo::modules::createStubModules();
+  auto* zoom = dynamic_cast<corevideo::modules::RealZoomCaptureSource*>(modules.zoom.get());
+  ASSERT_NE(zoom, nullptr);
+
+  // A known solid BGRA color for the participant routed into the scene.
+  constexpr uint8_t kBlue = 0x10;
+  constexpr uint8_t kGreen = 0x9a;
+  constexpr uint8_t kRed = 0xe4;
+  constexpr int kWidth = 16;
+  constexpr int kHeight = 16;
+  std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
+  for (size_t i = 0; i < pixels.size(); i += 4) {
+    pixels[i + 0] = kBlue;
+    pixels[i + 1] = kGreen;
+    pixels[i + 2] = kRed;
+    pixels[i + 3] = 0xff;
+  }
+  zoom->ingestFrame("1234", pixels.data(), kWidth, kHeight, /*frameId=*/1, /*timestampMs=*/0);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "solo"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "main"},
+                             {"mode", "fixed"},
+                             {"participantId", "1234"},
+                             {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+                         },
+                     }},
+      },
+  });
+
+  const auto previews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  ASSERT_NE(preview, nullptr);
+  EXPECT_EQ(preview->getString("pixelFormat"), "bgra");
+  const int previewWidth = static_cast<int>(preview->get("width")->asNumber());
+  const int previewHeight = static_cast<int>(preview->get("height")->asNumber());
+  EXPECT_GE(previewWidth, 1);
+  EXPECT_GE(previewHeight, 1);
+
+  const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  EXPECT_EQ(decoded.size(), static_cast<size_t>(previewWidth) * static_cast<size_t>(previewHeight) * 4u);
+
+  // The full-frame route should blit the participant's real pixels across the
+  // preview; sample the center pixel and confirm the known color flowed
+  // end-to-end through phases 1/2/4 instead of the synthetic slate color.
+  const int centerX = previewWidth / 2;
+  const int centerY = previewHeight / 2;
+  const size_t offset = (static_cast<size_t>(centerY) * static_cast<size_t>(previewWidth) + static_cast<size_t>(centerX)) * 4u;
+  ASSERT_TRUE(offset + 3 < decoded.size());
+  EXPECT_EQ(decoded[offset + 0], kBlue);
+  EXPECT_EQ(decoded[offset + 1], kGreen);
+  EXPECT_EQ(decoded[offset + 2], kRed);
+  EXPECT_EQ(decoded[offset + 3], 0xff);
+
+  // The synthetic slate color for this participant must NOT be what we see,
+  // proving real pixels (not the colorFromParticipantId fill) were composited.
+  const uint32_t syntheticColor = corevideo::compositor::colorFromParticipantId("1234");
+  const uint8_t syntheticBlue = static_cast<uint8_t>(syntheticColor & 0xff);
+  const uint8_t syntheticGreen = static_cast<uint8_t>((syntheticColor >> 8) & 0xff);
+  const uint8_t syntheticRed = static_cast<uint8_t>((syntheticColor >> 16) & 0xff);
+  const bool matchesSynthetic =
+      decoded[offset + 0] == syntheticBlue && decoded[offset + 1] == syntheticGreen && decoded[offset + 2] == syntheticRed;
+  EXPECT_FALSE(matchesSynthetic);
 }

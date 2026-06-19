@@ -72,6 +72,18 @@ void blendPixelBgra(std::vector<uint8_t>& pixels, int width, int x, int y, uint3
   pixels[offset + 3] = 0xff;
 }
 
+const VideoFrame* findFrameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId) {
+  if (participantId.empty()) {
+    return nullptr;
+  }
+  for (const auto& frame : frames) {
+    if (frame.participantId == participantId) {
+      return &frame;
+    }
+  }
+  return nullptr;
+}
+
 void fillRectBgra(std::vector<uint8_t>& pixels, int width, int height, float x, float y, float w, float h, uint32_t rgba, float opacity) {
   if (opacity <= 0.f) {
     return;
@@ -176,6 +188,7 @@ void fillSyntheticProgramFramePreview(
         continue;
       }
       auto rect = layer.rect;
+      const VideoFrame* frameForLayer = nullptr;
       if (rect.width <= 0.f || rect.height <= 0.f) {
         if (compositorLayerIsOverlay(layer)) {
           const auto layout = compositorLayerIsLowerThird(layer) ? compositor::lowerThirdOverlay() : compositor::topRightOverlay();
@@ -195,9 +208,14 @@ void fillSyntheticProgramFramePreview(
       if (!compositorLayerIsOverlay(layer)) {
         if (!layer.participantId.empty()) {
           color = compositor::colorFromParticipantId(layer.participantId);
+          frameForLayer = findFrameForParticipant(frames, layer.participantId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
-          color = compositor::colorFromParticipantId(frames[static_cast<size_t>(videoIndex - 1)].participantId);
+          frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
+          color = compositor::colorFromParticipantId(frameForLayer->participantId);
         }
+      }
+      if (frameForLayer && blitVideoFrameIntoPreviewRect(preview, *frameForLayer, rect, compositorLayerOpacity(layer))) {
+        continue;
       }
       fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), compositorLayerOpacity(layer));
     }
@@ -207,8 +225,13 @@ void fillSyntheticProgramFramePreview(
   const int count = static_cast<int>(frames.size());
   for (int index = 0; index < count; ++index) {
     const auto layout = compositor::gridCell((std::max)(1, count), index);
-    const auto color = compositor::colorFromParticipantId(frames[static_cast<size_t>(index)].participantId);
-    fillRectBgra(preview.bgra, previewWidth, previewHeight, layout.x, layout.y, layout.width, layout.height, unpackColor(color), 1.f);
+    const CompositorLayerRect rect{layout.x, layout.y, layout.width, layout.height};
+    const auto& videoFrame = frames[static_cast<size_t>(index)];
+    if (blitVideoFrameIntoPreviewRect(preview, videoFrame, rect, 1.f)) {
+      continue;
+    }
+    const auto color = compositor::colorFromParticipantId(videoFrame.participantId);
+    fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), 1.f);
   }
 }
 
@@ -268,6 +291,81 @@ std::string base64Encode(const uint8_t* data, size_t length) {
     encoded.push_back(index + 2 < length ? kAlphabet[chunk & 0x3f] : '=');
   }
   return encoded;
+}
+
+std::vector<uint8_t> base64Decode(const std::string& encoded) {
+  auto sextet = [](char ch) -> int {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+  };
+
+  std::vector<uint8_t> decoded;
+  decoded.reserve((encoded.size() / 4) * 3);
+  uint32_t buffer = 0;
+  int bits = 0;
+  for (const char ch : encoded) {
+    if (ch == '=') {
+      break;
+    }
+    const int value = sextet(ch);
+    if (value < 0) {
+      continue;  // Skip whitespace/newlines and any stray characters.
+    }
+    buffer = (buffer << 6) | static_cast<uint32_t>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      decoded.push_back(static_cast<uint8_t>((buffer >> bits) & 0xff));
+    }
+  }
+  return decoded;
+}
+
+bool blitVideoFrameIntoPreviewRect(
+    ProgramFramePreviewPixels& preview,
+    const VideoFrame& frame,
+    const CompositorLayerRect& rect,
+    float opacity) {
+  if (!frame.hasPixels() || preview.width <= 0 || preview.height <= 0 || preview.bgra.empty() || opacity <= 0.f) {
+    return false;
+  }
+
+  const int previewWidth = preview.width;
+  const int previewHeight = preview.height;
+  const int left = std::max(0, static_cast<int>(std::floor(rect.x * static_cast<float>(previewWidth))));
+  const int top = std::max(0, static_cast<int>(std::floor(rect.y * static_cast<float>(previewHeight))));
+  const int right = std::min(previewWidth, static_cast<int>(std::ceil((rect.x + rect.width) * static_cast<float>(previewWidth))));
+  const int bottom = std::min(previewHeight, static_cast<int>(std::ceil((rect.y + rect.height) * static_cast<float>(previewHeight))));
+  if (right <= left || bottom <= top) {
+    return false;
+  }
+
+  const auto* source = frame.pixels->data();
+  const int sourceWidth = frame.pixelWidth;
+  const int sourceHeight = frame.pixelHeight;
+  const int sourceStride = frame.pixelStride;
+  const int rectWidth = right - left;
+  const int rectHeight = bottom - top;
+  const float clampedOpacity = std::clamp(opacity, 0.f, 1.f);
+
+  for (int py = top; py < bottom; ++py) {
+    const int sampleY = std::min(sourceHeight - 1, ((py - top) * sourceHeight) / rectHeight);
+    const auto* sourceRow = source + static_cast<size_t>(sampleY) * static_cast<size_t>(sourceStride);
+    for (int px = left; px < right; ++px) {
+      const int sampleX = std::min(sourceWidth - 1, ((px - left) * sourceWidth) / rectWidth);
+      const auto* pixel = sourceRow + static_cast<size_t>(sampleX) * 4u;
+      const uint32_t bgra = (static_cast<uint32_t>(pixel[3]) << 24) |
+                            (static_cast<uint32_t>(pixel[2]) << 16) |
+                            (static_cast<uint32_t>(pixel[1]) << 8) |
+                            static_cast<uint32_t>(pixel[0]);
+      blendPixelBgra(preview.bgra, previewWidth, px, py, bgra, clampedOpacity);
+    }
+  }
+  return true;
 }
 
 rpc::Json programSharedTextureJson(const ProgramFrame& frame) {

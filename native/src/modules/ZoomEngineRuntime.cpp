@@ -217,6 +217,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   }
   state_.reset();
   mediaStarted_ = false;
+  latestDecodedFrames_.clear();
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -278,6 +279,29 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
   auto events = std::move(pendingFrameEvents_);
   pendingFrameEvents_.clear();
   return events;
+}
+
+std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<VideoFrame> frames;
+  frames.reserve(latestDecodedFrames_.size());
+  for (const auto& [participantId, decoded] : latestDecodedFrames_) {
+    if (!decoded.pixels || decoded.width <= 0 || decoded.height <= 0) {
+      continue;
+    }
+    VideoFrame frame;
+    frame.participantId = participantId;
+    frame.width = decoded.width;
+    frame.height = decoded.height;
+    frame.timestampMs = timestampMs;
+    frame.pixels = decoded.pixels;
+    frame.pixelWidth = decoded.width;
+    frame.pixelHeight = decoded.height;
+    frame.pixelStride = decoded.width * 4;
+    frame.frameId = decoded.frameId;
+    frames.push_back(std::move(frame));
+  }
+  return frames;
 }
 
 bool ZoomEngineRuntime::ensureStartedLocked() {
@@ -480,6 +504,16 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
       event.height,
       frame->frameId,
       runtimeElapsedMs());
+
+  // Tap the decoded BGRA pixels for the compositor without disturbing the
+  // stdout/event queue below that feeds the WinUI multiview tiles.
+  if (!frame->participantId.empty() && frame->width > 0 && frame->height > 0 && !frame->rgba.empty()) {
+    DecodedFrame& decoded = latestDecodedFrames_[frame->participantId];
+    decoded.pixels = std::make_shared<const std::vector<std::uint8_t>>(frame->rgba);
+    decoded.width = static_cast<int>(frame->width);
+    decoded.height = static_cast<int>(frame->height);
+    decoded.frameId = static_cast<std::int64_t>(frame->frameId);
+  }
 
   const auto observedAtMs = runtimeElapsedMs();
 

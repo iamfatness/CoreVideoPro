@@ -5,6 +5,7 @@
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
 #include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,6 +28,11 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json snapshot();
   [[nodiscard]] rpc::Json syncSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
+  // Returns the latest decoded BGRA frame per participant, carrying real pixels,
+  // WITHOUT consuming the pending stdout/event queue (drainFrameEvents) that
+  // feeds the WinUI multiview tiles. Used by the compositor tick to ingest real
+  // pixels into RealZoomCaptureSource.
+  [[nodiscard]] std::vector<VideoFrame> latestDecodedVideoFrames(int64_t timestampMs);
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs);
   [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs);
 
@@ -67,6 +73,17 @@ class ZoomEngineRuntime {
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;
+
+  struct DecodedFrame {
+    std::shared_ptr<const std::vector<std::uint8_t>> pixels;
+    int width = 0;
+    int height = 0;
+    std::int64_t frameId = 0;
+  };
+  // Latest decoded BGRA frame per participantId, tapped alongside the stdout
+  // event queue so the compositor can read real pixels without draining the
+  // multiview event path.
+  std::map<std::string, DecodedFrame> latestDecodedFrames_;
 };
 
 }  // namespace corevideo::modules

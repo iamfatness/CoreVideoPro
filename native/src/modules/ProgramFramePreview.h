@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace corevideo::modules {
 
@@ -37,6 +38,18 @@ void downscaleBgraNearestNeighbor(
     ProgramFramePreviewPixels& preview);
 
 [[nodiscard]] std::string base64Encode(const uint8_t* data, size_t length);
+
+[[nodiscard]] std::vector<uint8_t> base64Decode(const std::string& encoded);
+
+// Copies a layer's decoded BGRA frame into its rect of the preview buffer,
+// honoring the layer opacity. The source is scaled (nearest-neighbor) to fit
+// the rect. Returns true when pixels were drawn, false when the frame was not
+// usable (callers then fall back to the synthetic color fill).
+bool blitVideoFrameIntoPreviewRect(
+    ProgramFramePreviewPixels& preview,
+    const VideoFrame& frame,
+    const CompositorLayerRect& rect,
+    float opacity);
 
 [[nodiscard]] rpc::Json programSharedTextureJson(const ProgramFrame& frame);
 
