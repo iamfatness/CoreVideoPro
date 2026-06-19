@@ -11,23 +11,37 @@ public sealed class SystemResourceMonitorService : IDisposable
     private ulong _lastKernelTime;
     private ulong _lastUserTime;
     private bool _hasCpuBaseline;
+    private bool _disposed;
 
     public int CpuLoadPercent { get; private set; }
     public int MemoryLoadPercent { get; private set; }
     public int DiskLoadPercent { get; private set; }
 
+    public event Action<int, int, int>? ResourcesSampled;
+
     public void Sample()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         CpuLoadPercent = SampleCpuLoad();
         MemoryLoadPercent = SampleMemoryLoad();
         DiskLoadPercent = SampleDiskLoad();
+        ResourcesSampled?.Invoke(CpuLoadPercent, MemoryLoadPercent, DiskLoadPercent);
     }
 
     /// <summary>Prime CPU baseline then return a live reading immediately.</summary>
     public void Prime()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         Sample();
         Sample();
+        if (CpuLoadPercent == 0)
+        {
+            // One more pass so transport bars show a value on cold start.
+            Thread.Sleep(50);
+            Sample();
+        }
     }
 
     private int SampleCpuLoad()
@@ -43,7 +57,7 @@ public sealed class SystemResourceMonitorService : IDisposable
             _lastKernelTime = kernel;
             _lastUserTime = user;
             _hasCpuBaseline = true;
-            return 0;
+            return CpuLoadPercent;
         }
 
         var idleDelta = idle - _lastIdleTime;
@@ -83,7 +97,18 @@ public sealed class SystemResourceMonitorService : IDisposable
         return (int)Math.Clamp(Math.Round(usedBytes * 100d / totalBytes), 0, 100);
     }
 
-    public void Dispose() => _hasCpuBaseline = false;
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _hasCpuBaseline = false;
+        ResourcesSampled = null;
+        GC.SuppressFinalize(this);
+    }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetSystemTimes(out ulong idleTime, out ulong kernelTime, out ulong userTime);

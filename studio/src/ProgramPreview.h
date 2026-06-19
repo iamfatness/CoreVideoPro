@@ -22,6 +22,7 @@ class ProgramPreview {
 
   bool updateFromEventLine(std::string_view line);
   void clear();
+  void setWaitingHint(std::string hint);
 
   bool hasFrame() const;
   std::optional<Metadata> latestMetadata() const;
@@ -36,4 +37,5 @@ class ProgramPreview {
 
   mutable std::mutex mutex_;
   std::optional<Frame> latest_;
+  std::string waitingHint_ = "Waiting for program frames from native core.";
 };

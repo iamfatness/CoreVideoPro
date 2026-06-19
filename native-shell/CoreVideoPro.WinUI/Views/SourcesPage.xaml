@@ -64,7 +64,7 @@
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
 
-                    <ListView ItemsSource="{x:Bind ViewModel.PreviewSlotEditors, Mode=OneWay}"
+                    <ListView x:Name="PreviewSlotListView"
                               SelectionMode="None"
                               Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <ListView.ItemTemplate>
@@ -157,7 +157,16 @@
 
                 <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Capture devices" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Capture devices" Style="{StaticResource OperatorSectionTitle}" />
+                            <Button Grid.Column="1" Content="Refresh"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    Command="{x:Bind ViewModel.RefreshCaptureDevicesCommand}" />
+                        </Grid>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" VerticalAlignment="Center" />
@@ -168,7 +177,13 @@
                             </Border>
                         </StackPanel>
 
-                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.CaptureDevices, Mode=OneWay}">
+                        <TextBlock Text="{x:Bind ViewModel.CaptureDevicesEmptyGuidance, Mode=OneWay}"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="WrapWholeWords"
+                                   Visibility="{x:Bind ViewModel.HasCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.CaptureDevices, Mode=OneWay}"
+                                       Visibility="{x:Bind ViewModel.HasCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                             <ItemsRepeater.ItemTemplate>
                                 <DataTemplate x:DataType="models:CaptureDevice">
                                     <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"

@@ -73,10 +73,24 @@
 
             <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Media bin" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Media bin" Style="{StaticResource OperatorSectionTitle}" />
+                        <Button Grid.Column="1" Content="Refresh"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.RefreshMediaBinCommand}" />
+                    </Grid>
                     <TextBlock Text="{x:Bind ViewModel.MediaBinSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.MediaBinGroups, Mode=OneWay}">
+                    <TextBlock Text="{x:Bind ViewModel.MediaBinGuidance, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                               TextWrapping="WrapWholeWords"
+                               Visibility="{x:Bind ViewModel.HasMediaBinAssets, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.MediaBinGroups, Mode=OneWay}"
+                                   Visibility="{x:Bind ViewModel.HasMediaBinAssets, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:MediaBinGroup">
                                 <StackPanel Spacing="6" Margin="0,0,0,10">

@@ -68,6 +68,9 @@ let joinSnapshot;
 let latestSnapshot;
 let latestSpineSnapshot;
 let firstFrameAtMs;
+let firstFrameParticipantId;
+let firstFrameDimensions;
+let firstFrameSource = "none";
 let activeSpeakerSeen = false;
 let maxParticipantCount = 0;
 const participantsById = new Map();
@@ -181,13 +184,18 @@ function onLine(line) {
   }
 
   if (message.type === "zoom-video-frame" && message.frame) {
-    const id = String(message.frame.participantId ?? "");
-    if (id) {
+    const frame = message.frame;
+    const id = String(frame.participantId ?? "");
+    const hasPixels = hasZoomFramePixels(frame);
+    if (id && hasPixels) {
       frameCountsByParticipant.set(id, (frameCountsByParticipant.get(id) ?? 0) + 1);
-      if (firstFrameAtMs === undefined) {
-        firstFrameAtMs = Date.now() - startedAt;
-        console.log(`First frame : ${firstFrameAtMs}ms from participant ${id} (${message.frame.width}x${message.frame.height})`);
-      }
+      recordFirstFrame({
+        participantId: id,
+        width: frame.width,
+        height: frame.height,
+        source: "zoom-video-frame",
+        observedAtMs: numberArg(frame.observedAtMs, Date.now() - startedAt),
+      });
     }
     return;
   }
@@ -281,7 +289,17 @@ function recordSpineSnapshot(snapshot) {
         Math.max(frameCountsByParticipant.get(subscription.participantId) ?? 0, subscription.framesReceived)
       );
       if (firstFrameAtMs === undefined) {
-        firstFrameAtMs = Date.now() - startedAt;
+        const observedAtMs =
+          typeof subscription.firstFrameAtMs === "number" && subscription.firstFrameAtMs >= 0
+            ? subscription.firstFrameAtMs
+            : Date.now() - startedAt;
+        recordFirstFrame({
+          participantId: subscription.participantId,
+          width: subscription.deliveredWidth,
+          height: subscription.deliveredHeight,
+          source: "zoom-media-spine-sync",
+          observedAtMs,
+        });
       }
     }
     if (subscription.kind === "participant-audio") {
@@ -389,7 +407,64 @@ function criteriaMet() {
   );
 }
 
+function buildCriteriaResults() {
+  const videoFeedCount = participantsWithFrames().length;
+  const meetingInProgress = normalizeMeetingState(latestSnapshot?.meetingState) === "in-meeting";
+  const firstFrameWithinBudget =
+    firstFrameAtMs !== undefined && firstFrameAtMs <= maxFirstFrameMs;
+
+  return {
+    meetingInMeeting: {
+      required: true,
+      met: meetingInProgress,
+      actual: normalizeMeetingState(latestSnapshot?.meetingState),
+      detail: meetingInProgress
+        ? "Zoom meeting reached in-meeting state."
+        : "Zoom meeting never reached in-meeting state.",
+    },
+    participantCount: {
+      required: true,
+      met: maxParticipantCount >= minParticipants,
+      actual: maxParticipantCount,
+      expected: `>=${minParticipants}`,
+      detail: `Observed ${maxParticipantCount} participant(s); need at least ${minParticipants}.`,
+    },
+    videoFeeds: {
+      required: true,
+      met: videoFeedCount >= minVideoFeeds,
+      actual: videoFeedCount,
+      expected: `>=${minVideoFeeds}`,
+      detail: `Observed ${videoFeedCount} participant video feed(s); need at least ${minVideoFeeds}.`,
+    },
+    firstFrameTiming: {
+      required: true,
+      met: firstFrameWithinBudget,
+      actualMs: firstFrameAtMs ?? null,
+      expectedMs: `<=${maxFirstFrameMs}`,
+      source: firstFrameSource,
+      participantId: firstFrameParticipantId ?? null,
+      dimensions: firstFrameDimensions ?? null,
+      detail:
+        firstFrameAtMs === undefined
+          ? "No first zoom video frame was observed before timeout."
+          : `First frame arrived in ${firstFrameAtMs}ms via ${firstFrameSource}${firstFrameParticipantId ? ` from participant ${firstFrameParticipantId}` : ""}${firstFrameDimensions ? ` (${firstFrameDimensions})` : ""}; budget is ${maxFirstFrameMs}ms.`,
+    },
+    activeSpeaker: {
+      required: requireActiveSpeaker,
+      met: !requireActiveSpeaker || activeSpeakerSeen,
+      actual: activeSpeakerSeen,
+      detail: activeSpeakerSeen
+        ? "Active speaker or talking participant was observed."
+        : "No active speaker or talking participant was observed.",
+    },
+  };
+}
+
 function buildReport(status, failureReason) {
+  const criteriaResults = buildCriteriaResults();
+  const failedChecks = Object.entries(criteriaResults)
+    .filter(([, result]) => result.required && !result.met)
+    .map(([name]) => name);
   const participantRows = [...participantsById.values()].map((participant) => ({
     id: participant.id,
     displayName: participant.displayName,
@@ -406,12 +481,17 @@ function buildReport(status, failureReason) {
 
   return {
     status,
+    result: status === "passed" ? "PASS" : "FAIL",
     failureReason,
+    failedChecks,
     elapsedMs: Date.now() - startedAt,
     meetingState: normalizeMeetingState(latestSnapshot?.meetingState),
     maxParticipantCount,
     activeSpeakerSeen,
     firstFrameMs: firstFrameAtMs ?? null,
+    firstFrameSource,
+    firstFrameParticipantId: firstFrameParticipantId ?? null,
+    firstFrameDimensions: firstFrameDimensions ?? null,
     videoParticipantsWithFrames: participantsWithFrames(),
     audioParticipantsWithPackets: participantsWithAudioPackets(),
     criteria: {
@@ -420,6 +500,7 @@ function buildReport(status, failureReason) {
       maxFirstFrameMs,
       requireActiveSpeaker,
     },
+    criteriaResults,
     participants: participantRows,
     subscriptions: latestSpineSnapshot?.subscriptions ?? [],
     warnings: collectWarnings(),
@@ -429,8 +510,91 @@ function buildReport(status, failureReason) {
 
 function printReport(report) {
   console.log("");
-  console.log("Live Zoom validation report");
+  console.log("=".repeat(72));
+  console.log(`Live Zoom validation: ${report.result}`);
+  console.log("=".repeat(72));
+  console.log(`Status        : ${report.status}`);
+  console.log(`Elapsed       : ${report.elapsedMs}ms`);
+  console.log(`Meeting state : ${report.meetingState}`);
+  console.log(
+    `First frame   : ${
+      report.firstFrameMs === null
+        ? "not observed"
+        : `${report.firstFrameMs}ms via ${report.firstFrameSource}${report.firstFrameParticipantId ? ` (participant ${report.firstFrameParticipantId})` : ""}${report.firstFrameDimensions ? ` ${report.firstFrameDimensions}` : ""}`
+    }`
+  );
+  if (report.failureReason) {
+    console.log(`Failure       : ${report.failureReason}`);
+  }
+  if (report.failedChecks?.length) {
+    console.log(`Failed checks : ${report.failedChecks.join(", ")}`);
+  }
+
+  console.log("");
+  console.log("Criteria");
+  for (const [name, result] of Object.entries(report.criteriaResults ?? {})) {
+    const label = result.required ? "required" : "optional";
+    const verdict = result.met ? "PASS" : "FAIL";
+    console.log(`- ${name}: ${verdict} (${label}) ${result.detail}`);
+  }
+
+  console.log("");
+  console.log("Participants");
+  for (const participant of report.participants ?? []) {
+    console.log(
+      `- ${participant.id} ${participant.displayName}: video=${participant.videoOn ? "on" : "off"}, frames=${participant.frames}, audioPackets=${participant.audioPackets}, talking=${participant.talking ? "yes" : "no"}`
+    );
+  }
+
+  if (report.warnings?.length) {
+    console.log("");
+    console.log("Warnings");
+    for (const warning of report.warnings) {
+      console.log(`- ${warning}`);
+    }
+  }
+
+  console.log("");
+  console.log("JSON report");
   console.log(JSON.stringify(report, null, 2));
+}
+
+function recordFirstFrame({ participantId, width, height, source, observedAtMs }) {
+  if (firstFrameAtMs !== undefined) {
+    return;
+  }
+
+  firstFrameAtMs = observedAtMs;
+  firstFrameParticipantId = participantId;
+  firstFrameDimensions =
+    width > 0 && height > 0 ? `${width}x${height}` : undefined;
+  firstFrameSource = source;
+  console.log(
+    `First frame : ${firstFrameAtMs}ms via ${source} from participant ${participantId}${
+      firstFrameDimensions ? ` (${firstFrameDimensions})` : ""
+    }`
+  );
+}
+
+function hasZoomFramePixels(frame) {
+  if (!frame || frame.width <= 0 || frame.height <= 0 || frame.frameId <= 0) {
+    return false;
+  }
+
+  const expectedBytes = frame.width * frame.height * 4;
+  if (typeof frame.bgraBase64 === "string" && frame.bgraBase64.length > 0) {
+    return true;
+  }
+
+  if (Array.isArray(frame.rgba) && frame.rgba.length === expectedBytes) {
+    return true;
+  }
+
+  if (Array.isArray(frame.bgra) && frame.bgra.length === expectedBytes) {
+    return true;
+  }
+
+  return false;
 }
 
 function usableParticipants(snapshot) {

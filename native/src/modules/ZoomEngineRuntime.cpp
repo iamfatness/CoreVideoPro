@@ -2,6 +2,7 @@
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
 #include <chrono>
@@ -480,11 +481,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
       frame->frameId,
       runtimeElapsedMs());
 
-  rpc::Json::Array rgba;
-  rgba.reserve(frame->rgba.size());
-  for (const auto byte : frame->rgba) {
-    rgba.emplace_back(static_cast<int>(byte));
-  }
+  const auto observedAtMs = runtimeElapsedMs();
 
   pendingFrameEvents_.emplace_back(rpc::Json::Object{
       {"type", "zoom-video-frame"},
@@ -494,7 +491,8 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
            {"width", static_cast<int>(frame->width)},
            {"height", static_cast<int>(frame->height)},
            {"frameId", static_cast<int>(frame->frameId)},
-           {"rgba", rgba},
+           {"observedAtMs", observedAtMs},
+           {"bgraBase64", base64Encode(frame->rgba.data(), frame->rgba.size())},
        }},
   });
 }

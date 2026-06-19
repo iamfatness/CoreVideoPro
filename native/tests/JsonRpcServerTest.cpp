@@ -28,6 +28,61 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
 #endif
 }
 
+TEST(JsonRpcServer, MediaCoreSyncElapsedMsAdvancesRecordingProof) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "recording-proof-sync"},
+      {"type", "media-core-sync"},
+      {"elapsedMs", 1000},
+      {"commands",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"type", "load-scene-graph"},
+               {"sceneId", "recording-proof"},
+               {"routes", corevideo::rpc::Json::Array{
+                              corevideo::rpc::Json::Object{
+                                  {"routeId", "program"},
+                                  {"mode", "fixed"},
+                                  {"audioRole", "mix"},
+                                  {"participantId", "speaker-1"},
+                              },
+                          }},
+           },
+           corevideo::rpc::Json::Object{
+               {"type", "start-program-output"},
+               {"destinations", corevideo::rpc::Json::Array{"recording"}},
+               {"isoParticipantIds", corevideo::rpc::Json::Array{"speaker-1"}},
+           },
+           corevideo::rpc::Json::Object{
+               {"type", "set-recording-targets"},
+               {"targetFolder", "Recordings/CoreVideo Pro/native-proof"},
+               {"filenamePrefix", "alpha-proof"},
+               {"format", "mp4"},
+               {"quality", "high"},
+               {"isoParticipantIds", corevideo::rpc::Json::Array{"speaker-1"}},
+           },
+           corevideo::rpc::Json::Object{
+               {"type", "start-recording-session"},
+               {"sessionId", "alpha-proof-speaker-1"},
+               {"startedAtMs", 1000},
+           },
+       }},
+  });
+
+  ASSERT_TRUE(response.get("ok")->asBool());
+  const auto* recording = response.get("snapshot")->get("recording");
+  ASSERT_NE(recording, nullptr);
+  EXPECT_EQ(recording->getString("status"), "recording");
+  const auto* proof = recording->get("proof");
+  ASSERT_NE(proof, nullptr);
+  EXPECT_GE(proof->get("durationMs")->asNumber(), 33);
+  EXPECT_GE(proof->get("programFrameCount")->asNumber(), 1);
+  EXPECT_GE(proof->get("isoFrameCount")->asNumber(), 1);
+  EXPECT_TRUE(proof->get("metadataValid")->asBool());
+  EXPECT_EQ(proof->getString("containerFormat"), "mp4");
+}
+
 TEST(JsonRpcServer, HandlesMediaCoreSyncRequestEnvelope) {
   corevideo::core::MediaCore mediaCore;
   corevideo::rpc::JsonRpcServer server(mediaCore);

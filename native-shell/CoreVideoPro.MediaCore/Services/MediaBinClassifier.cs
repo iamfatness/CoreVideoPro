@@ -201,4 +201,25 @@ public static class MediaBinClassifier
 
         return assets;
     }
+
+    public static string BuildEmptyGuidanceMessage(IEnumerable<string>? roots = null)
+    {
+        var resolvedRoots = (roots?.Where(root => !string.IsNullOrWhiteSpace(root))
+            ?? ResolveMediaRoots())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (resolvedRoots.Count == 0)
+        {
+            resolvedRoots.Add(DefaultMediaRoot);
+        }
+
+        var lines = new List<string>
+        {
+            "Add stingers (.mp4), lower-thirds (.png), audio beds (.wav/.mp3), or slates (slates/ or slate-*) to:"
+        };
+        lines.AddRange(resolvedRoots);
+
+        return string.Join(Environment.NewLine, lines);
+    }
 }

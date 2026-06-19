@@ -14,7 +14,8 @@ public static class FirstFrameValidationEvidenceBuilder
         NativeMediaCoreStateSnapshot? snapshot = null,
         ZoomMediaSpineNativeSnapshot? spineSnapshot = null,
         ZoomVideoFrame? zoomVideoFrame = null,
-        ProgramFramePreview? programPreviewFrame = null)
+        ProgramFramePreview? programPreviewFrame = null,
+        double? zoomFrameObservedElapsedMs = null)
     {
         var evidence = existing ?? new FirstFrameValidationEvidence();
 
@@ -30,7 +31,7 @@ public static class FirstFrameValidationEvidenceBuilder
 
         if (zoomVideoFrame is not null)
         {
-            evidence = MergeZoomVideoFrame(evidence, zoomVideoFrame);
+            evidence = MergeZoomVideoFrame(evidence, zoomVideoFrame, zoomFrameObservedElapsedMs);
         }
 
         if (programPreviewFrame is not null)
@@ -43,7 +44,8 @@ public static class FirstFrameValidationEvidenceBuilder
 
     public static FirstFrameValidationEvidence MergeZoomVideoFrame(
         FirstFrameValidationEvidence existing,
-        ZoomVideoFrame frame)
+        ZoomVideoFrame frame,
+        double? observedElapsedMs = null)
     {
         var observed = frame.Width > 0 &&
                        frame.Height > 0 &&
@@ -55,12 +57,21 @@ public static class FirstFrameValidationEvidenceBuilder
             return existing;
         }
 
+        var firstZoomFrameElapsedMs = existing.FirstZoomFrameElapsedMs;
+        if (firstZoomFrameElapsedMs is null && observedElapsedMs is >= 0)
+        {
+            firstZoomFrameElapsedMs = observedElapsedMs;
+        }
+
         return existing with
         {
             ZoomVideoFrameObserved = true,
             LiveZoomFrameCount = Math.Max(existing.LiveZoomFrameCount, frame.FrameId),
             LastZoomParticipantId = frame.ParticipantId,
-            LastZoomFrameId = frame.FrameId
+            LastZoomFrameId = frame.FrameId,
+            LastZoomFrameWidth = frame.Width,
+            LastZoomFrameHeight = frame.Height,
+            FirstZoomFrameElapsedMs = firstZoomFrameElapsedMs
         };
     }
 
@@ -138,6 +149,14 @@ public static class FirstFrameValidationEvidenceBuilder
         var frameCount = Math.Max(
             existing.LiveZoomFrameCount,
             spine.Subscriptions.Sum(subscription => subscription.FramesReceived));
+        var firstSpineFrameMs = spine.Subscriptions
+            .Where(subscription =>
+                subscription.Kind == "participant-video" &&
+                subscription.FramesReceived > 0 &&
+                subscription.FirstFrameAtMs >= 0)
+            .Select(subscription => subscription.FirstFrameAtMs)
+            .DefaultIfEmpty(-1)
+            .Min();
         var audioPacketCount = Math.Max(
             existing.AudioPacketCount,
             spine.Subscriptions.Sum(subscription => subscription.AudioPacketsReceived));
@@ -159,7 +178,9 @@ public static class FirstFrameValidationEvidenceBuilder
             ParticipantFreshnessObserved = existing.ParticipantFreshnessObserved || participantCount > 0,
             AudioFreshnessObserved = existing.AudioFreshnessObserved ||
                                      audioPacketCount > 0 ||
-                                     audioActiveParticipantCount > 0
+                                     audioActiveParticipantCount > 0,
+            FirstZoomFrameElapsedMs = existing.FirstZoomFrameElapsedMs ??
+                                      (firstSpineFrameMs >= 0 ? firstSpineFrameMs : null)
         };
     }
 

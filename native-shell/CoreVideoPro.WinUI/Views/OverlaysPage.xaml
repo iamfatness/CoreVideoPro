@@ -151,7 +151,12 @@
             <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Speaker captions" Style="{StaticResource OperatorSectionTitle}" />
-                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.Overlays.CaptionTranscript, Mode=OneWay}">
+                    <TextBlock Text="{x:Bind ViewModel.CaptionTranscriptEmptyGuidance, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                               TextWrapping="WrapWholeWords"
+                               Visibility="{x:Bind ViewModel.HasCaptionTranscript, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.Overlays.CaptionTranscript, Mode=OneWay}"
+                                   Visibility="{x:Bind ViewModel.HasCaptionTranscript, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:CaptionTranscriptEntry">
                                 <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"

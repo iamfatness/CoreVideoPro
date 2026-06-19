@@ -203,4 +203,80 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
         Assert.Equal(2, evidence.LastProgramFrameNumber);
         Assert.Equal(4, evidence.AudioPacketCount);
     }
+
+    [Fact]
+    public void RecordsFirstZoomFrameTimingFromObservedElapsedMs()
+    {
+        var evidence = FirstFrameValidationEvidenceBuilder.From(
+            zoomVideoFrame: new ZoomVideoFrame
+            {
+                ParticipantId = "42",
+                Width = 2,
+                Height = 1,
+                FrameId = 1,
+                Bgra = new byte[8]
+            },
+            zoomFrameObservedElapsedMs: 812.5);
+
+        Assert.True(evidence.ZoomVideoFrameObserved);
+        Assert.Equal(812.5, evidence.FirstZoomFrameElapsedMs);
+        Assert.Equal(2, evidence.LastZoomFrameWidth);
+        Assert.Equal(1, evidence.LastZoomFrameHeight);
+        Assert.Equal("42", evidence.LastZoomParticipantId);
+    }
+
+    [Fact]
+    public void PreservesEarliestFirstFrameTimingAcrossEvents()
+    {
+        var evidence = FirstFrameValidationEvidenceBuilder.From(
+            zoomVideoFrame: new ZoomVideoFrame
+            {
+                ParticipantId = "42",
+                Width = 1,
+                Height = 1,
+                FrameId = 1,
+                Bgra = new byte[4]
+            },
+            zoomFrameObservedElapsedMs: 420);
+
+        evidence = FirstFrameValidationEvidenceBuilder.From(
+            existing: evidence,
+            zoomVideoFrame: new ZoomVideoFrame
+            {
+                ParticipantId = "42",
+                Width = 1,
+                Height = 1,
+                FrameId = 2,
+                Bgra = new byte[4]
+            },
+            zoomFrameObservedElapsedMs: 900);
+
+        Assert.Equal(420, evidence.FirstZoomFrameElapsedMs);
+        Assert.Equal(2, evidence.LastZoomFrameId);
+    }
+
+    [Fact]
+    public void DerivesFirstFrameTimingFromSpineSubscriptionStats()
+    {
+        var evidence = FirstFrameValidationEvidenceBuilder.From(
+            spineSnapshot: new ZoomMediaSpineNativeSnapshot
+            {
+                MeetingState = "in-meeting",
+                ParticipantCount = 1,
+                Subscriptions =
+                [
+                    new ZoomMediaSpineSubscription
+                    {
+                        ParticipantId = "42",
+                        Kind = "participant-video",
+                        FramesReceived = 2,
+                        FirstFrameAtMs = 256.5,
+                        FirstFrameDelayMs = 256.5
+                    }
+                ]
+            });
+
+        Assert.True(evidence.ZoomVideoFrameObserved);
+        Assert.Equal(256.5, evidence.FirstZoomFrameElapsedMs);
+    }
 }

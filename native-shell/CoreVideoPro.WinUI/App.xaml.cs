@@ -43,14 +43,13 @@ public partial class App : Application
                 LaunchLog.Write("oauth: startup callback argument detected");
             }
 
-            _window = new MainWindow();
-            _window.Activate();
-            if (_window is MainWindow mainWindow)
-            {
-                mainWindow.ViewModel.HandleAppActivation(Activation.CurrentActivationArguments);
-            }
+            var mainWindow = new MainWindow();
+            _window = mainWindow;
+            ApplyWindowChromeBeforeShow(mainWindow);
+            mainWindow.Activate();
+            mainWindow.ViewModel.HandleAppActivation(Activation.CurrentActivationArguments);
 
-            BringMainWindowToForeground(_window);
+            BringMainWindowToForeground(mainWindow);
         }
         catch (Exception ex)
         {
@@ -71,6 +70,17 @@ public partial class App : Application
         if (_window is not null)
         {
             BringMainWindowToForeground(_window);
+        }
+    }
+
+    private static void ApplyWindowChromeBeforeShow(MainWindow window)
+    {
+        var hwnd = WindowNative.GetWindowHandle(window);
+        var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+        var appWindow = AppWindow.GetFromWindowId(windowId);
+        if (appWindow is not null)
+        {
+            WindowChromeService.Apply(window, appWindow);
         }
     }
 

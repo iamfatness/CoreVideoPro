@@ -114,10 +114,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
 
     [ObservableProperty]
-    private string _mediaBinSummary = "No media assets loaded";
+    private string _mediaBinSummary = "Media bin is empty";
 
     [ObservableProperty]
-    private string _captureFleetSummary = "No capture devices detected";
+    private string _mediaBinGuidance = string.Empty;
+
+    [ObservableProperty]
+    private string _captureFleetSummary = "No video capture devices detected";
+
+    [ObservableProperty]
+    private string _captureDevicesEmptyGuidance = ProductionStateHelper.CaptureDevicesEmptyGuidance();
 
     [ObservableProperty]
     private bool _dualCaptureLive;
@@ -143,7 +149,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<FeedHealthRow> FeedHealthRows { get; private set; } = [];
 
-    public BrandKit BrandKit { get; } = ProductionCatalog.BrandKit;
+    [ObservableProperty]
+    private BrandKit _brandKit = ProductionCatalog.BrandKit;
 
     public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript { get; private set; } = [];
 
@@ -291,6 +298,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
         _surfaces.SurfacesChanged += RefreshSurfaceBindings;
 
+        MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
+        _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _ = RefreshCaptureDevicesAsync();
 
         _resourceMonitorTimer = _dispatcher.CreateTimer();
@@ -643,6 +652,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioTabChrome));
         OnPropertyChanged(nameof(MediaTabChrome));
         OnPropertyChanged(nameof(AutomationTabChrome));
+
+        if (value == StudioTab.Sources)
+        {
+            _ = RefreshCaptureDevicesAsync();
+        }
+        else if (value == StudioTab.Media)
+        {
+            RefreshMediaBin();
+        }
     }
 
     partial void OnActiveSceneIdChanged(string value)
@@ -897,13 +915,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
     }
 
+    public bool HasCaptureDevices => CaptureDevices.Count > 0;
+
+    public bool HasMediaBinAssets => MediaBinGroups.Sum(group => group.Assets.Count) > 0;
+
+    public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
+
+    public string CaptionTranscriptEmptyGuidance =>
+        "Caption lines appear here when the engine is live and the caption track publishes cues.";
+
     [RelayCommand]
     private void RefreshMediaBin()
     {
         MediaBinGroups = _mediaBinService.LoadGroups();
+        MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(HasMediaBinAssets));
         RefreshProductionReadouts();
     }
+
+    [RelayCommand]
+    private void RefreshCaptureDevices() => _ = RefreshCaptureDevicesAsync();
 
     [RelayCommand]
     private void ConnectCaptureDevice(string deviceId)
@@ -959,15 +991,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         RunOnUiThread(() =>
         {
+            var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
             CaptureDevices.Clear();
             foreach (var device in discovered)
             {
+                if (priorById.TryGetValue(device.Id, out var prior))
+                {
+                    device.ConnectionState = prior.ConnectionState;
+                    device.SignalPresent = prior.SignalPresent;
+                    device.SelectedInputId = prior.SelectedInputId;
+                    device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
+                }
+
                 CaptureDevices.Add(device);
             }
 
             RefreshCaptureFleetSummary();
             RefreshShowInputEditors();
             RefreshMultiviewGridTiles();
+            OnPropertyChanged(nameof(HasCaptureDevices));
         });
     }
 
@@ -984,6 +1026,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioMixChannels();
         RefreshCaptureFleetSummary();
 
+        OnPropertyChanged(nameof(HasCaptureDevices));
+        OnPropertyChanged(nameof(HasMediaBinAssets));
+        OnPropertyChanged(nameof(HasCaptionTranscript));
         OnPropertyChanged(nameof(FeedHealthRows));
         OnPropertyChanged(nameof(SceneIntelligenceSummary));
         OnPropertyChanged(nameof(RecommendedSceneName));
@@ -1410,6 +1455,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CaptionTranscript = [];
         OnPropertyChanged(nameof(CaptionTranscript));
         OnPropertyChanged(nameof(CaptionQualitySummary));
+        OnPropertyChanged(nameof(HasCaptionTranscript));
         OutputStatus = "Outputs idle";
         OutputSessionStatus = "Outputs idle";
         ZoomStatus = "Zoom Offline";
@@ -1465,7 +1511,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
         ApplyOverlayStateFromSnapshot(snapshot);
+        ApplyProductionReadoutsFromSnapshot(snapshot);
         ApplyCaptionTranscriptFromSnapshot(snapshot);
+    }
+
+    private void ApplyProductionReadoutsFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var colorGradePatch = ProductionReadoutSync.ResolveColorGradePatch(snapshot, EngineRunning);
+        if (colorGradePatch is not null)
+        {
+            ColorGrade = new ColorGrade
+            {
+                Lut = colorGradePatch.Lut,
+                Exposure = colorGradePatch.Exposure,
+                Contrast = colorGradePatch.Contrast,
+                Saturation = colorGradePatch.Saturation,
+                Temperature = colorGradePatch.Temperature
+            };
+        }
+
+        var brandKitPatch = ProductionReadoutSync.ResolveBrandKitPatch(snapshot, EngineRunning);
+        if (brandKitPatch is not null)
+        {
+            BrandKit = new BrandKit
+            {
+                Name = brandKitPatch.Name,
+                LogoText = brandKitPatch.LogoText,
+                BrandColor = brandKitPatch.BrandColor,
+                AccentColor = brandKitPatch.AccentColor,
+                BackgroundColor = brandKitPatch.BackgroundColor,
+                FontFamily = brandKitPatch.FontFamily,
+                LowerThirdStyle = brandKitPatch.LowerThirdStyle
+            };
+        }
     }
 
     private void ApplyOverlayStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
@@ -1519,6 +1597,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         OnPropertyChanged(nameof(CaptionTranscript));
         OnPropertyChanged(nameof(CaptionQualitySummary));
+        OnPropertyChanged(nameof(HasCaptionTranscript));
     }
 
     private void SyncShowInputsFromMeeting(
@@ -1936,6 +2015,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ForceShutdownMediaCore();
 
         _surfaces.Dispose();
+        _captureDiscovery.Dispose();
         _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);
         LaunchLog.Write("shutdown: studio view model disposed");

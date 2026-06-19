@@ -11,6 +11,10 @@ Current scope:
 - Joins a Zoom meeting through the native core contract.
 - Shows the current Zoom roster, active speaker, native-core health, output state, and recording artifact path.
 - Builds a Magic Scene from the current roster and starts program recording/output through the C++ media core.
+- Owner-draw program preview surface with frame metadata overlay when `program-frame-preview` events arrive.
+- Dynamic scene/output panel (scene id, routes, overlays, destinations, encoder lifecycle).
+- Status bar and health panel surface first-frame arrival and recording health (frames, duration, metadata).
+- `run-studio.ps1 -UseDevNativeCore` (or `npm run run:studio:dev`) prefers `native/build-dev/corevideo-native.exe`.
 
 Build the native media core and native Studio shell from the repository root on
 Windows:

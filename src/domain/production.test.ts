@@ -10,6 +10,14 @@ describe("initialProduction", () => {
     expect(initialProduction.transition.statusText).toBe("Program ready");
   });
 
+  it("starts without fabricated caption transcript history", () => {
+    expect(initialProduction.captionTranscript).toEqual([]);
+  });
+
+  it("starts without fabricated capture hardware", () => {
+    expect(initialProduction.captureDevices).toEqual([]);
+  });
+
   it("seeds seven Zoom sources with unique ids covering every production role", () => {
     expect(initialParticipants).toHaveLength(7);
     expect(new Set(initialParticipants.map((participant) => participant.id)).size).toBe(7);

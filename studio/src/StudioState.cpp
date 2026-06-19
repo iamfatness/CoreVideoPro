@@ -314,6 +314,38 @@ void applyProfile(StudioState& state, const std::string& profile) {
   }
 }
 
+void applyRecordingHealth(StudioState& state) {
+  if (state.recordingArtifactPath.empty() && state.recordingFrameCount == 0 && !state.recordingMetadataValid) {
+    state.recordingHealth.clear();
+    return;
+  }
+
+  std::ostringstream out;
+  if (state.recordingMetadataValid) {
+    out << "ok";
+  } else if (!state.recordingArtifactPath.empty() || state.recordingFrameCount > 0) {
+    out << "pending";
+  } else {
+    out << "idle";
+  }
+  if (state.recordingFrameCount > 0) {
+    out << ", " << state.recordingFrameCount << " frames";
+  }
+  if (state.recordingDurationMs > 0) {
+    out << ", " << (state.recordingDurationMs / 1000) << "s";
+  }
+  if (state.recordingBytesWritten > 0) {
+    out << ", " << (state.recordingBytesWritten / 1024) << " KB";
+  }
+  state.recordingHealth = out.str();
+}
+
+void markFirstFrameIfNeeded(StudioState& state) {
+  if (!state.firstFrameSeen && (state.frameCount > 0 || state.previewFrameNumber > 0)) {
+    state.firstFrameSeen = true;
+  }
+}
+
 void applyHealth(StudioState& state, const std::string& health) {
   assignIfPresent(state.healthStatus, extractJsonString(health, "status"));
   assignIfPresent(state.renderer, extractJsonString(health, "renderer"));
@@ -321,23 +353,41 @@ void applyHealth(StudioState& state, const std::string& health) {
   assignIfPresent(state.programFrameHealth, extractJsonString(health, "programFrameHealth"));
   assignIfPresent(state.recordingArtifactPath, extractJsonString(health, "recordingArtifactPath"));
   assignCountIfPresent(state.frameCount, extractJsonNumber(health, "frameCount"));
+  assignCountIfPresent(state.recordingBytesWritten, extractJsonNumber(health, "recordingBytesWritten"));
+  assignCountIfPresent(state.recordingDurationMs, extractJsonNumber(health, "recordingDurationMs"));
+  assignCountIfPresent(state.recordingFrameCount, extractJsonNumber(health, "recordingFrameCount"));
+  if (auto metadataValid = extractJsonBool(health, "recordingMetadataValid")) {
+    state.recordingMetadataValid = *metadataValid;
+  }
+  applyRecordingHealth(state);
+  markFirstFrameIfNeeded(state);
 }
 
 void applyProgramFrame(StudioState& state, const std::string& programFrame) {
   assignIfPresent(state.programFrameHealth, extractJsonString(programFrame, "health"));
   assignIfPresent(state.renderer, extractJsonString(programFrame, "renderer"));
   assignCountIfPresent(state.frameCount, firstNumber(programFrame, {"frameNumber", "programFrameCount", "frameCount"}));
+  markFirstFrameIfNeeded(state);
 }
 
 void applyEncoderSession(StudioState& state, const std::string& encoderSession) {
   assignIfPresent(state.outputStatus, extractJsonString(encoderSession, "status"));
   assignIfPresent(state.recordingArtifactPath, extractJsonString(encoderSession, "recordingArtifactPath"));
   assignCountIfPresent(state.frameCount, extractJsonNumber(encoderSession, "programFrameCount"));
+  assignCountIfPresent(state.recordingBytesWritten, extractJsonNumber(encoderSession, "recordingBytesWritten"));
+  assignCountIfPresent(state.recordingDurationMs, extractJsonNumber(encoderSession, "recordingDurationMs"));
+  assignCountIfPresent(state.recordingFrameCount, extractJsonNumber(encoderSession, "recordingFrameCount"));
+  if (auto metadataValid = extractJsonBool(encoderSession, "recordingMetadataValid")) {
+    state.recordingMetadataValid = *metadataValid;
+  }
   if (auto lifecycle = extractJsonObject(encoderSession, "lifecycle")) {
+    assignIfPresent(state.encoderLifecycleStatus, extractJsonString(*lifecycle, "status"));
     if (auto transition = extractJsonString(*lifecycle, "lastTransition"); transition && !transition->empty()) {
       state.lastSummaryText = *transition;
     }
   }
+  applyRecordingHealth(state);
+  markFirstFrameIfNeeded(state);
 }
 
 void applyOutputSenderSession(StudioState& state, const std::string& outputSenderSession) {
@@ -349,9 +399,36 @@ void applyRecording(StudioState& state, const std::string& recording) {
   assignIfPresent(state.recordingArtifactPath, firstString(recording, {"artifactPath", "programPath", "path"}));
   assignIfPresent(state.lastErrorText, firstString(recording, {"error", "lastFailure"}));
   assignIfPresent(state.lastSummaryText, firstString(recording, {"warning", "lastRecovery"}));
+  assignCountIfPresent(state.recordingFrameCount, firstNumber(recording, {"programFramesWritten", "recordingFrameCount", "frameCount"}));
+  assignCountIfPresent(state.recordingDurationMs, extractJsonNumber(recording, "durationMs"));
+  if (auto metadataValid = extractJsonBool(recording, "metadataValid")) {
+    state.recordingMetadataValid = *metadataValid;
+  }
+  applyRecordingHealth(state);
+}
+
+void applySceneOutput(StudioState& state, const std::string& snapshot) {
+  assignIfPresent(state.sceneId, extractJsonString(snapshot, "sceneId"));
+  if (auto routeCount = extractJsonNumber(snapshot, "routeCount")) {
+    assignIntIfPresent(state.routeCount, routeCount);
+  }
+  if (auto overlayCount = extractJsonNumber(snapshot, "overlayCount")) {
+    assignIntIfPresent(state.overlayCount, overlayCount);
+  }
+  auto outputs = extractJsonStringArray(snapshot, "outputs");
+  if (!outputs.empty()) {
+    state.outputDestinations = std::move(outputs);
+  }
+  if (auto captionTrack = extractJsonObject(snapshot, "captionTrack")) {
+    if (auto enabled = extractJsonBool(*captionTrack, "enabled")) {
+      state.captionsEnabled = *enabled;
+    }
+    assignIfPresent(state.captionStatus, extractJsonString(*captionTrack, "status"));
+  }
 }
 
 void applySnapshotLikeObject(StudioState& state, const std::string& snapshot) {
+  applySceneOutput(state, snapshot);
   assignIfPresent(state.encoder, extractJsonString(snapshot, "encoder"));
   assignIfPresent(state.renderer, firstString(snapshot, {"compositorRenderer", "renderer"}));
   assignIfPresent(state.healthStatus, extractJsonString(snapshot, "status"));
@@ -375,6 +452,7 @@ void applySnapshotLikeObject(StudioState& state, const std::string& snapshot) {
   if (auto recording = extractJsonObject(snapshot, "recording")) {
     applyRecording(state, *recording);
   }
+  markFirstFrameIfNeeded(state);
 }
 
 void applyError(StudioState& state, const std::string& line) {
@@ -633,7 +711,24 @@ void applyStudioStateLine(StudioState& state, const std::string& line) {
   if (auto summary = firstString(json, {"summary", "lastTransition", "message"}); summary && !summary->empty()) {
     state.lastSummaryText = *summary;
   }
+
+  if (!snapshotObject) {
+    applySceneOutput(state, json);
+  }
+  applyRecordingHealth(state);
+  markFirstFrameIfNeeded(state);
   applyError(state, json);
+}
+
+void notePreviewFrame(StudioState& state, std::uint64_t frameNumber, const std::string& health) {
+  state.previewFrameNumber = frameNumber;
+  if (!health.empty()) {
+    state.programFrameHealth = health;
+  }
+  if (frameNumber > state.frameCount) {
+    state.frameCount = frameNumber;
+  }
+  markFirstFrameIfNeeded(state);
 }
 
 std::string summarizeStudioState(const StudioState& state) {
@@ -661,11 +756,25 @@ std::string summarizeStudioState(const StudioState& state) {
   if (!state.encoder.empty()) {
     out << ", encoder " << state.encoder;
   }
-  if (state.frameCount > 0) {
+  if (state.firstFrameSeen) {
+    out << ", first frame";
+    if (state.frameCount > 0) {
+      out << " #" << state.frameCount;
+    }
+  } else if (state.frameCount > 0) {
     out << ", frames " << state.frameCount;
+  }
+  if (!state.programFrameHealth.empty()) {
+    out << ", program " << state.programFrameHealth;
+  }
+  if (!state.recordingHealth.empty()) {
+    out << ", recording " << state.recordingHealth;
   }
   if (state.activeSenderCount > 0) {
     out << ", senders " << state.activeSenderCount;
+  }
+  if (!state.sceneId.empty() && state.sceneId != "unloaded") {
+    out << ", scene " << state.sceneId;
   }
   if (!state.lastSummaryText.empty()) {
     out << ". " << state.lastSummaryText;

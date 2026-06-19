@@ -522,11 +522,18 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
   }
 }
 
-rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands) {
+rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
+  const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   for (const auto& command : commands) {
     (void)applyCommand(command);
   }
-  renderSyntheticTick();
+
+  const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
+  const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
+  const int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
+  for (int tick = 0; tick < additionalTicks; ++tick) {
+    renderSyntheticTick();
+  }
   return sessionState();
 }
 
@@ -1226,15 +1233,15 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   const double durationMs = std::max(recordingElapsedMs_, static_cast<double>(session.recordingDurationMs));
   const int64_t audioPacketsObserved = recordingAudioPacketsObserved_;
   const bool audioPresent = audioPacketsObserved > 0;
-  const bool metadataValid = session.recordingMetadataValid || (!session.recordingContainerFormat.empty() && !session.recordingVideoCodec.empty() &&
-                                                               (session.recordingWidth == 0 || session.recordingWidth == lastProgramFrame_.width) &&
-                                                               (session.recordingHeight == 0 || session.recordingHeight == lastProgramFrame_.height));
   const int recordingWidth = session.recordingWidth > 0 ? session.recordingWidth : lastProgramFrame_.width;
   const int recordingHeight = session.recordingHeight > 0 ? session.recordingHeight : lastProgramFrame_.height;
   const int recordingFps = session.recordingFps > 0 ? session.recordingFps : 30;
   const std::string containerFormat = session.recordingContainerFormat.empty() ? recordingFormat_ : session.recordingContainerFormat;
   const std::string videoCodec = session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec;
   const std::string audioCodec = session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec;
+  const bool metadataValid = session.recordingMetadataValid ||
+                             (programFramesWritten > 0 && !containerFormat.empty() && !videoCodec.empty() && recordingWidth > 0 && recordingHeight > 0 &&
+                              recordingFps > 0 && !audioCodec.empty());
   rpc::Json::Array streams{
       rpc::Json::Object{
           {"kind", "program"},

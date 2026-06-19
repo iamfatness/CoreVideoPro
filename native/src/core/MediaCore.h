@@ -29,7 +29,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
-  [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands);
+  [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
 
  private:
   void loadSceneGraph(const rpc::Json& command);

@@ -22,6 +22,7 @@
 #include <zoom_sdk.h>
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <cstdint>
 #include <exception>
@@ -259,7 +260,10 @@ class MeetingRecordingEventSink final : public ZOOMSDK::IMeetingRecordingCtrlEve
 class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
  public:
   explicit ZoomMeetingSdkCaptureSource(ZoomMeetingSdkRuntimeConfig config)
-      : config_(std::move(config)), webDomain_(widenAscii(config_.webDomain)), brandingName_(L"CoreVideo Pro") {}
+      : config_(std::move(config)),
+        webDomain_(widenAscii(config_.webDomain)),
+        brandingName_(L"CoreVideo Pro"),
+        startedAt_(std::chrono::steady_clock::now()) {}
 
   ~ZoomMeetingSdkCaptureSource() override { shutdownSdk(); }
 
@@ -317,6 +321,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     activeSpeakerId_.clear();
     subscriptions_.clear();
     subscriptionStates_.clear();
+    subscriptionTiming_.clear();
     lastPolledVideoFrameCounts_.clear();
     lastPolledAudioPacketCounts_.clear();
     destroyRenderers();
@@ -330,6 +335,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) override {
     subscriptions_ = requests;
     subscriptionStates_.clear();
+    subscriptionTiming_.clear();
     lastPolledVideoFrameCounts_.clear();
     lastPolledAudioPacketCounts_.clear();
     destroyRenderers();
@@ -358,6 +364,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       const auto subscriptionId = subscriptionIdFor(request);
       const auto previousCount = lastPolledVideoFrameCounts_[subscriptionId];
       if (state.framesReceived > previousCount) {
+        recordFirstFrameTiming(subscriptionId, state.framesReceived == 1);
         frames.push_back({request.participantId, videoWidthFor(request.kind), videoHeightFor(request.kind), ++timestampMs_});
         lastPolledVideoFrameCounts_[subscriptionId] = state.framesReceived;
       }
@@ -461,7 +468,28 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
         const auto renderer = std::find_if(renderers_.begin(), renderers_.end(), [&](const RendererSubscription& candidate) {
           return candidate.subscriptionId == subscriptionIdFor(state.request);
         });
+        const auto previousFrames = state.framesReceived;
         state.framesReceived = renderer != renderers_.end() && renderer->delegate ? renderer->delegate->framesReceived() : 0;
+        if (state.framesReceived > 0) {
+          const auto subscriptionId = subscriptionIdFor(state.request);
+          const auto observedAtMs = runtimeElapsedMs();
+          auto timing = subscriptionTiming_.find(subscriptionId);
+          if (timing == subscriptionTiming_.end()) {
+            subscriptionTiming_[subscriptionId] = {observedAtMs, observedAtMs};
+            state.firstFrameAtMs = observedAtMs;
+            state.firstFrameDelayMs = observedAtMs;
+            state.lastFrameAtMs = observedAtMs;
+          } else {
+            state.firstFrameAtMs = timing->second.first;
+            state.firstFrameDelayMs = timing->second.first;
+            if (state.framesReceived > previousFrames) {
+              timing->second.second = observedAtMs;
+              state.lastFrameAtMs = observedAtMs;
+            } else {
+              state.lastFrameAtMs = timing->second.second;
+            }
+          }
+        }
         if (state.framesReceived == 0) {
           state.status = "degraded";
           state.warning = "Zoom Meeting SDK renderer subscription is active but no raw video frames have arrived yet.";
@@ -802,6 +830,25 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     return meetingService_->Join(joinParam);
   }
 
+  double runtimeElapsedMs() const {
+    return static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt_).count());
+  }
+
+  void recordFirstFrameTiming(const std::string& subscriptionId, bool isFirstFrame) {
+    const auto observedAtMs = runtimeElapsedMs();
+    auto timing = subscriptionTiming_.find(subscriptionId);
+    if (timing == subscriptionTiming_.end()) {
+      subscriptionTiming_[subscriptionId] = {observedAtMs, observedAtMs};
+      return;
+    }
+    if (isFirstFrame && timing->second.first < 0.0) {
+      timing->second = {observedAtMs, observedAtMs};
+      return;
+    }
+    timing->second.second = observedAtMs;
+  }
+
   void shutdownSdk() {
     destroyRenderers();
     if (audioHelper_) {
@@ -834,6 +881,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   }
 
   ZoomMeetingSdkRuntimeConfig config_;
+  std::chrono::steady_clock::time_point startedAt_;
   bool sdkInitialized_ = false;
   bool joined_ = false;
   int64_t timestampMs_ = 0;
@@ -859,6 +907,7 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
   std::vector<RendererSubscription> renderers_;
   std::vector<ZoomMeetingSdkSubscriptionRequest> subscriptions_;
   std::vector<ZoomMeetingSdkSubscriptionState> subscriptionStates_;
+  mutable std::map<std::string, std::pair<double, double>> subscriptionTiming_;
   std::map<std::string, int64_t> lastPolledVideoFrameCounts_;
   std::map<std::string, int64_t> lastPolledAudioPacketCounts_;
   std::vector<std::string> warnings_;

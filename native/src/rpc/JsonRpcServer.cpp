@@ -93,9 +93,10 @@ Json JsonRpcServer::handle(const Json& request) {
   }
 
   if (hasType(request, "media-core-sync") || hasType(request, "native-media-core-sync") || request.get("commands")) {
+    const double elapsedMs = request.get("elapsedMs") ? request.get("elapsedMs")->asNumber() : 0.0;
     return success(id, Json::Object{
                            {"type", hasType(request, "media-core-sync") ? "media-core-sync" : "native-media-core-sync"},
-                           {"snapshot", mediaCore_.applyCommands(commandBatch(request))},
+                           {"snapshot", mediaCore_.applyCommands(commandBatch(request), elapsedMs)},
                        });
   }
 

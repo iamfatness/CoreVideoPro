@@ -7,10 +7,10 @@ const explicitRunner = process.argv[2];
 const candidates = explicitRunner
   ? [explicitRunner]
   : [
-      join(repoRoot, "native", "build-dev", "corevideo-native.exe"),
-      join(repoRoot, "native", "build-dev", "Release", "corevideo-native.exe"),
       join(repoRoot, "native", "build", "corevideo-native.exe"),
       join(repoRoot, "native", "build", "Release", "corevideo-native.exe"),
+      join(repoRoot, "native", "build-dev", "corevideo-native.exe"),
+      join(repoRoot, "native", "build-dev", "Release", "corevideo-native.exe"),
     ];
 
 const runner = candidates.find((candidate) => existsSync(candidate));
@@ -125,13 +125,20 @@ try {
     throw new Error("expected program plus at least one ISO stream.");
   }
   if (!proof || proof.programFrameCount < 1 || proof.isoFrameCount < 1) {
-    throw new Error("recording proof did not observe program and ISO frames.");
+    throw new Error(
+      `recording proof did not observe program and ISO frames (proof=${JSON.stringify(proof ?? null)}).`,
+    );
+  }
+  if (proof.durationMs < 33) {
+    throw new Error(`recording proof durationMs too low: ${proof.durationMs}.`);
   }
   if (proof.audioPacketsObserved < 1 || proof.audioPresent !== true) {
     throw new Error("recording proof did not observe audio packets.");
   }
   if (proof.metadataValid !== true || proof.containerFormat !== "mp4") {
-    throw new Error("recording proof metadata is not valid mp4.");
+    throw new Error(
+      `recording proof metadata is not valid mp4 (metadataValid=${proof.metadataValid}, container=${proof.containerFormat}).`,
+    );
   }
 
   clearTimeout(timeout);
@@ -140,7 +147,7 @@ try {
   console.log(`  runner: ${runner}`);
   console.log(`  program: ${recording.programPath}`);
   console.log(`  streams: ${recording.streams.length}`);
-  console.log(`  frames: program=${proof.programFrameCount} iso=${proof.isoFrameCount}`);
+  console.log(`  frames: program=${proof.programFrameCount} iso=${proof.isoFrameCount} durationMs=${proof.durationMs}`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }

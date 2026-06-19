@@ -124,4 +124,19 @@ public sealed class MediaBinServiceTests : IDisposable
 
         Assert.Single(assets);
     }
+
+    [Fact]
+    public void BuildEmptyGuidanceMessage_ListsConfiguredRoots()
+    {
+        var localRoot = Path.Combine(_mediaRoot, "local");
+        var packagedRoot = Path.Combine(_mediaRoot, "packaged");
+        Directory.CreateDirectory(localRoot);
+        Directory.CreateDirectory(packagedRoot);
+
+        var guidance = MediaBinClassifier.BuildEmptyGuidanceMessage([localRoot, packagedRoot]);
+
+        Assert.Contains("stingers", guidance, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(localRoot, guidance, StringComparison.Ordinal);
+        Assert.Contains(packagedRoot, guidance, StringComparison.Ordinal);
+    }
 }

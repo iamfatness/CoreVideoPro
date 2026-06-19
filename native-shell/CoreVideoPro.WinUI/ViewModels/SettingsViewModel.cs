@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Models;
@@ -63,6 +64,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private ZoomSdkReadinessReport _sdkReadiness = CreateDefaultReport();
     private IReadOnlyList<ZoomEngineEvidenceItem> _zoomEngineEvidence = [];
     private FirstFrameValidationEvidence _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
+    private Stopwatch? _firstFrameStopwatch;
 
     public SettingsViewModel(
         MediaCoreBridgeService bridge,
@@ -96,7 +98,8 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public IReadOnlyList<ZoomSdkReadinessCheck> SdkChecks => _sdkReadiness.Checks;
 
-    public IReadOnlyList<string> SdkBlockers => _sdkReadiness.Blockers;
+    public IReadOnlyList<string> SdkBlockers =>
+        _sdkReadiness.Blockers.Select(FormatActionableBlocker).ToList();
 
     public IReadOnlyList<ZoomEngineEvidenceItem> ZoomEngineEvidence => _zoomEngineEvidence;
 
@@ -112,7 +115,10 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public bool CanJoinZoom => !JoinBlockedBySdk;
 
-    public string JoinBlockedReason => _sdkReadiness.Blockers.FirstOrDefault() ?? _sdkReadiness.Summary;
+    public string JoinBlockedReason =>
+        _sdkReadiness.Blockers.FirstOrDefault() is { } blocker
+            ? FormatActionableBlocker(blocker)
+            : _sdkReadiness.Summary;
 
     public bool ShowLicenseActionStatus => !string.IsNullOrWhiteSpace(LicenseActionStatus);
 
@@ -261,9 +267,11 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public void ObserveZoomVideoFrame(ZoomVideoFrame frame)
     {
+        EnsureFirstFrameStopwatch();
         _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
             existing: _firstFrameEvidence,
-            zoomVideoFrame: frame);
+            zoomVideoFrame: frame,
+            zoomFrameObservedElapsedMs: _firstFrameStopwatch?.Elapsed.TotalMilliseconds);
         RefreshZoomEngineEvidence(_bridge.LastSnapshot);
     }
 
@@ -362,6 +370,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             RunOnUiThread(() =>
             {
+                BeginFirstFrameTiming();
                 ApplyCaptureSnapshot(snapshot);
                 JoinStatus = MediaCoreBridgeService.SummarizeJoinLeaveMessage(snapshot, "Joined");
                 LaunchLog.Write($"zoom-join: {JoinStatus}");
@@ -402,6 +411,8 @@ public sealed partial class SettingsViewModel : ObservableObject
                 JoinStatus = "Left Zoom meeting.";
             }
 
+            ResetFirstFrameEvidence();
+            RefreshZoomEngineEvidence(_bridge.LastSnapshot);
             NotifyMeetingUi();
         }
         catch (Exception ex)
@@ -666,12 +677,27 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_firstFrameEvidence.Evidence.Count == 0 && _firstFrameEvidence.Missing.Count == 0)
         {
-            return ("no evidence", "No native media-core snapshot or frame event has been received yet.", ZoomSdkReadinessStatus.Warning);
+            return (
+                "no evidence",
+                IsInMeeting
+                    ? "Joined meeting but no zoom-video-frame event or media-core snapshot has arrived yet. Confirm raw video subscriptions are active and wait a few seconds."
+                    : "No native media-core snapshot or frame event has been received yet. Join a Zoom meeting to collect first-frame proof.",
+                ZoomSdkReadinessStatus.Warning);
         }
+
+        var timing = _firstFrameEvidence.FirstZoomFrameElapsedMs is >= 0
+            ? $"first-frame={_firstFrameEvidence.FirstZoomFrameElapsedMs:0}ms"
+            : "first-frame=not-timed";
+        var dimensions = _firstFrameEvidence.LastZoomFrameWidth is > 0 && _firstFrameEvidence.LastZoomFrameHeight is > 0
+            ? $"{_firstFrameEvidence.LastZoomFrameWidth}x{_firstFrameEvidence.LastZoomFrameHeight}"
+            : "unknown-size";
+        var participant = string.IsNullOrWhiteSpace(_firstFrameEvidence.LastZoomParticipantId)
+            ? "unknown-participant"
+            : $"participant={_firstFrameEvidence.LastZoomParticipantId}";
 
         return (
             _firstFrameEvidence.Ready ? "first-frame ready" : "waiting for first-frame proof",
-            $"observed: {string.Join(", ", _firstFrameEvidence.Evidence.DefaultIfEmpty("none"))}; missing: {string.Join(", ", _firstFrameEvidence.Missing.DefaultIfEmpty("none"))}; zoom={_firstFrameEvidence.LiveZoomFrameCount}; program={_firstFrameEvidence.ProgramFrameCount}; audio={_firstFrameEvidence.AudioPacketCount}",
+            $"{timing}; {participant}; frame={dimensions}; observed: {string.Join(", ", _firstFrameEvidence.Evidence.DefaultIfEmpty("none"))}; missing: {string.Join(", ", _firstFrameEvidence.Missing.DefaultIfEmpty("none"))}; zoom={_firstFrameEvidence.LiveZoomFrameCount}; program={_firstFrameEvidence.ProgramFrameCount}; audio={_firstFrameEvidence.AudioPacketCount}",
             _firstFrameEvidence.Ready ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning);
     }
 
@@ -679,20 +705,118 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         if (_sdkReadiness.Blockers.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item)) is { } blocker)
         {
-            return ("blocked", blocker, ZoomSdkReadinessStatus.Blocked);
+            return ("blocked", FormatActionableBlocker(blocker), ZoomSdkReadinessStatus.Blocked);
         }
 
         if (_sdkReadiness.Warnings.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item)) is { } warning)
         {
-            return ("warning", warning, ZoomSdkReadinessStatus.Warning);
+            return ("warning", $"{warning} {DescribeWarningRemediation(warning)}".Trim(), ZoomSdkReadinessStatus.Warning);
         }
 
         if (ShowZoomOAuthControls && !ZoomOAuthSignedIn)
         {
-            return ("sign-in recommended", "Sign in with Zoom before joining external-account meetings.", ZoomSdkReadinessStatus.Warning);
+            return (
+                "sign-in recommended",
+                "Sign in with Zoom before joining external-account meetings. Use the Sign in with Zoom button above.",
+                ZoomSdkReadinessStatus.Warning);
+        }
+
+        if (IsInMeeting && !_firstFrameEvidence.ZoomVideoFrameObserved)
+        {
+            return (
+                "awaiting zoom frame",
+                "Meeting is live but no zoom-video-frame proof has arrived yet. Keep the meeting open and confirm participant video is on.",
+                ZoomSdkReadinessStatus.Warning);
         }
 
         return ("ready", "Runtime, auth path, and raw-media readiness checks are clear.", ZoomSdkReadinessStatus.Ready);
+    }
+
+    private void EnsureFirstFrameStopwatch()
+    {
+        _firstFrameStopwatch ??= Stopwatch.StartNew();
+    }
+
+    private void BeginFirstFrameTiming()
+    {
+        _firstFrameStopwatch = Stopwatch.StartNew();
+        _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
+    }
+
+    private void ResetFirstFrameEvidence()
+    {
+        _firstFrameStopwatch = null;
+        _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
+    }
+
+    private static string FormatActionableBlocker(string blocker)
+    {
+        if (string.IsNullOrWhiteSpace(blocker))
+        {
+            return blocker;
+        }
+
+        var remediation = DescribeBlockerRemediation(blocker);
+        return string.IsNullOrWhiteSpace(remediation) ? blocker : $"{blocker} Next step: {remediation}";
+    }
+
+    private static string DescribeBlockerRemediation(string blocker)
+    {
+        var normalized = blocker.ToLowerInvariant();
+        if (normalized.Contains("native core executable is missing", StringComparison.Ordinal) ||
+            normalized.Contains("build with .\\scripts\\build-native-dev.ps1", StringComparison.Ordinal))
+        {
+            return "Run .\\scripts\\build-native-dev.ps1 from the repo root.";
+        }
+
+        if (normalized.Contains("zoom meeting sdk runtime is missing", StringComparison.Ordinal) ||
+            normalized.Contains("stage-zoom-sdk", StringComparison.Ordinal))
+        {
+            return "Run .\\scripts\\stage-zoom-sdk.ps1, then rebuild native with .\\scripts\\build-native-dev.ps1.";
+        }
+
+        if (normalized.Contains("meeting sdk app key is missing", StringComparison.Ordinal))
+        {
+            return "Embed src/config/zoomMeetingSdk.json or set COREVIDEO_ZOOM_PUBLIC_APP_KEY before joining.";
+        }
+
+        if (normalized.Contains("oauth pkce broker is not configured", StringComparison.Ordinal))
+        {
+            return "Embed src/config/zoomOAuth.json or configure the OAuth broker environment variables.";
+        }
+
+        if (normalized.Contains("raw participant video callbacks are disabled", StringComparison.Ordinal))
+        {
+            return "Re-stage the Zoom SDK package and confirm raw video headers are present.";
+        }
+
+        if (normalized.Contains("raw audio callbacks are disabled", StringComparison.Ordinal))
+        {
+            return "Re-stage the Zoom SDK package and confirm raw audio headers are present.";
+        }
+
+        if (normalized.Contains("raw screen-share callbacks are disabled", StringComparison.Ordinal))
+        {
+            return "Re-stage the Zoom SDK package and confirm raw screen-share headers are present.";
+        }
+
+        return string.Empty;
+    }
+
+    private static string DescribeWarningRemediation(string warning)
+    {
+        var normalized = warning.ToLowerInvariant();
+        if (normalized.Contains("sign in with zoom", StringComparison.Ordinal))
+        {
+            return "Use Sign in with Zoom in Settings before joining external-account meetings.";
+        }
+
+        if (normalized.Contains("staged target", StringComparison.Ordinal))
+        {
+            return "Run .\\scripts\\stage-zoom-sdk.ps1 to normalize packaging.";
+        }
+
+        return string.Empty;
     }
 
     private static ZoomMeetingState ParseMeetingState(string? meetingState) =>

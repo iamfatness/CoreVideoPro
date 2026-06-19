@@ -14,6 +14,9 @@ public sealed record FirstFrameValidationEvidence
     public int AudioActiveParticipantCount { get; init; }
     public string? LastZoomParticipantId { get; init; }
     public int? LastZoomFrameId { get; init; }
+    public int? LastZoomFrameWidth { get; init; }
+    public int? LastZoomFrameHeight { get; init; }
+    public double? FirstZoomFrameElapsedMs { get; init; }
     public int? LastProgramFrameNumber { get; init; }
     public IReadOnlyList<string> Evidence { get; init; } = [];
     public IReadOnlyList<string> Missing { get; init; } = [];

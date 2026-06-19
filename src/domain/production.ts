@@ -899,24 +899,7 @@ export const initialProduction: ProductionState = {
     backgroundOpacity: 70,
     uppercase: false
   },
-  captionTranscript: [
-    {
-      id: "cc-1",
-      speakerName: "Sophia Martinez",
-      role: "Host",
-      text: "Welcome to the Q2 Product Update.",
-      confidence: 96,
-      atSeconds: 4
-    },
-    {
-      id: "cc-2",
-      speakerName: "David Chen",
-      role: "Presenter",
-      text: "Let me walk through what we are building next.",
-      confidence: 93,
-      atSeconds: 12
-    }
-  ],
+  captionTranscript: [],
   graphics: [
     {
       id: "brand-bug",

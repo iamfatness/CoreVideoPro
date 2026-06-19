@@ -132,11 +132,13 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $artifactCandidates = @(
   (Join-Path $BuildDir $Config),
   $BuildDir
-)
-$artifactDir = $artifactCandidates | Where-Object { Test-Path (Join-Path $_ "corevideo-native.exe") } | Select-Object -First 1
-if (-not $artifactDir) {
+) | Where-Object { Test-Path (Join-Path $_ "corevideo-native.exe") }
+if (-not $artifactCandidates -or $artifactCandidates.Count -eq 0) {
   throw "corevideo-native.exe not found under $BuildDir"
 }
+$artifactDir = $artifactCandidates |
+  Sort-Object { (Get-Item (Join-Path $_ "corevideo-native.exe")).LastWriteTimeUtc } -Descending |
+  Select-Object -First 1
 
 $testBinary = Join-Path $artifactDir "corevideo-native-tests.exe"
 if (-not (Test-Path $testBinary)) {

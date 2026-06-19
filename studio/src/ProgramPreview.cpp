@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <limits>
+#include <sstream>
 
 namespace {
 
@@ -276,14 +277,80 @@ RECT fitRect(const RECT& bounds, int width, int height) {
   return result;
 }
 
-void drawPlaceholder(HDC dc, const RECT& bounds) {
-  FillRect(dc, &bounds, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+std::wstring widenUtf8(std::string_view value) {
+  if (value.empty()) {
+    return {};
+  }
+  const int size = MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+  if (size <= 0) {
+    return {};
+  }
+  std::wstring result(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size);
+  return result;
+}
+
+void drawCenteredMultiline(HDC dc, const RECT& bounds, const std::wstring& text, COLORREF color) {
   SetBkMode(dc, TRANSPARENT);
-  SetTextColor(dc, RGB(190, 190, 190));
+  SetTextColor(dc, color);
   HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
   HGDIOBJ previousFont = SelectObject(dc, font);
   RECT textBounds = bounds;
-  DrawTextW(dc, L"No program preview", -1, &textBounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  DrawTextW(dc, text.c_str(), -1, &textBounds, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+  SelectObject(dc, previousFont);
+}
+
+void drawPlaceholder(HDC dc, const RECT& bounds, std::string_view waitingHint) {
+  FillRect(dc, &bounds, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+  RECT header = bounds;
+  header.bottom = header.top + 24;
+  FillRect(dc, &header, reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+  drawCenteredMultiline(dc, header, L"PROGRAM PREVIEW", RGB(245, 245, 245));
+
+  RECT body = bounds;
+  body.top = header.bottom + 8;
+  body.bottom -= 8;
+  std::wstring message = L"No program frames yet.\r\n\r\n";
+  message += widenUtf8(waitingHint);
+  drawCenteredMultiline(dc, body, message, RGB(190, 190, 190));
+}
+
+void drawMetadataOverlay(HDC dc, const RECT& bounds, const ProgramPreview::Metadata& metadata) {
+  RECT header = bounds;
+  header.bottom = header.top + 22;
+  FillRect(dc, &header, reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+  drawCenteredMultiline(dc, header, L"PROGRAM PREVIEW", RGB(245, 245, 245));
+
+  RECT footer = bounds;
+  footer.top = std::max(footer.top, footer.bottom - 28);
+  HBRUSH overlayBrush = CreateSolidBrush(RGB(18, 18, 18));
+  FillRect(dc, &footer, overlayBrush);
+  DeleteObject(overlayBrush);
+
+  std::ostringstream caption;
+  caption << "Frame " << metadata.frameNumber;
+  if (metadata.width > 0 && metadata.height > 0) {
+    caption << "  " << metadata.width << "x" << metadata.height;
+  }
+  if (!metadata.health.empty()) {
+    caption << "  health " << metadata.health;
+  }
+  if (!metadata.renderer.empty()) {
+    caption << "  " << metadata.renderer;
+  }
+  if (!metadata.renderPlanId.empty()) {
+    caption << "  plan " << metadata.renderPlanId;
+  }
+
+  SetBkMode(dc, TRANSPARENT);
+  SetTextColor(dc, RGB(220, 220, 220));
+  HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+  HGDIOBJ previousFont = SelectObject(dc, font);
+  RECT textBounds = footer;
+  textBounds.left += 8;
+  textBounds.right -= 8;
+  DrawTextW(dc, widenUtf8(caption.str()).c_str(), -1, &textBounds, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
   SelectObject(dc, previousFont);
 }
 
@@ -326,6 +393,11 @@ bool ProgramPreview::updateFromEventLine(std::string_view line) {
   return true;
 }
 
+void ProgramPreview::setWaitingHint(std::string hint) {
+  std::lock_guard lock(mutex_);
+  waitingHint_ = std::move(hint);
+}
+
 void ProgramPreview::clear() {
   std::lock_guard lock(mutex_);
   latest_.reset();
@@ -350,10 +422,12 @@ void ProgramPreview::render(HDC dc, const RECT& bounds) const {
   }
 
   Frame frame;
+  std::string waitingHint;
   {
     std::lock_guard lock(mutex_);
+    waitingHint = waitingHint_;
     if (!latest_) {
-      drawPlaceholder(dc, bounds);
+      drawPlaceholder(dc, bounds, waitingHint);
       return;
     }
     frame = *latest_;
@@ -388,4 +462,6 @@ void ProgramPreview::render(HDC dc, const RECT& bounds) const {
       &info,
       DIB_RGB_COLORS,
       SRCCOPY);
+
+  drawMetadataOverlay(dc, bounds, frame.metadata);
 }

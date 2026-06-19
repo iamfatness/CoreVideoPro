@@ -367,13 +367,17 @@ public static class ProductionStateHelper
     {
         if (devices.Count == 0)
         {
-            return "No capture devices detected";
+            return "No video capture devices detected";
         }
 
         var connected = devices.Count(d => d.ConnectionState == CaptureConnectionState.Connected);
         var detected = devices.Count(d => d.ConnectionState == CaptureConnectionState.Detected);
         return $"{connected} connected · {detected} detected";
     }
+
+    public static string CaptureDevicesEmptyGuidance() =>
+        "Connect a webcam, capture card, or SDI/HDMI interface, then select Refresh. " +
+        "Windows enumerates real devices only — no simulated DeckLink or AJA hardware is shown.";
 
     public static bool DualCaptureLive(IReadOnlyList<CaptureDevice> devices) =>
         devices.Count(d => d.ConnectionState == CaptureConnectionState.Connected) >= 2;
@@ -417,7 +421,7 @@ public static class ProductionStateHelper
         }).ToList();
 
     public static string MediaBinSummary(int assetCount) =>
-        assetCount == 0 ? "No media assets loaded" : $"{assetCount} assets in bin";
+        assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";
 
     public static string CaptionQualitySummary(bool hasCaptions, int entryCount) =>
         hasCaptions

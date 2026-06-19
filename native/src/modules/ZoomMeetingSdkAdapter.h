@@ -35,6 +35,9 @@ struct ZoomMeetingSdkSubscriptionState {
   std::string lastResultCode = "not-started";
   int64_t framesReceived = 0;
   int64_t audioPacketsReceived = 0;
+  double firstFrameAtMs = -1.0;
+  double lastFrameAtMs = -1.0;
+  double firstFrameDelayMs = -1.0;
   std::string warning;
 };
 

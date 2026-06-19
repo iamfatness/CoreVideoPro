@@ -43,6 +43,10 @@ import { applyBrandKitToGraphics, programBackgroundStyle, summarizeBrandKit } fr
 import { captionStyleVars, formatCaptionText, summarizeCaptionStyle } from "./engine/captionStyle";
 import { appendCaptionEntry, attributeCaption } from "./engine/captionTranscript";
 import { summarizeCaptureFleet } from "./engine/captureFleet";
+import {
+  appendCaptionTranscriptFromSnapshot,
+  resolveOverlayEnabledFlags
+} from "./engine/graphicsOverlaySync";
 import { colorGradeFilter, colorGradeLuts, summarizeColorGrade } from "./engine/colorGrade";
 import { controlButtonStatus, controlSurface, summarizeControlSurface, type ControlAction } from "./engine/controlSurface";
 import { addMediaAsset, groupMediaBin, mediaAssetKinds, removeMediaAsset, summarizeMediaBin } from "./engine/mediaBin";
@@ -567,6 +571,30 @@ export function App({ engines, runtime }: AppProps) {
         return;
       }
       setMediaCoreSnapshot(snapshot);
+
+      const overlayFlags = resolveOverlayEnabledFlags(
+        snapshot,
+        production.graphics.map((graphic) => graphic.id),
+        engineRunning
+      );
+      if (overlayFlags) {
+        const speakerRoles = Object.fromEntries(
+          production.participants.map((participant) => [participant.name, participant.role])
+        );
+        setProduction((current) => ({
+          ...current,
+          graphics: current.graphics.map((graphic) =>
+            overlayFlags[graphic.id] === undefined
+              ? graphic
+              : { ...graphic, enabled: overlayFlags[graphic.id] }
+          ),
+          captionTranscript: appendCaptionTranscriptFromSnapshot(
+            snapshot,
+            current.captionTranscript,
+            speakerRoles
+          )
+        }));
+      }
 
       const nativeBridge = (window as { coreVideoNative?: { getMediaCoreHealth?(): Promise<MediaCoreHealth> } }).coreVideoNative;
       if (nativeBridge?.getMediaCoreHealth) {
@@ -2813,7 +2841,11 @@ export function App({ engines, runtime }: AppProps) {
               <Cable size={15} />
               Capture Devices
             </div>
-            {production.captureDevices.length === 0 && <p className="preset-status">No Blackmagic or AJA devices detected</p>}
+            {production.captureDevices.length === 0 && (
+              <p className="preset-status">
+                No video capture devices detected. Connect hardware and refresh — only real Windows-enumerated devices are listed.
+              </p>
+            )}
             {production.captureDevices.length > 0 && (
               <div className="capture-fleet" aria-label="Capture fleet">
                 <p className="capture-fleet-summary">{captureFleet.summary}</p>

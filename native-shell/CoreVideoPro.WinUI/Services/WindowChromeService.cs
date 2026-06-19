@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -11,6 +12,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public static class WindowChromeService
 {
+    private const int DwmwaUseImmersiveDarkModeLegacy = 19;
     private const int DwmwaUseImmersiveDarkMode = 20;
     private const int DwmwaCaptionColor = 35;
     private const int DwmwaTextColor = 36;
@@ -23,25 +25,41 @@ public static class WindowChromeService
     private static readonly Windows.UI.Color TitleButtonPressed = Windows.UI.Color.FromArgb(255, 52, 72, 88);
     private static readonly Windows.UI.Color TitleInactiveForeground = Windows.UI.Color.FromArgb(255, 148, 165, 155);
 
+    private static readonly ConcurrentDictionary<IntPtr, List<DispatcherQueueTimer>> ScheduledTimers = new();
+
     public static void Apply(Window window, AppWindow appWindow)
     {
-        var hwnd = WindowNative.GetWindowHandle(window);
-        EnableImmersiveDarkMode(hwnd);
-        ApplyDwmCaptionColors(hwnd);
-        ApplyAppWindowTitleBar(appWindow);
+        ApplyCore(window, appWindow);
+        ApplyCore(window, appWindow);
 
         // WinUI often paints default white caption buttons until after the first frame.
         var queue = DispatcherQueue.GetForCurrentThread();
         if (queue is not null)
         {
-            ScheduleReapply(queue, window, appWindow, TimeSpan.FromMilliseconds(50));
-            ScheduleReapply(queue, window, appWindow, TimeSpan.FromMilliseconds(200));
-            ScheduleReapply(queue, window, appWindow, TimeSpan.FromMilliseconds(600));
+            var hwnd = WindowNative.GetWindowHandle(window);
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(50));
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(200));
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(600));
+        }
+    }
+
+    public static void ClearScheduledReapply(Window window)
+    {
+        var hwnd = WindowNative.GetWindowHandle(window);
+        if (!ScheduledTimers.TryRemove(hwnd, out var timers))
+        {
+            return;
+        }
+
+        foreach (var timer in timers)
+        {
+            timer.Stop();
         }
     }
 
     private static void ScheduleReapply(
         DispatcherQueue queue,
+        IntPtr hwnd,
         Window window,
         AppWindow appWindow,
         TimeSpan delay)
@@ -49,12 +67,52 @@ public static class WindowChromeService
         var timer = queue.CreateTimer();
         timer.Interval = delay;
         timer.IsRepeating = false;
-        timer.Tick += (_, _) =>
+
+        void OnTick(DispatcherQueueTimer sender, object args)
         {
-            timer.Stop();
-            Apply(window, appWindow);
-        };
+            sender.Stop();
+            sender.Tick -= OnTick;
+            RemoveTimer(hwnd, sender);
+            ApplyCore(window, appWindow);
+        }
+
+        timer.Tick += OnTick;
+        TrackTimer(hwnd, timer);
         timer.Start();
+    }
+
+    private static void TrackTimer(IntPtr hwnd, DispatcherQueueTimer timer)
+    {
+        var timers = ScheduledTimers.GetOrAdd(hwnd, _ => []);
+        lock (timers)
+        {
+            timers.Add(timer);
+        }
+    }
+
+    private static void RemoveTimer(IntPtr hwnd, DispatcherQueueTimer timer)
+    {
+        if (!ScheduledTimers.TryGetValue(hwnd, out var timers))
+        {
+            return;
+        }
+
+        lock (timers)
+        {
+            timers.Remove(timer);
+            if (timers.Count == 0)
+            {
+                ScheduledTimers.TryRemove(hwnd, out _);
+            }
+        }
+    }
+
+    private static void ApplyCore(Window window, AppWindow appWindow)
+    {
+        var hwnd = WindowNative.GetWindowHandle(window);
+        EnableImmersiveDarkMode(hwnd);
+        ApplyDwmCaptionColors(hwnd);
+        ApplyAppWindowTitleBar(appWindow);
     }
 
     private static void ApplyAppWindowTitleBar(AppWindow appWindow)
@@ -87,6 +145,7 @@ public static class WindowChromeService
     private static void EnableImmersiveDarkMode(IntPtr hwnd)
     {
         var dark = 1;
+        _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeLegacy, ref dark, sizeof(int));
         _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
     }
 

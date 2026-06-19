@@ -1,61 +1,14 @@
-using System.Security.Cryptography;
-using System.Text;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using Windows.Devices.Enumeration;
 
 namespace CoreVideoPro.WinUI.Services;
 
-public static class CaptureDeviceDiscoveryMapper
+public sealed class CaptureDeviceDiscoveryService : IDisposable
 {
-    public static string CreateStableDeviceId(string symbolicLinkId)
-    {
-        if (string.IsNullOrWhiteSpace(symbolicLinkId))
-        {
-            return Guid.NewGuid().ToString("N");
-        }
+    private DeviceWatcher? _watcher;
+    private Action? _onDevicesChanged;
 
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(symbolicLinkId));
-        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
-    }
-
-    public static string DetectVendor(string friendlyName)
-    {
-        var normalized = friendlyName.ToLowerInvariant();
-        if (normalized.Contains("blackmagic", StringComparison.Ordinal) ||
-            normalized.Contains("decklink", StringComparison.Ordinal))
-        {
-            return "blackmagic";
-        }
-
-        if (normalized.Contains("aja", StringComparison.Ordinal))
-        {
-            return "aja";
-        }
-
-        return "windows";
-    }
-
-    public static CaptureDevice MapDiscoveredDevice(string deviceSymbolicLinkId, string friendlyName)
-    {
-        return new CaptureDevice
-        {
-            Id = CreateStableDeviceId(deviceSymbolicLinkId),
-            Vendor = DetectVendor(friendlyName),
-            Name = friendlyName,
-            Inputs = [new CaptureDeviceInput { Id = "default", Label = "Default" }],
-            SelectedInputId = "default",
-            Width = 0,
-            Height = 0,
-            FrameRate = 0,
-            ConnectionState = CaptureConnectionState.Detected,
-            SignalPresent = false,
-            AudioSyncOffsetMs = 0
-        };
-    }
-}
-
-public sealed class CaptureDeviceDiscoveryService
-{
     public async Task<IReadOnlyList<CaptureDevice>> DiscoverDevicesAsync()
     {
         try
@@ -67,7 +20,7 @@ public sealed class CaptureDeviceDiscoveryService
             return deviceInfos
                 .Where(info => !string.IsNullOrWhiteSpace(info.Name))
                 .GroupBy(info => info.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(group => CaptureDeviceDiscoveryMapper.MapDiscoveredDevice(group.Key, group.First().Name))
+                .Select(group => MapDiscoveredDevice(group.Key, group.First().Name))
                 .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -79,4 +32,64 @@ public sealed class CaptureDeviceDiscoveryService
 
     public IReadOnlyList<CaptureDevice> DiscoverDevices() =>
         DiscoverDevicesAsync().GetAwaiter().GetResult();
+
+    public void StartWatching(Action onDevicesChanged)
+    {
+        StopWatching();
+        _onDevicesChanged = onDevicesChanged;
+
+        try
+        {
+            _watcher = DeviceInformation.CreateWatcher(DeviceClass.VideoCapture);
+            _watcher.Added += OnWatcherChanged;
+            _watcher.Removed += OnWatcherChanged;
+            _watcher.Updated += OnWatcherChanged;
+            _watcher.EnumerationCompleted += OnWatcherChanged;
+            _watcher.Start();
+        }
+        catch
+        {
+            StopWatching();
+        }
+    }
+
+    public void StopWatching()
+    {
+        if (_watcher is null)
+        {
+            return;
+        }
+
+        _watcher.Added -= OnWatcherChanged;
+        _watcher.Removed -= OnWatcherChanged;
+        _watcher.Updated -= OnWatcherChanged;
+        _watcher.EnumerationCompleted -= OnWatcherChanged;
+        _watcher.Stop();
+        _watcher = null;
+    }
+
+    public void Dispose()
+    {
+        StopWatching();
+        _onDevicesChanged = null;
+    }
+
+    private void OnWatcherChanged(DeviceWatcher sender, object args) =>
+        _onDevicesChanged?.Invoke();
+
+    internal static CaptureDevice MapDiscoveredDevice(string deviceSymbolicLinkId, string friendlyName) =>
+        new()
+        {
+            Id = CaptureDeviceDiscoveryMapper.CreateStableDeviceId(deviceSymbolicLinkId),
+            Vendor = CaptureDeviceDiscoveryMapper.DetectVendor(friendlyName),
+            Name = friendlyName,
+            Inputs = [new CaptureDeviceInput { Id = "default", Label = "Default" }],
+            SelectedInputId = "default",
+            Width = 0,
+            Height = 0,
+            FrameRate = 0,
+            ConnectionState = CaptureConnectionState.Detected,
+            SignalPresent = false,
+            AudioSyncOffsetMs = 0
+        };
 }

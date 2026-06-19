@@ -20,10 +20,25 @@ struct StudioState {
   std::string healthStatus;
   std::string programFrameHealth;
   std::uint64_t frameCount = 0;
+  bool firstFrameSeen = false;
+  std::uint64_t previewFrameNumber = 0;
   std::string recordingArtifactPath;
+  std::string recordingHealth;
+  std::uint64_t recordingBytesWritten = 0;
+  std::uint64_t recordingDurationMs = 0;
+  std::uint64_t recordingFrameCount = 0;
+  bool recordingMetadataValid = false;
+
+  std::string sceneId;
+  int routeCount = 0;
+  int overlayCount = 0;
+  std::vector<std::string> outputDestinations;
+  bool captionsEnabled = false;
+  std::string captionStatus;
 
   std::string outputStatus;
   int activeSenderCount = 0;
+  std::string encoderLifecycleStatus;
 
   std::string meetingState;
   std::string activeSpeakerId;
@@ -44,6 +59,7 @@ struct StudioState {
 
 [[nodiscard]] StudioState parseStudioStateLine(const std::string& line);
 void applyStudioStateLine(StudioState& state, const std::string& line);
+void notePreviewFrame(StudioState& state, std::uint64_t frameNumber, const std::string& health);
 [[nodiscard]] std::string summarizeStudioState(const StudioState& state);
 
 }  // namespace corevideo::studio

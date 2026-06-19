@@ -267,6 +267,8 @@ std::filesystem::path findNativeCore() {
   return {};
 }
 
+std::wstring g_nativeCorePath;
+
 void configureNativeCoreEnvironment() {
   if (envEnabled(L"COREVIDEO_STUDIO_USE_DEV_CORE")) {
     const auto zoomEngine = findZoomEngine();
@@ -373,7 +375,10 @@ class NativeCoreClient {
     stdinWrite_ = childStdinWrite;
     running_ = true;
 
-    append(window, "Launched native media core: " + narrow(exe.wstring()));
+    g_nativeCorePath = exe.wstring();
+    const bool usingDevCore = envEnabled(L"COREVIDEO_STUDIO_USE_DEV_CORE") &&
+                              exe.string().find("build-dev") != std::string::npos;
+    append(window, std::string("Launched native media core") + (usingDevCore ? " (dev build)" : "") + ": " + narrow(exe.wstring()));
     reader_ = std::thread([this]() { readLoop(); });
     return true;
   }
@@ -516,20 +521,78 @@ std::string participantIdOrFallback(size_t index, const std::string& fallback) {
   return fallback;
 }
 
+std::wstring scenesStateText() {
+  std::ostringstream out;
+  out << "SCENE / OUTPUT\r\n\r\n";
+  if (g_studioState.sceneId.empty() || g_studioState.sceneId == "unloaded") {
+    out << "Scene: not loaded\r\n";
+    out << "Action: Magic Scene\r\n\r\n";
+    out << "Templates:\r\n"
+        << "  Interview\r\n"
+        << "  Speaker + Slides\r\n"
+        << "  Panel\r\n"
+        << "  Lower Third\r\n"
+        << "  Program Recording\r\n";
+  } else {
+    out << "Scene: " << g_studioState.sceneId << "\r\n";
+    if (g_studioState.routeCount > 0) {
+      out << "Routes: " << g_studioState.routeCount << "\r\n";
+    }
+    if (g_studioState.overlayCount > 0) {
+      out << "Overlays: " << g_studioState.overlayCount << "\r\n";
+    }
+    if (g_studioState.captionsEnabled) {
+      out << "Captions: on";
+      if (!g_studioState.captionStatus.empty()) {
+        out << " (" << g_studioState.captionStatus << ")";
+      }
+      out << "\r\n";
+    }
+    if (!g_studioState.outputDestinations.empty()) {
+      out << "Outputs: ";
+      for (std::size_t index = 0; index < g_studioState.outputDestinations.size(); ++index) {
+        if (index > 0) {
+          out << ", ";
+        }
+        out << g_studioState.outputDestinations[index];
+      }
+      out << "\r\n";
+    }
+    if (!g_studioState.encoderLifecycleStatus.empty()) {
+      out << "Encoder lifecycle: " << g_studioState.encoderLifecycleStatus << "\r\n";
+    }
+    if (!g_studioState.outputStatus.empty()) {
+      out << "Output session: " << g_studioState.outputStatus << "\r\n";
+    }
+    if (g_studioState.activeSenderCount > 0) {
+      out << "Active senders: " << g_studioState.activeSenderCount << "\r\n";
+    }
+    out << "\r\nAction: Record Program to arm recording + RTMP.";
+  }
+  return widen(out.str());
+}
+
 std::wstring studioStateText() {
   std::ostringstream health;
-  health << "NATIVE CORE\r\n\r\n"
-         << "Connected: " << (g_studioState.connected ? "yes" : "no") << "\r\n"
+  health << "NATIVE CORE\r\n\r\n";
+  if (!g_nativeCorePath.empty()) {
+    health << "Core: " << narrow(g_nativeCorePath) << "\r\n";
+  }
+  health << "Connected: " << (g_studioState.connected ? "yes" : "no") << "\r\n"
          << "Zoom: " << (g_studioState.meetingState.empty() ? "idle" : g_studioState.meetingState) << "\r\n"
          << "Active speaker: " << (g_studioState.activeSpeakerId.empty() ? "pending" : g_studioState.activeSpeakerId) << "\r\n"
          << "Handshake: " << (g_studioState.handshakeSeen ? "yes" : "no") << "\r\n"
          << "Renderer: " << (g_studioState.renderer.empty() ? "pending" : g_studioState.renderer) << "\r\n"
          << "Encoder: " << (g_studioState.encoder.empty() ? "pending" : g_studioState.encoder) << "\r\n"
          << "Health: " << (g_studioState.healthStatus.empty() ? "pending" : g_studioState.healthStatus) << "\r\n"
+         << "First frame: " << (g_studioState.firstFrameSeen ? "yes" : "waiting") << "\r\n"
          << "Program: " << (g_studioState.programFrameHealth.empty() ? "pending" : g_studioState.programFrameHealth) << "\r\n"
          << "Output: " << (g_studioState.outputStatus.empty() ? "idle" : g_studioState.outputStatus) << "\r\n"
          << "Frames: " << g_studioState.frameCount << "\r\n"
          << "Senders: " << g_studioState.activeSenderCount;
+  if (!g_studioState.recordingHealth.empty()) {
+    health << "\r\nRecording health: " << g_studioState.recordingHealth;
+  }
   if (!g_studioState.recordingArtifactPath.empty()) {
     health << "\r\nRecording: " << g_studioState.recordingArtifactPath;
   }
@@ -540,6 +603,19 @@ std::wstring studioStateText() {
   text += L"\r\n\r\n";
   text += zoomReadinessText();
   return text;
+}
+
+std::string programPreviewWaitingHint() {
+  if (g_studioState.firstFrameSeen) {
+    return "Program frames are flowing. Preview updates on each program-frame-preview event.";
+  }
+  if (!g_studioState.sceneId.empty() && g_studioState.sceneId != "unloaded") {
+    return "Scene " + g_studioState.sceneId + " is loaded. Start Record Program to produce preview frames.";
+  }
+  if (!g_studioState.meetingState.empty() && g_studioState.meetingState != "idle") {
+    return "Zoom is " + g_studioState.meetingState + ". Use Magic Scene, then Record Program.";
+  }
+  return "Join Zoom, build Magic Scene, then Record Program to surface program frames.";
 }
 
 std::wstring participantsText() {
@@ -562,27 +638,20 @@ std::wstring participantsText() {
 }
 
 void refreshStatePanels() {
+  g_preview.setWaitingHint(programPreviewWaitingHint());
+  setStudioText(g_scenes, scenesStateText().c_str());
   setStudioText(g_health, studioStateText().c_str());
   setStudioText(g_participants, participantsText().c_str());
   const auto summary = corevideo::studio::summarizeStudioState(g_studioState);
   if (!summary.empty()) {
     setStatus(widen(summary).c_str());
   }
+  if (g_program) {
+    InvalidateRect(g_program, nullptr, TRUE);
+  }
 }
 
 void refreshStaticPanels() {
-  setStudioText(
-      g_scenes,
-      L"SCENES\r\n\r\n"
-      L"Magic Scene builds the show from the current Zoom roster.\r\n\r\n"
-      L"1  Interview\r\n"
-      L"2  Speaker + Slides\r\n"
-      L"3  Panel\r\n"
-      L"4  Lower Third\r\n"
-      L"5  Program Recording");
-  setStudioText(
-      g_program,
-      L"");
   refreshStatePanels();
 }
 
@@ -852,7 +921,11 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         appendLog(g_log, *text);
         const std::string logLine = narrow(*text);
         const std::string payload = logLine.rfind("< ", 0) == 0 ? logLine.substr(2) : logLine;
-        if (g_preview.updateFromEventLine(payload)) {
+        const bool previewUpdated = g_preview.updateFromEventLine(payload);
+        if (previewUpdated) {
+          if (const auto metadata = g_preview.latestMetadata()) {
+            corevideo::studio::notePreviewFrame(g_studioState, metadata->frameNumber, metadata->health);
+          }
           InvalidateRect(g_program, nullptr, TRUE);
         }
         corevideo::studio::applyStudioStateLine(g_studioState, payload);
