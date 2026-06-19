@@ -11,3 +11,10 @@ public sealed record RoutingBus(string Id, string Label);
 /// source such as the Zoom program mix or media playback.
 /// </summary>
 public sealed record RoutingSource(string Id, string Label);
+
+/// <summary>
+/// A video destination in the routing matrix (a matrix column) — an ISO record
+/// channel, a multiview tile, or an aux/stream send. Video crosspoints are
+/// on/off only (no gain), unlike the audio buses.
+/// </summary>
+public sealed record RoutingDestination(string Id, string Label);

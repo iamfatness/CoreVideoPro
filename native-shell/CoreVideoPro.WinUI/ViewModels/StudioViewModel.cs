@@ -173,6 +173,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
 
+    public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
+
+    /// <summary>Which matrix the Routing tab is showing: "audio" or "video".</summary>
+    [ObservableProperty]
+    private string _routingMatrixMode = "audio";
+
+    public bool IsAudioRoutingMode => RoutingMatrixMode == "audio";
+
+    public bool IsVideoRoutingMode => RoutingMatrixMode == "video";
+
+    public TabChrome AudioRoutingModeChrome =>
+        IsAudioRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
+
+    public TabChrome VideoRoutingModeChrome =>
+        IsVideoRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
+
     public IReadOnlyList<SourceRoute> PreviewSceneRoutes { get; private set; } = [];
 
     public IReadOnlyList<SourceRoute> ProgramSceneRoutes { get; private set; } = [];
@@ -590,6 +606,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MultiviewModeChrome));
     }
 
+    partial void OnRoutingMatrixModeChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsAudioRoutingMode));
+        OnPropertyChanged(nameof(IsVideoRoutingMode));
+        OnPropertyChanged(nameof(AudioRoutingModeChrome));
+        OnPropertyChanged(nameof(VideoRoutingModeChrome));
+    }
+
     partial void OnMultiviewTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
     {
         OnPropertyChanged(nameof(MultiviewHeader));
@@ -673,6 +697,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         else if (value == StudioTab.Routing)
         {
             BuildAudioRoutingMatrix();
+            BuildVideoRoutingMatrix();
         }
         else if (value == StudioTab.Media)
         {
@@ -833,6 +858,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void SetRoutingMatrixMode(string mode)
+    {
+        RoutingMatrixMode = mode == "video" ? "video" : "audio";
+    }
+
+    [RelayCommand]
     private void SelectTab(string tab)
     {
         ActiveTab = tab switch
@@ -848,7 +879,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         };
     }
 
-    private void BuildAudioRoutingMatrix()
+    private List<RoutingSource> BuildAssignedInputSources()
     {
         var sources = new List<RoutingSource>();
         foreach (var input in ShowInputEditors)
@@ -859,9 +890,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        return sources;
+    }
+
+    private void BuildAudioRoutingMatrix()
+    {
+        var sources = BuildAssignedInputSources();
         sources.Add(new RoutingSource("zoom-mix", "Zoom program mix"));
         sources.Add(new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
+    }
+
+    private void BuildVideoRoutingMatrix()
+    {
+        var sources = BuildAssignedInputSources();
+        sources.Add(new RoutingSource("active-speaker", "Active Speaker"));
+        sources.Add(new RoutingSource("screen-share", "Screen Share"));
+        sources.Add(new RoutingSource("media", "Media"));
+        VideoRoutingMatrix.Build(sources);
     }
 
     [RelayCommand]
