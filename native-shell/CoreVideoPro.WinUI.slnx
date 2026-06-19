@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj" />
   <Project Path="CoreVideoPro.MediaCore/CoreVideoPro.MediaCore.csproj" />
+  <Project Path="CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj" />
   <Project Path="CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj" />
 </Solution>

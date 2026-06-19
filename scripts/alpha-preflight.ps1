@@ -111,6 +111,7 @@ $status = git status --short
 Invoke-AlphaStep -Name "npm audit" -Command "npm audit --audit-level=moderate"
 Invoke-AlphaStep -Name "TypeScript typecheck" -Command "npm run typecheck"
 Invoke-AlphaStep -Name "MediaCore tests" -Command "dotnet test native-shell/CoreVideoPro.MediaCore.Tests/CoreVideoPro.MediaCore.Tests.csproj --no-restore -p:NuGetAudit=false"
+Invoke-AlphaStep -Name "WinUI view-model tests" -Command "dotnet test native-shell/CoreVideoPro.WinUI.Tests/CoreVideoPro.WinUI.Tests.csproj --no-restore -p:NuGetAudit=false"
 
 if (-not $SkipNativeBuild) {
   Invoke-AlphaStep -Name "Native media-core stub build and smoke" -Command "npm run test:native-media-core"
