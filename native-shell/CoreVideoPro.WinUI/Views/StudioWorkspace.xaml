@@ -137,6 +137,12 @@
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="settings" />
+                    <Button Content="Sources" Style="{StaticResource GhostButton}"
+                            Background="{x:Bind ViewModel.InputsTabChrome.Background, Mode=OneWay}"
+                            BorderBrush="{x:Bind ViewModel.InputsTabChrome.BorderBrush, Mode=OneWay}"
+                            Foreground="{x:Bind ViewModel.InputsTabChrome.Foreground, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="inputs"
+                            ToolTipService.ToolTip="Sources — Inputs 1–10 mapping, capture devices, and Zoom feed health" />
                     <Button Style="{StaticResource SceneBuilderNavButton}"
                             Background="{x:Bind ViewModel.SourcesTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SourcesTabChrome.BorderBrush, Mode=OneWay}"
@@ -555,6 +561,11 @@
         <Border Grid.Row="1" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsSourcesTab, Mode=OneWay}">
             <views:SourcesPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
+        </Border>
+
+        <Border Grid.Row="1" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
+                Visibility="{x:Bind ViewModel.IsInputsTab, Mode=OneWay}">
+            <views:SourcesInputsPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="1" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
