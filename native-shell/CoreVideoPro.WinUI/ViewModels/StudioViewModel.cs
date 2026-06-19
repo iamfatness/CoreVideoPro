@@ -252,7 +252,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _currentRoomId = "main";
         _currentRoomName = "Main room";
 
-        Scenes = ProductionCatalog.Scenes;
+        _scenes = new ObservableCollection<Scene>(ProductionCatalog.Scenes);
         RoomVideoParticipants = [];
         CurrentRoomLabel = "No meeting";
         _multiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
@@ -336,7 +336,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _resourceMonitorTimer.Start();
     }
 
-    public IReadOnlyList<Scene> Scenes { get; }
+    private readonly ObservableCollection<Scene> _scenes;
+
+    public IReadOnlyList<Scene> Scenes => _scenes;
 
     public IReadOnlyList<SceneDisplayItem> SceneItems { get; private set; } = [];
 
@@ -814,6 +816,72 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool CanTake => PreviewSceneId != ActiveSceneId;
+
+    private static string NewCustomSceneId() =>
+        $"custom-{Guid.NewGuid():N}".Substring(0, "custom-".Length + 8);
+
+    [RelayCommand]
+    private void NewScene()
+    {
+        var newId = NewCustomSceneId();
+        var sceneNumber = _scenes.Count(s => s.Id.StartsWith("custom-", StringComparison.Ordinal)) + 1;
+        var scene = new Scene
+        {
+            Id = newId,
+            Name = $"New scene {sceneNumber}",
+            Layout = "host-focus",
+            Automation = "Custom canvas"
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[newId] = SceneRoutingService
+            .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
+            .Select(route => route.Clone())
+            .ToList();
+
+        RefreshSceneItems();
+        PreviewSceneId = newId;
+        CommandStatus = $"{scene.Name} created and queued on preview";
+        SchedulePreviewRoutingRefresh();
+    }
+
+    [RelayCommand]
+    private void SaveScene(string? name)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        var existing = _scenes.FirstOrDefault(
+            s => trimmed is not null && string.Equals(s.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+
+        if (existing is not null)
+        {
+            // A scene with this name already exists — overwrite its routes with the current canvas.
+            CopyPreviewRoutesToScene(existing.Id);
+            PreviewSceneId = existing.Id;
+            CommandStatus = $"{existing.Name} updated from canvas";
+            SchedulePreviewRoutingRefresh();
+            return;
+        }
+
+        var sceneNumber = _scenes.Count(s => s.Id.StartsWith("custom-", StringComparison.Ordinal)) + 1;
+        var newId = NewCustomSceneId();
+        var scene = new Scene
+        {
+            Id = newId,
+            Name = trimmed ?? $"Saved scene {sceneNumber}",
+            Layout = PreviewScene.Layout,
+            Automation = "Custom canvas"
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[newId] = GetMutableRoutes(PreviewSceneId)
+            .Select(route => route.Clone())
+            .ToList();
+
+        RefreshSceneItems();
+        PreviewSceneId = newId;
+        CommandStatus = $"{scene.Name} saved from canvas";
+        SchedulePreviewRoutingRefresh();
+    }
 
     // Take promotes Preview → Program. Because the compositor is always on, the program
     // composition + native scene sync must run regardless of whether Zoom capture is
