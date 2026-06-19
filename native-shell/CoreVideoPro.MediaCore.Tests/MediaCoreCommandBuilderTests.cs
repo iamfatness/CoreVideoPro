@@ -356,6 +356,44 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.True(playback.ExtensionData!["playing"].GetBoolean());
     }
 
+    [Fact]
+    public void PushesConcreteBrandKitFieldsToNativeCore()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants,
+            BrandKit = new MediaCoreBrandKitWire(
+                "Launch Briefing",
+                "CVP",
+                "logo-main",
+                "Primary Logo",
+                @"C:\media\brand\logo.png",
+                "#1cc7b8",
+                "#f2b84b",
+                "#081014",
+                "Inter",
+                "executive",
+                "boxed",
+                "auto")
+        });
+
+        var brand = commands.Single(command => command.Type == "set-brand-kit");
+        Assert.Equal("Launch Briefing", GetString(brand, "name"));
+        Assert.Equal("CVP", GetString(brand, "logoText"));
+        Assert.Equal("logo-main", GetString(brand, "logoAssetId"));
+        Assert.Equal("Primary Logo", GetString(brand, "logoAssetName"));
+        Assert.Equal(@"C:\media\brand\logo.png", GetString(brand, "logoAssetPath"));
+        Assert.Equal("#1cc7b8", GetString(brand, "brandColor"));
+        Assert.Equal("#f2b84b", GetString(brand, "accentColor"));
+        Assert.Equal("#081014", GetString(brand, "backgroundColor"));
+        Assert.Equal("Inter", GetString(brand, "fontFamily"));
+        Assert.Equal("executive", GetString(brand, "lowerThirdStyle"));
+        Assert.Equal("boxed", GetString(brand, "captionStyle"));
+        Assert.Equal("auto", GetString(brand, "defaultOverlayBehavior"));
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||

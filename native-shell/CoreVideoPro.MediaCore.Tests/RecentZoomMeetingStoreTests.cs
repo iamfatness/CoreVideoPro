@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Services;
+using System.Text.Json;
 using Xunit;
 
 namespace CoreVideoPro.MediaCore.Tests;
@@ -63,6 +64,59 @@ public sealed class RecentZoomMeetingStoreTests
             Assert.Equal("Updated Producer", meetings[0].DisplayName);
             Assert.True(meetings[0].Webinar);
             Assert.Single(meetings, meeting => meeting.MeetingNumber == "100000005");
+        }
+        finally
+        {
+            DeleteTempPath(path);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_SanitizesLegacyStoreAndDropsInvalidMeetings()
+    {
+        var path = CreateTempPath();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(
+                path,
+                """
+                [
+                  {
+                    "meetingNumber": "123456789",
+                    "displayName": "  Executive Producer  ",
+                    "webinar": true,
+                    "joinedAt": "2026-06-19T14:00:00Z",
+                    "meetingUrl": "https://zoom.us/j/123456789?pwd=legacy-secret",
+                    "passcode": "legacy-secret"
+                  },
+                  {
+                    "meetingNumber": "https://zoom.us/j/987654321?pwd=bad",
+                    "displayName": "Bad Legacy Record",
+                    "webinar": false,
+                    "joinedAt": "2026-06-19T14:05:00Z"
+                  },
+                  {
+                    "meetingNumber": "123",
+                    "displayName": "Too Short",
+                    "webinar": false,
+                    "joinedAt": "2026-06-19T14:10:00Z"
+                  }
+                ]
+                """);
+
+            var store = new FileRecentZoomMeetingStore(path);
+            var meetings = await store.LoadAsync();
+
+            var meeting = Assert.Single(meetings);
+            Assert.Equal("123456789", meeting.MeetingNumber);
+            Assert.Equal("Executive Producer", meeting.DisplayName);
+            Assert.True(meeting.Webinar);
+
+            var serialized = JsonSerializer.Serialize(meeting);
+            Assert.DoesNotContain("legacy-secret", serialized);
+            Assert.DoesNotContain("passcode", serialized, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("meetingUrl", serialized, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

@@ -100,6 +100,17 @@ public sealed class MediaBinServiceTests : IDisposable
         Assert.Contains(assets, asset => asset.Kind == "lower-third" && asset.Name == "lower-third");
         Assert.Contains(assets, asset => asset.Kind == "audio-bed" && asset.Name == "intro-bed");
         Assert.Contains(assets, asset => asset.Kind == "slate" && asset.Name == "opening");
+        Assert.Contains(
+            assets,
+            asset => asset.Id.StartsWith("media-", StringComparison.Ordinal) &&
+                     asset.RelativePath == "brand-stinger.mp4" &&
+                     asset.FilePath == Path.Combine(_mediaRoot, "brand-stinger.mp4") &&
+                     asset.FileType == "MP4");
+        Assert.Contains(
+            assets,
+            asset => asset.RelativePath == Path.Combine("slates", "opening.png") &&
+                     asset.FilePath == Path.Combine(_mediaRoot, "slates", "opening.png") &&
+                     asset.FileType == "PNG");
         Assert.All(assets, asset => Assert.Null(asset.DurationMs));
     }
 
