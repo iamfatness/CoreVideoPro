@@ -649,7 +649,9 @@
                                Foreground="{StaticResource StudioMutedBrush}" FontSize="11" Margin="0,0,8,0"
                                MaxWidth="220" TextTrimming="CharacterEllipsis" />
                     <Button Style="{StaticResource TakeButton}" MinWidth="96" MinHeight="44"
-                            Command="{x:Bind ViewModel.TakeCommand}">
+                            Command="{x:Bind ViewModel.TakeCommand}"
+                            IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
+                            ToolTipService.ToolTip="Promote the Preview scene to Program (PVW → PGM).">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="14" />
                             <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />

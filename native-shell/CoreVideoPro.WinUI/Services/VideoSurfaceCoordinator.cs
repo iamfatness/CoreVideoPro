@@ -19,11 +19,15 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private readonly Dictionary<string, long> _lastUiUpdateMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _lastAppliedFrameId = new(StringComparer.Ordinal);
     private readonly Timer _uiFlushTimer;
-    private VideoSurfaceState _programSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Program, "program", "Program");
-    private VideoSurfaceState _previewSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Preview, "preview", "Preview");
+    private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
+    private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
     private string _previewParticipantId = "p2";
     private string _compositorRenderer = "software";
-    private bool _engineRunning;
+
+    // The media core / compositor is ALWAYS ON. This flag tracks whether the operator has
+    // subscribed the raw Zoom capture spine. It only gates per-participant Zoom frames — the
+    // always-on program/compositor output is never gated on it.
+    private bool _zoomCaptureSubscribed;
 
     public event Action? SurfacesChanged;
 
@@ -76,26 +80,34 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         }
     }
 
-    public void SetEngineRunning(bool running, string? compositorRenderer = null)
+    public void SetZoomCaptureSubscribed(bool subscribed, string? compositorRenderer = null)
     {
         lock (_gate)
         {
-            _engineRunning = running;
+            _zoomCaptureSubscribed = subscribed;
             if (!string.IsNullOrWhiteSpace(compositorRenderer))
             {
                 _compositorRenderer = compositorRenderer;
             }
 
-            if (!running)
+            if (!subscribed)
             {
-                _trackers.Clear();
+                // Drop per-participant Zoom frame state, but keep the program surface as-is:
+                // the compositor is always on and keeps publishing program frames. The preview
+                // (which mirrors a participant feed) falls back to a "capture paused" slate
+                // instead of a hard "waiting for compositor output".
+                _trackers.Remove("program");
+                foreach (var key in _participantSurfaces.Keys.ToList())
+                {
+                    _trackers.Remove(key);
+                }
+
                 _participantSurfaces.Clear();
                 _pendingFrames.Clear();
                 _lastUiUpdateMs.Clear();
                 _lastAppliedFrameId.Clear();
                 _compositorRenderer = "software";
-                _programSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Program, "program", "Program");
-                _previewSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Preview, "preview", "Preview");
+                _previewSurface = VideoSurfaceState.CapturePaused(VideoSurfaceKind.Preview, "preview", "Preview");
             }
         }
 
@@ -124,7 +136,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     public void OnZoomVideoFrame(ZoomVideoFrame frame)
     {
-        if (!_engineRunning || frame.Bgra.Length == 0)
+        // Per-participant raw frames only arrive while capture is subscribed.
+        if (!_zoomCaptureSubscribed || frame.Bgra.Length == 0)
         {
             return;
         }
@@ -151,11 +164,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     public void OnProgramFramePreview(ProgramFramePreview preview)
     {
-        if (!_engineRunning)
-        {
-            return;
-        }
-
+        // Program frames come from the always-on compositor — never gated on capture.
         if (SharedTextureInteropRules.ShouldPreferGpuSurface(preview.SharedTexture))
         {
             ApplyProgramSharedTexture(
@@ -173,7 +182,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     public void OnProgramSharedTexture(ProgramSharedTexture texture)
     {
-        if (!_engineRunning || !SharedTextureInteropRules.IsPresentable(texture))
+        // Program GPU surfaces come from the always-on compositor — never gated on capture.
+        if (!SharedTextureInteropRules.IsPresentable(texture))
         {
             return;
         }
@@ -183,11 +193,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     public void OnMediaCoreSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
-        if (!_engineRunning)
-        {
-            return;
-        }
-
+        // The compositor is always on, so program frames from every snapshot are accepted
+        // regardless of whether the Zoom capture subscription is active.
         if (snapshot.ProgramFramePreview?.Bgra is { Length: > 0 } snapshotPreview)
         {
             ApplyProgramPreview(
@@ -319,7 +326,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     private void FlushPendingUiUpdates()
     {
-        if (!_engineRunning)
+        // Only participant (capture) frames are buffered here.
+        if (!_zoomCaptureSubscribed)
         {
             return;
         }

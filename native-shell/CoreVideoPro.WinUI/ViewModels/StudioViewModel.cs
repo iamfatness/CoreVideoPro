@@ -28,10 +28,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly string _currentRoomName;
 
     [ObservableProperty]
-    private bool _engineRunning;
+    private bool _zoomCaptureSubscribed;
 
     [ObservableProperty]
-    private string _engineStatus = "Join a Zoom meeting to enable capture.";
+    private string _engineStatus = "Join a Zoom meeting to request capture.";
 
     [ObservableProperty]
     private string _zoomStatus = "Zoom Offline";
@@ -82,10 +82,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _lowerThirdOrg = string.Empty;
 
     [ObservableProperty]
-    private VideoSurfaceState _programSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Program, "program", "Program");
+    private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
 
     [ObservableProperty]
-    private VideoSurfaceState _previewSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Preview, "preview", "Preview");
+    private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
 
     [ObservableProperty]
     private IReadOnlyList<ParticipantSurfaceTile> _multiviewTiles = [];
@@ -276,7 +276,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         Settings = new SettingsViewModel(
             _bridge,
-            () => EngineRunning,
+            () => ZoomCaptureSubscribed,
             _zoomOAuth,
             drainOAuthCallback: () => _zoomOAuthCoordinator.TryDrainPendingCallback(),
             onMeetingPresenceChanged: () =>
@@ -289,9 +289,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             },
             onBeforeLeaveMeeting: () =>
             {
-                if (EngineRunning)
+                if (ZoomCaptureSubscribed)
                 {
-                    StopCaptureEngine("Capture off — leaving meeting");
+                    UnsubscribeZoomCapture("Capture off — leaving meeting");
                 }
 
                 return Task.CompletedTask;
@@ -351,15 +351,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _currentRoomLabel;
 
-    public string EngineRunningLabel => EngineRunning ? "Capture On" : "Capture Off";
+    public string EngineRunningLabel => ZoomCaptureSubscribed ? "Capture On" : "Capture Off";
 
     public bool CanToggleCapture => Settings.IsInMeeting;
 
-    public bool CanToggleRecording => EngineRunning && Settings.IsInMeeting;
+    // Recording rights can be requested in a breakout room without capture running,
+    // so recording only requires being in a meeting (NOT an active capture subscription).
+    public bool CanToggleRecording => Settings.IsInMeeting;
 
     public string CaptureEngineHint => CanToggleCapture
-        ? "Starts raw Zoom ingest for the active meeting."
-        : "Join a Zoom meeting first, then enable capture.";
+        ? "Requests the raw Zoom capture subscription for the active meeting."
+        : "Join a Zoom meeting first, then request capture.";
 
     public string RecordingLabel => Recording ? "Recording" : "Record";
 
@@ -490,15 +492,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public int SelectedOutputLevel =>
         SelectedAudioMix?.OutputLevel ?? SelectedParticipant?.AudioLevel ?? 0;
 
-    public Brush EngineToggleBackground => EngineRunning
+    public Brush EngineToggleBackground => ZoomCaptureSubscribed
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(31, 61, 220, 151))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(10, 255, 255, 255));
 
-    public Brush EngineToggleBorder => EngineRunning
+    public Brush EngineToggleBorder => ZoomCaptureSubscribed
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(140, 61, 220, 151))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(46, 189, 207, 196));
 
-    public Brush EngineToggleForeground => EngineRunning
+    public Brush EngineToggleForeground => ZoomCaptureSubscribed
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 174, 242, 223))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 165, 155));
 
@@ -629,7 +631,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MultiviewHeader));
     }
 
-    partial void OnEngineRunningChanged(bool value)
+    partial void OnZoomCaptureSubscribedChanged(bool value)
     {
         ToggleEngineCommand.NotifyCanExecuteChanged();
         ToggleRecordingCommand.NotifyCanExecuteChanged();
@@ -715,6 +717,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         RefreshSceneItems();
         OnPropertyChanged(nameof(ProgramScene));
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnPreviewSceneIdChanged(string value)
@@ -722,6 +726,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
         SchedulePreviewRoutingRefresh();
     }
 
@@ -744,27 +750,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
     }
 
+    // The top-right toggle controls the Zoom CAPTURE SUBSCRIPTION, not the media core.
+    // The media core / compositor is always on (started on join, stopped on leave) so
+    // the program/preview surfaces always show the live compositor output. Toggling here
+    // only subscribes/unsubscribes the raw Zoom ingest spine sync.
     [RelayCommand(CanExecute = nameof(CanToggleCapture))]
     private async Task ToggleEngineAsync()
     {
         try
         {
-            if (EngineRunning)
+            if (ZoomCaptureSubscribed)
             {
-                StopCaptureEngine("Capture off — raw Zoom ingest paused");
+                UnsubscribeZoomCapture("Capture off — raw Zoom ingest paused");
             }
             else
             {
+                // The media core should already be running (started on join). If it
+                // died (e.g. supervisor restart), bring it back up rather than dead-ending.
                 if (!_bridge.Running)
                 {
-                    EngineStatus = "Join a Zoom meeting before starting capture.";
+                    EngineStatus = "Restarting media core…";
+                    await _bridge.StartAsync().ConfigureAwait(false);
+                    Settings.RefreshSdkReadiness();
+                }
+
+                if (!_bridge.Running)
+                {
+                    EngineStatus = "Media core is unavailable — rejoin the meeting.";
                     return;
                 }
 
-                EngineStatus = "Starting capture…";
+                EngineStatus = "Requesting Zoom capture…";
                 _bridge.ConfigureZoomSpineSync(BuildSpinePayload);
-                EngineRunning = true;
-                _surfaces.SetEngineRunning(true, _bridge.Profile?.Renderer);
+                ZoomCaptureSubscribed = true;
+                _surfaces.SetZoomCaptureSubscribed(true, _bridge.Profile?.Renderer);
                 _surfaces.SetPreviewParticipant(SelectedParticipantId);
                 EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
                 Settings.RefreshSdkReadiness();
@@ -776,8 +795,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            EngineRunning = false;
-            _surfaces.SetEngineRunning(false);
+            ZoomCaptureSubscribed = false;
+            _surfaces.SetZoomCaptureSubscribed(false);
             EngineStatus = ex.Message;
             Settings.RefreshSdkReadiness();
             RefreshSurfaceBindings();
@@ -794,16 +813,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
     }
 
-    [RelayCommand]
+    public bool CanTake => PreviewSceneId != ActiveSceneId;
+
+    // Take promotes Preview → Program. Because the compositor is always on, the program
+    // composition + native scene sync must run regardless of whether Zoom capture is
+    // subscribed; otherwise the program feed never reflects the new scene.
+    [RelayCommand(CanExecute = nameof(CanTake))]
     private async Task TakeAsync()
     {
         ActiveSceneId = PreviewSceneId;
         CopyPreviewRoutesToScene(ActiveSceneId);
+        RefreshPreviewRoutingState();
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
         CommandStatus = $"{scene.Name} taken with fade";
         OutputStatus = "Program updated";
 
-        if (EngineRunning)
+        if (_bridge.Running)
         {
             try
             {
@@ -838,7 +863,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Streaming = !Streaming;
         RefreshOutputStatus();
 
-        if (EngineRunning)
+        if (_bridge.Running)
         {
             try
             {
@@ -946,7 +971,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{graphic.Name} {(graphic.Enabled ? "enabled" : "disabled")} on program";
         OnPropertyChanged(nameof(EnabledGraphics));
 
-        if (EngineRunning)
+        if (_bridge.Running)
         {
             try
             {
@@ -1173,7 +1198,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Participants = participants,
                 Recording = Recording,
                 SelectedBreakoutRoomId = _currentRoomId,
-                EngineRunning = EngineRunning,
+                EngineRunning = ZoomCaptureSubscribed,
                 OAuthSignedIn = Settings.ZoomOAuthSignedIn,
                 SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
                 SdkRuntimeReady = !Settings.SdkIsBlocked
@@ -1335,10 +1360,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
+        // The compositor is always on, so surfaces always accept the latest program frame.
         _surfaces.OnMediaCoreSnapshot(snapshot);
+
+        // Always apply meeting/ZoomStatus/roster fields from the snapshot BEFORE any
+        // early-return so meeting status keeps updating even when capture is unsubscribed.
         ApplyMeetingFieldsFromSnapshot(snapshot);
 
-        if (!EngineRunning)
+        if (!ZoomCaptureSubscribed)
         {
             return;
         }
@@ -1383,13 +1412,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList()
         };
 
-    private void StopCaptureEngine(string status)
+    // Unsubscribes the raw Zoom capture spine while leaving the media core / compositor
+    // running. The program/preview surfaces fall back to a "capture paused / slate" state
+    // (driven by the always-on compositor) rather than "waiting for compositor output".
+    private void UnsubscribeZoomCapture(string status)
     {
         _bridge.ConfigureZoomSpineSync(null);
-        _surfaces.SetEngineRunning(false);
-        EngineRunning = false;
-        Recording = false;
-        Streaming = false;
+        _surfaces.SetZoomCaptureSubscribed(false);
+        ZoomCaptureSubscribed = false;
         EngineStatus = status;
         CommandStatus = status;
         if (Settings.IsInMeeting && _bridge.LastSnapshot is { } snapshot)
@@ -1410,14 +1440,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void StopMediaCoreSession(string status)
     {
-        StopCaptureEngine(status);
+        UnsubscribeZoomCapture(status);
+        Recording = false;
+        Streaming = false;
         _bridge.Stop();
         EngineStatus = status;
         Settings.RefreshSdkReadiness();
         RefreshTransportState();
     }
 
-    private void StopEngineForBreakoutRoomChange(string status) => StopCaptureEngine(status);
+    private void StopEngineForBreakoutRoomChange(string status) => UnsubscribeZoomCapture(status);
 
     private void ApplyLiveProductionPatch(LiveProductionSync.StudioLiveProductionPatch patch)
     {
@@ -1616,7 +1648,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProductionReadoutsFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
-        var colorGradePatch = ProductionReadoutSync.ResolveColorGradePatch(snapshot, EngineRunning);
+        var colorGradePatch = ProductionReadoutSync.ResolveColorGradePatch(snapshot, ZoomCaptureSubscribed);
         if (colorGradePatch is not null)
         {
             ColorGrade = new ColorGrade
@@ -1629,7 +1661,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
         }
 
-        var brandKitPatch = ProductionReadoutSync.ResolveBrandKitPatch(snapshot, EngineRunning);
+        var brandKitPatch = ProductionReadoutSync.ResolveBrandKitPatch(snapshot, ZoomCaptureSubscribed);
         if (brandKitPatch is not null)
         {
             BrandKit = new BrandKit
@@ -1650,7 +1682,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var enabledFlags = GraphicsOverlaySync.ResolveOverlayEnabledFlags(
             snapshot,
             Graphics.Select(graphic => graphic.Id),
-            EngineRunning);
+            ZoomCaptureSubscribed);
         if (enabledFlags is null)
         {
             return;
@@ -1846,7 +1878,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshOutputStatus()
     {
-        if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
+        // Recording/streaming run against the always-on core, so reflect the live snapshot
+        // whenever the core is running — capture does not have to be subscribed.
+        if (_bridge.Running && _bridge.LastSnapshot is { } snapshot)
         {
             OutputStatus = MediaCoreBridgeService.SummarizeOutputs(snapshot);
             OutputSessionStatus = LiveProductionSync.SummarizeOutputSession(snapshot);
@@ -1879,7 +1913,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportAutomationState();
         Transport.ApplyMeetingState(Settings.IsInMeeting);
 
-        if (EngineRunning && _bridge.LastSnapshot is { } snapshot)
+        if (_bridge.Running && _bridge.LastSnapshot is { } snapshot)
         {
             Transport.ApplySnapshot(
                 snapshot,
@@ -2184,7 +2218,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
-            _surfaces.SetEngineRunning(false);
+            _surfaces.SetZoomCaptureSubscribed(false);
             if (_bridge.Running)
             {
                 LaunchLog.Write("shutdown: stopping media core");

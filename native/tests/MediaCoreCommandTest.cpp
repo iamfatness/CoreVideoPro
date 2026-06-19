@@ -90,6 +90,37 @@ TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) 
   EXPECT_NE(state.get("health")->get("messages")->asArray().back().asString().find("Compositor warning"), std::string::npos);
 }
 
+// The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,
+// and an empty command tick, every applyCommands call advances the program frame and
+// emits a synthetic black/slate program preview so the operator's Preview/Program
+// surfaces are never stuck on "waiting for compositor output".
+TEST(MediaCoreCommand, EmptyTickEmitsSyntheticProgramFrameWithoutAnyInput) {
+  corevideo::core::MediaCore mediaCore;
+
+  // A bare tick with zero commands and zero Zoom video frames.
+  const auto first = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+
+  const auto* frame = first.get("programFrame");
+  ASSERT_NE(frame, nullptr);
+  EXPECT_GE(frame->get("frameNumber")->asNumber(), 1);
+  EXPECT_GE(frame->get("width")->asNumber(), 1);
+  EXPECT_GE(frame->get("height")->asNumber(), 1);
+  // Black slate still produces a stable, non-zero pixel signature.
+  EXPECT_NE(frame->get("programPixelSignature")->asNumber(), 0);
+  EXPECT_GE(first.get("programFrameCount")->asNumber(), 1);
+
+  // A synthetic program preview must be published even with no input frames.
+  const auto* preview = first.get("programFramePreview");
+  ASSERT_NE(preview, nullptr);
+  EXPECT_GE(preview->get("width")->asNumber(), 1);
+  EXPECT_GE(preview->get("height")->asNumber(), 1);
+
+  // A follow-up empty tick keeps the compositor running (frame number advances),
+  // proving the program feed is continuous rather than gated on capture/input.
+  const auto second = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  EXPECT_TRUE(second.get("programFrameCount")->asNumber() > first.get("programFrameCount")->asNumber());
+}
+
 TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   corevideo::core::MediaCore mediaCore;
   const auto profile = mediaCore.profile();
