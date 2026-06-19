@@ -1,4 +1,5 @@
 export { MediaCoreRuntime } from "./mediaCore.js";
+export { AudioRoutingMatrixModel, AUDIO_ROUTING_BUSES, MIN_AUDIO_ROUTING_GAIN_DB, MAX_AUDIO_ROUTING_GAIN_DB } from "./audioRoutingMatrix.js";
 export { LocalCameraMediaSource, TestPatternMediaSource, createMediaFrameSource } from "./mediaSource.js";
 export { OutputSenderSessionModel } from "./outputSenderSession.js";
 export { buildOperatorActions } from "./operatorActions.js";
@@ -24,6 +25,10 @@ export type {
 export type { ZoomMediaSpineServiceRequest, ZoomMediaSpineServiceResponse } from "./zoomMediaSpineServiceProtocol.js";
 export type {
   MediaCoreCommand,
+  MediaCoreAudioRoutingBus,
+  MediaCoreAudioRoutingBusSummary,
+  MediaCoreAudioRoutingMatrix,
+  MediaCoreAudioRoutingSend,
   MediaCoreColorGrade,
   MediaCoreColorGradeLut,
   MediaCoreCompositorHealth,

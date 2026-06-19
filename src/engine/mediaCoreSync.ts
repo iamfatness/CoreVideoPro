@@ -29,7 +29,7 @@ import type {
 } from "./nativeMediaCoreProtocol";
 import { buildNativeMediaCoreRenderPlan } from "./nativeMediaCoreRenderPlan";
 import { buildNativeMediaCoreOperatorActions } from "./mediaCoreOperatorActions";
-import { NativeAudioMixSessionSimulator, NativeCaptionTrackSimulator } from "./nativeMediaCoreAudioCaption";
+import { NativeAudioMixSessionSimulator, NativeAudioRoutingMatrixSimulator, NativeCaptionTrackSimulator } from "./nativeMediaCoreAudioCaption";
 import { NativeBrandKitSimulator } from "./nativeMediaCoreBrandKit";
 
 const MAX_EVENT_LOG_LENGTH = 80;
@@ -120,6 +120,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     isoParticipantIds: []
   };
   private readonly audioMixSession = new NativeAudioMixSessionSimulator();
+  private readonly audioRoutingMatrix = new NativeAudioRoutingMatrixSimulator();
   private readonly captionTrack = new NativeCaptionTrackSimulator();
   private readonly brandKit = new NativeBrandKitSimulator();
 
@@ -155,6 +156,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const transforms = commands.filter((command) => command.type === "set-participant-transform");
     const overlays = commands.filter((command) => command.type === "set-overlay-asset");
     const audioMixCommand = commands.find((command) => command.type === "sync-participant-audio-mix");
+    const audioRoutingCommand = commands.find((command) => command.type === "sync-audio-routing-matrix");
     const captionCue = commands.find((command) => command.type === "push-caption-cue");
     const captionEnabled = commands.find((command) => command.type === "set-caption-enabled");
     const brandKitCommand = commands.find((command) => command.type === "set-brand-kit");
@@ -238,6 +240,9 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     if (audioMixCommand) {
       this.audioMixSession.sync(audioMixCommand.channels);
     }
+    if (audioRoutingCommand) {
+      this.audioRoutingMatrix.sync(Array.isArray(audioRoutingCommand.sends) ? audioRoutingCommand.sends : []);
+    }
     if (captionEnabled) {
       this.captionTrack.setEnabled(captionEnabled.enabled);
     }
@@ -274,6 +279,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
     const frames = frameSources.map((layer, index) => this.frameFromRenderLayer(layer, index, elapsedMs));
     this.audioMixSession.mix(frames.length > 0 ? 1 : 0);
     const audioMixSession = this.audioMixSession.snapshot();
+    const audioRoutingMatrix = this.audioRoutingMatrix.snapshot();
     const captionTrack = this.captionTrack.snapshot();
     const brandKit = this.brandKit.snapshot();
     this.sourceSnapshot = this.buildSourceSnapshot(frames, elapsedMs);
@@ -302,6 +308,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         ...encoderSession.warnings,
         ...outputSenderSession.warnings,
         ...audioMixSession.warnings,
+        ...audioRoutingMatrix.warnings,
         ...captionTrack.warnings,
         ...brandKit.warnings,
         recording?.warning,
@@ -337,6 +344,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
       encoderSession,
       recording,
       audioMixSession,
+      audioRoutingMatrix,
       captionTrack,
       brandKit,
       operatorActions,
@@ -359,6 +367,7 @@ export class InMemoryMediaCoreSyncEngine implements MediaCoreSyncEngine {
         encoderSession,
         recording,
         audioMixSession,
+        audioRoutingMatrix,
         captionTrack,
         brandKit,
         operatorActions,

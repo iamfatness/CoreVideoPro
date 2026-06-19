@@ -1,5 +1,8 @@
 import type {
   NativeMediaCoreAudioMixSession,
+  NativeMediaCoreAudioRoutingBus,
+  NativeMediaCoreAudioRoutingMatrix,
+  NativeMediaCoreAudioRoutingSend,
   NativeMediaCoreCaptionTrack,
   NativeMediaCoreParticipantAudioChannel
 } from "./nativeMediaCoreProtocol";
@@ -189,4 +192,128 @@ function buildSummary(boostingCount: number, duckingCount: number, mutedCount: n
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+export const NATIVE_AUDIO_ROUTING_BUSES: NativeMediaCoreAudioRoutingBus[] = ["pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"];
+
+export const NATIVE_MIN_AUDIO_ROUTING_GAIN_DB = -60;
+export const NATIVE_MAX_AUDIO_ROUTING_GAIN_DB = 10;
+
+export const IDLE_NATIVE_AUDIO_ROUTING_MATRIX: NativeMediaCoreAudioRoutingMatrix = {
+  status: "idle",
+  routedSendCount: 0,
+  routedSourceCount: 0,
+  busSourceCounts: NATIVE_AUDIO_ROUTING_BUSES.map((busId) => ({ busId, sourceCount: 0 })),
+  sends: [],
+  summary: "Audio routing matrix idle.",
+  warnings: []
+};
+
+function isNativeAudioRoutingBus(value: string): value is NativeMediaCoreAudioRoutingBus {
+  return (NATIVE_AUDIO_ROUTING_BUSES as string[]).includes(value);
+}
+
+/**
+ * Renderer-side mirror of the backend `AudioRoutingMatrixModel`. Validates the
+ * incoming sends, clamps gain, and summarizes routed crosspoints so the in-memory
+ * sync engine matches the real media core.
+ */
+export class NativeAudioRoutingMatrixSimulator {
+  private sends: NativeMediaCoreAudioRoutingSend[] = [];
+  private syncWarnings: string[] = [];
+  private hasSynced = false;
+
+  sync(sends: NativeMediaCoreAudioRoutingSend[]) {
+    this.hasSynced = true;
+    const warnings: string[] = [];
+    const normalized: NativeMediaCoreAudioRoutingSend[] = [];
+    const seen = new Set<string>();
+    const routedSourceIds = new Set<string>();
+
+    sends.forEach((send) => {
+      const sourceId = typeof send.sourceId === "string" ? send.sourceId.trim() : "";
+      if (!sourceId) {
+        warnings.push("Audio routing send is missing a sourceId.");
+        return;
+      }
+
+      if (!isNativeAudioRoutingBus(send.busId)) {
+        warnings.push(`Audio routing send for ${sourceId} targets unknown bus ${String(send.busId)}.`);
+        return;
+      }
+
+      const key = `${sourceId}:${send.busId}`;
+      if (seen.has(key)) {
+        warnings.push(`Audio routing send ${sourceId} → ${send.busId} is duplicated; keeping the first value.`);
+        return;
+      }
+      seen.add(key);
+
+      const rawGain = Number.isFinite(send.gainDb) ? send.gainDb : 0;
+      if (rawGain < NATIVE_MIN_AUDIO_ROUTING_GAIN_DB || rawGain > NATIVE_MAX_AUDIO_ROUTING_GAIN_DB) {
+        warnings.push(
+          `Audio routing gain ${rawGain} dB for ${sourceId} → ${send.busId} is outside [${NATIVE_MIN_AUDIO_ROUTING_GAIN_DB}, ${NATIVE_MAX_AUDIO_ROUTING_GAIN_DB}] dB; clamped.`
+        );
+      }
+
+      const gainDb = clamp(rawGain, NATIVE_MIN_AUDIO_ROUTING_GAIN_DB, NATIVE_MAX_AUDIO_ROUTING_GAIN_DB);
+      routedSourceIds.add(sourceId);
+      normalized.push({ sourceId, busId: send.busId, gainDb });
+    });
+
+    const requestedSourceIds = new Set(
+      sends.map((send) => (typeof send.sourceId === "string" ? send.sourceId.trim() : "")).filter(Boolean)
+    );
+    requestedSourceIds.forEach((sourceId) => {
+      if (!routedSourceIds.has(sourceId)) {
+        warnings.push(`Audio routing source ${sourceId} is routed to no bus.`);
+      }
+    });
+
+    this.sends = normalized;
+    this.syncWarnings = [...new Set(warnings)];
+    return this.snapshot();
+  }
+
+  snapshot(): NativeMediaCoreAudioRoutingMatrix {
+    if (!this.hasSynced) {
+      return {
+        ...IDLE_NATIVE_AUDIO_ROUTING_MATRIX,
+        busSourceCounts: IDLE_NATIVE_AUDIO_ROUTING_MATRIX.busSourceCounts.map((entry) => ({ ...entry })),
+        sends: [],
+        warnings: []
+      };
+    }
+
+    const busSources = new Map<NativeMediaCoreAudioRoutingBus, Set<string>>(
+      NATIVE_AUDIO_ROUTING_BUSES.map((busId) => [busId, new Set<string>()])
+    );
+    const routedSourceIds = new Set<string>();
+    this.sends.forEach((send) => {
+      busSources.get(send.busId)?.add(send.sourceId);
+      routedSourceIds.add(send.sourceId);
+    });
+
+    const busSourceCounts = NATIVE_AUDIO_ROUTING_BUSES.map((busId) => ({
+      busId,
+      sourceCount: busSources.get(busId)?.size ?? 0
+    }));
+
+    const summary =
+      this.sends.length === 0
+        ? "No audio crosspoints routed."
+        : `${this.sends.length} send${this.sends.length === 1 ? "" : "s"} from ${routedSourceIds.size} source${
+            routedSourceIds.size === 1 ? "" : "s"
+          } across ${busSourceCounts.filter((entry) => entry.sourceCount > 0).length} bus(es).`;
+
+    return {
+      status: this.syncWarnings.length > 0 ? "warning" : this.sends.length > 0 ? "live" : "idle",
+      routedSendCount: this.sends.length,
+      routedSourceCount: routedSourceIds.size,
+      busSourceCounts,
+      sends: this.sends.map((send) => ({ ...send })),
+      summary,
+      warnings: [...this.syncWarnings]
+    };
+  }
 }

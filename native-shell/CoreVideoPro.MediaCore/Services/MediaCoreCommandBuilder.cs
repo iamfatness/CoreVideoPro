@@ -28,7 +28,8 @@ public static class MediaCoreCommandBuilder
             BuildColorGradeCommand(context.ColorGrade),
             BuildOutputProfileCommand(),
             BuildBrandKitCommand(context.BrandKit),
-            BuildAudioMixCommand(context.AudioMixChannels)
+            BuildAudioMixCommand(context.AudioMixChannels),
+            BuildAudioRoutingMatrixCommand(context.AudioRoutingSends)
         };
 
         commands.AddRange(BuildOverlayCommands(context.Graphics));
@@ -183,6 +184,17 @@ public static class MediaCoreCommandBuilder
                 muted = channel.Muted,
                 noiseSuppression = channel.NoiseSuppression,
                 manualGainDb = channel.ManualGainDb
+            }).ToList()
+        });
+
+    private static NativeMediaCoreCommand BuildAudioRoutingMatrixCommand(IReadOnlyList<MediaCoreAudioRoutingSendWire> sends) =>
+        Command("sync-audio-routing-matrix", new Dictionary<string, object?>
+        {
+            ["sends"] = sends.Select(send => new
+            {
+                sourceId = send.SourceId,
+                busId = send.BusId,
+                gainDb = send.GainDb
             }).ToList()
         });
 

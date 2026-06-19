@@ -210,4 +210,44 @@ describe("native media core command builder", () => {
       reason: "Recording disabled in production state."
     });
   });
+
+  it("serializes the audio routing gain matrix into a sync-audio-routing-matrix command", () => {
+    const state: ProductionState = {
+      ...initialProduction,
+      audioRoutingMatrix: {
+        sends: [
+          { sourceId: "input-01", busId: "pgm-l", gainDb: -3 },
+          { sourceId: "input-01", busId: "pgm-r", gainDb: -3 },
+          { sourceId: "input-01", busId: "mon", gainDb: -6 }
+        ]
+      }
+    };
+
+    const command = buildNativeMediaCoreCommands(state).find((entry) => entry.type === "sync-audio-routing-matrix");
+
+    expect(command).toEqual({
+      type: "sync-audio-routing-matrix",
+      sends: [
+        { sourceId: "input-01", busId: "pgm-l", gainDb: -3 },
+        { sourceId: "input-01", busId: "pgm-r", gainDb: -3 },
+        { sourceId: "input-01", busId: "mon", gainDb: -6 }
+      ]
+    });
+  });
+
+  it("defaults every participant mic into the stereo program bus at unity", () => {
+    const command = buildNativeMediaCoreCommands(initialProduction).find(
+      (entry) => entry.type === "sync-audio-routing-matrix"
+    );
+
+    expect(command?.type).toBe("sync-audio-routing-matrix");
+    if (command?.type !== "sync-audio-routing-matrix") {
+      return;
+    }
+
+    expect(command.sends).toContainEqual({ sourceId: "participant:p1", busId: "pgm-l", gainDb: 0 });
+    expect(command.sends).toContainEqual({ sourceId: "participant:p1", busId: "pgm-r", gainDb: 0 });
+    expect(command.sends.every((send) => send.busId === "pgm-l" || send.busId === "pgm-r")).toBe(true);
+    expect(command.sends).toHaveLength(initialProduction.participants.length * 2);
+  });
 });

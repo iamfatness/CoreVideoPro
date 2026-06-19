@@ -57,6 +57,7 @@ export function buildNativeMediaCoreCommands(state: ProductionState): NativeMedi
     buildOutputProfileCommand(state),
     buildBrandKitCommand(state),
     buildAudioMixCommand(state),
+    buildAudioRoutingMatrixCommand(state),
     ...buildCaptionCommands(state)
   ];
 
@@ -251,6 +252,17 @@ function buildAudioMixCommand(state: ProductionState): NativeMediaCoreCommand {
         manualGainDb: mix?.manualGainDb
       };
     })
+  };
+}
+
+function buildAudioRoutingMatrixCommand(state: ProductionState): NativeMediaCoreCommand {
+  return {
+    type: "sync-audio-routing-matrix",
+    sends: state.audioRoutingMatrix.sends.map((send) => ({
+      sourceId: send.sourceId,
+      busId: send.busId,
+      gainDb: send.gainDb
+    }))
   };
 }
 

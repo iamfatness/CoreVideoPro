@@ -1301,4 +1301,73 @@ describe("MediaCoreRuntime", () => {
       }
     });
   });
+
+  it("summarizes the audio routing gain matrix and surfaces routed crosspoints", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "audio-routing",
+      type: "sync",
+      commands: [
+        {
+          type: "sync-audio-routing-matrix",
+          sends: [
+            { sourceId: "input-01", busId: "pgm-l", gainDb: -3 },
+            { sourceId: "input-01", busId: "pgm-r", gainDb: -3 },
+            { sourceId: "input-01", busId: "mon", gainDb: -6 },
+            { sourceId: "input-02", busId: "pgm-l", gainDb: 0 },
+            { sourceId: "input-02", busId: "pgm-r", gainDb: 0 }
+          ]
+        }
+      ]
+    });
+
+    expect(response).toMatchObject({
+      ok: true,
+      state: {
+        audioRoutingMatrix: {
+          status: "live",
+          routedSendCount: 5,
+          routedSourceCount: 2,
+          busSourceCounts: expect.arrayContaining([
+            { busId: "pgm-l", sourceCount: 2 },
+            { busId: "pgm-r", sourceCount: 2 },
+            { busId: "mon", sourceCount: 1 },
+            { busId: "iso-1", sourceCount: 0 }
+          ])
+        },
+        lastCommandTypes: expect.arrayContaining(["sync-audio-routing-matrix"])
+      }
+    });
+  });
+
+  it("warns when an audio routing send carries an out-of-range gain or targets no bus", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "audio-routing-warn",
+      type: "sync",
+      commands: [
+        {
+          type: "sync-audio-routing-matrix",
+          // @ts-expect-error testing runtime guard for an unknown bus id
+          sends: [
+            { sourceId: "input-01", busId: "pgm-l", gainDb: 42 },
+            { sourceId: "input-02", busId: "ghost-bus", gainDb: 0 }
+          ]
+        }
+      ]
+    });
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) {
+      return;
+    }
+
+    const routing = response.state.audioRoutingMatrix;
+    expect(routing.status).toBe("warning");
+    // gain clamped into [-60, 10]
+    expect(routing.sends.find((send) => send.sourceId === "input-01")?.gainDb).toBe(10);
+    expect(routing.warnings.some((warning) => warning.includes("outside [-60, 10]"))).toBe(true);
+    expect(routing.warnings.some((warning) => warning.includes("input-02 is routed to no bus"))).toBe(true);
+    expect(response.state.warnings.length).toBeGreaterThan(0);
+  });
 });

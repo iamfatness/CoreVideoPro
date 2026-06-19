@@ -26,6 +26,7 @@ import type {
 } from "./protocol.js";
 import { TestPatternMediaSource, createMediaFrameSource, type MediaCoreFrameSourceRequest, type MediaFrameSource } from "./mediaSource.js";
 import { AudioMixSessionModel } from "./audioMixSession.js";
+import { AudioRoutingMatrixModel } from "./audioRoutingMatrix.js";
 import { BrandKitStateModel } from "./brandKitState.js";
 import { CaptionTrackModel } from "./captionTrack.js";
 import { RecordingSink } from "./recordingSink.js";
@@ -95,6 +96,7 @@ export class MediaCoreRuntime {
   private readonly outputSenderSessionModel = new OutputSenderSessionModel();
   private readonly recordingSink = new RecordingSink();
   private readonly audioMixSession = new AudioMixSessionModel();
+  private readonly audioRoutingMatrix = new AudioRoutingMatrixModel();
   private readonly captionTrack = new CaptionTrackModel();
   private readonly brandKitState = new BrandKitStateModel();
   private frames: MediaCoreFrame[] = [];
@@ -378,6 +380,14 @@ export class MediaCoreRuntime {
         return;
       }
 
+      if (command.type === "sync-audio-routing-matrix") {
+        const routing = this.audioRoutingMatrix.sync(Array.isArray(command.sends) ? command.sends : []);
+        if (routing.warnings.length > 0) {
+          this.warn(warnings, "routing", "Audio routing warning", routing.warnings[0], command.type);
+        }
+        return;
+      }
+
       if (command.type === "push-caption-cue") {
         const track = this.captionTrack.pushCue(command.text, command.atMs, command.speaker);
         if (track.warnings.length > 0) {
@@ -413,6 +423,7 @@ export class MediaCoreRuntime {
     this.syncOutputSenderEvents(outputSenderSession.senders);
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
     const audioMixSession = this.audioMixSession.snapshot();
+    const audioRoutingMatrix = this.audioRoutingMatrix.snapshot();
     const captionTrack = this.captionTrack.snapshot();
     const brandKit = this.brandKitState.snapshot();
     const operatorActions = buildOperatorActions({
@@ -432,6 +443,7 @@ export class MediaCoreRuntime {
         ...encoderSession.warnings,
         ...outputSenderSession.warnings,
         ...audioMixSession.warnings,
+        ...audioRoutingMatrix.warnings,
         ...captionTrack.warnings,
         ...brandKit.warnings,
         recording?.warning,
@@ -467,6 +479,7 @@ export class MediaCoreRuntime {
       encoderSession,
       recording,
       audioMixSession,
+      audioRoutingMatrix,
       captionTrack,
       brandKit,
       operatorActions,
@@ -480,6 +493,7 @@ export class MediaCoreRuntime {
         encoderSession,
         outputSenderSession,
         audioMixSession,
+        audioRoutingMatrix,
         captionTrack,
         brandKit,
         operatorActions
@@ -603,6 +617,7 @@ export class MediaCoreRuntime {
     encoderSession: MediaCoreEncoderSession,
     outputSenderSession: MediaCoreOutputSenderSession,
     audioMixSession: MediaCoreStateSnapshot["audioMixSession"],
+    audioRoutingMatrix: MediaCoreStateSnapshot["audioRoutingMatrix"],
     captionTrack: MediaCoreStateSnapshot["captionTrack"],
     brandKit: MediaCoreStateSnapshot["brandKit"],
     operatorActions: MediaCoreStateSnapshot["operatorActions"]
@@ -625,6 +640,7 @@ export class MediaCoreRuntime {
       encoderSession,
       recording,
       audioMixSession,
+      audioRoutingMatrix,
       captionTrack,
       brandKit,
       operatorActions,

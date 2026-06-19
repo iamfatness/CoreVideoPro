@@ -279,6 +279,50 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("p2", GetString(screenShare, "participantId"));
     }
 
+    [Fact]
+    public void SerializesAudioRoutingGainMatrixSends()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            SceneRoutes = [new("speaker-slides-1", "fixed", "isolated", "p2")],
+            Participants = Participants,
+            AudioRoutingSends =
+            [
+                new("input-01", "pgm-l", -3.0),
+                new("input-01", "pgm-r", -3.0),
+                new("input-01", "mon", -6.0),
+                new("input-02", "pgm-l", 0.0)
+            ]
+        });
+
+        var routing = commands.Single(command => command.Type == "sync-audio-routing-matrix");
+        Assert.NotNull(routing.ExtensionData);
+        var sends = routing.ExtensionData!["sends"].EnumerateArray().ToList();
+
+        Assert.Equal(4, sends.Count);
+        Assert.Equal("input-01", sends[0].GetProperty("sourceId").GetString());
+        Assert.Equal("pgm-l", sends[0].GetProperty("busId").GetString());
+        Assert.Equal(-3.0, sends[0].GetProperty("gainDb").GetDouble());
+        Assert.Equal("mon", sends[2].GetProperty("busId").GetString());
+        Assert.Equal(-6.0, sends[2].GetProperty("gainDb").GetDouble());
+    }
+
+    [Fact]
+    public void EmitsEmptyAudioRoutingMatrixWhenNoSendsAreRouted()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "active-speaker", "mix", null)],
+            Participants = Participants
+        });
+
+        var routing = commands.Single(command => command.Type == "sync-audio-routing-matrix");
+        Assert.NotNull(routing.ExtensionData);
+        Assert.Empty(routing.ExtensionData!["sends"].EnumerateArray());
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||

@@ -232,6 +232,73 @@ TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   EXPECT_EQ(participants[2].get("outputLevel")->asNumber(), 0);
 }
 
+TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-audio-routing-matrix"},
+      {"sends",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "pgm-l"}, {"gainDb", -3.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "pgm-r"}, {"gainDb", -3.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "mon"}, {"gainDb", -6.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "pgm-l"}, {"gainDb", 0.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "pgm-r"}, {"gainDb", 0.0}},
+       }},
+  });
+
+  const auto* routing = state.get("audioRoutingMatrix");
+  ASSERT_NE(routing, nullptr);
+  EXPECT_EQ(routing->getString("status"), "live");
+  EXPECT_EQ(routing->get("routedSendCount")->asNumber(), 5);
+  EXPECT_EQ(routing->get("routedSourceCount")->asNumber(), 2);
+
+  const auto& busSourceCounts = routing->get("busSourceCounts")->asArray();
+  ASSERT_TRUE(busSourceCounts.size() == 6u);
+  const auto findBus = [&](const std::string& busId) -> int {
+    for (const auto& bus : busSourceCounts) {
+      if (bus.getString("busId") == busId) {
+        return static_cast<int>(bus.get("sourceCount")->asNumber());
+      }
+    }
+    return -1;
+  };
+  EXPECT_EQ(findBus("pgm-l"), 2);
+  EXPECT_EQ(findBus("pgm-r"), 2);
+  EXPECT_EQ(findBus("mon"), 1);
+  EXPECT_EQ(findBus("iso-1"), 0);
+  EXPECT_EQ(routing->get("sends")->asArray().size(), 5u);
+}
+
+TEST(MediaCoreCommand, ClampsAndWarnsOnInvalidAudioRoutingSends) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-audio-routing-matrix"},
+      {"sends",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "pgm-l"}, {"gainDb", 99.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "ghost-bus"}, {"gainDb", 0.0}},
+       }},
+  });
+
+  const auto* routing = state.get("audioRoutingMatrix");
+  ASSERT_NE(routing, nullptr);
+  EXPECT_EQ(routing->getString("status"), "warning");
+  EXPECT_EQ(routing->get("routedSendCount")->asNumber(), 1);
+
+  const auto& sends = routing->get("sends")->asArray();
+  ASSERT_TRUE(sends.size() == 1u);
+  EXPECT_EQ(sends[0].getString("sourceId"), "input-01");
+  EXPECT_EQ(sends[0].get("gainDb")->asNumber(), 10);
+
+  const auto& warnings = routing->get("warnings")->asArray();
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("outside [-60, 10]") != std::string::npos;
+  }));
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("input-02 is routed to no bus") != std::string::npos;
+  }));
+}
+
 TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{

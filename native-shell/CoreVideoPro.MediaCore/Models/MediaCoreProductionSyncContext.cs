@@ -36,6 +36,12 @@ public sealed record MediaCoreAudioMixChannelWire(
     bool NoiseSuppression,
     double? ManualGainDb);
 
+/// <summary>One routed crosspoint in the audio routing gain matrix.</summary>
+public sealed record MediaCoreAudioRoutingSendWire(
+    string SourceId,
+    string BusId,
+    double GainDb);
+
 public sealed record MediaCoreColorGradeWire(
     string Lut,
     int Exposure,
@@ -76,6 +82,7 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public IReadOnlyList<MediaCoreAudioMixChannelWire> AudioMixChannels { get; init; } = [];
+    public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];
     public string? CaptionText { get; init; }
     public string? CaptionSpeaker { get; init; }
 
