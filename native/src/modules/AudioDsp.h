@@ -185,7 +185,8 @@ inline AudioMixMetrics summarizeAudioMixMetrics(std::vector<AudioParticipantMixM
     if (participant.underrunDetected) ++session.underrunCount;
     if (participant.clippingDetected) ++session.clippingCount;
     if (participant.silenceDetected) ++session.silenceCount;
-    session.maxAbsAvSyncOffsetMs = std::max(session.maxAbsAvSyncOffsetMs, std::llabs(participant.avSyncOffsetMs));
+    session.maxAbsAvSyncOffsetMs =
+        std::max<std::int64_t>(session.maxAbsAvSyncOffsetMs, std::llabs(participant.avSyncOffsetMs));
     if (participant.muted) {
       ++mutedCount;
       continue;
