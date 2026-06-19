@@ -5,6 +5,7 @@ using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
@@ -135,6 +136,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _previewSceneParticipants = "No sources assigned";
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
+    // Per-source color grades keyed by participant/source id. UI-only this round: native
+    // compositing still receives the single global grade (see OpenColorGradeEditor).
+    private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
     private bool _canvasInteractionActive;
 
@@ -1024,6 +1028,63 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void SelectParticipant(string participantId)
     {
         SelectedParticipantId = participantId;
+    }
+
+    /// <summary>
+    /// Opens the per-source color grade pop-out for the given participant/source id. Seeds
+    /// the editor with the source's stored grade (or the current global grade as a default).
+    /// On Save the grade is stored per source and the engine is re-synced.
+    ///
+    /// NOTE (UI-only / Option A): the media-core protocol still carries a single global
+    /// grade, so the value sent to native remains the primary/global grade for now. Wiring
+    /// per-source grades through MediaCoreCommandBuilder is a follow-up protocol change.
+    /// </summary>
+    [RelayCommand]
+    private void OpenColorGradeEditor(string? sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            CommandStatus = "Select a source before editing its color grade";
+            return;
+        }
+
+        var participant = RoomVideoParticipants.FirstOrDefault(p => p.Id == sourceId);
+        var sourceName = participant?.Name ?? sourceId;
+
+        var seed = _sourceColorGrades.TryGetValue(sourceId, out var stored) ? stored : ColorGrade;
+        var editorViewModel = new ColorGradeEditorViewModel(sourceId, sourceName, seed);
+        editorViewModel.GradeSaved += OnSourceColorGradeSaved;
+
+        var window = new ColorGradeEditorWindow(editorViewModel);
+        window.Activate();
+    }
+
+    private void OnSourceColorGradeSaved(object? sender, ColorGrade grade)
+    {
+        if (sender is not ColorGradeEditorViewModel editorViewModel)
+        {
+            return;
+        }
+
+        editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
+        _sourceColorGrades[editorViewModel.SourceId] = grade;
+        CommandStatus = $"Color grade saved for {editorViewModel.SourceName}: {grade.Summary}";
+
+        // Trigger the normal sync. The global grade is still what reaches native this round;
+        // per-source native compositing is a follow-up protocol change (see OpenColorGradeEditor).
+        _ = SyncColorGradeChangeAsync();
+    }
+
+    private async Task SyncColorGradeChangeAsync()
+    {
+        try
+        {
+            await SyncActiveSceneAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = ex.Message;
+        }
     }
 
     [RelayCommand]
