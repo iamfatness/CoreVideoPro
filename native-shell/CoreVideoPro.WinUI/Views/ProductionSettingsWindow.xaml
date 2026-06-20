@@ -143,6 +143,10 @@
                                     <ColumnDefinition Width="160" />
                                     <ColumnDefinition Width="180" />
                                 </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
                                 <ComboBox Header="Stream render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
                                           SelectedValue="{x:Bind ViewModel.StreamRenderResolution, Mode=TwoWay}"
@@ -223,6 +227,10 @@
                                     <ColumnDefinition Width="160" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
                                 <ComboBox Header="Protocol"
                                           ItemsSource="{x:Bind ViewModel.StreamRtmpProtocolOptions}"
                                           SelectedItem="{x:Bind ViewModel.StreamRtmpProtocol, Mode=TwoWay}"
@@ -268,6 +276,13 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="160" />
                                 </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
                                 <ComboBox Header="Mode"
                                           ItemsSource="{x:Bind ViewModel.StreamSrtModeOptions}"
                                           SelectedItem="{x:Bind ViewModel.StreamSrtMode, Mode=TwoWay}"
