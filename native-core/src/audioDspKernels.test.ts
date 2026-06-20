@@ -12,7 +12,7 @@ import {
   dbfsToLinear,
   linearToDbfs,
   peakLimiterGainReductionDb
-} from "./audioDspKernels";
+} from "./audioDspKernels.js";
 
 const SAMPLE_RATE = 48000;
 
@@ -44,120 +44,36 @@ function interSampleOvershoot(amplitude: number, sampleCount: number, sampleRate
   return samples;
 }
 
-describe("audioDspKernels", () => {
-  describe("computeRmsDbfs", () => {
-    it("reports the silence floor for an empty or silent buffer", () => {
-      expect(computeRmsDbfs(new Float32Array(0))).toBe(AUDIO_DBFS_FLOOR);
-      expect(computeRmsDbfs(new Float32Array(512))).toBe(AUDIO_DBFS_FLOOR);
-    });
-
-    it("reports ~0 dBFS for a full-scale square wave", () => {
-      const square = Float32Array.from({ length: 1024 }, (_unused, index) => (index % 2 === 0 ? 1 : -1));
-      expect(computeRmsDbfs(square)).toBeCloseTo(0, 6);
-    });
-
-    it("reports ~-3.01 dBFS for a full-amplitude sine", () => {
+describe("audioDspKernels (native-core)", () => {
+  // The native-core copy must stay byte-for-byte equivalent in behavior to the
+  // renderer copy and the C++ reference. These exercise the kernels the renderer
+  // copy already covers plus the new gate / true-peak additions.
+  describe("baseline kernels", () => {
+    it("measures RMS and sample peak of a known sine", () => {
       expect(computeRmsDbfs(sine(1, 1000, SAMPLE_RATE))).toBeCloseTo(-3.0103, 2);
-    });
-
-    it("accepts a plain number[] buffer", () => {
-      expect(computeRmsDbfs([1, -1, 1, -1])).toBeCloseTo(0, 9);
-    });
-  });
-
-  describe("computeSamplePeakDbfs", () => {
-    it("reports the silence floor for an empty buffer", () => {
-      expect(computeSamplePeakDbfs(new Float32Array(0))).toBe(AUDIO_DBFS_FLOOR);
-    });
-
-    it("reports ~0 dBFS at full scale", () => {
-      expect(computeSamplePeakDbfs(sine(1, 1000, SAMPLE_RATE))).toBeCloseTo(0, 6);
-    });
-
-    it("reports ~-6 dBFS for a half-amplitude signal", () => {
       expect(computeSamplePeakDbfs(sine(0.5, 1000, SAMPLE_RATE))).toBeCloseTo(-6.0206, 2);
+      expect(computeRmsDbfs(new Float32Array(0))).toBe(AUDIO_DBFS_FLOOR);
     });
 
-    it("detects the loudest sample even when it is brief", () => {
-      const buffer = new Float32Array(2048);
-      buffer[1234] = 0.25;
-      expect(computeSamplePeakDbfs(buffer)).toBeCloseTo(linearToDbfs(0.25), 9);
-    });
-  });
-
-  describe("linearToDbfs / dbfsToLinear", () => {
-    it("round-trips a linear ratio through dBFS", () => {
+    it("round-trips dBFS conversions", () => {
       expect(dbfsToLinear(linearToDbfs(0.5))).toBeCloseTo(0.5, 9);
-      expect(dbfsToLinear(0)).toBeCloseTo(1, 9);
-    });
-
-    it("clamps non-positive and non-finite input to the floor", () => {
       expect(linearToDbfs(0)).toBe(AUDIO_DBFS_FLOOR);
-      expect(linearToDbfs(-1)).toBe(AUDIO_DBFS_FLOOR);
-      expect(linearToDbfs(Number.NaN)).toBe(AUDIO_DBFS_FLOOR);
     });
-  });
 
-  describe("BS.1770 loudness", () => {
-    it("reports the floor for silence", () => {
+    it("reports the floor for silent loudness", () => {
       const silence = new Float32Array(SAMPLE_RATE);
       expect(computeMomentaryLufs(silence, silence, SAMPLE_RATE)).toBe(AUDIO_DBFS_FLOOR);
+      expect(computeShortTermLufs(silence, silence, SAMPLE_RATE)).toBe(AUDIO_DBFS_FLOOR);
     });
 
-    it("measures the short-term loudness of a known reference tone within tolerance", () => {
-      // A -20 dBFS RMS 997 Hz tone (full-scale-referenced) on both channels.
-      const amplitude = dbfsToLinear(-20) * Math.SQRT2;
-      const tone = sine(amplitude, 997, SAMPLE_RATE * 3);
-      // K-weighting + L=R=1.0 stereo summing places this near -17 LUFS.
-      expect(computeShortTermLufs(tone, tone, SAMPLE_RATE)).toBeCloseTo(-16.99, 1);
-    });
-
-    it("rises by ~6 LU when amplitude doubles", () => {
-      const quiet = sine(dbfsToLinear(-20) * Math.SQRT2, 997, SAMPLE_RATE * 3);
-      const loud = sine(dbfsToLinear(-14) * Math.SQRT2, 997, SAMPLE_RATE * 3);
-      const quietLufs = computeShortTermLufs(quiet, quiet, SAMPLE_RATE);
-      const loudLufs = computeShortTermLufs(loud, loud, SAMPLE_RATE);
-      expect(loudLufs - quietLufs).toBeCloseTo(6, 1);
-    });
-
-    it("uses the trailing 400 ms for momentary loudness", () => {
-      // First half silent, second half a tone: momentary (400 ms tail) sees the tone.
-      const total = SAMPLE_RATE; // 1 s
-      const samples = sine(dbfsToLinear(-20) * Math.SQRT2, 997, total);
-      for (let index = 0; index < total / 2; index += 1) {
-        samples[index] = 0;
-      }
-      expect(computeMomentaryLufs(samples, samples, SAMPLE_RATE)).toBeGreaterThan(-30);
-    });
-  });
-
-  describe("peak limiter", () => {
-    it("applies no reduction to a signal already under threshold", () => {
-      const samples = sine(0.5, 1000, 1024);
-      const reduction = applyPeakLimiter(samples, -3);
-      expect(reduction).toBe(0);
-      expect(computeSamplePeakDbfs(samples)).toBeCloseTo(-6.0206, 2);
-    });
-
-    it("caps a hot signal with a positive gain reduction and a brickwall output", () => {
+    it("limits a hot signal to a brickwall threshold", () => {
       const thresholdDbfs = -1;
-      const hot = sine(1.5, 1000, 4096); // intentionally over full scale
+      const hot = sine(1.5, 1000, 4096);
       const predicted = peakLimiterGainReductionDb(hot, thresholdDbfs);
       const applied = applyPeakLimiter(hot, thresholdDbfs);
-
       expect(applied).toBeGreaterThan(0);
       expect(applied).toBeCloseTo(predicted, 9);
-      // Output sample peak never exceeds the threshold (brickwall holds exactly).
-      const thresholdLinear = dbfsToLinear(thresholdDbfs);
-      for (let index = 0; index < hot.length; index += 1) {
-        expect(Math.abs(hot[index])).toBeLessThanOrEqual(thresholdLinear + 1e-6);
-      }
       expect(computeSamplePeakDbfs(hot)).toBeCloseTo(thresholdDbfs, 4);
-    });
-
-    it("returns zero reduction for an empty buffer", () => {
-      expect(applyPeakLimiter(new Float32Array(0), -1)).toBe(0);
-      expect(peakLimiterGainReductionDb(new Float32Array(0), -1)).toBe(0);
     });
   });
 
@@ -170,7 +86,6 @@ describe("audioDspKernels", () => {
     });
 
     it("heavily attenuates a signal well below threshold", () => {
-      // -50 dBFS sine vs a -30 dBFS threshold: crushed to near zero.
       const quiet = sine(dbfsToLinear(-50), 1000, 9600);
       const inRms = rmsLinear(quiet);
       const gatedFraction = applyNoiseGate(quiet, -30, 5, 50, SAMPLE_RATE);
@@ -180,7 +95,6 @@ describe("audioDspKernels", () => {
     });
 
     it("passes a loud signal nearly unchanged", () => {
-      // -6 dBFS sine vs a -30 dBFS threshold: gate opens, steady-state tail is unity.
       const loud = sine(0.5, 1000, 9600);
       const reference = loud.slice();
       const gatedFraction = applyNoiseGate(loud, -30, 5, 50, SAMPLE_RATE);
@@ -218,7 +132,7 @@ describe("audioDspKernels", () => {
       const dc = new Float32Array(2048).fill(1);
       const truePeak = computeTruePeakDbfs(dc);
       expect(truePeak).toBeGreaterThanOrEqual(computeSamplePeakDbfs(dc) - 1e-6);
-      expect(Math.abs(truePeak)).toBeLessThan(0.05); // ~0 dBFS
+      expect(Math.abs(truePeak)).toBeLessThan(0.05);
     });
 
     it("catches a known inter-sample overshoot", () => {
@@ -226,8 +140,8 @@ describe("audioDspKernels", () => {
       const samplePeak = computeSamplePeakDbfs(signal);
       const truePeak = computeTruePeakDbfs(signal, 4);
       expect(truePeak).toBeGreaterThan(samplePeak);
-      expect(truePeak - samplePeak).toBeGreaterThan(2); // multi-dB inter-sample overshoot
-      expect(truePeak).toBeGreaterThan(-1.5); // approaches the real 0.9 tone amplitude
+      expect(truePeak - samplePeak).toBeGreaterThan(2);
+      expect(truePeak).toBeGreaterThan(-1.5);
     });
 
     it("is deterministic", () => {

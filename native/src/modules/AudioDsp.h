@@ -283,6 +283,131 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
   }
 }
 
+// ---------------------------------------------------------------------------
+// Noise gate (envelope follower + attack/release smoothing).
+//
+// A downward expander/gate: a one-pole peak envelope follower tracks the signal
+// level; when the envelope sits below `thresholdDbfs` the gate closes (gain ->
+// 0) and the signal is attenuated, when it rises above threshold the gate opens
+// (gain -> 1) and the signal passes ~unchanged. Both the envelope and the gate
+// gain are smoothed with per-sample one-pole coefficients derived from the
+// attack/release times at the given sample rate, so transitions are click-free
+// and the result is deterministic (same input -> same output).
+//
+// Applied in place. Returns the fraction of samples [0, 1] whose applied gain
+// was below 0.5 (i.e. effectively gated) — 0 means the gate stayed open for the
+// whole buffer, ~1 means it was closed throughout. Empty/zero-count buffers are
+// safe and return 0.
+// ---------------------------------------------------------------------------
+inline double applyNoiseGate(float* samples, size_t count, double thresholdDbfs, double attackMs, double releaseMs, double sampleRate) {
+  if (samples == nullptr || count == 0 || sampleRate <= 0.0) {
+    return 0.0;
+  }
+  const double threshold = dbfsToLinear(thresholdDbfs);
+  // One-pole smoothing coefficient for a time constant t (ms): the per-sample
+  // factor that reaches ~63% of a step in t. 0 ms -> instantaneous (coeff 0).
+  const auto timeConstantCoeff = [sampleRate](double timeMs) -> double {
+    if (timeMs <= 0.0) {
+      return 0.0;
+    }
+    const double samplesForTc = (timeMs / 1000.0) * sampleRate;
+    if (samplesForTc <= 0.0) {
+      return 0.0;
+    }
+    return std::exp(-1.0 / samplesForTc);
+  };
+  const double attackCoeff = timeConstantCoeff(attackMs);
+  const double releaseCoeff = timeConstantCoeff(releaseMs);
+  // Envelope follower tracks magnitude: fast attack to rising peaks, slower
+  // release as the signal decays, using the same attack/release times.
+  double envelope = 0.0;
+  double gain = 0.0;  // start closed; opens as soon as signal exceeds threshold
+  size_t gatedSamples = 0;
+  for (size_t index = 0; index < count; ++index) {
+    const double magnitude = std::fabs(static_cast<double>(samples[index]));
+    const double envCoeff = magnitude > envelope ? attackCoeff : releaseCoeff;
+    envelope = envCoeff * envelope + (1.0 - envCoeff) * magnitude;
+    // Target gain: open (1) when the envelope is at/above threshold, else closed.
+    const double targetGain = envelope >= threshold ? 1.0 : 0.0;
+    // Smooth toward the target: attack when opening, release when closing.
+    const double gainCoeff = targetGain > gain ? attackCoeff : releaseCoeff;
+    gain = gainCoeff * gain + (1.0 - gainCoeff) * targetGain;
+    if (gain < 0.5) {
+      ++gatedSamples;
+    }
+    samples[index] = static_cast<float>(static_cast<double>(samples[index]) * gain);
+  }
+  return static_cast<double>(gatedSamples) / static_cast<double>(count);
+}
+
+// ---------------------------------------------------------------------------
+// True-peak (inter-sample peak) estimator.
+//
+// The sample-peak meter only sees the discrete samples; the reconstructed analog
+// waveform can overshoot between them (inter-sample peaks). We estimate the true
+// peak by band-limited polyphase oversampling: each output sub-sample is a
+// windowed-sinc (Hann-windowed) interpolation of the surrounding input samples,
+// evaluated `oversampleFactor` times per input sample. Sinc reconstruction
+// genuinely overshoots near steep transitions, so a signal whose samples sit
+// below full scale can still report a higher true peak — exactly the inter-
+// sample overshoot a sample-peak meter misses.
+//
+// The interpolation phase 0 reproduces the original sample exactly (sinc(0)=1,
+// all other taps land on zeros of the sinc), so the original sample magnitudes
+// are always included and the result is guaranteed >= the sample peak. Returns
+// dBFS; silence/empty/zero-count -> kAudioDbfsFloor.
+// ---------------------------------------------------------------------------
+inline double computeTruePeakDbfs(const float* samples, size_t count, int oversampleFactor = 4) {
+  if (samples == nullptr || count == 0) {
+    return kAudioDbfsFloor;
+  }
+  const int factor = oversampleFactor < 1 ? 1 : oversampleFactor;
+  // Half-width of the windowed-sinc kernel (taps on each side). Wider -> closer
+  // to ideal reconstruction; 16 is plenty for a deterministic ISP estimate.
+  const int half = 16;
+
+  double truePeak = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    for (int sub = 0; sub < factor; ++sub) {
+      const double fraction = static_cast<double>(sub) / static_cast<double>(factor);
+      double value;
+      if (sub == 0) {
+        // Phase 0 is the original sample exactly; no need to convolve.
+        value = static_cast<double>(samples[index]);
+      } else {
+        double accum = 0.0;
+        for (int tap = -half + 1; tap <= half; ++tap) {
+          // Clamp (replicate) at the buffer edges so a flat signal near a
+          // boundary doesn't ring against zero padding and over-report.
+          long long sourceIndex = static_cast<long long>(index) + tap;
+          if (sourceIndex < 0) {
+            sourceIndex = 0;
+          } else if (sourceIndex >= static_cast<long long>(count)) {
+            sourceIndex = static_cast<long long>(count) - 1;
+          }
+          const double x = static_cast<double>(tap) - fraction;
+          double sinc;
+          if (std::fabs(x) < 1e-9) {
+            sinc = 1.0;
+          } else {
+            const double px = kAudioPi * x;
+            sinc = std::sin(px) / px;
+          }
+          // Hann window over the kernel support to tame ringing.
+          const double window = 0.5 + 0.5 * std::cos(kAudioPi * x / static_cast<double>(half));
+          accum += static_cast<double>(samples[sourceIndex]) * sinc * window;
+        }
+        value = accum;
+      }
+      const double magnitude = std::fabs(value);
+      if (magnitude > truePeak) {
+        truePeak = magnitude;
+      }
+    }
+  }
+  return linearToDbfs(truePeak);
+}
+
 inline int clampAudioInt(int value, int minValue, int maxValue) {
   return std::max(minValue, std::min(maxValue, value));
 }

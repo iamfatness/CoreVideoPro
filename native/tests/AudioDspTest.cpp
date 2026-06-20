@@ -245,6 +245,142 @@ TEST(AudioDsp, BusMixEmptyDestinationIsSafe) {
   EXPECT_TRUE(true);
 }
 
+// --- Noise gate ---------------------------------------------------------------
+
+namespace {
+
+double rmsLinear(const std::vector<float>& samples, size_t from, size_t to) {
+  double sumSquares = 0.0;
+  const size_t span = to - from;
+  for (size_t index = from; index < to; ++index) {
+    sumSquares += static_cast<double>(samples[index]) * static_cast<double>(samples[index]);
+  }
+  return span == 0 ? 0.0 : std::sqrt(sumSquares / static_cast<double>(span));
+}
+
+}  // namespace
+
+TEST(AudioDsp, GateClosesOnSilence) {
+  std::vector<float> silence(4800, 0.0f);
+  const double gatedFraction = applyNoiseGate(silence.data(), silence.size(), -30.0, 5.0, 50.0, 48000.0);
+  // Silence is always below threshold: the gate stays closed for the whole buffer.
+  EXPECT_TRUE(std::abs(gatedFraction - 1.0) < kTightTol);
+  EXPECT_TRUE(std::abs(rmsLinear(silence, 0, silence.size())) < kTightTol);
+}
+
+TEST(AudioDsp, GateHeavilyAttenuatesQuietSignal) {
+  // A -50 dBFS sine sits well below a -30 dBFS threshold and must be crushed.
+  const double quietAmp = std::pow(10.0, -50.0 / 20.0);
+  auto quiet = makeSine(1000.0, quietAmp, 48000.0, 9600);
+  const double inRms = rmsLinear(quiet, 0, quiet.size());
+  const double gatedFraction = applyNoiseGate(quiet.data(), quiet.size(), -30.0, 5.0, 50.0, 48000.0);
+  const double outRms = rmsLinear(quiet, 0, quiet.size());
+  EXPECT_TRUE(gatedFraction > 0.99);
+  // Output RMS is a tiny fraction of the input (well below -40 dB of it).
+  EXPECT_TRUE(outRms < inRms * 0.01);
+}
+
+TEST(AudioDsp, GatePassesLoudSignalNearlyUnchanged) {
+  // A -6 dBFS sine is far above a -30 dBFS threshold: the gate opens and the
+  // steady-state tail passes through at unity gain.
+  auto loud = makeSine(1000.0, 0.5, 48000.0, 9600);
+  const auto reference = loud;
+  const double gatedFraction = applyNoiseGate(loud.data(), loud.size(), -30.0, 5.0, 50.0, 48000.0);
+  // Almost nothing gated (only the brief attack ramp at the very start).
+  EXPECT_TRUE(gatedFraction < 0.1);
+  // The trailing half (past the attack transient) is unchanged at unity gain.
+  const double inTail = rmsLinear(reference, reference.size() / 2, reference.size());
+  const double outTail = rmsLinear(loud, loud.size() / 2, loud.size());
+  EXPECT_TRUE(std::abs(outTail - inTail) < 1e-3);
+}
+
+TEST(AudioDsp, GateIsDeterministic) {
+  auto a = makeSine(800.0, 0.4, 48000.0, 4800);
+  auto b = a;
+  const double ra = applyNoiseGate(a.data(), a.size(), -30.0, 5.0, 50.0, 48000.0);
+  const double rb = applyNoiseGate(b.data(), b.size(), -30.0, 5.0, 50.0, 48000.0);
+  EXPECT_TRUE(std::abs(ra - rb) < kTightTol);
+  bool identical = true;
+  for (size_t index = 0; index < a.size(); ++index) {
+    if (a[index] != b[index]) {
+      identical = false;
+      break;
+    }
+  }
+  EXPECT_TRUE(identical);
+}
+
+TEST(AudioDsp, GateHandlesEmptyBuffer) {
+  EXPECT_TRUE(std::abs(applyNoiseGate(nullptr, 0, -30.0, 5.0, 50.0, 48000.0)) < kTightTol);
+  std::vector<float> data(8, 0.5f);
+  EXPECT_TRUE(std::abs(applyNoiseGate(data.data(), 0, -30.0, 5.0, 50.0, 48000.0)) < kTightTol);
+}
+
+// --- True-peak (inter-sample peak) --------------------------------------------
+
+namespace {
+
+// A 12 kHz (fs/4) tone sampled half a sample off-phase: the discrete samples sit
+// at +/-amp/sqrt(2), so the sample peak is ~3 dB below the real tone amplitude.
+// A true-peak meter must recover the higher inter-sample peak.
+std::vector<float> makeInterSampleOvershoot(double amplitude, double sampleRate, size_t count) {
+  std::vector<float> samples(count);
+  for (size_t index = 0; index < count; ++index) {
+    const double phase = 2.0 * kAudioPi * (sampleRate / 4.0) * (static_cast<double>(index) + 0.5) / sampleRate;
+    samples[index] = static_cast<float>(amplitude * std::sin(phase));
+  }
+  return samples;
+}
+
+}  // namespace
+
+TEST(AudioDsp, TruePeakSilenceReturnsFloor) {
+  std::vector<float> silence(1024, 0.0f);
+  EXPECT_TRUE(std::abs(computeTruePeakDbfs(silence.data(), silence.size()) - kAudioDbfsFloor) < kTightTol);
+}
+
+TEST(AudioDsp, TruePeakEmptyBufferReturnsFloor) {
+  EXPECT_TRUE(std::abs(computeTruePeakDbfs(nullptr, 0) - kAudioDbfsFloor) < kTightTol);
+  std::vector<float> data(8, 0.5f);
+  EXPECT_TRUE(std::abs(computeTruePeakDbfs(data.data(), 0) - kAudioDbfsFloor) < kTightTol);
+}
+
+TEST(AudioDsp, TruePeakIsAtLeastSamplePeak) {
+  const auto sine = makeSine(997.0, 0.7, 48000.0, 4800);
+  const double samplePeak = computeSamplePeakDbfs(sine.data(), sine.size());
+  const double truePeak = computeTruePeakDbfs(sine.data(), sine.size());
+  EXPECT_TRUE(truePeak >= samplePeak - 1e-6);
+}
+
+TEST(AudioDsp, TruePeakNeverBelowSamplePeakForDc) {
+  // A constant full-scale block has true peak == sample peak == 0 dBFS; edge
+  // handling must not invent overshoot for a flat signal.
+  std::vector<float> dc(2048, 1.0f);
+  const double truePeak = computeTruePeakDbfs(dc.data(), dc.size());
+  EXPECT_TRUE(truePeak >= computeSamplePeakDbfs(dc.data(), dc.size()) - 1e-6);
+  EXPECT_TRUE(std::abs(truePeak) < 0.05);  // ~0 dBFS, no false overshoot
+}
+
+TEST(AudioDsp, TruePeakCatchesInterSampleOvershoot) {
+  // Samples sit ~3 dB below the 0.9 tone amplitude; the true peak must climb back
+  // toward the real amplitude and clearly exceed the sample peak.
+  const auto signal = makeInterSampleOvershoot(0.9, 48000.0, 2048);
+  const double samplePeak = computeSamplePeakDbfs(signal.data(), signal.size());
+  const double truePeak = computeTruePeakDbfs(signal.data(), signal.size(), 4);
+  EXPECT_TRUE(truePeak > samplePeak);
+  // The inter-sample overshoot here is multiple dB above the sample peak.
+  EXPECT_TRUE(truePeak - samplePeak > 2.0);
+  // And the true peak approaches the real tone amplitude (0.9 -> ~-0.92 dBFS).
+  EXPECT_TRUE(truePeak > -1.5);
+}
+
+TEST(AudioDsp, TruePeakIsDeterministic) {
+  const auto a = makeInterSampleOvershoot(0.8, 48000.0, 2048);
+  const double first = computeTruePeakDbfs(a.data(), a.size(), 4);
+  const double second = computeTruePeakDbfs(a.data(), a.size(), 4);
+  EXPECT_TRUE(std::abs(first - second) < kTightTol);
+}
+
 // --- Optional AudioFrame PCM metering (backward-compatible) -------------------
 
 TEST(AudioDsp, AnalyzeUsesPcmRmsPeakWhenPresent) {

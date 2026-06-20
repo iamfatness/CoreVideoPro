@@ -274,3 +274,144 @@ export function peakLimiterGainReductionDb(samples: PcmSamples, thresholdDbfs: n
   const gain = threshold / peak;
   return -linearToDbfs(gain);
 }
+
+// ---------------------------------------------------------------------------
+// Noise gate (envelope follower + attack/release smoothing).
+//
+// A downward expander/gate: a one-pole peak envelope follower tracks the signal
+// level; when the envelope sits below `thresholdDbfs` the gate closes (gain ->
+// 0) and the signal is attenuated, when it rises above threshold the gate opens
+// (gain -> 1) and the signal passes ~unchanged. Both the envelope and the gate
+// gain are smoothed with per-sample one-pole coefficients derived from the
+// attack/release times at the given sample rate, so transitions are click-free
+// and the result is deterministic (same input -> same output).
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the noise gate in place, returning the fraction of samples [0, 1] whose
+ * applied gain was below 0.5 (i.e. effectively gated). 0 means the gate stayed
+ * open for the whole buffer, ~1 means it was closed throughout. Operates on a
+ * `Float32Array` so the mutation is observable. Empty buffers return 0.
+ */
+export function applyNoiseGate(
+  samples: Float32Array,
+  thresholdDbfs: number,
+  attackMs: number,
+  releaseMs: number,
+  sampleRate: number
+): number {
+  const count = samples.length;
+  if (count === 0 || sampleRate <= 0.0) {
+    return 0.0;
+  }
+  const threshold = dbfsToLinear(thresholdDbfs);
+  // One-pole smoothing coefficient for a time constant t (ms): the per-sample
+  // factor that reaches ~63% of a step in t. 0 ms -> instantaneous (coeff 0).
+  const timeConstantCoeff = (timeMs: number): number => {
+    if (timeMs <= 0.0) {
+      return 0.0;
+    }
+    const samplesForTc = (timeMs / 1000.0) * sampleRate;
+    if (samplesForTc <= 0.0) {
+      return 0.0;
+    }
+    return Math.exp(-1.0 / samplesForTc);
+  };
+  const attackCoeff = timeConstantCoeff(attackMs);
+  const releaseCoeff = timeConstantCoeff(releaseMs);
+  // Envelope follower tracks magnitude: fast attack to rising peaks, slower
+  // release as the signal decays, using the same attack/release times.
+  let envelope = 0.0;
+  let gain = 0.0; // start closed; opens as soon as signal exceeds threshold
+  let gatedSamples = 0;
+  for (let index = 0; index < count; index += 1) {
+    const magnitude = Math.abs(samples[index]);
+    const envCoeff = magnitude > envelope ? attackCoeff : releaseCoeff;
+    envelope = envCoeff * envelope + (1.0 - envCoeff) * magnitude;
+    // Target gain: open (1) when the envelope is at/above threshold, else closed.
+    const targetGain = envelope >= threshold ? 1.0 : 0.0;
+    // Smooth toward the target: attack when opening, release when closing.
+    const gainCoeff = targetGain > gain ? attackCoeff : releaseCoeff;
+    gain = gainCoeff * gain + (1.0 - gainCoeff) * targetGain;
+    if (gain < 0.5) {
+      gatedSamples += 1;
+    }
+    samples[index] = samples[index] * gain;
+  }
+  return gatedSamples / count;
+}
+
+// ---------------------------------------------------------------------------
+// True-peak (inter-sample peak) estimator.
+//
+// The sample-peak meter only sees the discrete samples; the reconstructed analog
+// waveform can overshoot between them (inter-sample peaks). We estimate the true
+// peak by band-limited polyphase oversampling: each output sub-sample is a
+// windowed-sinc (Hann-windowed) interpolation of the surrounding input samples,
+// evaluated `oversampleFactor` times per input sample. Sinc reconstruction
+// genuinely overshoots near steep transitions, so a signal whose samples sit
+// below full scale can still report a higher true peak — exactly the inter-
+// sample overshoot a sample-peak meter misses.
+//
+// The interpolation phase 0 reproduces the original sample exactly (sinc(0)=1,
+// all other taps land on zeros of the sinc), so the original sample magnitudes
+// are always included and the result is guaranteed >= the sample peak. Returns
+// dBFS; silence/empty -> AUDIO_DBFS_FLOOR.
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimate the inter-sample (true) peak of a PCM buffer in dBFS via band-limited
+ * (windowed-sinc) polyphase oversampling. Guaranteed to be >= the sample peak.
+ * Silence/empty -> AUDIO_DBFS_FLOOR.
+ */
+export function computeTruePeakDbfs(samples: PcmSamples, oversampleFactor = 4): number {
+  const count = samples.length;
+  if (count === 0) {
+    return AUDIO_DBFS_FLOOR;
+  }
+  const factor = oversampleFactor < 1 ? 1 : Math.floor(oversampleFactor);
+  // Half-width of the windowed-sinc kernel (taps on each side). Wider -> closer
+  // to ideal reconstruction; 16 is plenty for a deterministic ISP estimate.
+  const half = 16;
+
+  let truePeak = 0.0;
+  for (let index = 0; index < count; index += 1) {
+    for (let sub = 0; sub < factor; sub += 1) {
+      const fraction = sub / factor;
+      let value: number;
+      if (sub === 0) {
+        // Phase 0 is the original sample exactly; no need to convolve.
+        value = samples[index];
+      } else {
+        let accum = 0.0;
+        for (let tap = -half + 1; tap <= half; tap += 1) {
+          // Clamp (replicate) at the buffer edges so a flat signal near a
+          // boundary doesn't ring against zero padding and over-report.
+          let sourceIndex = index + tap;
+          if (sourceIndex < 0) {
+            sourceIndex = 0;
+          } else if (sourceIndex >= count) {
+            sourceIndex = count - 1;
+          }
+          const x = tap - fraction;
+          let sinc: number;
+          if (Math.abs(x) < 1e-9) {
+            sinc = 1.0;
+          } else {
+            const px = AUDIO_PI * x;
+            sinc = Math.sin(px) / px;
+          }
+          // Hann window over the kernel support to tame ringing.
+          const window = 0.5 + 0.5 * Math.cos((AUDIO_PI * x) / half);
+          accum += samples[sourceIndex] * sinc * window;
+        }
+        value = accum;
+      }
+      const magnitude = Math.abs(value);
+      if (magnitude > truePeak) {
+        truePeak = magnitude;
+      }
+    }
+  }
+  return linearToDbfs(truePeak);
+}
