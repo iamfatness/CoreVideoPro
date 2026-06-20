@@ -198,10 +198,13 @@ export class StaticDirectorStrategy implements DirectorStrategy {
  * under a timeout. It is deliberately the only async, potentially-remote seam in
  * the director.
  *
- * CRITICAL: no implementation of this interface ships in `src/engine` — the real
- * provider lives behind a `services/` boundary and is injected by the shell once a
- * privacy posture (local vs cloud inference over meeting content) is chosen. The
- * engine here only knows the *contract* and how to fall back. The deterministic
+ * Privacy posture (resolved): AI inference runs ENTIRELY on the production
+ * machine. So the on-device implementation ({@link LocalDirectorProvider} in
+ * `localDirectorProvider.ts`) ships in `src/engine` as pure local compute — no
+ * network, no cloud client, meeting content never leaves the box. A remote/cloud
+ * provider would still be injected by the shell behind a `services/` boundary, but
+ * that is explicitly out of scope under the on-device decision. Either way the
+ * engine only knows the *contract* and how to fall back, and the deterministic
  * stabilizer in `autoProductionDirector.ts` still gates whatever a provider
  * proposes, so a provider can never bypass the director's safety holds.
  */

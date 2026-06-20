@@ -12,6 +12,7 @@ import type {
 } from "./contracts";
 import { MockCaptureDeviceEngine } from "./captureDevices";
 import { MockOutputEngine, MockZoomCaptureEngine, RuleBasedAiProductionEngine } from "./mockEngines";
+import { localDirectorProvider } from "./localDirectorProvider";
 import { NativeCaptureDeviceEngineAdapter } from "./nativeCaptureDeviceEngineAdapter";
 import { NativeOutputEngineAdapter } from "./nativeOutputEngineAdapter";
 import { NativeZoomEngineAdapter } from "./nativeZoomEngineAdapter";
@@ -54,7 +55,7 @@ export function createMockEngineBundle(): EngineBundle {
   const spineTransport = new InMemoryZoomMediaSpineTransport();
   return {
     zoom: new MockZoomCaptureEngine(),
-    ai: new RuleBasedAiProductionEngine(),
+    ai: new RuleBasedAiProductionEngine({ directorProvider: localDirectorProvider }),
     aiStudio: new RuleBasedAiStudioEngine(),
     output: new MockOutputEngine(),
     audio: new SimulatedAudioMixEngine(),
@@ -74,7 +75,7 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bri
   const { transport: spineTransport, nativeTransport } = createZoomMediaSpineTransport(bridge);
   return {
     zoom: new NativeZoomEngineAdapter(transport),
-    ai: new RuleBasedAiProductionEngine(),
+    ai: new RuleBasedAiProductionEngine({ directorProvider: localDirectorProvider }),
     aiStudio: new RuleBasedAiStudioEngine(),
     output: new NativeOutputEngineAdapter(transport),
     audio: new SimulatedAudioMixEngine(),
