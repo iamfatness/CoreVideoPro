@@ -497,6 +497,8 @@ export type MediaCoreCommand =
       backgroundColor: string;
       fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
       lowerThirdStyle: "solid" | "minimal" | "gradient";
+      captionStyle: string;
+      defaultOverlayBehavior: string;
     }
   | {
       type: "set-media-playback";
@@ -524,6 +526,8 @@ export type MediaCoreBrandKit = {
   backgroundColor: string;
   fontFamily: "Inter" | "Poppins" | "Roboto" | "Georgia";
   lowerThirdStyle: "solid" | "minimal" | "gradient";
+  captionStyle: string;
+  defaultOverlayBehavior: string;
   appliedOverlayCount: number;
   summary: string;
   warnings: string[];

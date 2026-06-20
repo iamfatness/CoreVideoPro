@@ -985,6 +985,8 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
   brandBackgroundColor_ = command.getString("backgroundColor", brandBackgroundColor_);
   brandFontFamily_ = command.getString("fontFamily", brandFontFamily_);
   brandLowerThirdStyle_ = command.getString("lowerThirdStyle", brandLowerThirdStyle_);
+  brandCaptionStyle_ = command.getString("captionStyle", brandCaptionStyle_);
+  brandDefaultOverlayBehavior_ = command.getString("defaultOverlayBehavior", brandDefaultOverlayBehavior_);
   if (brandLogoText_.empty()) {
     brandLogoText_ = "CoreVideo Pro";
     brandWarnings_.push_back("Brand logo text was empty; using default bug label.");
@@ -1287,6 +1289,8 @@ rpc::Json MediaCore::brandKitState() const {
       {"backgroundColor", brandBackgroundColor_},
       {"fontFamily", brandFontFamily_},
       {"lowerThirdStyle", brandLowerThirdStyle_},
+      {"captionStyle", brandCaptionStyle_},
+      {"defaultOverlayBehavior", brandDefaultOverlayBehavior_},
       {"appliedOverlayCount", appliedOverlayCount},
       {"summary", summary.str()},
       {"warnings", warnings},

@@ -12,13 +12,17 @@ describe("BrandKitStateModel", () => {
         accentColor: "#aabbcc",
         backgroundColor: "#0c1118",
         fontFamily: "Inter",
-        lowerThirdStyle: "gradient"
+        lowerThirdStyle: "gradient",
+        captionStyle: "boxed",
+        defaultOverlayBehavior: "auto"
       },
       2
     );
 
     expect(brandKit.summary).toBe("Launch Night applied to 2 overlays");
     expect(brandKit.logoText).toBe("CoreVideo");
+    expect(brandKit.captionStyle).toBe("boxed");
+    expect(brandKit.defaultOverlayBehavior).toBe("auto");
     expect(brandKit.appliedOverlayCount).toBe(2);
   });
 });

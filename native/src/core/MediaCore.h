@@ -155,6 +155,8 @@ class MediaCore {
   std::string brandBackgroundColor_ = "#0c1118";
   std::string brandFontFamily_ = "Inter";
   std::string brandLowerThirdStyle_ = "gradient";
+  std::string brandCaptionStyle_ = "medium sentence captions";
+  std::string brandDefaultOverlayBehavior_ = "all-off";
   std::vector<std::string> brandWarnings_;
   std::string mediaPlaybackAssetId_;
   std::string mediaPlaybackAssetName_;

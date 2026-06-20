@@ -8,6 +8,8 @@ export const DEFAULT_BRAND_KIT: MediaCoreBrandKit = {
   backgroundColor: "#0c1118",
   fontFamily: "Inter",
   lowerThirdStyle: "gradient",
+  captionStyle: "medium sentence captions",
+  defaultOverlayBehavior: "all-off",
   appliedOverlayCount: 0,
   summary: "Brand kit idle.",
   warnings: []
@@ -25,6 +27,8 @@ export class BrandKitStateModel {
       backgroundColor: normalizeHex(input.backgroundColor, DEFAULT_BRAND_KIT.backgroundColor),
       fontFamily: input.fontFamily,
       lowerThirdStyle: input.lowerThirdStyle,
+      captionStyle: input.captionStyle.trim() || DEFAULT_BRAND_KIT.captionStyle,
+      defaultOverlayBehavior: input.defaultOverlayBehavior.trim() || DEFAULT_BRAND_KIT.defaultOverlayBehavior,
       appliedOverlayCount: overlayCount,
       summary: buildSummary(input.name, overlayCount),
       warnings: buildWarnings(input)
