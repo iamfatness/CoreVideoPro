@@ -215,7 +215,6 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2" VerticalAlignment="Center">
                     <TextBlock Text="Selected crosspoint" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
@@ -231,10 +230,6 @@
                                Minimum="-60" Maximum="10" SmallChange="0.5" LargeChange="3"
                                SpinButtonPlacementMode="Inline" />
                 </StackPanel>
-                <Button Grid.Column="2" Content="Remove route" VerticalAlignment="Bottom"
-                        Style="{StaticResource OperatorGhostButton}" Padding="10,4"
-                        Command="{x:Bind ViewModel.AudioRoutingMatrix.RemoveSelectedCommand}"
-                        Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
             </Grid>
         </Border>
     </Grid>

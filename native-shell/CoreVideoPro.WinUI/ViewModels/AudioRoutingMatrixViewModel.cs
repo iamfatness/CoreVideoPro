@@ -149,31 +149,26 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
             return;
         }
 
-        if (!cell.IsRouted)
+        if (cell.IsRouted)
         {
-            if (IsIsolatedAudioBus(cell.Bus.Id))
+            cell.IsRouted = false;
+            if (ReferenceEquals(SelectedCrosspoint, cell))
             {
-                ClearBusColumn(cell.Bus.Id);
+                SelectedCrosspoint = null;
             }
 
-            cell.IsRouted = true;
-        }
-
-        SelectedCrosspoint = cell;
-        RouteChanged?.Invoke(cell);
-    }
-
-    [RelayCommand]
-    private void RemoveSelected()
-    {
-        if (SelectedCrosspoint is null)
-        {
+            RouteChanged?.Invoke(cell);
             return;
         }
 
-        SelectedCrosspoint.IsRouted = false;
-        OnPropertyChanged(nameof(SelectedGainDb));
-        RouteChanged?.Invoke(SelectedCrosspoint);
+        if (IsIsolatedAudioBus(cell.Bus.Id))
+        {
+            ClearBusColumn(cell.Bus.Id);
+        }
+
+        cell.IsRouted = true;
+        SelectedCrosspoint = cell;
+        RouteChanged?.Invoke(cell);
     }
 
     [RelayCommand]
