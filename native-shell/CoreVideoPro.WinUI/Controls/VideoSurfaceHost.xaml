@@ -52,47 +52,6 @@
                                MaxWidth="360" />
                 </StackPanel>
 
-                <Border VerticalAlignment="Top"
-                        HorizontalAlignment="Right"
-                        Margin="10"
-                        Background="#AA0C1118"
-                        CornerRadius="6"
-                        Padding="8,6"
-                        Visibility="{x:Bind HasFrameStats, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                    <StackPanel Spacing="2">
-                        <TextBlock Text="{x:Bind ParticipantLine, Mode=OneWay}"
-                                   FontSize="10"
-                                   Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Text="{x:Bind ResolutionLine, Mode=OneWay}"
-                                   FontSize="11"
-                                   FontWeight="SemiBold" />
-                        <TextBlock Text="{x:Bind FpsLine, Mode=OneWay}"
-                                   FontSize="10"
-                                   Foreground="{StaticResource StudioAccentBrush}" />
-                        <TextBlock Text="{x:Bind RendererLine, Mode=OneWay}"
-                                   FontSize="10"
-                                   Foreground="{StaticResource StudioMutedBrush}" />
-                    </StackPanel>
-                </Border>
-
-                <Border VerticalAlignment="Bottom"
-                        HorizontalAlignment="Left"
-                        Margin="10"
-                        Background="#AA0C1118"
-                        CornerRadius="4"
-                        Padding="6,3"
-                        Visibility="{x:Bind ShowPathBadge, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
-                        <Ellipse Width="6"
-                                 Height="6"
-                                 VerticalAlignment="Center"
-                                 Fill="{x:Bind PathBadgeForeground, Mode=OneWay}" />
-                        <TextBlock Text="{x:Bind PathBadgeText, Mode=OneWay}"
-                                   FontSize="9"
-                                   FontWeight="SemiBold"
-                                   Foreground="{x:Bind PathBadgeForeground, Mode=OneWay}" />
-                    </StackPanel>
-                </Border>
             </Grid>
         </Border>
     </Grid>

@@ -79,6 +79,8 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public ObservableCollection<GraphicOverlay> Graphics => _studio.Graphics;
 
+    public bool HasGraphics => Graphics.Count > 0;
+
     public BrandKit BrandKit => _studio.BrandKit;
 
     public IReadOnlyList<CaptionTranscriptEntry> CaptionTranscript => _studio.CaptionTranscript;
@@ -240,6 +242,13 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     [RelayCommand]
     private void ToggleGraphic(string graphicId) => _studio.ToggleGraphicCommand.Execute(graphicId);
+
+    [RelayCommand]
+    private void AddGraphic(string kind)
+    {
+        _studio.AddGraphicOverlay(kind);
+        OnPropertyChanged(nameof(HasGraphics));
+    }
 
     [RelayCommand]
     private void UseSelectedMediaAsLogo()

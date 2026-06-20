@@ -39,7 +39,7 @@ public static class ShowInputRosterService
                 .Select(participant => new ShowInputSourceOption
                 {
                     Value = participant.Id,
-                    Label = $"{participant.Name} · {participant.RoleLabel}"
+                    Label = $"{participant.Name} - {participant.RoleLabel}"
                 })
                 .ToList(),
             ShowInputKind.Blackmagic => captureDevices
@@ -168,7 +168,7 @@ public static class ShowInputRosterService
 
         if (slot.CaptureDeviceId is not null && devicesById.TryGetValue(slot.CaptureDeviceId, out var device))
         {
-            var label = $"{device.Name} · {device.ResolutionLabel}";
+            var label = $"{device.Name} - {device.ResolutionLabel}";
             return new ParticipantSurfaceTile
             {
                 Participant = new Participant
@@ -179,13 +179,12 @@ public static class ShowInputRosterService
                     Role = ParticipantRole.Guest,
                     Health = device.IsConnected ? FeedHealth.Live : FeedHealth.VideoOff
                 },
-                Surface = VideoSurfaceState.Waiting(
-                    VideoSurfaceKind.Multiview,
-                    $"capture:{device.Id}",
-                    label) with
+                Surface = (device.IsConnected
+                    ? VideoSurfaceState.CaptureSourceOnline(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)
+                    : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)) with
                 {
                     DetailLine = device.IsConnected
-                        ? $"{device.ConnectionLabel} · {device.SignalLabel}"
+                        ? $"{device.ConnectionLabel} - {device.SignalLabel} - waiting for capture frames"
                         : "Connect device in Sources to bring online."
                 },
                 SourceIndex = slot.SlotNumber

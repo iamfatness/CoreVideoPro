@@ -127,6 +127,7 @@ public sealed class CaptureDeviceInput
 public partial class CaptureDevice : ObservableObject
 {
     public required string Id { get; init; }
+    public required string NativeDeviceId { get; init; }
     public required string Vendor { get; init; }
     public required string Name { get; init; }
     public required IReadOnlyList<CaptureDeviceInput> Inputs { get; init; }

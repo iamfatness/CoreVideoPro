@@ -81,6 +81,7 @@ public sealed class CaptureDeviceDiscoveryService : IDisposable
         new()
         {
             Id = CaptureDeviceDiscoveryMapper.CreateStableDeviceId(deviceSymbolicLinkId),
+            NativeDeviceId = deviceSymbolicLinkId,
             Vendor = CaptureDeviceDiscoveryMapper.DetectVendor(friendlyName),
             Name = friendlyName,
             Inputs = [new CaptureDeviceInput { Id = "default", Label = "Default" }],

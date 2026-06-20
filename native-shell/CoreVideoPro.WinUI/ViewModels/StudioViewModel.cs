@@ -148,6 +148,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string? _selectedMediaAssetName;
 
     [ObservableProperty]
+    private string? _selectedMediaAssetPath;
+
+    [ObservableProperty]
+    private string? _selectedMediaAssetKind;
+
+    [ObservableProperty]
     private bool _selectedMediaAssetPlaying;
 
     [ObservableProperty]
@@ -1223,6 +1229,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
         Graphics.Where(graphic => graphic.Enabled).ToList();
 
+    public void AddGraphicOverlay(string kind)
+    {
+        var normalizedKind = string.IsNullOrWhiteSpace(kind) ? "lower-third" : kind.Trim().ToLowerInvariant();
+        var label = normalizedKind switch
+        {
+            "bug" => "Corner bug",
+            "image" => "Image overlay",
+            "caption" => "Caption strip",
+            _ => "Lower third"
+        };
+        var position = normalizedKind switch
+        {
+            "bug" => "top-right",
+            "image" => "center",
+            "caption" => "bottom",
+            _ => Overlays.LowerThirdPosition
+        };
+
+        Graphics.Add(new GraphicOverlay
+        {
+            Id = $"graphic-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            Name = label,
+            Kind = normalizedKind,
+            Position = position,
+            Accent = BrandKit.AccentColor,
+            Enabled = true
+        });
+
+        OnPropertyChanged(nameof(EnabledGraphics));
+        CommandStatus = $"{label} added";
+        _ = TrySyncMediaCoreAsync();
+    }
+
     [RelayCommand]
     private void ToggleAutomation()
     {
@@ -1274,6 +1313,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? $"{SelectedMediaAssetName} selected"
             : "No media asset selected";
 
+    public string MediaPlaybackButtonLabel => SelectedMediaAssetPlaying ? "Pause" : "Play";
+
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
     public string CaptionTranscriptEmptyGuidance =>
@@ -1287,6 +1328,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             SelectedMediaAssetId = null;
             SelectedMediaAssetName = null;
+            SelectedMediaAssetPath = null;
+            SelectedMediaAssetKind = null;
             SelectedMediaAssetPlaying = false;
             MediaPlaybackStatus = "No media asset playing";
         }
@@ -1296,6 +1339,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasMediaBinAssets));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        RefreshMultiviewGridTiles();
         RefreshProductionReadouts();
     }
 
@@ -1351,12 +1396,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         SelectedMediaAssetId = asset.Id;
         SelectedMediaAssetName = asset.Name;
+        SelectedMediaAssetPath = asset.FilePath;
+        SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = false;
         MediaPlaybackStatus = $"{asset.Name} selected";
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        RefreshMultiviewGridTiles();
         CommandStatus = $"{asset.Name} ready for playback";
         _ = TrySyncMediaCoreAsync();
     }
@@ -1418,6 +1467,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var resumeSameAsset = string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
         SelectedMediaAssetId = asset.Id;
         SelectedMediaAssetName = asset.Name;
+        SelectedMediaAssetPath = asset.FilePath;
+        SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
@@ -1429,10 +1480,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
+        RefreshMultiviewGridTiles();
 
         // Push the selection through the typed boundary the same way scene takes do.
         _ = TrySyncMediaCoreAsync();
+    }
+
+    [RelayCommand]
+    private void ToggleSelectedMediaPlayback()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedMediaAssetId))
+        {
+            CommandStatus = "Select a media asset before playback";
+            return;
+        }
+
+        PlayMediaAsset(SelectedMediaAssetId);
     }
 
     private async Task TrySyncMediaCoreAsync()
@@ -2501,11 +2566,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshMultiviewGridTiles()
     {
-        MultiviewGridTiles = ShowInputRosterService.BuildMultiviewTiles(
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
             ShowInputs,
             RoomVideoParticipants,
             CaptureDevices,
-            MultiviewTiles);
+            MultiviewTiles).ToList();
+
+        if (SelectedMediaAssetId is not null && FindMediaAsset(SelectedMediaAssetId) is { } asset)
+        {
+            tiles.Add(new ParticipantSurfaceTile
+            {
+                Participant = new Participant
+                {
+                    Id = $"media:{asset.Id}",
+                    Name = asset.Name,
+                    Title = asset.Kind,
+                    Role = ParticipantRole.Guest,
+                    Health = SelectedMediaAssetPlaying ? FeedHealth.Live : FeedHealth.VideoOff
+                },
+                Surface = VideoSurfaceState.MediaAssetPreview(
+                    $"media:{asset.Id}",
+                    asset.Name,
+                    asset.FilePath,
+                    asset.Kind,
+                    SelectedMediaAssetPlaying),
+                SourceIndex = tiles.Count + 1
+            });
+        }
+
+        MultiviewGridTiles = tiles;
         OnPropertyChanged(nameof(MultiviewHeader));
     }
 

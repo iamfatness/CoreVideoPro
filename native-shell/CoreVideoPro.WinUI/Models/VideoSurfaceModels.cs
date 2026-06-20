@@ -64,6 +64,9 @@ public sealed record VideoSurfaceState
     public string DetailLine { get; init; } = "Start the engine to receive media-core frames.";
     public VideoFrameMetadata? LastFrame { get; init; }
     public SharedTextureHandle? PendingSharedHandle { get; init; }
+    public string? MediaAssetPath { get; init; }
+    public string? MediaAssetKind { get; init; }
+    public bool MediaAssetPlaying { get; init; }
     public byte[]? PreviewBgra { get; init; }
     public int PreviewWidth { get; init; }
     public int PreviewHeight { get; init; }
@@ -120,6 +123,29 @@ public sealed record VideoSurfaceState
             DetailLine = "Showing program slate. Turn Capture on to ingest Zoom video."
         };
 
+    public static VideoSurfaceState CaptureSourceOnline(VideoSurfaceKind kind, string surfaceKey, string title) =>
+        new()
+        {
+            SurfaceKey = surfaceKey,
+            Kind = kind,
+            Title = title,
+            StatusLine = "Source online",
+            DetailLine = "Waiting for capture frames."
+        };
+
+    public static VideoSurfaceState MediaAssetPreview(string surfaceKey, string title, string path, string kind, bool playing) =>
+        new()
+        {
+            SurfaceKey = surfaceKey,
+            Kind = VideoSurfaceKind.Multiview,
+            Title = title,
+            StatusLine = playing ? "Media playing" : "Media cued",
+            DetailLine = playing ? "Selected media is active in playout." : "Selected media is ready for playout.",
+            MediaAssetPath = path,
+            MediaAssetKind = kind,
+            MediaAssetPlaying = playing
+        };
+
     public VideoSurfaceState WithFrame(VideoFrameMetadata frame, string statusLine, string? detailLine = null) =>
         new()
         {
@@ -130,6 +156,9 @@ public sealed record VideoSurfaceState
             DetailLine = detailLine ?? DetailLine,
             LastFrame = frame,
             PendingSharedHandle = PendingSharedHandle,
+            MediaAssetPath = MediaAssetPath,
+            MediaAssetKind = MediaAssetKind,
+            MediaAssetPlaying = MediaAssetPlaying,
             PreviewBgra = PreviewBgra,
             PreviewWidth = PreviewWidth,
             PreviewHeight = PreviewHeight
@@ -145,6 +174,9 @@ public sealed record VideoSurfaceState
             DetailLine = DetailLine,
             LastFrame = LastFrame,
             PendingSharedHandle = PendingSharedHandle,
+            MediaAssetPath = MediaAssetPath,
+            MediaAssetKind = MediaAssetKind,
+            MediaAssetPlaying = MediaAssetPlaying,
             PreviewBgra = bgra,
             PreviewWidth = width,
             PreviewHeight = height
@@ -159,7 +191,10 @@ public sealed record VideoSurfaceState
             StatusLine = StatusLine,
             DetailLine = "GPU shared texture ready.",
             LastFrame = LastFrame,
-            PendingSharedHandle = handle
+            PendingSharedHandle = handle,
+            MediaAssetPath = MediaAssetPath,
+            MediaAssetKind = MediaAssetKind,
+            MediaAssetPlaying = MediaAssetPlaying
         };
 }
 

@@ -26,7 +26,37 @@
 
             <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Graphics" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Graphics" Style="{StaticResource OperatorSectionTitle}" />
+                        <Button Grid.Column="1" Content="Lower third"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.Overlays.AddGraphicCommand}"
+                                CommandParameter="lower-third" />
+                        <Button Grid.Column="2" Content="Bug"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.Overlays.AddGraphicCommand}"
+                                CommandParameter="bug" />
+                        <Button Grid.Column="3" Content="Image"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.Overlays.AddGraphicCommand}"
+                                CommandParameter="image" />
+                    </Grid>
+                    <Border Style="{StaticResource OperatorReadoutBorder}"
+                            Visibility="{x:Bind ViewModel.Overlays.HasGraphics, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="No graphics configured" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Text="Add a lower third, bug, or image overlay to build the show graphics package."
+                                       FontSize="11"
+                                       Foreground="{StaticResource StudioMutedBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
                     <ItemsRepeater ItemsSource="{x:Bind ViewModel.Overlays.Graphics, Mode=OneWay}">
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:GraphicOverlay">

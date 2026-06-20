@@ -103,6 +103,7 @@ public sealed class ShowInputRosterServiceTests
         new()
         {
             Id = id,
+            NativeDeviceId = $"native-{id}",
             Name = name,
             Vendor = vendor,
             Inputs = [new CaptureDeviceInput { Id = "input-1", Label = "Input 1" }],
