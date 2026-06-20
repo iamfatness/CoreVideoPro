@@ -44,6 +44,11 @@ ingest) is already proven in the vendored native capture engine.
   a Windows runner / dev machine.
 - Real Zoom and record/stream validation are **manual** runbook steps today.
 
+> **Beyond alpha:** the detailed plan and per-feature spec for making the
+> remaining synthetic/telemetry native paths real (UVC/AJA/DeckLink, SRT, NDI,
+> recording, audio DSP, RTMP audio, compositor framing, overlays, AI director)
+> lives in [`native-production-completion-plan.md`](native-production-completion-plan.md).
+
 ## 2. Alpha exit criteria
 
 An alpha is "working" when, on a Windows dev machine with the Zoom SDK staged, an
