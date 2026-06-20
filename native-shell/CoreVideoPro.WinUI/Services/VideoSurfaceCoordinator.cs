@@ -10,7 +10,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public sealed class VideoSurfaceCoordinator : IDisposable
 {
-    private const int UiUpdateIntervalMs = 33;
+    private const int UiUpdateIntervalMs = 16;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, FrameRateTracker> _trackers = new(StringComparer.Ordinal);

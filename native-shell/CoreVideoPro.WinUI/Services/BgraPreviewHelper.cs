@@ -11,7 +11,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public static class BgraPreviewHelper
 {
-    private const long MinimumPreviewIntervalMs = 33;
+    private const long MinimumPreviewIntervalMs = 16;
     private static readonly ConditionalWeakTable<Image, PreviewState> PreviewStates = new();
 
     public static void SetPreview(Image image, byte[]? bgra, int width, int height)
