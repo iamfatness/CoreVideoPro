@@ -1315,7 +1315,9 @@ describe("MediaCoreRuntime", () => {
             { sourceId: "input-01", busId: "pgm-r", gainDb: -3 },
             { sourceId: "input-01", busId: "mon", gainDb: -6 },
             { sourceId: "input-02", busId: "pgm-l", gainDb: 0 },
-            { sourceId: "input-02", busId: "pgm-r", gainDb: 0 }
+            { sourceId: "input-02", busId: "pgm-r", gainDb: 0 },
+            { sourceId: "input-03", busId: "iso-8", gainDb: 0 },
+            { sourceId: "input-04", busId: "bus-01", gainDb: -1.5 }
           ]
         }
       ]
@@ -1326,13 +1328,15 @@ describe("MediaCoreRuntime", () => {
       state: {
         audioRoutingMatrix: {
           status: "live",
-          routedSendCount: 5,
-          routedSourceCount: 2,
+          routedSendCount: 7,
+          routedSourceCount: 4,
           busSourceCounts: expect.arrayContaining([
             { busId: "pgm-l", sourceCount: 2 },
             { busId: "pgm-r", sourceCount: 2 },
             { busId: "mon", sourceCount: 1 },
-            { busId: "iso-1", sourceCount: 0 }
+            { busId: "iso-1", sourceCount: 0 },
+            { busId: "iso-8", sourceCount: 1 },
+            { busId: "bus-01", sourceCount: 1 }
           ])
         },
         lastCommandTypes: expect.arrayContaining(["sync-audio-routing-matrix"])

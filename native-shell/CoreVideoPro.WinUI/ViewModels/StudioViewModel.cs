@@ -1438,6 +1438,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnVideoRoutingMatrixChanged(VideoRoutingCrosspointViewModel cell)
     {
+        if (cell.Destination.Id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = TrySyncMediaCoreAsync();
+            CommandStatus = $"{cell.SourceLabel} {(cell.IsRouted ? "routed to" : "removed from")} {cell.Destination.Label}";
+            return;
+        }
+
         if (!string.Equals(cell.Destination.Id, "multiview", StringComparison.Ordinal) ||
             !TryParseInputSourceId(cell.SourceId, out var slotNumber) ||
             ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } slot)
@@ -2340,7 +2347,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     mix?.OutputLevel ?? participant.AudioLevel,
                     mix?.Muted ?? participant.IsMuted,
                     mix?.NoiseSuppression ?? false,
-                    mix?.ManualGainDb == 0 ? null : mix?.ManualGainDb);
+                    mix?.ManualGainDb == 0 ? null : mix?.ManualGainDb,
+                    mix?.Pan ?? 0,
+                    mix?.Solo ?? false,
+                    mix?.PluginInserts ?? []);
             })
             .ToList();
 
@@ -2350,14 +2360,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Select(cell => new MediaCoreAudioRoutingSendWire(cell.SourceId, cell.Bus.Id, cell.GainDb))
             .ToList();
 
-        var isoParticipantIds = GetMutableRoutes(ActiveSceneId)
-            .Where(route =>
-                route.AudioRole == SourceAudioRole.Isolated &&
-                route.ParticipantId is not null)
-            .Select(route => route.ParticipantId!)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(id => id, StringComparer.Ordinal)
-            .ToList();
+        var isoParticipantIds = BuildIsoParticipantTargets();
 
         if (isoParticipantIds.Count == 0)
         {
@@ -2548,7 +2551,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
             Format: NormalizeOutputText(RecordingFormat, MediaCoreProductionSyncContext.DefaultRecordingTargets.Format).ToLowerInvariant(),
             Quality: NormalizeOutputText(RecordingQuality, MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality).ToLowerInvariant(),
-            IsoParticipantIds: isoParticipantIds);
+            IsoParticipantIds: isoParticipantIds.Take(8).ToList());
+
+    private IReadOnlyList<string> BuildIsoParticipantTargets()
+    {
+        var ordered = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var cell in VideoRoutingMatrix.Rows
+            .SelectMany(row => row.Cells)
+            .Where(cell => cell.IsRouted && cell.Destination.Id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(cell => cell.Destination.Id, StringComparer.Ordinal))
+        {
+            if (TryResolveRoutingSourceParticipantId(cell.SourceId, out var participantId) &&
+                seen.Add(participantId))
+            {
+                ordered.Add(participantId);
+            }
+        }
+
+        foreach (var participantId in GetMutableRoutes(ActiveSceneId)
+            .Where(route =>
+                route.AudioRole == SourceAudioRole.Isolated &&
+                route.ParticipantId is not null)
+            .Select(route => route.ParticipantId!)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal))
+        {
+            if (seen.Add(participantId))
+            {
+                ordered.Add(participantId);
+            }
+        }
+
+        return ordered.Take(8).ToList();
+    }
+
+    private bool TryResolveRoutingSourceParticipantId(string sourceId, out string participantId)
+    {
+        participantId = string.Empty;
+        if (!TryParseInputSourceId(sourceId, out var slotNumber))
+        {
+            return false;
+        }
+
+        var slot = ShowInputs.FirstOrDefault(input => input.SlotNumber == slotNumber);
+        if (slot?.Kind != ShowInputKind.ZoomParticipant ||
+            string.IsNullOrWhiteSpace(slot.ParticipantId))
+        {
+            return false;
+        }
+
+        participantId = slot.ParticipantId;
+        return true;
+    }
 
     private static string NormalizeOutputText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
@@ -3165,11 +3221,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
                     OutputLevel = mix?.OutputLevel ?? participant.AudioLevel,
+                    GainLabel = mix is null ? "0.0 dB" : $"{(mix.ManualGainDb > 0 ? "+" : "")}{mix.ManualGainDb:0.0} dB",
+                    PanLabel = mix is null || Math.Abs(mix.Pan) < 0.01
+                        ? "C"
+                        : mix.Pan < 0
+                            ? $"L {Math.Abs(mix.Pan):0.00}"
+                            : $"R {mix.Pan:0.00}",
+                    LufsLabel = mix is null ? "-60.0 LUFS" : $"{mix.Lufs:0.0} LUFS",
+                    BusLabel = ResolvePrimaryAudioBusLabel(participant.Id),
+                    InsertLabel = mix is null || mix.PluginInserts.Count == 0
+                        ? "No inserts"
+                        : string.Join(" + ", mix.PluginInserts),
                     IsSelected = participant.Id == SelectedParticipantId
                 };
             })
             .ToList();
         OnPropertyChanged(nameof(AudioParticipantRows));
+    }
+
+    private string ResolvePrimaryAudioBusLabel(string participantId)
+    {
+        var routedBus = AudioRoutingMatrix.Rows
+            .Where(row => TryResolveRoutingSourceParticipantId(row.SourceId, out var routedParticipantId) &&
+                          string.Equals(routedParticipantId, participantId, StringComparison.Ordinal))
+            .SelectMany(row => row.Cells)
+            .Where(cell => cell.IsRouted)
+            .Select(cell => cell.Bus.Label)
+            .FirstOrDefault();
+
+        return routedBus ?? "MASTER";
     }
 
     private void OnSurfacesChanged() => RunOnUiThread(RefreshSurfaceBindings);

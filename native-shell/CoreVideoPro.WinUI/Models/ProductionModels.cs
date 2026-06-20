@@ -385,6 +385,11 @@ public sealed class AudioParticipantRow
     public required string Name { get; init; }
     public required string Subtitle { get; init; }
     public required int OutputLevel { get; init; }
+    public required string GainLabel { get; init; }
+    public required string PanLabel { get; init; }
+    public required string LufsLabel { get; init; }
+    public required string BusLabel { get; init; }
+    public required string InsertLabel { get; init; }
     public required bool IsSelected { get; init; }
 }
 
@@ -394,9 +399,14 @@ public sealed class ParticipantAudioMix
     public required int OutputLevel { get; init; }
     public required double GainDb { get; init; }
     public double ManualGainDb { get; set; }
+    public double Pan { get; set; }
+    public bool Solo { get; set; }
     public required bool NoiseSuppression { get; init; }
     public bool Muted { get; set; }
     public required string Status { get; init; }
+    public double Lufs { get; set; } = -60;
+    public double TruePeakDb { get; set; } = -60;
+    public IReadOnlyList<string> PluginInserts { get; init; } = [];
 }
 
 public sealed class AudioMixState
@@ -669,9 +679,14 @@ public static class ProductionStateHelper
                     OutputLevel = participant.AudioLevel,
                     GainDb = prior.GainDb,
                     ManualGainDb = prior.ManualGainDb,
+                    Pan = prior.Pan,
+                    Solo = prior.Solo,
                     NoiseSuppression = prior.NoiseSuppression,
                     Muted = prior.Muted,
-                    Status = prior.Status
+                    Status = prior.Status,
+                    Lufs = EstimateParticipantLufs(participant.AudioLevel, prior.Muted),
+                    TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, prior.Muted),
+                    PluginInserts = prior.PluginInserts
                 };
             }
 
@@ -681,12 +696,23 @@ public static class ProductionStateHelper
                 OutputLevel = participant.AudioLevel,
                 GainDb = 0,
                 ManualGainDb = 0,
+                Pan = 0,
+                Solo = false,
                 NoiseSuppression = true,
                 Muted = participant.IsMuted,
-                Status = participant.IsMuted ? "muted" : "balanced"
+                Status = participant.IsMuted ? "muted" : "balanced",
+                Lufs = EstimateParticipantLufs(participant.AudioLevel, participant.IsMuted),
+                TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, participant.IsMuted),
+                PluginInserts = ["Built-in EQ", "Compressor"]
             };
         }).ToList();
     }
+
+    private static double EstimateParticipantLufs(int level, bool muted) =>
+        muted || level <= 0 ? -60 : Math.Clamp(-34 + level * 0.22, -60, -10);
+
+    private static double EstimateTruePeakDb(int level, bool muted) =>
+        muted || level <= 0 ? -60 : Math.Clamp(-30 + level * 0.28, -60, -1);
 
     public static string BuildAudioMixSummary(IReadOnlyList<Participant> participants) =>
         participants.Count == 0

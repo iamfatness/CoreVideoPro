@@ -132,6 +132,9 @@ class MediaCore {
     bool noiseSuppression = false;
     double manualGainDb = 0;
     bool hasManualGain = false;
+    double pan = 0;
+    bool solo = false;
+    std::vector<std::string> pluginInserts;
   };
   std::vector<ParticipantAudioChannelInput> audioChannels_;
   struct AudioRoutingSendInput {

@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace corevideo::core {
 namespace {
@@ -165,8 +166,8 @@ rpc::Json MediaCore::profile() const {
       {"encoder", encoderSession.encoderName},
       {"maxProgramResolution", "1920x1080"},
       {"maxProgramFps", 30},
-      {"maxParticipantFeeds", 6},
-      {"maxIsoRecordings", 2},
+      {"maxParticipantFeeds", 8},
+      {"maxIsoRecordings", 8},
       {"capabilities", capabilityArray(renderer, encoderSession)},
   };
 }
@@ -864,6 +865,11 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
       input.manualGainDb = std::max(-24.0, std::min(24.0, manualGain->asNumber()));
       input.hasManualGain = true;
     }
+    if (const rpc::Json* pan = channel.get("pan")) {
+      input.pan = std::max(-1.0, std::min(1.0, pan->asNumber()));
+    }
+    input.solo = channel.get("solo") && channel.get("solo")->asBool();
+    input.pluginInserts = channel.getStringArray("pluginInserts");
     if (!input.participantId.empty()) {
       audioChannels_.push_back(std::move(input));
     }
@@ -877,7 +883,12 @@ constexpr double kMinAudioRoutingGainDb = -60.0;
 constexpr double kMaxAudioRoutingGainDb = 10.0;
 
 bool isAudioRoutingBus(const std::string& busId) {
-  static const std::array<std::string_view, 6> kBuses = {"pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"};
+  static const std::array<std::string_view, 15> kBuses = {
+      "master", "pgm-l", "pgm-r", "iso-1", "iso-2", "iso-3", "iso-4", "iso-5",
+      "iso-6",  "iso-7", "iso-8", "mon",   "stream", "aux-1", "aux-2"};
+  if (busId.rfind("bus-", 0) == 0) {
+    return true;
+  }
   return std::any_of(kBuses.begin(), kBuses.end(), [&](std::string_view bus) { return bus == busId; });
 }
 
@@ -1106,6 +1117,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
   int duckingCount = 0;
   int mutedCount = 0;
   int manualCount = 0;
+  int soloCount = 0;
+  int insertCount = 0;
 
   for (const auto& channel : audioChannels_) {
     const int smartGainDb = calculateSmartGainDb(channel.inputLevel);
@@ -1120,9 +1133,26 @@ rpc::Json MediaCore::audioMixSessionState() const {
     if (gainDb > 0 && !channel.muted) ++boostingCount;
     if (gainDb < 0 && !channel.muted) ++duckingCount;
     if (channel.muted) ++mutedCount;
+    if (channel.solo) ++soloCount;
     if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
+    if (!channel.pluginInserts.empty()) {
+      insertCount += static_cast<int>(channel.pluginInserts.size());
+      if (warningSet.insert("vst-bridge-scan-only").second) {
+        warnings.emplace_back("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
+      }
+    }
     if (noiseSuppression && channel.inputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
       warnings.emplace_back("Noise suppression active on low-level sources.");
+    }
+
+    rpc::Json::Array pluginInserts;
+    for (const auto& insert : channel.pluginInserts) {
+      pluginInserts.emplace_back(rpc::Json::Object{
+          {"name", insert},
+          {"format", insert.rfind("VST", 0) == 0 ? "vst3" : "builtin"},
+          {"status", insert.rfind("VST", 0) == 0 ? "scan-only" : "available"},
+          {"processingEnabled", false},
+      });
     }
 
     rpc::Json::Object participant{
@@ -1130,9 +1160,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"inputLevel", channel.inputLevel},
         {"outputLevel", outputLevel},
         {"gainDb", gainDb},
+        {"pan", channel.pan},
+        {"solo", channel.solo},
         {"noiseSuppression", noiseSuppression},
         {"limiterActive", outputLevel >= 88},
         {"muted", channel.muted},
+        {"pluginInserts", pluginInserts},
         {"status", audioStatusFor(channel.muted, gainDb)},
     };
     if (channel.hasManualGain) {
@@ -1148,6 +1181,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
   if (duckingCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << duckingCount << " ducked";
   if (mutedCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << mutedCount << " muted";
   if (manualCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << manualCount << " manual";
+  if (soloCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << soloCount << " solo";
+  if (insertCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << insertCount << " inserts";
   const std::string summaryText = summary.tellp() > 0 ? summary.str() + " in program mix" : "Program mix balanced";
 
   return rpc::Json::Object{
@@ -1163,7 +1198,14 @@ rpc::Json MediaCore::audioMixSessionState() const {
 }
 
 rpc::Json MediaCore::audioRoutingMatrixState() const {
-  static const std::array<std::string_view, 6> kBuses = {"pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"};
+  std::vector<std::string> buses = {
+      "master", "pgm-l", "pgm-r", "iso-1", "iso-2", "iso-3", "iso-4", "iso-5",
+      "iso-6",  "iso-7", "iso-8", "mon",   "stream", "aux-1", "aux-2"};
+  for (const auto& send : audioRoutingSends_) {
+    if (std::find(buses.begin(), buses.end(), send.busId) == buses.end()) {
+      buses.push_back(send.busId);
+    }
+  }
 
   rpc::Json::Array warnings;
   for (const auto& warning : audioRoutingWarnings_) {
@@ -1172,8 +1214,8 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
   if (!audioRoutingSynced_ || audioRoutingSends_.empty()) {
     rpc::Json::Array busSourceCounts;
-    for (const auto& bus : kBuses) {
-      busSourceCounts.emplace_back(rpc::Json::Object{{"busId", std::string(bus)}, {"sourceCount", 0}});
+    for (const auto& bus : buses) {
+      busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", 0}});
     }
     return rpc::Json::Object{
         {"status", audioRoutingWarnings_.empty() ? "idle" : "warning"},
@@ -1201,13 +1243,13 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
   rpc::Json::Array busSourceCounts;
   int routedBusCount = 0;
-  for (const auto& bus : kBuses) {
-    const auto found = busSources.find(std::string(bus));
+  for (const auto& bus : buses) {
+    const auto found = busSources.find(bus);
     const int sourceCount = found == busSources.end() ? 0 : static_cast<int>(found->second.size());
     if (sourceCount > 0) {
       ++routedBusCount;
     }
-    busSourceCounts.emplace_back(rpc::Json::Object{{"busId", std::string(bus)}, {"sourceCount", sourceCount}});
+    busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", sourceCount}});
   }
 
   std::ostringstream summary;

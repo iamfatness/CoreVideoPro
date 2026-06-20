@@ -187,7 +187,10 @@ public static class MediaCoreCommandBuilder
                 inputLevel = channel.InputLevel,
                 muted = channel.Muted,
                 noiseSuppression = channel.NoiseSuppression,
-                manualGainDb = channel.ManualGainDb
+                manualGainDb = channel.ManualGainDb,
+                pan = channel.Pan,
+                solo = channel.Solo,
+                pluginInserts = channel.PluginInserts ?? []
             }).ToList()
         });
 

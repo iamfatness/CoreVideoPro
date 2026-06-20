@@ -30,7 +30,7 @@ public static class SyntheticMediaCore
         MaxProgramResolution = "3840x2160",
         MaxProgramFps = 60,
         MaxParticipantFeeds = 8,
-        MaxIsoRecordings = 4,
+        MaxIsoRecordings = 8,
         Capabilities =
         [
             "zoom-raw-video",

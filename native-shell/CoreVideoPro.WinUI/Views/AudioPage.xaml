@@ -23,26 +23,48 @@
             <StackPanel Spacing="12">
                 <Border Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Audio mix" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}" />
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <Border Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
-                                    <TextBlock Text="Loudness" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
-                                               FontSize="12" />
+                                    <TextBlock Text="Master loudness" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}" FontSize="12" />
                                 </StackPanel>
                             </Border>
                             <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
-                                    <TextBlock Text="Limiter" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}"
-                                               FontSize="12" />
+                                    <TextBlock Text="Master bus" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}" FontSize="12" />
                                 </StackPanel>
                             </Border>
+                            <Border Grid.Column="2" Style="{StaticResource OperatorReadoutBorder}">
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="Zoom ISO" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <TextBlock Text="8 source capacity" FontSize="12" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Grid ColumnSpacing="8" Padding="10,0,10,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="70" />
+                                <ColumnDefinition Width="64" />
+                                <ColumnDefinition Width="58" />
+                                <ColumnDefinition Width="88" />
+                                <ColumnDefinition Width="150" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="SOURCE" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="METER" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="2" Text="GAIN" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="3" Text="PAN" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="4" Text="BUS" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="5" Text="INSERTS" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
                         </Grid>
 
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
@@ -53,18 +75,33 @@
                                             BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6"
                                             Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
                                             CommandParameter="{x:Bind Id}">
-                                        <Grid ColumnSpacing="10">
+                                        <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="120" />
+                                                <ColumnDefinition Width="2*" />
+                                                <ColumnDefinition Width="70" />
+                                                <ColumnDefinition Width="64" />
+                                                <ColumnDefinition Width="58" />
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="150" />
                                             </Grid.ColumnDefinitions>
-                                            <StackPanel HorizontalAlignment="Left">
+                                            <StackPanel HorizontalAlignment="Left" Spacing="1">
                                                 <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
                                                 <TextBlock Text="{x:Bind Subtitle}" FontSize="10"
-                                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                                           Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{x:Bind LufsLabel}" FontSize="10"
+                                                           Foreground="{StaticResource StudioAccentBrush}" />
                                             </StackPanel>
                                             <ProgressBar Grid.Column="1" Maximum="100" Value="{x:Bind OutputLevel}"
                                                          Height="8" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2" Text="{x:Bind GainLabel}" FontSize="11"
+                                                       VerticalAlignment="Center" HorizontalAlignment="Center" />
+                                            <TextBlock Grid.Column="3" Text="{x:Bind PanLabel}" FontSize="11"
+                                                       VerticalAlignment="Center" HorizontalAlignment="Center" />
+                                            <TextBlock Grid.Column="4" Text="{x:Bind BusLabel}" FontSize="11"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="5" Text="{x:Bind InsertLabel}" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                         </Grid>
                                     </Button>
                                 </DataTemplate>
@@ -75,51 +112,38 @@
 
                 <Border Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Loudness normalisation" Style="{StaticResource OperatorSectionTitle}" />
-                        <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <Border Style="{StaticResource OperatorReadoutBorder}">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="Integrated" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
-                                               FontSize="12" FontWeight="SemiBold" />
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="Target" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.LoudnessTargetLabel, Mode=OneWay}" FontSize="12" />
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Row="1" Style="{StaticResource OperatorReadoutBorder}">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="True peak" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.TruePeakLabel, Mode=OneWay}" FontSize="12" />
-                                </StackPanel>
-                            </Border>
-                            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
-                                <StackPanel Spacing="2">
-                                    <TextBlock Text="Gain adjust" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.GainAdjustLabel, Mode=OneWay}" FontSize="12" />
-                                </StackPanel>
-                            </Border>
+                            <TextBlock Text="Buses and routing" Style="{StaticResource OperatorSectionTitle}" />
+                            <Button Grid.Column="1" Content="Add Bus" Style="{StaticResource OperatorGhostButton}"
+                                    Command="{x:Bind ViewModel.AudioRoutingMatrix.AddBusCommand}" />
                         </Grid>
-                        <TextBlock Text="{x:Bind ViewModel.LoudnessLevelLabel, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioAccentBrush}" />
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.BusHeaders, Mode=OneWay}">
+                            <ItemsRepeater.Layout>
+                                <StackLayout Orientation="Horizontal" Spacing="6" />
+                            </ItemsRepeater.Layout>
+                            <ItemsRepeater.ItemTemplate>
+                                <DataTemplate x:DataType="models:RoutingBus">
+                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,6">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind Label}" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="{x:Bind Id}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
                     </StackPanel>
                 </Border>
             </StackPanel>
 
             <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Smart handling — audio" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="Channel processing" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay}"
                                FontSize="16" FontWeight="SemiBold" />
                     <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Title, Mode=OneWay}"
@@ -140,6 +164,20 @@
                         <StackPanel Spacing="2">
                             <TextBlock Text="Output level" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                             <TextBlock Text="{x:Bind ViewModel.SelectedOutputLevel, Mode=OneWay}" FontSize="12" />
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Insert chain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="Built-in EQ + compressor + VST3 scan-only"
+                                       FontSize="12" TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="VST bridge" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="Discovery model wired. Live VST processing requires the native bridge adapter."
+                                       FontSize="12" TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
                     <Button Content="{x:Bind ViewModel.SelectedMuteButtonLabel, Mode=OneWay}"

@@ -35,7 +35,10 @@ public sealed record MediaCoreAudioMixChannelWire(
     int InputLevel,
     bool Muted,
     bool NoiseSuppression,
-    double? ManualGainDb);
+    double? ManualGainDb,
+    double Pan = 0,
+    bool Solo = false,
+    IReadOnlyList<string>? PluginInserts = null);
 
 /// <summary>One routed crosspoint in the audio routing gain matrix.</summary>
 public sealed record MediaCoreAudioRoutingSendWire(

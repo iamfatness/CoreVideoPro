@@ -138,8 +138,8 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #endif
   EXPECT_EQ(profile.getString("maxProgramResolution"), "1920x1080");
   EXPECT_EQ(profile.get("maxProgramFps")->asNumber(), 30);
-  EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 6);
-  EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 2);
+  EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 8);
+  EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 8);
   ASSERT_NE(profile.get("capabilities"), nullptr);
   const auto& capabilities = *profile.get("capabilities");
   EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
@@ -361,17 +361,19 @@ TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
            corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "mon"}, {"gainDb", -6.0}},
            corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "pgm-l"}, {"gainDb", 0.0}},
            corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "pgm-r"}, {"gainDb", 0.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-03"}, {"busId", "iso-8"}, {"gainDb", 0.0}},
+           corevideo::rpc::Json::Object{{"sourceId", "input-04"}, {"busId", "bus-01"}, {"gainDb", -1.5}},
        }},
   });
 
   const auto* routing = state.get("audioRoutingMatrix");
   ASSERT_NE(routing, nullptr);
   EXPECT_EQ(routing->getString("status"), "live");
-  EXPECT_EQ(routing->get("routedSendCount")->asNumber(), 5);
-  EXPECT_EQ(routing->get("routedSourceCount")->asNumber(), 2);
+  EXPECT_EQ(routing->get("routedSendCount")->asNumber(), 7);
+  EXPECT_EQ(routing->get("routedSourceCount")->asNumber(), 4);
 
   const auto& busSourceCounts = routing->get("busSourceCounts")->asArray();
-  ASSERT_TRUE(busSourceCounts.size() == 6u);
+  ASSERT_TRUE(busSourceCounts.size() >= 16u);
   const auto findBus = [&](const std::string& busId) -> int {
     for (const auto& bus : busSourceCounts) {
       if (bus.getString("busId") == busId) {
@@ -384,7 +386,9 @@ TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
   EXPECT_EQ(findBus("pgm-r"), 2);
   EXPECT_EQ(findBus("mon"), 1);
   EXPECT_EQ(findBus("iso-1"), 0);
-  EXPECT_EQ(routing->get("sends")->asArray().size(), 5u);
+  EXPECT_EQ(findBus("iso-8"), 1);
+  EXPECT_EQ(findBus("bus-01"), 1);
+  EXPECT_EQ(routing->get("sends")->asArray().size(), 7u);
 }
 
 TEST(MediaCoreCommand, ClampsAndWarnsOnInvalidAudioRoutingSends) {

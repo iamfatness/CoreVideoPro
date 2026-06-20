@@ -26,7 +26,7 @@ public sealed class ShowInputRosterServiceTests
         device.ApplyFrameTelemetry(1920, 1080, 30);
 
         Assert.Equal("1920x1080", device.ResolutionLabel);
-        Assert.Equal("1920x1080 · 30 fps", device.FormatLabel);
+        Assert.Equal("1920x1080 · 60 fps", device.FormatLabel);
         Assert.True(device.SignalPresent);
         Assert.Equal(CaptureConnectionState.Connected, device.ConnectionState);
     }

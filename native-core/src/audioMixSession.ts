@@ -9,6 +9,9 @@ export type AudioMixChannelInput = {
   muted: boolean;
   noiseSuppression: boolean;
   manualGainDb?: number;
+  pan?: number;
+  solo?: boolean;
+  pluginInserts?: string[];
 };
 
 const IDLE_SESSION: MediaCoreAudioMixSession = {
@@ -75,6 +78,9 @@ export class AudioMixSessionModel {
     if (limiterActive) {
       warnings.push("Limiter active in participant audio mix.");
     }
+    if (participants.some((channel) => (channel.pluginInserts?.length ?? 0) > 0)) {
+      warnings.push("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
+    }
 
     return {
       status: warnings.length > 0 ? "warning" : "live",
@@ -114,7 +120,10 @@ function normalizeChannels(channels: AudioMixChannelInput[]) {
       inputLevel,
       muted: channel.muted,
       noiseSuppression: channel.noiseSuppression,
-      manualGainDb
+      manualGainDb,
+      pan: clampFinite(channel.pan ?? 0, -1, 1),
+      solo: channel.solo === true,
+      pluginInserts: Array.isArray(channel.pluginInserts) ? channel.pluginInserts.filter((insert) => typeof insert === "string") : []
     });
   });
 
@@ -138,6 +147,14 @@ function buildParticipantChannel(channel: AudioMixChannelInput): MediaCorePartic
     outputLevel,
     gainDb,
     manualGainDb: channel.manualGainDb,
+    pan: channel.pan,
+    solo: channel.solo,
+    pluginInserts: channel.pluginInserts?.map((insert) => ({
+      name: insert,
+      format: insert.startsWith("VST") ? "vst3" : "builtin",
+      status: insert.startsWith("VST") ? "scan-only" : "available",
+      processingEnabled: false
+    })),
     noiseSuppression,
     limiterActive,
     muted: channel.muted,

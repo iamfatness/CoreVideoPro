@@ -79,10 +79,14 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
 {
     public static IReadOnlyList<RoutingDestination> Destinations { get; } =
     [
-        new("iso-a", "ISO A"),
-        new("iso-b", "ISO B"),
-        new("iso-c", "ISO C"),
-        new("iso-d", "ISO D"),
+        new("iso-1", "ISO 1"),
+        new("iso-2", "ISO 2"),
+        new("iso-3", "ISO 3"),
+        new("iso-4", "ISO 4"),
+        new("iso-5", "ISO 5"),
+        new("iso-6", "ISO 6"),
+        new("iso-7", "ISO 7"),
+        new("iso-8", "ISO 8"),
         new("multiview", "MULTIVIEW"),
         new("aux", "AUX")
     ];

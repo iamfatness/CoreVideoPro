@@ -16,8 +16,8 @@ public sealed class RoutingMatrixViewModelTests
                 new RoutingSource("camera-2", "Camera 2")
             ]);
 
-        var firstIso = FindVideoCell(viewModel, "camera-1", "iso-a");
-        var secondIso = FindVideoCell(viewModel, "camera-2", "iso-a");
+        var firstIso = FindVideoCell(viewModel, "camera-1", "iso-1");
+        var secondIso = FindVideoCell(viewModel, "camera-2", "iso-1");
 
         viewModel.SelectCrosspointCommand.Execute(firstIso);
         viewModel.SelectCrosspointCommand.Execute(secondIso);
@@ -74,6 +74,21 @@ public sealed class RoutingMatrixViewModelTests
 
         Assert.False(secondIso.IsRouted);
         Assert.Same(secondIso, viewModel.SelectedCrosspoint);
+    }
+
+    [Fact]
+    public void AudioRouting_AddBusExtendsExistingRows()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build(
+            [
+                new RoutingSource("mic-1", "Mic 1")
+            ]);
+
+        viewModel.AddBusCommand.Execute(null);
+
+        Assert.Contains(viewModel.BusHeaders, bus => bus.Id == "bus-01");
+        Assert.NotNull(FindAudioCell(viewModel, "mic-1", "bus-01"));
     }
 
     private static VideoRoutingCrosspointViewModel FindVideoCell(

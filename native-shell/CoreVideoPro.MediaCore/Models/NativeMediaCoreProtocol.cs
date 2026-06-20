@@ -309,10 +309,21 @@ public sealed class NativeMediaCoreParticipantAudioChannel
     public int OutputLevel { get; init; }
     public double GainDb { get; init; }
     public double? ManualGainDb { get; init; }
+    public double? Pan { get; init; }
+    public bool Solo { get; init; }
+    public IReadOnlyList<NativeMediaCoreAudioPluginInsert> PluginInserts { get; init; } = [];
     public bool NoiseSuppression { get; init; }
     public bool LimiterActive { get; init; }
     public bool Muted { get; init; }
     public required string Status { get; init; }
+}
+
+public sealed class NativeMediaCoreAudioPluginInsert
+{
+    public required string Name { get; init; }
+    public required string Format { get; init; }
+    public required string Status { get; init; }
+    public bool ProcessingEnabled { get; init; }
 }
 
 public sealed class NativeMediaCoreAudioMixSession
@@ -535,14 +546,14 @@ public static class NativeMediaCoreProfileValidator
             warnings.Add("Software rendering is not suitable for production 1080p/4K switching.");
         }
 
-        if (profile.MaxParticipantFeeds < 6)
+        if (profile.MaxParticipantFeeds < 8)
         {
-            warnings.Add("MVP target expects at least 6 clean Zoom participant feeds.");
+            warnings.Add("MVP target expects at least 8 clean Zoom participant feeds.");
         }
 
-        if (profile.MaxIsoRecordings < 2)
+        if (profile.MaxIsoRecordings < 8)
         {
-            warnings.Add("MVP target expects program recording plus selected ISO recovery paths.");
+            warnings.Add("MVP target expects program recording plus up to 8 selected Zoom ISO recovery paths.");
         }
 
         if (!profile.MaxProgramResolution.Equals("3840x2160", StringComparison.Ordinal))
@@ -554,7 +565,8 @@ public static class NativeMediaCoreProfileValidator
         {
             Ready = missing.Count == 0 &&
                     !profile.Renderer.Equals("software", StringComparison.Ordinal) &&
-                    profile.MaxParticipantFeeds >= 6,
+                    profile.MaxParticipantFeeds >= 8 &&
+                    profile.MaxIsoRecordings >= 8,
             MissingCapabilities = missing,
             Warnings = warnings
         };

@@ -1,6 +1,22 @@
 import type { MediaCoreAudioRoutingBus, MediaCoreAudioRoutingMatrix, MediaCoreAudioRoutingSend } from "./protocol.js";
 
-export const AUDIO_ROUTING_BUSES: MediaCoreAudioRoutingBus[] = ["pgm-l", "pgm-r", "iso-1", "iso-2", "mon", "stream"];
+export const AUDIO_ROUTING_BUSES: MediaCoreAudioRoutingBus[] = [
+  "master",
+  "pgm-l",
+  "pgm-r",
+  "iso-1",
+  "iso-2",
+  "iso-3",
+  "iso-4",
+  "iso-5",
+  "iso-6",
+  "iso-7",
+  "iso-8",
+  "mon",
+  "stream",
+  "aux-1",
+  "aux-2"
+];
 
 export const MIN_AUDIO_ROUTING_GAIN_DB = -60;
 export const MAX_AUDIO_ROUTING_GAIN_DB = 10;
@@ -16,7 +32,7 @@ const IDLE_MATRIX: MediaCoreAudioRoutingMatrix = {
 };
 
 function isAudioRoutingBus(value: string): value is MediaCoreAudioRoutingBus {
-  return (AUDIO_ROUTING_BUSES as string[]).includes(value);
+  return (AUDIO_ROUTING_BUSES as string[]).includes(value) || value.startsWith("bus-");
 }
 
 /**
@@ -92,14 +108,21 @@ export class AudioRoutingMatrixModel {
       };
     }
 
-    const busSources = new Map<MediaCoreAudioRoutingBus, Set<string>>(AUDIO_ROUTING_BUSES.map((busId) => [busId, new Set<string>()]));
+    const buses = [...AUDIO_ROUTING_BUSES];
+    this.sends.forEach((send) => {
+      if (!buses.includes(send.busId)) {
+        buses.push(send.busId);
+      }
+    });
+
+    const busSources = new Map<MediaCoreAudioRoutingBus, Set<string>>(buses.map((busId) => [busId, new Set<string>()]));
     const routedSourceIds = new Set<string>();
     this.sends.forEach((send) => {
       busSources.get(send.busId)?.add(send.sourceId);
       routedSourceIds.add(send.sourceId);
     });
 
-    const busSourceCounts = AUDIO_ROUTING_BUSES.map((busId) => ({
+    const busSourceCounts = buses.map((busId) => ({
       busId,
       sourceCount: busSources.get(busId)?.size ?? 0
     }));

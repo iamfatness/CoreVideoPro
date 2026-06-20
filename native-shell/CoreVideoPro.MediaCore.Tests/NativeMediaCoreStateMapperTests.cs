@@ -142,8 +142,8 @@ public sealed class NativeMediaCoreStateMapperTests
                 Renderer = "d3d11",
                 MaxProgramResolution = "1920x1080",
                 MaxProgramFps = 30,
-                MaxParticipantFeeds = 6,
-                MaxIsoRecordings = 2,
+                MaxParticipantFeeds = 8,
+                MaxIsoRecordings = 8,
                 Capabilities = ["gpu-compositor", "program-recording", "rtmp-output"]
             }
         });
@@ -253,8 +253,8 @@ public sealed class NativeMediaCoreStateMapperTests
                 Renderer = "software",
                 MaxProgramResolution = "1920x1080",
                 MaxProgramFps = 30,
-                MaxParticipantFeeds = 6,
-                MaxIsoRecordings = 2,
+                MaxParticipantFeeds = 8,
+                MaxIsoRecordings = 8,
                 Capabilities = ["scene-graph-rendering"]
             }
         });

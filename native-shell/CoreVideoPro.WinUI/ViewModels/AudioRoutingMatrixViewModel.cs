@@ -62,16 +62,16 @@ public sealed class AudioRoutingSourceRowViewModel
     public AudioRoutingSourceRowViewModel(
         string sourceId,
         string sourceLabel,
-        IReadOnlyList<AudioRoutingCrosspointViewModel> cells)
+        IEnumerable<AudioRoutingCrosspointViewModel> cells)
     {
         SourceId = sourceId;
         SourceLabel = sourceLabel;
-        Cells = cells;
+        Cells = new ObservableCollection<AudioRoutingCrosspointViewModel>(cells);
     }
 
     public string SourceId { get; }
     public string SourceLabel { get; }
-    public IReadOnlyList<AudioRoutingCrosspointViewModel> Cells { get; }
+    public ObservableCollection<AudioRoutingCrosspointViewModel> Cells { get; }
 }
 
 /// <summary>
@@ -81,17 +81,26 @@ public sealed class AudioRoutingSourceRowViewModel
 /// </summary>
 public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 {
-    public static IReadOnlyList<RoutingBus> Buses { get; } =
+    public static IReadOnlyList<RoutingBus> DefaultBuses { get; } =
     [
+        new("master", "MASTER"),
         new("pgm-l", "PGM L"),
         new("pgm-r", "PGM R"),
         new("iso-1", "ISO 1"),
         new("iso-2", "ISO 2"),
+        new("iso-3", "ISO 3"),
+        new("iso-4", "ISO 4"),
+        new("iso-5", "ISO 5"),
+        new("iso-6", "ISO 6"),
+        new("iso-7", "ISO 7"),
+        new("iso-8", "ISO 8"),
         new("mon", "MON"),
-        new("stream", "STREAM")
+        new("stream", "STREAM"),
+        new("aux-1", "AUX 1"),
+        new("aux-2", "AUX 2")
     ];
 
-    public IReadOnlyList<RoutingBus> BusHeaders => Buses;
+    public ObservableCollection<RoutingBus> BusHeaders { get; } = new(DefaultBuses);
 
     public ObservableCollection<AudioRoutingSourceRowViewModel> Rows { get; } = [];
 
@@ -103,6 +112,8 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
     public bool HasSelection => SelectedCrosspoint is not null;
 
     public event Action<AudioRoutingCrosspointViewModel>? RouteChanged;
+
+    private int _customBusCounter = 1;
 
     public string SelectionSummary => SelectedCrosspoint is null
         ? "Select a crosspoint to route it and set its level."
@@ -165,6 +176,21 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         RouteChanged?.Invoke(SelectedCrosspoint);
     }
 
+    [RelayCommand]
+    private void AddBus()
+    {
+        var bus = new RoutingBus($"bus-{_customBusCounter:00}", $"BUS {_customBusCounter}");
+        _customBusCounter++;
+        BusHeaders.Add(bus);
+
+        foreach (var row in Rows)
+        {
+            row.Cells.Add(new AudioRoutingCrosspointViewModel(row.SourceId, row.SourceLabel, bus));
+        }
+
+        OnPropertyChanged(nameof(BusHeaders));
+    }
+
     /// <summary>
     /// Rebuild the matrix for the given sources, preserving any existing crosspoint
     /// state and defaulting new sources into the program (PGM L/R) buses at unity.
@@ -178,7 +204,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         Rows.Clear();
         foreach (var source in sources)
         {
-            var cells = Buses
+            var cells = BusHeaders
                 .Select(bus =>
                 {
                     var cell = new AudioRoutingCrosspointViewModel(source.Id, source.Label, bus);
@@ -187,7 +213,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                         cell.IsRouted = state.IsRouted;
                         cell.GainDb = state.GainDb;
                     }
-                    else if (bus.Id is "pgm-l" or "pgm-r")
+                    else if (bus.Id is "master" or "pgm-l" or "pgm-r")
                     {
                         cell.IsRouted = true;
                         cell.GainDb = 0;
@@ -217,7 +243,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
     private void NormalizeIsolatedAudioBuses()
     {
-        foreach (var bus in Buses.Where(bus => IsIsolatedAudioBus(bus.Id)))
+        foreach (var bus in BusHeaders.Where(bus => IsIsolatedAudioBus(bus.Id)))
         {
             var routedCells = Rows
                 .SelectMany(row => row.Cells)

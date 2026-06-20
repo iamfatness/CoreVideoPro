@@ -472,6 +472,9 @@ export type MediaCoreCommand =
         muted: boolean;
         noiseSuppression: boolean;
         manualGainDb?: number;
+        pan?: number;
+        solo?: boolean;
+        pluginInserts?: string[];
       }>;
     }
   | {
@@ -539,6 +542,14 @@ export type MediaCoreParticipantAudioChannel = {
   outputLevel: number;
   gainDb: number;
   manualGainDb?: number;
+  pan?: number;
+  solo?: boolean;
+  pluginInserts?: Array<{
+    name: string;
+    format: "builtin" | "vst3" | "vst2";
+    status: "available" | "scan-only" | "failed";
+    processingEnabled: boolean;
+  }>;
   noiseSuppression: boolean;
   limiterActive: boolean;
   muted: boolean;
@@ -556,7 +567,23 @@ export type MediaCoreAudioMixSession = {
   warnings: string[];
 };
 
-export type MediaCoreAudioRoutingBus = "pgm-l" | "pgm-r" | "iso-1" | "iso-2" | "mon" | "stream";
+export type MediaCoreAudioRoutingBus =
+  | "master"
+  | "pgm-l"
+  | "pgm-r"
+  | "iso-1"
+  | "iso-2"
+  | "iso-3"
+  | "iso-4"
+  | "iso-5"
+  | "iso-6"
+  | "iso-7"
+  | "iso-8"
+  | "mon"
+  | "stream"
+  | "aux-1"
+  | "aux-2"
+  | `bus-${string}`;
 
 export type MediaCoreAudioRoutingSend = {
   sourceId: string;
