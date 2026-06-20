@@ -28,8 +28,60 @@
                     <Button Content="{x:Bind ViewModel.AutomationButtonLabel, Mode=OneWay}"
                             Style="{StaticResource OperatorGhostButton}"
                             Command="{x:Bind ViewModel.ToggleAutomationCommand}" />
+                    <TextBlock Text="{x:Bind ViewModel.AutomationPolicySummary, Mode=OneWay}"
+                               FontSize="11"
+                               Foreground="{StaticResource StudioAccentBrush}"
+                               TextWrapping="WrapWholeWords" />
+                    <Button Content="Reset automation defaults"
+                            Style="{StaticResource OperatorGhostButton}"
+                            Command="{x:Bind ViewModel.ResetAutomationDefaultsCommand}" />
                     <TextBlock Text="{x:Bind ViewModel.AutoProductionReadout, Mode=OneWay}"
                                FontSize="12" TextWrapping="WrapWholeWords" />
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <ToggleSwitch Header="Auto-take"
+                                      IsOn="{x:Bind ViewModel.AutomationAutoTakeEnabled, Mode=TwoWay}" />
+                        <ToggleSwitch Grid.Column="1"
+                                      Header="Prefer screen share"
+                                      IsOn="{x:Bind ViewModel.AutomationPreferScreenShare, Mode=TwoWay}" />
+                        <NumberBox Grid.Row="1"
+                                   Header="Confidence %"
+                                   Value="{x:Bind ViewModel.AutomationConfidenceThreshold, Mode=TwoWay}"
+                                   Minimum="0"
+                                   Maximum="100"
+                                   SmallChange="5"
+                                   LargeChange="10"
+                                   SpinButtonPlacementMode="Inline" />
+                        <NumberBox Grid.Row="1" Grid.Column="1"
+                                   Header="Hold seconds"
+                                   Value="{x:Bind ViewModel.AutomationSwitchDelaySeconds, Mode=TwoWay}"
+                                   Minimum="0"
+                                   Maximum="30"
+                                   SmallChange="1"
+                                   LargeChange="5"
+                                   SpinButtonPlacementMode="Inline" />
+                        <NumberBox Grid.Row="2"
+                                   Header="Panel at sources"
+                                   Value="{x:Bind ViewModel.AutomationPanelParticipantThreshold, Mode=TwoWay}"
+                                   Minimum="2"
+                                   Maximum="10"
+                                   SmallChange="1"
+                                   LargeChange="2"
+                                   SpinButtonPlacementMode="Inline" />
+                        <TextBlock Grid.Row="2" Grid.Column="1"
+                                   Text="{x:Bind ViewModel.AutomationTakeModeLabel, Mode=OneWay}"
+                                   FontSize="12"
+                                   VerticalAlignment="Bottom"
+                                   TextWrapping="WrapWholeWords" />
+                    </Grid>
                     <TextBlock Text="Magic scene" FontSize="11" FontWeight="SemiBold"
                                Foreground="{StaticResource StudioAccentBrush}" />
                     <TextBlock Text="{x:Bind ViewModel.MagicSceneStatus, Mode=OneWay}"
@@ -91,18 +143,40 @@
                     </Grid>
                     <TextBlock Text="{x:Bind ViewModel.AutoProductionReason, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="WrapWholeWords" />
+                    <TextBlock Text="{x:Bind ViewModel.AutomationLastAction, Mode=OneWay}"
+                               FontSize="11"
+                               Foreground="{StaticResource StudioMutedBrush}"
+                               TextWrapping="WrapWholeWords" />
                 </StackPanel>
             </Border>
 
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="8">
+                    <TextBlock Text="Automation output controls" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="12" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ToggleSwitch Header="Dynamic lower thirds"
+                                      IsOn="{x:Bind ViewModel.AutomationLowerThirdsEnabled, Mode=TwoWay}" />
+                        <ToggleSwitch Grid.Column="1"
+                                      Header="Automation captions"
+                                      IsOn="{x:Bind ViewModel.AutomationCaptionsEnabled, Mode=TwoWay}" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.AutomationScenePolicySummary, Mode=OneWay}"
+                               FontSize="12"
+                               TextWrapping="WrapWholeWords" />
+                    <TextBlock Text="{x:Bind ViewModel.AutomationOverlayPolicySummary, Mode=OneWay}"
+                               FontSize="12"
+                               TextWrapping="WrapWholeWords" />
                     <TextBlock Text="Auto-production readout" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.AutoProductionReadout, Mode=OneWay}"
                                FontSize="13" TextWrapping="WrapWholeWords" />
                     <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords">
                         <Run Text="Mode: " />
                         <Run Text="{x:Bind ViewModel.ProductionMode, Mode=OneWay}" FontWeight="SemiBold" />
-                        <Run Text=" · Magic scene monitors participant mix and rebuilds layouts automatically." />
+                        <Run Text=" - Magic scene monitors participant mix and rebuilds layouts automatically." />
                     </TextBlock>
                 </StackPanel>
             </Border>

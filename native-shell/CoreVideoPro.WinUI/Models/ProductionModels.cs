@@ -580,8 +580,11 @@ public static class ProductionStateHelper
 
     public static AutoProductionState BuildAutomationRecommendation(
         IReadOnlyList<Participant> participants,
-        IReadOnlyList<Scene> scenes)
+        IReadOnlyList<Scene> scenes,
+        bool preferScreenShare = true,
+        int panelParticipantThreshold = 4)
     {
+        panelParticipantThreshold = Math.Clamp(panelParticipantThreshold, 2, 10);
         if (participants.Count == 0)
         {
             return new AutoProductionState
@@ -594,7 +597,7 @@ public static class ProductionStateHelper
         }
 
         var screenSharer = participants.FirstOrDefault(p => p.IsScreenSharing);
-        if (screenSharer is not null)
+        if (preferScreenShare && screenSharer is not null)
         {
             return new AutoProductionState
             {
@@ -605,7 +608,7 @@ public static class ProductionStateHelper
             };
         }
 
-        if (participants.Count >= 4)
+        if (participants.Count >= panelParticipantThreshold)
         {
             return new AutoProductionState
             {

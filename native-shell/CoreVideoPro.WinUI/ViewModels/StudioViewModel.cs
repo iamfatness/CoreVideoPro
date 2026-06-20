@@ -27,6 +27,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    private readonly DispatcherQueueTimer _automationTimer;
     private readonly ZoomOAuthService _zoomOAuth;
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
@@ -209,6 +210,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _automationButtonLabel = "Automation disabled";
 
     [ObservableProperty]
+    private bool _automationAutoTakeEnabled = true;
+
+    [ObservableProperty]
+    private bool _automationPreferScreenShare = true;
+
+    [ObservableProperty]
+    private bool _automationLowerThirdsEnabled = true;
+
+    [ObservableProperty]
+    private bool _automationCaptionsEnabled = true;
+
+    [ObservableProperty]
+    private double _automationConfidenceThreshold = 70;
+
+    [ObservableProperty]
+    private double _automationSwitchDelaySeconds = 4;
+
+    [ObservableProperty]
+    private double _automationPanelParticipantThreshold = 4;
+
+    [ObservableProperty]
+    private string _automationLastAction = "Automation is idle";
+
+    [ObservableProperty]
     private ColorGrade _colorGrade = ProductionCatalog.ColorGrade;
 
     [ObservableProperty]
@@ -265,6 +290,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
+    private string? _automationPendingSceneId;
+    private DateTimeOffset? _automationPendingSince;
+    private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
     private bool _multiviewGridRefreshScheduled;
@@ -427,6 +455,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AutoSwitchLabel => ProductionMode == ProductionMode.SetAndForget ? "Auto" : "Manual";
 
+    public string AutomationPolicySummary =>
+        $"{(AutomationAutoTakeEnabled ? "Auto-take" : "Queue preview")} - " +
+        $"{AutomationConfidenceThreshold:0}% confidence - {AutomationSwitchDelaySeconds:0}s hold";
+
+    public string AutomationScenePolicySummary =>
+        $"{(AutomationPreferScreenShare ? "Prefer screen share" : "Ignore screen share")} - " +
+        $"panel at {AutomationPanelParticipantThreshold:0}+ sources";
+
+    public string AutomationOverlayPolicySummary =>
+        $"{(AutomationLowerThirdsEnabled ? "Lower thirds on" : "Lower thirds off")} - " +
+        $"{(AutomationCaptionsEnabled ? "Captions on" : "Captions off")}";
+
+    public string AutomationTakeModeLabel => AutomationAutoTakeEnabled ? "Take to program" : "Queue on preview";
+
     public int CamerasOnCount => RoomVideoParticipants.Count;
 
     public string ScreenShareLabel => RoomVideoParticipants.Any(p => p.IsScreenSharing) ? "Active" : "Off";
@@ -504,6 +546,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
         Overlays = new OverlaysViewModel(this);
+        _automationTimer = _dispatcher.CreateTimer();
+        _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _automationTimer.Tick += (_, _) => EvaluateAutomationPolicy();
         InitializeGraphicsCatalog();
         InitializeSceneRoutes();
         RefreshPreviewRoutingState();
@@ -1021,6 +1066,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnProductionModeChanged(ProductionMode value)
     {
         RefreshTransportAutomationState();
+        EvaluateAutomationPolicy();
         OnPropertyChanged(nameof(AutomationButtonLabel));
         OnPropertyChanged(nameof(AutoProductionReadout));
     }
@@ -1097,6 +1143,75 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(ProgramResolutionLabel));
         RefreshTransportState();
+    }
+
+    partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
+
+    partial void OnAutomationPreferScreenShareChanged(bool value) => OnAutomationPolicyChanged();
+
+    partial void OnAutomationLowerThirdsEnabledChanged(bool value) => OnAutomationPolicyChanged();
+
+    partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
+
+    partial void OnAutomationConfidenceThresholdChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 0, 100);
+        if (Math.Abs(clamped - value) > 0.01)
+        {
+            AutomationConfidenceThreshold = clamped;
+            return;
+        }
+
+        OnAutomationPolicyChanged();
+    }
+
+    partial void OnAutomationSwitchDelaySecondsChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 0, 30);
+        if (Math.Abs(clamped - value) > 0.01)
+        {
+            AutomationSwitchDelaySeconds = clamped;
+            return;
+        }
+
+        OnAutomationPolicyChanged();
+    }
+
+    partial void OnAutomationPanelParticipantThresholdChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 2, 10);
+        if (Math.Abs(clamped - value) > 0.01)
+        {
+            AutomationPanelParticipantThreshold = clamped;
+            return;
+        }
+
+        OnAutomationPolicyChanged();
+    }
+
+    private void OnAutomationPolicyChanged()
+    {
+        _automationPendingSceneId = null;
+        _automationPendingSince = null;
+        OnPropertyChanged(nameof(AutomationPolicySummary));
+        OnPropertyChanged(nameof(AutomationScenePolicySummary));
+        OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
+        OnPropertyChanged(nameof(AutomationTakeModeLabel));
+        RefreshProductionReadouts();
+    }
+
+    [RelayCommand]
+    private void ResetAutomationDefaults()
+    {
+        AutomationAutoTakeEnabled = true;
+        AutomationPreferScreenShare = true;
+        AutomationLowerThirdsEnabled = true;
+        AutomationCaptionsEnabled = true;
+        AutomationConfidenceThreshold = 70;
+        AutomationSwitchDelaySeconds = 4;
+        AutomationPanelParticipantThreshold = 4;
+        AutomationLastAction = "Automation defaults restored";
+        CommandStatus = "Automation defaults restored";
     }
 
     // The top-right toggle controls the Zoom CAPTURE SUBSCRIPTION, not the media core.
@@ -1752,9 +1867,192 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSceneId = recommendedSceneId;
         var sceneName = RecommendedSceneName;
         MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
+        ApplyAutomationOverlayPolicy();
         SchedulePreviewRoutingRefresh();
         CommandStatus = $"{sceneName} queued by Magic Scene";
         RefreshSceneItems();
+    }
+
+    private void EvaluateAutomationPolicy()
+    {
+        if (ProductionMode != ProductionMode.SetAndForget)
+        {
+            if (_automationTimer.IsRunning)
+            {
+                _automationTimer.Stop();
+            }
+
+            _automationPendingSceneId = null;
+            _automationPendingSince = null;
+            AutomationLastAction = "Manual mode - automation is not changing scenes";
+            return;
+        }
+
+        if (!_automationTimer.IsRunning)
+        {
+            _automationTimer.Start();
+        }
+
+        ApplyAutomationOverlayPolicy();
+
+        if (RoomVideoParticipants.Count == 0)
+        {
+            _automationPendingSceneId = null;
+            _automationPendingSince = null;
+            AutomationLastAction = "Waiting for meeting participants";
+            return;
+        }
+
+        if (_automationRecommendation.Confidence < AutomationConfidenceThreshold)
+        {
+            _automationPendingSceneId = null;
+            _automationPendingSince = null;
+            AutomationLastAction = $"Holding current scene - confidence {_automationRecommendation.Confidence}% is below {AutomationConfidenceThreshold:0}%";
+            return;
+        }
+
+        var targetSceneId = _automationRecommendation.RecommendedSceneId;
+        if (string.Equals(targetSceneId, ActiveSceneId, StringComparison.Ordinal))
+        {
+            _automationPendingSceneId = null;
+            _automationPendingSince = null;
+            AutomationLastAction = $"{RecommendedSceneName} is already on program";
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (!string.Equals(_automationPendingSceneId, targetSceneId, StringComparison.Ordinal))
+        {
+            _automationPendingSceneId = targetSceneId;
+            _automationPendingSince = now;
+            AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
+            return;
+        }
+
+        var elapsedSeconds = _automationPendingSince is { } pendingSince
+            ? (now - pendingSince).TotalSeconds
+            : 0;
+        if (elapsedSeconds < AutomationSwitchDelaySeconds)
+        {
+            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{AutomationSwitchDelaySeconds:0}s";
+            return;
+        }
+
+        if (!string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal))
+        {
+            PreviewSceneId = targetSceneId;
+            SchedulePreviewRoutingRefresh();
+        }
+
+        if (AutomationAutoTakeEnabled)
+        {
+            AutomationLastAction = $"Taking {RecommendedSceneName} to program";
+            _ = TakeAutomationPreviewAsync(targetSceneId);
+        }
+        else
+        {
+            AutomationLastAction = $"{RecommendedSceneName} queued on preview";
+            CommandStatus = AutomationLastAction;
+        }
+    }
+
+    private async Task TakeAutomationPreviewAsync(string targetSceneId)
+    {
+        if (_automationTakeInFlight || !string.Equals(PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !CanTake)
+        {
+            return;
+        }
+
+        _automationTakeInFlight = true;
+        try
+        {
+            await TakeAsync();
+            _automationPendingSceneId = null;
+            _automationPendingSince = null;
+            AutomationLastAction = $"{Scenes.First(scene => scene.Id == targetSceneId).Name} taken by automation";
+        }
+        finally
+        {
+            _automationTakeInFlight = false;
+        }
+    }
+
+    private void ApplyAutomationOverlayPolicy()
+    {
+        var changed = false;
+        changed |= SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
+        changed |= SetAutomationGraphic("caption", AutomationCaptionsEnabled);
+
+        var activeSpeaker = RoomVideoParticipants.FirstOrDefault(participant => participant.IsActiveSpeaker) ??
+            RoomVideoParticipants.FirstOrDefault();
+        if (AutomationLowerThirdsEnabled && activeSpeaker is not null)
+        {
+            if (!string.Equals(LowerThirdName, activeSpeaker.Name, StringComparison.Ordinal))
+            {
+                LowerThirdName = activeSpeaker.Name;
+                changed = true;
+            }
+
+            if (!string.Equals(LowerThirdTitle, activeSpeaker.Title, StringComparison.Ordinal))
+            {
+                LowerThirdTitle = activeSpeaker.Title;
+                changed = true;
+            }
+
+            if (!string.Equals(LowerThirdOrg, activeSpeaker.RoleLabel, StringComparison.Ordinal))
+            {
+                LowerThirdOrg = activeSpeaker.RoleLabel;
+                changed = true;
+            }
+        }
+
+        if (!AutomationCaptionsEnabled)
+        {
+            if (!string.IsNullOrEmpty(CaptionText))
+            {
+                CaptionText = string.Empty;
+                changed = true;
+            }
+
+            if (!string.IsNullOrEmpty(CaptionSpeaker))
+            {
+                CaptionSpeaker = string.Empty;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            OnPropertyChanged(nameof(EnabledGraphics));
+            _ = TrySyncMediaCoreAsync();
+        }
+    }
+
+    private bool SetAutomationGraphic(string kind, bool enabled)
+    {
+        var automationGraphicId = $"automation-{kind}";
+        var graphic = Graphics.FirstOrDefault(item => string.Equals(item.Id, automationGraphicId, StringComparison.Ordinal));
+        if (graphic is null && enabled)
+        {
+            Graphics.Add(new GraphicOverlay
+            {
+                Id = automationGraphicId,
+                Name = kind == "caption" ? "Caption strip" : "Lower third",
+                Kind = kind,
+                Position = kind == "caption" ? "bottom" : Overlays.LowerThirdPosition,
+                Accent = BrandKit.AccentColor,
+                Enabled = true
+            });
+            return true;
+        }
+
+        if (graphic is not null && graphic.Enabled != enabled)
+        {
+            graphic.Enabled = enabled;
+            return true;
+        }
+
+        return false;
     }
 
     public bool HasCaptureDevices => CaptureDevices.Count > 0;
@@ -2300,7 +2598,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
             RoomVideoParticipants,
-            Scenes);
+            Scenes,
+            AutomationPreferScreenShare,
+            (int)Math.Round(AutomationPanelParticipantThreshold));
         FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants);
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
@@ -2318,8 +2618,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(RecommendedLayout));
         OnPropertyChanged(nameof(RecommendedConfidence));
         OnPropertyChanged(nameof(AutoProductionReason));
+        OnPropertyChanged(nameof(AutoSwitchLabel));
+        OnPropertyChanged(nameof(AutomationPolicySummary));
+        OnPropertyChanged(nameof(AutomationScenePolicySummary));
+        OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
+        OnPropertyChanged(nameof(AutomationTakeModeLabel));
         OnPropertyChanged(nameof(CaptionQualitySummary));
         RefreshAudioReadoutBindings();
+        EvaluateAutomationPolicy();
     }
 
     private void RefreshAudioReadoutBindings()
@@ -4050,6 +4356,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         LaunchLog.Write("shutdown: disposing studio view model");
+        _automationTimer.Stop();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
         _bridge.SnapshotChanged -= OnSnapshotChanged;
