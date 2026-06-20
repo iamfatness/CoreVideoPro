@@ -429,6 +429,7 @@ std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<IOutputSender> createSrtOutputSender();
+std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();

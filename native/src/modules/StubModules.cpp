@@ -762,8 +762,22 @@ ModuleSet createDefaultModules() {
   if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);
   }
+  // The module set carries a single outputSender. RTMP keeps precedence (it is
+  // the most complete real sender today); the NDI sender only claims the slot
+  // when RTMP is not built/available, so a dev build with only
+  // COREVIDEO_WITH_NDI_OUTPUT publishes to NDI. When NDI and RTMP could coexist
+  // they should be composed into a fan-out sender during integration; for now
+  // this preserves RTMP precedence and falls back to the synthetic sender when
+  // neither real sender is present.
+  bool outputSenderClaimed = false;
   if (auto outputSender = createRtmpOutputSender()) {
     modules.outputSender = std::move(outputSender);
+    outputSenderClaimed = true;
+  }
+  if (!outputSenderClaimed) {
+    if (auto ndiSender = createNdiOutputSender()) {
+      modules.outputSender = std::move(ndiSender);
+    }
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
   hardwareCaptureDevices.push_back(std::move(modules.captureDevice));

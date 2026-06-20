@@ -10,6 +10,7 @@ option(COREVIDEO_WITH_MF_ENCODER "Build the Windows Media Foundation hardware en
 option(COREVIDEO_WITH_WASAPI_MONITOR "Build the Windows WASAPI audio monitor output adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_RTMP_OUTPUT "Build the RTMP output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libavformat runtime on the dev machine." OFF)
 option(COREVIDEO_WITH_SRT_OUTPUT "Build the SRT output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine." OFF)
+option(COREVIDEO_WITH_NDI_OUTPUT "Build the NDI output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libNDI runtime on the dev machine (runtime-probed)." OFF)
 option(COREVIDEO_WITH_SRT_INGEST "Build the SRT ingest capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine for real transport." OFF)
 option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
 option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
@@ -30,6 +31,7 @@ add_library(corevideo_native
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
+  src/modules/NdiOutputSenderAdapter.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
@@ -60,6 +62,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
     COREVIDEO_WITH_RTMP_OUTPUT=$<BOOL:${COREVIDEO_WITH_RTMP_OUTPUT}>
     COREVIDEO_WITH_SRT_OUTPUT=$<BOOL:${COREVIDEO_WITH_SRT_OUTPUT}>
+    COREVIDEO_WITH_NDI_OUTPUT=$<BOOL:${COREVIDEO_WITH_NDI_OUTPUT}>
     COREVIDEO_WITH_SRT_INGEST=$<BOOL:${COREVIDEO_WITH_SRT_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
@@ -107,6 +110,18 @@ if(COREVIDEO_WITH_RTMP_OUTPUT)
   if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
     message(FATAL_ERROR "COREVIDEO_WITH_RTMP_OUTPUT requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
   endif()
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(corevideo_native PUBLIC dl)
+  endif()
+endif()
+
+if(COREVIDEO_WITH_NDI_OUTPUT)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_NDI_OUTPUT requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  # The adapter runtime-probes the libNDI shared library (Processing.NDI.Lib on
+  # Windows, libndi on POSIX) via LoadLibrary/dlopen, so there is no link-time
+  # dependency on the NDI SDK. Only the POSIX dynamic-loader is needed.
   if(UNIX AND NOT APPLE)
     target_link_libraries(corevideo_native PUBLIC dl)
   endif()
@@ -263,6 +278,7 @@ if(BUILD_TESTING)
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/ZoomFrameReaderTest.cpp

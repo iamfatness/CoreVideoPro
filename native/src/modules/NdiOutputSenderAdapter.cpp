@@ -1,0 +1,563 @@
+#include "modules/Interfaces.h"
+#include "modules/NdiSourceName.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+#endif
+
+namespace corevideo::modules {
+namespace {
+
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+
+struct RuntimeCandidate {
+  std::string name;
+  std::string status;
+  std::string detail;
+};
+
+struct RuntimeProbe {
+  bool available = false;
+  std::string detail;
+  std::vector<RuntimeCandidate> candidates;
+};
+
+// ---------------------------------------------------------------------------
+// Minimal libNDI ABI surface, declared locally so this scaffold COMPILES on a
+// machine without the NDI SDK headers (mirrors how the SRT scaffold builds with
+// COREVIDEO_HAS_LIBSRT=0). We runtime-probe Processing.NDI.Lib.x64.dll / the
+// POSIX shared object and resolve the v5 C entrypoints by name. The struct
+// layouts below match the published `Processing.NDI.Lib.h` v5 ABI; if the real
+// SDK is present at build time the dynamic resolution still uses these local
+// definitions (we never include the SDK header), which keeps the build
+// hermetic. On a dev rig with libNDI installed the resolved symbols drive a
+// real sender; without it the probe reports unavailable and the synthetic
+// sender remains in the module set.
+extern "C" {
+
+typedef enum {
+  NDIlib_FourCC_type_UYVY = 0x59565955,  // 'UYVY'
+  NDIlib_FourCC_type_BGRA = 0x41524742,  // 'BGRA'
+} NDIlib_FourCC_video_type_e;
+
+typedef enum {
+  NDIlib_frame_format_type_progressive = 1,
+} NDIlib_frame_format_type_e;
+
+typedef enum {
+  NDIlib_FourCC_audio_type_FLTP = 0x70746C66,  // 'fltp'
+} NDIlib_FourCC_audio_type_e;
+
+typedef struct {
+  const char* p_ndi_name;
+  const char* p_groups;
+  bool clock_video;
+  bool clock_audio;
+} NDIlib_send_create_t;
+
+typedef struct {
+  int xres;
+  int yres;
+  NDIlib_FourCC_video_type_e FourCC;
+  int frame_rate_N;
+  int frame_rate_D;
+  float picture_aspect_ratio;
+  NDIlib_frame_format_type_e frame_format_type;
+  int64_t timecode;
+  const uint8_t* p_data;
+  int line_stride_in_bytes;
+  const char* p_metadata;
+  int64_t timestamp;
+} NDIlib_video_frame_v2_t;
+
+typedef struct {
+  int sample_rate;
+  int no_channels;
+  int no_samples;
+  int64_t timecode;
+  const float* p_data;
+  int channel_stride_in_bytes;
+  const char* p_metadata;
+  int64_t timestamp;
+} NDIlib_audio_frame_v2_t;
+
+}  // extern "C"
+
+using NDIlib_send_instance_t = void*;
+
+using fn_NDIlib_initialize = bool (*)();
+using fn_NDIlib_destroy = void (*)();
+using fn_NDIlib_send_create = NDIlib_send_instance_t (*)(const NDIlib_send_create_t*);
+using fn_NDIlib_send_destroy = void (*)(NDIlib_send_instance_t);
+using fn_NDIlib_send_send_video_v2 = void (*)(NDIlib_send_instance_t, const NDIlib_video_frame_v2_t*);
+using fn_NDIlib_send_send_audio_v2 = void (*)(NDIlib_send_instance_t, const NDIlib_audio_frame_v2_t*);
+using fn_NDIlib_send_get_no_connections = int (*)(NDIlib_send_instance_t, uint32_t);
+
+struct NdiApi {
+  fn_NDIlib_initialize initialize = nullptr;
+  fn_NDIlib_destroy destroy = nullptr;
+  fn_NDIlib_send_create send_create = nullptr;
+  fn_NDIlib_send_destroy send_destroy = nullptr;
+  fn_NDIlib_send_send_video_v2 send_video = nullptr;
+  fn_NDIlib_send_send_audio_v2 send_audio = nullptr;
+  fn_NDIlib_send_get_no_connections get_no_connections = nullptr;
+  bool complete() const {
+    return initialize && destroy && send_create && send_destroy && send_video && send_audio;
+  }
+};
+
+#if defined(_WIN32)
+using LibraryHandle = HMODULE;
+LibraryHandle loadLibrary(const char* name) { return LoadLibraryA(name); }
+void* resolveSymbol(LibraryHandle handle, const char* symbol) {
+  return reinterpret_cast<void*>(GetProcAddress(handle, symbol));
+}
+void unloadLibrary(LibraryHandle handle) {
+  if (handle) {
+    FreeLibrary(handle);
+  }
+}
+std::string lastLoadError() { return "Win32 error " + std::to_string(GetLastError()); }
+#else
+using LibraryHandle = void*;
+LibraryHandle loadLibrary(const char* name) { return dlopen(name, RTLD_LAZY | RTLD_LOCAL); }
+void* resolveSymbol(LibraryHandle handle, const char* symbol) { return dlsym(handle, symbol); }
+void unloadLibrary(LibraryHandle handle) {
+  if (handle) {
+    dlclose(handle);
+  }
+}
+std::string lastLoadError() {
+  const char* error = dlerror();
+  return error ? error : "dlopen failed";
+}
+#endif
+
+const char* const* ndiLibraryCandidates(size_t& count) {
+#if defined(_WIN32)
+  static const char* kCandidates[] = {"Processing.NDI.Lib.x64.dll", "Processing.NDI.Lib.x86.dll"};
+#else
+  static const char* kCandidates[] = {"libndi.so.5", "libndi.so.4", "libndi.so", "libndi.dylib"};
+#endif
+  count = sizeof(kCandidates) / sizeof(kCandidates[0]);
+  return kCandidates;
+}
+
+LibraryHandle openNdiLibrary(RuntimeProbe& probe) {
+  size_t count = 0;
+  const char* const* candidates = ndiLibraryCandidates(count);
+  for (size_t index = 0; index < count; ++index) {
+    if (LibraryHandle handle = loadLibrary(candidates[index])) {
+      probe.candidates.push_back({candidates[index], "available", "library loaded"});
+      probe.available = true;
+      probe.detail = std::string("available:") + candidates[index];
+      return handle;
+    }
+    probe.candidates.push_back({candidates[index], "unavailable", lastLoadError()});
+  }
+  probe.available = false;
+  probe.detail = "missing:libNDI runtime";
+  return nullptr;
+}
+
+bool resolveNdiApi(LibraryHandle handle, NdiApi& api) {
+  api.initialize = reinterpret_cast<fn_NDIlib_initialize>(resolveSymbol(handle, "NDIlib_initialize"));
+  api.destroy = reinterpret_cast<fn_NDIlib_destroy>(resolveSymbol(handle, "NDIlib_destroy"));
+  api.send_create = reinterpret_cast<fn_NDIlib_send_create>(resolveSymbol(handle, "NDIlib_send_create"));
+  api.send_destroy = reinterpret_cast<fn_NDIlib_send_destroy>(resolveSymbol(handle, "NDIlib_send_destroy"));
+  api.send_video = reinterpret_cast<fn_NDIlib_send_send_video_v2>(resolveSymbol(handle, "NDIlib_send_send_video_v2"));
+  api.send_audio = reinterpret_cast<fn_NDIlib_send_send_audio_v2>(resolveSymbol(handle, "NDIlib_send_send_audio_v2"));
+  api.get_no_connections = reinterpret_cast<fn_NDIlib_send_get_no_connections>(resolveSymbol(handle, "NDIlib_send_get_no_connections"));
+  return api.complete();
+}
+
+const OutputDestinationSettings* findNdiSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+  for (const auto& settings : destinationSettings) {
+    if (settings.id == "ndi" || settings.protocol == "ndi") {
+      return &settings;
+    }
+  }
+  return nullptr;
+}
+
+// Convert a packed BGRA buffer to packed UYVY (4:2:2). NDI's SpeedHQ path is fed
+// most efficiently with UYVY, so we down-sample chroma horizontally here and
+// hand the result to send_video_v2. Output stride is width*2 bytes.
+void convertBgraToUyvy(const uint8_t* bgra, int width, int height, std::vector<uint8_t>& uyvy) {
+  const size_t outBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 2u;
+  uyvy.resize(outBytes);
+  const auto clamp8 = [](int value) -> uint8_t {
+    return static_cast<uint8_t>(value < 0 ? 0 : (value > 255 ? 255 : value));
+  };
+  const auto rgbToY = [&](int b, int g, int r) {
+    return clamp8(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+  };
+  const auto rgbToU = [&](int b, int g, int r) {
+    return clamp8(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+  };
+  const auto rgbToV = [&](int b, int g, int r) {
+    return clamp8(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+  };
+  size_t out = 0;
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* row = bgra + static_cast<size_t>(y) * static_cast<size_t>(width) * 4u;
+    for (int x = 0; x + 1 < width; x += 2) {
+      const uint8_t* p0 = row + static_cast<size_t>(x) * 4u;
+      const uint8_t* p1 = p0 + 4u;
+      const int b0 = p0[0], g0 = p0[1], r0 = p0[2];
+      const int b1 = p1[0], g1 = p1[1], r1 = p1[2];
+      const int avgB = (b0 + b1) / 2;
+      const int avgG = (g0 + g1) / 2;
+      const int avgR = (r0 + r1) / 2;
+      uyvy[out++] = rgbToU(avgB, avgG, avgR);  // U
+      uyvy[out++] = rgbToY(b0, g0, r0);        // Y0
+      uyvy[out++] = rgbToV(avgB, avgG, avgR);  // V
+      uyvy[out++] = rgbToY(b1, g1, r1);        // Y1
+    }
+    if (width % 2 != 0) {
+      // Odd trailing pixel: emit it as its own macropixel pair.
+      const uint8_t* p0 = row + static_cast<size_t>(width - 1) * 4u;
+      const int b0 = p0[0], g0 = p0[1], r0 = p0[2];
+      uyvy[out++] = rgbToU(b0, g0, r0);
+      uyvy[out++] = rgbToY(b0, g0, r0);
+      uyvy[out++] = rgbToV(b0, g0, r0);
+      uyvy[out++] = rgbToY(b0, g0, r0);
+    }
+  }
+}
+
+int64_t estimatedFrameBytes(double bitrateMbps, int fps) {
+  const int safeFps = (std::max)(1, fps);
+  return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / static_cast<double>(safeFps)) + 0.5);
+}
+
+class NdiOutputSender final : public IOutputSender {
+ public:
+  explicit NdiOutputSender(RuntimeProbe runtimeProbe, LibraryHandle library, NdiApi api)
+      : runtimeProbe_(std::move(runtimeProbe)),
+        runtimeDetail_(runtimeProbe_.detail),
+        runtimeAvailable_(runtimeProbe_.available),
+        library_(library),
+        api_(api) {}
+
+  ~NdiOutputSender() override {
+    destroySender();
+    if (ndiInitialized_ && api_.destroy) {
+      api_.destroy();
+    }
+    unloadLibrary(library_);
+  }
+
+  // NOTE FOR INTEGRATION: this matches the CURRENT IOutputSender::sync signature
+  // (destinations, const ProgramFrame*, elapsedMs, destinationSettings). A
+  // parallel agent is widening sync(...) to carry the program-audio PCM tap.
+  // Once that lands, the program-audio parameter should be forwarded to
+  // submitProgramAudio() below (send_audio_v2), replacing the silence keep-alive.
+  OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const ProgramFrame* frame,
+      double elapsedMs,
+      const std::vector<OutputDestinationSettings>& destinationSettings = {}) override {
+    const bool wantsNdi = std::find(destinations.begin(), destinations.end(), "ndi") != destinations.end();
+    if (!wantsNdi) {
+      destroySender();
+      if (sender_.status != "idle" && sender_.status != "stopped") {
+        sender_.status = "stopped";
+        sender_.stoppedAtMs = elapsedMs;
+        sender_.warning.clear();
+        sender_.destinationHealth = "stopped";
+        sender_.lastResultCode = "stopped";
+      }
+      return snapshot();
+    }
+
+    ensureSender(elapsedMs);
+    const auto* settings = findNdiSettings(destinationSettings);
+    if (settings) {
+      // The renderer carries the validated NDI source name in `streamKey`
+      // (there is no URL/key for NDI; the field is reused for the source name)
+      // or `label`. Validate it the same way the UI did before honoring it.
+      const std::string requested = !settings->streamKey.empty() ? settings->streamKey : settings->label;
+      const auto parsed = parseNdiSourceName(requested.empty() ? "Program" : requested);
+      if (parsed.valid) {
+        configuredSourceName_ = parsed.canonical;
+      } else if (!parsed.errors.empty()) {
+        configuredSourceNameError_ = parsed.errors.front();
+      }
+      configuredFps_ = (std::max)(1, settings->fps);
+      sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
+    }
+    if (configuredSourceName_.empty()) {
+      const auto fallback = parseNdiSourceName("Program");
+      configuredSourceName_ = fallback.canonical;
+    }
+
+    sender_.runtimeDetail = runtimeDetail_;
+
+    if (!runtimeAvailable_ || !api_.complete()) {
+      sender_.status = "warning";
+      sender_.warning = "NDI sender requires the libNDI runtime on this machine (" + runtimeDetail_ + ").";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "runtime-missing";
+      sender_.lastError = sender_.warning;
+      return snapshot();
+    }
+
+    if (!configuredSourceNameError_.empty()) {
+      sender_.status = "warning";
+      sender_.warning = "NDI source name rejected: " + configuredSourceNameError_;
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "source-name-invalid";
+      sender_.lastError = sender_.warning;
+      return snapshot();
+    }
+
+    if (!ensureSenderInstance()) {
+      sender_.status = "failed";
+      sender_.warning = "NDIlib_send_create failed for source \"" + configuredSourceName_ + "\".";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "send-create-failed";
+      sender_.lastError = sender_.warning;
+      return snapshot();
+    }
+
+    if (!frame || frame->frameNumber == 0) {
+      sender_.status = "starting";
+      sender_.warning = "NDI sender is waiting for a program frame.";
+      sender_.destinationHealth = "starting";
+      sender_.lastResultCode = "waiting-for-frame";
+      return snapshot();
+    }
+    if (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty()) {
+      sender_.status = "warning";
+      sender_.warning = "NDI sender is waiting for composed BGRA program pixels.";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "frame-pixels-missing";
+      sender_.lastError = sender_.warning;
+      return snapshot();
+    }
+
+    submitProgramVideo(*frame);
+    submitProgramAudioKeepAlive();
+    refreshConnectionCount();
+
+    sender_.status = "live";
+    sender_.warning.clear();
+    sender_.lastFrameNumber = frame->frameNumber;
+    ++sender_.framesSent;
+    sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps, configuredFps_);
+    sender_.destinationHealth = connectionCount_ > 0 ? "ok" : "starting";
+    sender_.lastResultCode = "ok";
+    return snapshot();
+  }
+
+  OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
+    if (destination != "ndi") {
+      return snapshot();
+    }
+    ensureSender(elapsedMs);
+    sender_.status = "failed";
+    sender_.stoppedAtMs = elapsedMs;
+    ++sender_.retryCount;
+    sender_.warning = message;
+    sender_.destinationHealth = "failed";
+    sender_.lastResultCode = "failed";
+    sender_.lastError = message;
+    return snapshot();
+  }
+
+  OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
+    if (destination != "ndi") {
+      return snapshot();
+    }
+    destroySender();
+    ensureSender(elapsedMs);
+    sender_.status = runtimeAvailable_ ? "starting" : "warning";
+    sender_.startedAtMs = elapsedMs;
+    sender_.stoppedAtMs = 0;
+    sender_.warning = reason.empty() ? "NDI sender recovered." : reason;
+    sender_.runtimeDetail = runtimeDetail_;
+    sender_.destinationHealth = runtimeAvailable_ ? "starting" : "warning";
+    sender_.lastResultCode = "recovered";
+    return snapshot();
+  }
+
+  OutputSenderSession session() const override { return snapshot(); }
+
+ private:
+  void ensureSender(double elapsedMs) {
+    if (!sender_.senderId.empty()) {
+      return;
+    }
+    sender_.senderId = "ndi:program";
+    sender_.destination = "ndi";
+    sender_.status = "starting";
+    sender_.startedAtMs = elapsedMs;
+    sender_.latencyMs = 16;  // NDI is a near-zero-latency LAN transport.
+    sender_.bitrateMbps = 125.0;  // 1080p60 SpeedHQ estimate (matches ndiOutput.ts).
+    sender_.runtimeDetail = runtimeDetail_;
+    sender_.destinationHealth = "starting";
+    sender_.lastResultCode = "waiting-for-frame";
+  }
+
+  bool ensureSenderInstance() {
+    if (sendInstance_ && activeSourceName_ == configuredSourceName_) {
+      return true;
+    }
+    destroySender();
+    if (!ndiInitialized_) {
+      if (!api_.initialize()) {
+        return false;
+      }
+      ndiInitialized_ = true;
+    }
+    NDIlib_send_create_t create{};
+    create.p_ndi_name = configuredSourceName_.c_str();
+    create.p_groups = nullptr;
+    create.clock_video = true;
+    create.clock_audio = true;
+    sendInstance_ = api_.send_create(&create);
+    if (!sendInstance_) {
+      return false;
+    }
+    activeSourceName_ = configuredSourceName_;
+    return true;
+  }
+
+  void submitProgramVideo(const ProgramFrame& frame) {
+    convertBgraToUyvy(frame.preview.bgra.data(), frame.preview.width, frame.preview.height, uyvyBuffer_);
+    NDIlib_video_frame_v2_t video{};
+    video.xres = frame.preview.width;
+    video.yres = frame.preview.height;
+    video.FourCC = NDIlib_FourCC_type_UYVY;
+    video.frame_rate_N = configuredFps_ * 1000;
+    video.frame_rate_D = 1000;
+    video.picture_aspect_ratio = static_cast<float>(frame.preview.width) / static_cast<float>((std::max)(1, frame.preview.height));
+    video.frame_format_type = NDIlib_frame_format_type_progressive;
+    video.timecode = INT64_MAX;  // NDIlib_send_timecode_synthesize
+    video.p_data = uyvyBuffer_.data();
+    video.line_stride_in_bytes = frame.preview.width * 2;
+    video.p_metadata = nullptr;
+    video.timestamp = 0;
+    api_.send_video(sendInstance_, &video);
+  }
+
+  // Until the audio-carrying sync(...) signature lands, push a short silent
+  // buffer so receivers see a continuous audio clock alongside video. Once the
+  // program-audio tap is available this becomes the real send_audio_v2 path.
+  void submitProgramAudioKeepAlive() {
+    constexpr int kChannels = 2;
+    const int samplesPerChannel = 48000 / (std::max)(1, configuredFps_);
+    audioBuffer_.assign(static_cast<size_t>(samplesPerChannel) * static_cast<size_t>(kChannels), 0.0f);
+    NDIlib_audio_frame_v2_t audio{};
+    audio.sample_rate = 48000;
+    audio.no_channels = kChannels;
+    audio.no_samples = samplesPerChannel;
+    audio.timecode = INT64_MAX;
+    audio.p_data = audioBuffer_.data();
+    audio.channel_stride_in_bytes = samplesPerChannel * static_cast<int>(sizeof(float));
+    audio.p_metadata = nullptr;
+    audio.timestamp = 0;
+    api_.send_audio(sendInstance_, &audio);
+  }
+
+  void refreshConnectionCount() {
+    if (api_.get_no_connections && sendInstance_) {
+      connectionCount_ = api_.get_no_connections(sendInstance_, 0);
+    }
+  }
+
+  void destroySender() {
+    if (sendInstance_ && api_.send_destroy) {
+      api_.send_destroy(sendInstance_);
+    }
+    sendInstance_ = nullptr;
+    activeSourceName_.clear();
+    connectionCount_ = 0;
+  }
+
+  OutputSenderSession snapshot() const {
+    OutputSenderSession session;
+    if (!sender_.senderId.empty()) {
+      OutputSender sender = sender_;
+      // Surface the live receiver count via retryCount-adjacent fields would be
+      // wrong; instead encode it into runtimeDetail so the snapshot carries the
+      // real connection counter without a protocol change.
+      sender.runtimeDetail = runtimeDetail_ + " connections=" + std::to_string(connectionCount_) +
+                             " source=\"" + configuredSourceName_ + "\"";
+      session.senders.push_back(sender);
+      if (sender.status == "live" || sender.status == "warning" || sender.status == "starting") {
+        session.activeSenderCount = 1;
+      }
+      if (!sender.warning.empty()) {
+        session.warnings.push_back(sender.warning);
+      }
+      session.status = sender.status == "failed" ? "failed"
+                       : !sender.warning.empty() || sender.status == "warning" ? "warning"
+                       : session.activeSenderCount > 0 ? "live"
+                                                       : "idle";
+    }
+    return session;
+  }
+
+  RuntimeProbe runtimeProbe_;
+  std::string runtimeDetail_;
+  bool runtimeAvailable_ = false;
+  LibraryHandle library_ = nullptr;
+  NdiApi api_;
+  bool ndiInitialized_ = false;
+  NDIlib_send_instance_t sendInstance_ = nullptr;
+  std::string configuredSourceName_;
+  std::string configuredSourceNameError_;
+  std::string activeSourceName_;
+  int configuredFps_ = 30;
+  int connectionCount_ = 0;
+  std::vector<uint8_t> uyvyBuffer_;
+  std::vector<float> audioBuffer_;
+  OutputSender sender_;
+};
+
+#endif  // dev gate
+
+}  // namespace
+
+std::unique_ptr<IOutputSender> createNdiOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
+  // REQUIRES DEV MACHINE: a real NDI sender needs the libNDI runtime. We
+  // runtime-probe the shared library (mirrors the RTMP FFmpeg-probe approach);
+  // when it is absent we return a sender that reports a clear runtime-missing
+  // warning rather than nullptr, so the operator sees why NDI is unavailable.
+  // When the runtime is missing entirely we fall back to nullptr so module
+  // composition keeps the synthetic sender (and RTMP precedence) unchanged.
+  RuntimeProbe probe;
+  LibraryHandle library = openNdiLibrary(probe);
+  if (!library) {
+    return nullptr;
+  }
+  NdiApi api;
+  if (!resolveNdiApi(library, api)) {
+    probe.available = false;
+    probe.detail = "incomplete:libNDI symbol set";
+    probe.candidates.push_back({"NDIlib_send_*", "unavailable", "required v5 send entrypoints not resolved"});
+  }
+  return std::make_unique<NdiOutputSender>(std::move(probe), library, api);
+#else
+  return nullptr;
+#endif
+}
+
+}  // namespace corevideo::modules
