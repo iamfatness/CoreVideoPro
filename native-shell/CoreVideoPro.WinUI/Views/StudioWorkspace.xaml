@@ -137,7 +137,7 @@
                             BorderBrush="{x:Bind ViewModel.StudioTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StudioTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="studio" />
-                    <Button Content="Settings" Style="{StaticResource GhostButton}"
+                    <Button Content="Zoom" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.SettingsTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
