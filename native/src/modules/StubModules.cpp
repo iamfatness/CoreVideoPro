@@ -26,9 +26,32 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
   }
 
   std::vector<AudioFrame> pollAudioFrames() override {
+    // Emit real interleaved float PCM (a distinct tone per speaker) so the F2
+    // mixing graph produces a genuine program mix and the recording proof
+    // observes real muxed PCM rather than a synthetic counter. 20 ms blocks at
+    // 48 kHz mono.
+    constexpr int kSampleRate = 48000;
+    constexpr int kFrames = kSampleRate / 50;  // 960 samples / 20 ms
+    auto makeTone = [&](const char* id, double freq, double amplitude) {
+      AudioFrame frame;
+      frame.participantId = id;
+      frame.sampleRate = kSampleRate;
+      frame.channels = 1;
+      frame.timestampMs = frameNumber_ * 20;
+      frame.sampleCount = kFrames;
+      frame.voiceActive = true;
+      frame.pcm.resize(static_cast<size_t>(kFrames));
+      const int64_t phaseBase = frameNumber_ * kFrames;
+      for (int index = 0; index < kFrames; ++index) {
+        const double t = static_cast<double>(phaseBase + index) / kSampleRate;
+        frame.pcm[static_cast<size_t>(index)] =
+            static_cast<float>(amplitude * std::sin(2.0 * 3.14159265358979323846 * freq * t));
+      }
+      return frame;
+    };
     return {
-        {"synthetic-speaker-1", 48000, 1, frameNumber_ * 16},
-        {"synthetic-speaker-2", 48000, 1, frameNumber_ * 16},
+        makeTone("synthetic-speaker-1", 220.0, 0.32),
+        makeTone("synthetic-speaker-2", 330.0, 0.28),
     };
   }
 
@@ -215,10 +238,18 @@ class CpuNoopCompositor final : public ICompositor {
   int64_t frameNumber_ = 0;
 };
 
-class DevSafeAudioMixer final : public IAudioMixer {
+// Real program-audio bus mixer (F2). Drives the AudioMixGraph: per-participant
+// chain -> routing-matrix crosspoints -> summing buses -> master limiter + LUFS,
+// and exposes the program/ISO/MON PCM taps. The per-participant telemetry that
+// downstream snapshots already consume is still produced from the DSP kernels so
+// the existing audio-mix UI keeps working, but the master metrics are now
+// MEASURED from the real program bus rather than derived from lookup formulas.
+class ProgramBusAudioMixer final : public IAudioMixer {
  public:
   int64_t mix(const std::vector<AudioFrame>& frames) override {
     mixedFrameCount_ += static_cast<int64_t>(frames.size());
+
+    // Per-participant telemetry (unchanged shape; used by the audio-mix UI).
     std::vector<AudioParticipantMixMetrics> participants;
     participants.reserve(frames.size());
     std::optional<int64_t> mixReferenceTimestamp;
@@ -242,15 +273,104 @@ class DevSafeAudioMixer final : public IAudioMixer {
       participants.push_back(analyzeAudioParticipantFrame(frame, timing));
       lastParticipantTimestamps_[bounded.participantId] = bounded.timestampMs;
     }
-    session_ = summarizeAudioMixMetrics(std::move(participants), mixedFrameCount_);
+    AudioMixMetrics session = summarizeAudioMixMetrics(std::move(participants), mixedFrameCount_);
+
+    // Drive the real mixing graph and measure the program bus.
+    int sampleRate = 48000;
+    int blockFrames = 960;
+    for (const auto& frame : frames) {
+      if (frame.sampleRate > 0) {
+        sampleRate = frame.sampleRate;
+      }
+      if (!frame.pcm.empty()) {
+        blockFrames = static_cast<int>(frame.pcm.size() / static_cast<size_t>(std::max(1, frame.channels)));
+      } else if (frame.sampleCount > 0) {
+        blockFrames = frame.sampleCount;
+      }
+    }
+    graph_.configure(sampleRate, blockFrames);
+    graph_.setLimiterEnabled(limiterEnabled_);
+    graph_.setChannels(channels_);
+    graph_.setCrosspoints(crosspoints_);
+    const AudioMasterMeasurement measurement = graph_.processBlock(frames, blockIndex_++);
+
+    session.programTapPresent = measurement.programTapPresent;
+    session.programTapSampleCount = measurement.programSampleCount;
+    session.truePeakDbfs = measurement.truePeakDbfs;
+    session.programRmsDbfs = measurement.rmsDbfs;
+    session.momentaryLufs = measurement.momentaryLufs;
+    session.shortTermLufs = measurement.shortTermLufs;
+    session.integratedLufs = measurement.integratedLufs;
+    session.gainReductionDb = measurement.gainReductionDb;
+    if (measurement.programTapPresent) {
+      // Master loudness now reflects the measured program meter.
+      session.loudnessLufs = std::max(-60.0, std::min(-5.0, measurement.shortTermLufs));
+      session.limiterActive = session.limiterActive || measurement.limiterEngaged;
+    }
+    session_ = std::move(session);
     return mixedFrameCount_;
   }
 
   AudioMixMetrics session() const override { return session_; }
 
+  void configureChannels(const std::vector<AudioChannelStrip>& channels) override {
+    channels_.clear();
+    channels_.reserve(channels.size());
+    for (const auto& strip : channels) {
+      AudioParticipantChainConfig config;
+      config.participantId = strip.participantId;
+      config.gainDb = strip.gainDb;
+      config.pan = strip.pan;
+      config.muted = strip.muted;
+      config.solo = strip.solo;
+      config.noiseSuppression = strip.noiseSuppression;
+      config.hasInsert = strip.hasInsert;
+      channels_.push_back(std::move(config));
+    }
+  }
+
+  void configureCrosspoints(const std::vector<AudioMixCrosspoint>& crosspoints) override {
+    crosspoints_.clear();
+    crosspoints_.reserve(crosspoints.size());
+    for (const auto& crosspoint : crosspoints) {
+      AudioCrosspoint point;
+      point.sourceId = crosspoint.sourceId;
+      point.busId = crosspoint.busId;
+      point.gainDb = crosspoint.gainDb;
+      crosspoints_.push_back(std::move(point));
+    }
+  }
+
+  void setLimiterEnabled(bool enabled) override { limiterEnabled_ = enabled; }
+
+  AudioProgramTap programTap() const override {
+    AudioProgramTap tap;
+    const auto& program = graph_.programTap();
+    if (!program.present()) {
+      return tap;
+    }
+    tap.frames = program.frames;
+    tap.sampleRate = program.sampleRate;
+    tap.channels = program.channels;
+    tap.programPcm = program.pcm;
+    const auto& monitor = graph_.monitorTap();
+    if (monitor.present()) {
+      tap.monitorPcm = monitor.pcm;
+    }
+    for (const auto& iso : graph_.isoTaps()) {
+      tap.isoPcm.emplace_back(iso.busId, iso.pcm);
+    }
+    return tap;
+  }
+
  private:
   int64_t mixedFrameCount_ = 0;
+  int64_t blockIndex_ = 0;
+  bool limiterEnabled_ = true;
   std::map<std::string, int64_t> lastParticipantTimestamps_;
+  std::vector<AudioParticipantChainConfig> channels_;
+  std::vector<AudioCrosspoint> crosspoints_;
+  AudioMixGraph graph_;
   AudioMixMetrics session_;
 };
 
@@ -575,7 +695,7 @@ ModuleSet createStubModules() {
   // participant video yet.
   modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
-  modules.mixer = std::make_unique<DevSafeAudioMixer>();
+  modules.mixer = std::make_unique<ProgramBusAudioMixer>();
   modules.encoder = createStubRecordingEncoderSink();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
   // The deterministic test-pattern device is part of the stub so the F1 frame

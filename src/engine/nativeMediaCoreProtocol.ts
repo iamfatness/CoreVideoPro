@@ -229,6 +229,20 @@ export type NativeMediaCoreParticipantAudioChannel = {
   status: "balanced" | "boosting" | "ducking" | "muted";
 };
 
+// F2 — master-chain metrics MEASURED from the real program (PGM L/R) bus by the
+// native PCM mixing graph. Mirrors native-core/src/protocol.ts byte-for-byte;
+// asserted by the native ContractParity test.
+export type NativeMediaCoreAudioMixProgramMaster = {
+  programTapPresent: boolean;
+  programTapSampleCount: number;
+  truePeakDbfs: number;
+  programRmsDbfs: number;
+  momentaryLufs: number;
+  shortTermLufs: number;
+  integratedLufs: number;
+  gainReductionDb: number;
+};
+
 export type NativeMediaCoreAudioMixSession = {
   status: "idle" | "live" | "warning";
   masterLevel: number;
@@ -238,6 +252,7 @@ export type NativeMediaCoreAudioMixSession = {
   participants: NativeMediaCoreParticipantAudioChannel[];
   summary: string;
   warnings: string[];
+  programMaster: NativeMediaCoreAudioMixProgramMaster;
 };
 
 export type NativeMediaCoreAudioRoutingBus = "pgm-l" | "pgm-r" | "iso-1" | "iso-2" | "mon" | "stream";

@@ -633,6 +633,20 @@ export type MediaCoreParticipantAudioChannel = {
   status: "balanced" | "boosting" | "ducking" | "muted";
 };
 
+// F2 — master-chain metrics MEASURED from the real program (PGM L/R) bus by the
+// native PCM mixing graph. Mirrored byte-for-byte in the renderer protocol and
+// asserted by the native ContractParity test.
+export type MediaCoreAudioMixProgramMaster = {
+  programTapPresent: boolean;
+  programTapSampleCount: number;
+  truePeakDbfs: number;
+  programRmsDbfs: number;
+  momentaryLufs: number;
+  shortTermLufs: number;
+  integratedLufs: number;
+  gainReductionDb: number;
+};
+
 export type MediaCoreAudioMixSession = {
   status: "idle" | "live" | "warning";
   masterLevel: number;
@@ -643,6 +657,7 @@ export type MediaCoreAudioMixSession = {
   participants: MediaCoreParticipantAudioChannel[];
   summary: string;
   warnings: string[];
+  programMaster: MediaCoreAudioMixProgramMaster;
 };
 
 export type MediaCoreAudioRoutingBus =

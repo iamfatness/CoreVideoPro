@@ -97,6 +97,18 @@ TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
   EXPECT_NE(nodeProtocol.find("zoom-media-spine-sync"), std::string::npos);
 }
 
+TEST(ContractParity, AudioMixProgramMasterFieldsMirroredInBothProtocols) {
+  const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
+  const std::string rendererProtocol = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");
+  ASSERT_FALSE(nodeProtocol.empty());
+  ASSERT_FALSE(rendererProtocol.empty());
+  // F2 measured master-chain metrics must appear in both protocol mirrors.
+  expectAllStringsPresent(nodeProtocol, corevideo::core::kAudioMixProgramMasterFields);
+  expectAllStringsPresent(rendererProtocol, corevideo::core::kAudioMixProgramMasterFields);
+  EXPECT_NE(nodeProtocol.find("programMaster"), std::string::npos);
+  EXPECT_NE(rendererProtocol.find("programMaster"), std::string::npos);
+}
+
 TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContracts) {
   const std::string cmakeSource = readRepoFile("native/CMakeLists.txt");
   const std::string adapterHeader = readRepoFile("native/src/modules/ZoomMeetingSdkAdapter.h");
