@@ -21,6 +21,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
+    private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly ZoomOAuthService _zoomOAuth;
@@ -1560,7 +1561,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshCaptureDevices() => _ = RefreshCaptureDevicesAsync();
 
     [RelayCommand]
-    private void ConnectCaptureDevice(string deviceId)
+    private async Task ConnectCaptureDeviceAsync(string deviceId)
     {
         var device = CaptureDevices.FirstOrDefault(d => d.Id == deviceId);
         if (device is null || device.ConnectionState == CaptureConnectionState.Connected)
@@ -1568,13 +1569,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        device.ConnectionState = CaptureConnectionState.Connected;
-        device.SignalPresent = true;
-        AssignConnectedCaptureDeviceToShowInput(device);
-        RefreshCaptureFleetSummary();
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
-        CommandStatus = $"{device.Name} brought online as program source";
+        try
+        {
+            await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
+            RunOnUiThread(() =>
+            {
+                device.ConnectionState = CaptureConnectionState.Connected;
+                device.SignalPresent = true;
+                AssignConnectedCaptureDeviceToShowInput(device);
+                RefreshCaptureFleetSummary();
+                RefreshShowInputEditors();
+                RefreshMultiviewGridTiles();
+                CommandStatus = $"{device.Name} brought online as program source";
+            });
+        }
+        catch (Exception ex)
+        {
+            RunOnUiThread(() =>
+            {
+                device.ConnectionState = CaptureConnectionState.Error;
+                device.SignalPresent = false;
+                RefreshCaptureFleetSummary();
+                RefreshShowInputEditors();
+                RefreshMultiviewGridTiles();
+                CommandStatus = $"{device.Name} failed to open: {ex.Message}";
+            });
+        }
     }
 
     [RelayCommand]
@@ -2921,6 +2941,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ForceShutdownMediaCore();
 
         _surfaces.Dispose();
+        _captureFrameReader.Dispose();
         _captureDiscovery.Dispose();
         _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);

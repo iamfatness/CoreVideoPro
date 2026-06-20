@@ -3,7 +3,6 @@
     x:Name="SourcesInputsRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:controls="using:CoreVideoPro.WinUI.Controls"
     xmlns:models="using:CoreVideoPro.WinUI.Models"
     xmlns:vm="using:CoreVideoPro.WinUI.ViewModels">
 
@@ -113,15 +112,6 @@
                                             <Run Text="fps · " />
                                             <Run Text="{x:Bind SignalLabel}" />
                                         </TextBlock>
-                                        <Border Height="150"
-                                                Background="#050608"
-                                                BorderBrush="{StaticResource StudioBorderBrush}"
-                                                BorderThickness="1"
-                                                CornerRadius="6">
-                                            <controls:CaptureDevicePreviewHost DeviceId="{x:Bind NativeDeviceId, Mode=OneWay}"
-                                                                               StableDeviceId="{x:Bind Id, Mode=OneWay}"
-                                                                               IsOnline="{x:Bind IsConnected, Mode=OneWay}" />
-                                        </Border>
                                         <Button Content="Bring online as program source"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"
