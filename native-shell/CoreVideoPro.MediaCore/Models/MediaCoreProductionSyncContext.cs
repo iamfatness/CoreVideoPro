@@ -88,6 +88,14 @@ public sealed record MediaCoreStreamDestinationWire(
     string? NdiName = null,
     string? NdiGroup = null);
 
+public sealed record MediaCoreOutputProfileWire(
+    string ProfileId,
+    string Resolution,
+    int Width,
+    int Height,
+    int Fps,
+    double TargetBitrateMbps);
+
 /// <summary>
 /// Production inputs for building a media-core-sync command batch.
 /// Mirrors the React <c>buildNativeMediaCoreCommands</c> production state slice.
@@ -101,6 +109,9 @@ public sealed record MediaCoreProductionSyncContext
     public bool Streaming { get; init; }
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
     public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
+    public MediaCoreOutputProfileWire CanvasOutputProfile { get; init; } = DefaultCanvasOutputProfile;
+    public MediaCoreOutputProfileWire StreamOutputProfile { get; init; } = DefaultStreamOutputProfile;
+    public MediaCoreOutputProfileWire RecordingOutputProfile { get; init; } = DefaultRecordingOutputProfile;
     public MediaCoreRecordingTargetsWire RecordingTargets { get; init; } = DefaultRecordingTargets;
     public IReadOnlyList<MediaCoreGraphicWire> Graphics { get; init; } = [];
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
@@ -114,6 +125,18 @@ public sealed record MediaCoreProductionSyncContext
     public string? SelectedMediaAssetKind { get; init; }
     public string? SelectedMediaAssetPath { get; init; }
     public bool SelectedMediaAssetPlaying { get; init; }
+
+    public static MediaCoreOutputProfileWire DefaultCanvasOutputProfile { get; } = new(
+        ProfileId: "1080p60",
+        Resolution: "1920x1080",
+        Width: 1920,
+        Height: 1080,
+        Fps: 60,
+        TargetBitrateMbps: 8.2);
+
+    public static MediaCoreOutputProfileWire DefaultStreamOutputProfile { get; } = DefaultCanvasOutputProfile;
+
+    public static MediaCoreOutputProfileWire DefaultRecordingOutputProfile { get; } = DefaultCanvasOutputProfile;
 
     public static MediaCoreRecordingTargetsWire DefaultRecordingTargets { get; } = new(
         TargetFolder: "Recordings/CoreVideo Pro",

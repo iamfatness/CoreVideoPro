@@ -92,6 +92,33 @@
                         <TextBlock Text="{x:Bind ViewModel.PreviewSceneParticipants, Mode=OneWay}"
                                    FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
 
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="150" />
+                                <ColumnDefinition Width="120" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{x:Bind ViewModel.CanvasProfileSummary, Mode=OneWay}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource StudioAccentBrush}"
+                                       VerticalAlignment="Center"
+                                       TextWrapping="WrapWholeWords" />
+                            <ComboBox Grid.Column="1"
+                                      Header="Canvas"
+                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                      SelectedValue="{x:Bind ViewModel.CanvasResolution, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                            <ComboBox Grid.Column="2"
+                                      Header="FPS"
+                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                      SelectedValue="{x:Bind ViewModel.CanvasFps, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                        </Grid>
+
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.PreviewRouteWarnings, Mode=OneWay}"
                                        Visibility="{x:Bind ViewModel.HasPreviewRouteWarnings, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                             <ItemsRepeater.ItemTemplate>

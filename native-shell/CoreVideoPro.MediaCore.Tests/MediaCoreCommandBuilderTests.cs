@@ -137,6 +137,9 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             Recording = true,
             Streaming = true,
+            CanvasOutputProfile = new MediaCoreOutputProfileWire("canvas-4k60", "3840x2160", 3840, 2160, 60, 28),
+            StreamOutputProfile = new MediaCoreOutputProfileWire("stream-1080p30", "1920x1080", 1920, 1080, 30, 4.1),
+            RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-4k60", "3840x2160", 3840, 2160, 60, 28),
             StreamDestinations = ["rtmp", "ndi", "srt"],
             StreamDestinationSettings =
             [
@@ -159,9 +162,19 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Contains(commands, command => command.Type == "prepare-encoder-session");
         Assert.Contains(commands, command => command.Type == "start-encoder-session");
 
+        var outputProfile = commands.Single(command => command.Type == "set-output-profile");
+        Assert.Equal("canvas-4k60", GetString(outputProfile, "profileId"));
+        Assert.Equal("3840x2160", GetString(outputProfile, "resolution"));
+        Assert.Equal(3840, outputProfile.ExtensionData!["width"].GetInt32());
+        Assert.Equal(2160, outputProfile.ExtensionData!["height"].GetInt32());
+        Assert.Equal(60, outputProfile.ExtensionData!["fps"].GetInt32());
+
         var output = commands.Single(command => command.Type == "start-program-output");
         Assert.Equal(["recording", "rtmp", "ndi", "srt"], GetStringArray(output, "destinations"));
         Assert.Empty(GetStringArray(output, "isoParticipantIds"));
+        Assert.Equal("stream-1080p30", GetObject(output, "streamOutputProfile").GetProperty("profileId").GetString());
+        Assert.Equal(30, GetObject(output, "streamOutputProfile").GetProperty("fps").GetInt32());
+        Assert.Equal("recording-4k60", GetObject(output, "recordingOutputProfile").GetProperty("profileId").GetString());
         var destinationSettings = GetObjectArray(output, "destinationSettings");
         Assert.Equal(["rtmp", "ndi", "srt"], destinationSettings.Select(destination => destination.GetProperty("id").GetString()));
         Assert.Equal("rtmps", destinationSettings[0].GetProperty("protocol").GetString());
@@ -181,9 +194,11 @@ public sealed class MediaCoreCommandBuilderTests
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
         Assert.Equal("corevideo-recording", GetString(targets, "filenamePrefix"));
+        Assert.Equal("recording-4k60", GetObject(targets, "renderProfile").GetProperty("profileId").GetString());
 
         var recording = commands.Single(command => command.Type == "start-recording-session");
         Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
+        Assert.Equal("3840x2160", GetObject(recording, "renderProfile").GetProperty("resolution").GetString());
         Assert.DoesNotContain(commands, command => command.Type == "set-overlay-asset");
     }
 
@@ -460,6 +475,14 @@ public sealed class MediaCoreCommandBuilderTests
         return value.EnumerateArray()
             .Where(element => element.ValueKind == JsonValueKind.Object)
             .ToList();
+    }
+
+    private static JsonElement GetObject(NativeMediaCoreCommand command, string propertyName)
+    {
+        Assert.NotNull(command.ExtensionData);
+        Assert.True(command.ExtensionData!.TryGetValue(propertyName, out var value));
+        Assert.Equal(JsonValueKind.Object, value.ValueKind);
+        return value;
     }
 
     private static IReadOnlyList<(string RouteId, string Mode, string AudioRole, string? ParticipantId)> GetRoutes(

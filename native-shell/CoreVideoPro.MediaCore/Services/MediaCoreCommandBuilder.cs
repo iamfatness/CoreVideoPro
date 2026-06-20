@@ -9,14 +9,6 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class MediaCoreCommandBuilder
 {
-    private static readonly MediaCoreOutputProfileWire DefaultOutputProfile = new(
-        ProfileId: "1080p60",
-        Resolution: "1920x1080",
-        Width: 1920,
-        Height: 1080,
-        Fps: 60,
-        TargetBitrateMbps: 8.2);
-
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSyncCommands(MediaCoreProductionSyncContext context)
     {
         var commands = new List<NativeMediaCoreCommand>
@@ -26,7 +18,7 @@ public static class MediaCoreCommandBuilder
             BuildScreenShareCommand(context.Participants),
             BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes),
             BuildColorGradeCommand(context.ColorGrade),
-            BuildOutputProfileCommand(),
+            BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context.AudioMixChannels),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends)
@@ -158,15 +150,15 @@ public static class MediaCoreCommandBuilder
             ["temperature"] = colorGrade.Temperature
         });
 
-    private static NativeMediaCoreCommand BuildOutputProfileCommand() =>
+    private static NativeMediaCoreCommand BuildOutputProfileCommand(MediaCoreOutputProfileWire profile) =>
         Command("set-output-profile", new Dictionary<string, object?>
         {
-            ["profileId"] = DefaultOutputProfile.ProfileId,
-            ["resolution"] = DefaultOutputProfile.Resolution,
-            ["width"] = DefaultOutputProfile.Width,
-            ["height"] = DefaultOutputProfile.Height,
-            ["fps"] = DefaultOutputProfile.Fps,
-            ["targetBitrateMbps"] = DefaultOutputProfile.TargetBitrateMbps
+            ["profileId"] = profile.ProfileId,
+            ["resolution"] = profile.Resolution,
+            ["width"] = profile.Width,
+            ["height"] = profile.Height,
+            ["fps"] = profile.Fps,
+            ["targetBitrateMbps"] = profile.TargetBitrateMbps
         });
 
     private static NativeMediaCoreCommand BuildBrandKitCommand(MediaCoreBrandKitWire brandKit) =>
@@ -273,6 +265,8 @@ public static class MediaCoreCommandBuilder
         return Command("start-program-output", new Dictionary<string, object?>
         {
             ["destinations"] = destinations.Distinct(StringComparer.Ordinal).ToList(),
+            ["streamOutputProfile"] = OutputProfilePayload(context.StreamOutputProfile),
+            ["recordingOutputProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["destinationSettings"] = context.StreamDestinationSettings.Select(destination => new Dictionary<string, object?>
             {
                 ["id"] = destination.Id,
@@ -320,6 +314,7 @@ public static class MediaCoreCommandBuilder
             ["filenamePrefix"] = targets.FilenamePrefix,
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
+            ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });
 
@@ -330,9 +325,21 @@ public static class MediaCoreCommandBuilder
             ["filenamePrefix"] = targets.FilenamePrefix,
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
+            ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });
     }
+
+    private static Dictionary<string, object?> OutputProfilePayload(MediaCoreOutputProfileWire profile) =>
+        new()
+        {
+            ["profileId"] = profile.ProfileId,
+            ["resolution"] = profile.Resolution,
+            ["width"] = profile.Width,
+            ["height"] = profile.Height,
+            ["fps"] = profile.Fps,
+            ["targetBitrateMbps"] = profile.TargetBitrateMbps
+        };
 
     private static NativeMediaCoreCommand Command(string type, IReadOnlyDictionary<string, object?> payload) =>
         new()
@@ -342,12 +349,4 @@ public static class MediaCoreCommandBuilder
                 pair => pair.Key,
                 pair => JsonSerializer.SerializeToElement(pair.Value))
         };
-
-    private sealed record MediaCoreOutputProfileWire(
-        string ProfileId,
-        string Resolution,
-        int Width,
-        int Height,
-        int Fps,
-        double TargetBitrateMbps);
 }

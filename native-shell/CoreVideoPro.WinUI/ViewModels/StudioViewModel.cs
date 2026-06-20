@@ -107,6 +107,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _streamSrtPassphrase = string.Empty;
 
     [ObservableProperty]
+    private string _canvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
+
+    [ObservableProperty]
+    private string _canvasFps = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Fps.ToString();
+
+    [ObservableProperty]
+    private string _streamRenderResolution = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Resolution;
+
+    [ObservableProperty]
+    private string _streamRenderFps = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Fps.ToString();
+
+    [ObservableProperty]
+    private string _recordingRenderResolution = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Resolution;
+
+    [ObservableProperty]
+    private string _recordingRenderFps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Fps.ToString();
+
+    [ObservableProperty]
     private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
 
     [ObservableProperty]
@@ -529,6 +547,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<string> StreamSrtKeyLengthOptions { get; } = ["0", "16", "24", "32"];
 
+    public IReadOnlyList<RouteSelectOption> OutputResolutionOptions { get; } =
+    [
+        new() { Value = "1280x720", Label = "1280x720 (720p)" },
+        new() { Value = "1920x1080", Label = "1920x1080 (1080p)" },
+        new() { Value = "2560x1440", Label = "2560x1440 (1440p)" },
+        new() { Value = "3840x2160", Label = "3840x2160 (4K)" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> OutputFpsOptions { get; } =
+    [
+        new() { Value = "24", Label = "24 fps" },
+        new() { Value = "30", Label = "30 fps" },
+        new() { Value = "50", Label = "50 fps" },
+        new() { Value = "60", Label = "60 fps" }
+    ];
+
+    public string CanvasProfileSummary =>
+        $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
+
+    public string StreamRenderProfileSummary =>
+        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps render";
+
+    public string RecordingRenderProfileSummary =>
+        $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps render";
+
     public string StreamDestinationSummary
     {
         get
@@ -546,8 +589,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             var configured = BuildConfiguredStreamDestinationLabels();
             return configured.Count == 0
-                ? "No stream destinations configured"
-                : string.Join(" + ", configured);
+                ? $"No stream destinations configured - {StreamRenderProfileSummary}"
+                : $"{string.Join(" + ", configured)} - {StreamRenderProfileSummary}";
         }
     }
 
@@ -916,6 +959,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamSrtKeyLengthChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtPassphraseChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnCanvasFpsChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnStreamRenderResolutionChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnStreamRenderFpsChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnRecordingRenderFpsChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
 
@@ -2209,6 +2264,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Streaming = Streaming,
             StreamDestinations = BuildSelectedStreamDestinations(),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
+            CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps),
+            StreamOutputProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps),
+            RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
@@ -2390,10 +2448,85 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static int? ParsePositiveInt(string? value) =>
         int.TryParse(value, out var parsed) ? parsed : null;
 
+    private static string NormalizeFpsText(string? value) =>
+        Math.Clamp(ParsePositiveInt(value) ?? 60, 1, 240).ToString();
+
+    private static MediaCoreOutputProfileWire BuildRequestedOutputProfile(
+        string scope,
+        string? resolution,
+        string? fpsText)
+    {
+        var normalizedResolution = NormalizeResolutionText(resolution);
+        var parts = normalizedResolution.Split('x', StringSplitOptions.RemoveEmptyEntries);
+        var width = parts.Length == 2 && int.TryParse(parts[0], out var parsedWidth) ? parsedWidth : 1920;
+        var height = parts.Length == 2 && int.TryParse(parts[1], out var parsedHeight) ? parsedHeight : 1080;
+        var fps = Math.Clamp(ParsePositiveInt(fpsText) ?? 60, 1, 240);
+        var tier = height >= 2160 ? "4k" : $"{height}p";
+        var profileId = $"{scope}-{tier}{fps}";
+
+        return new MediaCoreOutputProfileWire(
+            ProfileId: profileId,
+            Resolution: $"{width}x{height}",
+            Width: width,
+            Height: height,
+            Fps: fps,
+            TargetBitrateMbps: EstimateTargetBitrateMbps(width, height, fps));
+    }
+
+    private static string NormalizeResolutionText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
+        }
+
+        var normalized = value.Trim().ToLowerInvariant().Replace('×', 'x');
+        var parts = normalized.Split('x', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 2 &&
+               int.TryParse(parts[0], out var width) &&
+               int.TryParse(parts[1], out var height) &&
+               width > 0 &&
+               height > 0
+            ? $"{width}x{height}"
+            : MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
+    }
+
+    private static double EstimateTargetBitrateMbps(int width, int height, int fps)
+    {
+        var pixels = width * height;
+        var baseBitrate = pixels switch
+        {
+            >= 3840 * 2160 => 28.0,
+            >= 2560 * 1440 => 16.0,
+            >= 1920 * 1080 => 8.2,
+            _ => 4.5
+        };
+
+        var fpsScale = fps >= 50 ? 1.0 : Math.Max(0.5, fps / 60.0);
+        return Math.Round(baseBitrate * fpsScale, 1);
+    }
+
     private string BuildSrtEncryptionSummary()
     {
         var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);
         return keyLength > 0 ? $"AES-{keyLength * 8}" : "no encryption";
+    }
+
+    private void OnOutputProfileChanged()
+    {
+        var canvasProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps);
+        ProgramResolutionLabel = TransportFormatting.ShortResolutionLabel(canvasProfile.Resolution, canvasProfile.Fps);
+        OnPropertyChanged(nameof(CanvasProfileSummary));
+        OnPropertyChanged(nameof(StreamRenderProfileSummary));
+        OnPropertyChanged(nameof(RecordingRenderProfileSummary));
+        OnPropertyChanged(nameof(StreamConfigurationSummary));
+        OnPropertyChanged(nameof(RecordingOptionsSummary));
+        RefreshTransportState();
+
+        if (_bridge.Running)
+        {
+            _ = TrySyncMediaCoreAsync();
+        }
     }
 
     private async void OnStreamOutputOptionChanged()
@@ -3563,6 +3696,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var routes = GetMutableRoutes(PreviewSceneId);
         SceneCanvasLayoutService.ApplyPreset(presetWire, routes);
         CommandStatus = $"{PreviewScene.Name} canvas preset applied ({presetWire})";
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
     }
 
