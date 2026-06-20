@@ -6,6 +6,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 {
+    private const string CaptureValuePrefix = "capture:";
     private readonly Action<SceneCanvasLayerViewModel> _onChanged;
     private readonly SourceRoute _route;
     private IReadOnlyList<Participant> _participants;
@@ -69,7 +70,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     [ObservableProperty]
     private double _height;
 
-    public bool IsParticipantPickerEnabled => Mode is "fixed" or "spotlight" or "capture-input";
+    [ObservableProperty]
+    private VideoSurfaceState _surface = VideoSurfaceState.Waiting(
+        VideoSurfaceKind.Multiview,
+        "scene-layer",
+        "Source preview");
+
+    public bool IsParticipantPickerEnabled => Mode is "fixed" or "spotlight" or "capture-input" or "active-speaker";
 
     partial void OnModeChanged(string value)
     {
@@ -146,6 +153,14 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
     }
 
+    public void SetSurface(VideoSurfaceState? surface)
+    {
+        Surface = surface ?? VideoSurfaceState.Waiting(
+            VideoSurfaceKind.Multiview,
+            $"scene-layer-{LayerIndex + 1}",
+            LayerLabel);
+    }
+
     public void ApplyRoute()
     {
         _route.Mode = SceneRoutingService.ModeFromWire(Mode);
@@ -166,9 +181,37 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
         else
         {
-            _route.ParticipantId = Mode is "fixed" or "spotlight" ? ParticipantId : null;
-            _route.CaptureDeviceId = Mode is "capture-input" ? ParticipantId : null;
+            if (TryParseCaptureDeviceValue(ParticipantId, out var captureDeviceId))
+            {
+                _route.Mode = SourceRouteMode.CaptureDevice;
+                _route.ParticipantId = null;
+                _route.CaptureDeviceId = captureDeviceId;
+            }
+            else if (Mode is "fixed" or "spotlight")
+            {
+                _route.ParticipantId = ParticipantId;
+                _route.CaptureDeviceId = null;
+            }
+            else if (Mode is "active-speaker" &&
+                _participants.Any(participant => string.Equals(participant.Id, ParticipantId, StringComparison.Ordinal)))
+            {
+                _route.Mode = SourceRouteMode.Fixed;
+                _route.ParticipantId = ParticipantId;
+                _route.CaptureDeviceId = null;
+            }
+            else if (Mode is "capture-input")
+            {
+                _route.ParticipantId = null;
+                _route.CaptureDeviceId = ParticipantId;
+            }
+            else
+            {
+                _route.ParticipantId = null;
+                _route.CaptureDeviceId = null;
+            }
         }
+
+        SetModeSilently(SceneRoutingService.ModeToWire(_route.Mode));
 
         _route.AudioRole = SceneRoutingService.AudioRoleFromWire(AudioRole);
         _route.CanvasRect = new NormalizedCanvasRect
@@ -193,6 +236,24 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         OnPropertyChanged(nameof(ParticipantOptions));
     }
 
+    private void SetModeSilently(string mode)
+    {
+        if (string.Equals(Mode, mode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _suppressChangeNotification = true;
+        try
+        {
+            Mode = mode;
+        }
+        finally
+        {
+            _suppressChangeNotification = false;
+        }
+    }
+
     private static string ResolveSourceId(
         SourceRoute route,
         IReadOnlyList<Participant> participants,
@@ -206,7 +267,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
 
         return route.Mode == SourceRouteMode.CaptureDevice
-            ? route.CaptureDeviceId ?? captureDevices.FirstOrDefault()?.Id ?? string.Empty
+            ? FormatCaptureDeviceValue(route.CaptureDeviceId ?? captureDevices.FirstOrDefault()?.Id ?? string.Empty)
             : route.ParticipantId ?? participants.FirstOrDefault()?.Id ?? string.Empty;
     }
 
@@ -218,41 +279,39 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     {
         var showInputOptions = showInputs
             .Where(slot => slot.InShow && slot.IsAssigned)
-            .Where(slot => mode == "capture-input"
-                ? slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam
-                : slot.Kind == ShowInputKind.ZoomParticipant)
             .Select(slot => new RouteSelectOption
             {
                 Value = FormatShowInputValue(slot.SlotNumber),
                 Label = $"{slot.SlotLabel} - {ResolveShowInputSourceLabel(slot, participants, captureDevices)}"
             })
             .ToList();
-        if (showInputOptions.Count > 0)
-        {
-            return showInputOptions;
-        }
 
-        if (mode == "capture-input")
-        {
-            return captureDevices
-                .Select(device => new RouteSelectOption
-                {
-                    Value = device.Id,
-                    Label = $"{device.Name} - {device.FormatLabel}"
-                })
-                .ToList();
-        }
+        var captureOptions = captureDevices
+            .Select(device => new RouteSelectOption
+            {
+                Value = FormatCaptureDeviceValue(device.Id),
+                Label = $"{device.Name} - {device.FormatLabel}"
+            });
 
-        return participants
+        var participantOptions = participants
             .Select(participant => new RouteSelectOption
             {
                 Value = participant.Id,
                 Label = participant.Name
-            })
+            });
+
+        return showInputOptions
+            .Concat(captureOptions)
+            .Concat(participantOptions)
             .ToList();
     }
 
     private static string FormatShowInputValue(int slotNumber) => $"input-{slotNumber:00}";
+
+    private static string FormatCaptureDeviceValue(string value) =>
+        string.IsNullOrWhiteSpace(value) || value.StartsWith(CaptureValuePrefix, StringComparison.OrdinalIgnoreCase)
+            ? value
+            : $"{CaptureValuePrefix}{value}";
 
     private static bool TryParseShowInputValue(string? value, out int slotNumber)
     {
@@ -260,6 +319,19 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         return value is { Length: 8 } &&
             value.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
             int.TryParse(value[6..], out slotNumber);
+    }
+
+    private static bool TryParseCaptureDeviceValue(string? value, out string captureDeviceId)
+    {
+        captureDeviceId = string.Empty;
+        if (string.IsNullOrWhiteSpace(value) ||
+            !value.StartsWith(CaptureValuePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        captureDeviceId = value[CaptureValuePrefix.Length..];
+        return captureDeviceId.Length > 0;
     }
 
     private static string ResolveShowInputSourceLabel(

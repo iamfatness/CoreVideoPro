@@ -82,6 +82,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
                 UpdateLayerLabel(frame, layer.LayerLabel);
             }
 
+            UpdateLayerSurface(frame, layer.Surface);
             ApplyLayerGeometry(frame, layer);
             ApplySelectionStyle(frame, ReferenceEquals(layer, _selectedLayer));
         }
@@ -99,6 +100,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         };
 
         var content = new Grid();
+        var videoHost = new VideoSurfaceHost
+        {
+            Name = "LayerPreview",
+            SurfaceState = layer.Surface,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = false
+        };
+        content.Children.Add(videoHost);
+
+        var labelChrome = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Padding = new Thickness(8, 5, 8, 5),
+            CornerRadius = new CornerRadius(0, 0, 4, 0)
+        };
         var label = new TextBlock
         {
             Name = "LayerLabel",
@@ -106,10 +125,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             FontSize = 14,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 237, 244, 239)),
-            Margin = new Thickness(10, 8, 10, 0),
             VerticalAlignment = VerticalAlignment.Top
         };
-        content.Children.Add(label);
+        labelChrome.Child = label;
+        content.Children.Add(labelChrome);
 
         var grip = new Border
         {
@@ -141,9 +160,26 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
         foreach (var child in content.Children)
         {
-            if (child is TextBlock textBlock && textBlock.Name == "LayerLabel")
+            if (child is Border { Child: TextBlock textBlock } && textBlock.Name == "LayerLabel")
             {
                 textBlock.Text = label;
+                return;
+            }
+        }
+    }
+
+    private static void UpdateLayerSurface(Border frame, VideoSurfaceState surface)
+    {
+        if (frame.Child is not Grid content)
+        {
+            return;
+        }
+
+        foreach (var child in content.Children)
+        {
+            if (child is VideoSurfaceHost host && !ReferenceEquals(host.SurfaceState, surface))
+            {
+                host.SurfaceState = surface;
                 return;
             }
         }

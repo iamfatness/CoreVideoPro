@@ -3337,7 +3337,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-            PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
+                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
+                PreviewCanvasLayers[index].SetSurface(ResolveLayerSurface(routes[index], index));
             }
 
             OnPropertyChanged(nameof(PreviewCanvasLayers));
@@ -3354,6 +3355,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 CaptureDevices,
                 ShowInputs,
                 OnPreviewCanvasLayerChanged));
+            PreviewCanvasLayers[^1].SetSurface(ResolveLayerSurface(routes[index], index));
         }
     }
 
@@ -3402,6 +3404,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return participants
             .Select(participant => BuildParticipantSceneTile(participant, tilesByParticipant))
             .ToList();
+    }
+
+    private VideoSurfaceState ResolveLayerSurface(SourceRoute route, int index)
+    {
+        var resolved = ResolveRouteFromShowInput(route);
+        var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
+        if (ResolveRouteTile(resolved, tilesByParticipant) is { } tile)
+        {
+            return tile.Surface with
+            {
+                SurfaceKey = $"scene-layer-{index + 1}:{tile.Surface.SurfaceKey}",
+                Kind = VideoSurfaceKind.Multiview,
+                Title = $"{index + 1}. {tile.Participant.Name}"
+            };
+        }
+
+        return VideoSurfaceState.Waiting(
+            VideoSurfaceKind.Multiview,
+            $"scene-layer-{index + 1}",
+            $"Source {index + 1}") with
+            {
+                DetailLine = resolved.Mode switch
+                {
+                    SourceRouteMode.ScreenShare => "Screen share will appear when available.",
+                    SourceRouteMode.ActiveSpeaker => "Active speaker will appear during a Zoom meeting.",
+                    SourceRouteMode.None => "This source is parked.",
+                    _ => "Choose a live Show Input or connected capture device."
+                }
+            };
     }
 
     private ParticipantSurfaceTile? ResolveRouteTile(
@@ -3523,11 +3554,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
+        layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";
         PublishPreviewCompositionState(
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
+        OnPropertyChanged(nameof(PreviewCanvasLayers));
     }
 
     private void CopyPreviewRoutesToScene(string sceneId)
