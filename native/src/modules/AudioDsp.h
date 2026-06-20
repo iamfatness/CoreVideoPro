@@ -12,6 +12,277 @@
 
 namespace corevideo::modules {
 
+// ---------------------------------------------------------------------------
+// PCM DSP kernels (F2 audio DSP core).
+//
+// Pure, deterministic functions that operate directly on PCM sample buffers
+// (full-scale float range [-1, 1]). These are the reusable core the live audio
+// path will meter and mix with; everything here is header-only, allocation-
+// light, and free of platform/dev-gated code so it builds and is unit-tested in
+// the default stub build. The metadata-only telemetry helpers (derived from
+// AudioFrame fields) live further down and are unchanged.
+// ---------------------------------------------------------------------------
+
+// pi as a local constant so we never depend on M_PI being defined.
+inline constexpr double kAudioPi = 3.14159265358979323846;
+
+// Floor reported for digital silence, in dBFS. Real signals approach 0 dBFS at
+// full scale; -120 dB is well below any measurable content and keeps the log
+// math finite for empty/zero buffers.
+inline constexpr double kAudioDbfsFloor = -120.0;
+
+// Convert a non-negative linear amplitude ratio (relative to full scale 1.0) to
+// dBFS, clamped to the silence floor.
+inline double linearToDbfs(double linear) {
+  if (!std::isfinite(linear) || linear <= 0.0) {
+    return kAudioDbfsFloor;
+  }
+  const double db = 20.0 * std::log10(linear);
+  return db < kAudioDbfsFloor ? kAudioDbfsFloor : db;
+}
+
+// dBFS -> linear amplitude ratio.
+inline double dbfsToLinear(double dbfs) {
+  return std::pow(10.0, dbfs / 20.0);
+}
+
+// RMS level of a PCM buffer in dBFS. A full-scale square wave -> 0 dBFS, a
+// full-amplitude sine -> ~-3.01 dBFS, digital silence (or count == 0) ->
+// kAudioDbfsFloor.
+inline double computeRmsDbfs(const float* samples, size_t count) {
+  if (samples == nullptr || count == 0) {
+    return kAudioDbfsFloor;
+  }
+  double sumSquares = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const double sample = static_cast<double>(samples[index]);
+    sumSquares += sample * sample;
+  }
+  const double meanSquare = sumSquares / static_cast<double>(count);
+  return linearToDbfs(std::sqrt(meanSquare));
+}
+
+// Peak |sample| of a PCM buffer in dBFS. Full-scale (|s| == 1) -> 0 dBFS,
+// silence (or count == 0) -> kAudioDbfsFloor.
+inline double computeSamplePeakDbfs(const float* samples, size_t count) {
+  if (samples == nullptr || count == 0) {
+    return kAudioDbfsFloor;
+  }
+  double peak = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const double magnitude = std::fabs(static_cast<double>(samples[index]));
+    if (magnitude > peak) {
+      peak = magnitude;
+    }
+  }
+  return linearToDbfs(peak);
+}
+
+// ---------------------------------------------------------------------------
+// ITU-R BS.1770 K-weighting + loudness.
+//
+// K-weighting is a two-stage biquad cascade: a stage-1 high-shelf "head" filter
+// and a stage-2 RLB high-pass. The analog-prototype parameters below are the
+// BS.1770 reference values; we bilinear-transform them at the actual sample
+// rate so the weighting is correct away from 48 kHz, then take the mean square
+// of the weighted signal over a sliding window.
+//
+// Momentary loudness uses a 400 ms window, short-term a 3 s window. Loudness in
+// LUFS = -0.691 + 10*log10(sum_channels(weight * mean_square)); for stereo we
+// use channel weights L = R = 1.0 per the task spec.
+// ---------------------------------------------------------------------------
+
+struct AudioBiquadCoefficients {
+  double b0 = 1.0;
+  double b1 = 0.0;
+  double b2 = 0.0;
+  double a1 = 0.0;  // normalized so a0 == 1
+  double a2 = 0.0;
+};
+
+struct AudioBiquadState {
+  double z1 = 0.0;
+  double z2 = 0.0;
+};
+
+// Transposed-direct-form-II single-sample step.
+inline double biquadProcessSample(const AudioBiquadCoefficients& coeff, AudioBiquadState& state, double input) {
+  const double output = coeff.b0 * input + state.z1;
+  state.z1 = coeff.b1 * input - coeff.a1 * output + state.z2;
+  state.z2 = coeff.b2 * input - coeff.a2 * output;
+  return output;
+}
+
+// BS.1770 K-weighting stage 1: high-shelf "head" filter.
+inline AudioBiquadCoefficients bs1770Stage1(double sampleRate) {
+  // Reference analog parameters (BS.1770-4 / EBU R128 derivation).
+  const double f0 = 1681.974450955533;
+  const double gainDb = 3.999843853973347;
+  const double q = 0.7071752369554196;
+  const double k = std::tan(kAudioPi * f0 / sampleRate);
+  const double vh = std::pow(10.0, gainDb / 20.0);
+  const double vb = std::pow(vh, 0.4996667741545416);
+  const double denom = 1.0 + k / q + k * k;
+
+  AudioBiquadCoefficients coeff;
+  coeff.b0 = (vh + vb * k / q + k * k) / denom;
+  coeff.b1 = 2.0 * (k * k - vh) / denom;
+  coeff.b2 = (vh - vb * k / q + k * k) / denom;
+  coeff.a1 = 2.0 * (k * k - 1.0) / denom;
+  coeff.a2 = (1.0 - k / q + k * k) / denom;
+  return coeff;
+}
+
+// BS.1770 K-weighting stage 2: RLB high-pass filter.
+inline AudioBiquadCoefficients bs1770Stage2(double sampleRate) {
+  const double f0 = 38.13547087602444;
+  const double q = 0.5003270373238773;
+  const double k = std::tan(kAudioPi * f0 / sampleRate);
+  const double denom = 1.0 + k / q + k * k;
+
+  AudioBiquadCoefficients coeff;
+  coeff.b0 = 1.0;
+  coeff.b1 = -2.0;
+  coeff.b2 = 1.0;
+  coeff.a1 = 2.0 * (k * k - 1.0) / denom;
+  coeff.a2 = (1.0 - k / q + k * k) / denom;
+  return coeff;
+}
+
+// Mean square of a single channel after K-weighting, over the trailing
+// `windowSamples` samples (or the whole buffer when shorter / 0).
+inline double kWeightedMeanSquare(const float* samples, size_t count, double sampleRate, size_t windowSamples) {
+  if (samples == nullptr || count == 0 || sampleRate <= 0.0) {
+    return 0.0;
+  }
+  const AudioBiquadCoefficients stage1 = bs1770Stage1(sampleRate);
+  const AudioBiquadCoefficients stage2 = bs1770Stage2(sampleRate);
+  AudioBiquadState state1;
+  AudioBiquadState state2;
+
+  const size_t window = (windowSamples == 0 || windowSamples > count) ? count : windowSamples;
+  const size_t windowStart = count - window;
+  double sumSquares = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const double pre = biquadProcessSample(stage1, state1, static_cast<double>(samples[index]));
+    const double weighted = biquadProcessSample(stage2, state2, pre);
+    if (index >= windowStart) {
+      sumSquares += weighted * weighted;
+    }
+  }
+  return sumSquares / static_cast<double>(window);
+}
+
+// Loudness (LUFS) of a stereo PCM signal over a trailing window, per BS.1770.
+// `left`/`right` are deinterleaved channel buffers of `count` samples each;
+// channel weights are L = R = 1.0. Returns kAudioDbfsFloor for empty/zero input.
+inline double computeStereoLoudnessLufs(const float* left, const float* right, size_t count, double sampleRate, double windowSeconds) {
+  if (count == 0 || sampleRate <= 0.0) {
+    return kAudioDbfsFloor;
+  }
+  const size_t windowSamples = static_cast<size_t>(std::llround(windowSeconds * sampleRate));
+  const double leftMeanSquare = kWeightedMeanSquare(left, count, sampleRate, windowSamples);
+  const double rightMeanSquare = kWeightedMeanSquare(right, count, sampleRate, windowSamples);
+  const double weightedSum = leftMeanSquare + rightMeanSquare;  // L = R = 1.0
+  if (weightedSum <= 0.0) {
+    return kAudioDbfsFloor;
+  }
+  const double lufs = -0.691 + 10.0 * std::log10(weightedSum);
+  return lufs < kAudioDbfsFloor ? kAudioDbfsFloor : lufs;
+}
+
+// Momentary (400 ms) loudness in LUFS for a stereo signal.
+inline double computeMomentaryLufs(const float* left, const float* right, size_t count, double sampleRate) {
+  return computeStereoLoudnessLufs(left, right, count, sampleRate, 0.400);
+}
+
+// Short-term (3 s) loudness in LUFS for a stereo signal.
+inline double computeShortTermLufs(const float* left, const float* right, size_t count, double sampleRate) {
+  return computeStereoLoudnessLufs(left, right, count, sampleRate, 3.000);
+}
+
+// ---------------------------------------------------------------------------
+// Peak limiter (brickwall / look-ahead).
+//
+// Scans the whole buffer (look-ahead over the block), computes a single static
+// gain that guarantees the output sample peak does not exceed `thresholdDbfs`,
+// and applies it in place. A final clamp catches floating-point overshoot so
+// the brickwall holds exactly. Deterministic: same input -> same output and the
+// same reported gain reduction. Returns the gain reduction applied in dB
+// (>= 0; 0 when the signal was already at or under threshold).
+//
+// This is the pure kernel the live master chain will later wrap with
+// attack/release smoothing; the per-block look-ahead form keeps the unit test
+// able to prove output peak <= threshold.
+// ---------------------------------------------------------------------------
+inline double applyPeakLimiter(float* samples, size_t count, double thresholdDbfs) {
+  if (samples == nullptr || count == 0) {
+    return 0.0;
+  }
+  const double threshold = dbfsToLinear(thresholdDbfs);
+  double peak = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const double magnitude = std::fabs(static_cast<double>(samples[index]));
+    if (magnitude > peak) {
+      peak = magnitude;
+    }
+  }
+  if (peak <= threshold || peak <= 0.0) {
+    return 0.0;
+  }
+  const double gain = threshold / peak;
+  for (size_t index = 0; index < count; ++index) {
+    double value = static_cast<double>(samples[index]) * gain;
+    // Guard against floating-point overshoot so the brickwall holds exactly.
+    value = std::max(-threshold, std::min(threshold, value));
+    samples[index] = static_cast<float>(value);
+  }
+  return -linearToDbfs(gain);  // gain < 1 -> negative dB; report the magnitude (>0)
+}
+
+// ---------------------------------------------------------------------------
+// Bus mix.
+//
+// Sums N source PCM buffers, each scaled by a per-source linear gain, into a
+// destination buffer of `count` samples, then soft-clips (or hard-clamps) the
+// sum into [-1, 1]. Sources shorter than `count` contribute only their
+// available samples. Deterministic and allocation-free (writes into the
+// caller's destination buffer).
+// ---------------------------------------------------------------------------
+struct AudioBusSource {
+  const float* samples = nullptr;
+  size_t count = 0;
+  double gain = 1.0;  // linear
+};
+
+// tanh-based soft clip normalized so an input of magnitude 1 maps to magnitude
+// 1: linear near zero, smoothly saturating toward +/-1 so a hot sum never
+// exceeds full scale and never introduces a hard discontinuity.
+inline double softClipSample(double value) {
+  if (value > 1.0) {
+    value = 1.0;
+  } else if (value < -1.0) {
+    value = -1.0;
+  }
+  return std::tanh(value) / std::tanh(1.0);
+}
+
+inline void mixAudioBus(float* destination, size_t count, const std::vector<AudioBusSource>& sources, bool softClip = true) {
+  if (destination == nullptr || count == 0) {
+    return;
+  }
+  for (size_t index = 0; index < count; ++index) {
+    double sum = 0.0;
+    for (const auto& source : sources) {
+      if (source.samples != nullptr && index < source.count) {
+        sum += static_cast<double>(source.samples[index]) * source.gain;
+      }
+    }
+    const double mixed = softClip ? softClipSample(sum) : std::max(-1.0, std::min(1.0, sum));
+    destination[index] = static_cast<float>(mixed);
+  }
+}
+
 inline int clampAudioInt(int value, int minValue, int maxValue) {
   return std::max(minValue, std::min(maxValue, value));
 }
@@ -93,7 +364,25 @@ inline double deterministicRmsLevel(const AudioFrame& frame, std::uint32_t hash)
   return clampAudioDouble((18 + bucket + sampleRateBias + channelBias) / 100.0, 0.0, 0.96);
 }
 
-inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame& frame, const AudioDspTimingReference& timing = {}) {
+// When a frame carries real PCM, measure linear RMS/peak amplitude from the
+// samples and fold them into the frame's level fields so the existing telemetry
+// path treats them exactly like producer-supplied levels. When `pcm` is empty
+// this returns the frame untouched, preserving the original metadata behavior.
+inline AudioFrame meterAudioFrameFromPcm(const AudioFrame& frame) {
+  if (frame.pcm.empty()) {
+    return frame;
+  }
+  AudioFrame metered = frame;
+  const double rmsDbfs = computeRmsDbfs(metered.pcm.data(), metered.pcm.size());
+  const double peakDbfs = computeSamplePeakDbfs(metered.pcm.data(), metered.pcm.size());
+  // Downstream level fields are linear amplitude ratios in [0, 1]; convert.
+  metered.rmsLevel = clampAudioDouble(dbfsToLinear(rmsDbfs), 0.0, 1.0);
+  metered.peakLevel = clampAudioDouble(dbfsToLinear(peakDbfs), 0.0, 1.0);
+  return metered;
+}
+
+inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame& rawFrame, const AudioDspTimingReference& timing = {}) {
+  const AudioFrame frame = meterAudioFrameFromPcm(rawFrame);
   const BoundedAudioFrame bounded = boundAudioFrame(frame);
   const std::uint32_t hash = audioDspHash(frame);
   const double rmsLevel = frame.rmsLevel > 0.0 ? bounded.rmsLevel : deterministicRmsLevel(frame, hash);

@@ -38,6 +38,12 @@ struct AudioFrame {
   double peakLevel = 0.0;
   double noiseFloorDb = -60.0;
   bool voiceActive = true;
+  // Optional interleaved float PCM payload in full-scale range [-1, 1] with
+  // `channels` channels (so `pcm.size()` is `sampleCount * channels` when
+  // present). When non-empty, the audio DSP core measures real RMS/peak from
+  // these samples; when empty, callers fall back to the `rmsLevel`/`peakLevel`
+  // metadata above. Defaulted empty so every existing producer stays valid.
+  std::vector<float> pcm;
 };
 
 struct AudioParticipantMixMetrics {
