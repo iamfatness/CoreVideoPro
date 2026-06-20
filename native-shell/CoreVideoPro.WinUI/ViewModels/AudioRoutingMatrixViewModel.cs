@@ -102,6 +102,8 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
     public bool HasSelection => SelectedCrosspoint is not null;
 
+    public event Action<AudioRoutingCrosspointViewModel>? RouteChanged;
+
     public string SelectionSummary => SelectedCrosspoint is null
         ? "Select a crosspoint to route it and set its level."
         : $"{SelectedCrosspoint.SourceLabel}  →  {SelectedCrosspoint.BusLabel}";
@@ -114,6 +116,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
             if (SelectedCrosspoint is not null)
             {
                 SelectedCrosspoint.GainDb = value;
+                RouteChanged?.Invoke(SelectedCrosspoint);
             }
 
             OnPropertyChanged();
@@ -146,6 +149,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         }
 
         SelectedCrosspoint = cell;
+        RouteChanged?.Invoke(cell);
     }
 
     [RelayCommand]
@@ -158,6 +162,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
         SelectedCrosspoint.IsRouted = false;
         OnPropertyChanged(nameof(SelectedGainDb));
+        RouteChanged?.Invoke(SelectedCrosspoint);
     }
 
     /// <summary>

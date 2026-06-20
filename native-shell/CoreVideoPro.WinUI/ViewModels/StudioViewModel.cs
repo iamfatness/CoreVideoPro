@@ -399,6 +399,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public StudioViewModel()
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+        AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
+        VideoRoutingMatrix.RouteChanged += OnVideoRoutingMatrixChanged;
 
         _currentRoomId = "main";
         _currentRoomName = "Main room";
@@ -1290,12 +1292,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private List<RoutingSource> BuildAssignedInputSources()
     {
         var sources = new List<RoutingSource>();
-        foreach (var input in ShowInputEditors)
+        foreach (var input in ShowInputs.Where(slot => slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned))
         {
-            if (input.Kind != ShowInputKind.Unassigned && !string.IsNullOrWhiteSpace(input.SelectedSourceId))
-            {
-                sources.Add(new RoutingSource($"input-{input.SlotNumber:00}", input.SlotLabel));
-            }
+            sources.Add(new RoutingSource(
+                FormatInputSourceId(input.SlotNumber),
+                $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)}"));
         }
 
         return sources;
@@ -1316,6 +1317,64 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         sources.Add(new RoutingSource("screen-share", "Screen Share"));
         sources.Add(new RoutingSource("media", "Media"));
         VideoRoutingMatrix.Build(sources);
+        foreach (var slot in ShowInputs.Where(slot => slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned))
+        {
+            VideoRoutingMatrix.SetRoute(FormatInputSourceId(slot.SlotNumber), "multiview", slot.InShow);
+        }
+    }
+
+    private void OnVideoRoutingMatrixChanged(VideoRoutingCrosspointViewModel cell)
+    {
+        if (!string.Equals(cell.Destination.Id, "multiview", StringComparison.Ordinal) ||
+            !TryParseInputSourceId(cell.SourceId, out var slotNumber) ||
+            ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } slot)
+        {
+            return;
+        }
+
+        slot.InShow = cell.IsRouted;
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
+        SchedulePreviewRoutingRefresh();
+        CommandStatus = $"{slot.SlotLabel} {(slot.InShow ? "routed to" : "removed from")} multiview";
+    }
+
+    private void OnAudioRoutingMatrixChanged(AudioRoutingCrosspointViewModel cell)
+    {
+        if (!cell.SourceId.StartsWith("input-", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private static string FormatInputSourceId(int slotNumber) => $"input-{slotNumber:00}";
+
+    private static bool TryParseInputSourceId(string sourceId, out int slotNumber)
+    {
+        slotNumber = 0;
+        return sourceId is { Length: 8 } &&
+            sourceId.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(sourceId[6..], out slotNumber);
+    }
+
+    private string ResolveShowInputSourceLabel(ShowInputSlot slot)
+    {
+        if (slot.Kind == ShowInputKind.ZoomParticipant &&
+            slot.ParticipantId is { Length: > 0 } participantId)
+        {
+            return RoomVideoParticipants.FirstOrDefault(participant => participant.Id == participantId)?.Name ??
+                participantId;
+        }
+
+        if (slot.CaptureDeviceId is { Length: > 0 } captureDeviceId)
+        {
+            return CaptureDevices.FirstOrDefault(device => device.Id == captureDeviceId)?.Name ??
+                captureDeviceId;
+        }
+
+        return slot.KindLabel;
     }
 
     [RelayCommand]
@@ -2055,6 +2114,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
         var sceneRoutes = GetMutableRoutes(ActiveSceneId)
+            .Select(ResolveRouteFromShowInput)
             .Select(route => new MediaCoreSceneRouteWire(
                 route.Id,
                 SceneRoutingService.ModeToWire(route.Mode),
@@ -2924,6 +2984,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
         RefreshRoutingMatricesIfVisible();
+        SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
         CommandStatus = "Show input roster updated";
     }
@@ -3230,7 +3291,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         ReconcileRoutes(mutableRoutes, defaults);
         SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
-        var workingRoutes = mutableRoutes.Select(route => route.Clone()).ToList();
+        var workingRoutes = mutableRoutes.Select(ResolveRouteFromShowInput).ToList();
 
         if (isPreview)
         {
@@ -3276,7 +3337,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices);
+            PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
             }
 
             OnPropertyChanged(nameof(PreviewCanvasLayers));
@@ -3291,6 +3352,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 routes[index],
                 RoomVideoParticipants,
                 CaptureDevices,
+                ShowInputs,
                 OnPreviewCanvasLayerChanged));
         }
     }
@@ -3353,6 +3415,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
         return participant is null ? null : BuildParticipantSceneTile(participant, tilesByParticipant);
+    }
+
+    private SourceRoute ResolveRouteFromShowInput(SourceRoute route)
+    {
+        var resolved = route.Clone();
+        if (route.ShowInputSlotNumber is not { } slotNumber ||
+            ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } slot ||
+            !slot.IsAssigned)
+        {
+            return resolved;
+        }
+
+        if (slot.Kind == ShowInputKind.ZoomParticipant)
+        {
+            resolved.Mode = SourceRouteMode.Fixed;
+            resolved.ParticipantId = slot.ParticipantId;
+            resolved.CaptureDeviceId = null;
+            return resolved;
+        }
+
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
+        {
+            resolved.Mode = SourceRouteMode.CaptureDevice;
+            resolved.ParticipantId = null;
+            resolved.CaptureDeviceId = slot.CaptureDeviceId;
+        }
+
+        return resolved;
     }
 
     private static ParticipantSurfaceTile BuildParticipantSceneTile(
@@ -3437,7 +3527,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";
         PublishPreviewCompositionState(
             PreviewScene,
-            routes.Select(route => route.Clone()).ToList());
+            routes.Select(ResolveRouteFromShowInput).ToList());
     }
 
     private void CopyPreviewRoutesToScene(string sceneId)

@@ -23,6 +23,7 @@ public sealed class SourceRoute
     public SourceRouteMode Mode { get; set; }
     public string? ParticipantId { get; set; }
     public string? CaptureDeviceId { get; set; }
+    public int? ShowInputSlotNumber { get; set; }
     public int? SpotlightIndex { get; set; }
     public SourceAudioRole AudioRole { get; set; }
     public NormalizedCanvasRect? CanvasRect { get; set; }
@@ -35,6 +36,7 @@ public sealed class SourceRoute
             Mode = Mode,
             ParticipantId = ParticipantId,
             CaptureDeviceId = CaptureDeviceId,
+            ShowInputSlotNumber = ShowInputSlotNumber,
             SpotlightIndex = SpotlightIndex,
             AudioRole = AudioRole,
             CanvasRect = CanvasRect?.Clone(),

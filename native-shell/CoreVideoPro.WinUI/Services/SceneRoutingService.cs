@@ -212,6 +212,7 @@ public static class SceneRoutingService
                 Mode = route.Mode,
                 ParticipantId = route.ParticipantId ?? participants.FirstOrDefault()?.Id,
                 CaptureDeviceId = null,
+                ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Audience
                     ? SourceAudioRole.Isolated
@@ -226,6 +227,7 @@ public static class SceneRoutingService
                 Mode = route.Mode,
                 ParticipantId = null,
                 CaptureDeviceId = route.CaptureDeviceId,
+                ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Audience
                     ? SourceAudioRole.Isolated
@@ -241,6 +243,7 @@ public static class SceneRoutingService
                 Mode = route.Mode,
                 ParticipantId = route.ParticipantId ?? participants.ElementAtOrDefault(spotlightIndex)?.Id,
                 CaptureDeviceId = null,
+                ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = spotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Audience
                     ? SourceAudioRole.Mix
@@ -255,6 +258,7 @@ public static class SceneRoutingService
                 Mode = route.Mode,
                 ParticipantId = null,
                 CaptureDeviceId = null,
+                ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = SourceAudioRole.Audience
             };
@@ -267,6 +271,7 @@ public static class SceneRoutingService
                 Mode = route.Mode,
                 ParticipantId = null,
                 CaptureDeviceId = null,
+                ShowInputSlotNumber = route.ShowInputSlotNumber,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Isolated
                     ? SourceAudioRole.Mix
@@ -285,6 +290,7 @@ public static class SceneRoutingService
         route.Mode = normalized.Mode;
         route.ParticipantId = normalized.ParticipantId;
         route.CaptureDeviceId = normalized.CaptureDeviceId;
+        route.ShowInputSlotNumber = normalized.ShowInputSlotNumber;
         route.SpotlightIndex = normalized.SpotlightIndex;
         route.AudioRole = normalized.AudioRole;
         route.CanvasRect = normalized.CanvasRect?.Clone();
@@ -296,6 +302,7 @@ public static class SceneRoutingService
         target.Mode = source.Mode;
         target.ParticipantId = source.ParticipantId;
         target.CaptureDeviceId = source.CaptureDeviceId;
+        target.ShowInputSlotNumber = source.ShowInputSlotNumber;
         target.SpotlightIndex = source.SpotlightIndex;
         target.AudioRole = source.AudioRole;
         target.CanvasRect = source.CanvasRect?.Clone();

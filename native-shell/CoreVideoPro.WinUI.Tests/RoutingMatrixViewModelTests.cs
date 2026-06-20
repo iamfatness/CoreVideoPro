@@ -36,8 +36,8 @@ public sealed class RoutingMatrixViewModelTests
                 new RoutingSource("camera-2", "Camera 2")
             ]);
 
-        var firstMv = FindVideoCell(viewModel, "camera-1", "mv-1");
-        var secondMv = FindVideoCell(viewModel, "camera-2", "mv-1");
+        var firstMv = FindVideoCell(viewModel, "camera-1", "multiview");
+        var secondMv = FindVideoCell(viewModel, "camera-2", "multiview");
 
         viewModel.SelectCrosspointCommand.Execute(firstMv);
         viewModel.SelectCrosspointCommand.Execute(secondMv);

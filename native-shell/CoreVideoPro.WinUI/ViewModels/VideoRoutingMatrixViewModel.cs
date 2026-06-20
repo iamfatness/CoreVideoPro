@@ -83,8 +83,7 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
         new("iso-b", "ISO B"),
         new("iso-c", "ISO C"),
         new("iso-d", "ISO D"),
-        new("mv-1", "MV 1"),
-        new("mv-2", "MV 2"),
+        new("multiview", "MULTIVIEW"),
         new("aux", "AUX")
     ];
 
@@ -93,6 +92,8 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
     public ObservableCollection<VideoRoutingSourceRowViewModel> Rows { get; } = [];
 
     public bool HasRows => Rows.Count > 0;
+
+    public event Action<VideoRoutingCrosspointViewModel>? RouteChanged;
 
     [RelayCommand]
     private void SelectCrosspoint(VideoRoutingCrosspointViewModel? cell)
@@ -105,6 +106,7 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
         if (cell.IsRouted)
         {
             cell.IsRouted = false;
+            RouteChanged?.Invoke(cell);
             return;
         }
 
@@ -114,6 +116,7 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
         }
 
         cell.IsRouted = true;
+        RouteChanged?.Invoke(cell);
     }
 
     /// <summary>
@@ -147,6 +150,19 @@ public sealed partial class VideoRoutingMatrixViewModel : ObservableObject
 
         NormalizeExclusiveDestinations();
         OnPropertyChanged(nameof(HasRows));
+    }
+
+    public void SetRoute(string sourceId, string destinationId, bool isRouted)
+    {
+        var cell = Rows
+            .SelectMany(row => row.Cells)
+            .FirstOrDefault(cell =>
+                string.Equals(cell.SourceId, sourceId, StringComparison.Ordinal) &&
+                string.Equals(cell.Destination.Id, destinationId, StringComparison.Ordinal));
+        if (cell is not null)
+        {
+            cell.IsRouted = isRouted;
+        }
     }
 
     private void ClearDestinationColumn(string destinationId)
