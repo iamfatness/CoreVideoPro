@@ -51,6 +51,8 @@ class MediaCore {
   void recoverRecordingSession(const rpc::Json& command);
   void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
+  void pushAudioMixerChannelConfig();
+  void pushAudioMixerCrosspointConfig();
   void syncAudioMonitor(const rpc::Json& command);
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);

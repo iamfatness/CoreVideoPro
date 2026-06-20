@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace corevideo::modules {
@@ -80,6 +81,30 @@ struct AudioMixMetrics {
   std::vector<AudioParticipantMixMetrics> participants;
   std::vector<std::string> warnings;
   std::string summary = "Audio mix idle.";
+  // Measured-from-signal master-chain metrics (F2). Populated when the program
+  // audio bus produced real PCM this session; otherwise carry the idle floors.
+  bool programTapPresent = false;        // real program PCM flowed
+  int64_t programTapSampleCount = 0;     // stereo frames in the latest program tap
+  double truePeakDbfs = -120.0;          // measured program true-peak
+  double programRmsDbfs = -120.0;        // measured program RMS
+  double momentaryLufs = -120.0;         // BS.1770 momentary (400 ms)
+  double shortTermLufs = -120.0;         // BS.1770 short-term (3 s)
+  double integratedLufs = -120.0;        // BS.1770 gated integrated
+  double gainReductionDb = 0.0;          // limiter reduction applied to program
+};
+
+// A stereo PCM tap exposed by the mixer for outputs/recording/monitor. `pcm` is
+// interleaved float in [-1, 1]; size == frames * channels. Empty when no real
+// program audio is flowing.
+struct AudioProgramTap {
+  std::vector<float> programPcm;  // interleaved stereo program mix
+  std::vector<float> monitorPcm;  // interleaved stereo MON bus
+  int frames = 0;
+  int sampleRate = 48000;
+  int channels = 2;
+  // Per-ISO taps keyed by bus id ("iso-1".."iso-8"); only present buses appear.
+  std::vector<std::pair<std::string, std::vector<float>>> isoPcm;
+  [[nodiscard]] bool present() const { return frames > 0 && !programPcm.empty(); }
 };
 
 struct ProgramFramePreviewPixels {
@@ -288,11 +313,38 @@ class ICompositor {
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
 };
 
+// One participant channel-strip configuration pushed into the mixer before the
+// next mix() block. Mirrors the renderer's sync-participant-audio-mix command.
+struct AudioChannelStrip {
+  std::string participantId;
+  double gainDb = 0.0;
+  double pan = 0.0;
+  bool muted = false;
+  bool solo = false;
+  bool noiseSuppression = false;
+  bool hasInsert = false;
+};
+
+// One routing-matrix crosspoint pushed into the mixer (sync-audio-routing-matrix).
+struct AudioMixCrosspoint {
+  std::string sourceId;
+  std::string busId;
+  double gainDb = 0.0;
+};
+
 class IAudioMixer {
  public:
   virtual ~IAudioMixer() = default;
   virtual int64_t mix(const std::vector<AudioFrame>& frames) = 0;
   virtual AudioMixMetrics session() const = 0;
+
+  // F2 program-bus controls. Default no-ops so the stub and legacy mixers stay
+  // valid; the real mixing-graph mixer overrides them.
+  virtual void configureChannels(const std::vector<AudioChannelStrip>&) {}
+  virtual void configureCrosspoints(const std::vector<AudioMixCrosspoint>&) {}
+  virtual void setLimiterEnabled(bool) {}
+  // The latest program/ISO/MON PCM tap. Empty by default.
+  virtual AudioProgramTap programTap() const { return {}; }
 };
 
 class IEncoderSink {

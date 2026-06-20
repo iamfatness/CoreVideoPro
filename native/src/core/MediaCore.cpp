@@ -1060,7 +1060,38 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
       audioChannels_.push_back(std::move(input));
     }
   }
+  pushAudioMixerChannelConfig();
+  modules_.mixer->setLimiterEnabled(audioLimiterEnabled_);
   renderSyntheticTick();
+}
+
+void MediaCore::pushAudioMixerChannelConfig() {
+  // Translate the renderer-supplied channel strips into the mixing-graph chain
+  // config. inputLevel is a 0..100 meter target; the per-participant smart-gain
+  // (already used for telemetry) plus any manual trim become the real linear
+  // gain applied to PCM. Solo/mute are sample-acting in the graph.
+  std::vector<modules::AudioChannelStrip> strips;
+  strips.reserve(audioChannels_.size());
+  for (const auto& channel : audioChannels_) {
+    modules::AudioChannelStrip strip;
+    strip.participantId = channel.participantId;
+    // Smart auto-gain toward a -68%-of-full meter target, matching the telemetry
+    // path's calculateSmartGainDb(); inlined here so it stays above that helper.
+    const int delta = 68 - channel.inputLevel;
+    int smartGainDb = 0;
+    if (delta > 28) smartGainDb = 6;
+    else if (delta > 14) smartGainDb = 3;
+    else if (delta < -12) smartGainDb = -4;
+    else if (delta < -4) smartGainDb = -2;
+    strip.gainDb = std::max(-24.0, std::min(24.0, static_cast<double>(smartGainDb) + (channel.hasManualGain ? channel.manualGainDb : 0.0)));
+    strip.pan = channel.pan;
+    strip.muted = channel.muted;
+    strip.solo = channel.solo;
+    strip.noiseSuppression = channel.noiseSuppression || channel.inputLevel < 35;
+    strip.hasInsert = !channel.pluginInserts.empty();
+    strips.push_back(std::move(strip));
+  }
+  modules_.mixer->configureChannels(strips);
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
@@ -1169,6 +1200,23 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
   }
 
   audioRoutingWarnings_ = std::move(warnings);
+  pushAudioMixerCrosspointConfig();
+}
+
+void MediaCore::pushAudioMixerCrosspointConfig() {
+  // Feed the validated crosspoints into the mixing graph so per-crosspoint gain
+  // applies to real samples and sums into the destination bus. pgm-l/pgm-r are
+  // the program bus; iso-1..8 the ISO taps; mon the monitor bus.
+  std::vector<modules::AudioMixCrosspoint> crosspoints;
+  crosspoints.reserve(audioRoutingSends_.size());
+  for (const auto& send : audioRoutingSends_) {
+    modules::AudioMixCrosspoint crosspoint;
+    crosspoint.sourceId = send.sourceId;
+    crosspoint.busId = send.busId;
+    crosspoint.gainDb = send.gainDb;
+    crosspoints.push_back(std::move(crosspoint));
+  }
+  modules_.mixer->configureCrosspoints(crosspoints);
 }
 
 void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
@@ -2093,14 +2141,28 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty() && audioMonitorVolume_ > 0.0 && mixedAudioFrameCount_ > 0) {
-    const int monitorLevel = modules_.mixer->session().masterLevel > 0 ? modules_.mixer->session().masterLevel : 60;
-    if (playMonitorPulse(audioMonitorVolume_, monitorLevel)) {
+  const auto programTap = modules_.mixer->programTap();
+  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty() && audioMonitorVolume_ > 0.0 && programTap.present()) {
+    // Play the real MON bus (falling back to the program tap if MON is unrouted)
+    // on the selected device. The dev-gated WasapiMonitorOutput renders real PCM;
+    // the default build uses the Beep fallback to stay headless/deterministic.
+    const std::vector<float>& monitorPcm = !programTap.monitorPcm.empty() ? programTap.monitorPcm : programTap.programPcm;
+    bool played = false;
+#if COREVIDEO_WITH_WASAPI_MONITOR
+    if (audioMonitorOutput_) {
+      played = audioMonitorOutput_->play(monitorPcm.data(), programTap.frames, programTap.channels, programTap.sampleRate, audioMonitorVolume_);
+    }
+#endif
+    if (!played) {
+      const int monitorLevel = modules_.mixer->session().masterLevel > 0 ? modules_.mixer->session().masterLevel : 60;
+      played = playMonitorPulse(audioMonitorVolume_, monitorLevel);
+    }
+    if (played) {
       audioMonitorStatus_ = "playing";
       ++audioMonitorFramesPlayed_;
     } else {
       audioMonitorStatus_ = "unavailable";
-      audioMonitorWarning_ = "Native audio monitor could not open the default Windows playback path.";
+      audioMonitorWarning_ = "Native audio monitor could not open the playback path.";
     }
   } else if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
     audioMonitorStatus_ = "armed";

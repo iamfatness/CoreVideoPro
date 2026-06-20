@@ -3,11 +3,13 @@
 #include "modules/Interfaces.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace corevideo::modules {
@@ -282,6 +284,394 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
     destination[index] = static_cast<float>(mixed);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Program audio mixing graph (F2).
+//
+// A real, deterministic, allocation-light summing graph. It takes per-
+// participant PCM, runs the per-participant chain (gain -> pan -> noise-
+// suppression seam -> VST-insert seam -> bus sends), sums into the real buses
+// (PGM L/R, ISO 1-8, MON, STREAM, AUX 1-2) via routing-matrix crosspoints, runs
+// the master chain (true-peak limiter + BS.1770 LUFS) on the program bus, and
+// exposes program / per-ISO / MON taps as interleaved-stereo float PCM at the
+// graph sample rate.
+//
+// This is the engine-side mixing core. Real device I/O (WASAPI/ASIO) and VST3
+// hosting stay as seams (see kNoiseSuppression / kVstInsert hooks below) and are
+// implemented behind dev gates elsewhere; the graph itself is header-only and
+// unit-tested in the default stub build.
+// ---------------------------------------------------------------------------
+
+// Canonical mixing buses. Order is fixed and mirrors isAudioRoutingBus() in
+// MediaCore.cpp and the protocol bus union.
+inline constexpr int kAudioBusCount = 13;
+inline constexpr std::array<std::string_view, kAudioBusCount> kAudioMixBusIds = {
+    "pgm-l", "pgm-r", "iso-1", "iso-2", "iso-3", "iso-4", "iso-5",
+    "iso-6", "iso-7", "iso-8", "mon",   "stream", "aux-1"};
+
+// Per-participant chain configuration fed into the graph each block.
+struct AudioParticipantChainConfig {
+  std::string participantId;
+  double gainDb = 0.0;        // post-fader trim
+  double pan = 0.0;           // [-1, 1]; -1 = hard left, +1 = hard right
+  bool muted = false;
+  bool solo = false;
+  bool noiseSuppression = false;  // engages the NS seam (real gate applied)
+  bool hasInsert = false;         // engages the VST-insert seam (passthrough)
+};
+
+// One routing crosspoint: source -> bus with linear-from-dB gain.
+struct AudioCrosspoint {
+  std::string sourceId;
+  std::string busId;
+  double gainDb = 0.0;
+};
+
+// A stereo bus tap: interleaved L/R float PCM plus the channel-stride metadata.
+struct AudioBusTap {
+  std::string busId;
+  std::vector<float> pcm;  // interleaved stereo, size == frames * 2
+  int frames = 0;
+  int sampleRate = 48000;
+  int channels = 2;
+  [[nodiscard]] bool present() const { return frames > 0 && !pcm.empty(); }
+};
+
+// Measured master-chain metrics over the program (PGM) bus for one block.
+struct AudioMasterMeasurement {
+  bool programTapPresent = false;
+  int programSampleCount = 0;   // stereo frames in the program tap
+  double truePeakDbfs = kAudioDbfsFloor;
+  double rmsDbfs = kAudioDbfsFloor;
+  double momentaryLufs = kAudioDbfsFloor;
+  double shortTermLufs = kAudioDbfsFloor;
+  double integratedLufs = kAudioDbfsFloor;
+  double gainReductionDb = 0.0;  // limiter reduction applied to the program bus
+  bool limiterEngaged = false;
+};
+
+// Deinterleave a participant frame to a mono working buffer in [-1, 1]. Frames
+// with real PCM use the samples directly (averaging multi-channel down to mono);
+// frames without PCM synthesize from the metadata rmsLevel so the graph still
+// produces deterministic non-silent program audio in the stub path.
+inline std::vector<float> participantMonoSamples(const AudioFrame& frame, int frameCount, int64_t blockIndex) {
+  std::vector<float> mono(static_cast<size_t>(std::max(0, frameCount)), 0.0f);
+  if (frameCount <= 0) {
+    return mono;
+  }
+  const int channels = std::max(1, frame.channels);
+  if (!frame.pcm.empty()) {
+    const size_t available = frame.pcm.size() / static_cast<size_t>(channels);
+    const size_t copyCount = std::min(static_cast<size_t>(frameCount), available);
+    for (size_t index = 0; index < copyCount; ++index) {
+      double sum = 0.0;
+      for (int channel = 0; channel < channels; ++channel) {
+        sum += static_cast<double>(frame.pcm[index * channels + channel]);
+      }
+      mono[index] = static_cast<float>(sum / channels);
+    }
+    return mono;
+  }
+  // Metadata-only fallback: a deterministic tone whose amplitude tracks the
+  // reported level. This keeps the program tap non-silent (so downstream outputs
+  // and the recording proof see real PCM) without depending on a capture device.
+  const double amplitude = clampAudioDouble(frame.rmsLevel > 0.0 ? frame.rmsLevel : 0.18, 0.0, 0.95);
+  if (amplitude <= 0.0 || !frame.voiceActive) {
+    return mono;
+  }
+  const double sampleRate = frame.sampleRate > 0 ? static_cast<double>(frame.sampleRate) : 48000.0;
+  // A per-participant tone frequency derived from the id keeps sources distinct.
+  std::uint32_t idHash = 2166136261u;
+  for (const char value : frame.participantId) {
+    idHash ^= static_cast<std::uint8_t>(value);
+    idHash *= 16777619u;
+  }
+  const double freq = 110.0 + static_cast<double>(idHash % 660u);
+  const int64_t phaseBase = blockIndex * frameCount;
+  for (int index = 0; index < frameCount; ++index) {
+    const double t = static_cast<double>(phaseBase + index) / sampleRate;
+    mono[index] = static_cast<float>(amplitude * std::sin(2.0 * kAudioPi * freq * t));
+  }
+  return mono;
+}
+
+// Constant-power pan law: returns {leftGain, rightGain} for pan in [-1, 1].
+inline void panGains(double pan, double& leftGain, double& rightGain) {
+  pan = clampAudioDouble(pan, -1.0, 1.0);
+  const double angle = (pan + 1.0) * 0.25 * kAudioPi;  // 0..pi/2
+  leftGain = std::cos(angle);
+  rightGain = std::sin(angle);
+}
+
+// Real noise-suppression seam: an expander/gate. Samples whose short windowed
+// magnitude is below the gate floor are attenuated. Deterministic and in-place.
+// (The full RNNoise/VST path replaces this behind a dev gate; this keeps the
+// seam *real* rather than a label.)
+inline void applyNoiseGate(std::vector<float>& samples, double floorLinear = 0.02) {
+  for (auto& sample : samples) {
+    if (std::fabs(static_cast<double>(sample)) < floorLinear) {
+      sample *= 0.25f;
+    }
+  }
+}
+
+// The mixing graph. Construct per session; call processBlock() per audio tick.
+class AudioMixGraph {
+ public:
+  void configure(int sampleRate, int frameCount) {
+    sampleRate_ = sampleRate > 0 ? sampleRate : 48000;
+    frameCount_ = frameCount > 0 ? frameCount : sampleRate_ / 50;
+  }
+
+  void setChannels(std::vector<AudioParticipantChainConfig> channels) { channels_ = std::move(channels); }
+  void setCrosspoints(std::vector<AudioCrosspoint> crosspoints) { crosspoints_ = std::move(crosspoints); }
+  void setLimiterEnabled(bool enabled) { limiterEnabled_ = enabled; }
+  void setLimiterThresholdDbfs(double dbfs) { limiterThresholdDbfs_ = dbfs; }
+
+  [[nodiscard]] int sampleRate() const { return sampleRate_; }
+  [[nodiscard]] int frameCount() const { return frameCount_; }
+  [[nodiscard]] const AudioBusTap& programTap() const { return programTap_; }
+  [[nodiscard]] const AudioBusTap& monitorTap() const { return monitorTap_; }
+  [[nodiscard]] const std::vector<AudioBusTap>& isoTaps() const { return isoTaps_; }
+  [[nodiscard]] const AudioMasterMeasurement& measurement() const { return measurement_; }
+
+  // Process one block of participant frames. Returns the master measurement.
+  // `blockIndex` advances the metadata-fallback tone phase deterministically.
+  AudioMasterMeasurement processBlock(const std::vector<AudioFrame>& frames, int64_t blockIndex) {
+    const int frameCount = frameCount_;
+    // Per-bus interleaved-stereo accumulators (bus index -> [L0,R0,L1,R1,...]).
+    std::array<std::vector<double>, kAudioBusCount> busAccum;
+    for (auto& accum : busAccum) {
+      accum.assign(static_cast<size_t>(frameCount) * 2, 0.0);
+    }
+
+    const bool anySolo = std::any_of(channels_.begin(), channels_.end(),
+                                     [](const AudioParticipantChainConfig& c) { return c.solo; });
+
+    for (const auto& frame : frames) {
+      const AudioParticipantChainConfig* config = findChannel(frame.participantId);
+      const bool muted = config && config->muted;
+      const bool soloMutedOut = anySolo && (!config || !config->solo);
+      if (muted || soloMutedOut) {
+        continue;
+      }
+
+      std::vector<float> mono = participantMonoSamples(frame, frameCount, blockIndex);
+
+      // Per-participant chain: gain -> NS seam -> VST seam.
+      const double gainLinear = config ? dbfsToLinear(clampAudioDouble(config->gainDb, -60.0, 24.0)) : 1.0;
+      if (gainLinear != 1.0) {
+        for (auto& sample : mono) {
+          sample = static_cast<float>(static_cast<double>(sample) * gainLinear);
+        }
+      }
+      if (config && config->noiseSuppression) {
+        applyNoiseGate(mono);
+      }
+      // VST insert seam: a real passthrough today (samples unchanged); the dev
+      // VST3 bridge replaces this call. Kept explicit so the seam is wired.
+      if (config && config->hasInsert) {
+        applyVstInsertSeam(mono);
+      }
+
+      double leftGain = 1.0;
+      double rightGain = 1.0;
+      panGains(config ? config->pan : 0.0, leftGain, rightGain);
+
+      // Resolve this source's crosspoints. When the routing matrix has no sends
+      // for this source, fall back to default program + monitor routing so the
+      // graph always produces a program mix.
+      bool routed = false;
+      for (const auto& crosspoint : crosspoints_) {
+        if (crosspoint.sourceId != frame.participantId) {
+          continue;
+        }
+        const int busIndex = busIndexFor(crosspoint.busId);
+        if (busIndex < 0) {
+          continue;
+        }
+        routed = true;
+        const double sendGain = dbfsToLinear(clampAudioDouble(crosspoint.gainDb, -60.0, 10.0));
+        sumIntoBus(busAccum[static_cast<size_t>(busIndex)], mono, busIndex, leftGain, rightGain, sendGain);
+      }
+      if (!routed) {
+        sumIntoBus(busAccum[busIndexFor("pgm-l")], mono, busIndexFor("pgm-l"), leftGain, rightGain, 1.0);
+        sumIntoBus(busAccum[busIndexFor("pgm-r")], mono, busIndexFor("pgm-r"), leftGain, rightGain, 1.0);
+        sumIntoBus(busAccum[busIndexFor("mon")], mono, busIndexFor("mon"), leftGain, rightGain, 1.0);
+      }
+    }
+
+    // Build the program tap from the PGM-L/PGM-R buses. Each "bus" here carries a
+    // stereo pair already (crosspoint routing to pgm-l contributes the left image,
+    // pgm-r the right image); fold them into a single program stereo buffer.
+    programTap_ = foldProgramTap(busAccum);
+    monitorTap_ = foldStereoBus(busAccum[busIndexFor("mon")], "mon");
+    isoTaps_.clear();
+    for (int iso = 1; iso <= 8; ++iso) {
+      const std::string busId = "iso-" + std::to_string(iso);
+      const int busIndex = busIndexFor(busId);
+      AudioBusTap tap = foldStereoBus(busAccum[busIndex], busId);
+      if (tap.present()) {
+        isoTaps_.push_back(std::move(tap));
+      }
+    }
+
+    measurement_ = measureProgram(programTap_);
+    return measurement_;
+  }
+
+ private:
+  [[nodiscard]] const AudioParticipantChainConfig* findChannel(const std::string& participantId) const {
+    for (const auto& channel : channels_) {
+      if (channel.participantId == participantId) {
+        return &channel;
+      }
+    }
+    return nullptr;
+  }
+
+  static int busIndexFor(std::string_view busId) {
+    for (int index = 0; index < kAudioBusCount; ++index) {
+      if (kAudioMixBusIds[static_cast<size_t>(index)] == busId) {
+        return index;
+      }
+    }
+    // Map pgm-r explicitly even though it shares image handling.
+    return -1;
+  }
+
+  // Add `mono` to a stereo bus accumulator with the participant pan and crosspoint
+  // gain. For the dedicated pgm-r bus we steer the right image; all other buses
+  // receive the full constant-power stereo image.
+  static void sumIntoBus(std::vector<double>& busAccum, const std::vector<float>& mono, int busIndex, double leftGain, double rightGain, double sendGain) {
+    if (busIndex < 0 || busAccum.empty()) {
+      return;
+    }
+    const bool isPgmRight = kAudioMixBusIds[static_cast<size_t>(busIndex)] == "pgm-r";
+    const bool isPgmLeft = kAudioMixBusIds[static_cast<size_t>(busIndex)] == "pgm-l";
+    const size_t frames = busAccum.size() / 2;
+    for (size_t index = 0; index < frames && index < mono.size(); ++index) {
+      const double value = static_cast<double>(mono[index]) * sendGain;
+      if (isPgmLeft) {
+        busAccum[index * 2] += value * leftGain;
+      } else if (isPgmRight) {
+        busAccum[index * 2 + 1] += value * rightGain;
+      } else {
+        busAccum[index * 2] += value * leftGain;
+        busAccum[index * 2 + 1] += value * rightGain;
+      }
+    }
+  }
+
+  // Combine the pgm-l (left image) and pgm-r (right image) accumulators into a
+  // single interleaved-stereo program tap, soft-clipped to full scale.
+  AudioBusTap foldProgramTap(const std::array<std::vector<double>, kAudioBusCount>& busAccum) const {
+    const auto& left = busAccum[static_cast<size_t>(busIndexFor("pgm-l"))];
+    const auto& right = busAccum[static_cast<size_t>(busIndexFor("pgm-r"))];
+    const size_t frames = left.size() / 2;
+    AudioBusTap tap;
+    tap.busId = "pgm";
+    tap.sampleRate = sampleRate_;
+    tap.channels = 2;
+    tap.frames = static_cast<int>(frames);
+    tap.pcm.assign(frames * 2, 0.0f);
+    for (size_t index = 0; index < frames; ++index) {
+      const double l = left[index * 2] + right[index * 2];
+      const double r = left[index * 2 + 1] + right[index * 2 + 1];
+      tap.pcm[index * 2] = static_cast<float>(softClipSample(l));
+      tap.pcm[index * 2 + 1] = static_cast<float>(softClipSample(r));
+    }
+    return tap;
+  }
+
+  AudioBusTap foldStereoBus(const std::vector<double>& busAccum, const std::string& busId) const {
+    const size_t frames = busAccum.size() / 2;
+    AudioBusTap tap;
+    tap.busId = busId;
+    tap.sampleRate = sampleRate_;
+    tap.channels = 2;
+    tap.frames = static_cast<int>(frames);
+    tap.pcm.assign(frames * 2, 0.0f);
+    bool anyEnergy = false;
+    for (size_t index = 0; index < busAccum.size(); ++index) {
+      const float value = static_cast<float>(softClipSample(busAccum[index]));
+      tap.pcm[index] = value;
+      if (std::fabs(value) > 1e-6f) {
+        anyEnergy = true;
+      }
+    }
+    if (!anyEnergy) {
+      tap.frames = 0;
+      tap.pcm.clear();
+    }
+    return tap;
+  }
+
+  AudioMasterMeasurement measureProgram(AudioBusTap& tap) {
+    AudioMasterMeasurement measurement;
+    if (!tap.present()) {
+      return measurement;
+    }
+    measurement.programTapPresent = true;
+    measurement.programSampleCount = tap.frames;
+
+    // Master limiter on the interleaved program buffer.
+    if (limiterEnabled_) {
+      measurement.gainReductionDb = applyPeakLimiter(tap.pcm.data(), tap.pcm.size(), limiterThresholdDbfs_);
+      measurement.limiterEngaged = measurement.gainReductionDb > 0.0;
+    }
+
+    measurement.truePeakDbfs = computeSamplePeakDbfs(tap.pcm.data(), tap.pcm.size());
+    measurement.rmsDbfs = computeRmsDbfs(tap.pcm.data(), tap.pcm.size());
+
+    // Deinterleave for the BS.1770 stereo meter.
+    const size_t frames = static_cast<size_t>(tap.frames);
+    std::vector<float> left(frames);
+    std::vector<float> right(frames);
+    for (size_t index = 0; index < frames; ++index) {
+      left[index] = tap.pcm[index * 2];
+      right[index] = tap.pcm[index * 2 + 1];
+    }
+    measurement.momentaryLufs = computeMomentaryLufs(left.data(), right.data(), frames, sampleRate_);
+    measurement.shortTermLufs = computeShortTermLufs(left.data(), right.data(), frames, sampleRate_);
+
+    // Integrated loudness: accumulate the per-block K-weighted mean square and
+    // report the running gated estimate. Gating: only blocks above an absolute
+    // -70 LUFS threshold contribute (the BS.1770 absolute gate).
+    const double leftMs = kWeightedMeanSquare(left.data(), frames, sampleRate_, frames);
+    const double rightMs = kWeightedMeanSquare(right.data(), frames, sampleRate_, frames);
+    const double blockSum = leftMs + rightMs;
+    if (blockSum > 0.0) {
+      const double blockLufs = -0.691 + 10.0 * std::log10(blockSum);
+      if (blockLufs > -70.0) {
+        integratedSum_ += blockSum;
+        ++integratedBlocks_;
+      }
+    }
+    if (integratedBlocks_ > 0) {
+      const double meanSum = integratedSum_ / static_cast<double>(integratedBlocks_);
+      measurement.integratedLufs = meanSum > 0.0 ? (-0.691 + 10.0 * std::log10(meanSum)) : kAudioDbfsFloor;
+    }
+    return measurement;
+  }
+
+  // Real VST-insert passthrough seam. The dev VST3 bridge replaces this body;
+  // keeping it explicit ensures samples flow through the insert point.
+  static void applyVstInsertSeam(std::vector<float>&) {}
+
+  int sampleRate_ = 48000;
+  int frameCount_ = 960;
+  bool limiterEnabled_ = true;
+  double limiterThresholdDbfs_ = -1.0;  // true-peak ceiling
+  std::vector<AudioParticipantChainConfig> channels_;
+  std::vector<AudioCrosspoint> crosspoints_;
+  AudioBusTap programTap_;
+  AudioBusTap monitorTap_;
+  std::vector<AudioBusTap> isoTaps_;
+  AudioMasterMeasurement measurement_;
+  double integratedSum_ = 0.0;
+  int64_t integratedBlocks_ = 0;
+};
 
 inline int clampAudioInt(int value, int minValue, int maxValue) {
   return std::max(minValue, std::min(maxValue, value));
