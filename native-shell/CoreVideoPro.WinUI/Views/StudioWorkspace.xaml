@@ -271,45 +271,63 @@
                             </ItemsRepeater.Layout>
                             <ItemsRepeater.ItemTemplate>
                                 <DataTemplate x:DataType="models:SceneDisplayItem">
-                                    <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                            Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
-                                            BorderBrush="{x:Bind ItemBorderBrush, Mode=OneWay}"
-                                            Foreground="{StaticResource StudioTextBrush}"
-                                            BorderThickness="1" Padding="{x:Bind ItemPadding, Mode=OneWay}"
-                                            CornerRadius="8"
-                                            Command="{x:Bind SelectCommand}"
-                                            CommandParameter="{x:Bind Id}">
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="28" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <Border Width="28" Height="28" CornerRadius="14"
-                                                    Background="{x:Bind SlotBadgeBackground, Mode=OneWay}">
-                                                <TextBlock Text="{x:Bind SlotNumber}" FontWeight="Bold" FontSize="11"
-                                                           Foreground="{x:Bind SlotBadgeForeground, Mode=OneWay}"
-                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                            <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind Name}"
-                                                           FontWeight="SemiBold"
-                                                           FontSize="12"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           ToolTipService.ToolTip="{x:Bind Name}" />
-                                                <TextBlock Text="{x:Bind MetaLabel}"
-                                                           FontSize="10"
-                                                           Foreground="{StaticResource StudioMutedBrush}"
-                                                           TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-                                            <Border Grid.Column="2" Background="{x:Bind StatusBackgroundBrush, Mode=OneWay}"
-                                                    CornerRadius="4" Padding="6,3" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind StatusLabel, Mode=OneWay}"
-                                                           FontSize="9" FontWeight="ExtraBold"
-                                                           Foreground="{x:Bind StatusForegroundBrush, Mode=OneWay}" />
-                                            </Border>
-                                        </Grid>
-                                    </Button>
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                                Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
+                                                BorderBrush="{x:Bind ItemBorderBrush, Mode=OneWay}"
+                                                Foreground="{StaticResource StudioTextBrush}"
+                                                BorderThickness="1" Padding="{x:Bind ItemPadding, Mode=OneWay}"
+                                                CornerRadius="8"
+                                                Command="{x:Bind SelectCommand}"
+                                                CommandParameter="{x:Bind Id}">
+                                            <Grid ColumnSpacing="8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="28" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="28" Height="28" CornerRadius="14"
+                                                        Background="{x:Bind SlotBadgeBackground, Mode=OneWay}">
+                                                    <TextBlock Text="{x:Bind SlotNumber}" FontWeight="Bold" FontSize="11"
+                                                               Foreground="{x:Bind SlotBadgeForeground, Mode=OneWay}"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind Name}"
+                                                               FontWeight="SemiBold"
+                                                               FontSize="12"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTipService.ToolTip="{x:Bind Name}" />
+                                                    <TextBlock Text="{x:Bind MetaLabel}"
+                                                               FontSize="10"
+                                                               Foreground="{StaticResource StudioMutedBrush}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <Border Grid.Column="2" Background="{x:Bind StatusBackgroundBrush, Mode=OneWay}"
+                                                        CornerRadius="4" Padding="6,3" VerticalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind StatusLabel, Mode=OneWay}"
+                                                               FontSize="9" FontWeight="ExtraBold"
+                                                               Foreground="{x:Bind StatusForegroundBrush, Mode=OneWay}" />
+                                                </Border>
+                                            </Grid>
+                                        </Button>
+                                        <Button Grid.Column="1"
+                                                Width="32"
+                                                Height="32"
+                                                Padding="0"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource GhostButton}"
+                                                Command="{x:Bind RemoveCommand}"
+                                                CommandParameter="{x:Bind Id}"
+                                                Visibility="{x:Bind RemoveButtonVisibility, Mode=OneWay}"
+                                                ToolTipService.ToolTip="Remove scene">
+                                            <FontIcon Glyph="&#xE74D;" FontSize="13" />
+                                        </Button>
+                                    </Grid>
                                 </DataTemplate>
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>

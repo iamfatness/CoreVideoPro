@@ -1504,6 +1504,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void RemoveScene(string sceneId)
+    {
+        if (!CanRemoveScene(sceneId))
+        {
+            CommandStatus = "Only idle custom scenes can be removed";
+            return;
+        }
+
+        var scene = _scenes.FirstOrDefault(item => string.Equals(item.Id, sceneId, StringComparison.Ordinal));
+        if (scene is null)
+        {
+            return;
+        }
+
+        if (string.Equals(PreviewSceneId, sceneId, StringComparison.Ordinal))
+        {
+            PreviewSceneId = ActiveSceneId;
+        }
+
+        _scenes.Remove(scene);
+        _sceneRoutes.Remove(sceneId);
+        CommandStatus = $"{scene.Name} removed";
+        RefreshSceneItems();
+        RefreshProductionReadouts();
+    }
+
+    [RelayCommand]
     private void PreviewMultiviewTile(ParticipantSurfaceTile? tile)
     {
         if (tile is not { IsEmpty: false })
@@ -5130,7 +5157,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 SlotNumber = index + 1,
                 IsOnProgram = scene.Id == ActiveSceneId,
                 IsOnPreview = scene.Id == PreviewSceneId,
-                SelectCommand = SelectSceneCommand
+                CanRemove = CanRemoveScene(scene.Id),
+                SelectCommand = SelectSceneCommand,
+                RemoveCommand = RemoveSceneCommand
             })
             .ToList();
         OnPropertyChanged(nameof(SceneItems));
@@ -5140,6 +5169,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static bool IsInternalMultiviewSoloScene(string sceneId) =>
         string.Equals(sceneId, MultiviewSoloSceneAId, StringComparison.Ordinal) ||
         string.Equals(sceneId, MultiviewSoloSceneBId, StringComparison.Ordinal);
+
+    private bool CanRemoveScene(string sceneId) =>
+        IsUserRemovableScene(sceneId) &&
+        !string.Equals(sceneId, ActiveSceneId, StringComparison.Ordinal);
+
+    private static bool IsUserRemovableScene(string sceneId) =>
+        sceneId.StartsWith("custom-", StringComparison.Ordinal) ||
+        sceneId.StartsWith("multiview-solo-", StringComparison.Ordinal);
 
     private string ResolveOnAirSceneLabel(string sceneId)
     {

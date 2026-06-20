@@ -41,6 +41,8 @@ public sealed class SceneDisplayItem
 
     public IRelayCommand<string>? SelectCommand { get; init; }
 
+    public IRelayCommand<string>? RemoveCommand { get; init; }
+
     public string Name => Scene.Name;
 
     public string LayoutLabel => string.IsNullOrWhiteSpace(Scene.Layout) ? "Custom" : Scene.Layout.Replace('-', ' ');
@@ -71,6 +73,11 @@ public sealed class SceneDisplayItem
     public bool IsOnPreview { get; init; }
 
     public bool IsIdle => !IsOnProgram && !IsOnPreview;
+
+    public bool CanRemove { get; init; }
+
+    public Visibility RemoveButtonVisibility =>
+        CanRemove ? Visibility.Visible : Visibility.Collapsed;
 
     public Brush ItemBorderBrush =>
         IsOnPreview ? PreviewBorder : IsOnProgram ? ProgramBorder : DefaultBorder;
