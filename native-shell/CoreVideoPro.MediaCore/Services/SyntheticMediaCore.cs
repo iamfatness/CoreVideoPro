@@ -191,12 +191,14 @@ public static class SyntheticMediaCore
             Warnings = []
         };
 
+        var audioMixCommand = commands.FirstOrDefault(command => command.Type == "sync-participant-audio-mix");
+        var limiterEnabled = TryGetBool(audioMixCommand, "limiterEnabled") ?? true;
         var audioMixSession = new NativeMediaCoreAudioMixSession
         {
             Status = "idle",
             MasterLevel = 0,
             LoudnessLufs = -60,
-            LimiterEnabled = true,
+            LimiterEnabled = limiterEnabled,
             LimiterActive = false,
             MixedFrameCount = 0,
             Participants = [],
@@ -437,5 +439,20 @@ public static class SyntheticMediaCore
             .Where(element => element.ValueKind == System.Text.Json.JsonValueKind.String)
             .Select(element => element.GetString()!)
             .ToList();
+    }
+
+    private static bool? TryGetBool(NativeMediaCoreCommand? command, string propertyName)
+    {
+        if (command?.ExtensionData is null ||
+            !command.ExtensionData.TryGetValue(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind == System.Text.Json.JsonValueKind.True
+            ? true
+            : value.ValueKind == System.Text.Json.JsonValueKind.False
+                ? false
+                : null;
     }
 }

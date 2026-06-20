@@ -1121,6 +1121,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMasterLimiterEnabledChanged(bool value)
     {
         RefreshAudioReadoutBindings();
+        RefreshTransportState();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -3864,7 +3865,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             snapshot,
             snapshot.Recording?.Active == true,
             LiveProductionSync.IsStreamingLive(snapshot),
-            programResolutionLabel);
+            programResolutionLabel,
+            MasterLimiterEnabled);
         RefreshAudioReadoutBindings();
 
         if (!ZoomCaptureSubscribed)
@@ -4612,7 +4614,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 snapshot,
                 snapshot.Recording?.Active == true,
                 LiveProductionSync.IsStreamingLive(snapshot),
-                ResolveProgramResolutionLabel(snapshot));
+                ResolveProgramResolutionLabel(snapshot),
+                MasterLimiterEnabled);
             return;
         }
 

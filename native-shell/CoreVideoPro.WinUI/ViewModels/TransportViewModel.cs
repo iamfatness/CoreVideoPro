@@ -223,7 +223,8 @@ public sealed partial class TransportViewModel : ObservableObject
         NativeMediaCoreStateSnapshot snapshot,
         bool recording,
         bool streaming,
-        string programResolutionLabel)
+        string programResolutionLabel,
+        bool masterLimiterEnabled)
     {
         var elapsedSeconds = (int)Math.Floor(snapshot.Diagnostics.GeneratedAtMs / 1000d);
         var networkHealth = ResolveNetworkHealth(snapshot);
@@ -262,7 +263,7 @@ public sealed partial class TransportViewModel : ObservableObject
         MasterLufsLabel = snapshot.AudioMixSession.LoudnessLufs <= -59
             ? "LUFS —"
             : $"{snapshot.AudioMixSession.LoudnessLufs:0.0} LUFS";
-        MasterVolumeLabel = snapshot.AudioMixSession.LimiterEnabled
+        MasterVolumeLabel = masterLimiterEnabled
             ? snapshot.AudioMixSession.LimiterActive ? "Limiter reducing" : "Limiter enabled"
             : "Limiter bypassed";
     }
