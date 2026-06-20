@@ -469,7 +469,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
         CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
-        _surfaces.SurfacesChanged += RefreshSurfaceBindings;
+        _surfaces.SurfacesChanged += OnSurfacesChanged;
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
@@ -2773,6 +2773,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioParticipantRows));
     }
 
+    private void OnSurfacesChanged() => RunOnUiThread(RefreshSurfaceBindings);
+
     private void RefreshSurfaceBindings()
     {
         ProgramSurface = _surfaces.ProgramSurface;
@@ -3327,7 +3329,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
-        _surfaces.SurfacesChanged -= RefreshSurfaceBindings;
+        _surfaces.SurfacesChanged -= OnSurfacesChanged;
 
         ForceShutdownMediaCore();
 
@@ -3371,20 +3373,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Settings.ObserveZoomVideoFrame(frame);
     }
 
-    private void OnCaptureDeviceFrameReceived(CaptureDeviceFrame frame) =>
-        RunOnUiThread(() => ApplyCaptureDeviceFrame(frame));
+    private void OnCaptureDeviceFrameReceived(CaptureDeviceFrame frame)
+    {
+        if (_surfaces.OnCaptureDeviceFrame(frame))
+        {
+            RunOnUiThread(() => ApplyCaptureDeviceFrameTelemetry(frame));
+        }
+    }
 
-    private void ApplyCaptureDeviceFrame(CaptureDeviceFrame frame)
+    private void ApplyCaptureDeviceFrameTelemetry(CaptureDeviceFrame frame)
     {
         if (CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, frame.DeviceId, StringComparison.Ordinal)) is { } device)
         {
             device.ApplyFrameTelemetry(frame.Width, frame.Height, frame.Fps);
             RefreshCaptureFleetSummary();
         }
-
-        _surfaces.OnCaptureDeviceFrame(frame);
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
     }
 
     private void OnProgramFramePreviewReceived(ProgramFramePreview preview)

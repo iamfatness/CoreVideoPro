@@ -10,7 +10,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// </summary>
 public sealed class VideoSurfaceCoordinator : IDisposable
 {
-    private const int UiUpdateIntervalMs = 67;
+    private const int UiUpdateIntervalMs = 33;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, FrameRateTracker> _trackers = new(StringComparer.Ordinal);
@@ -174,11 +174,11 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         NotifyChanged();
     }
 
-    public void OnCaptureDeviceFrame(CaptureDeviceFrame frame)
+    public bool OnCaptureDeviceFrame(CaptureDeviceFrame frame)
     {
         if (frame.Bgra.Length == 0 || frame.Width <= 0 || frame.Height <= 0)
         {
-            return;
+            return false;
         }
 
         var trackerKey = CaptureDeviceKey(frame.DeviceId);
@@ -187,13 +187,13 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         {
             if (_lastAppliedFrameId.TryGetValue(trackerKey, out var appliedFrameId) && frame.FrameId <= appliedFrameId)
             {
-                return;
+                return false;
             }
 
             if (_lastUiUpdateMs.TryGetValue(trackerKey, out var lastUpdateMs) &&
                 now - lastUpdateMs < UiUpdateIntervalMs)
             {
-                return;
+                return false;
             }
 
             var fps = frame.Fps > 0 ? frame.Fps : TrackFps(trackerKey, frame.FrameId);
@@ -218,6 +218,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         }
 
         NotifyChanged();
+        return true;
     }
 
     public void OnProgramFramePreview(ProgramFramePreview preview)
