@@ -316,7 +316,7 @@
                     </ScrollViewer>
 
                     <StackPanel Grid.Row="3" Spacing="6">
-                        <TextBlock Text="Tap a scene to queue on preview · Take promotes PVW → PGM"
+                        <TextBlock Text="Tap a scene to queue on preview - Take swaps PVW and PGM"
                                    FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                         <Button Style="{StaticResource SceneBuilderCalloutButton}"
                                 HorizontalAlignment="Stretch"
@@ -356,59 +356,12 @@
 
                 <Grid x:Name="ProgramPreviewGrid" Grid.Row="1" ColumnSpacing="4">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition x:Name="ProgramMonitorColumn" Width="*" MinWidth="220" />
-                        <ColumnDefinition Width="6" />
                         <ColumnDefinition x:Name="PreviewMonitorColumn" Width="*" MinWidth="220" />
+                        <ColumnDefinition Width="6" />
+                        <ColumnDefinition x:Name="ProgramMonitorColumn" Width="*" MinWidth="220" />
                     </Grid.ColumnDefinitions>
 
-                    <Border Grid.Column="0" Style="{StaticResource StudioPanelBorder}">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="PROGRAM" FontWeight="ExtraBold" FontSize="11" Foreground="#F0A85C" CharacterSpacing="60" />
-                                    <TextBlock Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" FontSize="11"
-                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                            </Border>
-                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
-                                <cvcontrols:AspectRatioHost.Child>
-                                    <Grid>
-                                        <cvcontrols:ScenePreviewControl
-                                            HorizontalAlignment="Stretch"
-                                            VerticalAlignment="Stretch"
-                                            Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
-                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
-                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}" />
-                                    </Grid>
-                                </cvcontrols:AspectRatioHost.Child>
-                            </cvcontrols:AspectRatioHost>
-                        </Grid>
-                    </Border>
-
-                    <Border x:Name="ProgramPreviewSplitter"
-                            Grid.Column="1"
-                            Background="#223139"
-                            BorderBrush="#3DDC97"
-                            BorderThickness="1,0"
-                            CornerRadius="3"
-                            HorizontalAlignment="Stretch"
-                            ToolTipService.ToolTip="Drag to resize Program and Preview"
-                            PointerPressed="OnProgramPreviewSplitterPointerPressed"
-                            PointerMoved="OnProgramPreviewSplitterPointerMoved"
-                            PointerReleased="OnProgramPreviewSplitterPointerReleased"
-                            PointerCanceled="OnProgramPreviewSplitterPointerReleased">
-                        <Rectangle Fill="#3DDC97"
-                                   Width="2"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Stretch"
-                                   Opacity="0.75" />
-                    </Border>
-
-                    <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}" BorderBrush="#473DDC97">
+                    <Border Grid.Column="0" Style="{StaticResource StudioPanelBorder}" BorderBrush="#473DDC97">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -432,6 +385,53 @@
                                             Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
                                             Routes="{x:Bind ViewModel.PreviewSceneRoutes, Mode=OneWay}"
                                             IsPreview="True" />
+                                    </Grid>
+                                </cvcontrols:AspectRatioHost.Child>
+                            </cvcontrols:AspectRatioHost>
+                        </Grid>
+                    </Border>
+
+                    <Border x:Name="ProgramPreviewSplitter"
+                            Grid.Column="1"
+                            Background="#223139"
+                            BorderBrush="#3DDC97"
+                            BorderThickness="1,0"
+                            CornerRadius="3"
+                            HorizontalAlignment="Stretch"
+                            ToolTipService.ToolTip="Drag to resize Preview and Program"
+                            PointerPressed="OnProgramPreviewSplitterPointerPressed"
+                            PointerMoved="OnProgramPreviewSplitterPointerMoved"
+                            PointerReleased="OnProgramPreviewSplitterPointerReleased"
+                            PointerCanceled="OnProgramPreviewSplitterPointerReleased">
+                        <Rectangle Fill="#3DDC97"
+                                   Width="2"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Stretch"
+                                   Opacity="0.75" />
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="PROGRAM" FontWeight="ExtraBold" FontSize="11" Foreground="#F0A85C" CharacterSpacing="60" />
+                                    <TextBlock Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" FontSize="11"
+                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
+                                <cvcontrols:AspectRatioHost.Child>
+                                    <Grid>
+                                        <cvcontrols:ScenePreviewControl
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch"
+                                            Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
+                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
+                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
@@ -674,7 +674,7 @@
                     <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
                             Command="{x:Bind ViewModel.TakeCommand}"
                             IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
-                            ToolTipService.ToolTip="Promote the Preview scene to Program (PVW → PGM).">
+                            ToolTipService.ToolTip="Take Preview to Program and swap the previous Program back to Preview.">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="13" />
                             <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />

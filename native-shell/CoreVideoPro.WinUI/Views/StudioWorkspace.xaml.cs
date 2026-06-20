@@ -135,10 +135,10 @@ public sealed partial class StudioWorkspace : UserControl
             return;
         }
 
-        var programWidth = Math.Clamp(pointerX, minMonitorWidth, availableWidth - minMonitorWidth);
-        var previewWidth = availableWidth - programWidth;
+        var previewWidth = Math.Clamp(pointerX, minMonitorWidth, availableWidth - minMonitorWidth);
+        var programWidth = availableWidth - previewWidth;
 
-        ProgramMonitorColumn.Width = new GridLength(programWidth, GridUnitType.Star);
         PreviewMonitorColumn.Width = new GridLength(previewWidth, GridUnitType.Star);
+        ProgramMonitorColumn.Width = new GridLength(programWidth, GridUnitType.Star);
     }
 }

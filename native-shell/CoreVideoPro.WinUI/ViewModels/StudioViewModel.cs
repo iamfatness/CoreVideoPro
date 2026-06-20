@@ -1295,8 +1295,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand(CanExecute = nameof(CanTake))]
     private async Task TakeAsync()
     {
-        ActiveSceneId = PreviewSceneId;
-        CopyPreviewRoutesToScene(ActiveSceneId);
+        var previousProgramSceneId = ActiveSceneId;
+        var takenSceneId = PreviewSceneId;
+
+        ActiveSceneId = takenSceneId;
+        PreviewSceneId = previousProgramSceneId;
         RefreshPreviewRoutingState();
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
         CommandStatus = $"{scene.Name} taken with fade";
