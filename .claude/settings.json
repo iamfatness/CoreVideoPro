@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake *)",
+      "Bash(ctest *)",
+      "Bash(npm run *)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npm test)",
+      "Bash(node *)",
+      "Bash(dotnet *)",
+      "Bash(git *)",
+      "Bash(powershell *)",
+      "Bash(pwsh *)",
+      "PowerShell(cmake *)",
+      "PowerShell(ctest *)",
+      "PowerShell(npm run *)",
+      "PowerShell(npm ci)",
+      "PowerShell(npm install)",
+      "PowerShell(npm test)",
+      "PowerShell(node *)",
+      "PowerShell(dotnet *)",
+      "PowerShell(git *)"
+    ]
+  }
+}
