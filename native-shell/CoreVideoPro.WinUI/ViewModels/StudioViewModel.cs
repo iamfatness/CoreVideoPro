@@ -263,8 +263,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _previewSceneParticipants = "No sources assigned";
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
-    // Per-source color grades keyed by participant/source id. UI-only this round: native
-    // compositing still receives the single global grade (see OpenColorGradeEditor).
+    // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
@@ -1514,33 +1513,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     /// <summary>
-    /// Opens the per-source color grade pop-out for the given participant/source id. Seeds
-    /// the editor with the source's stored grade (or the current global grade as a default).
-    /// On Save the grade is stored per source and the engine is re-synced.
-    ///
-    /// NOTE (UI-only / Option A): the media-core protocol still carries a single global
-    /// grade, so the value sent to native remains the primary/global grade for now. Wiring
-    /// per-source grades through MediaCoreCommandBuilder is a follow-up protocol change.
+    /// Opens the per-source color grade pop-out for a Zoom participant or capture source.
+    /// Saved grades are attached to matching scene routes and sent to native per layer.
     /// </summary>
     [RelayCommand]
     private void OpenColorGradeEditor(string? sourceId)
     {
-        if (string.IsNullOrWhiteSpace(sourceId))
+        var normalizedSourceId = NormalizeColorGradeSourceId(sourceId);
+        if (string.IsNullOrWhiteSpace(normalizedSourceId))
         {
             CommandStatus = "Select a source before editing its color grade";
             return;
         }
 
-        var participant = RoomVideoParticipants.FirstOrDefault(p => p.Id == sourceId);
-        var sourceName = participant?.Name ?? sourceId;
+        var sourceName = ResolveColorGradeSourceName(normalizedSourceId);
 
-        var seed = _sourceColorGrades.TryGetValue(sourceId, out var stored) ? stored : ColorGrade;
-        var editorViewModel = new ColorGradeEditorViewModel(sourceId, sourceName, seed);
+        var seed = ResolveStoredColorGrade(normalizedSourceId);
+        var editorViewModel = new ColorGradeEditorViewModel(normalizedSourceId, sourceName, seed);
         editorViewModel.GradeSaved += OnSourceColorGradeSaved;
 
         var window = new ColorGradeEditorWindow(editorViewModel);
         window.Activate();
     }
+
+    [RelayCommand]
+    private void OpenCaptureDeviceColorGradeEditor(string? captureDeviceId) =>
+        OpenColorGradeEditor(string.IsNullOrWhiteSpace(captureDeviceId) ? null : $"capture:{captureDeviceId}");
 
     private void OnSourceColorGradeSaved(object? sender, ColorGrade grade)
     {
@@ -1551,10 +1549,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
         _sourceColorGrades[editorViewModel.SourceId] = grade;
+        ApplyColorGradeToMatchingRoutes(editorViewModel.SourceId, grade);
         CommandStatus = $"Color grade saved for {editorViewModel.SourceName}: {grade.Summary}";
 
-        // Trigger the normal sync. The global grade is still what reaches native this round;
-        // per-source native compositing is a follow-up protocol change (see OpenColorGradeEditor).
+        SyncPreviewCanvasLayers(GetMutableRoutes(PreviewSceneId));
+        RefreshPreviewRoutingState();
         _ = SyncColorGradeChangeAsync();
     }
 
@@ -1568,6 +1567,92 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             CommandStatus = ex.Message;
         }
+    }
+
+    private string? NormalizeColorGradeSourceId(string? sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return null;
+        }
+
+        if (sourceId.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(sourceId[6..], out var slotNumber) &&
+            ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is { } slot)
+        {
+            return slot.Kind == ShowInputKind.ZoomParticipant
+                ? slot.ParticipantId
+                : string.IsNullOrWhiteSpace(slot.CaptureDeviceId) ? null : $"capture:{slot.CaptureDeviceId}";
+        }
+
+        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
+        {
+            var captureDeviceId = sourceId["capture:".Length..];
+            return string.IsNullOrWhiteSpace(captureDeviceId) ? null : $"capture:{captureDeviceId}";
+        }
+
+        if (CaptureDevices.Any(device => string.Equals(device.Id, sourceId, StringComparison.Ordinal)))
+        {
+            return $"capture:{sourceId}";
+        }
+
+        return sourceId;
+    }
+
+    private string ResolveColorGradeSourceName(string sourceId)
+    {
+        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
+        {
+            var captureDeviceId = sourceId["capture:".Length..];
+            return CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, captureDeviceId, StringComparison.Ordinal))?.Name ??
+                captureDeviceId;
+        }
+
+        return RoomVideoParticipants.FirstOrDefault(participant => participant.Id == sourceId)?.Name ?? sourceId;
+    }
+
+    private ColorGrade ResolveStoredColorGrade(string sourceId) =>
+        _sourceColorGrades.TryGetValue(sourceId, out var stored) ? stored : ColorGrade;
+
+    private void ApplyColorGradeToMatchingRoutes(string sourceId, ColorGrade grade)
+    {
+        foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes))
+        {
+            var resolved = ResolveRouteFromShowInput(route);
+            if (string.Equals(ResolveColorGradeSourceId(resolved), sourceId, StringComparison.Ordinal))
+            {
+                route.ColorGrade = grade;
+            }
+        }
+    }
+
+    private MediaCoreColorGradeWire? BuildRouteColorGradeWire(SourceRoute route)
+    {
+        var sourceId = ResolveColorGradeSourceId(route);
+        var grade = route.ColorGrade;
+        if (sourceId is not null && _sourceColorGrades.TryGetValue(sourceId, out var stored))
+        {
+            grade = stored;
+        }
+
+        return grade is null
+            ? null
+            : new MediaCoreColorGradeWire(
+                grade.Lut,
+                grade.Exposure,
+                grade.Contrast,
+                grade.Saturation,
+                grade.Temperature);
+    }
+
+    private static string? ResolveColorGradeSourceId(SourceRoute route)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
+        {
+            return $"capture:{captureDeviceId}";
+        }
+
+        return route.ParticipantId;
     }
 
     [RelayCommand]
@@ -2324,7 +2409,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 FitMode: route.FitMode,
                 BorderStyle: route.BorderStyle,
                 BorderColor: route.BorderColor,
-                BorderThickness: route.BorderThickness))
+                BorderThickness: route.BorderThickness,
+                ColorGrade: BuildRouteColorGradeWire(route)))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -3820,17 +3906,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             resolved.Mode = SourceRouteMode.Fixed;
             resolved.ParticipantId = slot.ParticipantId;
             resolved.CaptureDeviceId = null;
+            ApplyKnownColorGradeToRoute(resolved);
             return resolved;
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest)
         {
             resolved.Mode = SourceRouteMode.CaptureDevice;
             resolved.ParticipantId = null;
             resolved.CaptureDeviceId = slot.CaptureDeviceId;
         }
 
+        ApplyKnownColorGradeToRoute(resolved);
         return resolved;
+    }
+
+    private void ApplyKnownColorGradeToRoute(SourceRoute route)
+    {
+        var sourceId = ResolveColorGradeSourceId(route);
+        if (sourceId is not null && _sourceColorGrades.TryGetValue(sourceId, out var grade))
+        {
+            route.ColorGrade = grade;
+        }
     }
 
     private static ParticipantSurfaceTile BuildParticipantSceneTile(
@@ -3915,6 +4012,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
+        ApplyKnownColorGradeToRoute(routes[layer.LayerIndex]);
         layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";

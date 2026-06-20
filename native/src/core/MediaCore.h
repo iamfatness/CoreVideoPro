@@ -35,6 +35,7 @@ class MediaCore {
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
   void setOverlayAsset(const rpc::Json& command);
+  void setColorGrade(const rpc::Json& command);
   void startProgramOutput(const rpc::Json& command);
   void prepareEncoderSession(const rpc::Json& command);
   void startEncoderSession(const rpc::Json& command);
@@ -85,6 +86,8 @@ class MediaCore {
     std::string borderStyle = "accent";
     std::string borderColor = "#44C1A1";
     float borderThickness = 2.f;
+    bool hasColorGrade = false;
+    modules::CompositorColorGrade colorGrade;
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
@@ -95,6 +98,7 @@ class MediaCore {
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
+  modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
   int64_t mixedAudioFrameCount_ = 0;
   modules::ProgramFrame lastProgramFrame_;

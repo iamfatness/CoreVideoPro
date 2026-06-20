@@ -14,7 +14,8 @@ public sealed record MediaCoreSceneRouteWire(
     string? FitMode = null,
     string? BorderStyle = null,
     string? BorderColor = null,
-    double? BorderThickness = null);
+    double? BorderThickness = null,
+    MediaCoreColorGradeWire? ColorGrade = null);
 
 public sealed record MediaCoreParticipantWire(
     string Id,

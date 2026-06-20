@@ -73,7 +73,17 @@ public static class MediaCoreCommandBuilder
                     ["fitMode"] = route.FitMode,
                     ["borderStyle"] = route.BorderStyle,
                     ["borderColor"] = route.BorderColor,
-                    ["borderThickness"] = route.BorderThickness
+                    ["borderThickness"] = route.BorderThickness,
+                    ["colorGrade"] = route.ColorGrade is null
+                        ? null
+                        : new Dictionary<string, object?>
+                        {
+                            ["lut"] = route.ColorGrade.Lut,
+                            ["exposure"] = route.ColorGrade.Exposure,
+                            ["contrast"] = route.ColorGrade.Contrast,
+                            ["saturation"] = route.ColorGrade.Saturation,
+                            ["temperature"] = route.ColorGrade.Temperature
+                        }
                 };
 
                 if (route.RectX is not null && route.RectY is not null &&

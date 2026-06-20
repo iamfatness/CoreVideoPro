@@ -83,7 +83,8 @@ export function withRenderPlanId(renderPlan: Omit<MediaCoreRenderPlan, "renderPl
       fitMode: route.fitMode,
       borderStyle: route.borderStyle,
       borderColor: route.borderColor,
-      borderThickness: route.borderThickness
+      borderThickness: route.borderThickness,
+      colorGrade: route.colorGrade
     })),
     layers: renderPlan.layers.map((layer) => ({
       layerId: layer.layerId,
@@ -96,7 +97,8 @@ export function withRenderPlanId(renderPlan: Omit<MediaCoreRenderPlan, "renderPl
       fitMode: layer.fitMode,
       borderStyle: layer.borderStyle,
       borderColor: layer.borderColor,
-      borderThickness: layer.borderThickness
+      borderThickness: layer.borderThickness,
+      colorGrade: layer.colorGrade
     }))
   });
 

@@ -80,6 +80,7 @@ export type MediaCoreResolvedRoute = {
   borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
   borderColor?: string;
   borderThickness?: number;
+  colorGrade?: MediaCoreColorGrade;
   warning?: string;
 };
 
@@ -95,6 +96,7 @@ export type MediaCoreRenderPlanLayer = {
   borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
   borderColor?: string;
   borderThickness?: number;
+  colorGrade?: MediaCoreColorGrade;
   position?: "top-right" | "bottom-right" | "center" | "lower-third";
 };
 
@@ -385,6 +387,7 @@ export type MediaCoreCommand =
         borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
         borderColor?: string;
         borderThickness?: number;
+        colorGrade?: MediaCoreColorGrade;
       }>;
     }
   | {

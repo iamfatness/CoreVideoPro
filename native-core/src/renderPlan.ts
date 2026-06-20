@@ -60,7 +60,8 @@ export function buildRenderPlan(input: {
       fitMode: route.fitMode,
       borderStyle: route.borderStyle,
       borderColor: route.borderColor,
-      borderThickness: route.borderThickness
+      borderThickness: route.borderThickness,
+      colorGrade: route.colorGrade
     }));
 
   const overlayLayers = input.overlays.map((overlay, index) => ({
@@ -146,6 +147,7 @@ function resolvedRoute(
     borderStyle: route.borderStyle,
     borderColor: route.borderColor,
     borderThickness: route.borderThickness,
+    colorGrade: route.colorGrade,
     status: "resolved"
   };
 }

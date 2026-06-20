@@ -94,6 +94,58 @@ TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) 
   EXPECT_NE(state.get("health")->get("messages")->asArray().back().asString().find("Compositor warning"), std::string::npos);
 }
 
+TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
+  corevideo::core::MediaCore mediaCore;
+  const auto first = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "graded"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "a"},
+                             {"mode", "fixed"},
+                             {"audioRole", "mix"},
+                             {"participantId", "speaker-1"},
+                             {"colorGrade",
+                              corevideo::rpc::Json::Object{
+                                  {"exposure", 8},
+                                  {"contrast", 12},
+                                  {"saturation", -6},
+                                  {"temperature", 15},
+                              }},
+                         },
+                     }},
+      },
+  });
+  const auto second = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "graded"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "a"},
+                             {"mode", "fixed"},
+                             {"audioRole", "mix"},
+                             {"participantId", "speaker-1"},
+                             {"colorGrade",
+                              corevideo::rpc::Json::Object{
+                                  {"exposure", 8},
+                                  {"contrast", 3},
+                                  {"saturation", -6},
+                                  {"temperature", 15},
+                              }},
+                         },
+                     }},
+      },
+  });
+
+  ASSERT_NE(first.get("programFrame"), nullptr);
+  ASSERT_NE(second.get("programFrame"), nullptr);
+  EXPECT_NE(
+      first.get("programFrame")->get("renderPlanSignature")->asNumber(),
+      second.get("programFrame")->get("renderPlanSignature")->asNumber());
+}
+
 // The compositor must be ALWAYS ON: even with no scene graph, no Zoom input frames,
 // and an empty command tick, every applyCommands call advances the program frame and
 // emits a synthetic black/slate program preview so the operator's Preview/Program

@@ -107,6 +107,11 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         }
     }
 
+    public string? SourceColorGradeId =>
+        Kind == ShowInputKind.ZoomParticipant
+            ? ParticipantId
+            : string.IsNullOrWhiteSpace(CaptureDeviceId) ? null : $"capture:{CaptureDeviceId}";
+
     public IReadOnlyList<ShowInputKindOption> KindOptions { get; } = ShowInputRosterService.KindOptions;
 
     public IReadOnlyList<ShowInputSourceOption> SourceOptions { get; private set; } = [];
@@ -138,6 +143,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
+        OnPropertyChanged(nameof(SourceColorGradeId));
     }
 
     private void OnSlotPropertyChanged()
@@ -149,6 +155,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
         OnPropertyChanged(nameof(ShowInShowToggle));
         OnPropertyChanged(nameof(SelectedSourceId));
+        OnPropertyChanged(nameof(SourceColorGradeId));
     }
 
     private void OnPropertyChanged(string propertyName) =>

@@ -96,6 +96,35 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesPerRouteColorGradeForSceneGraphRoutes()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "graded-scene",
+            SceneRoutes =
+            [
+                new(
+                    "graded-1",
+                    "fixed",
+                    "mix",
+                    "p1",
+                    ColorGrade: new MediaCoreColorGradeWire("warm-film", 8, 12, -6, 15))
+            ],
+            Participants = Participants
+        });
+
+        var sceneGraph = commands.Single(command => command.Type == "load-scene-graph");
+        var route = sceneGraph.ExtensionData!["routes"].EnumerateArray().Single();
+        var grade = route.GetProperty("colorGrade");
+
+        Assert.Equal("warm-film", grade.GetProperty("lut").GetString());
+        Assert.Equal(8, grade.GetProperty("exposure").GetInt32());
+        Assert.Equal(12, grade.GetProperty("contrast").GetInt32());
+        Assert.Equal(-6, grade.GetProperty("saturation").GetInt32());
+        Assert.Equal(15, grade.GetProperty("temperature").GetInt32());
+    }
+
+    [Fact]
     public void BuildsSpeakerSlidesRoutesFromPreviewSlotEditors()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

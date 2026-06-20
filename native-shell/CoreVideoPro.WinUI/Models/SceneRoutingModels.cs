@@ -39,6 +39,7 @@ public sealed class SourceRoute
     public string BorderStyle { get; set; } = SourceRouteVisualDefaults.BorderStyle;
     public string BorderColor { get; set; } = SourceRouteVisualDefaults.BorderColor;
     public double BorderThickness { get; set; } = SourceRouteVisualDefaults.BorderThickness;
+    public ColorGrade? ColorGrade { get; set; }
     public int ZIndex { get; set; }
 
     public SourceRoute Clone() =>
@@ -56,6 +57,7 @@ public sealed class SourceRoute
             BorderStyle = BorderStyle,
             BorderColor = BorderColor,
             BorderThickness = BorderThickness,
+            ColorGrade = ColorGrade,
             ZIndex = ZIndex
         };
 }

@@ -69,6 +69,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public IReadOnlyList<RouteSelectOption> ParticipantOptions { get; private set; } = [];
 
+    public string SourceColorGradeId => ResolveColorGradeSourceId(_route) ?? ParticipantId;
+
+    public string ColorGradeSummary => _route.ColorGrade?.Summary ?? "Neutral";
+
     [ObservableProperty]
     private string _mode;
 
@@ -176,6 +180,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             BorderStyle = SceneRoutingService.NormalizeBorderStyle(_route.BorderStyle);
             BorderColor = SceneRoutingService.NormalizeBorderColor(_route.BorderColor);
             BorderThickness = Math.Clamp(_route.BorderThickness, 0, 12);
+            OnPropertyChanged(nameof(SourceColorGradeId));
+            OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(ParticipantOptions));
         }
         finally
@@ -271,6 +277,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.BorderColor = SceneRoutingService.NormalizeBorderColor(BorderColor);
         _route.BorderThickness = Math.Clamp(BorderThickness, 0, 12);
         _route.ZIndex = LayerIndex;
+        OnPropertyChanged(nameof(SourceColorGradeId));
+        OnPropertyChanged(nameof(ColorGradeSummary));
     }
 
     private void ApplyVisualChange()
@@ -412,5 +420,15 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
 
         return slot.KindLabel;
+    }
+
+    private static string? ResolveColorGradeSourceId(SourceRoute route)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
+        {
+            return FormatCaptureDeviceValue(captureDeviceId);
+        }
+
+        return route.ParticipantId;
     }
 }

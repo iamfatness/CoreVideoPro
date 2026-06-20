@@ -132,6 +132,8 @@ struct CompositorRenderPlanLayer {
   std::string borderStyle = "accent";
   std::string borderColor = "#44C1A1";
   float borderThickness = 2.f;
+  bool hasColorGrade = false;
+  CompositorColorGrade colorGrade;
 };
 
 struct CompositorRenderPlan {

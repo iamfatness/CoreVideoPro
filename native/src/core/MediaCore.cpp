@@ -27,6 +27,19 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
+float clampColorGradeAxis(double value) {
+  return static_cast<float>(std::max(-100.0, std::min(100.0, value)));
+}
+
+modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
+  return modules::CompositorColorGrade{
+      clampColorGradeAxis(value.getNumber("exposure", 0.0)),
+      clampColorGradeAxis(value.getNumber("contrast", 0.0)),
+      clampColorGradeAxis(value.getNumber("saturation", 0.0)),
+      clampColorGradeAxis(value.getNumber("temperature", 0.0)),
+  };
+}
+
 rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
   rpc::Json::Array result;
   result.emplace_back("audio-mixer");
@@ -552,6 +565,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setParticipantTransform(command);
   } else if (type == "set-overlay-asset") {
     setOverlayAsset(command);
+  } else if (type == "set-color-grade") {
+    setColorGrade(command);
   } else if (type == "start-program-output") {
     startProgramOutput(command);
   } else if (type == "prepare-encoder-session") {
@@ -677,6 +692,10 @@ void MediaCore::simulateBreakoutRoomChange(const rpc::Json& command) {
   }
 }
 
+void MediaCore::setColorGrade(const rpc::Json& command) {
+  colorGrade_ = readColorGrade(command);
+}
+
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
@@ -714,6 +733,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       }
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
+      if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
+        state.hasColorGrade = true;
+        state.colorGrade = readColorGrade(*colorGrade);
+      }
       if (state.routeId.empty()) {
         sceneValidationWarnings_.push_back("Scene route " + std::to_string(routeIndex) + " is missing routeId.");
         state.routeId = "invalid-route-" + std::to_string(routeIndex);
@@ -1608,6 +1631,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   renderPlan.width = 1920;
   renderPlan.height = 1080;
   renderPlan.fps = 30;
+  renderPlan.colorGrade = colorGrade_;
   renderPlan.warnings = sceneValidationWarnings_;
 
   int videoLayerIndex = 0;
@@ -1638,6 +1662,8 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
       layer.borderStyle = route.borderStyle;
       layer.borderColor = route.borderColor;
       layer.borderThickness = route.borderThickness;
+      layer.hasColorGrade = route.hasColorGrade;
+      layer.colorGrade = route.colorGrade;
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }

@@ -249,7 +249,11 @@
                                                 <Button Content="Color grade"
                                                         Style="{StaticResource OperatorGhostButton}"
                                                         Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesRoot}"
-                                                        CommandParameter="{x:Bind ParticipantId, Mode=OneWay}" />
+                                                        CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}" />
+                                                <TextBlock Text="{x:Bind ColorGradeSummary, Mode=OneWay}"
+                                                           FontSize="10"
+                                                           Foreground="{StaticResource StudioMutedBrush}"
+                                                           TextWrapping="WrapWholeWords" />
                                             </StackPanel>
                                         </Border>
                                     </DataTemplate>

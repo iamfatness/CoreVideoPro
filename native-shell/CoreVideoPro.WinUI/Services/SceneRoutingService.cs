@@ -284,6 +284,7 @@ public static class SceneRoutingService
         normalized.BorderStyle = NormalizeBorderStyle(route.BorderStyle);
         normalized.BorderColor = NormalizeBorderColor(route.BorderColor);
         normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
+        normalized.ColorGrade = route.ColorGrade;
         normalized.ZIndex = route.ZIndex;
         return normalized;
     }
@@ -302,6 +303,7 @@ public static class SceneRoutingService
         route.BorderStyle = normalized.BorderStyle;
         route.BorderColor = normalized.BorderColor;
         route.BorderThickness = normalized.BorderThickness;
+        route.ColorGrade = normalized.ColorGrade;
         route.ZIndex = normalized.ZIndex;
     }
 
@@ -318,6 +320,7 @@ public static class SceneRoutingService
         target.BorderStyle = NormalizeBorderStyle(source.BorderStyle);
         target.BorderColor = NormalizeBorderColor(source.BorderColor);
         target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
+        target.ColorGrade = source.ColorGrade;
         target.ZIndex = source.ZIndex;
     }
 

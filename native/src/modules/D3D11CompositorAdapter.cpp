@@ -447,10 +447,11 @@ class D3D11Compositor final : public ICompositor {
     constants->color[1] = static_cast<float>((layer.color >> 8) & 0xff) / 255.f;
     constants->color[2] = static_cast<float>(layer.color & 0xff) / 255.f;
     constants->color[3] = compositorLayerOpacity(layer.plan);
-    constants->exposure = renderPlan.colorGrade.exposure * 0.1f;
-    constants->contrast = renderPlan.colorGrade.contrast * 0.1f;
-    constants->saturation = renderPlan.colorGrade.saturation * 0.1f;
-    constants->temperature = renderPlan.colorGrade.temperature * 0.1f;
+    const auto grade = layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade;
+    constants->exposure = grade.exposure * 0.1f;
+    constants->contrast = grade.contrast * 0.1f;
+    constants->saturation = grade.saturation * 0.1f;
+    constants->temperature = grade.temperature * 0.1f;
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);

@@ -127,6 +127,57 @@ describe("ProgramCompositor", () => {
     expect(first.renderPlanId).not.toBe(changedBorder.renderPlanId);
   });
 
+  it("carries per-source color grade into resolved routes and render layers", () => {
+    const gradedSceneGraph: Extract<MediaCoreCommand, { type: "load-scene-graph" }> = {
+      type: "load-scene-graph",
+      sceneId: "graded-interview",
+      routes: [
+        {
+          routeId: "active",
+          mode: "active-speaker",
+          audioRole: "mix",
+          colorGrade: {
+            lut: "warm-film",
+            exposure: 8,
+            contrast: 12,
+            saturation: -6,
+            temperature: 15
+          }
+        }
+      ]
+    };
+
+    const first = buildRenderPlan({
+      sceneGraph: gradedSceneGraph,
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+    const changedGrade = buildRenderPlan({
+      sceneGraph: {
+        ...gradedSceneGraph,
+        routes: [{ ...gradedSceneGraph.routes[0], colorGrade: { ...gradedSceneGraph.routes[0].colorGrade!, contrast: 3 } }]
+      },
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+
+    expect(first.routes[0].colorGrade).toMatchObject({
+      lut: "warm-film",
+      exposure: 8,
+      contrast: 12,
+      saturation: -6,
+      temperature: 15
+    });
+    expect(first.layers[0].colorGrade).toMatchObject(first.routes[0].colorGrade!);
+    expect(first.renderPlanId).not.toBe(changedGrade.renderPlanId);
+  });
+
   it("reconfigures when the render plan id changes and marks incomplete plans degraded", () => {
     const compositor = new ProgramCompositor();
     const livePlan = buildRenderPlan({
