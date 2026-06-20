@@ -164,41 +164,88 @@
 
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="SRT ingest" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="SRT ingest" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.SrtIngestCountSummary, Mode=OneWay}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Content="+"
+                                MinWidth="44"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddSrtIngestSourceCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanAddSrtIngestSource, Mode=OneWay}" />
+                    </Grid>
                     <TextBlock Text="{x:Bind ViewModel.SrtIngestSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
-                    <Grid ColumnSpacing="8" RowSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="160" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="120" />
-                            <ColumnDefinition Width="120" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <ComboBox Header="Mode"
-                                  ItemsSource="{x:Bind ViewModel.SrtIngestModeOptions}"
-                                  SelectedItem="{x:Bind ViewModel.SrtIngestMode, Mode=TwoWay}"
-                                  HorizontalAlignment="Stretch" />
-                        <TextBox Grid.Column="1"
-                                 Header="Host"
-                                 Text="{x:Bind ViewModel.SrtIngestHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBox Grid.Column="2"
-                                 Header="Port"
-                                 Text="{x:Bind ViewModel.SrtIngestPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBox Grid.Column="3"
-                                 Header="Latency ms"
-                                 Text="{x:Bind ViewModel.SrtIngestLatencyMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBox Grid.Row="1" Grid.ColumnSpan="2"
-                                 Header="Stream ID"
-                                 PlaceholderText="Optional receiver routing ID"
-                                 Text="{x:Bind ViewModel.SrtIngestStreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBox Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2"
-                                 Header="Passphrase"
-                                 Text="{x:Bind ViewModel.SrtIngestPassphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                    </Grid>
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.SrtIngestSources, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Orientation="Vertical" Spacing="8" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:SrtIngestSource">
+                                <Border Background="#0C1118"
+                                        BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="10">
+                                    <Grid ColumnSpacing="8" RowSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="120" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.ColumnSpan="4" Spacing="2">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
+                                            <TextBlock Text="{x:Bind Summary, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                        <Button Grid.Column="4"
+                                                Content="Remove"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Command="{Binding ViewModel.RemoveSrtIngestSourceCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}" />
+                                        <ComboBox Grid.Row="1"
+                                                  Header="Mode"
+                                                  ItemsSource="{Binding ViewModel.SrtIngestModeOptions, ElementName=SourcesInputsRoot}"
+                                                  SelectedItem="{x:Bind Mode, Mode=TwoWay}"
+                                                  HorizontalAlignment="Stretch" />
+                                        <TextBox Grid.Row="1" Grid.Column="1"
+                                                 Header="Host"
+                                                 Text="{x:Bind Host, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBox Grid.Row="1" Grid.Column="2"
+                                                 Header="Port"
+                                                 Text="{x:Bind Port, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBox Grid.Row="1" Grid.Column="3"
+                                                 Header="Latency ms"
+                                                 Text="{x:Bind LatencyMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        <StackPanel Grid.Row="2" Grid.ColumnSpan="5" Spacing="8">
+                                            <TextBox Header="Stream ID"
+                                                     PlaceholderText="Optional receiver routing ID"
+                                                     Text="{x:Bind StreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <TextBox Header="Passphrase"
+                                                     Text="{x:Bind Passphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
                     <TextBlock Text="{x:Bind ViewModel.SrtIngestRuntimeSummary, Mode=OneWay}"
                                FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}"

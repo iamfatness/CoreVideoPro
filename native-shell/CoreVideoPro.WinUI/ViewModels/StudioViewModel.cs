@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Models;
@@ -19,7 +21,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
     private const string MultiviewSoloSceneAId = "multiview-solo-a";
     private const string MultiviewSoloSceneBId = "multiview-solo-b";
-    private const string VirtualSrtIngestDeviceId = "srt-ingest-program";
+    private const int MaxSrtIngestSources = 8;
 
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
@@ -109,24 +111,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _streamSrtPassphrase = string.Empty;
 
     [ObservableProperty]
-    private string _srtIngestMode = "listener";
-
-    [ObservableProperty]
-    private string _srtIngestHost = "0.0.0.0";
-
-    [ObservableProperty]
-    private string _srtIngestPort = "10000";
-
-    [ObservableProperty]
-    private string _srtIngestLatencyMs = "120";
-
-    [ObservableProperty]
-    private string _srtIngestStreamId = string.Empty;
-
-    [ObservableProperty]
-    private string _srtIngestPassphrase = string.Empty;
-
-    [ObservableProperty]
     private string _canvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
 
     [ObservableProperty]
@@ -196,6 +180,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new(ShowInputRosterService.CreateDefaultSlots());
 
     public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors { get; } = [];
+
+    public ObservableCollection<SrtIngestSource> SrtIngestSources { get; } =
+    [
+        CreateSrtIngestSource(1)
+    ];
 
     [ObservableProperty]
     private ProductionMode _productionMode = ProductionMode.Manual;
@@ -488,6 +477,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
         VideoRoutingMatrix.RouteChanged += OnVideoRoutingMatrixChanged;
+        SrtIngestSources.CollectionChanged += OnSrtIngestSourcesChanged;
+        foreach (var source in SrtIngestSources)
+        {
+            source.PropertyChanged += OnSrtIngestSourcePropertyChanged;
+        }
 
         _currentRoomId = "main";
         _currentRoomName = "Main room";
@@ -613,10 +607,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<string> SrtIngestModeOptions { get; } = ["listener", "caller", "rendezvous"];
 
     public string SrtIngestSummary =>
-        $"{NormalizeOutputText(SrtIngestMode, "listener")} {NormalizeOutputText(SrtIngestHost, "0.0.0.0")}:{NormalizeOutputText(SrtIngestPort, "10000")} - {NormalizeOutputText(SrtIngestLatencyMs, "120")} ms latency";
+        SrtIngestSources.Count == 1
+            ? SrtIngestSources[0].Summary
+            : $"{SrtIngestSources.Count}/{MaxSrtIngestSources} SRT sources configured";
+
+    public string SrtIngestCountSummary =>
+        $"{SrtIngestSources.Count} of {MaxSrtIngestSources} SRT sources";
+
+    public bool CanAddSrtIngestSource => SrtIngestSources.Count < MaxSrtIngestSources;
 
     public string SrtIngestRuntimeSummary =>
-        "Configured as a routable source. Real SRT receive/decode requires the libsrt ingest adapter.";
+        "Each SRT source is exposed as a routable input. Real SRT receive/decode requires the libsrt ingest adapter.";
 
     public IReadOnlyList<RouteSelectOption> OutputResolutionOptions { get; } =
     [
@@ -1030,18 +1031,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamSrtKeyLengthChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtPassphraseChanged(string value) => OnStreamOutputOptionChanged();
-
-    partial void OnSrtIngestModeChanged(string value) => OnSrtIngestSettingsChanged();
-
-    partial void OnSrtIngestHostChanged(string value) => OnSrtIngestSettingsChanged();
-
-    partial void OnSrtIngestPortChanged(string value) => OnSrtIngestSettingsChanged();
-
-    partial void OnSrtIngestLatencyMsChanged(string value) => OnSrtIngestSettingsChanged();
-
-    partial void OnSrtIngestStreamIdChanged(string value) => OnSrtIngestSettingsChanged();
-
-    partial void OnSrtIngestPassphraseChanged(string value) => OnSrtIngestSettingsChanged();
 
     partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
 
@@ -2392,8 +2381,82 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OnSrtIngestSettingsChanged()
     {
         OnPropertyChanged(nameof(SrtIngestSummary));
+        OnPropertyChanged(nameof(SrtIngestCountSummary));
+        OnPropertyChanged(nameof(CanAddSrtIngestSource));
         OnPropertyChanged(nameof(SrtIngestRuntimeSummary));
-        RefreshVirtualSrtIngestDevice();
+        RefreshVirtualSrtIngestDevices();
+        RefreshShowInputEditors();
+        RefreshPreviewRoutingState();
+        RefreshMultiviewGridTiles();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanAddSrtIngestSource))]
+    private void AddSrtIngestSource()
+    {
+        if (!CanAddSrtIngestSource)
+        {
+            CommandStatus = $"SRT ingest is capped at {MaxSrtIngestSources} sources.";
+            return;
+        }
+
+        var nextNumber = Enumerable.Range(1, MaxSrtIngestSources)
+            .First(number => SrtIngestSources.All(source => source.Number != number));
+        var source = CreateSrtIngestSource(nextNumber);
+        SrtIngestSources.Add(source);
+        CommandStatus = $"{source.Name} added as a routable SRT input";
+    }
+
+    [RelayCommand]
+    private void RemoveSrtIngestSource(string sourceId)
+    {
+        if (SrtIngestSources.Count <= 1)
+        {
+            CommandStatus = "Keep at least one SRT ingest source configured.";
+            return;
+        }
+
+        var source = SrtIngestSources.FirstOrDefault(item => string.Equals(item.Id, sourceId, StringComparison.Ordinal));
+        if (source is null)
+        {
+            return;
+        }
+
+        SrtIngestSources.Remove(source);
+        RemoveVirtualSrtIngestDevice(source.DeviceId);
+        CommandStatus = $"{source.Name} removed from SRT inputs";
+    }
+
+    private void OnSrtIngestSourcesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems is not null)
+        {
+            foreach (var source in e.OldItems.OfType<SrtIngestSource>())
+            {
+                source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
+            }
+        }
+
+        if (e.NewItems is not null)
+        {
+            foreach (var source in e.NewItems.OfType<SrtIngestSource>())
+            {
+                source.PropertyChanged += OnSrtIngestSourcePropertyChanged;
+            }
+        }
+
+        AddSrtIngestSourceCommand.NotifyCanExecuteChanged();
+        OnSrtIngestSettingsChanged();
+    }
+
+    private void OnSrtIngestSourcePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is not SrtIngestSource source)
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(SrtIngestSummary));
+        RefreshVirtualSrtIngestDevice(source);
         RefreshShowInputEditors();
         RefreshPreviewRoutingState();
         RefreshMultiviewGridTiles();
@@ -2527,7 +2590,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
         CaptureDevices.Clear();
-        foreach (var device in discovered.Concat([CreateVirtualSrtIngestDevice()]))
+        foreach (var device in discovered.Concat(CreateVirtualSrtIngestDevices()))
         {
             if (priorById.TryGetValue(device.Id, out var prior))
             {
@@ -2549,19 +2612,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptureDevices));
     }
 
-    private void RefreshVirtualSrtIngestDevice()
+    private void RefreshVirtualSrtIngestDevices()
     {
-        var prior = CaptureDevices.FirstOrDefault(device => device.Id == VirtualSrtIngestDeviceId);
+        foreach (var source in SrtIngestSources)
+        {
+            RefreshVirtualSrtIngestDevice(source);
+        }
+
+        var activeIds = SrtIngestSources
+            .Select(source => source.DeviceId)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var staleDevice in CaptureDevices
+            .Where(device => IsVirtualSrtIngestDevice(device) && !activeIds.Contains(device.Id))
+            .ToList())
+        {
+            RemoveVirtualSrtIngestDevice(staleDevice.Id);
+        }
+    }
+
+    private void RefreshVirtualSrtIngestDevice(SrtIngestSource source)
+    {
+        var prior = CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId);
         if (prior is null)
         {
-            CaptureDevices.Add(CreateVirtualSrtIngestDevice());
+            CaptureDevices.Add(CreateVirtualSrtIngestDevice(source));
         }
         else
         {
             var index = CaptureDevices.IndexOf(prior);
-            var next = CreateVirtualSrtIngestDevice();
+            var next = CreateVirtualSrtIngestDevice(source);
             next.ConnectionState = prior.ConnectionState;
             next.SignalPresent = prior.SignalPresent;
+            next.SelectedInputId = prior.SelectedInputId;
+            next.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
+            next.ObservedFrameWidth = prior.ObservedFrameWidth;
+            next.ObservedFrameHeight = prior.ObservedFrameHeight;
+            next.ObservedFrameRate = prior.ObservedFrameRate;
             CaptureDevices[index] = next;
         }
 
@@ -2570,22 +2656,67 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptureDevices));
     }
 
-    private CaptureDevice CreateVirtualSrtIngestDevice() =>
+    private void RemoveVirtualSrtIngestDevice(string deviceId)
+    {
+        var device = CaptureDevices.FirstOrDefault(item => string.Equals(item.Id, deviceId, StringComparison.Ordinal));
+        if (device is not null)
+        {
+            CaptureDevices.Remove(device);
+        }
+
+        foreach (var slot in ShowInputs.Where(slot =>
+            slot.Kind == ShowInputKind.SrtIngest &&
+            string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        {
+            slot.Kind = ShowInputKind.Unassigned;
+            slot.CaptureDeviceId = null;
+            slot.InShow = false;
+        }
+
+        foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes)
+            .Where(route => route.Mode == SourceRouteMode.CaptureDevice &&
+                string.Equals(route.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
+        {
+            route.Mode = SourceRouteMode.None;
+            route.CaptureDeviceId = null;
+            route.ParticipantId = null;
+        }
+
+        RefreshDualCaptureSourceOptions();
+        RefreshCaptureFleetSummary();
+        RefreshShowInputEditors();
+        RefreshPreviewRoutingState();
+        RefreshMultiviewGridTiles();
+        OnPropertyChanged(nameof(HasCaptureDevices));
+    }
+
+    private IReadOnlyList<CaptureDevice> CreateVirtualSrtIngestDevices() =>
+        SrtIngestSources.Select(CreateVirtualSrtIngestDevice).ToList();
+
+    private static SrtIngestSource CreateSrtIngestSource(int number) =>
         new()
         {
-            Id = VirtualSrtIngestDeviceId,
-            NativeDeviceId = $"srt://{NormalizeOutputText(SrtIngestHost, "0.0.0.0")}:{NormalizeOutputText(SrtIngestPort, "10000")}",
+            Id = $"srt-source-{number:00}",
+            Number = number,
+            Port = (10000 + number - 1).ToString()
+        };
+
+    private static CaptureDevice CreateVirtualSrtIngestDevice(SrtIngestSource source) =>
+        new()
+        {
+            Id = source.DeviceId,
+            NativeDeviceId = source.NativeUri,
             Vendor = "srt",
-            Name = $"SRT Ingest - {SrtIngestSummary}",
+            Name = $"{source.Name} - {source.Summary}",
             Inputs =
             [
                 new CaptureDeviceInput
                 {
-                    Id = "program",
-                    Label = "Program"
+                    Id = source.Id,
+                    Label = source.Name
                 }
             ],
-            SelectedInputId = "program",
+            SelectedInputId = source.Id,
             Width = 1920,
             Height = 1080,
             FrameRate = 60,
@@ -4365,6 +4496,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged -= OnSurfacesChanged;
+        SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
+        foreach (var source in SrtIngestSources)
+        {
+            source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
+        }
 
         ForceShutdownMediaCore();
 
