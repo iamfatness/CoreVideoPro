@@ -1,7 +1,9 @@
 using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using System.Windows.Input;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -14,6 +16,13 @@ public sealed partial class BroadcastMultiviewTile : UserControl
             typeof(BroadcastMultiviewTile),
             new PropertyMetadata(null, OnTileChanged));
 
+    public static readonly DependencyProperty TileClickCommandProperty =
+        DependencyProperty.Register(
+            nameof(TileClickCommand),
+            typeof(ICommand),
+            typeof(BroadcastMultiviewTile),
+            new PropertyMetadata(null));
+
     public BroadcastMultiviewTile()
     {
         InitializeComponent();
@@ -23,6 +32,12 @@ public sealed partial class BroadcastMultiviewTile : UserControl
     {
         get => (ParticipantSurfaceTile?)GetValue(TileProperty);
         set => SetValue(TileProperty, value);
+    }
+
+    public ICommand? TileClickCommand
+    {
+        get => (ICommand?)GetValue(TileClickCommandProperty);
+        set => SetValue(TileClickCommandProperty, value);
     }
 
     public string SourceLabel => Tile is null ? "—" : Tile.SourceLabel;
@@ -41,6 +56,20 @@ public sealed partial class BroadcastMultiviewTile : UserControl
         {
             tile.Bindings.Update();
             tile.ApplyTallyChrome();
+        }
+    }
+
+    private void OnTileTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (Tile is not { IsEmpty: false } tile)
+        {
+            return;
+        }
+
+        if (TileClickCommand?.CanExecute(tile) == true)
+        {
+            TileClickCommand.Execute(tile);
+            e.Handled = true;
         }
     }
 

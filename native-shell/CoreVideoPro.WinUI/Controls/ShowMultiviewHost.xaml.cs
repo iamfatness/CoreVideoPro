@@ -3,6 +3,7 @@ using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.Windows.Input;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -11,6 +12,10 @@ public sealed partial class ShowMultiviewHost : UserControl
     public static readonly DependencyProperty TilesProperty =
         DependencyProperty.Register(nameof(Tiles), typeof(IEnumerable), typeof(ShowMultiviewHost),
             new PropertyMetadata(null, OnTilesChanged));
+
+    public static readonly DependencyProperty TileClickCommandProperty =
+        DependencyProperty.Register(nameof(TileClickCommand), typeof(ICommand), typeof(ShowMultiviewHost),
+            new PropertyMetadata(null, OnTileClickCommandChanged));
 
     private bool _rebuildInProgress;
     private bool _rebuildScheduled;
@@ -28,11 +33,25 @@ public sealed partial class ShowMultiviewHost : UserControl
         set => SetValue(TilesProperty, value);
     }
 
+    public ICommand? TileClickCommand
+    {
+        get => (ICommand?)GetValue(TileClickCommandProperty);
+        set => SetValue(TileClickCommandProperty, value);
+    }
+
     private static void OnTilesChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ShowMultiviewHost host)
         {
             host.ScheduleRebuildLayout();
+        }
+    }
+
+    private static void OnTileClickCommandChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is ShowMultiviewHost host)
+        {
+            host.ApplyTileClickCommandToChildren();
         }
     }
 
@@ -105,6 +124,7 @@ public sealed partial class ShowMultiviewHost : UserControl
             }
 
             multiviewTile.Tile = tiles[patchIndex];
+            multiviewTile.TileClickCommand = TileClickCommand;
             patchIndex++;
         }
 
@@ -196,6 +216,7 @@ public sealed partial class ShowMultiviewHost : UserControl
         var host = new BroadcastMultiviewTile
         {
             Tile = tile,
+            TileClickCommand = TileClickCommand,
             Margin = new Thickness(2),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
@@ -205,5 +226,23 @@ public sealed partial class ShowMultiviewHost : UserControl
         Grid.SetRowSpan(host, rowSpan);
         Grid.SetColumnSpan(host, columnSpan);
         LayoutSurface.Children.Add(host);
+    }
+
+    private void ApplyTileClickCommandToChildren()
+    {
+        foreach (var child in LayoutSurface.Children)
+        {
+            var multiviewTile = child switch
+            {
+                BroadcastMultiviewTile direct => direct,
+                AspectRatioHost { Child: BroadcastMultiviewTile nested } => nested,
+                _ => null
+            };
+
+            if (multiviewTile is not null)
+            {
+                multiviewTile.TileClickCommand = TileClickCommand;
+            }
+        }
     }
 }

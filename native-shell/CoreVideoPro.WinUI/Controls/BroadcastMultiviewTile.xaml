@@ -18,7 +18,8 @@
             BorderThickness="1"
             CornerRadius="2"
             MinWidth="0"
-            MinHeight="0">
+            MinHeight="0"
+            Tapped="OnTileTapped">
         <Grid>
             <cvcontrols:VideoSurfaceHost SurfaceState="{x:Bind Surface, Mode=OneWay}" />
 

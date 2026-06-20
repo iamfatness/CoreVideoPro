@@ -18,6 +18,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private readonly Direct3D11InteropService _direct3DInterop = new();
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
+    private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
     {
@@ -129,7 +130,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         SurfaceState = VideoSurfaceState.Waiting(kind, SurfaceKey, Title);
         _direct3DDevicePointer = 0;
         SwapChainHost.Visibility = Visibility.Collapsed;
-        PreviewImage.Source = null;
+        BgraPreviewHelper.ClearPreview(PreviewImage);
+        _lastPreviewSurfaceKey = null;
         PreviewImage.Visibility = Visibility.Collapsed;
     }
 
@@ -216,7 +218,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         if (SurfaceState is null)
         {
-            BgraPreviewHelper.SetPreview(PreviewImage, null, 0, 0);
+            BgraPreviewHelper.ClearPreview(PreviewImage);
+            _lastPreviewSurfaceKey = null;
             PlaceholderPanel.Visibility = Visibility.Visible;
             return;
         }
@@ -226,13 +229,19 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             return;
         }
 
+        if (!string.Equals(_lastPreviewSurfaceKey, SurfaceState.SurfaceKey, StringComparison.Ordinal))
+        {
+            BgraPreviewHelper.ClearPreview(PreviewImage);
+            _lastPreviewSurfaceKey = SurfaceState.SurfaceKey;
+        }
+
         BgraPreviewHelper.SetPreview(
             PreviewImage,
             SurfaceState.PreviewBgra,
             SurfaceState.PreviewWidth,
             SurfaceState.PreviewHeight);
 
-        if (SurfaceState.HasPreviewBitmap)
+        if (SurfaceState.HasPreviewBitmap || BgraPreviewHelper.HasPresentedFrame(PreviewImage))
         {
             PreviewImage.Visibility = Visibility.Visible;
             PlaceholderPanel.Visibility = Visibility.Collapsed;

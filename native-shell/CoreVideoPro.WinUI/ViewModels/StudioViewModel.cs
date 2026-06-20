@@ -17,6 +17,8 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
+    private const string MultiviewSoloSceneAId = "multiview-solo-a";
+    private const string MultiviewSoloSceneBId = "multiview-solo-b";
 
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
@@ -1043,10 +1045,74 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
     }
 
+    [RelayCommand]
+    private void PreviewMultiviewTile(ParticipantSurfaceTile? tile)
+    {
+        if (tile is not { IsEmpty: false })
+        {
+            return;
+        }
+
+        var sceneId = ActiveSceneId == MultiviewSoloSceneAId
+            ? MultiviewSoloSceneBId
+            : MultiviewSoloSceneAId;
+        var scene = EnsureMultiviewSoloScene(sceneId);
+        var routes = GetMutableRoutes(scene.Id);
+        routes.Clear();
+        routes.Add(BuildSoloRoute(scene.Id, tile));
+
+        PreviewSceneId = scene.Id;
+        CommandStatus = $"{tile.Participant.Name} queued full-frame on preview";
+        SchedulePreviewRoutingRefresh();
+    }
+
     public bool CanTake => PreviewSceneId != ActiveSceneId;
 
     private static string NewCustomSceneId() =>
         $"custom-{Guid.NewGuid():N}".Substring(0, "custom-".Length + 8);
+
+    private Scene EnsureMultiviewSoloScene(string sceneId)
+    {
+        if (Scenes.FirstOrDefault(scene => scene.Id == sceneId) is { } existing)
+        {
+            return existing;
+        }
+
+        var scene = new Scene
+        {
+            Id = sceneId,
+            Name = sceneId == MultiviewSoloSceneAId ? "Multiview Solo A" : "Multiview Solo B",
+            Layout = "full",
+            Automation = "Multiview source"
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[scene.Id] = [];
+        RefreshSceneItems();
+        return scene;
+    }
+
+    private static SourceRoute BuildSoloRoute(string sceneId, ParticipantSurfaceTile tile)
+    {
+        var participantId = tile.Participant.Id;
+        var isCaptureDevice = participantId.StartsWith("capture:", StringComparison.Ordinal);
+        return new SourceRoute
+        {
+            Id = $"{sceneId}-1",
+            Mode = isCaptureDevice ? SourceRouteMode.CaptureDevice : SourceRouteMode.Fixed,
+            ParticipantId = isCaptureDevice ? null : participantId,
+            CaptureDeviceId = isCaptureDevice ? participantId["capture:".Length..] : null,
+            AudioRole = SourceAudioRole.Isolated,
+            CanvasRect = new NormalizedCanvasRect
+            {
+                X = 0,
+                Y = 0,
+                Width = 1,
+                Height = 1
+            },
+            ZIndex = 0
+        };
+    }
 
     [RelayCommand]
     private void NewScene()

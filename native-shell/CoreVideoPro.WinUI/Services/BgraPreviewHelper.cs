@@ -14,16 +14,36 @@ public static class BgraPreviewHelper
     private const long MinimumPreviewIntervalMs = 16;
     private static readonly ConditionalWeakTable<Image, PreviewState> PreviewStates = new();
 
+    public static bool HasPresentedFrame(Image image) =>
+        PreviewStates.TryGetValue(image, out var state) &&
+        Volatile.Read(ref state.HasPresentedFrame) == 1;
+
+    public static void ClearPreview(Image image)
+    {
+        if (PreviewStates.TryGetValue(image, out var state))
+        {
+            Interlocked.Exchange(ref state.HasPresentedFrame, 0);
+            Interlocked.Exchange(ref state.UpdateInFlight, 0);
+        }
+
+        image.Source = null;
+        image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+    }
+
     public static void SetPreview(Image image, byte[]? bgra, int width, int height)
     {
+        var state = PreviewStates.GetOrCreateValue(image);
         if (bgra is not { Length: > 0 } || width <= 0 || height <= 0 || bgra.Length != width * height * 4)
         {
-            image.Source = null;
-            image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            if (Volatile.Read(ref state.HasPresentedFrame) == 0)
+            {
+                image.Source = null;
+                image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            }
+
             return;
         }
 
-        var state = PreviewStates.GetOrCreateValue(image);
         var now = Environment.TickCount64;
         if (now - Interlocked.Read(ref state.LastUpdateMs) < MinimumPreviewIntervalMs ||
             Interlocked.CompareExchange(ref state.UpdateInFlight, 1, 0) != 0)
@@ -36,19 +56,17 @@ public static class BgraPreviewHelper
         {
             var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
             softwareBitmap.CopyFromBuffer(bgra.AsBuffer());
-            if (!ReferenceEquals(image.Source, state.Source))
-            {
-                image.Source = state.Source;
-            }
-
             _ = SetPreviewSourceAsync(image, state, softwareBitmap, width, height);
         }
         catch (Exception ex)
         {
             LaunchLog.Write($"preview: failed to update BGRA preview {width}x{height}: {ex.GetType().Name}: {ex.Message}");
             Interlocked.Exchange(ref state.UpdateInFlight, 0);
-            image.Source = null;
-            image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            if (Volatile.Read(ref state.HasPresentedFrame) == 0)
+            {
+                image.Source = null;
+                image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            }
         }
     }
 
@@ -61,9 +79,12 @@ public static class BgraPreviewHelper
     {
         try
         {
-            await state.Source.SetBitmapAsync(bitmap);
-            image.Source = state.Source;
+            var nextSource = state.NextSource;
+            await nextSource.SetBitmapAsync(bitmap);
+            image.Source = nextSource;
             image.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            state.CommitPresentedSource();
+            Interlocked.Exchange(ref state.HasPresentedFrame, 1);
         }
         catch (Exception ex)
         {
@@ -72,8 +93,11 @@ public static class BgraPreviewHelper
                 LaunchLog.Write($"preview: failed to update BGRA preview {width}x{height}: {ex.GetType().Name}: {ex.Message}");
             }
 
-            image.Source = null;
-            image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            if (Volatile.Read(ref state.HasPresentedFrame) == 0)
+            {
+                image.Source = null;
+                image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            }
         }
         finally
         {
@@ -84,9 +108,17 @@ public static class BgraPreviewHelper
 
     private sealed class PreviewState
     {
-        public SoftwareBitmapSource Source { get; } = new();
+        private readonly SoftwareBitmapSource[] _sources = [new(), new()];
+        private int _frontSourceIndex;
+
         public int UpdateInFlight;
         public int FailureCount;
+        public int HasPresentedFrame;
         public long LastUpdateMs;
+
+        public SoftwareBitmapSource NextSource => _sources[1 - Volatile.Read(ref _frontSourceIndex)];
+
+        public void CommitPresentedSource() =>
+            Interlocked.Exchange(ref _frontSourceIndex, 1 - Volatile.Read(ref _frontSourceIndex));
     }
 }

@@ -454,7 +454,8 @@
                             </StackPanel>
                         </Grid>
                         <cvcontrols:ShowMultiviewHost Grid.Row="1"
-                                                      Tiles="{x:Bind ViewModel.MultiviewGridTiles, Mode=OneWay}" />
+                                                      Tiles="{x:Bind ViewModel.MultiviewGridTiles, Mode=OneWay}"
+                                                      TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}" />
                     </Grid>
                 </Border>
             </Grid>
