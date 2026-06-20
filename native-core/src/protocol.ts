@@ -498,6 +498,7 @@ export type MediaCoreCommand =
     }
   | {
       type: "sync-participant-audio-mix";
+      limiterEnabled?: boolean;
       channels: Array<{
         participantId: string;
         inputLevel: number;
@@ -601,6 +602,7 @@ export type MediaCoreAudioMixSession = {
   status: "idle" | "live" | "warning";
   masterLevel: number;
   loudnessLufs: number;
+  limiterEnabled: boolean;
   limiterActive: boolean;
   mixedFrameCount: number;
   participants: MediaCoreParticipantAudioChannel[];

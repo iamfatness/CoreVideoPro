@@ -3,6 +3,7 @@
     x:Name="AudioRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CoreVideoPro.WinUI.Controls"
     xmlns:models="using:CoreVideoPro.WinUI.Models">
 
     <UserControl.Resources>
@@ -54,10 +55,28 @@
                             </Border>
                             <Border Grid.Column="2" Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
-                                    <TextBlock Text="Zoom ISO" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="8 source capacity" FontSize="12" />
+                                    <TextBlock Text="Limiter" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                    <TextBlock Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}" FontSize="12" />
                                 </StackPanel>
                             </Border>
+                        </Grid>
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="{x:Bind ViewModel.MasterLimiterModeLabel, Mode=OneWay}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind ViewModel.MasterLimiterSummary, Mode=OneWay}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1"
+                                          Header="Master limiter"
+                                          IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
                         </Grid>
 
                         <Grid ColumnSpacing="8" Padding="10,0,10,0">
@@ -101,8 +120,11 @@
                                                 <TextBlock Text="{x:Bind LufsLabel}" FontSize="10"
                                                            Foreground="{StaticResource StudioAccentBrush}" />
                                             </StackPanel>
-                                            <ProgressBar Grid.Column="1" Maximum="100" Value="{x:Bind OutputLevel}"
-                                                         Height="8" VerticalAlignment="Center" />
+                                            <controls:AudioLevelMeter Grid.Column="1"
+                                                                      Level="{x:Bind OutputLevel, Mode=OneWay}"
+                                                                      SegmentCount="14"
+                                                                      Height="12"
+                                                                      VerticalAlignment="Center" />
                                             <TextBlock Grid.Column="2" Text="{x:Bind GainLabel}" FontSize="11"
                                                        VerticalAlignment="Center" HorizontalAlignment="Center" />
                                             <TextBlock Grid.Column="3" Text="{x:Bind PanLabel}" FontSize="11"
@@ -179,14 +201,42 @@
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="Insert chain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="Built-in EQ + compressor + VST3 scan-only"
+                            <TextBlock Text="{x:Bind ViewModel.SelectedInsertChainLabel, Mode=OneWay}"
                                        FontSize="12" TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Button Content="Add EQ"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                CommandParameter="Built-in EQ" />
+                        <Button Grid.Column="1"
+                                Content="Add compressor"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                CommandParameter="Compressor" />
+                        <Button Grid.Row="1"
+                                Content="Add VST3 slot"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                CommandParameter="VST3 Bridge" />
+                        <Button Grid.Row="1" Grid.Column="1"
+                                Content="Clear chain"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.ClearSelectedAudioInsertsCommand}" />
+                    </Grid>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="VST bridge" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="Discovery model wired. Live VST processing requires the native bridge adapter."
+                            <TextBlock Text="{x:Bind ViewModel.VstBridgeStatusLabel, Mode=OneWay}"
                                        FontSize="12" TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>

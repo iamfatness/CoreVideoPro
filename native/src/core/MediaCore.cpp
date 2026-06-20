@@ -936,6 +936,7 @@ void MediaCore::configureEncoderRecordingRequest() {
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   audioChannels_.clear();
+  audioLimiterEnabled_ = !command.get("limiterEnabled") || command.get("limiterEnabled")->asBool();
   const rpc::Json* channels = command.get("channels");
   if (!channels || !channels->isArray()) {
     return;
@@ -1214,7 +1215,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
             {"outputLevel", participant.outputLevel},
             {"gainDb", participant.gainDb},
             {"noiseSuppression", participant.noiseSuppressionActive},
-            {"limiterActive", participant.limiterActive},
+            {"limiterActive", audioLimiterEnabled_ && participant.limiterActive},
             {"muted", participant.muted},
             {"status", protocolAudioStatusForDsp(participant)},
         });
@@ -1229,7 +1230,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"status", nativeMix.status},
           {"masterLevel", nativeMix.masterLevel},
           {"loudnessLufs", nativeMix.loudnessLufs},
-          {"limiterActive", nativeMix.limiterActive},
+          {"limiterEnabled", audioLimiterEnabled_},
+          {"limiterActive", audioLimiterEnabled_ && nativeMix.limiterActive},
           {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
           {"participants", participants},
           {"summary", nativeMix.summary},
@@ -1241,6 +1243,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"status", "idle"},
         {"masterLevel", 0},
         {"loudnessLufs", -60},
+        {"limiterEnabled", audioLimiterEnabled_},
         {"limiterActive", false},
         {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
         {"participants", rpc::Json::Array{}},
@@ -1254,7 +1257,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
   std::unordered_set<std::string> warningSet;
   int masterTotal = 0;
   int audibleCount = 0;
-  bool limiterActive = false;
+  bool limiterWouldReduce = false;
   int boostingCount = 0;
   int duckingCount = 0;
   int mutedCount = 0;
@@ -1267,7 +1270,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
     const int gainDb = channel.muted ? -60 : static_cast<int>(clampDouble(smartGainDb + (channel.hasManualGain ? channel.manualGainDb : 0), -12, 12));
     const bool noiseSuppression = channel.noiseSuppression || channel.inputLevel < 35;
     const int outputLevel = channel.muted ? 0 : clampInt(channel.inputLevel + gainDb * 4, 0, 100);
-    limiterActive = limiterActive || outputLevel >= 88;
+    const bool channelLimiterWouldReduce = outputLevel >= 88;
+    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce;
     if (!channel.muted) {
       masterTotal += outputLevel;
       ++audibleCount;
@@ -1305,7 +1309,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"pan", channel.pan},
         {"solo", channel.solo},
         {"noiseSuppression", noiseSuppression},
-        {"limiterActive", outputLevel >= 88},
+        {"limiterActive", audioLimiterEnabled_ && channelLimiterWouldReduce},
         {"muted", channel.muted},
         {"pluginInserts", pluginInserts},
         {"status", audioStatusFor(channel.muted, gainDb)},
@@ -1317,7 +1321,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
   }
 
   const int masterLevel = audibleCount > 0 ? clampInt((masterTotal / audibleCount) + 8, 0, 100) : 0;
-  limiterActive = limiterActive || masterLevel >= 88;
+  limiterWouldReduce = limiterWouldReduce || masterLevel >= 88;
+  const bool limiterActive = audioLimiterEnabled_ && limiterWouldReduce;
   std::ostringstream summary;
   if (boostingCount > 0) summary << boostingCount << " boosted";
   if (duckingCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << duckingCount << " ducked";
@@ -1331,6 +1336,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"status", warnings.empty() ? "live" : "warning"},
       {"masterLevel", masterLevel},
       {"loudnessLufs", limiterActive ? -14 : -16},
+      {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
       {"participants", participants},

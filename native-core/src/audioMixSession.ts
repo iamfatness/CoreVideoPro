@@ -18,6 +18,7 @@ const IDLE_SESSION: MediaCoreAudioMixSession = {
   status: "idle",
   masterLevel: 0,
   loudnessLufs: -60,
+  limiterEnabled: true,
   limiterActive: false,
   mixedFrameCount: 0,
   participants: [],
@@ -29,10 +30,12 @@ export class AudioMixSessionModel {
   private channels: AudioMixChannelInput[] = [];
   private mixedFrameCount = 0;
   private hasSyncedRawAudio = false;
+  private limiterEnabled = true;
   private syncWarnings: string[] = [];
 
-  sync(channels: AudioMixChannelInput[]) {
+  sync(channels: AudioMixChannelInput[], limiterEnabled = true) {
     this.hasSyncedRawAudio = true;
+    this.limiterEnabled = limiterEnabled;
     const { channels: normalizedChannels, warnings } = normalizeChannels(channels);
     this.channels = normalizedChannels;
     this.syncWarnings = warnings;
@@ -52,6 +55,7 @@ export class AudioMixSessionModel {
       return {
         ...IDLE_SESSION,
         status: warnings.length > 0 ? "warning" : IDLE_SESSION.status,
+        limiterEnabled: this.limiterEnabled,
         mixedFrameCount: this.mixedFrameCount,
         warnings
       };
@@ -63,7 +67,8 @@ export class AudioMixSessionModel {
       audible.length > 0
         ? Math.min(100, Math.round(audible.reduce((total, channel) => total + channel.outputLevel, 0) / audible.length + 8))
         : 0;
-    const limiterActive = participants.some((channel) => channel.limiterActive) || masterLevel >= LIMITER_THRESHOLD;
+    const limiterWouldReduce = participants.some((channel) => channel.limiterActive) || masterLevel >= LIMITER_THRESHOLD;
+    const limiterActive = this.limiterEnabled && limiterWouldReduce;
     const boostingCount = participants.filter((channel) => channel.status === "boosting").length;
     const duckingCount = participants.filter((channel) => channel.status === "ducking").length;
     const mutedCount = participants.filter((channel) => channel.muted).length;
@@ -86,9 +91,13 @@ export class AudioMixSessionModel {
       status: warnings.length > 0 ? "warning" : "live",
       masterLevel,
       loudnessLufs: limiterActive ? -14 : -16,
+      limiterEnabled: this.limiterEnabled,
       limiterActive,
       mixedFrameCount: this.mixedFrameCount,
-      participants,
+      participants: participants.map((participant) => ({
+        ...participant,
+        limiterActive: this.limiterEnabled && participant.limiterActive
+      })),
       summary: buildSummary(boostingCount, duckingCount, mutedCount, manualCount),
       warnings
     };

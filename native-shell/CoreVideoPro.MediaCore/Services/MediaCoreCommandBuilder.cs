@@ -21,7 +21,7 @@ public static class MediaCoreCommandBuilder
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
-            BuildAudioMixCommand(context.AudioMixChannels),
+            BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
         };
@@ -211,9 +211,10 @@ public static class MediaCoreCommandBuilder
             ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
         });
 
-    private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels) =>
+    private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels, bool limiterEnabled) =>
         Command("sync-participant-audio-mix", new Dictionary<string, object?>
         {
+            ["limiterEnabled"] = limiterEnabled,
             ["channels"] = channels.Select(channel => new
             {
                 participantId = channel.ParticipantId,

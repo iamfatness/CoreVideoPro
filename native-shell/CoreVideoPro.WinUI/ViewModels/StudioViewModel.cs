@@ -68,6 +68,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streaming;
 
     [ObservableProperty]
+    private bool _masterLimiterEnabled = true;
+
+    [ObservableProperty]
     private bool _streamRtmpEnabled = true;
 
     [ObservableProperty]
@@ -475,9 +478,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         Participants = _audioMixChannels,
         LoudnessLufs = _bridge.LastSnapshot?.AudioMixSession.LoudnessLufs ?? -16,
+        LimiterEnabled = MasterLimiterEnabled,
         LimiterActive = _bridge.LastSnapshot?.AudioMixSession.LimiterActive ?? false,
         Summary = ProductionStateHelper.BuildAudioMixSummary(RoomVideoParticipants)
     };
+
+    public string MasterLimiterModeLabel => MasterLimiterEnabled ? "Limiter enabled" : "Limiter bypassed";
+
+    public string MasterLimiterActivityLabel =>
+        !MasterLimiterEnabled ? "Bypassed" : AudioMix.LimiterActive ? "Reducing peaks" : "Standing by";
+
+    public string MasterLimiterSummary =>
+        MasterLimiterEnabled
+            ? "Master protection is armed; activity only lights when peaks reach the ceiling."
+            : "Master protection is bypassed; no limiting is applied.";
 
     public StudioViewModel()
     {
@@ -824,6 +838,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public int SelectedOutputLevel =>
         SelectedAudioMix?.OutputLevel ?? SelectedParticipant?.AudioLevel ?? 0;
 
+    public string SelectedInsertChainLabel =>
+        SelectedAudioMix is { PluginInserts.Count: > 0 } mix
+            ? string.Join(" -> ", mix.PluginInserts)
+            : "No inserts";
+
+    public string VstBridgeStatusLabel =>
+        SelectedAudioMix?.PluginInserts.Any(insert => insert.StartsWith("VST", StringComparison.OrdinalIgnoreCase)) == true
+            ? "VST3 bridge slot configured - scan/load bridge required for live PCM processing"
+            : "No VST bridge slot on selected channel";
+
     public Brush EngineToggleBackground => ZoomCaptureSubscribed
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(31, 61, 220, 151))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(10, 255, 255, 255));
@@ -1011,6 +1035,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
     }
 
+    partial void OnMasterLimiterEnabledChanged(bool value)
+    {
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamNdiEnabledChanged(bool value) => OnStreamOutputOptionChanged();
@@ -1134,6 +1164,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedManualGainLabel));
         OnPropertyChanged(nameof(SelectedMuteButtonLabel));
         OnPropertyChanged(nameof(SelectedOutputLevel));
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
+        OnPropertyChanged(nameof(VstBridgeStatusLabel));
         RefreshAudioParticipantRows();
     }
 
@@ -1694,6 +1726,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    [RelayCommand]
+    private void AddSelectedAudioInsert(string insertName)
+    {
+        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(insertName))
+        {
+            return;
+        }
+
+        var normalized = NormalizeAudioInsertName(insertName);
+        if (mix.PluginInserts.Any(insert => string.Equals(insert, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            CommandStatus = $"{normalized} is already on {SelectedParticipant?.Name ?? "selected channel"}";
+            return;
+        }
+
+        mix.PluginInserts.Add(normalized);
+        CommandStatus = normalized.StartsWith("VST", StringComparison.OrdinalIgnoreCase)
+            ? $"Added {normalized} scan slot. Live VST processing requires the native bridge."
+            : $"Added {normalized} to {SelectedParticipant?.Name ?? "selected channel"}";
+        RefreshMixerBindings(mix.ParticipantId);
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    [RelayCommand]
+    private void ClearSelectedAudioInserts()
+    {
+        if (SelectedAudioMix is not { } mix)
+        {
+            return;
+        }
+
+        mix.PluginInserts.Clear();
+        CommandStatus = $"Insert chain cleared for {SelectedParticipant?.Name ?? "selected channel"}";
+        RefreshMixerBindings(mix.ParticipantId);
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private static string NormalizeAudioInsertName(string insertName) =>
+        insertName.Trim().ToLowerInvariant() switch
+        {
+            "eq" or "built-in eq" => "Built-in EQ",
+            "compressor" => "Compressor",
+            "vst" or "vst3" or "vst3 bridge" => "VST3 Bridge Slot",
+            _ => insertName.Trim()
+        };
+
     private void RefreshMixerBindings(string participantId)
     {
         if (!string.Equals(SelectedParticipantId, participantId, StringComparison.Ordinal))
@@ -1708,6 +1786,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedManualGainLabel));
         OnPropertyChanged(nameof(SelectedMuteButtonLabel));
         OnPropertyChanged(nameof(SelectedOutputLevel));
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
+        OnPropertyChanged(nameof(VstBridgeStatusLabel));
     }
 
     /// <summary>
@@ -2983,6 +3063,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(LoudnessTargetLabel));
         OnPropertyChanged(nameof(LoudnessLevelLabel));
         OnPropertyChanged(nameof(TruePeakLabel));
+        OnPropertyChanged(nameof(MasterLimiterModeLabel));
+        OnPropertyChanged(nameof(MasterLimiterActivityLabel));
+        OnPropertyChanged(nameof(MasterLimiterSummary));
     }
 
     private void RefreshAudioMixChannels()
@@ -3163,6 +3246,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.LowerThirdStyle,
                 BrandKit.CaptionStyle,
                 BrandKit.DefaultOverlayBehavior),
+            AudioLimiterEnabled = MasterLimiterEnabled,
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
             CaptureAudioSources = captureAudioSources,

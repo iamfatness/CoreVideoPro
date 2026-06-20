@@ -380,6 +380,22 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesLimiterEnabledOnAudioMixCommand()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            SceneRoutes = [new("speaker-slides-1", "fixed", "isolated", "p2")],
+            Participants = Participants,
+            AudioLimiterEnabled = false
+        });
+
+        var mix = commands.Single(command => command.Type == "sync-participant-audio-mix");
+        Assert.NotNull(mix.ExtensionData);
+        Assert.False(mix.ExtensionData!["limiterEnabled"].GetBoolean());
+    }
+
+    [Fact]
     public void EmitsEmptyAudioRoutingMatrixWhenNoSendsAreRouted()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

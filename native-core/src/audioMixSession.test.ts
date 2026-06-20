@@ -95,4 +95,20 @@ describe("AudioMixSessionModel", () => {
       warnings: []
     });
   });
+
+  it("keeps limiter activity off when the master limiter is bypassed", () => {
+    const model = new AudioMixSessionModel();
+    const snapshot = model.sync(
+      [{ participantId: "hot-host", inputLevel: 100, muted: false, noiseSuppression: false, manualGainDb: 12 }],
+      false
+    );
+
+    expect(snapshot.limiterEnabled).toBe(false);
+    expect(snapshot.limiterActive).toBe(false);
+    expect(snapshot.participants[0]).toMatchObject({
+      outputLevel: 100,
+      limiterActive: false
+    });
+    expect(snapshot.warnings).not.toContain("Limiter active in participant audio mix.");
+  });
 });

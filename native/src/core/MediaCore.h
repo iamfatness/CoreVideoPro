@@ -156,6 +156,7 @@ class MediaCore {
     std::vector<std::string> pluginInserts;
   };
   std::vector<ParticipantAudioChannelInput> audioChannels_;
+  bool audioLimiterEnabled_ = true;
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;

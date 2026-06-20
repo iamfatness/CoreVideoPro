@@ -136,6 +136,7 @@ export type NativeMediaCoreCommand =
     }
   | {
       type: "sync-participant-audio-mix";
+      limiterEnabled?: boolean;
       channels: Array<{
         participantId: string;
         inputLevel: number;

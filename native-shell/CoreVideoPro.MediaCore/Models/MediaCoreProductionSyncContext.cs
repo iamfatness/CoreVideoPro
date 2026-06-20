@@ -142,6 +142,7 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreGraphicWire> Graphics { get; init; } = [];
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
+    public bool AudioLimiterEnabled { get; init; } = true;
     public IReadOnlyList<MediaCoreAudioMixChannelWire> AudioMixChannels { get; init; } = [];
     public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];
     public IReadOnlyList<MediaCoreCaptureAudioSourceWire> CaptureAudioSources { get; init; } = [];

@@ -262,7 +262,9 @@ public sealed partial class TransportViewModel : ObservableObject
         MasterLufsLabel = snapshot.AudioMixSession.LoudnessLufs <= -59
             ? "LUFS —"
             : $"{snapshot.AudioMixSession.LoudnessLufs:0.0} LUFS";
-        MasterVolumeLabel = snapshot.AudioMixSession.LimiterActive ? "Limiter on" : "Limiter off";
+        MasterVolumeLabel = snapshot.AudioMixSession.LimiterEnabled
+            ? snapshot.AudioMixSession.LimiterActive ? "Limiter reducing" : "Limiter enabled"
+            : "Limiter bypassed";
     }
 
     private static int EstimateEncoderLoad(

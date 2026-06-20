@@ -2,6 +2,7 @@
     x:Class="CoreVideoPro.WinUI.Views.AudioMixerWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CoreVideoPro.WinUI.Controls"
     xmlns:models="using:CoreVideoPro.WinUI.Models"
     Title="Audio mixer">
     <Grid Background="{StaticResource StudioBackgroundBrush}" Padding="14" RowSpacing="12">
@@ -101,10 +102,10 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
-                                                <ProgressBar Maximum="100"
-                                                             Value="{x:Bind OutputLevel}"
-                                                             Height="8"
-                                                             VerticalAlignment="Center" />
+                                                <controls:AudioLevelMeter Level="{x:Bind OutputLevel, Mode=OneWay}"
+                                                                          SegmentCount="16"
+                                                                          Height="12"
+                                                                          VerticalAlignment="Center" />
                                                 <TextBlock Grid.Column="1"
                                                            Text="{x:Bind MuteStateLabel}"
                                                            FontSize="10"
@@ -301,16 +302,12 @@
                                                     <ColumnDefinition Width="22" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <ProgressBar Maximum="100"
-                                                             Value="{x:Bind OutputLevel}"
-                                                             Width="18"
-                                                             Height="200"
-                                                             VerticalAlignment="Center"
-                                                             RenderTransformOrigin="0.5,0.5">
-                                                    <ProgressBar.RenderTransform>
-                                                        <RotateTransform Angle="-90" />
-                                                    </ProgressBar.RenderTransform>
-                                                </ProgressBar>
+                                                <controls:AudioLevelMeter Level="{x:Bind OutputLevel, Mode=OneWay}"
+                                                                          IsVertical="True"
+                                                                          SegmentCount="22"
+                                                                          Width="18"
+                                                                          Height="200"
+                                                                          VerticalAlignment="Center" />
                                                 <Slider Grid.Column="1"
                                                         Orientation="Vertical"
                                                         Minimum="-24"
@@ -392,11 +389,13 @@
             <Border Grid.Column="2"
                     Style="{StaticResource OperatorReadoutBorder}">
                 <StackPanel Spacing="2">
-                    <TextBlock Text="CHANNELS"
+                    <TextBlock Text="LIMITER"
                                FontSize="10"
                                Foreground="{StaticResource StudioMutedBrush}" />
-                    <TextBlock Text="Zoom ISO and routed source buses"
+                    <TextBlock Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
                                FontSize="12" />
+                    <ToggleSwitch Header="{x:Bind ViewModel.MasterLimiterModeLabel, Mode=OneWay}"
+                                  IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
                 </StackPanel>
             </Border>
         </Grid>

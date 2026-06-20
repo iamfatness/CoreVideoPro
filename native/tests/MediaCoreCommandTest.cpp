@@ -402,6 +402,33 @@ TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   EXPECT_EQ(participants[2].get("outputLevel")->asNumber(), 0);
 }
 
+TEST(MediaCoreCommand, AudioLimiterCanBeBypassedWithoutDroppingAudioLevels) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"limiterEnabled", false},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "hot-host"},
+               {"inputLevel", 100},
+               {"manualGainDb", 24},
+               {"noiseSuppression", false},
+               {"muted", false},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_FALSE(mix->get("limiterEnabled")->asBool());
+  EXPECT_FALSE(mix->get("limiterActive")->asBool());
+  const auto& participants = mix->get("participants")->asArray();
+  ASSERT_TRUE(participants.size() == 1u);
+  EXPECT_EQ(participants[0].get("outputLevel")->asNumber(), 100);
+  EXPECT_FALSE(participants[0].get("limiterActive")->asBool());
+}
+
 TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{

@@ -196,6 +196,7 @@ public static class SyntheticMediaCore
             Status = "idle",
             MasterLevel = 0,
             LoudnessLufs = -24,
+            LimiterEnabled = true,
             LimiterActive = false,
             MixedFrameCount = 0,
             Participants = [],

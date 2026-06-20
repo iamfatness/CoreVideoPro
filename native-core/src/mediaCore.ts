@@ -385,7 +385,7 @@ export class MediaCoreRuntime {
       }
 
       if (command.type === "sync-participant-audio-mix") {
-        const audioMix = this.audioMixSession.sync(command.channels);
+        const audioMix = this.audioMixSession.sync(command.channels, command.limiterEnabled !== false);
         if (audioMix.warnings.length > 0) {
           this.warn(warnings, "program", "Audio mix warning", audioMix.warnings[0], command.type);
         }

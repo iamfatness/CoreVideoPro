@@ -470,13 +470,14 @@ public sealed class ParticipantAudioMix
     public required string Status { get; init; }
     public double Lufs { get; set; } = -60;
     public double TruePeakDb { get; set; } = -60;
-    public IReadOnlyList<string> PluginInserts { get; init; } = [];
+    public List<string> PluginInserts { get; set; } = [];
 }
 
 public sealed class AudioMixState
 {
     public required IReadOnlyList<ParticipantAudioMix> Participants { get; init; }
     public required double LoudnessLufs { get; init; }
+    public required bool LimiterEnabled { get; init; }
     public required bool LimiterActive { get; init; }
     public required string Summary { get; init; }
 }
@@ -753,7 +754,7 @@ public static class ProductionStateHelper
                     Status = prior.Status,
                     Lufs = EstimateParticipantLufs(participant.AudioLevel, prior.Muted),
                     TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, prior.Muted),
-                    PluginInserts = prior.PluginInserts
+                    PluginInserts = prior.PluginInserts.ToList()
                 };
             }
 

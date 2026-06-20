@@ -332,6 +332,7 @@ public sealed class NativeMediaCoreAudioMixSession
     public required string Status { get; init; }
     public int MasterLevel { get; init; }
     public double LoudnessLufs { get; init; }
+    public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }
     public int MixedFrameCount { get; init; }
     public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
