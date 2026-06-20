@@ -255,6 +255,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _automationCaptionsEnabled = true;
 
     [ObservableProperty]
+    private string _takeTransitionMode = "fade";
+
+    [ObservableProperty]
     private double _automationConfidenceThreshold = 70;
 
     [ObservableProperty]
@@ -1359,6 +1362,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
 
+    partial void OnTakeTransitionModeChanged(string value)
+    {
+        var normalized = NormalizeTakeTransitionMode(value);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            TakeTransitionMode = normalized;
+            return;
+        }
+
+        OnPropertyChanged(nameof(TakeTransitionLabel));
+        OnPropertyChanged(nameof(TakeToolTip));
+    }
+
     partial void OnAutomationConfidenceThresholdChanged(double value)
     {
         var clamped = Math.Clamp(value, 0, 100);
@@ -1406,6 +1422,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshProgramLowerThirdKeyPosition();
         RefreshProductionReadouts();
     }
+
+    private static string NormalizeTakeTransitionMode(string? transitionMode) =>
+        transitionMode?.Trim().ToLowerInvariant() switch
+        {
+            "cut" => "cut",
+            "dip" => "dip",
+            "wipe" => "wipe",
+            _ => "fade"
+        };
 
     [RelayCommand]
     private void ResetAutomationDefaults()
@@ -1502,6 +1527,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public bool CanTake => PreviewSceneId != ActiveSceneId;
+
+    public string TakeTransitionLabel => TakeTransitionMode switch
+    {
+        "cut" => "Cut",
+        "dip" => "Dip",
+        "wipe" => "Wipe",
+        _ => "Fade"
+    };
+
+    public string TakeToolTip =>
+        $"Take Preview to Program using {TakeTransitionLabel}, then swap the previous Program back to Preview.";
 
     private static string NewCustomSceneId() =>
         $"custom-{Guid.NewGuid():N}".Substring(0, "custom-".Length + 8);
@@ -1624,7 +1660,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ActiveSceneId = takenSceneId;
         PreviewSceneId = previousProgramSceneId;
         RefreshPreviewRoutingState();
-        CommandStatus = $"{ProgramSceneSummary} taken with fade";
+        CommandStatus = $"{ProgramSceneSummary} taken with {TakeTransitionLabel.ToLowerInvariant()}";
         OutputStatus = "Program updated";
 
         if (_bridge.Running)
@@ -1638,6 +1674,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 CommandStatus = ex.Message;
             }
         }
+    }
+
+    [RelayCommand]
+    private void SetTakeTransition(string? transitionMode)
+    {
+        TakeTransitionMode = NormalizeTakeTransitionMode(transitionMode);
+        CommandStatus = $"Take transition set to {TakeTransitionLabel}";
     }
 
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]

@@ -692,15 +692,45 @@
                     <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" VerticalAlignment="Center"
                                Foreground="{StaticResource StudioMutedBrush}" FontSize="11" Margin="0,0,8,0"
                                MaxWidth="160" TextTrimming="CharacterEllipsis" />
-                    <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
-                            Command="{x:Bind ViewModel.TakeCommand}"
-                            IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
-                            ToolTipService.ToolTip="Take Preview to Program and swap the previous Program back to Preview.">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="13" />
-                            <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />
-                        </StackPanel>
-                    </Button>
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                        <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
+                                CornerRadius="8,0,0,8"
+                                Command="{x:Bind ViewModel.TakeCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.TakeToolTip, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="13" />
+                                <TextBlock Text="{x:Bind ViewModel.TakeTransitionLabel, Mode=OneWay}"
+                                           FontWeight="SemiBold"
+                                           FontSize="11"
+                                           Opacity="0.72"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Style="{StaticResource TakeButton}" Width="34" MinHeight="40"
+                                Padding="0"
+                                CornerRadius="0,8,8,0"
+                                BorderThickness="1,1,1,1"
+                                ToolTipService.ToolTip="Choose Take transition">
+                            <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
+                            <Button.Flyout>
+                                <MenuFlyout Placement="Top">
+                                    <MenuFlyoutItem Text="Cut"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="cut" />
+                                    <MenuFlyoutItem Text="Fade"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="fade" />
+                                    <MenuFlyoutItem Text="Dip"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="dip" />
+                                    <MenuFlyoutItem Text="Wipe"
+                                                    Command="{x:Bind ViewModel.SetTakeTransitionCommand}"
+                                                    CommandParameter="wipe" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
+                    </StackPanel>
                     <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
