@@ -18,6 +18,7 @@ public sealed partial class ProductionSettingsWindow : Window
         InitializeComponent();
         Closed += OnWindowClosed;
         ApplyChromeAndSize();
+        ShowPanel(OutputPanel);
     }
 
     public StudioViewModel ViewModel { get; }
@@ -28,6 +29,25 @@ public sealed partial class ProductionSettingsWindow : Window
     {
         Closed -= OnWindowClosed;
         WindowClosed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnOutputClicked(object sender, RoutedEventArgs args) => ShowPanel(OutputPanel);
+
+    private void OnStreamingClicked(object sender, RoutedEventArgs args) => ShowPanel(StreamingPanel);
+
+    private void OnAudioClicked(object sender, RoutedEventArgs args) => ShowPanel(AudioPanel);
+
+    private void OnRecordingClicked(object sender, RoutedEventArgs args) => ShowPanel(RecordingPanel);
+
+    private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowPanel(FfmpegPanel);
+
+    private void ShowPanel(FrameworkElement activePanel)
+    {
+        OutputPanel.Visibility = activePanel == OutputPanel ? Visibility.Visible : Visibility.Collapsed;
+        StreamingPanel.Visibility = activePanel == StreamingPanel ? Visibility.Visible : Visibility.Collapsed;
+        AudioPanel.Visibility = activePanel == AudioPanel ? Visibility.Visible : Visibility.Collapsed;
+        RecordingPanel.Visibility = activePanel == RecordingPanel ? Visibility.Visible : Visibility.Collapsed;
+        FfmpegPanel.Visibility = activePanel == FfmpegPanel ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ApplyChromeAndSize()

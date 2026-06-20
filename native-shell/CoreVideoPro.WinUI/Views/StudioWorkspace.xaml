@@ -726,7 +726,7 @@
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
                             Command="{x:Bind ViewModel.OpenProductionSettingsCommand}"
-                            ToolTipService.ToolTip="Open production settings">
+                            ToolTipService.ToolTip="Open Settings">
                         <FontIcon Glyph="&#xE713;" FontSize="16" />
                     </Button>
                 </StackPanel>

@@ -83,6 +83,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _audioMonitorVolume = 0.75;
 
     [ObservableProperty]
+    private bool _localAudioSourceEnabled;
+
+    [ObservableProperty]
+    private string _selectedLocalAudioCaptureDeviceId = string.Empty;
+
+    [ObservableProperty]
+    private string _ffmpegBinDirectory = Environment.GetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR") ??
+        Environment.GetEnvironmentVariable("FFMPEG_BIN_DIR") ??
+        string.Empty;
+
+    [ObservableProperty]
     private bool _streamRtmpEnabled = true;
 
     [ObservableProperty]
@@ -536,6 +547,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "No mixed audio frames from the media engine."
                 : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames. Native playback tap pending."
             : "Waiting for media engine audio telemetry.";
+
+    public string SelectedLocalAudioCaptureDeviceName =>
+        AudioCaptureDevices.FirstOrDefault(device =>
+            string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))?.Name ??
+        "No local audio input selected";
+
+    public string LocalAudioSourceStatus =>
+        LocalAudioSourceEnabled
+            ? $"Local source routed - {SelectedLocalAudioCaptureDeviceName}"
+            : "Local machine audio source disabled";
+
+    public string FfmpegRuntimeStatus
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(FfmpegBinDirectory))
+            {
+                return "FFmpeg not configured. RTMP/RTMPS runtime packaging needs a bin folder containing avformat*.dll.";
+            }
+
+            return Directory.Exists(FfmpegBinDirectory) &&
+                   Directory.EnumerateFiles(FfmpegBinDirectory, "avformat*.dll").Any()
+                ? "FFmpeg runtime found. Package scripts can stage RTMP/RTMPS DLLs from this folder."
+                : "Folder does not contain avformat*.dll. Choose the FFmpeg bin folder, not the install root.";
+        }
+    }
 
     public StudioViewModel()
     {
@@ -1092,6 +1129,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnSelectedAudioMonitorDeviceIdChanged(string value) => RefreshAudioMonitorBindings();
 
     partial void OnAudioMonitorVolumeChanged(double value) => RefreshAudioMonitorBindings();
+
+    partial void OnLocalAudioSourceEnabledChanged(bool value)
+    {
+        RefreshLocalAudioSourceBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    partial void OnSelectedLocalAudioCaptureDeviceIdChanged(string value)
+    {
+        RefreshLocalAudioSourceBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    partial void OnFfmpegBinDirectoryChanged(string value) =>
+        OnPropertyChanged(nameof(FfmpegRuntimeStatus));
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -2366,6 +2418,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private async Task BrowseFfmpegBinFolderAsync()
+    {
+        var picker = new FolderPicker
+        {
+            SuggestedStartLocation = PickerLocationId.ComputerFolder
+        };
+        picker.FileTypeFilter.Add("*");
+
+        var hwnd = App.MainWindowHandle;
+        if (hwnd != IntPtr.Zero)
+        {
+            InitializeWithWindow.Initialize(picker, hwnd);
+        }
+
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null)
+        {
+            CommandStatus = "FFmpeg folder selection canceled";
+            return;
+        }
+
+        FfmpegBinDirectory = folder.Path;
+        CommandStatus = FfmpegRuntimeStatus;
+    }
+
+    [RelayCommand]
     private void SelectMediaAsset(string assetId)
     {
         var asset = FindMediaAsset(assetId);
@@ -2562,9 +2640,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         NormalizeCaptureAudioAssignments();
+        if (string.IsNullOrWhiteSpace(SelectedLocalAudioCaptureDeviceId) ||
+            AudioCaptureDevices.All(device => !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
+        {
+            SelectedLocalAudioCaptureDeviceId = AudioCaptureDevices.FirstOrDefault()?.Id ?? string.Empty;
+        }
+
         RefreshShowInputEditors();
         OnPropertyChanged(nameof(AudioCaptureDevices));
         OnPropertyChanged(nameof(AudioCaptureSourceOptions));
+        RefreshLocalAudioSourceBindings();
     }
 
     private void NormalizeCaptureAudioAssignments()
@@ -3174,6 +3259,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
     }
 
+    private void RefreshLocalAudioSourceBindings()
+    {
+        OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
+        OnPropertyChanged(nameof(LocalAudioSourceStatus));
+    }
+
     private void RefreshAudioMixChannels()
     {
         var existing = _audioMixChannels.ToDictionary(channel => channel.ParticipantId);
@@ -3302,6 +3393,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.AssignedAudioDeviceName,
                 device.AudioSyncOffsetMs))
             .ToList();
+        if (LocalAudioSourceEnabled &&
+            AudioCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)) is { } localAudio)
+        {
+            captureAudioSources.Add(new MediaCoreCaptureAudioSourceWire(
+                "local-machine-audio",
+                localAudio.Id,
+                localAudio.Name,
+                0));
+        }
 
         var isoParticipantIds = BuildIsoParticipantTargets();
 
