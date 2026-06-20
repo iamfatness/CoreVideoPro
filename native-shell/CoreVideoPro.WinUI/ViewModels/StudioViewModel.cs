@@ -1704,6 +1704,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RefreshDualCaptureSourceOptions();
                 RefreshCaptureFleetSummary();
                 RefreshShowInputEditors();
+                RefreshPreviewRoutingState();
                 RefreshMultiviewGridTiles();
                 CommandStatus = $"{device.Name} brought online as program source";
             });
@@ -1716,6 +1717,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.SignalPresent = false;
                 RefreshCaptureFleetSummary();
                 RefreshShowInputEditors();
+                RefreshPreviewRoutingState();
                 RefreshMultiviewGridTiles();
                 CommandStatus = $"{device.Name} failed to open: {ex.Message}";
             });
@@ -1890,6 +1892,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshDualCaptureSourceOptions();
         RefreshCaptureFleetSummary();
         RefreshShowInputEditors();
+        RefreshPreviewRoutingState();
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(HasCaptureDevices));
     }
@@ -1995,7 +1998,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 route.CanvasRect?.Y,
                 route.CanvasRect?.Width,
                 route.CanvasRect?.Height,
-                route.ZIndex))
+                route.ZIndex,
+                CaptureDeviceId: route.CaptureDeviceId))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -2780,6 +2784,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramSurface = _surfaces.ProgramSurface;
         PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        SchedulePreviewRoutingRefresh();
         ScheduleMultiviewGridRefresh();
     }
 
@@ -3205,7 +3210,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants);
+                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices);
             }
 
             OnPropertyChanged(nameof(PreviewCanvasLayers));
@@ -3219,6 +3224,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 index,
                 routes[index],
                 RoomVideoParticipants,
+                CaptureDevices,
                 OnPreviewCanvasLayerChanged));
         }
     }
@@ -3249,21 +3255,95 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(Scene scene, IReadOnlyList<SourceRoute> routes)
     {
-        var participants = SceneRoutingService.GetSceneParticipants(scene, routes, RoomVideoParticipants);
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
+        var sceneTiles = new List<ParticipantSurfaceTile>();
+        foreach (var route in routes)
+        {
+            if (ResolveRouteTile(route, tilesByParticipant) is { } routeTile)
+            {
+                sceneTiles.Add(routeTile);
+            }
+        }
+
+        if (sceneTiles.Count > 0)
+        {
+            return sceneTiles;
+        }
+
+        var participants = SceneRoutingService.GetSceneParticipants(scene, routes, RoomVideoParticipants);
         return participants
-            .Select(participant =>
-                tilesByParticipant.TryGetValue(participant.Id, out var tile)
-                    ? tile
-                    : new ParticipantSurfaceTile
-                    {
-                        Participant = participant,
-                        Surface = VideoSurfaceState.Waiting(
-                            VideoSurfaceKind.Multiview,
-                            $"participant:{participant.Id}",
-                            participant.Name)
-                    })
+            .Select(participant => BuildParticipantSceneTile(participant, tilesByParticipant))
             .ToList();
+    }
+
+    private ParticipantSurfaceTile? ResolveRouteTile(
+        SourceRoute route,
+        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice)
+        {
+            return BuildCaptureSceneTile(route.CaptureDeviceId);
+        }
+
+        var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
+        return participant is null ? null : BuildParticipantSceneTile(participant, tilesByParticipant);
+    }
+
+    private static ParticipantSurfaceTile BuildParticipantSceneTile(
+        Participant participant,
+        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant) =>
+        tilesByParticipant.TryGetValue(participant.Id, out var tile)
+            ? tile
+            : new ParticipantSurfaceTile
+            {
+                Participant = participant,
+                Surface = VideoSurfaceState.Waiting(
+                    VideoSurfaceKind.Multiview,
+                    $"participant:{participant.Id}",
+                    participant.Name)
+            };
+
+    private ParticipantSurfaceTile? BuildCaptureSceneTile(string? captureDeviceId)
+    {
+        if (string.IsNullOrWhiteSpace(captureDeviceId) ||
+            CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, captureDeviceId, StringComparison.Ordinal)) is not { } device)
+        {
+            return null;
+        }
+
+        var label = $"{device.Name} - {device.ResolutionLabel}";
+        var captureSurfaces = _surfaces.CaptureDeviceSurfaces;
+        var hasLiveSurface = captureSurfaces.TryGetValue(device.Id, out var liveSurface) &&
+            liveSurface.HasPreviewBitmap;
+        var surface = hasLiveSurface
+            ? liveSurface! with
+            {
+                SurfaceKey = $"capture:{device.Id}",
+                Kind = VideoSurfaceKind.Multiview,
+                Title = label
+            }
+            : (device.IsConnected
+                ? VideoSurfaceState.CaptureSourceOnline(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)
+                : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)) with
+                {
+                    DetailLine = device.IsConnected
+                        ? $"{device.ConnectionLabel} - {device.SignalLabel} - waiting for capture frames"
+                        : "Connect device in Sources to bring online."
+                };
+
+        return new ParticipantSurfaceTile
+        {
+            Participant = new Participant
+            {
+                Id = $"capture:{device.Id}",
+                Name = label,
+                Title = device.Vendor,
+                Role = ParticipantRole.Guest,
+                Health = hasLiveSurface ? FeedHealth.Live : device.IsConnected ? FeedHealth.Live : FeedHealth.VideoOff
+            },
+            Surface = surface,
+            SourceIndex = 1
+        };
     }
 
     public void ApplyCanvasPreset(string presetWire)

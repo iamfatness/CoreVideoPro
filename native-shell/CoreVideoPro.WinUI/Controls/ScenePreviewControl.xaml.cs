@@ -10,6 +10,8 @@ namespace CoreVideoPro.WinUI.Controls;
 
 public sealed partial class ScenePreviewControl : UserControl
 {
+    private IReadOnlyList<string> _lastCanvasRouteKeys = [];
+
     public static readonly DependencyProperty SceneProperty =
         DependencyProperty.Register(
             nameof(Scene),
@@ -80,16 +82,22 @@ public sealed partial class ScenePreviewControl : UserControl
 
     private void ApplyLayout()
     {
-        LayoutRoot.Children.Clear();
-        LayoutRoot.RowDefinitions.Clear();
-        LayoutRoot.ColumnDefinitions.Clear();
-
         var routes = Routes ?? Array.Empty<SourceRoute>();
         if (routes.Count > 0 && routes.All(route => route.CanvasRect is not null))
         {
+            if (TryPatchCanvasLayout(routes))
+            {
+                return;
+            }
+
             BuildCanvasLayout(routes);
             return;
         }
+
+        _lastCanvasRouteKeys = [];
+        LayoutRoot.Children.Clear();
+        LayoutRoot.RowDefinitions.Clear();
+        LayoutRoot.ColumnDefinitions.Clear();
 
         var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
         var participants = tiles.Select(tile => tile.Participant).ToList();
@@ -123,6 +131,10 @@ public sealed partial class ScenePreviewControl : UserControl
 
     private void BuildCanvasLayout(IReadOnlyList<SourceRoute> routes)
     {
+        LayoutRoot.Children.Clear();
+        LayoutRoot.RowDefinitions.Clear();
+        LayoutRoot.ColumnDefinitions.Clear();
+
         const double designWidth = 1600;
         const double designHeight = 900;
         var canvas = new Canvas
@@ -133,9 +145,10 @@ public sealed partial class ScenePreviewControl : UserControl
         LayoutRoot.Children.Add(canvas);
 
         var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
-        var participants = tiles.Select(tile => tile.Participant).ToList();
 
-        foreach (var route in routes.OrderBy(route => route.ZIndex))
+        var orderedRoutes = routes.OrderBy(route => route.ZIndex).ToList();
+        var renderedRouteKeys = new List<string>();
+        foreach (var route in orderedRoutes)
         {
             var rect = route.CanvasRect;
             if (rect is null)
@@ -143,26 +156,95 @@ public sealed partial class ScenePreviewControl : UserControl
                 continue;
             }
 
-            var participant = SceneRoutingService.ResolveRouteParticipant(route, participants);
-            var tile = tiles.FirstOrDefault(entry => entry.Participant.Id == participant?.Id);
+            var tile = ResolveRouteTile(route, tiles);
+            if (tile is null)
+            {
+                continue;
+            }
+
             var layer = new ParticipantTileControl
             {
-                Participant = participant,
+                Participant = tile.Participant,
                 TileVariant = "canvas",
-                SurfaceState = tile?.Surface,
+                SurfaceState = tile.Surface,
                 Width = rect.Width * designWidth,
-                Height = rect.Height * designHeight
+                Height = rect.Height * designHeight,
+                Tag = GetCanvasRouteKey(route)
             };
 
             Canvas.SetLeft(layer, rect.X * designWidth);
             Canvas.SetTop(layer, rect.Y * designHeight);
             canvas.Children.Add(layer);
+            renderedRouteKeys.Add(GetCanvasRouteKey(route));
         }
 
         if (canvas.Children.Count == 0)
         {
+            LayoutRoot.Children.Clear();
             BuildEmptySceneState("No routed live sources");
+            _lastCanvasRouteKeys = [];
+            return;
         }
+
+        _lastCanvasRouteKeys = renderedRouteKeys;
+    }
+
+    private bool TryPatchCanvasLayout(IReadOnlyList<SourceRoute> routes)
+    {
+        var orderedRoutes = routes.OrderBy(route => route.ZIndex).ToList();
+        var tiles = Tiles ?? Array.Empty<ParticipantSurfaceTile>();
+        var renderItems = orderedRoutes
+            .Select(route => (Route: route, Tile: ResolveRouteTile(route, tiles)))
+            .Where(item => item.Tile is not null)
+            .ToList();
+        var routeKeys = renderItems.Select(item => GetCanvasRouteKey(item.Route)).ToList();
+        if (_lastCanvasRouteKeys.Count != routeKeys.Count ||
+            !_lastCanvasRouteKeys.SequenceEqual(routeKeys) ||
+            LayoutRoot.Children.Count != 1 ||
+            LayoutRoot.Children[0] is not Canvas canvas ||
+            canvas.Children.Count != renderItems.Count)
+        {
+            return false;
+        }
+
+        const double designWidth = 1600;
+        const double designHeight = 900;
+        for (var index = 0; index < renderItems.Count; index++)
+        {
+            var route = renderItems[index].Route;
+            var tile = renderItems[index].Tile!;
+            if (route.CanvasRect is not { } rect ||
+                canvas.Children[index] is not ParticipantTileControl layer)
+            {
+                return false;
+            }
+
+            layer.Participant = tile.Participant;
+            layer.SurfaceState = tile.Surface;
+            layer.Width = rect.Width * designWidth;
+            layer.Height = rect.Height * designHeight;
+            Canvas.SetLeft(layer, rect.X * designWidth);
+            Canvas.SetTop(layer, rect.Y * designHeight);
+        }
+
+        return true;
+    }
+
+    private static string GetCanvasRouteKey(SourceRoute route) =>
+        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}";
+
+    private static ParticipantSurfaceTile? ResolveRouteTile(
+        SourceRoute route,
+        IReadOnlyList<ParticipantSurfaceTile> tiles)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
+        {
+            return tiles.FirstOrDefault(tile => tile.Participant.Id == $"capture:{captureDeviceId}");
+        }
+
+        var participants = tiles.Select(tile => tile.Participant).ToList();
+        var participant = SceneRoutingService.ResolveRouteParticipant(route, participants);
+        return tiles.FirstOrDefault(entry => entry.Participant.Id == participant?.Id);
     }
 
     private void BuildHostFocusLayout(IReadOnlyList<Participant> participants, bool isOutro)

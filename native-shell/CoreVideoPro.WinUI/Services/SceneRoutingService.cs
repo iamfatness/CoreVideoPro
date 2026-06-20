@@ -10,6 +10,7 @@ public static class SceneRoutingService
     public static IReadOnlyList<RouteSelectOption> RouteModeOptions { get; } =
     [
         new() { Value = "fixed", Label = "Fixed participant" },
+        new() { Value = "capture-input", Label = "Capture input" },
         new() { Value = "active-speaker", Label = "Active speaker" },
         new() { Value = "spotlight", Label = "Spotlight" },
         new() { Value = "screen-share", Label = "Screen share" },
@@ -26,6 +27,7 @@ public static class SceneRoutingService
     public static string ModeToWire(SourceRouteMode mode) => mode switch
     {
         SourceRouteMode.Fixed => "fixed",
+        SourceRouteMode.CaptureDevice => "capture-input",
         SourceRouteMode.ActiveSpeaker => "active-speaker",
         SourceRouteMode.Spotlight => "spotlight",
         SourceRouteMode.ScreenShare => "screen-share",
@@ -36,6 +38,7 @@ public static class SceneRoutingService
     public static SourceRouteMode ModeFromWire(string wire) => wire switch
     {
         "fixed" => SourceRouteMode.Fixed,
+        "capture-input" => SourceRouteMode.CaptureDevice,
         "active-speaker" => SourceRouteMode.ActiveSpeaker,
         "spotlight" => SourceRouteMode.Spotlight,
         "screen-share" => SourceRouteMode.ScreenShare,
@@ -208,6 +211,21 @@ public static class SceneRoutingService
                 Id = route.Id,
                 Mode = route.Mode,
                 ParticipantId = route.ParticipantId ?? participants.FirstOrDefault()?.Id,
+                CaptureDeviceId = null,
+                SpotlightIndex = route.SpotlightIndex,
+                AudioRole = route.AudioRole == SourceAudioRole.Audience
+                    ? SourceAudioRole.Isolated
+                    : route.AudioRole
+            };
+        }
+        else if (route.Mode == SourceRouteMode.CaptureDevice)
+        {
+            normalized = new SourceRoute
+            {
+                Id = route.Id,
+                Mode = route.Mode,
+                ParticipantId = null,
+                CaptureDeviceId = route.CaptureDeviceId,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Audience
                     ? SourceAudioRole.Isolated
@@ -222,6 +240,7 @@ public static class SceneRoutingService
                 Id = route.Id,
                 Mode = route.Mode,
                 ParticipantId = route.ParticipantId ?? participants.ElementAtOrDefault(spotlightIndex)?.Id,
+                CaptureDeviceId = null,
                 SpotlightIndex = spotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Audience
                     ? SourceAudioRole.Mix
@@ -235,6 +254,7 @@ public static class SceneRoutingService
                 Id = route.Id,
                 Mode = route.Mode,
                 ParticipantId = null,
+                CaptureDeviceId = null,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = SourceAudioRole.Audience
             };
@@ -246,6 +266,7 @@ public static class SceneRoutingService
                 Id = route.Id,
                 Mode = route.Mode,
                 ParticipantId = null,
+                CaptureDeviceId = null,
                 SpotlightIndex = route.SpotlightIndex,
                 AudioRole = route.AudioRole == SourceAudioRole.Isolated
                     ? SourceAudioRole.Mix
@@ -263,6 +284,7 @@ public static class SceneRoutingService
         var normalized = NormalizeRouteUpdate(route, participants);
         route.Mode = normalized.Mode;
         route.ParticipantId = normalized.ParticipantId;
+        route.CaptureDeviceId = normalized.CaptureDeviceId;
         route.SpotlightIndex = normalized.SpotlightIndex;
         route.AudioRole = normalized.AudioRole;
         route.CanvasRect = normalized.CanvasRect?.Clone();
@@ -273,6 +295,7 @@ public static class SceneRoutingService
     {
         target.Mode = source.Mode;
         target.ParticipantId = source.ParticipantId;
+        target.CaptureDeviceId = source.CaptureDeviceId;
         target.SpotlightIndex = source.SpotlightIndex;
         target.AudioRole = source.AudioRole;
         target.CanvasRect = source.CanvasRect?.Clone();
@@ -286,6 +309,13 @@ public static class SceneRoutingService
             return route.ParticipantId;
         }
 
+        if (route.Mode == SourceRouteMode.CaptureDevice)
+        {
+            return route.CaptureDeviceId is { Length: > 0 } deviceId
+                ? $"capture:{deviceId}"
+                : null;
+        }
+
         return route.Mode == SourceRouteMode.ScreenShare ? "screen-share" : null;
     }
 
@@ -293,6 +323,9 @@ public static class SceneRoutingService
         route.Mode switch
         {
             SourceRouteMode.ScreenShare => "screen share",
+            SourceRouteMode.CaptureDevice => route.CaptureDeviceId is { Length: > 0 } deviceId
+                ? $"capture {deviceId}"
+                : "capture input",
             SourceRouteMode.ActiveSpeaker => ResolveRouteParticipant(route, participants)?.Name ?? "active speaker",
             SourceRouteMode.None => null,
             _ => ResolveRouteParticipant(route, participants)?.Name
@@ -332,6 +365,17 @@ public static class SceneRoutingService
                 Id = $"{sceneId}-{index + 1}",
                 Mode = SourceRouteMode.ScreenShare,
                 AudioRole = SourceAudioRole.Audience
+            };
+        }
+
+        if (slot?.StartsWith("capture:", StringComparison.Ordinal) == true)
+        {
+            return new SourceRoute
+            {
+                Id = $"{sceneId}-{index + 1}",
+                Mode = SourceRouteMode.CaptureDevice,
+                CaptureDeviceId = slot["capture:".Length..],
+                AudioRole = SourceAudioRole.Isolated
             };
         }
 

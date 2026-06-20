@@ -9,7 +9,8 @@ public sealed record MediaCoreSceneRouteWire(
     double? RectY = null,
     double? RectWidth = null,
     double? RectHeight = null,
-    int? ZIndex = null);
+    int? ZIndex = null,
+    string? CaptureDeviceId = null);
 
 public sealed record MediaCoreParticipantWire(
     string Id,

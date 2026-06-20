@@ -76,7 +76,8 @@ public static class MediaCoreCommandBuilder
                     ["routeId"] = route.RouteId,
                     ["mode"] = route.Mode,
                     ["audioRole"] = route.AudioRole,
-                    ["participantId"] = route.ParticipantId
+                    ["participantId"] = route.ParticipantId,
+                    ["captureDeviceId"] = route.CaptureDeviceId
                 };
 
                 if (route.RectX is not null && route.RectY is not null &&
