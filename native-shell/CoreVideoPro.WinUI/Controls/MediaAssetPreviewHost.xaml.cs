@@ -86,8 +86,8 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             return;
         }
 
-        var kind = Kind?.Trim().ToLowerInvariant() ?? string.Empty;
-        if (kind == "image")
+        var mediaType = ResolveMediaType(FilePath, Kind);
+        if (mediaType == "image")
         {
             StopPlayer();
             ImagePreview.Source = new BitmapImage(new Uri(FilePath));
@@ -96,7 +96,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             return;
         }
 
-        if (kind is "video" or "audio")
+        if (mediaType is "video" or "audio")
         {
             _player ??= new MediaPlayer();
             VideoPreview.SetMediaPlayer(_player);
@@ -113,6 +113,34 @@ public sealed partial class MediaAssetPreviewHost : UserControl
                 _player.Pause();
             }
         }
+    }
+
+    private static string ResolveMediaType(string filePath, string? kind)
+    {
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        if (extension is ".png" or ".jpg" or ".jpeg" or ".gif")
+        {
+            return "image";
+        }
+
+        if (extension is ".mp4" or ".mov" or ".webm")
+        {
+            return "video";
+        }
+
+        if (extension is ".wav" or ".mp3" or ".aac" or ".m4a")
+        {
+            return "audio";
+        }
+
+        return kind?.Trim().ToLowerInvariant() switch
+        {
+            "lower-third" => "image",
+            "stinger" or "slate" => "video",
+            "audio-bed" => "audio",
+            "image" or "video" or "audio" => kind.Trim().ToLowerInvariant(),
+            _ => string.Empty
+        };
     }
 
     private void StopPlayer()

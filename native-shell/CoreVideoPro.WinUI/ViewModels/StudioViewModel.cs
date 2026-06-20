@@ -4889,7 +4889,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RelativePath = asset.RelativePath,
                 FilePath = asset.FilePath,
                 FileType = asset.FileType,
-                IsSelected = string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal)
+                IsSelected = string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal),
+                IsPlaying = SelectedMediaAssetPlaying &&
+                    string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal)
             }).ToList()
         }).ToList();
 

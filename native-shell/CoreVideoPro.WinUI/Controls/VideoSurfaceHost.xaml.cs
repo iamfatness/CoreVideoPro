@@ -105,6 +105,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool HasPreviewBitmap => SurfaceState?.HasPreviewBitmap == true;
 
+    public string? MediaAssetPath => SurfaceState?.MediaAssetPath;
+
+    public string? MediaAssetKind => SurfaceState?.MediaAssetKind;
+
+    public bool MediaAssetPlaying => SurfaceState?.MediaAssetPlaying == true;
+
+    public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
+
     public bool IsDirect3DReady => _direct3DInterop.IsReady || _direct3DDevicePointer != 0;
 
     public bool IsGpuPathActive => _direct3DInterop.IsGpuPresenting;
@@ -242,6 +250,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             BgraPreviewHelper.ClearPreview(PreviewImage);
             _lastPreviewSurfaceKey = null;
             PlaceholderPanel.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (HasMediaAssetPreview)
+        {
+            BgraPreviewHelper.ClearPreview(PreviewImage);
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PlaceholderPanel.Visibility = Visibility.Collapsed;
             return;
         }
 

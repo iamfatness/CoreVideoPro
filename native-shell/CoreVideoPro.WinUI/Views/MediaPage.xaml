@@ -122,7 +122,7 @@
                                                             Style="{StaticResource OperatorGhostButton}"
                                                             Command="{Binding ViewModel.SelectMediaAssetCommand, ElementName=MediaRoot}"
                                                             CommandParameter="{x:Bind Id}" />
-                                                    <Button Grid.Column="3" Content="Play"
+                                                    <Button Grid.Column="3" Content="{x:Bind PlaybackLabel, Mode=OneWay}"
                                                             Style="{StaticResource OperatorGhostButton}"
                                                             Command="{Binding ViewModel.PlayMediaAssetCommand, ElementName=MediaRoot}"
                                                             CommandParameter="{x:Bind Id}" />

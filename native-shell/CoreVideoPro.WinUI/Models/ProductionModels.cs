@@ -582,6 +582,7 @@ public sealed class MediaAsset
     public string FilePath { get; init; } = string.Empty;
     public string FileType { get; init; } = string.Empty;
     public bool IsSelected { get; init; }
+    public bool IsPlaying { get; init; }
 
     public string DurationLabel =>
         DurationMs is { } ms ? $"{Math.Round(ms / 100.0) / 10.0:0.#}s" : string.Empty;
@@ -590,6 +591,8 @@ public sealed class MediaAsset
         string.Join(" - ", new[] { Kind, FileType, RelativePath }.Where(part => !string.IsNullOrWhiteSpace(part)));
 
     public string SelectionLabel => IsSelected ? "Selected" : "Select";
+
+    public string PlaybackLabel => IsPlaying ? "Pause" : "Play";
 }
 
 public sealed class MediaBinGroup
