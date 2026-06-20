@@ -241,6 +241,8 @@ if(BUILD_TESTING)
 
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
+    tests/AudioDspTest.cpp
+    tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/EncoderRecordingSessionTest.cpp
