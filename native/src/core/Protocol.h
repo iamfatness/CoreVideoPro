@@ -95,4 +95,19 @@ inline constexpr std::array<std::string_view, 3> kCoreEventTypes = {
     "program-shared-texture",
 };
 
+// F2 — measured-from-signal master-chain metrics carried on the audio-mix
+// snapshot under `programMaster`. These field names are mirrored byte-for-byte
+// in the Node and renderer protocol mirrors; ContractParity asserts each name
+// appears in both. Measured by the real PCM mixing graph (AudioMixGraph).
+inline constexpr std::array<std::string_view, 8> kAudioMixProgramMasterFields = {
+    "programTapPresent",
+    "programTapSampleCount",
+    "truePeakDbfs",
+    "programRmsDbfs",
+    "momentaryLufs",
+    "shortTermLufs",
+    "integratedLufs",
+    "gainReductionDb",
+};
+
 }  // namespace corevideo::core

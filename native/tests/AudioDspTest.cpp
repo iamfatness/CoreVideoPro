@@ -288,3 +288,148 @@ TEST(AudioDsp, AnalyzeFlagsSilentPcmAsSilence) {
   const AudioParticipantMixMetrics metrics = analyzeAudioParticipantFrame(frame);
   EXPECT_TRUE(metrics.silenceDetected);
 }
+
+// --- F2 program audio mixing graph -------------------------------------------
+
+namespace {
+
+// Build a participant AudioFrame carrying a real PCM sine.
+AudioFrame makePcmFrame(const std::string& id, double freq, double amplitude, int frames, int sampleRate = 48000) {
+  AudioFrame frame;
+  frame.participantId = id;
+  frame.sampleRate = sampleRate;
+  frame.channels = 1;
+  frame.voiceActive = true;
+  frame.sampleCount = frames;
+  frame.pcm = makeSine(freq, amplitude, sampleRate, static_cast<size_t>(frames));
+  return frame;
+}
+
+}  // namespace
+
+TEST(AudioMixGraph, ProducesProgramTapFromRealPcm) {
+  AudioMixGraph graph;
+  graph.configure(48000, 960);
+  graph.setLimiterEnabled(true);
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 220.0, 0.3, 960)};
+  const auto measurement = graph.processBlock(frames, 0);
+  EXPECT_TRUE(measurement.programTapPresent);
+  EXPECT_TRUE(graph.programTap().present());
+  EXPECT_EQ(graph.programTap().frames, 960);
+  EXPECT_EQ(graph.programTap().channels, 2);
+  // The program tap carries interleaved-stereo float PCM (frames * 2 samples).
+  EXPECT_EQ(graph.programTap().pcm.size(), static_cast<size_t>(960) * 2);
+  // RMS of a ~0.3 sine is roughly -13.5 dBFS; just assert it measured real energy.
+  EXPECT_TRUE(measurement.rmsDbfs > kAudioDbfsFloor + 1.0);
+  EXPECT_TRUE(measurement.truePeakDbfs > kAudioDbfsFloor + 1.0);
+}
+
+TEST(AudioMixGraph, MuteSilencesSourceOnSamples) {
+  AudioMixGraph graph;
+  graph.configure(48000, 480);
+  AudioParticipantChainConfig muted;
+  muted.participantId = "a";
+  muted.muted = true;
+  graph.setChannels({muted});
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 220.0, 0.5, 480)};
+  const auto measurement = graph.processBlock(frames, 0);
+  // A single muted source produces no program energy.
+  EXPECT_FALSE(measurement.programTapPresent);
+}
+
+TEST(AudioMixGraph, SoloIsolatesSourceOnSamples) {
+  AudioMixGraph graph;
+  graph.configure(48000, 480);
+  AudioParticipantChainConfig soloed;
+  soloed.participantId = "a";
+  soloed.solo = true;
+  AudioParticipantChainConfig other;
+  other.participantId = "b";
+  graph.setChannels({soloed, other});
+  std::vector<AudioFrame> frames = {
+      makePcmFrame("a", 220.0, 0.3, 480),
+      makePcmFrame("b", 440.0, 0.9, 480),
+  };
+  const auto withSolo = graph.processBlock(frames, 0);
+  const double soloPeak = withSolo.truePeakDbfs;
+
+  // Without solo, the louder "b" dominates and the peak is higher.
+  AudioMixGraph plain;
+  plain.configure(48000, 480);
+  plain.setChannels({{"a"}, {"b"}});
+  const auto noSolo = plain.processBlock(frames, 0);
+  EXPECT_TRUE(noSolo.truePeakDbfs > soloPeak);
+}
+
+TEST(AudioMixGraph, CrosspointGainScalesContribution) {
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 220.0, 0.4, 960)};
+
+  AudioMixGraph unity;
+  unity.configure(48000, 960);
+  unity.setCrosspoints({{"a", "pgm-l", 0.0}, {"a", "pgm-r", 0.0}});
+  const auto unityMeasurement = unity.processBlock(frames, 0);
+
+  AudioMixGraph attenuated;
+  attenuated.configure(48000, 960);
+  attenuated.setCrosspoints({{"a", "pgm-l", -12.0}, {"a", "pgm-r", -12.0}});
+  const auto attenMeasurement = attenuated.processBlock(frames, 0);
+
+  ASSERT_TRUE(unityMeasurement.programTapPresent);
+  ASSERT_TRUE(attenMeasurement.programTapPresent);
+  // A -12 dB crosspoint gain lowers the program true peak by ~12 dB.
+  const double delta = unityMeasurement.truePeakDbfs - attenMeasurement.truePeakDbfs;
+  EXPECT_TRUE(std::abs(delta - 12.0) < 1.0);
+}
+
+TEST(AudioMixGraph, MonitorTapRoutesToMonBus) {
+  AudioMixGraph graph;
+  graph.configure(48000, 480);
+  graph.setCrosspoints({{"a", "mon", 0.0}});
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 330.0, 0.5, 480)};
+  graph.processBlock(frames, 0);
+  EXPECT_TRUE(graph.monitorTap().present());
+  EXPECT_EQ(graph.monitorTap().channels, 2);
+}
+
+TEST(AudioMixGraph, IsoTapRoutesToIsoBus) {
+  AudioMixGraph graph;
+  graph.configure(48000, 480);
+  graph.setCrosspoints({{"a", "iso-1", 0.0}});
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 330.0, 0.5, 480)};
+  graph.processBlock(frames, 0);
+  ASSERT_FALSE(graph.isoTaps().empty());
+  EXPECT_EQ(graph.isoTaps().front().busId, std::string("iso-1"));
+  EXPECT_TRUE(graph.isoTaps().front().present());
+}
+
+TEST(AudioMixGraph, LimiterReducesHotProgram) {
+  // Two hot sources summed into the program bus overshoot the -1 dBFS ceiling;
+  // the master limiter must report real gain reduction.
+  AudioMixGraph graph;
+  graph.configure(48000, 4800);
+  graph.setLimiterEnabled(true);
+  graph.setLimiterThresholdDbfs(-1.0);
+  std::vector<AudioFrame> frames = {
+      makePcmFrame("a", 220.0, 0.95, 4800),
+      makePcmFrame("b", 220.0, 0.95, 4800),
+  };
+  const auto measurement = graph.processBlock(frames, 0);
+  ASSERT_TRUE(measurement.programTapPresent);
+  EXPECT_TRUE(measurement.limiterEngaged);
+  EXPECT_TRUE(measurement.gainReductionDb > 0.0);
+  // After limiting, the program true peak must sit at/under the ceiling.
+  EXPECT_TRUE(measurement.truePeakDbfs <= -1.0 + 0.1);
+}
+
+TEST(AudioMixGraph, IntegratedLufsAccumulatesAcrossBlocks) {
+  AudioMixGraph graph;
+  graph.configure(48000, 48000);  // 1 s blocks
+  const double amplitude = std::pow(10.0, -20.0 / 20.0);
+  std::vector<AudioFrame> frames = {makePcmFrame("a", 1000.0, amplitude, 48000)};
+  AudioMasterMeasurement last;
+  for (int block = 0; block < 3; ++block) {
+    last = graph.processBlock(frames, block);
+  }
+  // A steady -20 dBFS tone reads near -20 LUFS (with K-weighting unity near 1 kHz).
+  EXPECT_TRUE(last.integratedLufs > -28.0 && last.integratedLufs < -14.0);
+}

@@ -12,6 +12,7 @@ option(COREVIDEO_WITH_SRT_OUTPUT "Build the SRT output sender adapter. Requires 
 option(COREVIDEO_WITH_SRT_INGEST "Build the SRT ingest capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine for real transport." OFF)
 option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
 option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
+option(COREVIDEO_WITH_WASAPI_MONITOR "Build the WASAPI shared-mode audio monitor output (F2 MON bus playback). Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored standalone Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
 set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ or h/, plus lib/)")
@@ -36,6 +37,7 @@ add_library(corevideo_native
   src/modules/SrtOutputSenderAdapter.cpp
   src/modules/StubRecordingEncoder.cpp
   src/modules/StubModules.cpp
+  src/modules/WasapiMonitorOutput.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp
@@ -60,6 +62,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_SRT_INGEST=$<BOOL:${COREVIDEO_WITH_SRT_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
+    COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
 )
 
 if(COREVIDEO_ENABLE_DEV_ADAPTERS)
@@ -139,6 +142,16 @@ if(COREVIDEO_WITH_AJA)
   if(UNIX AND NOT APPLE)
     target_link_libraries(corevideo_native PUBLIC dl)
   endif()
+endif()
+
+if(COREVIDEO_WITH_WASAPI_MONITOR)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_MONITOR requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT WIN32)
+    message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_MONITOR currently supports the Windows WASAPI adapter only.")
+  endif()
+  target_link_libraries(corevideo_native PUBLIC ole32)
 endif()
 
 if(COREVIDEO_WITH_ZOOM)

@@ -7,12 +7,16 @@ import type {
   NativeMediaCoreParticipantAudioChannel
 } from "./nativeMediaCoreProtocol";
 import {
+  AUDIO_DBFS_FLOOR,
+  computeMomentaryLufs,
   computeRmsDbfs,
+  computeSamplePeakDbfs,
   computeShortTermLufs,
   dbfsToLinear,
   linearToDbfs,
   peakLimiterGainReductionDb
 } from "./audioDspKernels";
+import type { NativeMediaCoreAudioMixProgramMaster } from "./nativeMediaCoreProtocol";
 
 const TARGET_LEVEL = 68;
 const LIMITER_THRESHOLD = 88;
@@ -95,6 +99,18 @@ function gainDbToLinear(gainDb: number): number {
   return dbfsToLinear(gainDb);
 }
 
+// F2 idle master metrics: no program PCM has flowed yet.
+const IDLE_NATIVE_PROGRAM_MASTER: NativeMediaCoreAudioMixProgramMaster = {
+  programTapPresent: false,
+  programTapSampleCount: 0,
+  truePeakDbfs: AUDIO_DBFS_FLOOR,
+  programRmsDbfs: AUDIO_DBFS_FLOOR,
+  momentaryLufs: AUDIO_DBFS_FLOOR,
+  shortTermLufs: AUDIO_DBFS_FLOOR,
+  integratedLufs: AUDIO_DBFS_FLOOR,
+  gainReductionDb: 0
+};
+
 export const IDLE_NATIVE_AUDIO_MIX_SESSION: NativeMediaCoreAudioMixSession = {
   status: "idle",
   masterLevel: 0,
@@ -103,7 +119,8 @@ export const IDLE_NATIVE_AUDIO_MIX_SESSION: NativeMediaCoreAudioMixSession = {
   mixedFrameCount: 0,
   participants: [],
   summary: "Audio mix idle.",
-  warnings: []
+  warnings: [],
+  programMaster: IDLE_NATIVE_PROGRAM_MASTER
 };
 
 export const IDLE_NATIVE_CAPTION_TRACK: NativeMediaCoreCaptionTrack = {
@@ -176,6 +193,28 @@ export class NativeAudioMixSessionSimulator {
     );
     const limiterActive = participants.some((channel) => channel.limiterActive) || programGainReductionDb > 0;
 
+    // F2 master metrics MEASURED from the summed program stereo bus.
+    const programPresent = audible.length > 0;
+    const shortTermLufs = programPresent
+      ? round1(computeShortTermLufs(programLeft, programRight, SYNTH_SAMPLE_RATE))
+      : AUDIO_DBFS_FLOOR;
+    const momentaryLufs = programPresent
+      ? round1(computeMomentaryLufs(programLeft, programRight, SYNTH_SAMPLE_RATE))
+      : AUDIO_DBFS_FLOOR;
+    const integratedLufs = programPresent && shortTermLufs > -70 ? shortTermLufs : AUDIO_DBFS_FLOOR;
+    const programMaster: NativeMediaCoreAudioMixProgramMaster = {
+      programTapPresent: programPresent,
+      programTapSampleCount: programPresent ? SYNTH_SAMPLE_COUNT : 0,
+      truePeakDbfs: programPresent
+        ? round1(Math.max(computeSamplePeakDbfs(programLeft), computeSamplePeakDbfs(programRight)))
+        : AUDIO_DBFS_FLOOR,
+      programRmsDbfs: programPresent ? round1(stereoRmsDbfs(programLeft, programRight)) : AUDIO_DBFS_FLOOR,
+      momentaryLufs,
+      shortTermLufs,
+      integratedLufs,
+      gainReductionDb: round1(programGainReductionDb)
+    };
+
     const boostingCount = participants.filter((channel) => channel.status === "boosting").length;
     const duckingCount = participants.filter((channel) => channel.status === "ducking").length;
     const mutedCount = participants.filter((channel) => channel.muted).length;
@@ -193,7 +232,8 @@ export class NativeAudioMixSessionSimulator {
       mixedFrameCount: this.mixedFrameCount,
       participants,
       summary: buildSummary(boostingCount, duckingCount, mutedCount, manualCount),
-      warnings
+      warnings,
+      programMaster
     };
   }
 }

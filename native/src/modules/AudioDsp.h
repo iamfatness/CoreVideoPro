@@ -48,6 +48,15 @@ inline double dbfsToLinear(double dbfs) {
   return std::pow(10.0, dbfs / 20.0);
 }
 
+// Clamp a double to [minValue, maxValue]; non-finite inputs collapse to the
+// lower bound. Declared early so the F2 mixing graph below can use it.
+inline double clampAudioDouble(double value, double minValue, double maxValue) {
+  if (!std::isfinite(value)) {
+    return minValue;
+  }
+  return std::max(minValue, std::min(maxValue, value));
+}
+
 // RMS level of a PCM buffer in dBFS. A full-scale square wave -> 0 dBFS, a
 // full-amplitude sine -> ~-3.01 dBFS, digital silence (or count == 0) ->
 // kAudioDbfsFloor.
@@ -575,11 +584,24 @@ class AudioMixGraph {
     tap.channels = 2;
     tap.frames = static_cast<int>(frames);
     tap.pcm.assign(frames * 2, 0.0f);
+    bool anyEnergy = false;
     for (size_t index = 0; index < frames; ++index) {
       const double l = left[index * 2] + right[index * 2];
       const double r = left[index * 2 + 1] + right[index * 2 + 1];
-      tap.pcm[index * 2] = static_cast<float>(softClipSample(l));
-      tap.pcm[index * 2 + 1] = static_cast<float>(softClipSample(r));
+      const float lf = static_cast<float>(softClipSample(l));
+      const float rf = static_cast<float>(softClipSample(r));
+      tap.pcm[index * 2] = lf;
+      tap.pcm[index * 2 + 1] = rf;
+      if (std::fabs(lf) > 1e-6f || std::fabs(rf) > 1e-6f) {
+        anyEnergy = true;
+      }
+    }
+    // A program bus with no signal (e.g. every source muted) is reported as
+    // absent rather than as a silent-but-present tap, so downstream
+    // programTapPresent reflects real audio.
+    if (!anyEnergy) {
+      tap.frames = 0;
+      tap.pcm.clear();
     }
     return tap;
   }
@@ -674,13 +696,6 @@ class AudioMixGraph {
 };
 
 inline int clampAudioInt(int value, int minValue, int maxValue) {
-  return std::max(minValue, std::min(maxValue, value));
-}
-
-inline double clampAudioDouble(double value, double minValue, double maxValue) {
-  if (!std::isfinite(value)) {
-    return minValue;
-  }
   return std::max(minValue, std::min(maxValue, value));
 }
 

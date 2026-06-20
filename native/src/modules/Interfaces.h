@@ -369,6 +369,23 @@ class IOutputSender {
   virtual OutputSenderSession session() const = 0;
 };
 
+// F2 — a real audio-monitor playback device. Renders interleaved float PCM
+// (the MON bus, or program tap fallback) to a system output. The default build
+// has no real output; the dev-gated WasapiMonitorOutput plays the MON bus via
+// WASAPI shared mode, replacing the legacy Beep()/playMonitorPulse() fallback.
+class IAudioMonitorOutput {
+ public:
+  virtual ~IAudioMonitorOutput() = default;
+  // Play one interleaved-stereo block. `frames` is per-channel sample count;
+  // `pcm` holds `frames * channels` samples in [-1, 1]. Returns true when the
+  // block was accepted by a real device.
+  virtual bool play(const float* pcm, int frames, int channels, int sampleRate, double volume) = 0;
+};
+
+// Construct the platform monitor output when built with COREVIDEO_WITH_WASAPI_MONITOR;
+// returns nullptr otherwise (caller falls back to the Beep pulse).
+std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
+
 class ICaptureDevice {
  public:
   virtual ~ICaptureDevice() = default;

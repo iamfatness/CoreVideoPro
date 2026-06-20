@@ -1,6 +1,13 @@
-import type { MediaCoreAudioMixSession, MediaCoreParticipantAudioChannel } from "./protocol.js";
+import type {
+  MediaCoreAudioMixProgramMaster,
+  MediaCoreAudioMixSession,
+  MediaCoreParticipantAudioChannel
+} from "./protocol.js";
 import {
+  AUDIO_DBFS_FLOOR,
+  computeMomentaryLufs,
   computeRmsDbfs,
+  computeSamplePeakDbfs,
   computeShortTermLufs,
   dbfsToLinear,
   linearToDbfs,
@@ -99,6 +106,19 @@ export type AudioMixChannelInput = {
   pluginInserts?: string[];
 };
 
+// F2 idle master metrics: no program PCM has flowed, so every measured value
+// carries the dBFS floor and the limiter is at rest.
+const IDLE_PROGRAM_MASTER: MediaCoreAudioMixProgramMaster = {
+  programTapPresent: false,
+  programTapSampleCount: 0,
+  truePeakDbfs: AUDIO_DBFS_FLOOR,
+  programRmsDbfs: AUDIO_DBFS_FLOOR,
+  momentaryLufs: AUDIO_DBFS_FLOOR,
+  shortTermLufs: AUDIO_DBFS_FLOOR,
+  integratedLufs: AUDIO_DBFS_FLOOR,
+  gainReductionDb: 0
+};
+
 const IDLE_SESSION: MediaCoreAudioMixSession = {
   status: "idle",
   masterLevel: 0,
@@ -108,7 +128,8 @@ const IDLE_SESSION: MediaCoreAudioMixSession = {
   mixedFrameCount: 0,
   participants: [],
   summary: "Audio mix idle.",
-  warnings: []
+  warnings: [],
+  programMaster: IDLE_PROGRAM_MASTER
 };
 
 export class AudioMixSessionModel {
@@ -174,6 +195,30 @@ export class AudioMixSessionModel {
     );
     const limiterWouldReduce = participants.some((channel) => channel.limiterActive) || programGainReductionDb > 0;
     const limiterActive = this.limiterEnabled && limiterWouldReduce;
+
+    // F2 master metrics MEASURED from the summed program stereo bus. The
+    // integrated estimate uses the short-term window content directly (single
+    // deterministic window), gated by the BS.1770 absolute -70 LUFS floor.
+    const programPresent = audible.length > 0;
+    const shortTermLufs = programPresent
+      ? round1(computeShortTermLufs(programLeft, programRight, SYNTH_SAMPLE_RATE))
+      : AUDIO_DBFS_FLOOR;
+    const momentaryLufs = programPresent
+      ? round1(computeMomentaryLufs(programLeft, programRight, SYNTH_SAMPLE_RATE))
+      : AUDIO_DBFS_FLOOR;
+    const integratedLufs = programPresent && shortTermLufs > -70 ? shortTermLufs : AUDIO_DBFS_FLOOR;
+    const programMaster: MediaCoreAudioMixProgramMaster = {
+      programTapPresent: programPresent,
+      programTapSampleCount: programPresent ? SYNTH_SAMPLE_COUNT : 0,
+      truePeakDbfs: programPresent
+        ? round1(Math.max(computeSamplePeakDbfs(programLeft), computeSamplePeakDbfs(programRight)))
+        : AUDIO_DBFS_FLOOR,
+      programRmsDbfs: programPresent ? round1(stereoRmsDbfs(programLeft, programRight)) : AUDIO_DBFS_FLOOR,
+      momentaryLufs,
+      shortTermLufs,
+      integratedLufs,
+      gainReductionDb: this.limiterEnabled ? round1(programGainReductionDb) : 0
+    };
     const boostingCount = participants.filter((channel) => channel.status === "boosting").length;
     const duckingCount = participants.filter((channel) => channel.status === "ducking").length;
     const mutedCount = participants.filter((channel) => channel.muted).length;
@@ -204,7 +249,8 @@ export class AudioMixSessionModel {
         limiterActive: this.limiterEnabled && participant.limiterActive
       })),
       summary: buildSummary(boostingCount, duckingCount, mutedCount, manualCount),
-      warnings
+      warnings,
+      programMaster
     };
   }
 }

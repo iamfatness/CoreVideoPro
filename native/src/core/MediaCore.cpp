@@ -127,6 +127,10 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("aja-capture");
 #endif
 
+#if COREVIDEO_WITH_WASAPI_MONITOR
+  result.emplace_back("wasapi-monitor");
+#endif
+
   return result;
 }
 
@@ -242,7 +246,11 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 }  // namespace
 
 MediaCore::MediaCore(modules::ModuleSet modules)
-    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {}
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  // Build the real MON-bus monitor output when compiled with the dev gate.
+  // Returns nullptr in the default stub build (Beep fallback).
+  audioMonitorOutput_ = modules::createWasapiMonitorOutput();
+}
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
@@ -972,6 +980,7 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   recordingIsoFramesWritten_ = 0;
   recordingDroppedFrames_ = 0;
   recordingAudioPacketsObserved_ = 0;
+  recordingProgramAudioSamplesMuxed_ = 0;
   recordingFailureCount_ = 0;
   recordingRecoveryCount_ = 0;
   recordingStatus_ = "recording";
@@ -1380,6 +1389,25 @@ std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics&
 
 }  // namespace
 
+rpc::Json MediaCore::audioProgramMasterState() const {
+  // Master-chain metrics MEASURED from the real F2 program bus (PGM L/R): true
+  // peak, RMS, BS.1770 momentary/short-term/integrated LUFS, and limiter gain
+  // reduction. Carries the idle floors until real program PCM has flowed. This
+  // object is mirrored byte-for-byte in the TypeScript protocol mirrors and
+  // asserted by ContractParityTest (kAudioMixProgramMasterFields).
+  const auto mix = modules_.mixer->session();
+  return rpc::Json::Object{
+      {"programTapPresent", mix.programTapPresent},
+      {"programTapSampleCount", static_cast<double>(mix.programTapSampleCount)},
+      {"truePeakDbfs", mix.truePeakDbfs},
+      {"programRmsDbfs", mix.programRmsDbfs},
+      {"momentaryLufs", mix.momentaryLufs},
+      {"shortTermLufs", mix.shortTermLufs},
+      {"integratedLufs", mix.integratedLufs},
+      {"gainReductionDb", mix.gainReductionDb},
+  };
+}
+
 rpc::Json MediaCore::audioMixSessionState() const {
   if (audioChannels_.empty()) {
     const auto nativeMix = modules_.mixer->session();
@@ -1422,6 +1450,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"participants", participants},
           {"summary", nativeMix.summary},
           {"warnings", warnings},
+          {"programMaster", audioProgramMasterState()},
       };
     }
 
@@ -1441,6 +1470,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"participants", rpc::Json::Array{}},
         {"summary", "Audio mix idle."},
         {"warnings", audioMonitorWarning_.empty() ? rpc::Json::Array{} : rpc::Json::Array{audioMonitorWarning_}},
+        {"programMaster", audioProgramMasterState()},
     };
   }
 
@@ -1543,6 +1573,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"participants", participants},
       {"summary", summaryText},
       {"warnings", warnings},
+      {"programMaster", audioProgramMasterState()},
   };
 }
 
@@ -1971,6 +2002,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"isoFrameCount", static_cast<double>(isoFramesWritten)},
            {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
            {"audioPresent", audioPresent},
+           {"programAudioSamplesMuxed", static_cast<double>(recordingProgramAudioSamplesMuxed_)},
            {"metadataValid", metadataValid},
            {"containerFormat", containerFormat},
            {"videoCodec", videoCodec},
@@ -2148,11 +2180,9 @@ void MediaCore::renderSyntheticTick() {
     // the default build uses the Beep fallback to stay headless/deterministic.
     const std::vector<float>& monitorPcm = !programTap.monitorPcm.empty() ? programTap.monitorPcm : programTap.programPcm;
     bool played = false;
-#if COREVIDEO_WITH_WASAPI_MONITOR
     if (audioMonitorOutput_) {
       played = audioMonitorOutput_->play(monitorPcm.data(), programTap.frames, programTap.channels, programTap.sampleRate, audioMonitorVolume_);
     }
-#endif
     if (!played) {
       const int monitorLevel = modules_.mixer->session().masterLevel > 0 ? modules_.mixer->session().masterLevel : 60;
       played = playMonitorPulse(audioMonitorVolume_, monitorLevel);
@@ -2185,7 +2215,14 @@ void MediaCore::renderSyntheticTick() {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
     recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
-    recordingAudioPacketsObserved_ += static_cast<int64_t>(audioFrames.size());
+    // Count an audio packet only when the F2 mixing graph produced a real program
+    // PCM tap this tick. This ties the recording proof's audioPresent/
+    // audioPacketsObserved assertions to genuine muxed PCM (the program mix that
+    // outputs consume) rather than a raw input-frame count.
+    if (programTap.present()) {
+      recordingAudioPacketsObserved_ += 1;
+      recordingProgramAudioSamplesMuxed_ += static_cast<int64_t>(programTap.frames);
+    }
     recordingElapsedMs_ += static_cast<double>(frameIntervalMs);
   }
 }

@@ -67,6 +67,7 @@ class MediaCore {
   void enqueueProgramSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
+  [[nodiscard]] rpc::Json audioProgramMasterState() const;
   [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
   [[nodiscard]] rpc::Json captureAudioSourcesState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
@@ -105,6 +106,9 @@ class MediaCore {
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
 
   modules::ModuleSet modules_;
+  // F2 dev-gated real monitor output (MON bus playback). nullptr in the default
+  // build, where renderSyntheticTick() falls back to the Beep pulse.
+  std::unique_ptr<modules::IAudioMonitorOutput> audioMonitorOutput_;
   std::string sceneId_ = "unloaded";
   std::vector<SceneRouteState> sceneRoutes_;
   int routeCount_ = 0;
@@ -147,6 +151,7 @@ class MediaCore {
   int64_t recordingIsoFramesWritten_ = 0;
   int64_t recordingDroppedFrames_ = 0;
   int64_t recordingAudioPacketsObserved_ = 0;
+  int64_t recordingProgramAudioSamplesMuxed_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;
   std::string recordingError_;
