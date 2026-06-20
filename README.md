@@ -8,6 +8,8 @@ The product depends on a native media core for real-time Zoom ingest, GPU compos
 
 **Roadmap:** the demo-driven, sprint-by-sprint path to the first live demo lives in [`docs/roadmap/index.html`](docs/roadmap/index.html) — open it in a browser.
 
+**Native production completion:** the plan and per-feature spec for turning the synthetic/telemetry native paths (UVC/AJA/DeckLink capture, SRT, NDI, recording, audio, RTMP, compositor framing, overlays, automation) into real implementations lives in [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
+
 ## Current Slice
 
 - React + Vite app shell for the operator console.
