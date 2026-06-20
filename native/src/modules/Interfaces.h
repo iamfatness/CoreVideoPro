@@ -221,6 +221,18 @@ struct OutputSenderSession {
   std::vector<std::string> warnings;
 };
 
+struct OutputDestinationSettings {
+  std::string id;
+  std::string label;
+  std::string protocol;
+  std::string url;
+  std::string streamKey;
+  std::string ffmpegBinDirectory;
+  int fps = 30;
+  double targetBitrateMbps = 6.0;
+  std::string videoCodec = "h264";
+};
+
 struct CaptureDeviceInfo {
   std::string id;
   std::string name;
@@ -285,7 +297,11 @@ class IEncoderSink {
 class IOutputSender {
  public:
   virtual ~IOutputSender() = default;
-  virtual OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) = 0;
+  virtual OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const ProgramFrame* frame,
+      double elapsedMs,
+      const std::vector<OutputDestinationSettings>& destinationSettings = {}) = 0;
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;

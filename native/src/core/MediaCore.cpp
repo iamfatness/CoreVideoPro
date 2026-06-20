@@ -47,6 +47,32 @@ modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
   };
 }
 
+std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(const rpc::Json& command) {
+  std::vector<modules::OutputDestinationSettings> result;
+  const auto* settings = command.get("destinationSettings");
+  if (!settings || !settings->isArray()) {
+    return result;
+  }
+
+  for (const auto& value : settings->asArray()) {
+    if (!value.isObject()) {
+      continue;
+    }
+    modules::OutputDestinationSettings destination;
+    destination.id = value.getString("id");
+    destination.label = value.getString("label");
+    destination.protocol = value.getString("protocol");
+    destination.url = value.getString("url");
+    destination.streamKey = value.getString("streamKey");
+    destination.ffmpegBinDirectory = value.getString("ffmpegBinDirectory");
+    destination.fps = static_cast<int>(value.getNumber("fps", destination.fps));
+    destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
+    destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
+    result.push_back(std::move(destination));
+  }
+  return result;
+}
+
 bool playMonitorPulse(double volume, int masterLevel) {
 #ifdef _WIN32
   if (volume <= 0.0 || masterLevel <= 0) {
@@ -878,6 +904,14 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
     recordingOutputFps_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("fps", recordingOutputFps_)), 1, 120);
     recordingTargetBitrateMbps_ = std::max(0.5, std::min(80.0, recordingProfile->getNumber("targetBitrateMbps", recordingTargetBitrateMbps_)));
     recordingVideoCodec_ = normalizeVideoCodec(recordingProfile->getString("codec", recordingVideoCodec_), recordingVideoCodec_);
+  }
+  outputDestinationSettings_ = readOutputDestinationSettings(command);
+  for (auto& destination : outputDestinationSettings_) {
+    if (destination.id == "rtmp" || destination.protocol == "rtmp" || destination.protocol == "rtmps") {
+      destination.fps = outputFps_;
+      destination.targetBitrateMbps = outputTargetBitrateMbps_;
+      destination.videoCodec = streamVideoCodec_;
+    }
   }
   configureEncoderRecordingRequest();
   modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
@@ -2073,7 +2107,11 @@ void MediaCore::renderSyntheticTick() {
   enqueueProgramSharedTextureEvent();
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();
-  modules_.outputSender->sync(session.destinations, &lastProgramFrame_, static_cast<double>(lastProgramFrame_.frameNumber * 33));
+  modules_.outputSender->sync(
+      session.destinations,
+      &lastProgramFrame_,
+      static_cast<double>(lastProgramFrame_.frameNumber * 33),
+      outputDestinationSettings_);
   if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;

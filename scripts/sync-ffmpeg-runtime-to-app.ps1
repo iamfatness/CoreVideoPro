@@ -1,4 +1,4 @@
-# Copy FFmpeg runtime DLLs beside the packaged native core when available.
+# Copy FFmpeg runtime files beside the packaged native core when available.
 # Missing FFmpeg is non-fatal: RTMP send-proof validation will report a warning
 # and the app can still run recording/native-shell flows.
 param(
@@ -36,25 +36,25 @@ function Write-FfmpegRuntimeManifest {
 function Resolve-FfmpegBinDir {
   param([string]$Override)
 
-  if ($Override -and (Test-Path (Join-Path $Override "avformat*.dll"))) {
+  if ($Override -and (Test-Path (Join-Path $Override "ffmpeg.exe"))) {
     return $Override
+  }
+
+  $wingetRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+  if (Test-Path $wingetRoot) {
+    $candidate = Get-ChildItem -Path $wingetRoot -Recurse -File -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+    if ($candidate) {
+      return $candidate.DirectoryName
+    }
   }
 
   $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
   if ($ffmpeg) {
     $candidate = Split-Path -Parent $ffmpeg.Source
-    if (Test-Path (Join-Path $candidate "avformat*.dll")) {
+    if (Test-Path (Join-Path $candidate "ffmpeg.exe")) {
       return $candidate
-    }
-  }
-
-  $wingetRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
-  if (Test-Path $wingetRoot) {
-    $candidate = Get-ChildItem -Path $wingetRoot -Recurse -File -Filter "avformat*.dll" -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending |
-      Select-Object -First 1
-    if ($candidate) {
-      return $candidate.DirectoryName
     }
   }
 
@@ -67,13 +67,14 @@ if (-not (Test-Path $AppDir)) {
 
 $sourceDir = Resolve-FfmpegBinDir -Override $FfmpegBinDir
 if (-not $sourceDir) {
-  $warning = "FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing avformat*.dll for RTMP runtime packaging."
-  Write-FfmpegRuntimeManifest -Status "missing" -SourceDir $null -CopiedDlls @() -MissingPatterns @("avformat*.dll") -Warning $warning
+  $warning = "FFmpeg runtime not found. Set COREVIDEO_FFMPEG_BIN_DIR to a bin folder containing ffmpeg.exe for RTMP runtime packaging."
+  Write-FfmpegRuntimeManifest -Status "missing" -SourceDir $null -CopiedDlls @() -MissingPatterns @("ffmpeg.exe") -Warning $warning
   Write-Warning "[ffmpeg-runtime] $warning"
   return
 }
 
 $patterns = @(
+  "ffmpeg.exe",
   "avformat*.dll",
   "avcodec*.dll",
   "avutil*.dll",
@@ -100,4 +101,4 @@ if ($copied.Count -eq 0) {
 }
 
 Write-FfmpegRuntimeManifest -Status "staged" -SourceDir $sourceDir -CopiedDlls $copied
-Write-Host "[ffmpeg-runtime] staged $($copied.Count) FFmpeg runtime DLL(s) from $sourceDir" -ForegroundColor DarkGray
+Write-Host "[ffmpeg-runtime] staged $($copied.Count) FFmpeg runtime file(s) from $sourceDir" -ForegroundColor DarkGray

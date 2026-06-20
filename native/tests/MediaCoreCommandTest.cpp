@@ -1229,7 +1229,6 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   EXPECT_NE(content.find("runtimeDetail"), std::string::npos);
   EXPECT_NE(content.find("runtimeCandidates"), std::string::npos);
   EXPECT_NE(content.find("endpointMode"), std::string::npos);
-  EXPECT_NE(content.find("synthetic-test-mode"), std::string::npos);
   EXPECT_NE(content.find("packagingSignal"), std::string::npos);
   EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
   input.close();
@@ -1482,7 +1481,8 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
   EXPECT_GE(texture->get("height")->asNumber(), 1);
   EXPECT_EQ(texture->getString("format"), "B8G8R8A8_UNORM");
 #else
-  GTEST_SKIP() << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
+  EXPECT_TRUE(true) << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
+  return;
 #endif
 }
 

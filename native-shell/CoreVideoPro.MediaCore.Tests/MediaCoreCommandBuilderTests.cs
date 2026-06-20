@@ -172,7 +172,16 @@ public sealed class MediaCoreCommandBuilderTests
             StreamDestinations = ["rtmp", "ndi", "srt"],
             StreamDestinationSettings =
             [
-                new("rtmp", "RTMP", Protocol: "rtmps", Url: "rtmps://live.example.com/app", StreamKey: "abc123"),
+                new(
+                    "rtmp",
+                    "RTMP",
+                    Protocol: "rtmps",
+                    Url: "rtmps://live.example.com/app",
+                    StreamKey: "abc123",
+                    FfmpegBinDirectory: "C:\\ffmpeg\\bin",
+                    Fps: 30,
+                    TargetBitrateMbps: 4.1,
+                    VideoCodec: "h265"),
                 new("ndi", "NDI", NdiName: "CoreVideo Pro Program", NdiGroup: "public"),
                 new(
                     "srt",
@@ -211,6 +220,10 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("rtmps", destinationSettings[0].GetProperty("protocol").GetString());
         Assert.Equal("rtmps://live.example.com/app", destinationSettings[0].GetProperty("url").GetString());
         Assert.Equal("abc123", destinationSettings[0].GetProperty("streamKey").GetString());
+        Assert.Equal("C:\\ffmpeg\\bin", destinationSettings[0].GetProperty("ffmpegBinDirectory").GetString());
+        Assert.Equal(30, destinationSettings[0].GetProperty("fps").GetInt32());
+        Assert.Equal(4.1, destinationSettings[0].GetProperty("targetBitrateMbps").GetDouble());
+        Assert.Equal("h265", destinationSettings[0].GetProperty("videoCodec").GetString());
         Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
         Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
         Assert.Equal("caller", destinationSettings[2].GetProperty("mode").GetString());

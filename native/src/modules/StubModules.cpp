@@ -284,7 +284,11 @@ int64_t estimatedFrameBytes(double bitrateMbps) {
 
 class SyntheticOutputSender final : public IOutputSender {
  public:
-  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) override {
+  OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const ProgramFrame* frame,
+      double elapsedMs,
+      const std::vector<OutputDestinationSettings>& = {}) override {
     std::vector<std::string> activeDestinations;
     for (const auto& destination : destinations) {
       if (isNetworkDestination(destination) && std::find(activeDestinations.begin(), activeDestinations.end(), destination) == activeDestinations.end()) {

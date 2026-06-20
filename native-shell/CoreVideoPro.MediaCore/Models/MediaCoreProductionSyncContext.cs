@@ -120,7 +120,11 @@ public sealed record MediaCoreStreamDestinationWire(
     int? KeyLength = null,
     string? StreamId = null,
     string? NdiName = null,
-    string? NdiGroup = null);
+    string? NdiGroup = null,
+    string? FfmpegBinDirectory = null,
+    int? Fps = null,
+    double? TargetBitrateMbps = null,
+    string? VideoCodec = null);
 
 public sealed record MediaCoreSrtIngestSourceWire(
     string Id,

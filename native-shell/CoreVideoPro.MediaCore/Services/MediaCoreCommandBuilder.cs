@@ -384,7 +384,11 @@ public static class MediaCoreCommandBuilder
                 ["keyLength"] = destination.KeyLength,
                 ["streamId"] = destination.StreamId,
                 ["ndiName"] = destination.NdiName,
-                ["ndiGroup"] = destination.NdiGroup
+                ["ndiGroup"] = destination.NdiGroup,
+                ["ffmpegBinDirectory"] = destination.FfmpegBinDirectory,
+                ["fps"] = destination.Fps,
+                ["targetBitrateMbps"] = destination.TargetBitrateMbps,
+                ["videoCodec"] = destination.VideoCodec
             }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds

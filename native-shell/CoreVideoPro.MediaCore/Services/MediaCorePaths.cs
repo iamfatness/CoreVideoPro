@@ -5,6 +5,7 @@ public static class MediaCorePaths
     public const string ZoomSdkDirEnvVar = "ZOOM_SDK_DIR";
     public const string ZoomRuntimeDirEnvVar = "COREVIDEO_ZOOM_RUNTIME_DIR";
     public const string ZoomOAuthBrokerStartUrlEnvVar = "COREVIDEO_ZOOM_OAUTH_BROKER_START_URL";
+    public const string FfmpegBinDirEnvVar = "COREVIDEO_FFMPEG_BIN_DIR";
 
     public static string StagedZoomRuntimeRelativePath =>
         Path.Combine("native-core", "zoom-runtime", "windows", "x64");
@@ -133,6 +134,14 @@ public static class MediaCorePaths
         env["COREVIDEO_ZOOM_JOIN_WAIT_MS"] = "45000";
 
         var pathEntries = new List<string> { workingDirectory };
+        var ffmpegBinDirectory = Environment.GetEnvironmentVariable(FfmpegBinDirEnvVar) ??
+                                 Environment.GetEnvironmentVariable("FFMPEG_BIN_DIR");
+        if (!string.IsNullOrWhiteSpace(ffmpegBinDirectory) && Directory.Exists(ffmpegBinDirectory))
+        {
+            env[FfmpegBinDirEnvVar] = ffmpegBinDirectory;
+            pathEntries.Add(ffmpegBinDirectory);
+        }
+
         var packagedBin = zoomRuntime is not null
             ? Path.Combine(zoomRuntime, "bin")
             : null;

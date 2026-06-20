@@ -473,7 +473,7 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Spacing="14">
                     <TextBlock Text="FFmpeg" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="RTMP and RTMPS output require FFmpeg runtime DLLs staged beside the packaged app."
+                    <TextBlock Text="RTMP and RTMPS output require ffmpeg.exe staged beside the packaged app."
                                Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
@@ -494,7 +494,7 @@
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.FfmpegRuntimeStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
-                            <TextBlock Text="Package scripts read COREVIDEO_FFMPEG_BIN_DIR or FFMPEG_BIN_DIR. This field validates the folder in-app; staging still happens during packaging."
+                            <TextBlock Text="Package scripts read COREVIDEO_FFMPEG_BIN_DIR or FFMPEG_BIN_DIR. This field also feeds the running media engine so RTMP/RTMPS can launch FFmpeg without restarting the app."
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>

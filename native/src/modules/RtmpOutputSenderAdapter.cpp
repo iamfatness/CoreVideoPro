@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +33,7 @@ struct RuntimeCandidate {
 struct RuntimeProbe {
   bool available = false;
   std::string detail;
+  std::string ffmpegExecutable;
   std::vector<RuntimeCandidate> candidates;
 };
 
@@ -116,8 +119,120 @@ RuntimeProbe probeLibavformatRuntime() {
   return probe;
 }
 
+std::string trimTrailingSlash(std::string value) {
+  while (!value.empty() && (value.back() == '/' || value.back() == '\\')) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::string buildRtmpEndpoint(const OutputDestinationSettings& settings) {
+  std::string endpoint = trimTrailingSlash(settings.url);
+  if (!settings.streamKey.empty()) {
+    endpoint += "/" + settings.streamKey;
+  }
+  return endpoint;
+}
+
+std::string redactedEndpoint(const std::string& endpoint, const std::string& streamKey) {
+  if (streamKey.empty()) {
+    return endpoint;
+  }
+  const auto position = endpoint.rfind(streamKey);
+  if (position == std::string::npos) {
+    return endpoint;
+  }
+  return endpoint.substr(0, position) + "<stream-key>";
+}
+
+const OutputDestinationSettings* findRtmpSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+  for (const auto& settings : destinationSettings) {
+    if (settings.id == "rtmp" || settings.protocol == "rtmp" || settings.protocol == "rtmps") {
+      return &settings;
+    }
+  }
+  return nullptr;
+}
+
+bool fileExists(const std::filesystem::path& path) {
+  std::error_code error;
+  return std::filesystem::is_regular_file(path, error);
+}
+
+std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
+#if defined(_WIN32)
+  constexpr const char* executableName = "ffmpeg.exe";
+#else
+  constexpr const char* executableName = "ffmpeg";
+#endif
+  std::vector<std::filesystem::path> candidates;
+  if (!configuredBinDirectory.empty()) {
+    candidates.emplace_back(std::filesystem::path(configuredBinDirectory) / executableName);
+  }
+  if (const char* env = std::getenv("COREVIDEO_FFMPEG_BIN_DIR"); env && *env) {
+    candidates.emplace_back(std::filesystem::path(env) / executableName);
+  }
+  if (const char* env = std::getenv("FFMPEG_BIN_DIR"); env && *env) {
+    candidates.emplace_back(std::filesystem::path(env) / executableName);
+  }
+  candidates.emplace_back(std::filesystem::current_path() / executableName);
+
+  for (const auto& candidate : candidates) {
+    if (fileExists(candidate)) {
+      return candidate.string();
+    }
+  }
+#if defined(_WIN32)
+  char resolved[MAX_PATH] = {};
+  if (SearchPathA(nullptr, executableName, nullptr, MAX_PATH, resolved, nullptr) > 0) {
+    return resolved;
+  }
+#else
+  if (const char* pathEnv = std::getenv("PATH"); pathEnv && *pathEnv) {
+    std::stringstream pathStream(pathEnv);
+    std::string entry;
+    while (std::getline(pathStream, entry, ':')) {
+      const auto candidate = std::filesystem::path(entry) / executableName;
+      if (fileExists(candidate)) {
+        return candidate.string();
+      }
+    }
+  }
+#endif
+  return {};
+}
+
+RuntimeProbe probeFfmpegRuntime(const std::string& configuredBinDirectory) {
+  RuntimeProbe probe = probeLibavformatRuntime();
+  const auto executable = resolveFfmpegExecutable(configuredBinDirectory);
+  if (!executable.empty()) {
+    probe.available = true;
+    probe.ffmpegExecutable = executable;
+    probe.detail = "available:" + executable;
+    probe.candidates.push_back({"ffmpeg", "available", executable});
+  } else {
+    probe.candidates.push_back({"ffmpeg", "unavailable", "ffmpeg executable was not found in configured bin directory, app directory, or PATH"});
+    probe.available = false;
+    probe.detail = "missing:ffmpeg executable";
+  }
+  return probe;
+}
+
 int64_t estimatedFrameBytes(double bitrateMbps) {
   return static_cast<int64_t>((bitrateMbps * 1000000.0 / 8.0 / 30.0) + 0.5);
+}
+
+std::string quoteArgument(const std::string& value) {
+  std::string quoted = "\"";
+  for (const char ch : value) {
+    if (ch == '"') {
+      quoted += "\\\"";
+    } else {
+      quoted += ch;
+    }
+  }
+  quoted += "\"";
+  return quoted;
 }
 
 class RtmpOutputSender final : public IOutputSender {
@@ -125,9 +240,16 @@ class RtmpOutputSender final : public IOutputSender {
   explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
       : runtimeProbe_(std::move(runtimeProbe)), runtimeDetail_(runtimeProbe_.detail), runtimeAvailable_(runtimeProbe_.available) {}
 
-  OutputSenderSession sync(const std::vector<std::string>& destinations, const ProgramFrame* frame, double elapsedMs) override {
+  ~RtmpOutputSender() override { stopFfmpegProcess(); }
+
+  OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const ProgramFrame* frame,
+      double elapsedMs,
+      const std::vector<OutputDestinationSettings>& destinationSettings = {}) override {
     const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
     if (!wantsRtmp) {
+      stopFfmpegProcess();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -139,10 +261,32 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     ensureSender(elapsedMs);
+    const auto* settings = findRtmpSettings(destinationSettings);
+    configuredEndpoint_ = settings ? buildRtmpEndpoint(*settings) : configuredEndpoint_;
+    configuredStreamKey_ = settings ? settings->streamKey : configuredStreamKey_;
+    configuredFfmpegBinDirectory_ = settings ? settings->ffmpegBinDirectory : configuredFfmpegBinDirectory_;
+    configuredFps_ = settings ? (std::max)(1, settings->fps) : configuredFps_;
+    sender_.bitrateMbps = settings ? (std::max)(0.5, settings->targetBitrateMbps) : sender_.bitrateMbps;
+    runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
+    runtimeDetail_ = runtimeProbe_.detail;
+    runtimeAvailable_ = runtimeProbe_.available;
+    if (!runtimeProbe_.ffmpegExecutable.empty()) {
+      ffmpegExecutable_ = runtimeProbe_.ffmpegExecutable;
+    }
+    sender_.runtimeDetail = runtimeDetail_;
     openSendProofIfNeeded();
+    if (configuredEndpoint_.empty()) {
+      sender_.status = "warning";
+      sender_.warning = "RTMP sender needs a configured RTMP/RTMPS server URL and stream key.";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "endpoint-missing";
+      sender_.lastError = sender_.warning;
+      appendSendProof(nullptr, "endpoint-missing");
+      return snapshot();
+    }
     if (!runtimeAvailable_) {
       sender_.status = "warning";
-      sender_.warning = "RTMP sender requires libavformat runtime on the dev machine (" + runtimeDetail_ + ").";
+      sender_.warning = "RTMP sender requires FFmpeg runtime on this machine (" + runtimeDetail_ + ").";
       sender_.runtimeDetail = runtimeDetail_;
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "runtime-missing";
@@ -156,6 +300,32 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "waiting-for-frame";
       appendSendProof(frame, "waiting-for-frame");
+      return snapshot();
+    }
+    if (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty()) {
+      sender_.status = "warning";
+      sender_.warning = "RTMP sender is waiting for composed BGRA program pixels.";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "frame-pixels-missing";
+      sender_.lastError = sender_.warning;
+      appendSendProof(frame, "frame-pixels-missing");
+      return snapshot();
+    }
+
+    if (!ensureFfmpegProcess(*frame, elapsedMs)) {
+      appendSendProof(frame, "ffmpeg-start-failed");
+      return snapshot();
+    }
+
+    if (!writeFrameToFfmpeg(*frame)) {
+      sender_.status = "failed";
+      ++sender_.retryCount;
+      sender_.warning = "FFmpeg stdin write failed; the RTMP process stopped or rejected frames.";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "ffmpeg-write-failed";
+      sender_.lastError = sender_.warning;
+      stopFfmpegProcess();
+      appendSendProof(frame, "ffmpeg-write-failed");
       return snapshot();
     }
 
@@ -190,7 +360,8 @@ class RtmpOutputSender final : public IOutputSender {
     if (destination != "rtmp") {
       return snapshot();
     }
-    runtimeProbe_ = probeLibavformatRuntime();
+    stopFfmpegProcess();
+    runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
     ensureSender(elapsedMs);
@@ -222,6 +393,190 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.lastResultCode = "waiting-for-frame";
   }
 
+  bool ensureFfmpegProcess(const ProgramFrame& frame, double elapsedMs) {
+    const bool sizeChanged = frame.preview.width != ffmpegFrameWidth_ || frame.preview.height != ffmpegFrameHeight_;
+    const bool endpointChanged = configuredEndpoint_ != activeEndpoint_;
+    const bool executableChanged = ffmpegExecutable_ != activeFfmpegExecutable_;
+    const bool fpsChanged = configuredFps_ != activeFps_;
+    const bool bitrateChanged = sender_.bitrateMbps != activeBitrateMbps_;
+    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged) {
+      return true;
+    }
+
+    stopFfmpegProcess();
+    ffmpegFrameWidth_ = frame.preview.width;
+    ffmpegFrameHeight_ = frame.preview.height;
+    activeEndpoint_ = configuredEndpoint_;
+    activeFfmpegExecutable_ = ffmpegExecutable_;
+    activeFps_ = configuredFps_;
+    activeBitrateMbps_ = sender_.bitrateMbps;
+    if (startFfmpegProcess(frame.preview.width, frame.preview.height)) {
+      sender_.startedAtMs = elapsedMs;
+      sender_.destinationHealth = "starting";
+      sender_.lastResultCode = "ffmpeg-started";
+      return true;
+    }
+    return false;
+  }
+
+  std::string buildFfmpegArguments(int width, int height) const {
+    const int bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    const int bufferKbps = bitrateKbps * 2;
+    std::ostringstream args;
+    const int fps = (std::max)(1, configuredFps_);
+    args << " -hide_banner -loglevel warning"
+         << " -f rawvideo -pix_fmt bgra -s " << width << "x" << height
+         << " -r " << fps << " -i pipe:0"
+         << " -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
+         << " -map 0:v:0 -map 1:a:0"
+         << " -c:v libx264 -preset veryfast -tune zerolatency"
+         << " -b:v " << bitrateKbps << "k -maxrate " << bitrateKbps << "k -bufsize " << bufferKbps << "k"
+         << " -g " << (fps * 2) << " -pix_fmt yuv420p"
+         << " -c:a aac -b:a 160k -ar 48000"
+         << " -f flv " << quoteArgument(configuredEndpoint_);
+    return args.str();
+  }
+
+  bool startFfmpegProcess(int width, int height) {
+    if (ffmpegExecutable_.empty()) {
+      sender_.status = "warning";
+      sender_.warning = "FFmpeg executable was not found.";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "ffmpeg-missing";
+      sender_.lastError = sender_.warning;
+      return false;
+    }
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES securityAttributes{};
+    securityAttributes.nLength = sizeof(securityAttributes);
+    securityAttributes.bInheritHandle = TRUE;
+
+    HANDLE childStdinRead = nullptr;
+    HANDLE childStdinWrite = nullptr;
+    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, 0)) {
+      sender_.status = "failed";
+      sender_.warning = "Could not create FFmpeg stdin pipe.";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "ffmpeg-pipe-failed";
+      sender_.lastError = sender_.warning;
+      return false;
+    }
+    SetHandleInformation(childStdinWrite, HANDLE_FLAG_INHERIT, 0);
+
+    HANDLE nullHandle = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &securityAttributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (nullHandle == INVALID_HANDLE_VALUE) {
+      CloseHandle(childStdinRead);
+      CloseHandle(childStdinWrite);
+      sender_.status = "failed";
+      sender_.warning = "Could not open NUL for FFmpeg output redirection.";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "ffmpeg-redirect-failed";
+      sender_.lastError = sender_.warning;
+      return false;
+    }
+
+    STARTUPINFOA startupInfo{};
+    startupInfo.cb = sizeof(startupInfo);
+    startupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startupInfo.hStdInput = childStdinRead;
+    startupInfo.hStdOutput = nullHandle;
+    startupInfo.hStdError = nullHandle;
+
+    PROCESS_INFORMATION processInfo{};
+    std::string commandLine = quoteArgument(ffmpegExecutable_) + buildFfmpegArguments(width, height);
+    std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
+    mutableCommandLine.push_back('\0');
+
+    const BOOL started = CreateProcessA(
+        ffmpegExecutable_.c_str(),
+        mutableCommandLine.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startupInfo,
+        &processInfo);
+    CloseHandle(childStdinRead);
+    CloseHandle(nullHandle);
+    if (!started) {
+      CloseHandle(childStdinWrite);
+      sender_.status = "failed";
+      sender_.warning = "Failed to start FFmpeg process. Win32 error " + std::to_string(GetLastError()) + ".";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "ffmpeg-start-failed";
+      sender_.lastError = sender_.warning;
+      return false;
+    }
+
+    ffmpegStdin_ = childStdinWrite;
+    ffmpegProcess_ = processInfo.hProcess;
+    CloseHandle(processInfo.hThread);
+    ffmpegRunning_ = true;
+    sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
+    writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
+              ",\"height\":" + std::to_string(height) +
+              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) + "}");
+    return true;
+#else
+    (void)width;
+    (void)height;
+    sender_.status = "warning";
+    sender_.warning = "FFmpeg RTMP process output is currently implemented for Windows dev/runtime builds.";
+    sender_.destinationHealth = "warning";
+    sender_.lastResultCode = "ffmpeg-platform-disabled";
+    sender_.lastError = sender_.warning;
+    return false;
+#endif
+  }
+
+  bool writeFrameToFfmpeg(const ProgramFrame& frame) {
+#if defined(_WIN32)
+    if (!ffmpegRunning_ || !ffmpegStdin_) {
+      return false;
+    }
+    DWORD exitCode = 0;
+    if (ffmpegProcess_ && GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode != STILL_ACTIVE) {
+      return false;
+    }
+    DWORD written = 0;
+    const auto* data = frame.preview.bgra.data();
+    size_t remaining = frame.preview.bgra.size();
+    while (remaining > 0) {
+      const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
+      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+        return false;
+      }
+      data += written;
+      remaining -= written;
+    }
+    return true;
+#else
+    (void)frame;
+    return false;
+#endif
+  }
+
+  void stopFfmpegProcess() {
+#if defined(_WIN32)
+    if (ffmpegStdin_) {
+      CloseHandle(ffmpegStdin_);
+      ffmpegStdin_ = nullptr;
+    }
+    if (ffmpegProcess_) {
+      DWORD exitCode = 0;
+      if (GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode == STILL_ACTIVE) {
+        WaitForSingleObject(ffmpegProcess_, 500);
+      }
+      CloseHandle(ffmpegProcess_);
+      ffmpegProcess_ = nullptr;
+    }
+#endif
+    ffmpegRunning_ = false;
+  }
+
   void openSendProofIfNeeded() {
     if (sendProof_.is_open() || !sender_.sendArtifactPath.empty()) {
       return;
@@ -234,8 +589,11 @@ class RtmpOutputSender final : public IOutputSender {
       return;
     }
     sender_.sendArtifactPath = path.string();
-    writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":false,\"endpointMode\":\"synthetic-test-mode\","
-              "\"testMode\":true,\"muxingMode\":\"runtime-probe-only\",\"runtimeLibrary\":\"libavformat\",\"runtimeAvailable\":" +
+    writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":" +
+              std::string(configuredEndpoint_.empty() ? "false" : "true") +
+              ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
+              ",\"endpointMode\":\"ffmpeg-process\","
+              "\"testMode\":false,\"muxingMode\":\"ffmpeg-process\",\"runtimeLibrary\":\"ffmpeg\",\"runtimeAvailable\":" +
               std::string(runtimeAvailable_ ? "true" : "false") +
               ",\"runtimeDetail\":" + jsonString(runtimeDetail_) +
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
@@ -246,7 +604,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!sendProof_.is_open()) {
       return;
     }
-    std::string line = "{\"type\":\"rtmp-send-attempt\",\"destination\":\"rtmp\",\"endpointMode\":\"synthetic-test-mode\",\"status\":" + jsonString(status);
+    std::string line = "{\"type\":\"rtmp-send-attempt\",\"destination\":\"rtmp\",\"endpointMode\":\"ffmpeg-process\",\"status\":" + jsonString(status);
     if (frame) {
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
               ",\"width\":" + std::to_string(frame->width) +
@@ -281,6 +639,22 @@ class RtmpOutputSender final : public IOutputSender {
   RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
+  std::string configuredEndpoint_;
+  std::string configuredStreamKey_;
+  std::string configuredFfmpegBinDirectory_;
+  std::string ffmpegExecutable_;
+  std::string activeEndpoint_;
+  std::string activeFfmpegExecutable_;
+  int ffmpegFrameWidth_ = 0;
+  int ffmpegFrameHeight_ = 0;
+  int configuredFps_ = 30;
+  int activeFps_ = 0;
+  double activeBitrateMbps_ = 0;
+  bool ffmpegRunning_ = false;
+#if defined(_WIN32)
+  HANDLE ffmpegProcess_ = nullptr;
+  HANDLE ffmpegStdin_ = nullptr;
+#endif
   OutputSender sender_;
   std::ofstream sendProof_;
 };
@@ -292,7 +666,7 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   // REQUIRES DEV MACHINE: real RTMP packet muxing belongs behind this libavformat
   // sender. The scaffold verifies runtime availability without affecting stubs.
-  return std::make_unique<RtmpOutputSender>(probeLibavformatRuntime());
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""));
 #else
   return nullptr;
 #endif

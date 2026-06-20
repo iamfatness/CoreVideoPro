@@ -586,13 +586,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             if (string.IsNullOrWhiteSpace(FfmpegBinDirectory))
             {
-                return "FFmpeg not configured. RTMP/RTMPS runtime packaging needs a bin folder containing avformat*.dll.";
+                return "FFmpeg not configured. RTMP/RTMPS needs a bin folder containing ffmpeg.exe.";
             }
 
-            return Directory.Exists(FfmpegBinDirectory) &&
-                   Directory.EnumerateFiles(FfmpegBinDirectory, "avformat*.dll").Any()
-                ? "FFmpeg runtime found. Package scripts can stage RTMP/RTMPS DLLs from this folder."
-                : "Folder does not contain avformat*.dll. Choose the FFmpeg bin folder, not the install root.";
+            if (!Directory.Exists(FfmpegBinDirectory))
+            {
+                return "FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe.";
+            }
+
+            var hasExecutable = File.Exists(Path.Combine(FfmpegBinDirectory, "ffmpeg.exe"));
+            return hasExecutable
+                ? "FFmpeg runtime found. RTMP/RTMPS can use this folder and package scripts can stage it."
+                : "Folder must contain ffmpeg.exe. Choose the FFmpeg bin folder, not the install root.";
         }
     }
 
@@ -1203,8 +1208,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
     }
 
-    partial void OnFfmpegBinDirectoryChanged(string value) =>
+    partial void OnFfmpegBinDirectoryChanged(string value)
+    {
+        ApplyFfmpegRuntimeEnvironment(value);
         OnPropertyChanged(nameof(FfmpegRuntimeStatus));
+    }
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -2755,6 +2763,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = FfmpegRuntimeStatus;
     }
 
+    private static void ApplyFfmpegRuntimeEnvironment(string? binDirectory)
+    {
+        var normalized = string.IsNullOrWhiteSpace(binDirectory)
+            ? string.Empty
+            : Path.GetFullPath(binDirectory.Trim());
+        Environment.SetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR", normalized, EnvironmentVariableTarget.Process);
+        if (!Directory.Exists(normalized))
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR", normalized, EnvironmentVariableTarget.User);
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var entries = path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (entries.Any(entry => PathsEqual(entry, normalized)))
+        {
+            return;
+        }
+
+        Environment.SetEnvironmentVariable("PATH", string.Join(Path.PathSeparator, entries.Prepend(normalized)));
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [RelayCommand]
     private void SelectMediaAsset(string assetId)
     {
@@ -3896,6 +3938,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private IReadOnlyList<MediaCoreStreamDestinationWire> BuildStreamDestinationSettings()
     {
         var destinations = new List<MediaCoreStreamDestinationWire>(3);
+        var streamProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps, StreamVideoCodec);
         if (StreamRtmpEnabled)
         {
             destinations.Add(new MediaCoreStreamDestinationWire(
@@ -3903,7 +3946,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Label: "RTMP",
                 Protocol: StudioStreamOutputValidation.NormalizeRtmpProtocol(StreamRtmpProtocol),
                 Url: StudioStreamOutputValidation.BuildRtmpUrl(StreamRtmpProtocol, StreamRtmpServerUrl),
-                StreamKey: NormalizeOutputText(StreamRtmpStreamKey, string.Empty)));
+                StreamKey: NormalizeOutputText(StreamRtmpStreamKey, string.Empty),
+                FfmpegBinDirectory: NormalizeOptionalOutputText(FfmpegBinDirectory),
+                Fps: streamProfile.Fps,
+                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+                VideoCodec: streamProfile.Codec));
         }
 
         if (StreamNdiEnabled)

@@ -118,6 +118,7 @@ class MediaCore {
   int recordingOutputFps_ = 60;
   double recordingTargetBitrateMbps_ = 8.2;
   std::string recordingVideoCodec_ = "h264";
+  std::vector<modules::OutputDestinationSettings> outputDestinationSettings_;
   modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
   int64_t mixedAudioFrameCount_ = 0;
