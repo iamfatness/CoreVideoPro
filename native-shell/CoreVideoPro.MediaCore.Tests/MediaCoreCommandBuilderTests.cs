@@ -137,7 +137,23 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             Recording = true,
             Streaming = true,
-            StreamDestinations = ["rtmp", "ndi", "srt"]
+            StreamDestinations = ["rtmp", "ndi", "srt"],
+            StreamDestinationSettings =
+            [
+                new("rtmp", "RTMP", Protocol: "rtmps", Url: "rtmps://live.example.com/app", StreamKey: "abc123"),
+                new("ndi", "NDI", NdiName: "CoreVideo Pro Program", NdiGroup: "public"),
+                new(
+                    "srt",
+                    "SRT",
+                    Mode: "caller",
+                    Host: "receiver.example.com",
+                    Port: 9000,
+                    LatencyMs: 120,
+                    LatencyUs: 120000,
+                    Passphrase: "secret-passphrase",
+                    KeyLength: 32,
+                    StreamId: "publish/live/main")
+            ]
         });
 
         Assert.Contains(commands, command => command.Type == "prepare-encoder-session");
@@ -146,6 +162,21 @@ public sealed class MediaCoreCommandBuilderTests
         var output = commands.Single(command => command.Type == "start-program-output");
         Assert.Equal(["recording", "rtmp", "ndi", "srt"], GetStringArray(output, "destinations"));
         Assert.Empty(GetStringArray(output, "isoParticipantIds"));
+        var destinationSettings = GetObjectArray(output, "destinationSettings");
+        Assert.Equal(["rtmp", "ndi", "srt"], destinationSettings.Select(destination => destination.GetProperty("id").GetString()));
+        Assert.Equal("rtmps", destinationSettings[0].GetProperty("protocol").GetString());
+        Assert.Equal("rtmps://live.example.com/app", destinationSettings[0].GetProperty("url").GetString());
+        Assert.Equal("abc123", destinationSettings[0].GetProperty("streamKey").GetString());
+        Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
+        Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
+        Assert.Equal("caller", destinationSettings[2].GetProperty("mode").GetString());
+        Assert.Equal("receiver.example.com", destinationSettings[2].GetProperty("host").GetString());
+        Assert.Equal(9000, destinationSettings[2].GetProperty("port").GetInt32());
+        Assert.Equal(120, destinationSettings[2].GetProperty("latencyMs").GetInt32());
+        Assert.Equal(120000, destinationSettings[2].GetProperty("latencyUs").GetInt32());
+        Assert.Equal("secret-passphrase", destinationSettings[2].GetProperty("passphrase").GetString());
+        Assert.Equal(32, destinationSettings[2].GetProperty("keyLength").GetInt32());
+        Assert.Equal("publish/live/main", destinationSettings[2].GetProperty("streamId").GetString());
 
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
@@ -414,6 +445,20 @@ public sealed class MediaCoreCommandBuilderTests
         return value.EnumerateArray()
             .Where(element => element.ValueKind == JsonValueKind.String)
             .Select(element => element.GetString()!)
+            .ToList();
+    }
+
+    private static IReadOnlyList<JsonElement> GetObjectArray(NativeMediaCoreCommand command, string propertyName)
+    {
+        if (command.ExtensionData is null ||
+            !command.ExtensionData.TryGetValue(propertyName, out var value) ||
+            value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return value.EnumerateArray()
+            .Where(element => element.ValueKind == JsonValueKind.Object)
             .ToList();
     }
 

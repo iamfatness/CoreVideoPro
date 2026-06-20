@@ -70,6 +70,23 @@ public sealed record MediaCoreRecordingTargetsWire(
     string Quality,
     IReadOnlyList<string> IsoParticipantIds);
 
+public sealed record MediaCoreStreamDestinationWire(
+    string Id,
+    string Label,
+    string? Protocol = null,
+    string? Url = null,
+    string? StreamKey = null,
+    string? Mode = null,
+    string? Host = null,
+    int? Port = null,
+    int? LatencyMs = null,
+    int? LatencyUs = null,
+    string? Passphrase = null,
+    int? KeyLength = null,
+    string? StreamId = null,
+    string? NdiName = null,
+    string? NdiGroup = null);
+
 /// <summary>
 /// Production inputs for building a media-core-sync command batch.
 /// Mirrors the React <c>buildNativeMediaCoreCommands</c> production state slice.
@@ -82,6 +99,7 @@ public sealed record MediaCoreProductionSyncContext
     public bool Recording { get; init; }
     public bool Streaming { get; init; }
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
+    public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
     public MediaCoreRecordingTargetsWire RecordingTargets { get; init; } = DefaultRecordingTargets;
     public IReadOnlyList<MediaCoreGraphicWire> Graphics { get; init; } = [];
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;

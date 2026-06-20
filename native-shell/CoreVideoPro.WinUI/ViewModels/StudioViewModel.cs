@@ -69,6 +69,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _streamSrtEnabled;
 
     [ObservableProperty]
+    private string _streamRtmpProtocol = "rtmps";
+
+    [ObservableProperty]
+    private string _streamRtmpServerUrl = string.Empty;
+
+    [ObservableProperty]
+    private string _streamRtmpStreamKey = string.Empty;
+
+    [ObservableProperty]
+    private string _streamNdiProgramName = "CoreVideo Pro Program";
+
+    [ObservableProperty]
+    private string _streamNdiGroupName = "public";
+
+    [ObservableProperty]
+    private string _streamSrtMode = "caller";
+
+    [ObservableProperty]
+    private string _streamSrtHost = string.Empty;
+
+    [ObservableProperty]
+    private string _streamSrtPort = "9000";
+
+    [ObservableProperty]
+    private string _streamSrtLatencyMs = "120";
+
+    [ObservableProperty]
+    private string _streamSrtStreamId = string.Empty;
+
+    [ObservableProperty]
+    private string _streamSrtKeyLength = "0";
+
+    [ObservableProperty]
+    private string _streamSrtPassphrase = string.Empty;
+
+    [ObservableProperty]
     private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
 
     [ObservableProperty]
@@ -196,6 +232,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
     private bool _applyingDualCaptureSelection;
+    private readonly HashSet<string> _captureAutoConnectInFlight = new(StringComparer.Ordinal);
 
     public SettingsViewModel Settings { get; }
 
@@ -473,6 +510,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string StreamingLabel => Streaming ? "Streaming" : "Stream";
 
+    public IReadOnlyList<string> StreamRtmpProtocolOptions { get; } = ["rtmps", "rtmp"];
+
+    public IReadOnlyList<string> StreamSrtModeOptions { get; } = ["caller", "listener", "rendezvous"];
+
+    public IReadOnlyList<string> StreamSrtKeyLengthOptions { get; } = ["0", "16", "24", "32"];
+
     public string StreamDestinationSummary
     {
         get
@@ -483,6 +526,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : string.Join(" + ", destinations.Select(destination => destination.ToUpperInvariant()));
         }
     }
+
+    public string StreamConfigurationSummary
+    {
+        get
+        {
+            var configured = BuildConfiguredStreamDestinationLabels();
+            return configured.Count == 0
+                ? "No stream destinations configured"
+                : string.Join(" + ", configured);
+        }
+    }
+
+    public string StreamRtmpSummary =>
+        StreamRtmpEnabled
+            ? ValidateRtmpSettings() is null
+                ? $"{StudioStreamOutputValidation.NormalizeRtmpProtocol(StreamRtmpProtocol).ToUpperInvariant()} ready - {StudioStreamOutputValidation.BuildRtmpUrl(StreamRtmpProtocol, StreamRtmpServerUrl)}"
+                : "RTMP/RTMPS needs matching protocol, server URL, and stream key"
+            : "RTMP disabled";
+
+    public string StreamNdiSummary =>
+        StreamNdiEnabled
+            ? IsNdiConfigured()
+                ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}"
+                : "NDI needs a program name"
+            : "NDI disabled";
+
+    public string StreamSrtSummary =>
+        StreamSrtEnabled
+            ? ValidateSrtSettings() is null
+                ? $"SRT ready - {StudioStreamOutputValidation.NormalizeSrtMode(StreamSrtMode)} {NormalizeOutputText(StreamSrtHost, string.Empty)}:{NormalizeOutputText(StreamSrtPort, string.Empty)} - {NormalizeOutputText(StreamSrtLatencyMs, "120")} ms ({BuildSrtEncryptionSummary()})"
+                : "SRT needs mode, host, port, latency, and valid encryption settings"
+            : "SRT disabled";
 
     public string RecordingOptionsSummary =>
         $"{RecordingFormat.ToUpperInvariant()} · {RecordingQuality} · {RecordingFilenamePrefix}";
@@ -798,6 +873,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
+    partial void OnStreamRtmpProtocolChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamRtmpServerUrlChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamRtmpStreamKeyChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamNdiProgramNameChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamNdiGroupNameChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtModeChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtHostChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtPortChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtLatencyMsChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtStreamIdChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtKeyLengthChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnStreamSrtPassphraseChanged(string value) => OnStreamOutputOptionChanged();
+
     partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
 
     partial void OnRecordingFilenamePrefixChanged(string value) => OnRecordingOutputOptionChanged();
@@ -1061,6 +1160,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OutputStatus = "Select at least one stream destination.";
             OutputSessionStatus = OutputStatus;
+            return;
+        }
+
+        if (!Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        {
+            OutputStatus = validationError;
+            OutputSessionStatus = validationError;
             return;
         }
 
@@ -1696,6 +1802,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             UpdateDualCaptureSummary();
             RefreshShowInputEditors();
             RefreshMultiviewGridTiles();
+            QueueSelectedCaptureDevicesOnline();
         }
         finally
         {
@@ -1949,6 +2056,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Recording = Recording,
             Streaming = Streaming,
             StreamDestinations = BuildSelectedStreamDestinations(),
+            StreamDestinationSettings = BuildStreamDestinationSettings(),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
@@ -2009,6 +2117,110 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
+    private IReadOnlyList<MediaCoreStreamDestinationWire> BuildStreamDestinationSettings()
+    {
+        var destinations = new List<MediaCoreStreamDestinationWire>(3);
+        if (StreamRtmpEnabled)
+        {
+            destinations.Add(new MediaCoreStreamDestinationWire(
+                Id: "rtmp",
+                Label: "RTMP",
+                Protocol: StudioStreamOutputValidation.NormalizeRtmpProtocol(StreamRtmpProtocol),
+                Url: StudioStreamOutputValidation.BuildRtmpUrl(StreamRtmpProtocol, StreamRtmpServerUrl),
+                StreamKey: NormalizeOutputText(StreamRtmpStreamKey, string.Empty)));
+        }
+
+        if (StreamNdiEnabled)
+        {
+            destinations.Add(new MediaCoreStreamDestinationWire(
+                Id: "ndi",
+                Label: "NDI",
+                NdiName: NormalizeOutputText(StreamNdiProgramName, "CoreVideo Pro Program"),
+                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public")));
+        }
+
+        if (StreamSrtEnabled)
+        {
+            var latencyMs = ParsePositiveInt(StreamSrtLatencyMs);
+            var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);
+            destinations.Add(new MediaCoreStreamDestinationWire(
+                Id: "srt",
+                Label: "SRT",
+                Mode: StudioStreamOutputValidation.NormalizeSrtMode(StreamSrtMode),
+                Host: NormalizeOutputText(StreamSrtHost, string.Empty),
+                Port: ParsePositiveInt(StreamSrtPort),
+                LatencyMs: latencyMs,
+                LatencyUs: latencyMs is null ? null : latencyMs * 1000,
+                Passphrase: NormalizeOutputText(StreamSrtPassphrase, string.Empty),
+                KeyLength: keyLength,
+                StreamId: NormalizeOptionalOutputText(StreamSrtStreamId)));
+        }
+
+        return destinations;
+    }
+
+    private IReadOnlyList<string> BuildConfiguredStreamDestinationLabels()
+    {
+        var destinations = new List<string>(3);
+        if (StreamRtmpEnabled)
+        {
+            destinations.Add(IsRtmpConfigured() ? "RTMP configured" : "RTMP missing");
+        }
+
+        if (StreamNdiEnabled)
+        {
+            destinations.Add(IsNdiConfigured() ? "NDI configured" : "NDI missing");
+        }
+
+        if (StreamSrtEnabled)
+        {
+            destinations.Add(ValidateSrtSettings() is null ? "SRT configured" : "SRT missing");
+        }
+
+        return destinations;
+    }
+
+    private string? ValidateStreamDestinations()
+    {
+        if (StreamRtmpEnabled && ValidateRtmpSettings() is { Length: > 0 } rtmpError)
+        {
+            return rtmpError;
+        }
+
+        if (StreamNdiEnabled && !IsNdiConfigured())
+        {
+            return "Configure an NDI program name before streaming.";
+        }
+
+        if (StreamSrtEnabled && ValidateSrtSettings() is { Length: > 0 } srtError)
+        {
+            return srtError;
+        }
+
+        return null;
+    }
+
+    private bool IsRtmpConfigured()
+        => ValidateRtmpSettings() is null;
+
+    private string? ValidateRtmpSettings() =>
+        StudioStreamOutputValidation.ValidateRtmp(
+            StreamRtmpProtocol,
+            StreamRtmpServerUrl,
+            StreamRtmpStreamKey);
+
+    private bool IsNdiConfigured() => !string.IsNullOrWhiteSpace(StreamNdiProgramName);
+
+    private string? ValidateSrtSettings()
+        => StudioStreamOutputValidation.ValidateSrt(
+            StreamSrtMode,
+            StreamSrtHost,
+            StreamSrtPort,
+            StreamSrtLatencyMs,
+            StreamSrtStreamId,
+            StreamSrtKeyLength,
+            StreamSrtPassphrase);
+
     private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
         new(
             TargetFolder: NormalizeOutputText(RecordingTargetFolder, MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder),
@@ -2020,9 +2232,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static string NormalizeOutputText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
+    private static string? NormalizeOptionalOutputText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static int? ParsePositiveInt(string? value) =>
+        int.TryParse(value, out var parsed) ? parsed : null;
+
+    private string BuildSrtEncryptionSummary()
+    {
+        var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);
+        return keyLength > 0 ? $"AES-{keyLength * 8}" : "no encryption";
+    }
+
     private async void OnStreamOutputOptionChanged()
     {
         OnPropertyChanged(nameof(StreamDestinationSummary));
+        OnPropertyChanged(nameof(StreamConfigurationSummary));
+        OnPropertyChanged(nameof(StreamRtmpSummary));
+        OnPropertyChanged(nameof(StreamNdiSummary));
+        OnPropertyChanged(nameof(StreamSrtSummary));
 
         if (!Streaming || !_bridge.Running)
         {
@@ -2623,7 +2851,41 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
         RefreshRoutingMatricesIfVisible();
+        QueueSelectedCaptureDevicesOnline();
         CommandStatus = "Show input roster updated";
+    }
+
+    private void QueueSelectedCaptureDevicesOnline()
+    {
+        foreach (var deviceId in ShowInputs
+                     .Where(slot => slot.InShow &&
+                         slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
+                         !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
+                     .Select(slot => slot.CaptureDeviceId!)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            var device = ResolveCaptureDevice(deviceId);
+            if (device is null ||
+                device.ConnectionState is CaptureConnectionState.Connected or CaptureConnectionState.Error ||
+                !_captureAutoConnectInFlight.Add(deviceId))
+            {
+                continue;
+            }
+
+            _ = ConnectSelectedCaptureDeviceAsync(deviceId);
+        }
+    }
+
+    private async Task ConnectSelectedCaptureDeviceAsync(string deviceId)
+    {
+        try
+        {
+            await ConnectCaptureDeviceAsync(deviceId).ConfigureAwait(false);
+        }
+        finally
+        {
+            RunOnUiThread(() => _captureAutoConnectInFlight.Remove(deviceId));
+        }
     }
 
     private MediaAsset? FindMediaAsset(string assetId) =>

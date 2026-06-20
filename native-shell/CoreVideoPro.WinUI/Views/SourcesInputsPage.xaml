@@ -187,7 +187,7 @@
                                             <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="KindCombo"
                                                       ItemsSource="{x:Bind KindOptions}"
-                                                      SelectedValue="{x:Bind Kind, Mode=OneWay}"
+                                                      SelectedValue="{x:Bind Kind, Mode=TwoWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       HorizontalAlignment="Stretch" />
@@ -196,7 +196,7 @@
                                             <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="SourceCombo"
                                                       ItemsSource="{x:Bind SourceOptions}"
-                                                      SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
+                                                      SelectedValue="{x:Bind SelectedSourceId, Mode=TwoWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"

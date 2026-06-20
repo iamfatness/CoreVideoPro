@@ -272,6 +272,24 @@ public static class MediaCoreCommandBuilder
         return Command("start-program-output", new Dictionary<string, object?>
         {
             ["destinations"] = destinations.Distinct(StringComparer.Ordinal).ToList(),
+            ["destinationSettings"] = context.StreamDestinationSettings.Select(destination => new Dictionary<string, object?>
+            {
+                ["id"] = destination.Id,
+                ["label"] = destination.Label,
+                ["protocol"] = destination.Protocol,
+                ["url"] = destination.Url,
+                ["streamKey"] = destination.StreamKey,
+                ["mode"] = destination.Mode,
+                ["host"] = destination.Host,
+                ["port"] = destination.Port,
+                ["latencyMs"] = destination.LatencyMs,
+                ["latencyUs"] = destination.LatencyUs,
+                ["passphrase"] = destination.Passphrase,
+                ["keyLength"] = destination.KeyLength,
+                ["streamId"] = destination.StreamId,
+                ["ndiName"] = destination.NdiName,
+                ["ndiGroup"] = destination.NdiGroup
+            }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds
                 : Array.Empty<string>()
