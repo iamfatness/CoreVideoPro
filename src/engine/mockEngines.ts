@@ -24,7 +24,14 @@ import {
 import { SimulatedZoomSession } from "./simulatedZoomSession";
 import { SimulatedOutputSession } from "./outputSession";
 import { planAutoProduction } from "./autoProductionDirector";
-import { heuristicDirectorStrategy, type DirectorStrategy } from "./directorStrategy";
+import {
+  heuristicDirectorStrategy,
+  proposeWithProviderAsync,
+  strategyFromResolution,
+  type AiDirectorProvider,
+  type DirectorSignals,
+  type DirectorStrategy
+} from "./directorStrategy";
 
 export class MockZoomCaptureEngine implements ZoomCaptureEngine {
   private session = new SimulatedZoomSession();
@@ -50,17 +57,38 @@ export class MockZoomCaptureEngine implements ZoomCaptureEngine {
   }
 }
 
-export class RuleBasedAiProductionEngine implements AiProductionEngine {
-  /**
-   * Optional pluggable director strategy. Defaults to the always-on heuristic.
-   * A future model-backed strategy plugs in here; `planAutoProduction` always
-   * gates its proposal and silently falls back to the heuristic on any
-   * failure/invalid proposal, so passing a strategy can never reduce safety.
-   */
-  private readonly directorStrategy: DirectorStrategy;
+/**
+ * Optional injection points for {@link RuleBasedAiProductionEngine}.
+ *
+ * - `directorStrategy`: synchronous, always-on proposal seam (defaults to the
+ *   heuristic).
+ * - `directorProvider`: the optional ASYNC intelligence-provider seam (Item 10).
+ *   A future model-backed / `services/`-hosted director is injected here; the
+ *   engine runs it under a timeout and falls back to the heuristic on absence /
+ *   timeout / error / invalid proposal. `planAutoProduction` still gates whatever
+ *   it returns, so a provider can never reduce safety. NONE ships in `src/engine`.
+ * - `providerTimeoutMs`: per-call budget before the heuristic takes over.
+ */
+export type RuleBasedAiProductionEngineOptions = {
+  directorStrategy?: DirectorStrategy;
+  directorProvider?: AiDirectorProvider;
+  providerTimeoutMs?: number;
+};
 
-  constructor(directorStrategy: DirectorStrategy = heuristicDirectorStrategy) {
-    this.directorStrategy = directorStrategy;
+export class RuleBasedAiProductionEngine implements AiProductionEngine {
+  private readonly directorStrategy: DirectorStrategy;
+  private readonly directorProvider?: AiDirectorProvider;
+  private readonly providerTimeoutMs?: number;
+
+  constructor(options: RuleBasedAiProductionEngineOptions | DirectorStrategy = {}) {
+    // Back-compat: a bare DirectorStrategy may still be passed directly.
+    const normalized: RuleBasedAiProductionEngineOptions =
+      typeof (options as DirectorStrategy).propose === "function"
+        ? { directorStrategy: options as DirectorStrategy }
+        : (options as RuleBasedAiProductionEngineOptions);
+    this.directorStrategy = normalized.directorStrategy ?? heuristicDirectorStrategy;
+    this.directorProvider = normalized.directorProvider;
+    this.providerTimeoutMs = normalized.providerTimeoutMs;
   }
 
   async buildMagicScene(request: MagicSceneRequest): Promise<MagicSceneResult> {
@@ -68,7 +96,23 @@ export class RuleBasedAiProductionEngine implements AiProductionEngine {
   }
 
   async recommendAutoProduction(state: ProductionState, snapshot: ZoomSessionSnapshot): Promise<AutoProductionState> {
-    return recommendAutoProduction(state, snapshot, this.directorStrategy);
+    // With no async provider configured, take the deterministic sync path so the
+    // engine stays synchronous-equivalent and offline.
+    if (!this.directorProvider) {
+      return recommendAutoProduction(state, snapshot, this.directorStrategy);
+    }
+
+    // Resolve the async provider proposal (timeout + heuristic fallback), then
+    // gate it through the SAME stabilizer the heuristic uses. The provider can
+    // only ever influence the *proposal*; the holds remain the safety arbiter.
+    const elapsedMs = snapshot.elapsedSeconds * 1000;
+    const liveParticipants = snapshot.participants.filter((participant) => participant.health !== "video-off");
+    const signals: DirectorSignals = { state, snapshot, liveParticipants, elapsedMs };
+    const resolution = await proposeWithProviderAsync(signals, this.directorProvider, {
+      timeoutMs: this.providerTimeoutMs,
+      fallback: this.directorStrategy
+    });
+    return recommendAutoProduction(state, snapshot, strategyFromResolution(resolution));
   }
 }
 

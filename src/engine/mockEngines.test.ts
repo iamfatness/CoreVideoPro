@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { initialProduction } from "../domain/production";
+import { initialProduction, type ProductionState } from "../domain/production";
 import { mapCaptureSnapshot } from "./captureSnapshotMapper";
-import { buildMagicScene, recommendAutoProduction } from "./mockEngines";
+import type { AiDirectorProvider, DirectorIntelligenceSignals } from "./directorStrategy";
+import { RuleBasedAiProductionEngine, buildMagicScene, recommendAutoProduction } from "./mockEngines";
 
 describe("buildMagicScene", () => {
   it("selects speaker plus slides when screen share is active", () => {
@@ -205,5 +206,103 @@ describe("recommendAutoProduction", () => {
     expect(recommendation.action).toBe("take");
     expect(recommendation.ruleId).toBe("single-speaker");
     expect(recommendation.reason).toContain("One live speaker");
+  });
+});
+
+class StubProvider implements AiDirectorProvider {
+  readonly id: string;
+  constructor(private readonly behavior: (signals: DirectorIntelligenceSignals) => Promise<unknown>, id = "stub") {
+    this.id = id;
+  }
+  propose(signals: DirectorIntelligenceSignals): Promise<unknown> {
+    return this.behavior(signals);
+  }
+}
+
+function panelSnapshot() {
+  return mapCaptureSnapshot({
+    meetingState: "in_meeting",
+    tick: 1,
+    activeSpeakerId: "p1",
+    participants: initialProduction.participants.map((participant) => ({
+      userId: participant.id,
+      displayName: participant.name,
+      role: participant.role,
+      talking: participant.id === "p1",
+      sharingScreen: false,
+      networkQuality: "good"
+    }))
+  });
+}
+
+describe("RuleBasedAiProductionEngine provider seam", () => {
+  it("uses the heuristic when no provider is configured (matches the sync path)", async () => {
+    const engine = new RuleBasedAiProductionEngine();
+    const recommendation = await engine.recommendAutoProduction(initialProduction, panelSnapshot());
+    const sync = recommendAutoProduction(initialProduction, panelSnapshot());
+    expect(recommendation.recommendedSceneId).toBe("panel");
+    expect(recommendation.recommendedSceneId).toBe(sync.recommendedSceneId);
+    expect(recommendation.ruleId).toBe(sync.ruleId);
+  });
+
+  it("falls back to the heuristic recommendation when the provider throws", async () => {
+    const throwing = new StubProvider(async () => {
+      throw new Error("provider unavailable");
+    }, "throwing");
+    const engine = new RuleBasedAiProductionEngine({ directorProvider: throwing });
+
+    const fallback = await new RuleBasedAiProductionEngine().recommendAutoProduction(initialProduction, panelSnapshot());
+    const withProvider = await engine.recommendAutoProduction(initialProduction, panelSnapshot());
+
+    expect(withProvider.recommendedSceneId).toBe(fallback.recommendedSceneId);
+    expect(withProvider.ruleId).toBe(fallback.ruleId);
+    expect(withProvider.confidence).toBe(fallback.confidence);
+  });
+
+  it("falls back to the heuristic recommendation when the provider exceeds its timeout", async () => {
+    const slow = new StubProvider(() => new Promise(() => {}), "slow");
+    const engine = new RuleBasedAiProductionEngine({ directorProvider: slow, providerTimeoutMs: 20 });
+
+    const fallback = await new RuleBasedAiProductionEngine().recommendAutoProduction(initialProduction, panelSnapshot());
+    const withProvider = await engine.recommendAutoProduction(initialProduction, panelSnapshot());
+
+    expect(withProvider.recommendedSceneId).toBe(fallback.recommendedSceneId);
+    expect(withProvider.ruleId).toBe(fallback.ruleId);
+  });
+
+  it("still gates an eager provider proposal behind the anti-thrash hold (no instant unsafe take)", async () => {
+    // Provider confidently demands an instant jump to speaker-slides while screen
+    // sharing; the screen-share enter hold must still apply on the first tick.
+    const eager = new StubProvider(
+      async () => ({ ruleId: "screen-share-priority", recommendedSceneId: "speaker-slides", confidence: 100 }),
+      "eager"
+    );
+    const engine = new RuleBasedAiProductionEngine({ directorProvider: eager });
+
+    const screenShare = mapCaptureSnapshot({
+      meetingState: "in_meeting",
+      tick: 1,
+      activeSpeakerId: "p2",
+      participants: initialProduction.participants.map((participant) => ({
+        userId: participant.id,
+        displayName: participant.name,
+        role: participant.role,
+        talking: participant.id === "p2",
+        sharingScreen: participant.id === "p2",
+        networkQuality: "good"
+      }))
+    });
+
+    const onPanel: ProductionState = {
+      ...initialProduction,
+      activeSceneId: "panel",
+      previewSceneId: "panel"
+    };
+
+    const recommendation = await engine.recommendAutoProduction(onPanel, screenShare);
+    // The stabilizer overrides the eager proposal: hold, do not cut.
+    expect(recommendation.action).toBe("hold");
+    expect(recommendation.pendingSceneId).toBe("speaker-slides");
+    expect(recommendation.holdReason).toBe("Screen share stabilization");
   });
 });

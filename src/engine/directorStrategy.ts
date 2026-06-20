@@ -1,5 +1,8 @@
 import type { Participant, ProductionState } from "../domain/production";
 import type { ZoomSessionSnapshot } from "./contracts";
+import { buildDirectorIntelligenceSignals, type DirectorIntelligenceSignals } from "./directorSignals";
+
+export type { DirectorIntelligenceSignals } from "./directorSignals";
 
 /**
  * Pluggable director-strategy seam.
@@ -180,6 +183,130 @@ export class StaticDirectorStrategy implements DirectorStrategy {
     }
     return this.result as DirectorProposal;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Async intelligence-provider seam (Item 10 scaffold)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a future, out-of-process / model-backed director plugs in.
+ *
+ * An {@link AiDirectorProvider} is the ASYNC analogue of {@link DirectorStrategy}:
+ * it consumes the richer {@link DirectorIntelligenceSignals} bundle and MAY take
+ * arbitrarily long (network/model latency), so it returns a promise and is run
+ * under a timeout. It is deliberately the only async, potentially-remote seam in
+ * the director.
+ *
+ * CRITICAL: no implementation of this interface ships in `src/engine` — the real
+ * provider lives behind a `services/` boundary and is injected by the shell once a
+ * privacy posture (local vs cloud inference over meeting content) is chosen. The
+ * engine here only knows the *contract* and how to fall back. The deterministic
+ * stabilizer in `autoProductionDirector.ts` still gates whatever a provider
+ * proposes, so a provider can never bypass the director's safety holds.
+ */
+export interface AiDirectorProvider {
+  /** Human-readable id for proposal-vs-taken telemetry. */
+  readonly id: string;
+  /**
+   * Propose a scene from the richer signal bundle. MAY reject or hang; callers
+   * MUST run it via {@link proposeWithProviderAsync}, which enforces the timeout
+   * and the heuristic fallback. The returned value is untrusted and is sanitized.
+   */
+  propose(signals: DirectorIntelligenceSignals): Promise<unknown>;
+}
+
+/** Default budget for a provider call before the heuristic takes over. */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 1200;
+
+export type ProviderResolution = {
+  proposal: DirectorProposal;
+  /** Which seam actually produced the taken proposal. */
+  strategyId: string;
+  /** True when the provider was absent, slow, errored, or returned junk. */
+  degraded: boolean;
+  /** Why we degraded, for telemetry. Undefined when the provider was honored. */
+  degradeReason?: "absent" | "timeout" | "error" | "invalid" | "ghost-scene";
+};
+
+/** Wrap a promise so it rejects after `timeoutMs`, identifying a timeout. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ProviderTimeoutError(timeoutMs)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+export class ProviderTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`AI director provider exceeded ${timeoutMs}ms budget`);
+    this.name = "ProviderTimeoutError";
+  }
+}
+
+/**
+ * Run an optional async provider with the heuristic as the always-on fallback.
+ *
+ * Falls back to the deterministic heuristic — and reports `degraded` — when the
+ * provider is absent, exceeds the timeout, throws, returns an unsanitizable
+ * proposal, or proposes a scene the current show does not contain. The returned
+ * proposal is the *ungated* candidate; `autoProductionDirector` still applies the
+ * anti-thrash holds before any take.
+ */
+export async function proposeWithProviderAsync(
+  signals: DirectorSignals,
+  provider: AiDirectorProvider | undefined,
+  options: { timeoutMs?: number; fallback?: DirectorStrategy } = {}
+): Promise<ProviderResolution> {
+  const fallback = options.fallback ?? heuristicDirectorStrategy;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  const heuristicProposal = fallback.propose(signals);
+
+  if (!provider) {
+    return { proposal: heuristicProposal, strategyId: fallback.id, degraded: false };
+  }
+
+  const degrade = (degradeReason: ProviderResolution["degradeReason"]): ProviderResolution => ({
+    proposal: heuristicProposal,
+    strategyId: fallback.id,
+    degraded: true,
+    degradeReason
+  });
+
+  try {
+    const intelligenceSignals = buildDirectorIntelligenceSignals(signals);
+    const raw = await withTimeout(provider.propose(intelligenceSignals), timeoutMs);
+    const sanitized = sanitizeDirectorProposal(raw);
+    if (!sanitized) {
+      return degrade("invalid");
+    }
+    const sceneExists = signals.state.scenes.some((scene) => scene.id === sanitized.recommendedSceneId);
+    if (!sceneExists) {
+      return degrade("ghost-scene");
+    }
+    return { proposal: sanitized, strategyId: provider.id, degraded: false };
+  } catch (error) {
+    return degrade(error instanceof ProviderTimeoutError ? "timeout" : "error");
+  }
+}
+
+/**
+ * Adapt a resolved async provider proposal into a synchronous
+ * {@link DirectorStrategy} so it can be fed to `planAutoProduction` unchanged.
+ * This is how a future provider-driven plan is gated by the same stabilizer the
+ * heuristic uses: resolve the proposal once, then hand the frozen result in.
+ */
+export function strategyFromResolution(resolution: ProviderResolution): DirectorStrategy {
+  return new StaticDirectorStrategy(resolution.proposal, resolution.strategyId);
 }
 
 // ---------------------------------------------------------------------------

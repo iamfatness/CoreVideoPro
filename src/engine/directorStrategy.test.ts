@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialProduction, type Participant, type ProductionState } from "../domain/production";
 import { mapCaptureSnapshot } from "./captureSnapshotMapper";
 import type { ZoomSessionSnapshot } from "./contracts";
@@ -7,9 +7,13 @@ import {
   StaticDirectorStrategy,
   heuristicDirectorStrategy,
   proposeWithFallback,
+  proposeWithProviderAsync,
   sanitizeDirectorProposal,
   selectBaseProposal,
   selectHeuristicProposal,
+  strategyFromResolution,
+  type AiDirectorProvider,
+  type DirectorIntelligenceSignals,
   type DirectorProposal,
   type DirectorSignals
 } from "./directorStrategy";
@@ -233,6 +237,111 @@ describe("proposeWithFallback", () => {
     const a = strategy.propose(base);
     const b = strategy.propose(base);
     expect(a).toEqual(b);
+  });
+});
+
+/** A minimal in-memory async provider double — never does any real I/O. */
+class FakeAsyncProvider implements AiDirectorProvider {
+  readonly id: string;
+  lastSignals?: DirectorIntelligenceSignals;
+  constructor(
+    private readonly behavior: (signals: DirectorIntelligenceSignals) => Promise<unknown>,
+    id = "fake-async-provider"
+  ) {
+    this.id = id;
+  }
+  propose(signals: DirectorIntelligenceSignals): Promise<unknown> {
+    this.lastSignals = signals;
+    return this.behavior(signals);
+  }
+}
+
+describe("proposeWithProviderAsync", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const base = signals(snapshot({ count: 5 }));
+
+  it("uses the heuristic (not degraded) when no provider is configured", async () => {
+    const result = await proposeWithProviderAsync(base, undefined);
+    expect(result.strategyId).toBe("heuristic");
+    expect(result.degraded).toBe(false);
+    expect(result.degradeReason).toBeUndefined();
+    expect(result.proposal.recommendedSceneId).toBe("panel");
+  });
+
+  it("honors a valid in-show proposal from the provider and passes it the rich signals", async () => {
+    const provider = new FakeAsyncProvider(
+      async () => ({ ruleId: "single-speaker", recommendedSceneId: "intro", confidence: 80 }),
+      "good"
+    );
+    const result = await proposeWithProviderAsync(base, provider);
+    expect(result.degraded).toBe(false);
+    expect(result.strategyId).toBe("good");
+    expect(result.proposal.recommendedSceneId).toBe("intro");
+    expect(provider.lastSignals?.schemaVersion).toBe(1);
+  });
+
+  it("falls back to the heuristic when the provider rejects (error)", async () => {
+    const provider = new FakeAsyncProvider(async () => {
+      throw new Error("model down");
+    }, "boom");
+    const result = await proposeWithProviderAsync(base, provider);
+    expect(result.degraded).toBe(true);
+    expect(result.degradeReason).toBe("error");
+    expect(result.strategyId).toBe("heuristic");
+    expect(result.proposal.recommendedSceneId).toBe("panel");
+  });
+
+  it("falls back to the heuristic when the provider returns an invalid proposal", async () => {
+    const provider = new FakeAsyncProvider(async () => ({ ruleId: "nope", recommendedSceneId: "panel", confidence: 9 }));
+    const result = await proposeWithProviderAsync(base, provider);
+    expect(result.degraded).toBe(true);
+    expect(result.degradeReason).toBe("invalid");
+    expect(result.strategyId).toBe("heuristic");
+  });
+
+  it("falls back to the heuristic when the proposed scene is not in the show", async () => {
+    const stateWithoutIntro: ProductionState = {
+      ...initialProduction,
+      scenes: initialProduction.scenes.filter((scene) => scene.id !== "intro")
+    };
+    const provider = new FakeAsyncProvider(async () => ({
+      ruleId: "single-speaker",
+      recommendedSceneId: "intro",
+      confidence: 95
+    }));
+    const result = await proposeWithProviderAsync(signals(snapshot({ count: 5 }), stateWithoutIntro), provider);
+    expect(result.degraded).toBe(true);
+    expect(result.degradeReason).toBe("ghost-scene");
+    expect(result.strategyId).toBe("heuristic");
+  });
+
+  it("falls back to the heuristic when the provider exceeds its timeout budget", async () => {
+    vi.useFakeTimers();
+    const provider = new FakeAsyncProvider(
+      () => new Promise(() => {}), // never resolves
+      "slow"
+    );
+    const pending = proposeWithProviderAsync(base, provider, { timeoutMs: 50 });
+    await vi.advanceTimersByTimeAsync(60);
+    const result = await pending;
+    expect(result.degraded).toBe(true);
+    expect(result.degradeReason).toBe("timeout");
+    expect(result.strategyId).toBe("heuristic");
+    expect(result.proposal.recommendedSceneId).toBe("panel");
+  });
+
+  it("strategyFromResolution adapts a resolved proposal into a sync strategy", () => {
+    const resolution = {
+      proposal: { ruleId: "single-speaker", recommendedSceneId: "intro", confidence: 70 } as DirectorProposal,
+      strategyId: "good",
+      degraded: false
+    };
+    const strategy = strategyFromResolution(resolution);
+    expect(strategy.id).toBe("good");
+    expect(strategy.propose(base)).toEqual(resolution.proposal);
   });
 });
 

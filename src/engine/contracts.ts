@@ -47,6 +47,14 @@ export type MagicSceneRequest = {
   currentScenes: SceneTemplate[];
   brandKitId?: string;
   screenShareActive: boolean;
+  /**
+   * Optional richer signal bundle (speaker turns, screen-share presence,
+   * engagement, feed-health) a future intelligence provider could reason over.
+   * Additive and ignored by the deterministic `buildMagicScene`; constructed via
+   * `buildDirectorIntelligenceSignals` (see `./directorSignals`). Item 10 scaffold
+   * — no model consumes it yet.
+   */
+  signals?: import("./directorSignals").DirectorIntelligenceSignals;
 };
 
 export type MagicSceneResult = {
@@ -65,12 +73,20 @@ export interface ZoomCaptureEngine {
 
 /**
  * `recommendAutoProduction` is backed by the deterministic auto-director. The
- * scene *proposal* is produced by a pluggable `DirectorStrategy`
- * (`./directorStrategy`); an implementation MAY accept an optional strategy
- * (see `RuleBasedAiProductionEngine`). The director always gates the proposal
- * with its anti-thrash holds and falls back to the always-on heuristic on any
- * strategy failure, so the contract's behavior stays deterministic and safe
- * regardless of which strategy is supplied.
+ * scene *proposal* is produced by a pluggable seam in `./directorStrategy`:
+ *
+ * - A synchronous {@link import("./directorStrategy").DirectorStrategy} (pure,
+ *   always-on; the heuristic default).
+ * - An optional ASYNC {@link import("./directorStrategy").AiDirectorProvider} —
+ *   the seam a future model-backed / `services/`-hosted director plugs into. It
+ *   consumes the richer {@link import("./directorSignals").DirectorIntelligenceSignals}
+ *   bundle and is run under a timeout via `proposeWithProviderAsync`.
+ *
+ * In ALL cases the director gates the proposal with its anti-thrash holds and
+ * falls back to the always-on heuristic on absence / timeout / error / invalid
+ * proposal, so the contract's behavior stays deterministic and safe regardless of
+ * which strategy or provider is supplied. NO model/network client is embedded in
+ * `src/engine`; a provider is injected from outside (Item 10 scaffold).
  */
 export interface AiProductionEngine {
   buildMagicScene(request: MagicSceneRequest): Promise<MagicSceneResult>;
