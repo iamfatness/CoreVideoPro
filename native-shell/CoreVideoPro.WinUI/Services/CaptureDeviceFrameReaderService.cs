@@ -1,5 +1,6 @@
 using CoreVideoPro.WinUI.Models;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Graphics.Imaging;
 using Windows.Media.Capture;
@@ -11,6 +12,7 @@ namespace CoreVideoPro.WinUI.Services;
 public sealed class CaptureDeviceFrameReaderService : IDisposable
 {
     private readonly Dictionary<string, CaptureSession> _sessions = new(StringComparer.Ordinal);
+    private static readonly StrategyBasedComWrappers MemoryBufferComWrappers = new();
 
     public async Task<CaptureDeviceFormatTelemetry> StartAsync(CaptureDevice device)
     {
@@ -63,6 +65,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private MediaFrameReader? _reader;
         private int _frameId;
         private int _publishingFrame;
+        private int _loggedStrideFallback;
+        private int _loggedFirstPublishedFrame;
         private int _formatWidth;
         private int _formatHeight;
         private int _formatFps;
@@ -137,6 +141,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 var bytes = CopyBgraBytes(bgra);
                 var now = Environment.TickCount64;
                 var fps = ResolveFrameRate(now);
+                if (Interlocked.Exchange(ref _loggedFirstPublishedFrame, 1) == 0)
+                {
+                    LaunchLog.Write($"capture: first frame published {_stableDeviceId} {bgra.PixelWidth}x{bgra.PixelHeight} {fps}fps");
+                }
+
                 CaptureDeviceFrameRouter.Publish(new CaptureDeviceFrame
                 {
                     DeviceId = _stableDeviceId,
@@ -163,7 +172,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
         }
 
-        private static byte[] CopyBgraBytes(SoftwareBitmap bitmap)
+        private byte[] CopyBgraBytes(SoftwareBitmap bitmap)
         {
             var width = bitmap.PixelWidth;
             var height = bitmap.PixelHeight;
@@ -175,16 +184,23 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 bitmap.CopyToBuffer(bytes.AsBuffer());
                 return bytes;
             }
-            catch (ArgumentException ex) when (ex.Message.Contains("Negative stride", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (IsStrideCopyFailure(ex))
             {
+                if (Interlocked.Exchange(ref _loggedStrideFallback, 1) == 0)
+                {
+                    LaunchLog.Write($"capture: using stride-aware bitmap copy for {_stableDeviceId} ({ex.GetType().Name}: {ex.Message})");
+                }
             }
 
             using var buffer = bitmap.LockBuffer(BitmapBufferAccessMode.Read);
             using var reference = buffer.CreateReference();
             unsafe
             {
-                using var byteAccess = MemoryBufferByteAccess.From(reference);
-                byteAccess.Interface.GetBuffer(out var data, out var capacity);
+                var byteAccess = (IMemoryBufferByteAccess)MemoryBufferComWrappers.GetOrCreateObjectForComInstance(
+                    ((WinRT.IWinRTObject)reference).NativeObject.ThisPtr,
+                    CreateObjectFlags.None);
+                var hr = byteAccess.GetBuffer(out var data, out var capacity);
+                Marshal.ThrowExceptionForHR(hr);
                 var plane = buffer.GetPlaneDescription(0);
                 var stride = plane.Stride;
                 if (stride == 0)
@@ -201,6 +217,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
             return bytes;
         }
+
+        private static bool IsStrideCopyFailure(Exception ex) =>
+            ex is ArgumentException argumentException &&
+            argumentException.Message.Contains("stride", StringComparison.OrdinalIgnoreCase);
 
         private static unsafe bool TryCopyRows(
             byte* data,
@@ -290,55 +310,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
     }
 }
 
-[ComImport]
 [Guid("5B0D3235-4DBA-4D44-865E-8F1D0E4FD04D")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-internal unsafe interface IMemoryBufferByteAccess
+[GeneratedComInterface]
+internal unsafe partial interface IMemoryBufferByteAccess
 {
-    void GetBuffer(out byte* buffer, out uint capacity);
-}
-
-internal sealed class MemoryBufferByteAccess : IDisposable
-{
-    private nint _unknown;
-    private nint _byteAccess;
-
-    private MemoryBufferByteAccess(nint unknown, nint byteAccess, IMemoryBufferByteAccess instance)
-    {
-        _unknown = unknown;
-        _byteAccess = byteAccess;
-        Interface = instance;
-    }
-
-    public IMemoryBufferByteAccess Interface { get; }
-
-    public static MemoryBufferByteAccess From(object reference)
-    {
-        var unknown = Marshal.GetIUnknownForObject(reference);
-        var iid = typeof(IMemoryBufferByteAccess).GUID;
-        var result = Marshal.QueryInterface(unknown, ref iid, out var byteAccess);
-        if (result != 0)
-        {
-            Marshal.Release(unknown);
-            Marshal.ThrowExceptionForHR(result);
-        }
-
-        var instance = (IMemoryBufferByteAccess)Marshal.GetTypedObjectForIUnknown(byteAccess, typeof(IMemoryBufferByteAccess));
-        return new MemoryBufferByteAccess(unknown, byteAccess, instance);
-    }
-
-    public void Dispose()
-    {
-        if (_byteAccess != 0)
-        {
-            Marshal.Release(_byteAccess);
-            _byteAccess = 0;
-        }
-
-        if (_unknown != 0)
-        {
-            Marshal.Release(_unknown);
-            _unknown = 0;
-        }
-    }
+    [PreserveSig]
+    int GetBuffer(out byte* buffer, out uint capacity);
 }
