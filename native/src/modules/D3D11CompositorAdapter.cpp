@@ -75,6 +75,11 @@ struct LayerShaderConstants {
   float contrast;
   float saturation;
   float temperature;
+  // Source-UV transform for framing: the on-screen [0,1] uv is mapped to the
+  // sampled source region [uvOffset, uvOffset + uvScale]. Identity = offset 0,
+  // scale 1. Used by the textured (framing) shader.
+  float uvScale[2];
+  float uvOffset[2];
 };
 
 constexpr char kCompositorVertexShader[] = R"(
@@ -99,6 +104,8 @@ cbuffer LayerConstants : register(b0) {
   float contrast;
   float saturation;
   float temperature;
+  float2 uvScale;
+  float2 uvOffset;
 };
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
@@ -122,13 +129,19 @@ cbuffer LayerConstants : register(b0) {
   float contrast;
   float saturation;
   float temperature;
+  float2 uvScale;
+  float2 uvOffset;
 };
 
 Texture2D layerTexture : register(t0);
 SamplerState layerSampler : register(s0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-  float4 sampled = layerTexture.Sample(layerSampler, uv);
+  // Framing: map the on-screen [0,1] uv into the sampled source region. fit
+  // (letterbox) shrinks the on-screen content rect (handled by the viewport),
+  // fill (cover) and zoom/pan narrow the sampled region via uvScale/uvOffset.
+  float2 sourceUv = uvOffset + uv * uvScale;
+  float4 sampled = layerTexture.Sample(layerSampler, sourceUv);
   float3 rgb = sampled.rgb;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
@@ -426,39 +439,156 @@ class D3D11Compositor final : public ICompositor {
     return nullptr;
   }
 
-  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan) {
-    const auto& rect = layer.plan.rect;
+  // Sets a viewport from a normalized rect (clamped to the render target).
+  void setViewportFromRect(const compositor::LayerRect& rect) {
     D3D11_VIEWPORT viewport{};
     viewport.TopLeftX = rect.x * static_cast<float>(targetWidth_);
     viewport.TopLeftY = rect.y * static_cast<float>(targetHeight_);
-    viewport.Width = rect.width * static_cast<float>(targetWidth_);
-    viewport.Height = rect.height * static_cast<float>(targetHeight_);
+    viewport.Width = std::max(0.f, rect.width) * static_cast<float>(targetWidth_);
+    viewport.Height = std::max(0.f, rect.height) * static_cast<float>(targetHeight_);
     viewport.MinDepth = 0.f;
     viewport.MaxDepth = 1.f;
     context_->RSSetViewports(1, &viewport);
+  }
 
+  // Uploads the layer's color grade + an explicit color + UV transform into the
+  // shared constant buffer. Returns false if the buffer could not be mapped.
+  bool writeLayerConstants(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      uint32_t colorArgb,
+      float alpha,
+      float uvScaleX,
+      float uvScaleY,
+      float uvOffsetX,
+      float uvOffsetY) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-      return;
+      return false;
     }
-
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
-    constants->color[0] = static_cast<float>((layer.color >> 16) & 0xff) / 255.f;
-    constants->color[1] = static_cast<float>((layer.color >> 8) & 0xff) / 255.f;
-    constants->color[2] = static_cast<float>(layer.color & 0xff) / 255.f;
-    constants->color[3] = compositorLayerOpacity(layer.plan);
+    constants->color[0] = static_cast<float>((colorArgb >> 16) & 0xff) / 255.f;
+    constants->color[1] = static_cast<float>((colorArgb >> 8) & 0xff) / 255.f;
+    constants->color[2] = static_cast<float>(colorArgb & 0xff) / 255.f;
+    constants->color[3] = alpha;
     const auto grade = layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade;
     constants->exposure = grade.exposure * 0.1f;
     constants->contrast = grade.contrast * 0.1f;
     constants->saturation = grade.saturation * 0.1f;
     constants->temperature = grade.temperature * 0.1f;
+    constants->uvScale[0] = uvScaleX;
+    constants->uvScale[1] = uvScaleY;
+    constants->uvOffset[0] = uvOffsetX;
+    constants->uvOffset[1] = uvOffsetY;
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
     context_->PSSetConstantBuffers(0, 1, buffers);
+    return true;
+  }
 
-    // Participant layers with a decoded BGRA frame sample the uploaded texture;
-    // everything else (overlays, undecoded participants) keeps the solid-color
-    // path as the fallback.
+  // Draws a solid-color quad filling the current viewport (set the viewport to
+  // the target rect before calling). Used for borders, letterbox bars, and
+  // overlay backgrounds.
+  void drawSolidQuad(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      const compositor::LayerRect& rect,
+      uint32_t colorArgb,
+      float alpha) {
+    if (rect.width <= 0.f || rect.height <= 0.f || alpha <= 0.f) {
+      return;
+    }
+    setViewportFromRect(rect);
+    if (!writeLayerConstants(layer, renderPlan, colorArgb, alpha, 1.f, 1.f, 0.f, 0.f)) {
+      return;
+    }
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->Draw(3, 0);
+  }
+
+  // Strokes a border around `rect` by drawing its four edge quads.
+  void drawBorderPass(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      const compositor::LayerRect& rect,
+      const compositor::BorderFraming& border,
+      float alpha) {
+    if (!border.visible || alpha <= 0.f) {
+      return;
+    }
+    const float smaller = std::min(rect.width, rect.height);
+    float stroke = border.thickness * smaller;
+    stroke = std::max(stroke, 1.f / static_cast<float>(std::max(targetWidth_, targetHeight_)));
+    const float strokeX = std::min(stroke, rect.width * 0.5f);
+    const float strokeY = std::min(stroke, rect.height * 0.5f);
+    const uint32_t color = border.colorRgba;
+    const float borderAlpha = std::clamp(alpha * (static_cast<float>((color >> 24) & 0xff) / 255.f), 0.f, 1.f);
+    drawSolidQuad(layer, renderPlan, {rect.x, rect.y, rect.width, strokeY}, color, borderAlpha);
+    drawSolidQuad(layer, renderPlan, {rect.x, rect.y + rect.height - strokeY, rect.width, strokeY}, color, borderAlpha);
+    drawSolidQuad(layer, renderPlan, {rect.x, rect.y, strokeX, rect.height}, color, borderAlpha);
+    drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
+  }
+
+  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan) {
+    const compositor::LayerRect rect{
+        layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
+    const float layerAlpha = compositorLayerOpacity(layer.plan);
+
+    // Overlay/lower-third/caption layers go through the raster stage.
+    if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
+      drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      return;
+    }
+
+    // --- Item 8: per-source framing. ---
+    // Compute the framing in canvas-pixel proportions so aspect comparisons are
+    // correct (the rect is normalized to the canvas), then resolve the on-screen
+    // content rect (letterbox) and the sampled source UV window (cover/zoom/pan).
+    int sourceWidth = renderPlan.width > 0 ? renderPlan.width : 16;
+    int sourceHeight = renderPlan.height > 0 ? renderPlan.height : 9;
+    if (layer.frame != nullptr && layer.frame->pixelWidth > 0 && layer.frame->pixelHeight > 0) {
+      sourceWidth = layer.frame->pixelWidth;
+      sourceHeight = layer.frame->pixelHeight;
+    }
+    const compositor::LayerRect aspectRect{
+        0.f,
+        0.f,
+        rect.width * static_cast<float>(targetWidth_),
+        rect.height * static_cast<float>(targetHeight_)};
+    const auto framing = compositor::computeSourceFraming(
+        sourceWidth,
+        sourceHeight,
+        aspectRect,
+        layer.plan.fitMode,
+        layer.plan.sourceScale,
+        layer.plan.sourceOffsetX,
+        layer.plan.sourceOffsetY);
+
+    // Map the framing (computed in aspectRect units) back into the layer rect.
+    const float contentFracX = aspectRect.width > 0.f ? framing.contentX / aspectRect.width : 0.f;
+    const float contentFracY = aspectRect.height > 0.f ? framing.contentY / aspectRect.height : 0.f;
+    const float contentFracW = aspectRect.width > 0.f ? framing.contentW / aspectRect.width : 1.f;
+    const float contentFracH = aspectRect.height > 0.f ? framing.contentH / aspectRect.height : 1.f;
+    const compositor::LayerRect contentRect{
+        rect.x + contentFracX * rect.width,
+        rect.y + contentFracY * rect.height,
+        contentFracW * rect.width,
+        contentFracH * rect.height};
+
+    // Letterbox bars: paint the full layer rect dark first when the content is
+    // inset, so fit/contain shows bars (matching the CPU preview).
+    if (framing.hasLetterbox) {
+      drawSolidQuad(layer, renderPlan, rect, 0xff05080cu, layerAlpha);
+    }
+
+    // Main content pass: viewport = content rect; UV transform = sampled window.
+    setViewportFromRect(contentRect);
+    const float uvScaleX = framing.u1 - framing.u0;
+    const float uvScaleY = framing.v1 - framing.v0;
+    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, uvScaleX, uvScaleY, framing.u0, framing.v0)) {
+      return;
+    }
+
     const bool textured = layer.frame != nullptr && layer.frame->hasPixels() && uploadLayerTexture(*layer.frame);
     if (textured) {
       context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
@@ -469,16 +599,94 @@ class D3D11Compositor final : public ICompositor {
     } else {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
-
     context_->Draw(3, 0);
-
     if (textured) {
-      // Unbind the SRV so the next layer (or render-target read-back) is not
-      // blocked by a lingering shader-resource binding.
       ID3D11ShaderResourceView* nullViews[] = {nullptr};
       context_->PSSetShaderResources(0, 1, nullViews);
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
+
+    // --- Item 8: border pass around the full layer rect. ---
+    const auto border = compositor::computeBorderFraming(
+        layer.plan.borderStyle, layer.plan.borderColor, layer.plan.borderThickness);
+    drawBorderPass(layer, renderPlan, rect, border, layerAlpha);
+  }
+
+  // --- Item 9: overlay/lower-third/caption raster stage. ---
+  // Rasters the overlay's real content (DirectWrite text + WIC image on Windows)
+  // into a texture, then composites it with the animated keyPhase transform.
+  // NEEDS WINDOWS SMOKE: the DirectWrite/D2D/WIC text+image raster is currently
+  // a deterministic GPU-side band + accent draw (so the build stays portable and
+  // the math matches the CPU stub); wiring the real DirectWrite/WIC rasterizer
+  // into `overlayTexture_` is the remaining Windows-only step (see
+  // rasterOverlayTexture()). The animated transform/alpha and brand styling are
+  // applied here and are validated headless against the CPU mirror.
+  void drawOverlayLayer(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      const compositor::LayerRect& rect,
+      float layerAlpha) {
+    const auto& overlay = layer.plan.overlay;
+    const auto key = compositor::computeOverlayKeyTransform(
+        overlay.keyPhase, overlay.keyProgress, overlay.keyPosition);
+    if (!key.visible || key.alpha <= 0.001f) {
+      return;
+    }
+    const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
+    if (alpha <= 0.f) {
+      return;
+    }
+
+    // Animated slide + content scale about the rect center (mirror of CPU math).
+    compositor::LayerRect animated = rect;
+    animated.x += key.slideX;
+    animated.y += key.slideY;
+    const float centerX = animated.x + animated.width * 0.5f;
+    const float centerY = animated.y + animated.height * 0.5f;
+    animated.width *= key.contentScale;
+    animated.height *= key.contentScale;
+    animated.x = centerX - animated.width * 0.5f;
+    animated.y = centerY - animated.height * 0.5f;
+
+    const uint32_t background = compositor::parseHexColorRgba(overlay.brandBackgroundColor, 0xff0c1118u);
+    const uint32_t accent = compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u);
+
+    // Brand-styled band background.
+    drawSolidQuad(layer, renderPlan, animated, background, alpha);
+
+    // If a DirectWrite/WIC raster is available, composite it over the band; the
+    // texture carries the real text/image pixels. Otherwise fall back to the
+    // accent bar so the overlay region is still non-uniform/brand-styled.
+    if (rasterOverlayTexture(overlay, animated)) {
+      setViewportFromRect(animated);
+      if (writeLayerConstants(layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f)) {
+        context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
+        ID3D11ShaderResourceView* views[] = {overlayTextureView_.get()};
+        ID3D11SamplerState* samplers[] = {samplerState_.get()};
+        context_->PSSetShaderResources(0, 1, views);
+        context_->PSSetSamplers(0, 1, samplers);
+        context_->Draw(3, 0);
+        ID3D11ShaderResourceView* nullViews[] = {nullptr};
+        context_->PSSetShaderResources(0, 1, nullViews);
+        context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+      }
+    } else {
+      // Accent bar: left edge for lower-thirds, top edge for captions.
+      if (overlay.isCaption) {
+        drawSolidQuad(layer, renderPlan, {animated.x, animated.y, animated.width, animated.height * 0.10f}, accent, alpha);
+      } else {
+        drawSolidQuad(layer, renderPlan, {animated.x, animated.y, animated.width * 0.04f, animated.height}, accent, alpha);
+      }
+    }
+  }
+
+  // Rasters overlay text/image into `overlayTexture_` using DirectWrite/D2D +
+  // WIC. Returns true when a texture was produced. Currently returns false
+  // (portable build): the real Windows rasterizer is the remaining smoke-pass
+  // step. Kept as a seam so drawOverlayLayer() composites it transparently once
+  // implemented.
+  bool rasterOverlayTexture(const CompositorOverlayContent& /*overlay*/, const compositor::LayerRect& /*rect*/) {
+    return false;
   }
 
   bool uploadLayerTexture(const VideoFrame& frame) {
@@ -650,6 +858,8 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
+  ComPtrLite<ID3D11Texture2D> overlayTexture_;
+  ComPtrLite<ID3D11ShaderResourceView> overlayTextureView_;
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;

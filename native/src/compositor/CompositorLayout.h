@@ -240,6 +240,70 @@ inline BorderFraming computeBorderFraming(
   return border;
 }
 
+// Resolved animated overlay keying state. alpha multiplies the layer opacity;
+// (slideX, slideY) is an additional normalized translation applied to the
+// overlay content (a slide-in/out), and contentScale scales the content about
+// its center (a subtle pop). All values are deterministic functions of phase +
+// progress so the D3D11 and CPU paths animate identically.
+struct OverlayKeyTransform {
+  float alpha = 1.f;
+  float slideX = 0.f;
+  float slideY = 0.f;
+  float contentScale = 1.f;
+  bool visible = true;
+};
+
+// Smoothstep easing for animated keying (3t^2 - 2t^3), clamped to [0,1].
+inline float overlayEase(float t) {
+  t = std::clamp(t, 0.f, 1.f);
+  return t * t * (3.f - 2.f * t);
+}
+
+// Resolves the animated keying transform for an overlay layer from its phase
+// and normalized progress. "building-in" slides up + fades in, "on-air" is
+// fully settled, "building-out" slides down + fades out, "hidden" is invisible.
+// keyPosition controls the slide direction's anchor (lower vs upper third).
+inline OverlayKeyTransform computeOverlayKeyTransform(
+    const std::string& keyPhase,
+    float keyProgress,
+    const std::string& keyPosition = "lower-left") {
+  OverlayKeyTransform transform;
+  const float progress = std::clamp(keyProgress, 0.f, 1.f);
+  // Lower-third slides up from below; upper third slides down from above.
+  const float slideSign = keyPosition == "upper-left" ? -1.f : 1.f;
+  const float slideTravel = 0.08f;  // Normalized slide distance.
+
+  if (keyPhase == "hidden") {
+    transform.visible = false;
+    transform.alpha = 0.f;
+    transform.slideY = slideSign * slideTravel;
+    transform.contentScale = 0.96f;
+    return transform;
+  }
+  if (keyPhase == "building-in") {
+    const float eased = overlayEase(progress);
+    transform.alpha = eased;
+    transform.slideY = slideSign * slideTravel * (1.f - eased);
+    transform.contentScale = 0.96f + 0.04f * eased;
+    return transform;
+  }
+  if (keyPhase == "building-out") {
+    const float eased = overlayEase(progress);
+    transform.alpha = 1.f - eased;
+    transform.slideY = slideSign * slideTravel * eased;
+    transform.contentScale = 1.f - 0.04f * eased;
+    if (transform.alpha <= 0.001f) {
+      transform.visible = false;
+    }
+    return transform;
+  }
+  // "on-air" (and any unknown phase): fully settled.
+  transform.alpha = 1.f;
+  transform.slideY = 0.f;
+  transform.contentScale = 1.f;
+  return transform;
+}
+
 inline uint32_t colorFromParticipantId(const std::string& participantId) {
   uint32_t hash = 2166136261u;
   for (const unsigned char ch : participantId) {

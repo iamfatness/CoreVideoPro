@@ -237,6 +237,35 @@ struct CompositorColorGrade {
   float temperature = 0.f;
 };
 
+// Overlay-raster payload for an overlay/lower-third/caption layer. These fields
+// are internal to the compositor render plan (built in MediaCore, consumed by
+// the compositor adapters) and are NOT serialized over the wire, so they do not
+// have a TS protocol mirror. The source command fields (set-overlay-asset /
+// push-caption-cue / set-brand-kit) already exist in both protocol mirrors.
+struct CompositorOverlayContent {
+  std::string title;        // Lower-third title line (e.g. speaker name).
+  std::string org;          // Lower-third secondary line (e.g. organization).
+  std::string text;         // Free-form overlay text / caption body.
+  std::string speaker;      // Caption speaker attribution.
+  std::string imageUri;     // Image overlay source (decoded via WIC on Windows).
+  std::string keyPosition = "lower-left";  // lower-left | upper-left.
+  // Animation phase: hidden | building-in | on-air | building-out. Drives the
+  // animated transform/alpha keying applied per frame.
+  std::string keyPhase = "on-air";
+  // Keyer placement relative to the program: upstream composites under the
+  // sources, downstream composites on top of them.
+  std::string keyer = "downstream";
+  // Normalized [0,1] animation progress within the current keyPhase, advanced
+  // by the compositor's animation clock. 0 = phase just entered, 1 = settled.
+  float keyProgress = 1.f;
+  bool isCaption = false;   // True for caption layers (lower band styling).
+  // BrandKit styling resolved at plan-build time (#RRGGBB / #RRGGBBAA).
+  std::string brandColor = "#44c1a1";
+  std::string brandAccentColor = "#f0a85c";
+  std::string brandBackgroundColor = "#0c1118";
+  std::string fontFamily = "Inter";
+};
+
 struct CompositorRenderPlanLayer {
   std::string layerId;
   std::string kind;
@@ -254,6 +283,10 @@ struct CompositorRenderPlanLayer {
   float sourceOffsetY = 0.f;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
+  // Set for overlay/lower-third/caption layers. Empty (default) for video
+  // sources, which leaves overlay rendering on the prior solid-fill fallback.
+  bool hasOverlayContent = false;
+  CompositorOverlayContent overlay;
 };
 
 struct CompositorRenderPlan {

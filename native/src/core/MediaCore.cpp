@@ -895,11 +895,41 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
   const std::string overlayId = command.getString("overlayId", "overlay:" + std::to_string(overlayIds_.size() + 1));
   if (command.get("enabled") && !command.get("enabled")->asBool()) {
     overlayIds_.erase(overlayId);
+    if (auto existing = overlayAssets_.find(overlayId); existing != overlayAssets_.end()) {
+      // Animate the overlay out rather than dropping it instantly; the render
+      // tick retires it once the building-out animation has settled.
+      existing->second.keyPhase = "building-out";
+      existing->second.keyProgress = 0.f;
+    }
     overlayCount_ = static_cast<int>(overlayIds_.size());
     return;
   }
 
   overlayIds_.insert(overlayId);
+  auto& asset = overlayAssets_[overlayId];
+  const bool isNew = asset.overlayId.empty();
+  asset.overlayId = overlayId;
+  if (isNew) {
+    asset.insertionOrder = overlayInsertionCounter_++;
+    // A freshly enabled overlay animates in.
+    asset.keyPhase = "building-in";
+    asset.keyProgress = 0.f;
+  }
+  asset.text = command.getString("text", asset.text);
+  asset.imageUri = command.getString("imageUri", asset.imageUri);
+  asset.position = command.getString("position", asset.position);
+  asset.title = command.getString("title", asset.title);
+  asset.org = command.getString("org", asset.org);
+  asset.keyPosition = command.getString("keyPosition", asset.keyPosition);
+  asset.keyer = command.getString("keyer", asset.keyer);
+  // An explicit keyPhase from the command overrides the auto in/out animation.
+  if (const auto* phase = command.get("keyPhase"); phase && phase->isString()) {
+    const std::string requested = phase->asString();
+    if (requested != asset.keyPhase) {
+      asset.keyPhase = requested;
+      asset.keyProgress = 0.f;
+    }
+  }
   overlayCount_ = static_cast<int>(overlayIds_.size());
 }
 
@@ -2036,6 +2066,37 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   return recording;
 }
 
+void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
+  overlayAnimationClockMs_ += frameIntervalMs;
+  // A keyPhase transition completes over a fixed wall-clock window so the
+  // animation is frame-rate independent and deterministic for a given fps.
+  constexpr double kPhaseDurationMs = 420.0;
+  const float step = kPhaseDurationMs > 0.0
+                         ? static_cast<float>(frameIntervalMs / kPhaseDurationMs)
+                         : 1.f;
+
+  std::vector<std::string> retired;
+  for (auto& [overlayId, asset] : overlayAssets_) {
+    if (asset.keyPhase == "building-in" || asset.keyPhase == "building-out") {
+      asset.keyProgress = std::min(1.f, asset.keyProgress + step);
+      if (asset.keyProgress >= 1.f) {
+        if (asset.keyPhase == "building-in") {
+          asset.keyPhase = "on-air";
+          asset.keyProgress = 1.f;
+        } else {
+          // building-out settled -> retire the asset entirely.
+          retired.push_back(overlayId);
+        }
+      }
+    } else {
+      asset.keyProgress = 1.f;
+    }
+  }
+  for (const auto& overlayId : retired) {
+    overlayAssets_.erase(overlayId);
+  }
+}
+
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   modules::CompositorRenderPlan renderPlan;
   renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
@@ -2100,14 +2161,91 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
     }
   }
 
-  for (int overlayIndex = 0; overlayIndex < overlayCount_; ++overlayIndex) {
+  // Emit overlay layers from the captured overlay assets in stable insertion
+  // order, carrying their real text/image/keyer payload + animated key phase so
+  // the compositor can raster them. Overlays with no captured asset (legacy
+  // count-only state) fall back to a placeholder lower-third / brand bug.
+  std::vector<const OverlayAssetState*> orderedOverlays;
+  orderedOverlays.reserve(overlayAssets_.size());
+  for (const auto& [overlayId, asset] : overlayAssets_) {
+    orderedOverlays.push_back(&asset);
+  }
+  std::stable_sort(
+      orderedOverlays.begin(),
+      orderedOverlays.end(),
+      [](const OverlayAssetState* left, const OverlayAssetState* right) {
+        return left->insertionOrder < right->insertionOrder;
+      });
+
+  auto resolveOverlayLayout = [](const std::string& position) -> compositor::LayerRect {
+    if (position == "top-right" || position == "upper-left") {
+      return compositor::topRightOverlay();
+    }
+    return compositor::lowerThirdOverlay();
+  };
+
+  int overlayLayerIndex = 0;
+  for (const auto* asset : orderedOverlays) {
     modules::CompositorRenderPlanLayer layer;
-    layer.layerId = overlayIndex == 0 ? "overlay:lower-third" : "overlay:brand-bug";
+    const bool isLowerThird = asset->position == "lower-third" || asset->position == "bottom-right";
+    layer.layerId = "overlay:" + asset->overlayId + (isLowerThird ? ":lower-third" : ":bug");
     layer.kind = "overlay";
     layer.order = static_cast<int>(renderPlan.layers.size());
-    const auto layout = overlayIndex == 0 ? compositor::lowerThirdOverlay() : compositor::topRightOverlay();
+    const auto layout = resolveOverlayLayout(asset->position);
     layer.rect = {layout.x, layout.y, layout.width, layout.height};
     layer.opacity = 0.92f;
+    layer.hasOverlayContent = true;
+    layer.overlay.title = asset->title;
+    layer.overlay.org = asset->org;
+    layer.overlay.text = asset->text;
+    layer.overlay.imageUri = asset->imageUri;
+    layer.overlay.keyPosition = asset->keyPosition;
+    layer.overlay.keyPhase = asset->keyPhase;
+    layer.overlay.keyer = asset->keyer;
+    layer.overlay.keyProgress = asset->keyProgress;
+    layer.overlay.brandColor = brandColor_;
+    layer.overlay.brandAccentColor = brandAccentColor_;
+    layer.overlay.brandBackgroundColor = brandBackgroundColor_;
+    layer.overlay.fontFamily = brandFontFamily_;
+    renderPlan.layers.push_back(std::move(layer));
+    ++overlayLayerIndex;
+  }
+
+  // Legacy fallback: if overlays were tracked as a bare count without captured
+  // asset payloads, keep the prior placeholder placement so existing callers
+  // and tests still see overlay layers.
+  for (int legacyIndex = overlayLayerIndex; legacyIndex < overlayCount_; ++legacyIndex) {
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = legacyIndex == 0 ? "overlay:lower-third" : "overlay:brand-bug";
+    layer.kind = "overlay";
+    layer.order = static_cast<int>(renderPlan.layers.size());
+    const auto layout = legacyIndex == 0 ? compositor::lowerThirdOverlay() : compositor::topRightOverlay();
+    layer.rect = {layout.x, layout.y, layout.width, layout.height};
+    layer.opacity = 0.92f;
+    renderPlan.layers.push_back(std::move(layer));
+  }
+
+  // Caption band: a styled lower band carrying the active caption text + speaker
+  // attribution when captions are enabled and a cue is present.
+  if (captionEnabled_ && !captionText_.empty()) {
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = "overlay:caption";
+    layer.kind = "overlay";
+    layer.order = static_cast<int>(renderPlan.layers.size());
+    layer.rect = {0.08f, 0.86f, 0.84f, 0.10f};
+    layer.opacity = 0.95f;
+    layer.hasOverlayContent = true;
+    layer.overlay.isCaption = true;
+    layer.overlay.text = captionText_;
+    layer.overlay.speaker = captionSpeaker_;
+    layer.overlay.keyPosition = "lower-left";
+    layer.overlay.keyPhase = "on-air";
+    layer.overlay.keyProgress = 1.f;
+    layer.overlay.keyer = "downstream";
+    layer.overlay.brandColor = brandColor_;
+    layer.overlay.brandAccentColor = brandAccentColor_;
+    layer.overlay.brandBackgroundColor = brandBackgroundColor_;
+    layer.overlay.fontFamily = brandFontFamily_;
     renderPlan.layers.push_back(std::move(layer));
   }
 
@@ -2198,6 +2336,7 @@ void MediaCore::renderSyntheticTick() {
   } else if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
     audioMonitorStatus_ = "armed";
   }
+  advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
   const auto renderPlan = buildCompositorRenderPlan(videoFrames);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   if (lastProgramFrame_.preview.bgra.empty()) {

@@ -4,6 +4,7 @@
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -104,6 +105,9 @@ class MediaCore {
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  // Advances the overlay animation clock and each overlay's keyPhase progress by
+  // one render tick, retiring overlays whose building-out animation has settled.
+  void advanceOverlayAnimation(double frameIntervalMs);
 
   modules::ModuleSet modules_;
   // F2 dev-gated real monitor output (MON bus playback). nullptr in the default
@@ -115,6 +119,29 @@ class MediaCore {
   int transformCount_ = 0;
   int overlayCount_ = 0;
   std::unordered_set<std::string> overlayIds_;
+  // Rich overlay-asset payloads captured from set-overlay-asset, carried into
+  // the compositor render plan for real text/image/keyer rendering. Keyed by
+  // overlayId; insertionOrder preserves a stable, deterministic z-order.
+  struct OverlayAssetState {
+    std::string overlayId;
+    std::string text;
+    std::string imageUri;
+    std::string position = "lower-third";
+    std::string title;
+    std::string org;
+    std::string keyPosition = "lower-left";
+    std::string keyPhase = "on-air";
+    std::string keyer = "downstream";
+    int insertionOrder = 0;
+    // Animation clock: the keyPhase the layer is animating toward, and the
+    // monotonically-advanced progress [0,1] within the current phase.
+    float keyProgress = 0.f;
+  };
+  std::map<std::string, OverlayAssetState> overlayAssets_;
+  int overlayInsertionCounter_ = 0;
+  // Monotonic compositor animation clock (ms), advanced each render tick, that
+  // drives overlay keyPhase progress deterministically.
+  double overlayAnimationClockMs_ = 0.0;
   std::string outputProfileId_ = "canvas-1080p60";
   std::string outputResolution_ = "1920x1080";
   int outputWidth_ = 1920;

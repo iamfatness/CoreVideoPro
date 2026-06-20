@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <set>
+#include <string>
 #include <vector>
 
 namespace {
@@ -200,6 +202,263 @@ TEST(StubCompositor, AppliesSemanticOverlayDepthAndOpacity) {
   const uint32_t overlayColor = 0xff2a3548u;
 
   EXPECT_EQ(previewPixelRgba(frame.preview, sampleX, sampleY), blendRgbaOver(overlayColor, participantColor, 0.5f));
+}
+
+namespace {
+
+// Counts the distinct RGBA values in a normalized sub-rectangle of the preview.
+// A real text/image raster produces many distinct values; a solid fill yields 1.
+size_t distinctColorsInRegion(
+    const corevideo::modules::ProgramFramePreviewPixels& preview,
+    float x,
+    float y,
+    float w,
+    float h) {
+  std::set<uint32_t> colors;
+  const int left = std::max(0, static_cast<int>(x * preview.width));
+  const int top = std::max(0, static_cast<int>(y * preview.height));
+  const int right = std::min(preview.width, static_cast<int>((x + w) * preview.width));
+  const int bottom = std::min(preview.height, static_cast<int>((y + h) * preview.height));
+  for (int py = top; py < bottom; ++py) {
+    for (int px = left; px < right; ++px) {
+      colors.insert(previewPixelRgba(preview, px, py));
+    }
+  }
+  return colors.size();
+}
+
+// Builds a VideoFrame whose top half is `top` and bottom half is `bottom`
+// (packed 0xAARRGGBB), so framing crops can be verified by which band survives.
+corevideo::modules::VideoFrame makeHalfBandFrame(
+    const std::string& participantId,
+    int width,
+    int height,
+    uint32_t topRgba,
+    uint32_t bottomRgba) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.pixelWidth = width;
+  frame.pixelHeight = height;
+  frame.pixelStride = width * 4;
+  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * height * 4);
+  for (int y = 0; y < height; ++y) {
+    const uint32_t rgba = y < height / 2 ? topRgba : bottomRgba;
+    for (int x = 0; x < width; ++x) {
+      const size_t offset = static_cast<size_t>((y * width + x) * 4);
+      (*pixels)[offset + 0] = static_cast<uint8_t>(rgba & 0xff);
+      (*pixels)[offset + 1] = static_cast<uint8_t>((rgba >> 8) & 0xff);
+      (*pixels)[offset + 2] = static_cast<uint8_t>((rgba >> 16) & 0xff);
+      (*pixels)[offset + 3] = static_cast<uint8_t>((rgba >> 24) & 0xff);
+    }
+  }
+  frame.pixels = pixels;
+  return frame;
+}
+
+corevideo::modules::CompositorRenderPlanLayer makeOverlayLayer(
+    const std::string& layerId,
+    float rx,
+    float ry,
+    float rw,
+    float rh) {
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.layerId = layerId;
+  layer.kind = "overlay";
+  layer.order = 10;
+  layer.rect = {rx, ry, rw, rh};
+  layer.opacity = 0.95f;
+  layer.hasOverlayContent = true;
+  return layer;
+}
+
+}  // namespace
+
+TEST(StubCompositor, FramingStretchSamplesFullSourceTopAndBottom) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "f3-stretch";
+  renderPlan.width = 1280;
+  renderPlan.height = 720;
+  corevideo::modules::CompositorRenderPlanLayer layer{
+      "src", "participant-video", "zoom:src", "src", 0, {0.f, 0.f, 1.f, 1.f}, 1.f};
+  layer.fitMode = "stretch";
+  layer.borderStyle = "none";
+  renderPlan.layers.push_back(layer);
+
+  const uint32_t topColor = 0xffff2020u;
+  const uint32_t bottomColor = 0xff2040ffu;
+  const auto frame = modules.compositor->render(
+      renderPlan, {makeHalfBandFrame("src", 256, 256, topColor, bottomColor)});
+
+  // Stretch maps the whole source to the whole rect: the upper-quarter samples
+  // the top band, the lower-quarter samples the bottom band.
+  const uint32_t topSample = previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 4);
+  const uint32_t bottomSample = previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height * 3 / 4);
+  EXPECT_EQ(topSample, topColor);
+  EXPECT_EQ(bottomSample, bottomColor);
+}
+
+TEST(StubCompositor, FramingVerticalPanSelectsSourceBand) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  const uint32_t topColor = 0xffff2020u;
+  const uint32_t bottomColor = 0xff2040ffu;
+
+  auto renderWithOffset = [&](float offsetY) {
+    corevideo::modules::CompositorRenderPlan renderPlan;
+    renderPlan.renderPlanId = "f3-pan";
+    renderPlan.width = 1280;
+    renderPlan.height = 720;
+    corevideo::modules::CompositorRenderPlanLayer layer{
+        "src", "participant-video", "zoom:src", "src", 0, {0.f, 0.f, 1.f, 1.f}, 1.f};
+    layer.fitMode = "stretch";
+    layer.borderStyle = "none";
+    layer.sourceScale = 4.f;   // Sample a small window...
+    layer.sourceOffsetY = offsetY;  // ...panned to the top (-1) or bottom (+1).
+    renderPlan.layers.push_back(layer);
+    return modules.compositor->render(
+        renderPlan, {makeHalfBandFrame("src", 256, 256, topColor, bottomColor)});
+  };
+
+  const auto panUp = renderWithOffset(-1.f);
+  const auto panDown = renderWithOffset(1.f);
+  const int cx = panUp.preview.width / 2;
+  const int cy = panUp.preview.height / 2;
+  // Panning fully up samples the top band; fully down samples the bottom band.
+  EXPECT_EQ(previewPixelRgba(panUp.preview, cx, cy), topColor);
+  EXPECT_EQ(previewPixelRgba(panDown.preview, cx, cy), bottomColor);
+}
+
+TEST(StubCompositor, LowerThirdOverlayRastersRealTextPixels) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "f3-lower-third";
+  renderPlan.width = 1280;
+  renderPlan.height = 720;
+  renderPlan.layers.push_back({
+      "speaker",
+      "participant-video",
+      "zoom:speaker",
+      "speaker",
+      0,
+      {0.f, 0.f, 1.f, 1.f},
+      1.f,
+  });
+  auto overlay = makeOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+  overlay.overlay.title = "ADA OTIENO";
+  overlay.overlay.org = "AETHELRED";
+  overlay.overlay.keyPhase = "on-air";
+  overlay.overlay.keyProgress = 1.f;
+  overlay.overlay.brandColor = "#44c1a1";
+  renderPlan.layers.push_back(overlay);
+
+  const auto frame = modules.compositor->render(renderPlan, {{"speaker", 1280, 720, 16}});
+  // The overlay band must contain many distinct colors (text glyphs + brand
+  // band + accent), proving real raster rather than a single solid rect.
+  // The old solid-fill overlay produced exactly one uniform color in the band;
+  // a real raster (brand band + accent bar + rastered title/org text) produces
+  // several distinct colors, proving non-uniform text pixels.
+  const size_t distinct = distinctColorsInRegion(frame.preview, 0.05f, 0.78f, 0.9f, 0.16f);
+  EXPECT_TRUE(distinct > 2u) << "distinct overlay colors = " << distinct;
+}
+
+TEST(StubCompositor, OverlayTextContentChangesPixels) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  auto buildPlan = [](const std::string& title) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.renderPlanId = "f3-text-vary";
+    plan.width = 1280;
+    plan.height = 720;
+    auto overlay = makeOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+    overlay.overlay.title = title;
+    overlay.overlay.keyPhase = "on-air";
+    overlay.overlay.keyProgress = 1.f;
+    plan.layers.push_back(overlay);
+    return plan;
+  };
+
+  const auto frameA = modules.compositor->render(buildPlan("AAAA TITLE"), {});
+  const auto frameB = modules.compositor->render(buildPlan("OOOO OTHER"), {});
+  EXPECT_NE(frameA.preview.bgra, frameB.preview.bgra);
+}
+
+TEST(StubCompositor, OverlayKeyPhaseAnimatesOverProgress) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  auto buildPlan = [](float progress) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.renderPlanId = "f3-anim";
+    plan.width = 1280;
+    plan.height = 720;
+    auto overlay = makeOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+    overlay.overlay.title = "ANIMATED TITLE";
+    overlay.overlay.keyPhase = "building-in";
+    overlay.overlay.keyProgress = progress;
+    plan.layers.push_back(overlay);
+    return plan;
+  };
+
+  // Early in the build-in the overlay is nearly transparent (few non-background
+  // colors); fully on-air it is opaque with rastered text. The pixel buffers
+  // must therefore differ across animation progress.
+  const auto early = modules.compositor->render(buildPlan(0.f), {});
+  const auto late = modules.compositor->render(buildPlan(1.f), {});
+  EXPECT_NE(early.preview.bgra, late.preview.bgra);
+  EXPECT_TRUE(
+      distinctColorsInRegion(late.preview, 0.05f, 0.78f, 0.9f, 0.16f) >
+      distinctColorsInRegion(early.preview, 0.05f, 0.78f, 0.9f, 0.16f));
+}
+
+TEST(StubCompositor, OverlayAppliesBrandColor) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  auto buildPlan = [](const std::string& brandColor) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.renderPlanId = "f3-brand";
+    plan.width = 1280;
+    plan.height = 720;
+    auto overlay = makeOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+    overlay.overlay.title = "BRANDED";
+    overlay.overlay.keyPhase = "on-air";
+    overlay.overlay.keyProgress = 1.f;
+    overlay.overlay.brandColor = brandColor;
+    plan.layers.push_back(overlay);
+    return plan;
+  };
+
+  // Different brand accent colors must change the rendered overlay pixels.
+  const auto green = modules.compositor->render(buildPlan("#44c1a1"), {});
+  const auto magenta = modules.compositor->render(buildPlan("#ff20a0"), {});
+  EXPECT_NE(green.preview.bgra, magenta.preview.bgra);
+}
+
+TEST(StubCompositor, CaptionOverlayRastersSpeakerAndBody) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "f3-caption";
+  renderPlan.width = 1280;
+  renderPlan.height = 720;
+  auto caption = makeOverlayLayer("overlay:caption", 0.08f, 0.86f, 0.84f, 0.10f);
+  caption.overlay.isCaption = true;
+  caption.overlay.speaker = "ADA";
+  caption.overlay.text = "TESTING CAPTIONS";
+  caption.overlay.keyPhase = "on-air";
+  caption.overlay.keyProgress = 1.f;
+  renderPlan.layers.push_back(caption);
+
+  const auto frame = modules.compositor->render(renderPlan, {});
+  EXPECT_TRUE(distinctColorsInRegion(frame.preview, 0.08f, 0.86f, 0.84f, 0.10f) > 3u);
 }
 
 TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
