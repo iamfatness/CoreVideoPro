@@ -66,6 +66,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _previewSceneId = "speaker-slides";
 
     [ObservableProperty]
+    private string _sceneBuilderName = "Speaker + Slides";
+
+    [ObservableProperty]
     private string? _selectedParticipantId;
 
     [ObservableProperty]
@@ -1340,6 +1343,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnPreviewSceneIdChanged(string value)
     {
+        SceneBuilderName = PreviewScene.Name;
         RefreshSceneItems();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
@@ -1663,6 +1667,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void SaveScene(string? name)
     {
         var trimmed = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        if (trimmed is null)
+        {
+            UpdateScene(PreviewScene.Name);
+            return;
+        }
+
         var existing = _scenes.FirstOrDefault(
             s => trimmed is not null && string.Equals(s.Name, trimmed, StringComparison.OrdinalIgnoreCase));
 
@@ -1695,6 +1705,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSceneId = newId;
         CommandStatus = $"{scene.Name} saved from canvas";
         SchedulePreviewRoutingRefresh();
+    }
+
+    [RelayCommand]
+    private void UpdateScene(string? name)
+    {
+        var scene = PreviewScene;
+        var trimmed = string.IsNullOrWhiteSpace(name) ? scene.Name : name.Trim();
+        var duplicate = _scenes.FirstOrDefault(item =>
+            !string.Equals(item.Id, scene.Id, StringComparison.Ordinal) &&
+            string.Equals(item.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+
+        if (duplicate is not null)
+        {
+            CommandStatus = $"{duplicate.Name} already exists - choose a unique scene name";
+            SceneBuilderName = scene.Name;
+            return;
+        }
+
+        CopyPreviewRoutesToScene(scene.Id);
+        if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
+        {
+            RenameScene(scene.Id, trimmed);
+        }
+
+        SceneBuilderName = trimmed;
+        CommandStatus = $"{trimmed} updated";
+        RefreshSceneItems();
+        RefreshProductionReadouts();
+        SchedulePreviewRoutingRefresh();
+    }
+
+    private void RenameScene(string sceneId, string name)
+    {
+        var index = _scenes.ToList().FindIndex(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
+        if (index < 0)
+        {
+            return;
+        }
+
+        var scene = _scenes[index];
+        _scenes[index] = new Scene
+        {
+            Id = scene.Id,
+            Name = name,
+            Layout = scene.Layout,
+            Automation = scene.Automation,
+            DurationLabel = scene.DurationLabel
+        };
+
+        OnPropertyChanged(nameof(ProgramScene));
+        OnPropertyChanged(nameof(PreviewScene));
+        OnPropertyChanged(nameof(ProgramSceneSummary));
+        OnPropertyChanged(nameof(PreviewSceneSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
     }
 
     // Take promotes Preview → Program. Because the compositor is always on, the program

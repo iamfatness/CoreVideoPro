@@ -71,20 +71,27 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SceneNameInput" Grid.Column="0"
                                      Style="{StaticResource StudioField}"
                                      PlaceholderText="Scene name"
+                                     Text="{x:Bind ViewModel.SceneBuilderName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                      VerticalAlignment="Center" />
                             <Button Grid.Column="1" Content="New scene"
                                     Style="{StaticResource OperatorGhostButton}"
                                     VerticalAlignment="Center"
                                     Command="{x:Bind ViewModel.NewSceneCommand}" />
-                            <Button Grid.Column="2" Content="Save scene"
+                            <Button Grid.Column="2" Content="Update scene"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    VerticalAlignment="Center"
+                                    Command="{x:Bind ViewModel.UpdateSceneCommand}"
+                                    CommandParameter="{x:Bind ViewModel.SceneBuilderName, Mode=OneWay}" />
+                            <Button Grid.Column="3" Content="Save scene"
                                     Style="{StaticResource OperatorGhostButton}"
                                     VerticalAlignment="Center"
                                     Command="{x:Bind ViewModel.SaveSceneCommand}"
-                                    CommandParameter="{x:Bind SceneNameInput.Text, Mode=OneWay}" />
+                                    CommandParameter="{x:Bind ViewModel.SceneBuilderName, Mode=OneWay}" />
                         </Grid>
 
                         <TextBlock Text="{x:Bind ViewModel.SceneBuilderSlotSummary, Mode=OneWay}"
