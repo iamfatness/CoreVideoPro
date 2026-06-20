@@ -170,6 +170,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _dualCaptureLive;
 
     [ObservableProperty]
+    private IReadOnlyList<ShowInputSourceOption> _dualCaptureSourceOptions = [];
+
+    [ObservableProperty]
+    private string? _primaryCaptureDeviceId;
+
+    [ObservableProperty]
+    private string? _secondaryCaptureDeviceId;
+
+    [ObservableProperty]
+    private string _dualCaptureSummary = "Choose capture sources to enable dual capture.";
+
+    [ObservableProperty]
     private string _feedHealthSummary = "No Zoom feeds — join a meeting";
 
     [ObservableProperty]
@@ -183,6 +195,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _showInputRefreshScheduled;
     private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
+    private bool _applyingDualCaptureSelection;
 
     public SettingsViewModel Settings { get; }
 
@@ -736,6 +749,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(MultiviewHeader));
     }
+
+    partial void OnPrimaryCaptureDeviceIdChanged(string? value) => ApplyDualCaptureSelection();
+
+    partial void OnSecondaryCaptureDeviceIdChanged(string? value) => ApplyDualCaptureSelection();
 
     partial void OnZoomCaptureSubscribedChanged(bool value)
     {
@@ -1578,6 +1595,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.ApplyFormatTelemetry(format.Width, format.Height, format.Fps);
                 device.SignalPresent = false;
                 AssignConnectedCaptureDeviceToShowInput(device);
+                RefreshDualCaptureSourceOptions();
                 RefreshCaptureFleetSummary();
                 RefreshShowInputEditors();
                 RefreshMultiviewGridTiles();
@@ -1618,8 +1636,116 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshCaptureFleetSummary()
     {
         CaptureFleetSummary = ProductionStateHelper.CaptureFleetSummary(CaptureDevices);
-        DualCaptureLive = ProductionStateHelper.DualCaptureLive(CaptureDevices);
+        UpdateDualCaptureSummary();
     }
+
+    private void RefreshDualCaptureSourceOptions()
+    {
+        DualCaptureSourceOptions = ShowInputRosterService.BuildCaptureSourceOptions(CaptureDevices);
+
+        _applyingDualCaptureSelection = true;
+        try
+        {
+            var primary = ResolveCaptureDevice(PrimaryCaptureDeviceId);
+            if (primary is null)
+            {
+                PrimaryCaptureDeviceId =
+                    CaptureDevices.FirstOrDefault(device => device.IsConnected)?.Id ??
+                    CaptureDevices.FirstOrDefault()?.Id;
+            }
+
+            var secondary = ResolveCaptureDevice(SecondaryCaptureDeviceId);
+            if (secondary is null || string.Equals(SecondaryCaptureDeviceId, PrimaryCaptureDeviceId, StringComparison.Ordinal))
+            {
+                SecondaryCaptureDeviceId =
+                    CaptureDevices.FirstOrDefault(device =>
+                        device.IsConnected &&
+                        !string.Equals(device.Id, PrimaryCaptureDeviceId, StringComparison.Ordinal))?.Id ??
+                    CaptureDevices.FirstOrDefault(device =>
+                        !string.Equals(device.Id, PrimaryCaptureDeviceId, StringComparison.Ordinal))?.Id;
+            }
+        }
+        finally
+        {
+            _applyingDualCaptureSelection = false;
+        }
+
+        ApplyDualCaptureSelection();
+    }
+
+    private void ApplyDualCaptureSelection()
+    {
+        if (_applyingDualCaptureSelection)
+        {
+            return;
+        }
+
+        _applyingDualCaptureSelection = true;
+        try
+        {
+            var primary = ResolveCaptureDevice(PrimaryCaptureDeviceId);
+            var secondary = ResolveCaptureDevice(SecondaryCaptureDeviceId);
+            if (primary is not null && secondary is not null && primary.Id == secondary.Id)
+            {
+                secondary = CaptureDevices.FirstOrDefault(device => device.Id != primary.Id);
+                SecondaryCaptureDeviceId = secondary?.Id;
+            }
+
+            ApplyCaptureDeviceToShowInputSlot(0, primary);
+            ApplyCaptureDeviceToShowInputSlot(1, secondary);
+            UpdateDualCaptureSummary();
+            RefreshShowInputEditors();
+            RefreshMultiviewGridTiles();
+        }
+        finally
+        {
+            _applyingDualCaptureSelection = false;
+        }
+    }
+
+    private void ApplyCaptureDeviceToShowInputSlot(int slotIndex, CaptureDevice? device)
+    {
+        if (slotIndex < 0 || slotIndex >= ShowInputs.Count)
+        {
+            return;
+        }
+
+        var slot = ShowInputs[slotIndex];
+        if (device is null)
+        {
+            if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam)
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.CaptureDeviceId = null;
+                slot.InShow = false;
+            }
+
+            return;
+        }
+
+        slot.Kind = ResolveShowInputKind(device);
+        slot.CaptureDeviceId = device.Id;
+        slot.InShow = true;
+    }
+
+    private void UpdateDualCaptureSummary()
+    {
+        var primary = ResolveCaptureDevice(PrimaryCaptureDeviceId);
+        var secondary = ResolveCaptureDevice(SecondaryCaptureDeviceId);
+        DualCaptureLive = primary?.IsConnected == true && secondary?.IsConnected == true;
+        DualCaptureSummary = (primary, secondary) switch
+        {
+            (null, null) => "Choose primary and secondary capture sources.",
+            ({ } first, null) => $"{first.Name} selected as primary - choose a different secondary source.",
+            (null, { } second) => $"{second.Name} selected as secondary - choose a primary source.",
+            ({ } first, { } second) => $"{first.Name} primary - {second.Name} secondary"
+        };
+    }
+
+    private CaptureDevice? ResolveCaptureDevice(string? deviceId) =>
+        string.IsNullOrWhiteSpace(deviceId)
+            ? null
+            : CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, deviceId, StringComparison.Ordinal));
 
     private async Task RefreshCaptureDevicesAsync()
     {
@@ -1654,6 +1780,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Add(device);
         }
 
+        RefreshDualCaptureSourceOptions();
         RefreshCaptureFleetSummary();
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();

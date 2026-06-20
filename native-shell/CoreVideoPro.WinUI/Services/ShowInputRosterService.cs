@@ -72,6 +72,17 @@ public static class ShowInputRosterService
         };
     }
 
+    public static IReadOnlyList<ShowInputSourceOption> BuildCaptureSourceOptions(
+        IReadOnlyList<CaptureDevice> captureDevices) =>
+        [
+            new ShowInputSourceOption { Value = string.Empty, Label = "Choose capture source" },
+            .. captureDevices.Select(device => new ShowInputSourceOption
+            {
+                Value = device.Id,
+                Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
+            })
+        ];
+
     public static IReadOnlyList<ParticipantSurfaceTile> BuildMultiviewTiles(
         IReadOnlyList<ShowInputSlot> slots,
         IReadOnlyList<Participant> participants,

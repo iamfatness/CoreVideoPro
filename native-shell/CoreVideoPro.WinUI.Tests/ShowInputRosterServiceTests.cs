@@ -47,6 +47,25 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void BuildCaptureSourceOptions_IncludesFormatAndConnectionState()
+    {
+        var options = ShowInputRosterService.BuildCaptureSourceOptions(
+            [
+                Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: true),
+                Device("cam-windows", "Integrated Camera", "windows", 1280, 720, 30)
+            ]);
+
+        Assert.Equal(string.Empty, options[0].Value);
+        Assert.Equal("Choose capture source", options[0].Label);
+        Assert.Equal("cam-uvc", options[1].Value);
+        Assert.Contains("USB Capture", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("1920x1080", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("60 fps", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("connected", options[1].Label, StringComparison.Ordinal);
+        Assert.Equal("cam-windows", options[2].Value);
+    }
+
+    [Fact]
     public void BuildMultiviewTiles_UsesSelectedCaptureDeviceForUvcSlot()
     {
         var slots = new[]
