@@ -6,7 +6,8 @@ public enum ShowInputKind
     ZoomParticipant,
     Blackmagic,
     Aja,
-    UvcWebcam
+    UvcWebcam,
+    SrtIngest
 }
 
 public sealed class ShowInputKindOption
@@ -45,18 +46,19 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
         ShowInputKind.Blackmagic => "Blackmagic",
         ShowInputKind.Aja => "AJA",
         ShowInputKind.UvcWebcam => "UVC webcam",
+        ShowInputKind.SrtIngest => "SRT ingest",
         _ => "Unassigned"
     };
 
     public bool IsAssigned => Kind switch
     {
         ShowInputKind.ZoomParticipant => !string.IsNullOrWhiteSpace(ParticipantId),
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam => !string.IsNullOrWhiteSpace(CaptureDeviceId),
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest => !string.IsNullOrWhiteSpace(CaptureDeviceId),
         _ => false
     };
 
     public bool IsSourcePickerEnabled =>
-        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam;
+        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest;
 
     partial void OnKindChanged(ShowInputKind value)
     {

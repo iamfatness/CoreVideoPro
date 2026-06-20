@@ -124,7 +124,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             {
                 ParticipantId = SourceOptions.FirstOrDefault()?.Value;
             }
-            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
+            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
                      (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
             {
                 CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;

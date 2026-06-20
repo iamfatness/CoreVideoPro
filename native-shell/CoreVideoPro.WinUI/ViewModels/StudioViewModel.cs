@@ -19,6 +19,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
     private const string MultiviewSoloSceneAId = "multiview-solo-a";
     private const string MultiviewSoloSceneBId = "multiview-solo-b";
+    private const string VirtualSrtIngestDeviceId = "srt-ingest-program";
 
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
@@ -105,6 +106,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _streamSrtPassphrase = string.Empty;
+
+    [ObservableProperty]
+    private string _srtIngestMode = "listener";
+
+    [ObservableProperty]
+    private string _srtIngestHost = "0.0.0.0";
+
+    [ObservableProperty]
+    private string _srtIngestPort = "10000";
+
+    [ObservableProperty]
+    private string _srtIngestLatencyMs = "120";
+
+    [ObservableProperty]
+    private string _srtIngestStreamId = string.Empty;
+
+    [ObservableProperty]
+    private string _srtIngestPassphrase = string.Empty;
 
     [ObservableProperty]
     private string _canvasResolution = MediaCoreProductionSyncContext.DefaultCanvasOutputProfile.Resolution;
@@ -547,6 +566,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<string> StreamSrtKeyLengthOptions { get; } = ["0", "16", "24", "32"];
 
+    public IReadOnlyList<string> SrtIngestModeOptions { get; } = ["listener", "caller", "rendezvous"];
+
+    public string SrtIngestSummary =>
+        $"{NormalizeOutputText(SrtIngestMode, "listener")} {NormalizeOutputText(SrtIngestHost, "0.0.0.0")}:{NormalizeOutputText(SrtIngestPort, "10000")} - {NormalizeOutputText(SrtIngestLatencyMs, "120")} ms latency";
+
+    public string SrtIngestRuntimeSummary =>
+        "Configured as a routable source. Real SRT receive/decode requires the libsrt ingest adapter.";
+
     public IReadOnlyList<RouteSelectOption> OutputResolutionOptions { get; } =
     [
         new() { Value = "1280x720", Label = "1280x720 (720p)" },
@@ -959,6 +986,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamSrtKeyLengthChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtPassphraseChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnSrtIngestModeChanged(string value) => OnSrtIngestSettingsChanged();
+
+    partial void OnSrtIngestHostChanged(string value) => OnSrtIngestSettingsChanged();
+
+    partial void OnSrtIngestPortChanged(string value) => OnSrtIngestSettingsChanged();
+
+    partial void OnSrtIngestLatencyMsChanged(string value) => OnSrtIngestSettingsChanged();
+
+    partial void OnSrtIngestStreamIdChanged(string value) => OnSrtIngestSettingsChanged();
+
+    partial void OnSrtIngestPassphraseChanged(string value) => OnSrtIngestSettingsChanged();
 
     partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
 
@@ -1888,6 +1927,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (IsVirtualSrtIngestDevice(device))
+        {
+            device.ConnectionState = CaptureConnectionState.Connected;
+            device.SignalPresent = false;
+            AssignConnectedCaptureDeviceToShowInput(device);
+            RefreshDualCaptureSourceOptions();
+            RefreshCaptureFleetSummary();
+            RefreshShowInputEditors();
+            RefreshPreviewRoutingState();
+            RefreshMultiviewGridTiles();
+            CommandStatus = "SRT ingest source routed. Waiting for libsrt receiver frames.";
+            return;
+        }
+
         try
         {
             var format = await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
@@ -1941,6 +1994,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         CaptureFleetSummary = ProductionStateHelper.CaptureFleetSummary(CaptureDevices);
         UpdateDualCaptureSummary();
+    }
+
+    private void OnSrtIngestSettingsChanged()
+    {
+        OnPropertyChanged(nameof(SrtIngestSummary));
+        OnPropertyChanged(nameof(SrtIngestRuntimeSummary));
+        RefreshVirtualSrtIngestDevice();
+        RefreshShowInputEditors();
+        RefreshPreviewRoutingState();
+        RefreshMultiviewGridTiles();
     }
 
     private void RefreshDualCaptureSourceOptions()
@@ -2071,7 +2134,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
         CaptureDevices.Clear();
-        foreach (var device in discovered)
+        foreach (var device in discovered.Concat([CreateVirtualSrtIngestDevice()]))
         {
             if (priorById.TryGetValue(device.Id, out var prior))
             {
@@ -2092,6 +2155,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(HasCaptureDevices));
     }
+
+    private void RefreshVirtualSrtIngestDevice()
+    {
+        var prior = CaptureDevices.FirstOrDefault(device => device.Id == VirtualSrtIngestDeviceId);
+        if (prior is null)
+        {
+            CaptureDevices.Add(CreateVirtualSrtIngestDevice());
+        }
+        else
+        {
+            var index = CaptureDevices.IndexOf(prior);
+            var next = CreateVirtualSrtIngestDevice();
+            next.ConnectionState = prior.ConnectionState;
+            next.SignalPresent = prior.SignalPresent;
+            CaptureDevices[index] = next;
+        }
+
+        RefreshDualCaptureSourceOptions();
+        RefreshCaptureFleetSummary();
+        OnPropertyChanged(nameof(HasCaptureDevices));
+    }
+
+    private CaptureDevice CreateVirtualSrtIngestDevice() =>
+        new()
+        {
+            Id = VirtualSrtIngestDeviceId,
+            NativeDeviceId = $"srt://{NormalizeOutputText(SrtIngestHost, "0.0.0.0")}:{NormalizeOutputText(SrtIngestPort, "10000")}",
+            Vendor = "srt",
+            Name = $"SRT Ingest - {SrtIngestSummary}",
+            Inputs =
+            [
+                new CaptureDeviceInput
+                {
+                    Id = "program",
+                    Label = "Program"
+                }
+            ],
+            SelectedInputId = "program",
+            Width = 1920,
+            Height = 1080,
+            FrameRate = 60,
+            ConnectionState = CaptureConnectionState.Detected,
+            SignalPresent = false,
+            AudioSyncOffsetMs = 0
+        };
 
     private void RefreshProductionReadouts()
     {
@@ -3151,7 +3259,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam &&
+                         slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))
@@ -3264,9 +3372,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             "blackmagic" => ShowInputKind.Blackmagic,
             "aja" => ShowInputKind.Aja,
+            "srt" => ShowInputKind.SrtIngest,
             "uvc" or "windows" => ShowInputKind.UvcWebcam,
             _ => ShowInputKind.UvcWebcam
         };
+
+    private static bool IsVirtualSrtIngestDevice(CaptureDevice device) =>
+        string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase);
 
     private void RefreshMultiviewGridTiles()
     {

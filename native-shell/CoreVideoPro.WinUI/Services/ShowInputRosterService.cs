@@ -14,7 +14,8 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.ZoomParticipant, Label = "Zoom participant" },
         new() { Value = ShowInputKind.Blackmagic, Label = "Blackmagic SDI/HDMI" },
         new() { Value = ShowInputKind.Aja, Label = "AJA SDI/HDMI" },
-        new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" }
+        new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
+        new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" }
     ];
 
     public static IReadOnlyList<ShowInputSlot> CreateDefaultSlots()
@@ -66,6 +67,14 @@ public static class ShowInputRosterService
                 {
                     Value = device.Id,
                     Label = device.Name
+                })
+                .ToList(),
+            ShowInputKind.SrtIngest => captureDevices
+                .Where(device => device.Vendor.Equals("srt", StringComparison.OrdinalIgnoreCase))
+                .Select(device => new ShowInputSourceOption
+                {
+                    Value = device.Id,
+                    Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
                 })
                 .ToList(),
             _ => []
@@ -141,7 +150,7 @@ public static class ShowInputRosterService
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
-            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam =>
+            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
             _ => false
         };
