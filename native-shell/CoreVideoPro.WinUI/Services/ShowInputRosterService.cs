@@ -99,7 +99,7 @@ public static class ShowInputRosterService
             .. audioDevices.Select(device => new ShowInputSourceOption
             {
                 Value = device.Id,
-                Label = device.Name
+                Label = device.DisplayLabel
             })
         ];
 

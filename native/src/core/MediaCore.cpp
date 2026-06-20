@@ -1150,6 +1150,13 @@ void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
 
     input.audioDeviceId = source.getString("audioDeviceId");
     input.audioDeviceName = source.getString("audioDeviceName");
+    input.audioSourceKind = source.getString("audioSourceKind");
+    if (input.audioSourceKind.empty()) {
+      input.audioSourceKind = input.audioDeviceId.empty() ? "none" : "wasapi-input";
+    }
+    input.nativeAudioDeviceId = source.getString("nativeAudioDeviceId");
+    input.audioDriverName = source.getString("audioDriverName");
+    input.embedded = source.get("embedded") && source.get("embedded")->asBool();
     input.audioSyncOffsetMs = static_cast<int>(source.get("audioSyncOffsetMs")
                                                    ? source.get("audioSyncOffsetMs")->asNumber()
                                                    : 0);
@@ -1525,16 +1532,28 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
 rpc::Json MediaCore::captureAudioSourcesState() const {
   rpc::Json::Array sources;
+  rpc::Json::Array warnings;
   int pairedCount = 0;
   for (const auto& source : captureAudioSources_) {
     if (!source.audioDeviceId.empty()) {
       ++pairedCount;
     }
 
+    if (!source.audioDeviceId.empty() && source.audioSourceKind == "asio-input") {
+      warnings.emplace_back("ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.");
+    }
+    if (!source.audioDeviceId.empty() && source.audioSourceKind == "embedded-capture-audio") {
+      warnings.emplace_back("Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.");
+    }
+
     sources.emplace_back(rpc::Json::Object{
         {"captureDeviceId", source.captureDeviceId},
         {"audioDeviceId", source.audioDeviceId},
         {"audioDeviceName", source.audioDeviceName},
+        {"audioSourceKind", source.audioSourceKind},
+        {"nativeAudioDeviceId", source.nativeAudioDeviceId},
+        {"audioDriverName", source.audioDriverName},
+        {"embedded", source.embedded},
         {"audioSyncOffsetMs", source.audioSyncOffsetMs},
         {"paired", !source.audioDeviceId.empty()},
     });
@@ -1542,13 +1561,14 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
 
   std::ostringstream summary;
   summary << pairedCount << " of " << captureAudioSources_.size() << " capture source"
-          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with microphone input.";
+          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input.";
 
   return rpc::Json::Object{
       {"status", captureAudioSourcesSynced_ ? "ready" : "idle"},
       {"sourceCount", static_cast<int>(captureAudioSources_.size())},
       {"pairedCount", pairedCount},
       {"sources", sources},
+      {"warnings", warnings},
       {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
   };
 }

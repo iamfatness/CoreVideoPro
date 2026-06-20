@@ -64,7 +64,11 @@ public sealed record MediaCoreCaptureAudioSourceWire(
     string CaptureDeviceId,
     string? AudioDeviceId,
     string? AudioDeviceName,
-    int AudioSyncOffsetMs);
+    int AudioSyncOffsetMs,
+    string AudioSourceKind = "none",
+    string? NativeAudioDeviceId = null,
+    string? AudioDriverName = null,
+    bool Embedded = false);
 
 public sealed record MediaCoreAudioMonitorWire(
     bool Enabled,

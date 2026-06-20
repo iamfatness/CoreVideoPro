@@ -40,6 +40,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionSettingsWindow? _productionSettingsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
+    private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -559,7 +560,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string SelectedLocalAudioCaptureDeviceName =>
         AudioCaptureDevices.FirstOrDefault(device =>
-            string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))?.Name ??
+            string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))?.DisplayLabel ??
         "No local audio input selected";
 
     public string LocalAudioSourceStatus =>
@@ -2703,17 +2704,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyDiscoveredAudioCaptureDevices(IReadOnlyList<AudioCaptureDevice> discovered)
     {
+        _lastDiscoveredAudioCaptureDevices = discovered;
+        RebuildAudioCaptureDeviceCatalog();
+    }
+
+    private void RebuildAudioCaptureDeviceCatalog()
+    {
+        var selectedAudioId = SelectedLocalAudioCaptureDeviceId;
+        var catalog = _lastDiscoveredAudioCaptureDevices
+            .Concat(AudioCaptureDeviceDiscoveryService.CreateEmbeddedCaptureAudioDevices(CaptureDevices))
+            .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(device => device.SourceKind.Equals("embedded-capture-audio", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         AudioCaptureDevices.Clear();
-        foreach (var device in discovered)
+        foreach (var device in catalog)
         {
             AudioCaptureDevices.Add(device);
         }
 
         NormalizeCaptureAudioAssignments();
-        if (string.IsNullOrWhiteSpace(SelectedLocalAudioCaptureDeviceId) ||
-            AudioCaptureDevices.All(device => !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
+        if (string.IsNullOrWhiteSpace(selectedAudioId) ||
+            AudioCaptureDevices.All(device => !string.Equals(device.Id, selectedAudioId, StringComparison.Ordinal)))
         {
             SelectedLocalAudioCaptureDeviceId = AudioCaptureDevices.FirstOrDefault()?.Id ?? string.Empty;
+        }
+        else if (!string.Equals(SelectedLocalAudioCaptureDeviceId, selectedAudioId, StringComparison.Ordinal))
+        {
+            SelectedLocalAudioCaptureDeviceId = selectedAudioId;
         }
 
         RefreshShowInputEditors();
@@ -2735,7 +2756,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             else
             {
-                captureDevice.AssignedAudioDeviceName = audioDevice.Name;
+                captureDevice.AssignedAudioDeviceName = audioDevice.DisplayLabel;
             }
 
             captureDevice.NotifyAudioAssignmentChanged();
@@ -2791,7 +2812,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 string.Equals(device.Id, normalizedAudioDeviceId, StringComparison.Ordinal));
 
         captureDevice.AssignedAudioDeviceId = audioDevice?.Id;
-        captureDevice.AssignedAudioDeviceName = audioDevice?.Name;
+        captureDevice.AssignedAudioDeviceName = audioDevice?.DisplayLabel;
         captureDevice.NotifyAudioAssignmentChanged();
 
         foreach (var slot in ShowInputs.Where(slot =>
@@ -3161,6 +3182,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshPreviewRoutingState();
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(HasCaptureDevices));
+        RebuildAudioCaptureDeviceCatalog();
     }
 
     private void RefreshVirtualSrtIngestDevices()
@@ -3478,11 +3500,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         var captureAudioSources = CaptureDevices
             .Where(device => !string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase))
-            .Select(device => new MediaCoreCaptureAudioSourceWire(
-                device.Id,
-                device.AssignedAudioDeviceId,
-                device.AssignedAudioDeviceName,
-                device.AudioSyncOffsetMs))
+            .Select(BuildCaptureAudioSourceWire)
             .ToList();
         if (LocalAudioSourceEnabled &&
             AudioCaptureDevices.FirstOrDefault(device =>
@@ -3491,8 +3509,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             captureAudioSources.Add(new MediaCoreCaptureAudioSourceWire(
                 "local-machine-audio",
                 localAudio.Id,
-                localAudio.Name,
-                0));
+                localAudio.DisplayLabel,
+                0,
+                localAudio.SourceKind,
+                localAudio.NativeDeviceId,
+                localAudio.DriverName,
+                localAudio.IsEmbeddedCaptureAudio));
         }
 
         var isoParticipantIds = BuildIsoParticipantTargets();
@@ -3571,6 +3593,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
             SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
+    }
+
+    private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)
+    {
+        var audioDevice = string.IsNullOrWhiteSpace(captureDevice.AssignedAudioDeviceId)
+            ? null
+            : AudioCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, captureDevice.AssignedAudioDeviceId, StringComparison.Ordinal));
+
+        return new MediaCoreCaptureAudioSourceWire(
+            captureDevice.Id,
+            audioDevice?.Id ?? captureDevice.AssignedAudioDeviceId,
+            audioDevice?.DisplayLabel ?? captureDevice.AssignedAudioDeviceName,
+            captureDevice.AudioSyncOffsetMs,
+            audioDevice?.SourceKind ?? "none",
+            audioDevice?.NativeDeviceId,
+            audioDevice?.DriverName,
+            audioDevice?.IsEmbeddedCaptureAudio ?? false);
     }
 
     private IReadOnlyList<MediaCoreSrtIngestSourceWire> BuildSrtIngestSourceSettings() =>

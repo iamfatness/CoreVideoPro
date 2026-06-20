@@ -473,7 +473,7 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             CaptureAudioSources =
             [
-                new("uvc-01", "mic-01", "USB Microphone", 40),
+                new("uvc-01", "mic-01", "USB Microphone", 40, "wasapi-input", @"\\\\?\\SWD#MMDEVAPI#mic-01", "WASAPI"),
                 new("uvc-02", null, null, -20)
             ]
         });
@@ -486,8 +486,13 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("uvc-01", sources[0].GetProperty("captureDeviceId").GetString());
         Assert.Equal("mic-01", sources[0].GetProperty("audioDeviceId").GetString());
         Assert.Equal("USB Microphone", sources[0].GetProperty("audioDeviceName").GetString());
+        Assert.Equal("wasapi-input", sources[0].GetProperty("audioSourceKind").GetString());
+        Assert.Equal(@"\\\\?\\SWD#MMDEVAPI#mic-01", sources[0].GetProperty("nativeAudioDeviceId").GetString());
+        Assert.Equal("WASAPI", sources[0].GetProperty("audioDriverName").GetString());
+        Assert.False(sources[0].GetProperty("embedded").GetBoolean());
         Assert.Equal(40, sources[0].GetProperty("audioSyncOffsetMs").GetInt32());
         Assert.Equal("uvc-02", sources[1].GetProperty("captureDeviceId").GetString());
+        Assert.Equal("none", sources[1].GetProperty("audioSourceKind").GetString());
         Assert.Equal(-20, sources[1].GetProperty("audioSyncOffsetMs").GetInt32());
     }
 

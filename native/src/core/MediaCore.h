@@ -185,7 +185,11 @@ class MediaCore {
     std::string captureDeviceId;
     std::string audioDeviceId;
     std::string audioDeviceName;
+    std::string audioSourceKind = "none";
+    std::string nativeAudioDeviceId;
+    std::string audioDriverName;
     int audioSyncOffsetMs = 0;
+    bool embedded = false;
   };
   std::vector<CaptureAudioSourceInput> captureAudioSources_;
   bool captureAudioSourcesSynced_ = false;

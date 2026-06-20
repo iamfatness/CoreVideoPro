@@ -95,6 +95,44 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void BuildAudioSourceOptions_LabelsSourceKindAndDriver()
+    {
+        var options = ShowInputRosterService.BuildAudioSourceOptions(
+            [
+                AudioDevice("mic-01", "USB Microphone", "wasapi-input", "WASAPI"),
+                AudioDevice("asio-01", "Focusrite USB ASIO", "asio-input", "ASIO")
+            ]);
+
+        Assert.Equal(string.Empty, options[0].Value);
+        Assert.Contains("USB Microphone", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("Mic / line input", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("WASAPI", options[1].Label, StringComparison.Ordinal);
+        Assert.Contains("Focusrite USB ASIO", options[2].Label, StringComparison.Ordinal);
+        Assert.Contains("ASIO", options[2].Label, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateEmbeddedCaptureAudioDevices_AddsBlackmagicAndAjaAudioSources()
+    {
+        var audioDevices = AudioCaptureDeviceDiscoveryService.CreateEmbeddedCaptureAudioDevices(
+            [
+                Device("decklink", "DeckLink Mini Recorder", "blackmagic", 1920, 1080, 60),
+                Device("aja", "AJA U-TAP", "aja", 1920, 1080, 60),
+                Device("uvc", "USB Webcam", "uvc", 1280, 720, 30)
+            ]);
+
+        Assert.Equal(2, audioDevices.Count);
+        Assert.Contains(audioDevices, device =>
+            device.LinkedCaptureDeviceId == "decklink" &&
+            device.SourceKind == "embedded-capture-audio" &&
+            device.DriverName == "Blackmagic DeckLink");
+        Assert.Contains(audioDevices, device =>
+            device.LinkedCaptureDeviceId == "aja" &&
+            device.SourceKind == "embedded-capture-audio" &&
+            device.DriverName == "AJA NTV2");
+    }
+
+    [Fact]
     public void BuildMultiviewTiles_UsesSelectedCaptureDeviceForUvcSlot()
     {
         var slots = new[]
@@ -223,5 +261,19 @@ public sealed class ShowInputRosterServiceTests
             FrameRate = frameRate,
             ConnectionState = connected ? CaptureConnectionState.Connected : CaptureConnectionState.Detected,
             SignalPresent = connected
+        };
+
+    private static AudioCaptureDevice AudioDevice(
+        string id,
+        string name,
+        string sourceKind,
+        string driverName) =>
+        new()
+        {
+            Id = id,
+            NativeDeviceId = $"native-{id}",
+            Name = name,
+            SourceKind = sourceKind,
+            DriverName = driverName
         };
 }

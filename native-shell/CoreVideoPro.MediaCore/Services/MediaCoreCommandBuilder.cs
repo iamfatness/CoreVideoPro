@@ -258,6 +258,10 @@ public static class MediaCoreCommandBuilder
                 captureDeviceId = source.CaptureDeviceId,
                 audioDeviceId = source.AudioDeviceId,
                 audioDeviceName = source.AudioDeviceName,
+                audioSourceKind = source.AudioSourceKind,
+                nativeAudioDeviceId = source.NativeAudioDeviceId,
+                audioDriverName = source.AudioDriverName,
+                embedded = source.Embedded,
                 audioSyncOffsetMs = source.AudioSyncOffsetMs
             }).ToList()
         });

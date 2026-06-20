@@ -968,6 +968,53 @@ TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   EXPECT_TRUE(connectedAja->get("signalPresent")->asBool());
 }
 
+TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
+  corevideo::core::MediaCore mediaCore;
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "decklink-1"},
+                   {"audioDeviceId", "embedded-decklink-1"},
+                   {"audioDeviceName", "DeckLink Mini Recorder embedded audio"},
+                   {"audioSourceKind", "embedded-capture-audio"},
+                   {"nativeAudioDeviceId", "decklink-native-1"},
+                   {"audioDriverName", "Blackmagic DeckLink"},
+                   {"embedded", true},
+                   {"audioSyncOffsetMs", 42},
+               },
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "asio-1"},
+                   {"audioDeviceName", "Focusrite USB ASIO"},
+                   {"audioSourceKind", "asio-input"},
+                   {"nativeAudioDeviceId", "asio:{focusrite}"},
+                   {"audioDriverName", "ASIO"},
+                   {"audioSyncOffsetMs", -24},
+               },
+           }},
+      },
+  });
+
+  const auto* captureAudio = state.get("captureAudioSources");
+  ASSERT_NE(captureAudio, nullptr);
+  EXPECT_EQ(captureAudio->getString("status"), "ready");
+  EXPECT_EQ(captureAudio->get("sourceCount")->asNumber(), 2);
+  EXPECT_NE(captureAudio->getString("summary").find("audio input"), std::string::npos);
+
+  const auto& sources = captureAudio->get("sources")->asArray();
+  ASSERT_TRUE(sources.size() == 2u);
+  EXPECT_EQ(sources[0].getString("audioSourceKind"), "embedded-capture-audio");
+  EXPECT_EQ(sources[0].getString("nativeAudioDeviceId"), "decklink-native-1");
+  EXPECT_EQ(sources[0].getString("audioDriverName"), "Blackmagic DeckLink");
+  EXPECT_TRUE(sources[0].get("embedded")->asBool());
+  EXPECT_EQ(sources[1].getString("audioSourceKind"), "asio-input");
+  EXPECT_EQ(sources[1].getString("audioDriverName"), "ASIO");
+}
+
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
   corevideo::core::MediaCore mediaCore;
 

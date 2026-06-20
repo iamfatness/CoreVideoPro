@@ -319,11 +319,11 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <ComboBox Header="Input device"
+                                <ComboBox Header="Input source"
                                           ItemsSource="{x:Bind ViewModel.AudioCaptureDevices, Mode=OneWay}"
                                           SelectedValue="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceId, Mode=TwoWay}"
                                           SelectedValuePath="Id"
-                                          DisplayMemberPath="Name"
+                                          DisplayMemberPath="DisplayLabel"
                                           HorizontalAlignment="Stretch" />
                                 <ToggleSwitch Grid.Column="1"
                                               Header="Route to mix"

@@ -129,6 +129,26 @@ public sealed class AudioCaptureDevice
     public required string Id { get; init; }
     public required string NativeDeviceId { get; init; }
     public required string Name { get; init; }
+    public string SourceKind { get; init; } = "wasapi-input";
+    public string DriverName { get; init; } = "WASAPI";
+    public string? LinkedCaptureDeviceId { get; init; }
+    public bool IsAvailable { get; init; } = true;
+
+    public bool IsEmbeddedCaptureAudio => SourceKind.Equals("embedded-capture-audio", StringComparison.OrdinalIgnoreCase);
+
+    public string KindLabel => SourceKind switch
+    {
+        "wasapi-input" => "Mic / line input",
+        "asio-input" => "ASIO",
+        "embedded-capture-audio" => "Embedded capture audio",
+        "local-machine-audio" => "Local machine audio",
+        "loopback" => "System loopback",
+        _ => SourceKind
+    };
+
+    public string DisplayLabel => string.IsNullOrWhiteSpace(DriverName)
+        ? $"{Name} - {KindLabel}"
+        : $"{Name} - {KindLabel} - {DriverName}";
 }
 
 public sealed class AudioRenderDevice

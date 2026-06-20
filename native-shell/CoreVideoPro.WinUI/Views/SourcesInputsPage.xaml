@@ -154,8 +154,8 @@
                                                       SelectedValue="{x:Bind AssignedAudioDeviceId, Mode=OneWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
-                                                      Header="Paired microphone"
-                                                      PlaceholderText="No paired microphone"
+                                                      Header="Paired audio source"
+                                                      PlaceholderText="No paired audio source"
                                                       SelectionChanged="OnCaptureDeviceMicChanged"
                                                       HorizontalAlignment="Stretch" />
                                         </StackPanel>
@@ -351,7 +351,7 @@
                                                       VerticalAlignment="Center" />
                                         <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Spacing="4"
                                                     Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="Paired microphone" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <TextBlock Text="Paired audio source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="InputMicCombo"
                                                       ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
                                                       SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
