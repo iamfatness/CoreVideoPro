@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
 TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterministically) {
   auto encoder = corevideo::modules::createStubRecordingEncoderSink();
   ASSERT_NE(encoder, nullptr);
@@ -53,6 +55,54 @@ TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterminist
   EXPECT_TRUE(session.recordingMetadataValid);
   EXPECT_TRUE(session.recordingWarning.empty());
   EXPECT_TRUE(session.recordingError.empty());
+}
+
+TEST(EncoderRecordingSession, StubMuxesRealProgramAudioPacketsAndSamples) {
+  auto encoder = corevideo::modules::createStubRecordingEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "audio-show";
+  request.targetFolder = "Recordings/CoreVideo Pro/tests";
+  request.filenamePrefix = "with-audio";
+  request.format = "mp4";
+  request.width = 1920;
+  request.height = 1080;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  // Two stereo audio packets (real interleaved PCM), 1024 sample-frames each.
+  std::vector<float> pcm(1024 * 2, 0.25f);
+  encoder->submitAudio(pcm.data(), 1024, 2, 48000);
+  encoder->submitAudio(pcm.data(), 1024, 2, 48000);
+
+  const auto session = encoder->session();
+  EXPECT_EQ(session.recordingAudioPacketCount, 2);
+  EXPECT_EQ(session.recordingAudioSampleCount, 2048);
+  EXPECT_EQ(session.recordingAudioChannels, 2);
+  EXPECT_EQ(session.recordingAudioSampleRate, 48000);
+  EXPECT_TRUE(session.recordingBytesWritten > 0);
+}
+
+TEST(EncoderRecordingSession, StubIgnoresAudioWhenRecordingNotSelected) {
+  auto encoder = corevideo::modules::createStubRecordingEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.audioCodec = "aac";
+  encoder->configureRecording(request);
+  // Only an output destination, no "recording" target.
+  encoder->start({"rtmp"}, {});
+
+  std::vector<float> pcm(960 * 2, 0.1f);
+  encoder->submitAudio(pcm.data(), 960, 2, 48000);
+
+  const auto session = encoder->session();
+  EXPECT_EQ(session.recordingAudioPacketCount, 0);
+  EXPECT_EQ(session.recordingAudioSampleCount, 0);
 }
 
 TEST(EncoderRecordingSession, MediaCorePropagatesRecordingTargetsIntoEncoderSession) {
