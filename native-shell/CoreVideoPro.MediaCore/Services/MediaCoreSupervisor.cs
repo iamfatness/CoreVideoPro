@@ -21,12 +21,13 @@ public sealed class MediaCoreSupervisorOptions
 public sealed class MediaCoreSupervisor : IAsyncDisposable
 {
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _stdinGate = new(1, 1);
     private readonly MediaCoreSupervisorOptions _options;
     private Process? _process;
     private StreamWriter? _stdin;
     private readonly Dictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
     private Timer? _frameDrainTimer;
-    private int _nextId = 1;
+    private int _nextId;
     private int _restarts;
     private bool _stopped = true;
     private bool _recovering;
@@ -431,9 +432,9 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             throw new InvalidOperationException("Failed to start media core process.");
         }
 
-        _stdin = _process.StandardInput;
-        _ = Task.Run(ReadStdoutLoopAsync);
-        _process.BeginErrorReadLine();
+        var process = _process;
+        _stdin = process.StandardInput;
+        _ = Task.Run(() => ReadStdoutLoopAsync(process));
         _process.ErrorDataReceived += (_, e) =>
         {
             if (!string.IsNullOrWhiteSpace(e.Data))
@@ -441,18 +442,30 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 Debug.WriteLine($"[media-core] {e.Data}");
             }
         };
+        _process.BeginErrorReadLine();
     }
 
-    private async Task ReadStdoutLoopAsync()
+    private async Task ReadStdoutLoopAsync(Process process)
     {
-        if (_process?.StandardOutput is null)
+        while (!process.HasExited)
         {
-            return;
-        }
+            string? line;
+            try
+            {
+                line = await process.StandardOutput.ReadLineAsync().ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            catch (InvalidOperationException ex)
+            {
+                RejectAllForProcess(
+                    process,
+                    new InvalidOperationException("Media core stream reader was already active for this process.", ex));
+                return;
+            }
 
-        while (!_process.HasExited)
-        {
-            var line = await _process.StandardOutput.ReadLineAsync().ConfigureAwait(false);
             if (line is null)
             {
                 break;
@@ -515,6 +528,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             TaskCompletionSource<JsonDocument>? waiter = null;
             lock (_gate)
             {
+                if (!ReferenceEquals(_process, process))
+                {
+                    document.Dispose();
+                    continue;
+                }
+
                 if (_pending.Remove(id, out waiter))
                 {
                     waiter.TrySetResult(document);
@@ -649,8 +668,41 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         });
 
         var json = JsonSerializer.Serialize(payload, MediaCoreJson.Options);
-        await _stdin.WriteLineAsync(json).ConfigureAwait(false);
-        await _stdin.FlushAsync().ConfigureAwait(false);
+        await _stdinGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                StreamWriter? stdin;
+                lock (_gate)
+                {
+                    stdin = _stdin;
+                }
+
+                if (stdin is null)
+                {
+                    throw new InvalidOperationException("Media core is not running.");
+                }
+
+                await stdin.WriteLineAsync(json).ConfigureAwait(false);
+                await stdin.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)
+            {
+                lock (_gate)
+                {
+                    _pending.Remove(id);
+                }
+
+                tcs.TrySetException(ex);
+                throw;
+            }
+        }
+        finally
+        {
+            _stdinGate.Release();
+        }
+
         return await tcs.Task.ConfigureAwait(false);
     }
 
@@ -735,7 +787,18 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         _pending.Clear();
     }
 
-    private string NextId() => $"core-{_nextId++}";
+    private void RejectAllForProcess(Process process, Exception error)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_process, process))
+            {
+                RejectAll(error);
+            }
+        }
+    }
+
+    private string NextId() => $"core-{Interlocked.Increment(ref _nextId)}";
 
     private void RaiseHealth() => HealthChanged?.Invoke(Health);
 
