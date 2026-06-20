@@ -833,6 +833,62 @@ TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   EXPECT_TRUE(connectedAja->get("signalPresent")->asBool());
 }
 
+TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
+  corevideo::core::MediaCore mediaCore;
+
+  const auto snapshot = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "configure-srt-ingest-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"id", "srt-source-01"},
+                   {"deviceId", "srt-ingest-01"},
+                   {"name", "SRT 1"},
+                   {"mode", "listener"},
+                   {"host", "0.0.0.0"},
+                   {"port", 10000},
+                   {"latencyMs", 120},
+                   {"streamId", "ingest/main"},
+               },
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "srt-scene"},
+          {"routes",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"routeId", "route-srt-1"},
+                   {"mode", "capture-input"},
+                   {"audioRole", "mix"},
+                   {"captureDeviceId", "srt-ingest-01"},
+               },
+           }},
+      },
+  });
+
+  const auto devices = snapshot.get("captureDevices")->asArray();
+  const auto srtDevice = std::find_if(devices.begin(), devices.end(), [](const corevideo::rpc::Json& device) {
+    return device.getString("id") == "srt-ingest-01";
+  });
+  ASSERT_NE(srtDevice, devices.end());
+  EXPECT_EQ(srtDevice->getString("vendor"), "srt");
+  EXPECT_EQ(srtDevice->get("resolution")->get("width")->asNumber(), 1920);
+  EXPECT_EQ(srtDevice->get("frameRate")->asNumber(), 60);
+
+  const auto connected = mediaCore.connectCaptureDevice("srt-ingest-01");
+  const auto connectedSrt = std::find_if(connected.asArray().begin(), connected.asArray().end(), [](const corevideo::rpc::Json& device) {
+    return device.getString("id") == "srt-ingest-01";
+  });
+  ASSERT_NE(connectedSrt, connected.asArray().end());
+  EXPECT_EQ(connectedSrt->getString("connectionState"), "connecting");
+
+  const auto rendered = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 33);
+  EXPECT_TRUE(rendered.get("programFrame")->get("layerCount")->asNumber() > 0);
+  EXPECT_NE(rendered.get("programFrame")->get("renderPlanSignature")->asNumber(), 0);
+}
+
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {
 #if COREVIDEO_WITH_D3D11
   auto compositor = corevideo::modules::createD3D11Compositor();

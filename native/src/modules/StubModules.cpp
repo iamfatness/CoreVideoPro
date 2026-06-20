@@ -536,6 +536,22 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return enumerate();
   }
 
+  std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>& sources) override {
+    for (const auto& device : devices_) {
+      (void)device->configureSrtIngestSources(sources);
+    }
+    return enumerate();
+  }
+
+  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+    std::vector<VideoFrame> result;
+    for (const auto& device : devices_) {
+      auto frames = device->pollVideoFrames(timestampMs);
+      result.insert(result.end(), frames.begin(), frames.end());
+    }
+    return result;
+  }
+
  private:
   std::vector<std::unique_ptr<ICaptureDevice>> devices_;
 };
@@ -569,13 +585,19 @@ ModuleSet createDefaultModules() {
     modules.outputSender = std::move(outputSender);
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
+  hardwareCaptureDevices.push_back(std::move(modules.captureDevice));
+  if (auto srtIngest = createSrtIngestCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(srtIngest));
+  }
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }
   if (auto aja = createAjaCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(aja));
   }
-  if (!hardwareCaptureDevices.empty()) {
+  if (hardwareCaptureDevices.size() == 1) {
+    modules.captureDevice = std::move(hardwareCaptureDevices.front());
+  } else if (!hardwareCaptureDevices.empty()) {
     modules.captureDevice = std::make_unique<CompositeCaptureDevice>(std::move(hardwareCaptureDevices));
   }
   return modules;

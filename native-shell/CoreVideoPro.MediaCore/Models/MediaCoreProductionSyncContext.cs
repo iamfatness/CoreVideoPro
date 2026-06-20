@@ -96,6 +96,17 @@ public sealed record MediaCoreStreamDestinationWire(
     string? NdiName = null,
     string? NdiGroup = null);
 
+public sealed record MediaCoreSrtIngestSourceWire(
+    string Id,
+    string DeviceId,
+    string Name,
+    string Mode,
+    string Host,
+    int Port,
+    int LatencyMs,
+    string? StreamId = null,
+    string? Passphrase = null);
+
 public sealed record MediaCoreOutputProfileWire(
     string ProfileId,
     string Resolution,
@@ -117,6 +128,7 @@ public sealed record MediaCoreProductionSyncContext
     public bool Streaming { get; init; }
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
     public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
+    public IReadOnlyList<MediaCoreSrtIngestSourceWire> SrtIngestSources { get; init; } = [];
     public MediaCoreOutputProfileWire CanvasOutputProfile { get; init; } = DefaultCanvasOutputProfile;
     public MediaCoreOutputProfileWire StreamOutputProfile { get; init; } = DefaultStreamOutputProfile;
     public MediaCoreOutputProfileWire RecordingOutputProfile { get; init; } = DefaultRecordingOutputProfile;

@@ -19,6 +19,7 @@ public static class MediaCoreCommandBuilder
             BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes),
             BuildColorGradeCommand(context.ColorGrade),
             BuildOutputProfileCommand(context.CanvasOutputProfile),
+            BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context.AudioMixChannels),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends)
@@ -173,6 +174,23 @@ public static class MediaCoreCommandBuilder
             ["height"] = profile.Height,
             ["fps"] = profile.Fps,
             ["targetBitrateMbps"] = profile.TargetBitrateMbps
+        });
+
+    private static NativeMediaCoreCommand BuildSrtIngestSourcesCommand(IReadOnlyList<MediaCoreSrtIngestSourceWire> sources) =>
+        Command("configure-srt-ingest-sources", new Dictionary<string, object?>
+        {
+            ["sources"] = sources.Select(source => new Dictionary<string, object?>
+            {
+                ["id"] = source.Id,
+                ["deviceId"] = source.DeviceId,
+                ["name"] = source.Name,
+                ["mode"] = source.Mode,
+                ["host"] = source.Host,
+                ["port"] = source.Port,
+                ["latencyMs"] = source.LatencyMs,
+                ["streamId"] = source.StreamId,
+                ["passphrase"] = source.Passphrase
+            }).ToList()
         });
 
     private static NativeMediaCoreCommand BuildBrandKitCommand(MediaCoreBrandKitWire brandKit) =>

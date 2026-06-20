@@ -18,6 +18,7 @@ public enum NativeMediaCoreCapability
     [JsonStringEnumMemberName("rtmp-output")] RtmpOutput,
     [JsonStringEnumMemberName("ndi-output")] NdiOutput,
     [JsonStringEnumMemberName("srt-output")] SrtOutput,
+    [JsonStringEnumMemberName("srt-ingest")] SrtIngest,
     [JsonStringEnumMemberName("webrtc-output")] WebrtcOutput,
     [JsonStringEnumMemberName("virtual-camera")] VirtualCamera,
     [JsonStringEnumMemberName("decklink-capture")] DecklinkCapture,

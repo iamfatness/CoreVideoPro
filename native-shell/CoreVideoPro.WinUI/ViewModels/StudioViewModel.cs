@@ -2905,6 +2905,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Streaming = Streaming,
             StreamDestinations = BuildSelectedStreamDestinations(),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
+            SrtIngestSources = BuildSrtIngestSourceSettings(),
             CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps),
             StreamOutputProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps),
             RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps),
@@ -2946,6 +2947,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
     }
+
+    private IReadOnlyList<MediaCoreSrtIngestSourceWire> BuildSrtIngestSourceSettings() =>
+        SrtIngestSources
+            .Select(source => new MediaCoreSrtIngestSourceWire(
+                source.Id,
+                source.DeviceId,
+                source.Name,
+                NormalizeOutputText(source.Mode, "listener"),
+                NormalizeOutputText(source.Host, "0.0.0.0"),
+                ParsePositiveInt(source.Port) ?? 10000,
+                ParsePositiveInt(source.LatencyMs) ?? 120,
+                NormalizeOptionalOutputText(source.StreamId),
+                string.IsNullOrWhiteSpace(source.Passphrase) ? null : source.Passphrase))
+            .ToList();
 
     private IReadOnlyList<string> BuildSelectedStreamDestinations()
     {

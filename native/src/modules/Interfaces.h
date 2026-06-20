@@ -240,6 +240,18 @@ struct CaptureDeviceInfo {
   std::string warning;
 };
 
+struct SrtIngestSourceConfig {
+  std::string id;
+  std::string deviceId;
+  std::string name;
+  std::string mode = "listener";
+  std::string host = "0.0.0.0";
+  int port = 10000;
+  int latencyMs = 120;
+  std::string streamId;
+  std::string passphrase;
+};
+
 class IZoomCaptureSource {
  public:
   virtual ~IZoomCaptureSource() = default;
@@ -286,6 +298,8 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) = 0;
   virtual std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) = 0;
   virtual std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) = 0;
+  virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
+  virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
 };
 
 struct ModuleSet {
@@ -304,6 +318,7 @@ std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();
 std::unique_ptr<IOutputSender> createSrtOutputSender();
+std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 

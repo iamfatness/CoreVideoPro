@@ -66,6 +66,10 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("rtmp-output");
 #endif
 
+#if COREVIDEO_WITH_SRT_INGEST
+  result.emplace_back("srt-ingest");
+#endif
+
 #if COREVIDEO_WITH_DECKLINK
   result.emplace_back("decklink-capture");
 #endif
@@ -601,6 +605,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setBrandKit(command);
   } else if (type == "set-media-playback") {
     setMediaPlayback(command);
+  } else if (type == "configure-srt-ingest-sources") {
+    configureSrtIngestSources(command);
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
   }
@@ -712,6 +718,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
+      state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
@@ -744,7 +751,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       if (state.mode.empty()) {
         sceneValidationWarnings_.push_back("Scene route " + state.routeId + " is missing mode.");
         state.mode = "fixed";
-      } else if (state.mode != "fixed" && state.mode != "active-speaker" && state.mode != "screen-share") {
+      } else if (state.mode != "fixed" && state.mode != "active-speaker" && state.mode != "screen-share" && state.mode != "capture-input") {
         sceneValidationWarnings_.push_back("Scene route " + state.routeId + " has unsupported mode " + state.mode + ".");
         state.mode = "fixed";
       }
@@ -1057,6 +1064,37 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
   mediaPlaybackAssetId_ = mediaAssetId;
   mediaPlaybackAssetName_ = mediaAssetName.empty() ? mediaAssetId : mediaAssetName;
   mediaPlaybackPlaying_ = command.get("playing") && command.get("playing")->asBool();
+}
+
+void MediaCore::configureSrtIngestSources(const rpc::Json& command) {
+  std::vector<modules::SrtIngestSourceConfig> configs;
+  const auto* sources = command.get("sources");
+  if (!sources || !sources->isArray()) {
+    (void)modules_.captureDevice->configureSrtIngestSources(configs);
+    return;
+  }
+
+  configs.reserve(sources->asArray().size());
+  for (const auto& source : sources->asArray()) {
+    modules::SrtIngestSourceConfig config;
+    config.id = source.getString("id");
+    config.deviceId = source.getString("deviceId");
+    config.name = source.getString("name");
+    config.mode = source.getString("mode", "listener");
+    config.host = source.getString("host", "0.0.0.0");
+    config.port = static_cast<int>(source.getNumber("port", 10000));
+    config.latencyMs = static_cast<int>(source.getNumber("latencyMs", 120));
+    config.streamId = source.getString("streamId");
+    config.passphrase = source.getString("passphrase");
+    if (config.deviceId.empty()) {
+      config.deviceId = config.id;
+    }
+    if (config.name.empty()) {
+      config.name = config.deviceId;
+    }
+    configs.push_back(std::move(config));
+  }
+  (void)modules_.captureDevice->configureSrtIngestSources(configs);
 }
 
 namespace {
@@ -1643,7 +1681,10 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
       layer.layerId = "route:" + route.routeId;
       layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
       layer.order = videoLayerIndex;
-      if (!route.participantId.empty()) {
+      if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
+        layer.participantId = "capture:" + route.captureDeviceId;
+        layer.sourceId = layer.participantId;
+      } else if (!route.participantId.empty()) {
         layer.participantId = route.participantId;
         layer.sourceId = "zoom:" + route.participantId;
       } else if (videoLayerIndex < static_cast<int>(videoFrames.size())) {
@@ -1718,6 +1759,8 @@ void MediaCore::renderSyntheticTick() {
   }
 
   auto videoFrames = modules_.zoom->pollVideoFrames();
+  auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
+  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
     if (!engineFrames.empty()) {
@@ -1738,6 +1781,9 @@ void MediaCore::renderSyntheticTick() {
         } else {
           merged.push_back(std::move(engineFrame));
         }
+      }
+      for (auto& captureFrame : captureFrames) {
+        merged.push_back(std::move(captureFrame));
       }
       videoFrames = std::move(merged);
     }

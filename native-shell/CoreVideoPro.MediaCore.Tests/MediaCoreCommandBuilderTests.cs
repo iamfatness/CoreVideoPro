@@ -465,6 +465,47 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("auto", GetString(brand, "defaultOverlayBehavior"));
     }
 
+    [Fact]
+    public void SerializesSrtIngestSourcesForNativeCaptureAdapter()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "capture-input", "mix", null, CaptureDeviceId: "srt-ingest-01")],
+            Participants = Participants,
+            SrtIngestSources =
+            [
+                new(
+                    Id: "srt-source-01",
+                    DeviceId: "srt-ingest-01",
+                    Name: "SRT 1",
+                    Mode: "listener",
+                    Host: "0.0.0.0",
+                    Port: 10000,
+                    LatencyMs: 120,
+                    StreamId: "ingest/main",
+                    Passphrase: "secret-passphrase")
+            ]
+        });
+
+        var ingest = commands.Single(command => command.Type == "configure-srt-ingest-sources");
+        var sources = GetObjectArray(ingest, "sources");
+        Assert.Single(sources);
+        Assert.Equal("srt-source-01", sources[0].GetProperty("id").GetString());
+        Assert.Equal("srt-ingest-01", sources[0].GetProperty("deviceId").GetString());
+        Assert.Equal("listener", sources[0].GetProperty("mode").GetString());
+        Assert.Equal("0.0.0.0", sources[0].GetProperty("host").GetString());
+        Assert.Equal(10000, sources[0].GetProperty("port").GetInt32());
+        Assert.Equal(120, sources[0].GetProperty("latencyMs").GetInt32());
+
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"]
+            .EnumerateArray()
+            .Single();
+        Assert.Equal("capture-input", route.GetProperty("mode").GetString());
+        Assert.Equal("srt-ingest-01", route.GetProperty("captureDeviceId").GetString());
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||

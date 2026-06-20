@@ -54,6 +54,7 @@ class MediaCore {
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
   void setMediaPlayback(const rpc::Json& command);
+  void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick();
   void enqueueProgramFramePreviewEvent();
@@ -75,6 +76,7 @@ class MediaCore {
     std::string routeId;
     std::string mode;
     std::string participantId;
+    std::string captureDeviceId;
     std::string audioRole;
     float rectX = 0.f;
     float rectY = 0.f;
