@@ -106,6 +106,9 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             Name = "LayerPreview",
             SurfaceState = layer.Surface,
             SourceFit = layer.FitMode,
+            SourceScale = layer.SourceScale,
+            SourceOffsetX = layer.SourceOffsetX,
+            SourceOffsetY = layer.SourceOffsetY,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             IsHitTestVisible = false
@@ -202,6 +205,9 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             if (child is VideoSurfaceHost host)
             {
                 host.SourceFit = layer.FitMode;
+                host.SourceScale = layer.SourceScale;
+                host.SourceOffsetX = layer.SourceOffsetX;
+                host.SourceOffsetY = layer.SourceOffsetY;
                 return;
             }
         }

@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 
@@ -40,6 +41,9 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _borderStyle = SceneRoutingService.NormalizeBorderStyle(route.BorderStyle);
         _borderColor = SceneRoutingService.NormalizeBorderColor(route.BorderColor);
         _borderThickness = Math.Clamp(route.BorderThickness, 0, 12);
+        _sourceScale = SceneRoutingService.NormalizeSourceScale(route.SourceScale);
+        _sourceOffsetX = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetX);
+        _sourceOffsetY = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetY);
         ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs);
     }
 
@@ -107,6 +111,15 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     private double _borderThickness;
 
     [ObservableProperty]
+    private double _sourceScale;
+
+    [ObservableProperty]
+    private double _sourceOffsetX;
+
+    [ObservableProperty]
+    private double _sourceOffsetY;
+
+    [ObservableProperty]
     private VideoSurfaceState _surface = VideoSurfaceState.Waiting(
         VideoSurfaceKind.Multiview,
         "scene-layer",
@@ -157,6 +170,20 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     partial void OnBorderThicknessChanged(double value) => ApplyVisualChange();
 
+    partial void OnSourceScaleChanged(double value) => ApplyVisualChange();
+
+    partial void OnSourceOffsetXChanged(double value) => ApplyVisualChange();
+
+    partial void OnSourceOffsetYChanged(double value) => ApplyVisualChange();
+
+    [RelayCommand]
+    private void ResetFraming()
+    {
+        SourceScale = SourceRouteVisualDefaults.SourceScale;
+        SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+        SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+    }
+
     public void SyncFromRoute(
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
@@ -180,6 +207,9 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             BorderStyle = SceneRoutingService.NormalizeBorderStyle(_route.BorderStyle);
             BorderColor = SceneRoutingService.NormalizeBorderColor(_route.BorderColor);
             BorderThickness = Math.Clamp(_route.BorderThickness, 0, 12);
+            SourceScale = SceneRoutingService.NormalizeSourceScale(_route.SourceScale);
+            SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetX);
+            SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(ParticipantOptions));
@@ -276,6 +306,9 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.BorderStyle = SceneRoutingService.NormalizeBorderStyle(BorderStyle);
         _route.BorderColor = SceneRoutingService.NormalizeBorderColor(BorderColor);
         _route.BorderThickness = Math.Clamp(BorderThickness, 0, 12);
+        _route.SourceScale = SceneRoutingService.NormalizeSourceScale(SourceScale);
+        _route.SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(SourceOffsetX);
+        _route.SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(SourceOffsetY);
         _route.ZIndex = LayerIndex;
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(ColorGradeSummary));

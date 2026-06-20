@@ -284,6 +284,9 @@ public static class SceneRoutingService
         normalized.BorderStyle = NormalizeBorderStyle(route.BorderStyle);
         normalized.BorderColor = NormalizeBorderColor(route.BorderColor);
         normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
+        normalized.SourceScale = NormalizeSourceScale(route.SourceScale);
+        normalized.SourceOffsetX = NormalizeSourceOffset(route.SourceOffsetX);
+        normalized.SourceOffsetY = NormalizeSourceOffset(route.SourceOffsetY);
         normalized.ColorGrade = route.ColorGrade;
         normalized.ZIndex = route.ZIndex;
         return normalized;
@@ -303,6 +306,9 @@ public static class SceneRoutingService
         route.BorderStyle = normalized.BorderStyle;
         route.BorderColor = normalized.BorderColor;
         route.BorderThickness = normalized.BorderThickness;
+        route.SourceScale = normalized.SourceScale;
+        route.SourceOffsetX = normalized.SourceOffsetX;
+        route.SourceOffsetY = normalized.SourceOffsetY;
         route.ColorGrade = normalized.ColorGrade;
         route.ZIndex = normalized.ZIndex;
     }
@@ -320,6 +326,9 @@ public static class SceneRoutingService
         target.BorderStyle = NormalizeBorderStyle(source.BorderStyle);
         target.BorderColor = NormalizeBorderColor(source.BorderColor);
         target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
+        target.SourceScale = NormalizeSourceScale(source.SourceScale);
+        target.SourceOffsetX = NormalizeSourceOffset(source.SourceOffsetX);
+        target.SourceOffsetY = NormalizeSourceOffset(source.SourceOffsetY);
         target.ColorGrade = source.ColorGrade;
         target.ZIndex = source.ZIndex;
     }
@@ -353,6 +362,12 @@ public static class SceneRoutingService
 
         return color.Length is 7 or 9 ? color.ToUpperInvariant() : SourceRouteVisualDefaults.BorderColor;
     }
+
+    public static double NormalizeSourceScale(double value) =>
+        double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), 0.25, 4) : SourceRouteVisualDefaults.SourceScale;
+
+    public static double NormalizeSourceOffset(double value) =>
+        double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), -1, 1) : 0;
 
     public static string? RouteToSlot(SourceRoute route)
     {

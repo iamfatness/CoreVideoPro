@@ -77,6 +77,9 @@ public static class MediaCoreCommandBuilder
                     ["borderStyle"] = route.BorderStyle,
                     ["borderColor"] = route.BorderColor,
                     ["borderThickness"] = route.BorderThickness,
+                    ["sourceScale"] = route.SourceScale,
+                    ["sourceOffsetX"] = route.SourceOffsetX,
+                    ["sourceOffsetY"] = route.SourceOffsetY,
                     ["colorGrade"] = route.ColorGrade is null
                         ? null
                         : new Dictionary<string, object?>

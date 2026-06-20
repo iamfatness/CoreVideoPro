@@ -57,9 +57,31 @@ public sealed partial class ParticipantTileControl : UserControl
             typeof(ParticipantTileControl),
             new PropertyMetadata(1d, OnVisualChromeChanged));
 
+    public static readonly DependencyProperty SourceScaleProperty =
+        DependencyProperty.Register(
+            nameof(SourceScale),
+            typeof(double),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata(1d, OnSourceFramingChanged));
+
+    public static readonly DependencyProperty SourceOffsetXProperty =
+        DependencyProperty.Register(
+            nameof(SourceOffsetX),
+            typeof(double),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata(0d, OnSourceFramingChanged));
+
+    public static readonly DependencyProperty SourceOffsetYProperty =
+        DependencyProperty.Register(
+            nameof(SourceOffsetY),
+            typeof(double),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata(0d, OnSourceFramingChanged));
+
     public ParticipantTileControl()
     {
         InitializeComponent();
+        SizeChanged += OnSizeChanged;
     }
 
     public Participant? Participant
@@ -104,6 +126,24 @@ public sealed partial class ParticipantTileControl : UserControl
         set => SetValue(SourceBorderThicknessProperty, value);
     }
 
+    public double SourceScale
+    {
+        get => (double)GetValue(SourceScaleProperty);
+        set => SetValue(SourceScaleProperty, value);
+    }
+
+    public double SourceOffsetX
+    {
+        get => (double)GetValue(SourceOffsetXProperty);
+        set => SetValue(SourceOffsetXProperty, value);
+    }
+
+    public double SourceOffsetY
+    {
+        get => (double)GetValue(SourceOffsetYProperty);
+        set => SetValue(SourceOffsetYProperty, value);
+    }
+
     public string ParticipantName => Participant?.Name ?? string.Empty;
 
     public string Initials => Participant?.Initials ?? string.Empty;
@@ -145,6 +185,17 @@ public sealed partial class ParticipantTileControl : UserControl
             tile.ApplyActiveSpeakerStyle();
         }
     }
+
+    private static void OnSourceFramingChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is ParticipantTileControl tile)
+        {
+            tile.ApplySourceFraming();
+        }
+    }
+
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e) =>
+        ApplySourceFraming();
 
     private void ApplyActiveSpeakerStyle()
     {
@@ -209,6 +260,23 @@ public sealed partial class ParticipantTileControl : UserControl
             "fit" => Stretch.Uniform,
             "stretch" => Stretch.Fill,
             _ => Stretch.UniformToFill
+        };
+    }
+
+    private void ApplySourceFraming()
+    {
+        var scale = double.IsFinite(SourceScale) ? Math.Clamp(SourceScale, 0.25, 4) : 1;
+        var offsetX = double.IsFinite(SourceOffsetX) ? Math.Clamp(SourceOffsetX, -1, 1) : 0;
+        var offsetY = double.IsFinite(SourceOffsetY) ? Math.Clamp(SourceOffsetY, -1, 1) : 0;
+
+        PreviewImage.RenderTransform = new CompositeTransform
+        {
+            CenterX = ActualWidth / 2,
+            CenterY = ActualHeight / 2,
+            ScaleX = scale,
+            ScaleY = scale,
+            TranslateX = offsetX * ActualWidth * 0.5,
+            TranslateY = offsetY * ActualHeight * 0.5
         };
     }
 

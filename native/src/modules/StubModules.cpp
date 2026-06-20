@@ -100,6 +100,9 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
     mixHash(hash, layer.borderStyle);
     mixHash(hash, layer.borderColor);
     mixHash(hash, layer.borderThickness);
+    mixHash(hash, layer.sourceScale);
+    mixHash(hash, layer.sourceOffsetX);
+    mixHash(hash, layer.sourceOffsetY);
     mixHash(hash, layer.hasColorGrade ? 1 : 0);
     if (layer.hasColorGrade) {
       mixHash(hash, layer.colorGrade.exposure);

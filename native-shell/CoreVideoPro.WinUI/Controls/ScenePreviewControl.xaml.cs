@@ -225,6 +225,9 @@ public sealed partial class ScenePreviewControl : UserControl
                 SourceBorderStyle = route.BorderStyle,
                 SourceBorderColor = route.BorderColor,
                 SourceBorderThickness = route.BorderThickness,
+                SourceScale = route.SourceScale,
+                SourceOffsetX = route.SourceOffsetX,
+                SourceOffsetY = route.SourceOffsetY,
                 Width = rect.Width * designWidth,
                 Height = rect.Height * designHeight,
                 Tag = GetCanvasRouteKey(route)
@@ -283,6 +286,9 @@ public sealed partial class ScenePreviewControl : UserControl
             layer.SourceBorderStyle = route.BorderStyle;
             layer.SourceBorderColor = route.BorderColor;
             layer.SourceBorderThickness = route.BorderThickness;
+            layer.SourceScale = route.SourceScale;
+            layer.SourceOffsetX = route.SourceOffsetX;
+            layer.SourceOffsetY = route.SourceOffsetY;
             layer.Width = rect.Width * designWidth;
             layer.Height = rect.Height * designHeight;
             Canvas.SetLeft(layer, rect.X * designWidth);
@@ -293,7 +299,7 @@ public sealed partial class ScenePreviewControl : UserControl
     }
 
     private static string GetCanvasRouteKey(SourceRoute route) =>
-        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}|{route.FitMode}|{route.BorderStyle}|{route.BorderColor}|{route.BorderThickness:0.##}";
+        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}|{route.FitMode}|{route.BorderStyle}|{route.BorderColor}|{route.BorderThickness:0.##}|{route.SourceScale:0.##}|{route.SourceOffsetX:0.##}|{route.SourceOffsetY:0.##}";
 
     private static ParticipantSurfaceTile? ResolveRouteTile(
         SourceRoute route,

@@ -23,6 +23,9 @@ public static class SourceRouteVisualDefaults
     public const string BorderStyle = "accent";
     public const string BorderColor = "#44C1A1";
     public const double BorderThickness = 2;
+    public const double SourceScale = 1;
+    public const double SourceOffsetX = 0;
+    public const double SourceOffsetY = 0;
 }
 
 public sealed class SourceRoute
@@ -39,6 +42,9 @@ public sealed class SourceRoute
     public string BorderStyle { get; set; } = SourceRouteVisualDefaults.BorderStyle;
     public string BorderColor { get; set; } = SourceRouteVisualDefaults.BorderColor;
     public double BorderThickness { get; set; } = SourceRouteVisualDefaults.BorderThickness;
+    public double SourceScale { get; set; } = SourceRouteVisualDefaults.SourceScale;
+    public double SourceOffsetX { get; set; } = SourceRouteVisualDefaults.SourceOffsetX;
+    public double SourceOffsetY { get; set; } = SourceRouteVisualDefaults.SourceOffsetY;
     public ColorGrade? ColorGrade { get; set; }
     public int ZIndex { get; set; }
 
@@ -57,6 +63,9 @@ public sealed class SourceRoute
             BorderStyle = BorderStyle,
             BorderColor = BorderColor,
             BorderThickness = BorderThickness,
+            SourceScale = SourceScale,
+            SourceOffsetX = SourceOffsetX,
+            SourceOffsetY = SourceOffsetY,
             ColorGrade = ColorGrade,
             ZIndex = ZIndex
         };

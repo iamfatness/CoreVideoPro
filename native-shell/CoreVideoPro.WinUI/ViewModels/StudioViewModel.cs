@@ -3755,6 +3755,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BorderStyle: route.BorderStyle,
                 BorderColor: route.BorderColor,
                 BorderThickness: route.BorderThickness,
+                SourceScale: route.SourceScale,
+                SourceOffsetX: route.SourceOffsetX,
+                SourceOffsetY: route.SourceOffsetY,
                 ColorGrade: BuildRouteColorGradeWire(route)))
             .ToList();
 

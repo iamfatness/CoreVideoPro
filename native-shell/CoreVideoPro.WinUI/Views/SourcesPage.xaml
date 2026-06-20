@@ -246,6 +246,94 @@
                                                                    SpinButtonPlacementMode="Inline" />
                                                     </StackPanel>
                                                 </Grid>
+                                                <Border Background="#101820" BorderBrush="#22303A"
+                                                        BorderThickness="1" CornerRadius="6" Padding="8">
+                                                    <StackPanel Spacing="6">
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="Frame source"
+                                                                       FontSize="10"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Button Grid.Column="1"
+                                                                    Content="Reset"
+                                                                    Style="{StaticResource OperatorGhostButton}"
+                                                                    Padding="8,4"
+                                                                    MinHeight="28"
+                                                                    Command="{x:Bind ResetFramingCommand}" />
+                                                        </Grid>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="42" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="54" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="Zoom" FontSize="10"
+                                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Slider Grid.Column="1"
+                                                                    Minimum="0.25"
+                                                                    Maximum="4"
+                                                                    StepFrequency="0.05"
+                                                                    Value="{x:Bind SourceScale, Mode=TwoWay}" />
+                                                            <NumberBox Grid.Column="2"
+                                                                       Value="{x:Bind SourceScale, Mode=TwoWay}"
+                                                                       Minimum="0.25"
+                                                                       Maximum="4"
+                                                                       SmallChange="0.05"
+                                                                       LargeChange="0.25"
+                                                                       SpinButtonPlacementMode="Compact" />
+                                                        </Grid>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="42" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="54" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="X" FontSize="10"
+                                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Slider Grid.Column="1"
+                                                                    Minimum="-1"
+                                                                    Maximum="1"
+                                                                    StepFrequency="0.01"
+                                                                    Value="{x:Bind SourceOffsetX, Mode=TwoWay}" />
+                                                            <NumberBox Grid.Column="2"
+                                                                       Value="{x:Bind SourceOffsetX, Mode=TwoWay}"
+                                                                       Minimum="-1"
+                                                                       Maximum="1"
+                                                                       SmallChange="0.01"
+                                                                       LargeChange="0.1"
+                                                                       SpinButtonPlacementMode="Compact" />
+                                                        </Grid>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="42" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="54" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Text="Y" FontSize="10"
+                                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                                       VerticalAlignment="Center" />
+                                                            <Slider Grid.Column="1"
+                                                                    Minimum="-1"
+                                                                    Maximum="1"
+                                                                    StepFrequency="0.01"
+                                                                    Value="{x:Bind SourceOffsetY, Mode=TwoWay}" />
+                                                            <NumberBox Grid.Column="2"
+                                                                       Value="{x:Bind SourceOffsetY, Mode=TwoWay}"
+                                                                       Minimum="-1"
+                                                                       Maximum="1"
+                                                                       SmallChange="0.01"
+                                                                       LargeChange="0.1"
+                                                                       SpinButtonPlacementMode="Compact" />
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </Border>
                                                 <Button Content="Color grade"
                                                         Style="{StaticResource OperatorGhostButton}"
                                                         Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesRoot}"

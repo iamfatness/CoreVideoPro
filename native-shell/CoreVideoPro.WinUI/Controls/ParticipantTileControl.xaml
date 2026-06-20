@@ -21,6 +21,7 @@
         <Grid>
             <Image x:Name="PreviewImage"
                    Stretch="UniformToFill"
+                   RenderTransformOrigin="0.5,0.5"
                    HorizontalAlignment="Stretch"
                    VerticalAlignment="Stretch"
                    Visibility="Collapsed" />

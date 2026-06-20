@@ -851,6 +851,9 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       }
       state.borderColor = route.getString("borderColor", "#44C1A1");
       state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
+      state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));
+      state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
+      state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
       if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*colorGrade);
@@ -1993,6 +1996,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
       layer.borderStyle = route.borderStyle;
       layer.borderColor = route.borderColor;
       layer.borderThickness = route.borderThickness;
+      layer.sourceScale = route.sourceScale;
+      layer.sourceOffsetX = route.sourceOffsetX;
+      layer.sourceOffsetY = route.sourceOffsetY;
       layer.hasColorGrade = route.hasColorGrade;
       layer.colorGrade = route.colorGrade;
       renderPlan.layers.push_back(std::move(layer));
