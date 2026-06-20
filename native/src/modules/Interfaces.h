@@ -278,6 +278,10 @@ struct OutputDestinationSettings {
   double targetBitrateMbps = 6.0;
   std::string videoCodec = "h264";
   std::string encoderMode = "auto";
+  // Opt in to enhanced-RTMP (E-RTMP) so H.265/AV1 can ride the FLV transport
+  // instead of being downgraded to H.264. Defaulted off so the guaranteed
+  // H.264 + AAC baseline stays the safe default.
+  bool allowEnhancedRtmp = false;
 };
 
 struct CaptureDeviceInfo {
@@ -389,11 +393,20 @@ class IEncoderSink {
 class IOutputSender {
  public:
   virtual ~IOutputSender() = default;
+  // Push the program frame (and, optionally, the real program-audio mix) to the
+  // active network destinations each tick. `programAudioPcm` is interleaved
+  // float PCM in [-1, 1] with `audioChannels` channels at `audioSampleRate` Hz
+  // (the F2 program-audio tap / master bus). Defaulted null so senders that do
+  // not carry audio — and existing call sites — stay valid; the RTMP sender
+  // muxes it as a real AAC track instead of `anullsrc` silence.
   virtual OutputSenderSession sync(
       const std::vector<std::string>& destinations,
       const ProgramFrame* frame,
       double elapsedMs,
-      const std::vector<OutputDestinationSettings>& destinationSettings = {}) = 0;
+      const std::vector<OutputDestinationSettings>& destinationSettings = {},
+      const std::vector<float>* programAudioPcm = nullptr,
+      int audioChannels = 0,
+      int audioSampleRate = 0) = 0;
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;

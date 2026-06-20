@@ -280,6 +280,7 @@ if(BUILD_TESTING)
     tests/MediaCoreCommandTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
+    tests/RtmpFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp

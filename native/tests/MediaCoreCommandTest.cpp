@@ -1349,6 +1349,32 @@ TEST(OutputSenderAdapter, StubKeepsMultiDestinationDiagnosticsIsolated) {
   EXPECT_TRUE(session.senders[2].bytesSent > session.senders[1].bytesSent);
 }
 
+TEST(OutputSenderAdapter, SyncAcceptsRealProgramAudioWithoutChangingDiagnostics) {
+  // The IOutputSender::sync boundary now carries the real program-audio mix. The
+  // synthetic stub sender must accept the extra audio params and keep identical
+  // diagnostics (it does not encode), so existing output-sender behavior holds.
+  auto modules = corevideo::modules::createStubModules();
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 1920;
+  frame.height = 1080;
+  frame.frameNumber = 5;
+  frame.renderPlanId = "audio-aware-plan";
+
+  const std::vector<float> programAudioPcm(960, 0.25f);  // 480 stereo frames
+  auto withAudio =
+      modules.outputSender->sync({"rtmp"}, &frame, 33, {}, &programAudioPcm, 2, 48000);
+  ASSERT_TRUE(withAudio.senders.size() == 1u);
+  EXPECT_EQ(withAudio.senders[0].destination, "rtmp");
+  EXPECT_EQ(withAudio.senders[0].destinationHealth, "ok");
+  EXPECT_EQ(withAudio.senders[0].lastResultCode, "ok");
+
+  // Same call without audio (default args) yields the same health/result.
+  auto withoutAudio = corevideo::modules::createStubModules().outputSender->sync({"rtmp"}, &frame, 33);
+  ASSERT_TRUE(withoutAudio.senders.size() == 1u);
+  EXPECT_EQ(withoutAudio.senders[0].destinationHealth, withAudio.senders[0].destinationHealth);
+  EXPECT_EQ(withoutAudio.senders[0].lastResultCode, withAudio.senders[0].lastResultCode);
+}
+
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   corevideo::core::MediaCore mediaCore;
   const auto devices = mediaCore.captureDevices();

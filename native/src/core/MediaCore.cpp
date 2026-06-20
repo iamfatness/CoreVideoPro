@@ -70,6 +70,9 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
     destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
     destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
+    if (const auto* enhanced = value.get("allowEnhancedRtmp")) {
+      destination.allowEnhancedRtmp = enhanced->asBool(destination.allowEnhancedRtmp);
+    }
     result.push_back(std::move(destination));
   }
   return result;
@@ -2486,11 +2489,21 @@ void MediaCore::renderSyntheticTick() {
   enqueueProgramSharedTextureEvent();
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();
+  // Hand the real program-audio mix to the output senders so RTMP carries the
+  // F2 program tap (or routed master bus) as a real AAC track instead of
+  // silence. Prefer the routed master bus; fall back to the mixer monitor bus
+  // when audio is not routed through the matrix.
+  const std::vector<float>& outputProgramAudio =
+      !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
+  const int outputAudioChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
   modules_.outputSender->sync(
       session.destinations,
       &lastProgramFrame_,
       static_cast<double>(lastProgramFrame_.frameNumber * 33),
-      outputDestinationSettings_);
+      outputDestinationSettings_,
+      outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
+      outputAudioChannels,
+      modules_.mixer->monitorBusSampleRate());
   if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;

@@ -401,7 +401,16 @@ class SyntheticOutputSender final : public IOutputSender {
       const std::vector<std::string>& destinations,
       const ProgramFrame* frame,
       double elapsedMs,
-      const std::vector<OutputDestinationSettings>& = {}) override {
+      const std::vector<OutputDestinationSettings>& = {},
+      const std::vector<float>* programAudioPcm = nullptr,
+      int audioChannels = 0,
+      int audioSampleRate = 0) override {
+    // The synthetic sender reports diagnostics only; it does not encode, so the
+    // real program-audio mix is accepted and ignored (behavior is identical to
+    // before audio was threaded through the IOutputSender boundary).
+    (void)programAudioPcm;
+    (void)audioChannels;
+    (void)audioSampleRate;
     std::vector<std::string> activeDestinations;
     for (const auto& destination : destinations) {
       if (isNetworkDestination(destination) && std::find(activeDestinations.begin(), activeDestinations.end(), destination) == activeDestinations.end()) {
