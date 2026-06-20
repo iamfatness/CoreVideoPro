@@ -22,6 +22,7 @@ public static class MediaCoreCommandBuilder
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled),
+            BuildAudioMonitorCommand(context.AudioMonitor),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
         };
@@ -174,7 +175,8 @@ public static class MediaCoreCommandBuilder
             ["width"] = profile.Width,
             ["height"] = profile.Height,
             ["fps"] = profile.Fps,
-            ["targetBitrateMbps"] = profile.TargetBitrateMbps
+            ["targetBitrateMbps"] = profile.TargetBitrateMbps,
+            ["codec"] = profile.Codec
         });
 
     private static NativeMediaCoreCommand BuildSrtIngestSourcesCommand(IReadOnlyList<MediaCoreSrtIngestSourceWire> sources) =>
@@ -226,6 +228,15 @@ public static class MediaCoreCommandBuilder
                 solo = channel.Solo,
                 pluginInserts = channel.PluginInserts ?? []
             }).ToList()
+        });
+
+    private static NativeMediaCoreCommand BuildAudioMonitorCommand(MediaCoreAudioMonitorWire monitor) =>
+        Command("sync-audio-monitor", new Dictionary<string, object?>
+        {
+            ["enabled"] = monitor.Enabled,
+            ["deviceId"] = monitor.DeviceId,
+            ["deviceName"] = monitor.DeviceName,
+            ["volume"] = Math.Clamp(monitor.Volume, 0, 1)
         });
 
     private static NativeMediaCoreCommand BuildAudioRoutingMatrixCommand(IReadOnlyList<MediaCoreAudioRoutingSendWire> sends) =>

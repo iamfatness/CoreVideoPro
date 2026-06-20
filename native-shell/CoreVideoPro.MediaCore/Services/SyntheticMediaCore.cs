@@ -196,7 +196,12 @@ public static class SyntheticMediaCore
         };
 
         var audioMixCommand = commands.FirstOrDefault(command => command.Type == "sync-participant-audio-mix");
+        var audioMonitorCommand = commands.FirstOrDefault(command => command.Type == "sync-audio-monitor");
         var limiterEnabled = TryGetBool(audioMixCommand, "limiterEnabled") ?? true;
+        var monitorEnabled = TryGetBool(audioMonitorCommand, "enabled") ?? false;
+        var monitorDeviceId = TryGetString(audioMonitorCommand, "deviceId");
+        var monitorDeviceName = TryGetString(audioMonitorCommand, "deviceName");
+        var monitorVolume = TryGetDouble(audioMonitorCommand, "volume") ?? 0;
         var audioMixSession = new NativeMediaCoreAudioMixSession
         {
             Status = "idle",
@@ -205,6 +210,16 @@ public static class SyntheticMediaCore
             LimiterEnabled = limiterEnabled,
             LimiterActive = false,
             MixedFrameCount = 0,
+            MonitorEnabled = monitorEnabled,
+            MonitorStatus = monitorEnabled && string.IsNullOrWhiteSpace(monitorDeviceId)
+                ? "missing-device"
+                : monitorEnabled
+                    ? "armed"
+                    : "muted",
+            MonitorDeviceId = monitorDeviceId,
+            MonitorDeviceName = monitorDeviceName,
+            MonitorVolume = monitorVolume,
+            MonitorFramesPlayed = 0,
             Participants = [],
             Summary = "Audio mix idle",
             Warnings = []
@@ -487,6 +502,18 @@ public static class SyntheticMediaCore
             ? true
             : value.ValueKind == System.Text.Json.JsonValueKind.False
                 ? false
-                : null;
+            : null;
+    }
+
+    private static double? TryGetDouble(NativeMediaCoreCommand? command, string propertyName)
+    {
+        if (command?.ExtensionData is null ||
+            !command.ExtensionData.TryGetValue(propertyName, out var value) ||
+            value.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        return value.GetDouble();
     }
 }

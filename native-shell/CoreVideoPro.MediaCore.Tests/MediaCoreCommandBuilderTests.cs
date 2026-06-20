@@ -429,12 +429,23 @@ public sealed class MediaCoreCommandBuilderTests
             ActiveSceneId = "speaker-slides",
             SceneRoutes = [new("speaker-slides-1", "fixed", "isolated", "p2")],
             Participants = Participants,
-            AudioLimiterEnabled = false
+            AudioLimiterEnabled = false,
+            AudioMonitor = new MediaCoreAudioMonitorWire(
+                Enabled: true,
+                DeviceId: "render-01",
+                DeviceName: "Studio Headphones",
+                Volume: 0.75)
         });
 
         var mix = commands.Single(command => command.Type == "sync-participant-audio-mix");
         Assert.NotNull(mix.ExtensionData);
         Assert.False(mix.ExtensionData!["limiterEnabled"].GetBoolean());
+
+        var monitor = commands.Single(command => command.Type == "sync-audio-monitor");
+        Assert.True(monitor.ExtensionData!["enabled"].GetBoolean());
+        Assert.Equal("render-01", GetString(monitor, "deviceId"));
+        Assert.Equal("Studio Headphones", GetString(monitor, "deviceName"));
+        Assert.Equal(0.75, monitor.ExtensionData!["volume"].GetDouble());
     }
 
     [Fact]

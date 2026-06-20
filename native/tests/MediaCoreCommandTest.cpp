@@ -779,6 +779,40 @@ TEST(MediaCoreCommand, AppliesRecordingFailureAndRecoveryCommands) {
   EXPECT_EQ(recovered.get("recording")->get("proof")->get("recoveryCount")->asNumber(), 1);
 }
 
+TEST(MediaCoreCommand, SyncsAudioMonitorState) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "render-01"},
+          {"deviceName", "Studio Headphones"},
+          {"volume", 0.75},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-participant-audio-mix"},
+          {"limiterEnabled", true},
+          {"channels",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"participantId", "participant-1"},
+                   {"inputLevel", 68},
+                   {"muted", false},
+               },
+           }},
+      },
+  });
+
+  const auto* audio = state.get("audioMixSession");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_TRUE(audio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(audio->getString("monitorDeviceId"), "render-01");
+  EXPECT_EQ(audio->getString("monitorDeviceName"), "Studio Headphones");
+  EXPECT_EQ(audio->get("monitorVolume")->asNumber(), 0.75);
+  EXPECT_TRUE(audio->getString("monitorStatus") == "armed" || audio->getString("monitorStatus") == "playing" ||
+              audio->getString("monitorStatus") == "unavailable");
+}
+
 TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{

@@ -551,7 +551,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.LastSnapshot?.AudioMixSession is { } audio
             ? audio.MasterLevel <= 0 && audio.MixedFrameCount <= 0
                 ? "No mixed audio frames from the media engine."
-                : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames. Native playback tap pending."
+                : audio.MonitorEnabled
+                    ? $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames - monitor {FormatMonitorStatus(audio)}"
+                    : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames - monitor muted"
             : "Waiting for media engine audio telemetry.";
 
     public string SelectedLocalAudioCaptureDeviceName =>
@@ -1138,11 +1140,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnAudioMonitoringEnabledChanged(bool value) => RefreshAudioMonitorBindings();
+    partial void OnAudioMonitoringEnabledChanged(bool value) => OnAudioMonitorSettingsChanged();
 
-    partial void OnSelectedAudioMonitorDeviceIdChanged(string value) => RefreshAudioMonitorBindings();
+    partial void OnSelectedAudioMonitorDeviceIdChanged(string value) => OnAudioMonitorSettingsChanged();
 
-    partial void OnAudioMonitorVolumeChanged(double value) => RefreshAudioMonitorBindings();
+    partial void OnAudioMonitorVolumeChanged(double value) => OnAudioMonitorSettingsChanged();
 
     partial void OnLocalAudioSourceEnabledChanged(bool value)
     {
@@ -3277,6 +3279,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
     }
 
+    private void OnAudioMonitorSettingsChanged()
+    {
+        RefreshAudioMonitorBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>
+        audio.MonitorStatus switch
+        {
+            "playing" => $"{audio.MonitorFramesPlayed} playback frames",
+            "armed" => "armed, waiting for audio",
+            "missing-device" => "needs output device",
+            "muted" => "muted",
+            "unavailable" => "unavailable",
+            _ => audio.MonitorStatus ?? "unknown"
+        };
+
     private void RefreshLocalAudioSourceBindings()
     {
         OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
@@ -3482,6 +3501,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.CaptionStyle,
                 BrandKit.DefaultOverlayBehavior),
             AudioLimiterEnabled = MasterLimiterEnabled,
+            AudioMonitor = new MediaCoreAudioMonitorWire(
+                AudioMonitoringEnabled,
+                SelectedAudioMonitorDeviceId,
+                SelectedAudioMonitorDeviceName,
+                AudioMonitorVolume),
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
             CaptureAudioSources = captureAudioSources,

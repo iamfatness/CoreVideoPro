@@ -16,6 +16,13 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace corevideo::core {
 namespace {
 
@@ -38,6 +45,21 @@ modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
       clampColorGradeAxis(value.getNumber("saturation", 0.0)),
       clampColorGradeAxis(value.getNumber("temperature", 0.0)),
   };
+}
+
+bool playMonitorPulse(double volume, int masterLevel) {
+#ifdef _WIN32
+  if (volume <= 0.0 || masterLevel <= 0) {
+    return false;
+  }
+  const auto frequency = static_cast<DWORD>(440 + std::min(420, masterLevel * 4));
+  const auto durationMs = static_cast<DWORD>(12 + std::min(20, masterLevel / 4));
+  return Beep(frequency, durationMs) != 0;
+#else
+  (void)volume;
+  (void)masterLevel;
+  return false;
+#endif
 }
 
 rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
@@ -622,6 +644,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     recoverRecordingSession(command);
   } else if (type == "sync-participant-audio-mix") {
     syncParticipantAudioMix(command);
+  } else if (type == "sync-audio-monitor") {
+    syncAudioMonitor(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -1001,6 +1025,27 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   renderSyntheticTick();
 }
 
+void MediaCore::syncAudioMonitor(const rpc::Json& command) {
+  audioMonitorEnabled_ = command.get("enabled") && command.get("enabled")->asBool();
+  audioMonitorDeviceId_ = command.getString("deviceId");
+  audioMonitorDeviceName_ = command.getString("deviceName");
+  audioMonitorVolume_ = std::max(0.0, std::min(1.0, command.getNumber("volume", audioMonitorVolume_)));
+  audioMonitorWarning_.clear();
+
+  if (!audioMonitorEnabled_) {
+    audioMonitorStatus_ = "muted";
+    return;
+  }
+
+  if (audioMonitorDeviceId_.empty()) {
+    audioMonitorStatus_ = "missing-device";
+    audioMonitorWarning_ = "Audio monitor is enabled but no render device is selected.";
+    return;
+  }
+
+  audioMonitorStatus_ = mixedAudioFrameCount_ > 0 ? "playing" : "armed";
+}
+
 namespace {
 
 constexpr double kMinAudioRoutingGainDb = -60.0;
@@ -1263,6 +1308,9 @@ rpc::Json MediaCore::audioMixSessionState() const {
       for (const auto& warning : nativeMix.warnings) {
         warnings.emplace_back(warning);
       }
+      if (!audioMonitorWarning_.empty()) {
+        warnings.emplace_back(audioMonitorWarning_);
+      }
 
       return rpc::Json::Object{
           {"status", nativeMix.status},
@@ -1271,6 +1319,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"limiterEnabled", audioLimiterEnabled_},
           {"limiterActive", audioLimiterEnabled_ && nativeMix.limiterActive},
           {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
+          {"monitorEnabled", audioMonitorEnabled_},
+          {"monitorStatus", audioMonitorStatus_},
+          {"monitorDeviceId", audioMonitorDeviceId_},
+          {"monitorDeviceName", audioMonitorDeviceName_},
+          {"monitorVolume", audioMonitorVolume_},
+          {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"participants", participants},
           {"summary", nativeMix.summary},
           {"warnings", warnings},
@@ -1284,9 +1338,15 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"limiterEnabled", audioLimiterEnabled_},
         {"limiterActive", false},
         {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
+        {"monitorEnabled", audioMonitorEnabled_},
+        {"monitorStatus", audioMonitorStatus_},
+        {"monitorDeviceId", audioMonitorDeviceId_},
+        {"monitorDeviceName", audioMonitorDeviceName_},
+        {"monitorVolume", audioMonitorVolume_},
+        {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"participants", rpc::Json::Array{}},
         {"summary", "Audio mix idle."},
-        {"warnings", rpc::Json::Array{}},
+        {"warnings", audioMonitorWarning_.empty() ? rpc::Json::Array{} : rpc::Json::Array{audioMonitorWarning_}},
     };
   }
 
@@ -1369,6 +1429,9 @@ rpc::Json MediaCore::audioMixSessionState() const {
   if (soloCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << soloCount << " solo";
   if (insertCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << insertCount << " inserts";
   const std::string summaryText = summary.tellp() > 0 ? summary.str() + " in program mix" : "Program mix balanced";
+  if (!audioMonitorWarning_.empty()) {
+    warnings.emplace_back(audioMonitorWarning_);
+  }
 
   return rpc::Json::Object{
       {"status", warnings.empty() ? "live" : "warning"},
@@ -1377,6 +1440,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
+      {"monitorEnabled", audioMonitorEnabled_},
+      {"monitorStatus", audioMonitorStatus_},
+      {"monitorDeviceId", audioMonitorDeviceId_},
+      {"monitorDeviceName", audioMonitorDeviceName_},
+      {"monitorVolume", audioMonitorVolume_},
+      {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"participants", participants},
       {"summary", summaryText},
       {"warnings", warnings},
@@ -1941,6 +2010,18 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
+  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty() && audioMonitorVolume_ > 0.0 && mixedAudioFrameCount_ > 0) {
+    const int monitorLevel = modules_.mixer->session().masterLevel > 0 ? modules_.mixer->session().masterLevel : 60;
+    if (playMonitorPulse(audioMonitorVolume_, monitorLevel)) {
+      audioMonitorStatus_ = "playing";
+      ++audioMonitorFramesPlayed_;
+    } else {
+      audioMonitorStatus_ = "unavailable";
+      audioMonitorWarning_ = "Native audio monitor could not open the default Windows playback path.";
+    }
+  } else if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
+    audioMonitorStatus_ = "armed";
+  }
   const auto renderPlan = buildCompositorRenderPlan(videoFrames);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   if (lastProgramFrame_.preview.bgra.empty()) {

@@ -335,6 +335,12 @@ public sealed class NativeMediaCoreAudioMixSession
     public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }
     public int MixedFrameCount { get; init; }
+    public bool MonitorEnabled { get; init; }
+    public string? MonitorStatus { get; init; }
+    public string? MonitorDeviceId { get; init; }
+    public string? MonitorDeviceName { get; init; }
+    public double MonitorVolume { get; init; }
+    public int MonitorFramesPlayed { get; init; }
     public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];

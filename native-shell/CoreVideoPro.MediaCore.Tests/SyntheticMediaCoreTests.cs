@@ -11,6 +11,10 @@ public sealed class SyntheticMediaCoreTests
     public void SynthesizeSnapshotReflectsLimiterCommandState()
     {
         var limiterEnabled = JsonSerializer.SerializeToElement(false);
+        var monitorEnabled = JsonSerializer.SerializeToElement(true);
+        var monitorDeviceId = JsonSerializer.SerializeToElement("render-01");
+        var monitorDeviceName = JsonSerializer.SerializeToElement("Studio Headphones");
+        var monitorVolume = JsonSerializer.SerializeToElement(0.75);
         var snapshot = SyntheticMediaCore.SynthesizeSnapshot(
             [
                 new NativeMediaCoreCommand
@@ -20,6 +24,17 @@ public sealed class SyntheticMediaCoreTests
                     {
                         ["limiterEnabled"] = limiterEnabled
                     }
+                },
+                new NativeMediaCoreCommand
+                {
+                    Type = "sync-audio-monitor",
+                    ExtensionData = new Dictionary<string, JsonElement>
+                    {
+                        ["enabled"] = monitorEnabled,
+                        ["deviceId"] = monitorDeviceId,
+                        ["deviceName"] = monitorDeviceName,
+                        ["volume"] = monitorVolume
+                    }
                 }
             ],
             elapsedMs: 1000,
@@ -27,6 +42,11 @@ public sealed class SyntheticMediaCoreTests
 
         Assert.False(snapshot.AudioMixSession.LimiterEnabled);
         Assert.False(snapshot.Diagnostics.AudioMixSession.LimiterEnabled);
+        Assert.True(snapshot.AudioMixSession.MonitorEnabled);
+        Assert.Equal("armed", snapshot.AudioMixSession.MonitorStatus);
+        Assert.Equal("render-01", snapshot.AudioMixSession.MonitorDeviceId);
+        Assert.Equal("Studio Headphones", snapshot.AudioMixSession.MonitorDeviceName);
+        Assert.Equal(0.75, snapshot.AudioMixSession.MonitorVolume);
     }
 
     [Fact]

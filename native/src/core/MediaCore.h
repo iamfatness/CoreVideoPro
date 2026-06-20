@@ -51,6 +51,7 @@ class MediaCore {
   void recoverRecordingSession(const rpc::Json& command);
   void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
+  void syncAudioMonitor(const rpc::Json& command);
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
@@ -165,6 +166,13 @@ class MediaCore {
   };
   std::vector<ParticipantAudioChannelInput> audioChannels_;
   bool audioLimiterEnabled_ = true;
+  bool audioMonitorEnabled_ = false;
+  std::string audioMonitorDeviceId_;
+  std::string audioMonitorDeviceName_;
+  double audioMonitorVolume_ = 0.0;
+  std::string audioMonitorStatus_ = "muted";
+  int64_t audioMonitorFramesPlayed_ = 0;
+  std::string audioMonitorWarning_;
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;
