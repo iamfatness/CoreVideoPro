@@ -132,9 +132,47 @@ public partial class CaptureDevice : ObservableObject
     public required string Name { get; init; }
     public required IReadOnlyList<CaptureDeviceInput> Inputs { get; init; }
     public required string SelectedInputId { get; set; }
-    public required int Width { get; init; }
-    public required int Height { get; init; }
-    public required int FrameRate { get; init; }
+
+    private int _width;
+    public int Width
+    {
+        get => _width;
+        set
+        {
+            if (SetProperty(ref _width, value))
+            {
+                OnPropertyChanged(nameof(ResolutionLabel));
+                OnPropertyChanged(nameof(FormatLabel));
+            }
+        }
+    }
+
+    private int _height;
+    public int Height
+    {
+        get => _height;
+        set
+        {
+            if (SetProperty(ref _height, value))
+            {
+                OnPropertyChanged(nameof(ResolutionLabel));
+                OnPropertyChanged(nameof(FormatLabel));
+            }
+        }
+    }
+
+    private int _frameRate;
+    public int FrameRate
+    {
+        get => _frameRate;
+        set
+        {
+            if (SetProperty(ref _frameRate, value))
+            {
+                OnPropertyChanged(nameof(FormatLabel));
+            }
+        }
+    }
 
     [ObservableProperty]
     private CaptureConnectionState _connectionState;
@@ -144,7 +182,14 @@ public partial class CaptureDevice : ObservableObject
 
     public int AudioSyncOffsetMs { get; set; }
 
-    public string ResolutionLabel => $"{Width}x{Height}";
+    public string ResolutionLabel => Width > 0 && Height > 0 ? $"{Width}x{Height}" : "Format pending";
+
+    public string FormatLabel =>
+        Width > 0 && Height > 0 && FrameRate > 0
+            ? $"{Width}x{Height} · {FrameRate} fps"
+            : Width > 0 && Height > 0
+                ? $"{Width}x{Height} · fps pending"
+                : "Format pending";
 
     public string ConnectionLabel => ConnectionState switch
     {
@@ -161,6 +206,40 @@ public partial class CaptureDevice : ObservableObject
     public bool IsConnected => ConnectionState == CaptureConnectionState.Connected;
 
     public bool ShowConnectButton => !IsConnected;
+
+    public void ApplyFrameTelemetry(int width, int height, int frameRate)
+    {
+        ApplyFormatTelemetry(width, height, frameRate);
+
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        SignalPresent = true;
+        if (ConnectionState != CaptureConnectionState.Connected)
+        {
+            ConnectionState = CaptureConnectionState.Connected;
+        }
+    }
+
+    public void ApplyFormatTelemetry(int width, int height, int frameRate)
+    {
+        if (width > 0)
+        {
+            Width = width;
+        }
+
+        if (height > 0)
+        {
+            Height = height;
+        }
+
+        if (frameRate > 0)
+        {
+            FrameRate = frameRate;
+        }
+    }
 
     partial void OnConnectionStateChanged(CaptureConnectionState value)
     {

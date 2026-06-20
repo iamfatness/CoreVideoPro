@@ -19,10 +19,19 @@ public static class BgraPreviewHelper
             return;
         }
 
-        var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
-        softwareBitmap.CopyFromBuffer(bgra.AsBuffer());
-        var source = new SoftwareBitmapSource();
-        _ = SetPreviewSourceAsync(image, source, softwareBitmap);
+        try
+        {
+            var softwareBitmap = new SoftwareBitmap(BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Ignore);
+            softwareBitmap.CopyFromBuffer(bgra.AsBuffer());
+            var source = new SoftwareBitmapSource();
+            _ = SetPreviewSourceAsync(image, source, softwareBitmap);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"preview: failed to update BGRA preview {width}x{height}: {ex.GetType().Name}: {ex.Message}");
+            image.Source = null;
+            image.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        }
     }
 
     private static async Task SetPreviewSourceAsync(Image image, SoftwareBitmapSource source, SoftwareBitmap bitmap)

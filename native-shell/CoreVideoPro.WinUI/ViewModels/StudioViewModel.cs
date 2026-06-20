@@ -1571,11 +1571,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         try
         {
-            await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
+            var format = await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
             RunOnUiThread(() =>
             {
                 device.ConnectionState = CaptureConnectionState.Connected;
-                device.SignalPresent = true;
+                device.ApplyFormatTelemetry(format.Width, format.Height, format.Fps);
+                device.SignalPresent = false;
                 AssignConnectedCaptureDeviceToShowInput(device);
                 RefreshCaptureFleetSummary();
                 RefreshShowInputEditors();
@@ -1647,6 +1648,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.SignalPresent = prior.SignalPresent;
                 device.SelectedInputId = prior.SelectedInputId;
                 device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
+                device.ApplyFormatTelemetry(prior.Width, prior.Height, prior.FrameRate);
             }
 
             CaptureDevices.Add(device);
@@ -2981,7 +2983,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private void OnCaptureDeviceFrameReceived(CaptureDeviceFrame frame) =>
+        RunOnUiThread(() => ApplyCaptureDeviceFrame(frame));
+
+    private void ApplyCaptureDeviceFrame(CaptureDeviceFrame frame)
+    {
+        if (CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, frame.DeviceId, StringComparison.Ordinal)) is { } device)
+        {
+            device.ApplyFrameTelemetry(frame.Width, frame.Height, frame.Fps);
+            RefreshCaptureFleetSummary();
+        }
+
         _surfaces.OnCaptureDeviceFrame(frame);
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
+    }
 
     private void OnProgramFramePreviewReceived(ProgramFramePreview preview)
     {

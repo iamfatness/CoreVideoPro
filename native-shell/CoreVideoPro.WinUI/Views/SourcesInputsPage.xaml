@@ -102,15 +102,13 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
-                                            <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel}" FontSize="11"
+                                            <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
                                                        Foreground="{StaticResource StudioAccentBrush}" />
                                         </Grid>
                                         <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
-                                            <Run Text="{x:Bind ResolutionLabel}" />
+                                            <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
                                             <Run Text=" · " />
-                                            <Run Text="{x:Bind FrameRate}" />
-                                            <Run Text="fps · " />
-                                            <Run Text="{x:Bind SignalLabel}" />
+                                            <Run Text="{x:Bind SignalLabel, Mode=OneWay}" />
                                         </TextBlock>
                                         <Button Content="Bring online as program source"
                                                 Style="{StaticResource OperatorGhostButton}"

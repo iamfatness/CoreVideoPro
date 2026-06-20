@@ -196,7 +196,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                 return;
             }
 
-            var fps = TrackFps(trackerKey, frame.FrameId);
+            var fps = frame.Fps > 0 ? frame.Fps : TrackFps(trackerKey, frame.FrameId);
             var metadata = new VideoFrameMetadata
             {
                 ParticipantId = frame.DeviceId,

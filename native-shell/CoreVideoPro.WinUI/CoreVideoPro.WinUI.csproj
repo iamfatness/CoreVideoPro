@@ -21,6 +21,7 @@
     <!-- Use the installed Windows App Runtime (2.2.x) instead of bundling WinRT next to the app. -->
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <UseAppHost>true</UseAppHost>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
 
