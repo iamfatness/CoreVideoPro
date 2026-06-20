@@ -168,32 +168,6 @@ public sealed partial class ShowMultiviewHost : UserControl
             var tile = tiles[index];
             var row = index / columns;
             var column = index % columns;
-            if (tiles.Count == 3)
-            {
-                (row, column) = index switch
-                {
-                    0 => (0, 0),
-                    1 => (0, 1),
-                    _ => (1, 1)
-                };
-                AddTile(tile, row, column, index == 0 ? 2 : 1, 1);
-                continue;
-            }
-
-            if (tiles.Count == 5)
-            {
-                (row, column) = index switch
-                {
-                    0 => (0, 0),
-                    1 => (0, 1),
-                    2 => (0, 2),
-                    3 => (1, 1),
-                    _ => (1, 2)
-                };
-                AddTile(tile, row, column, index == 0 ? 2 : 1, 1);
-                continue;
-            }
-
             AddTile(tile, row, column);
         }
     }
@@ -203,9 +177,8 @@ public sealed partial class ShowMultiviewHost : UserControl
         {
             1 => (1, 1),
             2 => (2, 1),
-            3 => (2, 2),
+            3 => (3, 1),
             <= 4 => (2, 2),
-            5 => (3, 2),
             <= 6 => (3, 2),
             <= 8 => (4, 2),
             _ => (5, 2)

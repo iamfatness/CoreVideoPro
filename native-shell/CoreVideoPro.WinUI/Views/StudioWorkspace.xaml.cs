@@ -3,6 +3,7 @@ using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 
 namespace CoreVideoPro.WinUI.Views;
 
@@ -11,6 +12,7 @@ public sealed partial class StudioWorkspace : UserControl
     private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private StudioViewModel? _boundViewModel;
     private bool _participantListRefreshScheduled;
+    private bool _programPreviewSplitterDragging;
 
     public static readonly DependencyProperty ViewModelProperty =
         DependencyProperty.Register(
@@ -90,5 +92,53 @@ public sealed partial class StudioWorkspace : UserControl
                 ParticipantListView.ItemsSource = ViewModel?.ParticipantListItems;
             });
         });
+    }
+
+    private void OnProgramPreviewSplitterPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        _programPreviewSplitterDragging = true;
+        ProgramPreviewSplitter.CapturePointer(e.Pointer);
+        e.Handled = true;
+    }
+
+    private void OnProgramPreviewSplitterPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_programPreviewSplitterDragging)
+        {
+            return;
+        }
+
+        var pointerX = e.GetCurrentPoint(ProgramPreviewGrid).Position.X;
+        ResizeProgramPreviewColumns(pointerX);
+        e.Handled = true;
+    }
+
+    private void OnProgramPreviewSplitterPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_programPreviewSplitterDragging)
+        {
+            return;
+        }
+
+        _programPreviewSplitterDragging = false;
+        ProgramPreviewSplitter.ReleasePointerCapture(e.Pointer);
+        e.Handled = true;
+    }
+
+    private void ResizeProgramPreviewColumns(double pointerX)
+    {
+        const double minMonitorWidth = 220;
+        const double columnSpacingTotal = 8;
+        var availableWidth = ProgramPreviewGrid.ActualWidth - ProgramPreviewSplitter.ActualWidth - columnSpacingTotal;
+        if (availableWidth <= minMonitorWidth * 2)
+        {
+            return;
+        }
+
+        var programWidth = Math.Clamp(pointerX, minMonitorWidth, availableWidth - minMonitorWidth);
+        var previewWidth = availableWidth - programWidth;
+
+        ProgramMonitorColumn.Width = new GridLength(programWidth, GridUnitType.Star);
+        PreviewMonitorColumn.Width = new GridLength(previewWidth, GridUnitType.Star);
     }
 }
