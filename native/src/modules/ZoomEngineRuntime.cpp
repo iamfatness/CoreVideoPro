@@ -103,8 +103,10 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     if (process_ && process_->running()) {
       (void)process_->sendLine(buildZoomEngineLeaveCommand());
     }
+    state_.reset();
     initialized_ = false;
     mediaStarted_ = false;
+    latestDecodedFrames_.clear();
   }
 }
 

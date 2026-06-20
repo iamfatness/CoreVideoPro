@@ -148,6 +148,17 @@ TEST(ZoomEngineClient, ParsesFrameAudioParticipantAndSpeakerEvents) {
   EXPECT_EQ(speaker->participantId, 77u);
 }
 
+TEST(ZoomEngineClient, ParsesImmediateJoinFailureAsErrorEvent) {
+  const auto event = corevideo::modules::parseZoomEngineEvent(
+      R"({"cmd":"error","stage":"join","msg":"join_failed","code":3,"reason":"SDKERR_UNAUTHENTICATION"})");
+
+  ASSERT_TRUE(event.has_value());
+  EXPECT_EQ(event->kind, corevideo::modules::ZoomEngineEventKind::Error);
+  EXPECT_FALSE(event->ok);
+  EXPECT_EQ(event->stage, "join");
+  EXPECT_EQ(event->message, "join_failed: SDKERR_UNAUTHENTICATION");
+}
+
 TEST(ZoomEngineClient, ParsesFailureAndDebugEvents) {
   const auto authFail = corevideo::modules::parseZoomEngineEvent(R"({"cmd":"auth_fail","stage":"sdk_auth","code":7})");
   ASSERT_TRUE(authFail.has_value());

@@ -388,6 +388,26 @@ static const char *meeting_fail_name(int code)
     }
 }
 
+static const char *sdk_error_name(ZOOMSDK::SDKError error)
+{
+    switch (error) {
+    case ZOOMSDK::SDKERR_SUCCESS:
+        return "SDKERR_SUCCESS";
+    case ZOOMSDK::SDKERR_UNINITIALIZE:
+        return "SDKERR_UNINITIALIZE";
+    case ZOOMSDK::SDKERR_UNAUTHENTICATION:
+        return "SDKERR_UNAUTHENTICATION";
+    case ZOOMSDK::SDKERR_INVALID_PARAMETER:
+        return "SDKERR_INVALID_PARAMETER";
+    case ZOOMSDK::SDKERR_MODULE_LOAD_FAILED:
+        return "SDKERR_MODULE_LOAD_FAILED";
+    case ZOOMSDK::SDKERR_OTHER_SDK_INSTANCE_RUNNING:
+        return "SDKERR_OTHER_SDK_INSTANCE_RUNNING";
+    default:
+        return "SDKERR_UNKNOWN";
+    }
+}
+
 // UUID may only contain alphanumerics, hyphens, and underscores to prevent
 // path traversal when used as a POSIX shared-memory name.
 static bool is_valid_source_uuid(const std::string &uuid)
@@ -1307,6 +1327,11 @@ int main()
                 ZOOMSDK::SDKError err = meeting_svc->Join(jp);
                 EngineIpc::write(R"({"cmd":"debug","stage":"after_join","code":)" +
                     std::to_string(static_cast<int>(err)) + "}");
+                if (err != ZOOMSDK::SDKERR_SUCCESS) {
+                    EngineIpc::write(R"({"cmd":"error","stage":"join","msg":"join_failed","code":)" +
+                        std::to_string(static_cast<int>(err)) + R"(,"reason":")" +
+                        sdk_error_name(err) + "\"}");
+                }
             }
 
         } else if (line.find(IPC_CMD_LEAVE) != std::string::npos) {

@@ -159,10 +159,10 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   event.sourceUuid = parsed->getString("source_uuid");
   event.stage = parsed->getString("stage");
   event.message = parsed->getString("msg", parsed->getString("message"));
-  if (event.message == "meeting_failed") {
+  if (event.message == "meeting_failed" || event.message == "join_failed") {
     const auto reason = parsed->getString("reason");
     if (!reason.empty()) {
-      event.message = "meeting_failed: " + reason;
+      event.message += ": " + reason;
     }
   }
   event.participantId = uintField(*parsed, "participant_id");

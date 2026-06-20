@@ -67,6 +67,18 @@ TEST(ZoomEngineRuntimeState, TracksFrameAudioAndErrorEvidence) {
   EXPECT_EQ(snapshot.warnings[0], "raw_data_unavailable");
 }
 
+TEST(ZoomEngineRuntimeState, ImmediateJoinFailureMovesSnapshotToError) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+
+  state.apply(eventFrom(R"({"cmd":"auth_ok"})"));
+  state.apply(eventFrom(R"({"cmd":"error","stage":"join","msg":"join_failed","code":3,"reason":"SDKERR_UNAUTHENTICATION"})"));
+
+  const auto snapshot = state.snapshot();
+  EXPECT_EQ(snapshot.meetingState, "error");
+  ASSERT_TRUE(snapshot.warnings.size() == 1u);
+  EXPECT_EQ(snapshot.warnings[0], "join_failed: SDKERR_UNAUTHENTICATION");
+}
+
 TEST(ZoomEngineRuntimeState, TracksFrameFreshnessAndFirstFrameTimingPerParticipant) {
   corevideo::modules::ZoomEngineRuntimeState state;
 

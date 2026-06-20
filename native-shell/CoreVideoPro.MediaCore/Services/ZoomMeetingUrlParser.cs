@@ -27,6 +27,10 @@ public static class ZoomMeetingUrlParser
             passcode = ReadQueryValue(uri.Query, "pwd");
             meetingNumber = ExtractMeetingNumber(uri.AbsolutePath);
         }
+        else
+        {
+            meetingNumber = ExtractMeetingNumber(trimmed);
+        }
 
         return new ZoomMeetingJoinDetails
         {
