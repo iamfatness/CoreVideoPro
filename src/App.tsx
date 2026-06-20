@@ -3737,6 +3737,19 @@ export function App({ engines, runtime }: AppProps) {
                 signal,
                 0
               );
+              // Heuristic director state (read-only) — surface the live decision
+              // signals so the operator can see why automation is holding/queuing/taking.
+              const director = production.autoProduction;
+              const directorScene = production.scenes.find((s: SceneTemplate) => s.id === director.recommendedSceneId);
+              const directorHeldScene = director.heldSceneId
+                ? production.scenes.find((s: SceneTemplate) => s.id === director.heldSceneId)
+                : undefined;
+              const directorPendingScene = director.pendingSceneId
+                ? production.scenes.find((s: SceneTemplate) => s.id === director.pendingSceneId)
+                : undefined;
+              const directorConfidence = automationOn ? `${director.confidence}%` : "—";
+              const directorHoldElapsedMs = director.holdElapsedMs;
+              const directorWhy = director.holdReason ?? director.overrideReason ?? director.reason;
               return (
                 <div className="scene-intelligence-panel" aria-label="Scene intelligence panel">
                   <div className="scene-intel-summary">
@@ -3745,12 +3758,37 @@ export function App({ engines, runtime }: AppProps) {
                   <div className="health-grid">
                     <ControlReadout label="Recommended" value={rec.sceneName} />
                     <ControlReadout label="Layout" value={rec.layout} />
-                    <ControlReadout label="Confidence" value={rec.confidence} />
+                    <ControlReadout label="Confidence" value={directorConfidence} />
+                    <ControlReadout label="Signal" value={rec.confidence} />
                     <ControlReadout label="Cameras on" value={String(signal.videoOnCount)} />
                     <ControlReadout label="Screen share" value={signal.screenShareActive ? "Active" : "Off"} />
                     <ControlReadout label="Auto-switch" value={autoDecision.shouldSwitch ? "Now" : autoDecision.holdUntilMs > 0 ? `Hold ${(autoDecision.holdUntilMs / 1000).toFixed(0)}s` : "Stable"} />
                   </div>
                   <p className="scene-intel-reason">{rec.reason}</p>
+                  <div className="scene-intel-summary" aria-label="Auto-production readout">
+                    Auto-production readout
+                  </div>
+                  <div className="health-grid" aria-label="Director decision">
+                    <ControlReadout label="Director action" value={automationOn ? director.action : "Idle"} />
+                    <ControlReadout label="Director scene" value={directorScene?.name ?? director.recommendedSceneId} />
+                    <ControlReadout label="Director layout" value={directorScene?.layout ?? "—"} />
+                    {director.ruleId && <ControlReadout label="Rule" value={director.ruleId} />}
+                    {directorHeldScene && <ControlReadout label="Holding" value={directorHeldScene.name} />}
+                    {directorPendingScene && <ControlReadout label="Queued" value={directorPendingScene.name} />}
+                    {directorHoldElapsedMs !== undefined && (
+                      <ControlReadout label="Hold elapsed" value={`${(directorHoldElapsedMs / 1000).toFixed(0)}s`} />
+                    )}
+                  </div>
+                  <p className="scene-intel-reason" aria-label="Director why">
+                    {automationOn
+                      ? `Why ${director.action}: ${directorWhy}`
+                      : "Automation off — director idle."}
+                  </p>
+                  {director.signals && director.signals.length > 0 && (
+                    <p className="scene-intel-reason" aria-label="Director signals">
+                      Signals: {director.signals.join(", ")}
+                    </p>
+                  )}
                 </div>
               );
             })()}
