@@ -177,6 +177,7 @@ class MediaCore {
     std::string sourceId;
     std::string busId;
     double gainDb = 0;
+    std::vector<std::string> busPluginInserts;
   };
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
   std::vector<std::string> audioRoutingWarnings_;

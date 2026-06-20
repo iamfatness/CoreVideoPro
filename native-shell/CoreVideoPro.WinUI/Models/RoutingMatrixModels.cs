@@ -18,3 +18,17 @@ public sealed record RoutingSource(string Id, string Label);
 /// on/off only (no gain), unlike the audio buses.
 /// </summary>
 public sealed record RoutingDestination(string Id, string Label);
+
+/// <summary>
+/// A mixer processing target: either a source/channel strip or an output bus.
+/// Insert controls use this so EQ/compression/VST slots are applied to the right
+/// channel, aux, bus, or master path instead of an implicit selected participant.
+/// </summary>
+public sealed class AudioProcessingTargetOption
+{
+    public required string Id { get; init; }
+    public required string Label { get; init; }
+    public required string Kind { get; init; }
+    public required string Detail { get; init; }
+    public required string InsertLabel { get; init; }
+}

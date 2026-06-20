@@ -246,7 +246,8 @@ public static class MediaCoreCommandBuilder
             {
                 sourceId = send.SourceId,
                 busId = send.BusId,
-                gainDb = send.GainDb
+                gainDb = send.GainDb,
+                busPluginInserts = send.BusPluginInserts ?? []
             }).ToList()
         });
 

@@ -63,6 +63,7 @@ public sealed partial class AudioMixerWindow : Window
         if (TryResolveParticipantId(sender, out var participantId))
         {
             ViewModel.SelectParticipantCommand.Execute(participantId);
+            ViewModel.SelectAudioProcessingTarget($"channel:{participantId}");
         }
     }
 

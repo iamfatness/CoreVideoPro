@@ -48,7 +48,11 @@
                     Click="OnDawStyleClicked" />
         </Grid>
 
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="1" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="320" />
+            </Grid.ColumnDefinitions>
             <Border x:Name="RotaryMixerPanel"
                     Style="{StaticResource OperatorSectionBorder}">
                 <Grid RowSpacing="10">
@@ -244,6 +248,7 @@
             </Border>
 
             <Border x:Name="DawMixerPanel"
+                    Grid.Column="0"
                     Style="{StaticResource OperatorSectionBorder}"
                     Visibility="Collapsed">
                 <Grid RowSpacing="10">
@@ -357,6 +362,110 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1"
+                    Style="{StaticResource OperatorSectionBorder}">
+                <Grid RowSpacing="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Spacing="3">
+                        <TextBlock Text="Processing target"
+                                   Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetDetail, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}"
+                                   TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <ComboBox Grid.Row="1"
+                              Header="Apply inserts to"
+                              ItemsSource="{x:Bind ViewModel.AudioProcessingTargetOptions, Mode=OneWay}"
+                              SelectedValue="{x:Bind ViewModel.SelectedAudioProcessingTargetId, Mode=TwoWay}"
+                              SelectedValuePath="Id"
+                              DisplayMemberPath="Label"
+                              HorizontalAlignment="Stretch" />
+
+                    <Grid Grid.Row="2" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetKindLabel, Mode=OneWay}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetLabel, Mode=OneWay}"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="1"
+                                Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="INSERTS"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingInsertLabel, Mode=OneWay}"
+                                           FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="3" ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Button Content="Add EQ"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
+                                CommandParameter="Built-in EQ" />
+                        <Button Grid.Column="1"
+                                Content="Add comp"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
+                                CommandParameter="Compressor" />
+                        <Button Grid.Row="1"
+                                Content="Add VST3"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
+                                CommandParameter="VST3 Bridge" />
+                        <Button Grid.Row="1" Grid.Column="1"
+                                Content="Clear"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
+                    </Grid>
+
+                    <Border Grid.Row="4"
+                            Style="{StaticResource OperatorReadoutBorder}"
+                            VerticalAlignment="Stretch">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Processing path"
+                                       FontSize="10"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.ProcessingBridgeStatusLabel, Mode=OneWay}"
+                                       FontSize="12"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="Channel targets affect the source strip. Bus targets affect the selected master, stream, monitor, aux, ISO, or custom bus path."
+                                       FontSize="11"
+                                       Foreground="{StaticResource StudioMutedBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
         </Grid>

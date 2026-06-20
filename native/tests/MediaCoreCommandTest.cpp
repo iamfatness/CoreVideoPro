@@ -489,7 +489,11 @@ TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
       {"type", "sync-audio-routing-matrix"},
       {"sends",
        corevideo::rpc::Json::Array{
-           corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "pgm-l"}, {"gainDb", -3.0}},
+           corevideo::rpc::Json::Object{
+               {"sourceId", "input-01"},
+               {"busId", "pgm-l"},
+               {"gainDb", -3.0},
+               {"busPluginInserts", corevideo::rpc::Json::Array{"Built-in EQ", "Compressor"}}},
            corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "pgm-r"}, {"gainDb", -3.0}},
            corevideo::rpc::Json::Object{{"sourceId", "input-01"}, {"busId", "mon"}, {"gainDb", -6.0}},
            corevideo::rpc::Json::Object{{"sourceId", "input-02"}, {"busId", "pgm-l"}, {"gainDb", 0.0}},
@@ -522,6 +526,16 @@ TEST(MediaCoreCommand, SummarizesAudioRoutingGainMatrix) {
   EXPECT_EQ(findBus("iso-8"), 1);
   EXPECT_EQ(findBus("bus-01"), 1);
   EXPECT_EQ(routing->get("sends")->asArray().size(), 7u);
+  const auto& firstSendInserts = routing->get("sends")->asArray()[0].get("busPluginInserts")->asArray();
+  ASSERT_TRUE(firstSendInserts.size() == 2u);
+  EXPECT_EQ(firstSendInserts[0].asString(), "Built-in EQ");
+
+  const auto& busProcessing = routing->get("busProcessing")->asArray();
+  const auto pgmLProcessing = std::find_if(busProcessing.begin(), busProcessing.end(), [](const corevideo::rpc::Json& bus) {
+    return bus.getString("busId") == "pgm-l";
+  });
+  ASSERT_TRUE(pgmLProcessing != busProcessing.end());
+  EXPECT_EQ(pgmLProcessing->get("pluginInserts")->asArray()[1].asString(), "Compressor");
 }
 
 TEST(MediaCoreCommand, ClampsAndWarnsOnInvalidAudioRoutingSends) {

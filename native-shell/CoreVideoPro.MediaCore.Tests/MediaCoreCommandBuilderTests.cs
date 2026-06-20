@@ -402,7 +402,7 @@ public sealed class MediaCoreCommandBuilderTests
             Participants = Participants,
             AudioRoutingSends =
             [
-                new("input-01", "pgm-l", -3.0),
+                new("input-01", "pgm-l", -3.0, ["Built-in EQ", "Compressor"]),
                 new("input-01", "pgm-r", -3.0),
                 new("input-01", "mon", -6.0),
                 new("input-02", "pgm-l", 0.0)
@@ -417,6 +417,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("input-01", sends[0].GetProperty("sourceId").GetString());
         Assert.Equal("pgm-l", sends[0].GetProperty("busId").GetString());
         Assert.Equal(-3.0, sends[0].GetProperty("gainDb").GetDouble());
+        Assert.Equal(["Built-in EQ", "Compressor"], sends[0].GetProperty("busPluginInserts").EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToArray());
         Assert.Equal("mon", sends[2].GetProperty("busId").GetString());
         Assert.Equal(-6.0, sends[2].GetProperty("gainDb").GetDouble());
     }

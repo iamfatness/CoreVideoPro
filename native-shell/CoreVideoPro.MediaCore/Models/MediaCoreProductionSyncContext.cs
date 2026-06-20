@@ -58,7 +58,8 @@ public sealed record MediaCoreAudioMixChannelWire(
 public sealed record MediaCoreAudioRoutingSendWire(
     string SourceId,
     string BusId,
-    double GainDb);
+    double GainDb,
+    IReadOnlyList<string>? BusPluginInserts = null);
 
 public sealed record MediaCoreCaptureAudioSourceWire(
     string CaptureDeviceId,

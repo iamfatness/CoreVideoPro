@@ -224,10 +224,16 @@
 
             <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Channel processing" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay}"
+                    <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
+                    <ComboBox Header="Apply inserts to"
+                              ItemsSource="{x:Bind ViewModel.AudioProcessingTargetOptions, Mode=OneWay}"
+                              SelectedValue="{x:Bind ViewModel.SelectedAudioProcessingTargetId, Mode=TwoWay}"
+                              SelectedValuePath="Id"
+                              DisplayMemberPath="Label"
+                              HorizontalAlignment="Stretch" />
+                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetLabel, Mode=OneWay}"
                                FontSize="16" FontWeight="SemiBold" />
-                    <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Title, Mode=OneWay}"
+                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetDetail, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
@@ -250,7 +256,7 @@
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="Insert chain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.SelectedInsertChainLabel, Mode=OneWay}"
+                            <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingInsertLabel, Mode=OneWay}"
                                        FontSize="12" TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
@@ -265,27 +271,27 @@
                         </Grid.RowDefinitions>
                         <Button Content="Add EQ"
                                 Style="{StaticResource OperatorGhostButton}"
-                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
                                 CommandParameter="Built-in EQ" />
                         <Button Grid.Column="1"
                                 Content="Add compressor"
                                 Style="{StaticResource OperatorGhostButton}"
-                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
                                 CommandParameter="Compressor" />
                         <Button Grid.Row="1"
                                 Content="Add VST3 slot"
                                 Style="{StaticResource OperatorGhostButton}"
-                                Command="{x:Bind ViewModel.AddSelectedAudioInsertCommand}"
+                                Command="{x:Bind ViewModel.AddAudioProcessingInsertCommand}"
                                 CommandParameter="VST3 Bridge" />
                         <Button Grid.Row="1" Grid.Column="1"
                                 Content="Clear chain"
                                 Style="{StaticResource OperatorGhostButton}"
-                                Command="{x:Bind ViewModel.ClearSelectedAudioInsertsCommand}" />
+                                Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
                     </Grid>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="VST bridge" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.VstBridgeStatusLabel, Mode=OneWay}"
+                            <TextBlock Text="{x:Bind ViewModel.ProcessingBridgeStatusLabel, Mode=OneWay}"
                                        FontSize="12" TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>

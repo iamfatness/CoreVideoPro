@@ -41,6 +41,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
+    private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -89,6 +90,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _selectedLocalAudioCaptureDeviceId = string.Empty;
+
+    [ObservableProperty]
+    private string _selectedAudioProcessingTargetId = "bus:master";
 
     [ObservableProperty]
     private string _ffmpegBinDirectory = Environment.GetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR") ??
@@ -413,6 +417,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
     public IReadOnlyList<AudioParticipantRow> AudioParticipantRows { get; private set; } = [];
+
+    public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
 
     public string CaptionQualitySummary =>
         ProductionStateHelper.CaptionQualitySummary(
@@ -948,6 +954,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "VST3 bridge slot configured - scan/load bridge required for live PCM processing"
             : "No VST bridge slot on selected channel";
 
+    public AudioProcessingTargetOption? SelectedAudioProcessingTarget =>
+        AudioProcessingTargetOptions.FirstOrDefault(target =>
+            string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal));
+
+    public string SelectedAudioProcessingTargetLabel =>
+        SelectedAudioProcessingTarget?.Label ?? "No processing target selected";
+
+    public string SelectedAudioProcessingTargetKindLabel =>
+        SelectedAudioProcessingTarget?.Kind ?? "Target";
+
+    public string SelectedAudioProcessingTargetDetail =>
+        SelectedAudioProcessingTarget?.Detail ?? "Choose a channel, bus, aux, or master path before adding processing.";
+
+    public string SelectedAudioProcessingInsertLabel =>
+        SelectedAudioProcessingTarget?.InsertLabel ?? "No inserts";
+
+    public string ProcessingBridgeStatusLabel =>
+        SelectedAudioProcessingInsertLabel.Contains("VST", StringComparison.OrdinalIgnoreCase)
+            ? "VST3 slot is staged for this processing target; live plugin execution still requires the native plugin bridge."
+            : "Built-in processing settings are synced with the native media core metadata.";
+
     public Brush EngineToggleBackground => ZoomCaptureSubscribed
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(31, 61, 220, 151))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(10, 255, 255, 255));
@@ -1158,6 +1185,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         RefreshLocalAudioSourceBindings();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    partial void OnSelectedAudioProcessingTargetIdChanged(string value)
+    {
+        OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
+        OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
     }
 
     partial void OnFfmpegBinDirectoryChanged(string value) =>
@@ -1699,6 +1736,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         sources.Add(new RoutingSource("zoom-mix", "Zoom program mix"));
         sources.Add(new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
+        RefreshAudioProcessingTargets();
     }
 
     private void BuildVideoRoutingMatrix()
@@ -1744,6 +1782,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        RefreshAudioProcessingTargets();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -1789,6 +1828,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void SelectParticipant(string participantId)
     {
         SelectedParticipantId = participantId;
+        SelectAudioProcessingTarget(FormatChannelProcessingTargetId(participantId));
+    }
+
+    public void SelectAudioProcessingTarget(string targetId)
+    {
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            return;
+        }
+
+        if (AudioProcessingTargetOptions.All(target =>
+                !string.Equals(target.Id, targetId, StringComparison.Ordinal)))
+        {
+            RefreshAudioProcessingTargets();
+        }
+
+        if (AudioProcessingTargetOptions.Any(target =>
+                string.Equals(target.Id, targetId, StringComparison.Ordinal)))
+        {
+            SelectedAudioProcessingTargetId = targetId;
+        }
     }
 
     [RelayCommand]
@@ -1929,14 +1989,118 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _ => insertName.Trim()
         };
 
+    [RelayCommand]
+    private void AddAudioProcessingInsert(string insertName)
+    {
+        if (string.IsNullOrWhiteSpace(insertName))
+        {
+            return;
+        }
+
+        var targetId = NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId);
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            CommandStatus = "Choose an audio processing target first";
+            return;
+        }
+
+        var normalized = NormalizeAudioInsertName(insertName);
+        var inserts = ResolveAudioProcessingInsertList(targetId);
+        if (inserts.Any(insert => string.Equals(insert, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            CommandStatus = $"{normalized} is already on {ResolveAudioProcessingTargetName(targetId)}";
+            return;
+        }
+
+        inserts.Add(normalized);
+        CommandStatus = $"{normalized} added to {ResolveAudioProcessingTargetName(targetId)}";
+        RefreshAudioProcessingTargets();
+        RefreshAudioParticipantRows();
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    [RelayCommand]
+    private void ClearAudioProcessingInserts()
+    {
+        var targetId = NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId);
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            return;
+        }
+
+        ResolveAudioProcessingInsertList(targetId).Clear();
+        CommandStatus = $"Insert chain cleared for {ResolveAudioProcessingTargetName(targetId)}";
+        RefreshAudioProcessingTargets();
+        RefreshAudioParticipantRows();
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private List<string> ResolveAudioProcessingInsertList(string targetId)
+    {
+        if (TryParseChannelProcessingTargetId(targetId, out var participantId) &&
+            _audioMixChannels.FirstOrDefault(mix =>
+                string.Equals(mix.ParticipantId, participantId, StringComparison.Ordinal)) is { } channelMix)
+        {
+            return channelMix.PluginInserts;
+        }
+
+        if (!_audioProcessingInserts.TryGetValue(targetId, out var inserts))
+        {
+            inserts = [];
+            _audioProcessingInserts[targetId] = inserts;
+        }
+
+        return inserts;
+    }
+
+    private IReadOnlyList<string> ResolveAudioProcessingInserts(string targetId) =>
+        ResolveAudioProcessingInsertList(targetId);
+
+    private string ResolveAudioProcessingTargetName(string targetId)
+    {
+        if (TryParseChannelProcessingTargetId(targetId, out var participantId))
+        {
+            return RoomVideoParticipants.FirstOrDefault(participant =>
+                string.Equals(participant.Id, participantId, StringComparison.Ordinal))?.Name ??
+                "selected channel";
+        }
+
+        return AudioRoutingMatrix.BusHeaders.FirstOrDefault(bus =>
+            string.Equals(FormatBusProcessingTargetId(bus.Id), targetId, StringComparison.Ordinal))?.Label ??
+            targetId;
+    }
+
+    private static string NormalizeAudioProcessingTargetId(string? targetId) =>
+        string.IsNullOrWhiteSpace(targetId) ? "bus:master" : targetId.Trim();
+
+    private static string FormatChannelProcessingTargetId(string participantId) => $"channel:{participantId}";
+
+    private static string FormatBusProcessingTargetId(string busId) => $"bus:{busId}";
+
+    private static bool TryParseChannelProcessingTargetId(string targetId, out string participantId)
+    {
+        participantId = string.Empty;
+        if (!targetId.StartsWith("channel:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        participantId = targetId["channel:".Length..];
+        return participantId.Length > 0;
+    }
+
     private void RefreshMixerBindings(string participantId)
     {
         if (!string.Equals(SelectedParticipantId, participantId, StringComparison.Ordinal))
         {
             SelectedParticipantId = participantId;
         }
+        SelectedAudioProcessingTargetId = FormatChannelProcessingTargetId(participantId);
 
         RefreshAudioParticipantRows();
+        RefreshAudioProcessingTargets();
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(SelectedAudioMix));
         OnPropertyChanged(nameof(SelectedGainLabel));
@@ -3495,7 +3659,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var audioRoutingSends = AudioRoutingMatrix.Rows
             .SelectMany(row => row.Cells)
             .Where(cell => cell.IsRouted)
-            .Select(cell => new MediaCoreAudioRoutingSendWire(cell.SourceId, cell.Bus.Id, cell.GainDb))
+            .Select(cell => new MediaCoreAudioRoutingSendWire(
+                cell.SourceId,
+                cell.Bus.Id,
+                cell.GainDb,
+                ResolveAudioProcessingInserts(FormatBusProcessingTargetId(cell.Bus.Id))))
             .ToList();
 
         var captureAudioSources = CaptureDevices
@@ -4469,7 +4637,98 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             })
             .ToList();
         OnPropertyChanged(nameof(AudioParticipantRows));
+        RefreshAudioProcessingTargets();
     }
+
+    private void RefreshAudioProcessingTargets()
+    {
+        var targets = new List<AudioProcessingTargetOption>();
+
+        foreach (var participant in RoomVideoParticipants)
+        {
+            var targetId = FormatChannelProcessingTargetId(participant.Id);
+            var mix = _audioMixChannels.FirstOrDefault(channel =>
+                string.Equals(channel.ParticipantId, participant.Id, StringComparison.Ordinal));
+            var inserts = mix?.PluginInserts ?? [];
+            targets.Add(new AudioProcessingTargetOption
+            {
+                Id = targetId,
+                Label = participant.Name,
+                Kind = "Channel",
+                Detail = $"{participant.RoleLabel} channel - {ResolvePrimaryAudioBusLabel(participant.Id)}",
+                InsertLabel = FormatInsertLabel(inserts)
+            });
+        }
+
+        foreach (var bus in AudioRoutingMatrix.BusHeaders)
+        {
+            var targetId = FormatBusProcessingTargetId(bus.Id);
+            targets.Add(new AudioProcessingTargetOption
+            {
+                Id = targetId,
+                Label = bus.Label,
+                Kind = ResolveBusProcessingKind(bus.Id),
+                Detail = ResolveBusProcessingDetail(bus.Id),
+                InsertLabel = FormatInsertLabel(ResolveAudioProcessingInserts(targetId))
+            });
+        }
+
+        AudioProcessingTargetOptions = targets;
+        if (AudioProcessingTargetOptions.Count > 0 &&
+            AudioProcessingTargetOptions.All(target =>
+                !string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal)))
+        {
+            SelectedAudioProcessingTargetId = AudioProcessingTargetOptions.First().Id;
+        }
+
+        OnPropertyChanged(nameof(AudioProcessingTargetOptions));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
+        OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
+        OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+    }
+
+    private static string FormatInsertLabel(IReadOnlyList<string> inserts) =>
+        inserts.Count == 0 ? "No inserts" : string.Join(" + ", inserts);
+
+    private static string ResolveBusProcessingKind(string busId)
+    {
+        if (busId.Equals("master", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Master bus";
+        }
+
+        if (busId.StartsWith("aux-", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Aux bus";
+        }
+
+        if (busId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ISO bus";
+        }
+
+        if (busId.StartsWith("bus-", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Custom bus";
+        }
+
+        return "Bus";
+    }
+
+    private static string ResolveBusProcessingDetail(string busId) => busId switch
+    {
+        "master" => "Final program mix processing before output.",
+        "stream" => "Streaming output bus processing.",
+        "mon" => "Control-room monitor bus processing.",
+        "pgm-l" => "Left program bus processing.",
+        "pgm-r" => "Right program bus processing.",
+        _ when busId.StartsWith("aux-", StringComparison.OrdinalIgnoreCase) => "Aux send processing.",
+        _ when busId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase) => "Isolated recording bus processing.",
+        _ => "Custom bus processing."
+    };
 
     private string ResolvePrimaryAudioBusLabel(string participantId)
     {

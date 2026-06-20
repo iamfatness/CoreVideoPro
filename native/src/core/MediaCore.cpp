@@ -1119,6 +1119,7 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
     input.sourceId = sourceId;
     input.busId = busId;
     input.gainDb = std::max(kMinAudioRoutingGainDb, std::min(kMaxAudioRoutingGainDb, rawGain));
+    input.busPluginInserts = send.getStringArray("busPluginInserts");
     routedSources.insert(sourceId);
     audioRoutingSends_.push_back(std::move(input));
   }
@@ -1476,14 +1477,17 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
   if (!audioRoutingSynced_ || audioRoutingSends_.empty()) {
     rpc::Json::Array busSourceCounts;
+    rpc::Json::Array busProcessing;
     for (const auto& bus : buses) {
       busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", 0}});
+      busProcessing.emplace_back(rpc::Json::Object{{"busId", bus}, {"pluginInserts", rpc::Json::Array{}}});
     }
     return rpc::Json::Object{
         {"status", audioRoutingWarnings_.empty() ? "idle" : "warning"},
         {"routedSendCount", 0},
         {"routedSourceCount", 0},
         {"busSourceCounts", busSourceCounts},
+        {"busProcessing", busProcessing},
         {"sends", rpc::Json::Array{}},
         {"summary", audioRoutingSynced_ ? "No audio crosspoints routed." : "Audio routing matrix idle."},
         {"warnings", warnings},
@@ -1492,18 +1496,28 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
   std::set<std::string> routedSources;
   std::map<std::string, std::set<std::string>> busSources;
+  std::map<std::string, std::vector<std::string>> busPluginInserts;
   rpc::Json::Array sends;
   for (const auto& send : audioRoutingSends_) {
     routedSources.insert(send.sourceId);
     busSources[send.busId].insert(send.sourceId);
+    if (!send.busPluginInserts.empty()) {
+      busPluginInserts[send.busId] = send.busPluginInserts;
+    }
+    rpc::Json::Array inserts;
+    for (const auto& insert : send.busPluginInserts) {
+      inserts.emplace_back(insert);
+    }
     sends.emplace_back(rpc::Json::Object{
         {"sourceId", send.sourceId},
         {"busId", send.busId},
         {"gainDb", send.gainDb},
+        {"busPluginInserts", inserts},
     });
   }
 
   rpc::Json::Array busSourceCounts;
+  rpc::Json::Array busProcessing;
   int routedBusCount = 0;
   for (const auto& bus : buses) {
     const auto found = busSources.find(bus);
@@ -1512,6 +1526,13 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
       ++routedBusCount;
     }
     busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", sourceCount}});
+    rpc::Json::Array inserts;
+    if (const auto busInserts = busPluginInserts.find(bus); busInserts != busPluginInserts.end()) {
+      for (const auto& insert : busInserts->second) {
+        inserts.emplace_back(insert);
+      }
+    }
+    busProcessing.emplace_back(rpc::Json::Object{{"busId", bus}, {"pluginInserts", inserts}});
   }
 
   std::ostringstream summary;
@@ -1524,6 +1545,7 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
       {"routedSendCount", static_cast<int>(audioRoutingSends_.size())},
       {"routedSourceCount", static_cast<int>(routedSources.size())},
       {"busSourceCounts", busSourceCounts},
+      {"busProcessing", busProcessing},
       {"sends", sends},
       {"summary", summary.str()},
       {"warnings", warnings},
