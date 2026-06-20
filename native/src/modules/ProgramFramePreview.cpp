@@ -99,6 +99,33 @@ void fillRectBgra(std::vector<uint8_t>& pixels, int width, int height, float x, 
   }
 }
 
+// Draws a border framing the given rect by stroking its four edges. The border
+// thickness is a fraction of the rect's smaller dimension, with at least a
+// single pixel when visible so it never vanishes in the small preview buffer.
+void drawBorderBgra(
+    std::vector<uint8_t>& pixels,
+    int width,
+    int height,
+    const compositor::LayerRect& rect,
+    const compositor::BorderFraming& border,
+    float opacity) {
+  if (!border.visible || opacity <= 0.f || width <= 0 || height <= 0) {
+    return;
+  }
+  const float smaller = std::min(rect.width, rect.height);
+  float strokeNorm = border.thickness * smaller;
+  // Guarantee at least ~1px of stroke on each axis in the preview buffer.
+  strokeNorm = std::max(strokeNorm, 1.f / static_cast<float>(std::max(width, height)));
+  const float strokeX = std::min(strokeNorm, rect.width * 0.5f);
+  const float strokeY = std::min(strokeNorm, rect.height * 0.5f);
+  const uint32_t color = border.colorRgba;
+  // Top, bottom, left, right edges.
+  fillRectBgra(pixels, width, height, rect.x, rect.y, rect.width, strokeY, color, opacity);
+  fillRectBgra(pixels, width, height, rect.x, rect.y + rect.height - strokeY, rect.width, strokeY, color, opacity);
+  fillRectBgra(pixels, width, height, rect.x, rect.y, strokeX, rect.height, color, opacity);
+  fillRectBgra(pixels, width, height, rect.x + rect.width - strokeX, rect.y, strokeX, rect.height, color, opacity);
+}
+
 }  // namespace
 
 void computeProgramFramePreviewSize(int sourceWidth, int sourceHeight, int& outWidth, int& outHeight) {
@@ -205,7 +232,8 @@ void fillSyntheticProgramFramePreview(
       }
 
       uint32_t color = 0xff2a3548;
-      if (!compositorLayerIsOverlay(layer)) {
+      const bool isOverlay = compositorLayerIsOverlay(layer);
+      if (!isOverlay) {
         if (!layer.participantId.empty()) {
           color = compositor::colorFromParticipantId(layer.participantId);
           frameForLayer = findFrameForParticipant(frames, layer.participantId);
@@ -214,10 +242,79 @@ void fillSyntheticProgramFramePreview(
           color = compositor::colorFromParticipantId(frameForLayer->participantId);
         }
       }
-      if (frameForLayer && blitVideoFrameIntoPreviewRect(preview, *frameForLayer, rect, compositorLayerOpacity(layer))) {
+
+      const float layerOpacity = compositorLayerOpacity(layer);
+      if (frameForLayer && blitVideoFrameIntoPreviewRect(preview, *frameForLayer, rect, layerOpacity)) {
         continue;
       }
-      fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), compositorLayerOpacity(layer));
+
+      // Overlays keep their fixed placement; scene sources honor per-source
+      // framing geometry (letterbox bars, zoom/pan offset, border) in the
+      // synthetic fill so the preview reflects the resolved framing.
+      if (isOverlay) {
+        fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), layerOpacity);
+        continue;
+      }
+
+      // Resolve the source aspect from the (possibly real) frame, falling back
+      // to the render-plan aspect. The destination rect is normalized to the
+      // canvas, so its true aspect is scaled by the canvas pixel dimensions.
+      int sourceWidth = renderPlan.width > 0 ? renderPlan.width : 16;
+      int sourceHeight = renderPlan.height > 0 ? renderPlan.height : 9;
+      if (frameForLayer && frameForLayer->pixelWidth > 0 && frameForLayer->pixelHeight > 0) {
+        sourceWidth = frameForLayer->pixelWidth;
+        sourceHeight = frameForLayer->pixelHeight;
+      }
+
+      // Express the rect in canvas-pixel proportions so aspect comparisons are
+      // correct, then frame against a unit rect with that aspect baked in.
+      const compositor::LayerRect destRect{rect.x, rect.y, rect.width, rect.height};
+      const compositor::LayerRect aspectRect{
+          0.f,
+          0.f,
+          rect.width * static_cast<float>(previewWidth),
+          rect.height * static_cast<float>(previewHeight)};
+      const auto framing = compositor::computeSourceFraming(
+          sourceWidth,
+          sourceHeight,
+          aspectRect,
+          layer.fitMode,
+          layer.sourceScale,
+          layer.sourceOffsetX,
+          layer.sourceOffsetY);
+
+      // Map the framing (computed in aspectRect units) back into the layer's
+      // normalized dest rect. contentX/Y/W/H are fractions of aspectRect, which
+      // shares the rect's origin-relative proportions.
+      const float contentFracX = aspectRect.width > 0.f ? framing.contentX / aspectRect.width : 0.f;
+      const float contentFracY = aspectRect.height > 0.f ? framing.contentY / aspectRect.height : 0.f;
+      const float contentFracW = aspectRect.width > 0.f ? framing.contentW / aspectRect.width : 1.f;
+      const float contentFracH = aspectRect.height > 0.f ? framing.contentH / aspectRect.height : 1.f;
+      const float contentX = rect.x + contentFracX * rect.width;
+      const float contentY = rect.y + contentFracY * rect.height;
+      const float contentW = contentFracW * rect.width;
+      const float contentH = contentFracH * rect.height;
+
+      // Letterbox bars: when the content is smaller than the dest rect, paint
+      // the full rect with a dark bar color first, then the content on top.
+      if (framing.hasLetterbox) {
+        const uint32_t barColor = 0xff05080c;
+        fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, barColor, layerOpacity);
+      }
+
+      // The synthetic fill has no real texture, so honor zoom/pan geometry by
+      // mapping the resolved sampled UV window onto the on-screen content rect:
+      // zoom (window < full) insets the fill toward the sampled center, and pan
+      // shifts it (clamped). For default framing the window is full, so the
+      // fill covers the whole content rect (preview matches plain placement).
+      const float fillX = contentX + framing.u0 * contentW;
+      const float fillY = contentY + framing.v0 * contentH;
+      const float fillW = (framing.u1 - framing.u0) * contentW;
+      const float fillH = (framing.v1 - framing.v0) * contentH;
+      fillRectBgra(preview.bgra, previewWidth, previewHeight, fillX, fillY, fillW, fillH, unpackColor(color), layerOpacity);
+
+      const auto border = compositor::computeBorderFraming(layer.borderStyle, layer.borderColor, layer.borderThickness);
+      drawBorderBgra(preview.bgra, previewWidth, previewHeight, destRect, border, layerOpacity);
     }
     return;
   }
