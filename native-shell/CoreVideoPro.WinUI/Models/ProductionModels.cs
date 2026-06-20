@@ -174,6 +174,45 @@ public partial class CaptureDevice : ObservableObject
         }
     }
 
+    private int _observedFrameWidth;
+    public int ObservedFrameWidth
+    {
+        get => _observedFrameWidth;
+        set
+        {
+            if (SetProperty(ref _observedFrameWidth, value))
+            {
+                OnPropertyChanged(nameof(ObservedSignalLabel));
+            }
+        }
+    }
+
+    private int _observedFrameHeight;
+    public int ObservedFrameHeight
+    {
+        get => _observedFrameHeight;
+        set
+        {
+            if (SetProperty(ref _observedFrameHeight, value))
+            {
+                OnPropertyChanged(nameof(ObservedSignalLabel));
+            }
+        }
+    }
+
+    private int _observedFrameRate;
+    public int ObservedFrameRate
+    {
+        get => _observedFrameRate;
+        set
+        {
+            if (SetProperty(ref _observedFrameRate, value))
+            {
+                OnPropertyChanged(nameof(ObservedSignalLabel));
+            }
+        }
+    }
+
     [ObservableProperty]
     private CaptureConnectionState _connectionState;
 
@@ -203,13 +242,20 @@ public partial class CaptureDevice : ObservableObject
 
     public string SignalLabel => SignalPresent ? "Signal present" : "No signal";
 
+    public string ObservedSignalLabel =>
+        ObservedFrameWidth > 0 && ObservedFrameHeight > 0 && ObservedFrameRate > 0
+            ? $"Signal {ObservedFrameWidth}x{ObservedFrameHeight} · {ObservedFrameRate} fps"
+            : ObservedFrameWidth > 0 && ObservedFrameHeight > 0
+                ? $"Signal {ObservedFrameWidth}x{ObservedFrameHeight}"
+                : SignalLabel;
+
     public bool IsConnected => ConnectionState == CaptureConnectionState.Connected;
 
     public bool ShowConnectButton => !IsConnected;
 
     public void ApplyFrameTelemetry(int width, int height, int frameRate)
     {
-        ApplyFormatTelemetry(width, height, frameRate);
+        ApplyObservedFrameTelemetry(width, height, frameRate);
 
         if (width <= 0 || height <= 0)
         {
@@ -220,6 +266,24 @@ public partial class CaptureDevice : ObservableObject
         if (ConnectionState != CaptureConnectionState.Connected)
         {
             ConnectionState = CaptureConnectionState.Connected;
+        }
+    }
+
+    public void ApplyObservedFrameTelemetry(int width, int height, int frameRate)
+    {
+        if (width > 0)
+        {
+            ObservedFrameWidth = width;
+        }
+
+        if (height > 0)
+        {
+            ObservedFrameHeight = height;
+        }
+
+        if (frameRate > 0)
+        {
+            ObservedFrameRate = frameRate;
         }
     }
 
@@ -248,7 +312,11 @@ public partial class CaptureDevice : ObservableObject
         OnPropertyChanged(nameof(ShowConnectButton));
     }
 
-    partial void OnSignalPresentChanged(bool value) => OnPropertyChanged(nameof(SignalLabel));
+    partial void OnSignalPresentChanged(bool value)
+    {
+        OnPropertyChanged(nameof(SignalLabel));
+        OnPropertyChanged(nameof(ObservedSignalLabel));
+    }
 }
 
 public partial class GraphicOverlay : ObservableObject

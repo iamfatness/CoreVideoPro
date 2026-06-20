@@ -142,7 +142,7 @@
                                         <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
                                             <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
                                             <Run Text=" · " />
-                                            <Run Text="{x:Bind SignalLabel, Mode=OneWay}" />
+                                            <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
                                         </TextBlock>
                                         <Button Content="Bring online as program source"
                                                 Style="{StaticResource OperatorGhostButton}"
