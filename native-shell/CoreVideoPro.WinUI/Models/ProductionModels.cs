@@ -284,13 +284,19 @@ public partial class CaptureDevice : ObservableObject
         OnPropertyChanged(nameof(AssignedAudioLabel));
     }
 
-    public string ResolutionLabel => Width > 0 && Height > 0 ? $"{Width}x{Height}" : "Format pending";
+    private int EffectiveWidth => Width > 0 ? Width : ObservedFrameWidth;
+
+    private int EffectiveHeight => Height > 0 ? Height : ObservedFrameHeight;
+
+    private int EffectiveFrameRate => FrameRate > 0 ? FrameRate : ObservedFrameRate;
+
+    public string ResolutionLabel => EffectiveWidth > 0 && EffectiveHeight > 0 ? $"{EffectiveWidth}x{EffectiveHeight}" : "Format pending";
 
     public string FormatLabel =>
-        Width > 0 && Height > 0 && FrameRate > 0
-            ? $"{Width}x{Height} · {FrameRate} fps"
-            : Width > 0 && Height > 0
-                ? $"{Width}x{Height} · fps pending"
+        EffectiveWidth > 0 && EffectiveHeight > 0 && EffectiveFrameRate > 0
+            ? $"{EffectiveWidth}x{EffectiveHeight} · {EffectiveFrameRate} fps"
+            : EffectiveWidth > 0 && EffectiveHeight > 0
+                ? $"{EffectiveWidth}x{EffectiveHeight} · fps pending"
                 : "Format pending";
 
     public string ConnectionLabel => ConnectionState switch
@@ -325,6 +331,11 @@ public partial class CaptureDevice : ObservableObject
             return;
         }
 
+        if (Width <= 0 || Height <= 0 || (FrameRate <= 0 && frameRate > 0))
+        {
+            ApplyFormatTelemetry(width, height, frameRate);
+        }
+
         SignalPresent = true;
         if (ConnectionState != CaptureConnectionState.Connected)
         {
@@ -337,16 +348,21 @@ public partial class CaptureDevice : ObservableObject
         if (width > 0)
         {
             ObservedFrameWidth = width;
+            OnPropertyChanged(nameof(ResolutionLabel));
+            OnPropertyChanged(nameof(FormatLabel));
         }
 
         if (height > 0)
         {
             ObservedFrameHeight = height;
+            OnPropertyChanged(nameof(ResolutionLabel));
+            OnPropertyChanged(nameof(FormatLabel));
         }
 
         if (frameRate > 0)
         {
             ObservedFrameRate = frameRate;
+            OnPropertyChanged(nameof(FormatLabel));
         }
     }
 

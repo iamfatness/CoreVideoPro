@@ -3144,7 +3144,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
                 device.AssignedAudioDeviceId = prior.AssignedAudioDeviceId;
                 device.AssignedAudioDeviceName = prior.AssignedAudioDeviceName;
-                device.ApplyFormatTelemetry(prior.Width, prior.Height, prior.FrameRate);
+                device.ApplyFormatTelemetry(
+                    prior.Width > 0 ? prior.Width : prior.ObservedFrameWidth,
+                    prior.Height > 0 ? prior.Height : prior.ObservedFrameHeight,
+                    prior.FrameRate > 0 ? prior.FrameRate : prior.ObservedFrameRate);
+                device.ApplyObservedFrameTelemetry(prior.ObservedFrameWidth, prior.ObservedFrameHeight, prior.ObservedFrameRate);
             }
 
             CaptureDevices.Add(device);

@@ -32,6 +32,35 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void CaptureDeviceFormatLabel_UsesFirstLiveFrameWhenDiscoveryFormatIsMissing()
+    {
+        var device = Device("cam-uvc", "USB Capture", "uvc", 0, 0, 0);
+
+        device.ApplyFrameTelemetry(1280, 720, 30);
+
+        Assert.Equal("1280x720", device.ResolutionLabel);
+        Assert.Contains("1280x720", device.FormatLabel, StringComparison.Ordinal);
+        Assert.Contains("30 fps", device.FormatLabel, StringComparison.Ordinal);
+        Assert.Equal(1280, device.Width);
+        Assert.Equal(720, device.Height);
+        Assert.Equal(30, device.FrameRate);
+        Assert.True(device.SignalPresent);
+        Assert.Equal(CaptureConnectionState.Connected, device.ConnectionState);
+    }
+
+    [Fact]
+    public void CaptureDeviceFormatLabel_UsesObservedFramesWhenDeclaredFormatIsIncomplete()
+    {
+        var device = Device("cam-uvc", "USB Capture", "uvc", 0, 0, 0);
+
+        device.ApplyObservedFrameTelemetry(1920, 1080, 60);
+
+        Assert.Equal("1920x1080", device.ResolutionLabel);
+        Assert.Contains("1920x1080", device.FormatLabel, StringComparison.Ordinal);
+        Assert.Contains("60 fps", device.FormatLabel, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildSourceOptions_IncludesWindowsAndUvcWebcams()
     {
         var options = ShowInputRosterService.BuildSourceOptions(
