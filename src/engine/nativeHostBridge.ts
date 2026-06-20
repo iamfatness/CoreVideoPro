@@ -41,6 +41,26 @@ export type NativeHostBridge = {
   onZoomOAuthUpdated?(listener: () => void): () => void;
   onZoomOAuthError?(listener: (message: string) => void): () => void;
   exportSupportBundle?(bundle: SupportBundle): Promise<{ path: string; bytes: number }>;
+  /**
+   * Runtime config for the optional AI-director intelligence service (Item 10).
+   * Returns the service URL / key (never committed) + feature flag. Absent on
+   * hosts that don't provision the service, in which case the always-on
+   * heuristic director runs.
+   */
+  getAiDirectorConfig?(): Promise<AiDirectorBridgeConfig>;
+};
+
+export type AiDirectorBridgeConfig = {
+  /** Master feature flag. */
+  enabled: boolean;
+  /** Base URL of the `services/ai-director` worker. */
+  serviceUrl?: string;
+  /** Bearer key for the service. */
+  apiKey?: string;
+  /** Per-call timeout before falling back to the heuristic. */
+  timeoutMs?: number;
+  /** Whether meeting-content signals may be sent to the cloud service. */
+  allowContentSignals?: boolean;
 };
 
 declare global {

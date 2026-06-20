@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "corevideo-ai-director",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "ENVIRONMENT": "staging"
+  }
+  // Secrets are set out-of-band, never committed:
+  //   wrangler secret put ANTHROPIC_API_KEY        (required to call Claude)
+  //   wrangler secret put AI_DIRECTOR_API_KEY      (optional bearer for callers)
+  // Optional override of the model id via a var:
+  //   "CLAUDE_MODEL_ID": "claude-opus-4-8"
+}

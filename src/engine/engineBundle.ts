@@ -11,7 +11,7 @@ import type {
   ZoomCaptureEngine
 } from "./contracts";
 import { MockCaptureDeviceEngine } from "./captureDevices";
-import { MockOutputEngine, MockZoomCaptureEngine, RuleBasedAiProductionEngine } from "./mockEngines";
+import { MockOutputEngine, MockZoomCaptureEngine } from "./mockEngines";
 import { NativeCaptureDeviceEngineAdapter } from "./nativeCaptureDeviceEngineAdapter";
 import { NativeOutputEngineAdapter } from "./nativeOutputEngineAdapter";
 import { NativeZoomEngineAdapter } from "./nativeZoomEngineAdapter";
@@ -23,7 +23,7 @@ import { InMemoryMediaCoreSyncEngine, NativeHostMediaCoreSyncEngine } from "./me
 import { InMemoryPresetEngine } from "./presets";
 import { InMemoryDiagnosticsEngine } from "./supportBundle";
 import type { CaptionBrokerClient } from "./captionBrokerClient";
-import { createCaptionBrokerClient, createLicenseClient } from "./commerceClients";
+import { createAiProductionEngine, createCaptionBrokerClient, createLicenseClient } from "./commerceClients";
 import type { LicenseClient } from "./licenseClient";
 import type { NativeHostBridge } from "./nativeHostBridge";
 import { ZoomMediaSpineSessionController } from "./zoomMediaSpineSessionController";
@@ -52,9 +52,12 @@ export type EngineBundle = {
 
 export function createMockEngineBundle(): EngineBundle {
   const spineTransport = new InMemoryZoomMediaSpineTransport();
+  // No AI-director config on the mock host → createAiProductionEngine returns the
+  // always-on heuristic engine, so the in-container default stays cloud-free.
+  const license = createLicenseClient();
   return {
     zoom: new MockZoomCaptureEngine(),
-    ai: new RuleBasedAiProductionEngine(),
+    ai: createAiProductionEngine(license),
     aiStudio: new RuleBasedAiStudioEngine(),
     output: new MockOutputEngine(),
     audio: new SimulatedAudioMixEngine(),
@@ -65,16 +68,19 @@ export function createMockEngineBundle(): EngineBundle {
     mediaCore: new InMemoryMediaCoreSyncEngine(),
     spineController: new ZoomMediaSpineSessionController(spineTransport),
     spineTransport,
-    license: createLicenseClient(),
+    license,
     captionBroker: createCaptionBrokerClient()
   };
 }
 
 export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bridge?: NativeHostBridge): EngineBundle {
   const { transport: spineTransport, nativeTransport } = createZoomMediaSpineTransport(bridge);
+  // The AI-director intelligence service is gated by the host's config flag AND
+  // the `setAndForget` entitlement; absent config falls back to the heuristic.
+  const license = createLicenseClient();
   return {
     zoom: new NativeZoomEngineAdapter(transport),
-    ai: new RuleBasedAiProductionEngine(),
+    ai: createAiProductionEngine(license, undefined, bridge),
     aiStudio: new RuleBasedAiStudioEngine(),
     output: new NativeOutputEngineAdapter(transport),
     audio: new SimulatedAudioMixEngine(),
@@ -85,7 +91,7 @@ export function createNativeZoomEngineBundle(transport: NativeZoomTransport, bri
     mediaCore: bridge ? new NativeHostMediaCoreSyncEngine(bridge) : new InMemoryMediaCoreSyncEngine(),
     spineController: new ZoomMediaSpineSessionController(spineTransport),
     spineTransport: nativeTransport ?? spineTransport,
-    license: createLicenseClient(),
+    license,
     captionBroker: createCaptionBrokerClient()
   };
 }
