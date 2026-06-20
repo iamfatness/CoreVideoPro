@@ -111,4 +111,49 @@ describe("AudioMixSessionModel", () => {
     });
     expect(snapshot.warnings).not.toContain("Limiter active in participant audio mix.");
   });
+
+  it("measures master level and BS.1770 loudness from the synthesized program mix", () => {
+    const model = new AudioMixSessionModel();
+    const snapshot = model.sync([
+      { participantId: "p1", inputLevel: 70, muted: false, noiseSuppression: false },
+      { participantId: "p2", inputLevel: 50, muted: false, noiseSuppression: false }
+    ]);
+
+    // Loudness is a real measurement, not the old -16/-14 lookup constants.
+    expect(snapshot.loudnessLufs).not.toBe(-16);
+    expect(snapshot.loudnessLufs).not.toBe(-14);
+    expect(Number.isFinite(snapshot.loudnessLufs)).toBe(true);
+    expect(snapshot.masterLevel).toBeGreaterThan(40);
+    expect(snapshot.masterLevel).toBeLessThanOrEqual(100);
+  });
+
+  it("reports the silence floor for loudness when every channel is muted", () => {
+    const model = new AudioMixSessionModel();
+    const snapshot = model.sync([{ participantId: "p1", inputLevel: 80, muted: true, noiseSuppression: false }]);
+
+    expect(snapshot.masterLevel).toBe(0);
+    expect(snapshot.loudnessLufs).toBe(-60);
+    expect(snapshot.limiterActive).toBe(false);
+  });
+
+  it("engages the measured master limiter on a hot program mix", () => {
+    const model = new AudioMixSessionModel();
+    const snapshot = model.sync([
+      { participantId: "hot-a", inputLevel: 100, muted: false, noiseSuppression: false, manualGainDb: 12 },
+      { participantId: "hot-b", inputLevel: 100, muted: false, noiseSuppression: false, manualGainDb: 12 }
+    ]);
+
+    expect(snapshot.limiterActive).toBe(true);
+    expect(snapshot.masterLevel).toBe(100);
+  });
+
+  it("produces a deterministic measured snapshot for the same channels", () => {
+    const channels = [
+      { participantId: "p1", inputLevel: 60, muted: false, noiseSuppression: false },
+      { participantId: "p2", inputLevel: 44, muted: false, noiseSuppression: true }
+    ];
+    const first = new AudioMixSessionModel().sync(channels.map((channel) => ({ ...channel })));
+    const second = new AudioMixSessionModel().sync(channels.map((channel) => ({ ...channel })));
+    expect(second).toEqual(first);
+  });
 });

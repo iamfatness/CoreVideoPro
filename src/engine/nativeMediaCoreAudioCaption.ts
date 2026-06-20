@@ -6,9 +6,94 @@ import type {
   NativeMediaCoreCaptionTrack,
   NativeMediaCoreParticipantAudioChannel
 } from "./nativeMediaCoreProtocol";
+import {
+  computeRmsDbfs,
+  computeShortTermLufs,
+  dbfsToLinear,
+  linearToDbfs,
+  peakLimiterGainReductionDb
+} from "./audioDspKernels";
 
 const TARGET_LEVEL = 68;
 const LIMITER_THRESHOLD = 88;
+
+// Synthetic PCM characteristics used to MEASURE the audio-mix snapshot via the
+// real DSP kernels. The signal is fully deterministic (fixed sample rate, fixed
+// base frequency, per-participant phase) so snapshots stay stable across runs.
+const SYNTH_SAMPLE_RATE = 48000;
+// One short-term LUFS window (3 s) of mono samples per channel; short enough to
+// stay cheap, long enough for the BS.1770 filters to settle.
+const SYNTH_SAMPLE_COUNT = SYNTH_SAMPLE_RATE * 3;
+const SYNTH_BASE_FREQUENCY_HZ = 220;
+// dBFS the master limiter brickwalls the program mix at.
+const PROGRAM_LIMITER_THRESHOLD_DBFS = -1;
+
+// Map a 0-100 mixer level onto a peak amplitude in [0, 1] full scale. Level 0 ->
+// digital silence, level 100 -> full scale; a sine at amplitude `a` has RMS
+// a/sqrt(2), so the measured RMS dBFS scales smoothly with the level.
+function levelToAmplitude(level: number): number {
+  return clamp(level, 0, 100) / 100;
+}
+
+// Inverse of `levelToAmplitude` measured back from an RMS dBFS reading: recover
+// the 0-100 level a sine of the measured RMS corresponds to, so `outputLevel`
+// and `masterLevel` are computed FROM the synthesized/mixed signal rather than
+// from the input number directly.
+function rmsDbfsToLevel(rmsDbfs: number): number {
+  // sine RMS = amplitude / sqrt(2); amplitude = level/100 -> level = amplitude*100.
+  const amplitude = dbfsToLinear(rmsDbfs) * Math.SQRT2;
+  return clamp(Math.round(amplitude * 100), 0, 100);
+}
+
+// Deterministic FNV-1a hash of the participant id, used to derive a per-source
+// phase and frequency so summed mixes are reproducible AND effectively
+// uncorrelated (distinct tones don't coherently cancel/reinforce, so program
+// power tracks the sum of participant powers — physically realistic).
+function participantHash(participantId: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < participantId.length; index += 1) {
+    hash ^= participantId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function participantPhase(participantId: string): number {
+  return ((participantHash(participantId) % 360) / 360) * 2 * Math.PI;
+}
+
+// A small per-participant frequency offset (0..63 Hz above the base) keeps each
+// synthesized tone distinct so the program sum is incoherent.
+function participantFrequencyHz(participantId: string): number {
+  return SYNTH_BASE_FREQUENCY_HZ + ((participantHash(participantId) >>> 8) % 64);
+}
+
+/**
+ * Synthesize a deterministic mono PCM buffer for a participant: a sine whose
+ * peak amplitude tracks `inputLevel` (muted -> silence), at a per-participant
+ * phase and frequency. This is the synthetic signal the DSP kernels meter.
+ */
+function synthesizeParticipantPcm(channel: NativeAudioMixChannelInput): Float32Array {
+  const samples = new Float32Array(SYNTH_SAMPLE_COUNT);
+  if (channel.muted) {
+    return samples;
+  }
+  const amplitude = levelToAmplitude(channel.inputLevel);
+  if (amplitude <= 0) {
+    return samples;
+  }
+  const phase = participantPhase(channel.participantId);
+  const angular = (2 * Math.PI * participantFrequencyHz(channel.participantId)) / SYNTH_SAMPLE_RATE;
+  for (let index = 0; index < SYNTH_SAMPLE_COUNT; index += 1) {
+    samples[index] = amplitude * Math.sin(angular * index + phase);
+  }
+  return samples;
+}
+
+// Linear gain to apply to a synthesized signal given the smart/manual gain in dB.
+function gainDbToLinear(gainDb: number): number {
+  return dbfsToLinear(gainDb);
+}
 
 export const IDLE_NATIVE_AUDIO_MIX_SESSION: NativeMediaCoreAudioMixSession = {
   status: "idle",
@@ -57,13 +142,40 @@ export class NativeAudioMixSessionSimulator {
       return { ...IDLE_NATIVE_AUDIO_MIX_SESSION, mixedFrameCount: this.mixedFrameCount };
     }
 
-    const participants = this.channels.map(buildParticipantChannel);
-    const audible = participants.filter((channel) => !channel.muted);
-    const masterLevel = Math.min(
-      100,
-      Math.round(audible.reduce((total, channel) => total + channel.outputLevel, 0) / Math.max(1, audible.length) + 8)
+    const measured = this.channels.map(measureParticipantChannel);
+    const participants = measured.map((entry) => entry.channel);
+    const audible = measured.filter((entry) => !entry.channel.muted);
+
+    // Sum the post-gain participant signals into a deterministic stereo program
+    // mix, then MEASURE the master metrics from that mixed PCM via the kernels.
+    const programLeft = new Float32Array(SYNTH_SAMPLE_COUNT);
+    const programRight = new Float32Array(SYNTH_SAMPLE_COUNT);
+    audible.forEach((entry, sourceIndex) => {
+      // Equal-power pan spread so left/right differ deterministically per source.
+      const pan = audible.length > 1 ? (sourceIndex / (audible.length - 1)) * 2 - 1 : 0;
+      const leftGain = Math.cos(((pan + 1) / 2) * (Math.PI / 2));
+      const rightGain = Math.sin(((pan + 1) / 2) * (Math.PI / 2));
+      const pcm = entry.pcm;
+      for (let index = 0; index < SYNTH_SAMPLE_COUNT; index += 1) {
+        programLeft[index] += pcm[index] * leftGain;
+        programRight[index] += pcm[index] * rightGain;
+      }
+    });
+
+    // Master level is measured from the program RMS dBFS: combine the L and R
+    // channel power (the louder-summing measure, not a -6 dB mono fold-down) so a
+    // hard-panned full-scale pair still reads full.
+    const masterLevel = audible.length > 0 ? rmsDbfsToLevel(stereoRmsDbfs(programLeft, programRight)) : 0;
+    const loudnessLufs =
+      audible.length > 0 ? round1(computeShortTermLufs(programLeft, programRight, SYNTH_SAMPLE_RATE)) : -60;
+    // Run the brickwall limiter against whichever channel is hottest so the
+    // master limiter activity reflects a real program-peak overshoot.
+    const programGainReductionDb = Math.max(
+      peakLimiterGainReductionDb(programLeft, PROGRAM_LIMITER_THRESHOLD_DBFS),
+      peakLimiterGainReductionDb(programRight, PROGRAM_LIMITER_THRESHOLD_DBFS)
     );
-    const limiterActive = participants.some((channel) => channel.limiterActive) || masterLevel >= LIMITER_THRESHOLD;
+    const limiterActive = participants.some((channel) => channel.limiterActive) || programGainReductionDb > 0;
+
     const boostingCount = participants.filter((channel) => channel.status === "boosting").length;
     const duckingCount = participants.filter((channel) => channel.status === "ducking").length;
     const mutedCount = participants.filter((channel) => channel.muted).length;
@@ -76,7 +188,7 @@ export class NativeAudioMixSessionSimulator {
     return {
       status: warnings.length > 0 ? "warning" : "live",
       masterLevel,
-      loudnessLufs: limiterActive ? -14 : -16,
+      loudnessLufs,
       limiterActive,
       mixedFrameCount: this.mixedFrameCount,
       participants,
@@ -144,24 +256,71 @@ export class NativeCaptionTrackSimulator {
   }
 }
 
-function buildParticipantChannel(channel: NativeAudioMixChannelInput): NativeMediaCoreParticipantAudioChannel {
+type MeasuredParticipantChannel = {
+  channel: NativeMediaCoreParticipantAudioChannel;
+  /** Post-gain synthesized PCM, summed into the program mix. */
+  pcm: Float32Array;
+};
+
+// Build a participant channel whose `outputLevel` and `limiterActive` are
+// MEASURED from a synthesized signal: synthesize the input PCM, apply the smart
+// + manual gain, then meter the post-gain buffer's RMS (outputLevel) and run the
+// brickwall limiter to see whether it would reduce the channel (limiterActive).
+function measureParticipantChannel(channel: NativeAudioMixChannelInput): MeasuredParticipantChannel {
   const smartGainDb = calculateGain(channel.inputLevel);
   const gainDb = channel.muted ? -60 : clamp(smartGainDb + (channel.manualGainDb ?? 0), -12, 12);
   const noiseSuppression = channel.noiseSuppression || channel.inputLevel < 35;
-  const outputLevel = channel.muted ? 0 : clamp(Math.round(channel.inputLevel + gainDb * 4), 0, 100);
-  const limiterActive = outputLevel >= LIMITER_THRESHOLD;
+
+  const input = synthesizeParticipantPcm(channel);
+  const gainLinear = channel.muted ? 0 : gainDbToLinear(gainDb);
+  const postGain = new Float32Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    postGain[index] = input[index] * gainLinear;
+  }
+
+  const outputLevel = channel.muted ? 0 : rmsDbfsToLevel(computeRmsDbfs(postGain));
+  // The channel limiter would engage if the synthesized post-gain peak exceeds
+  // the channel threshold; reuse the level-based threshold the protocol uses.
+  const limiterActive = !channel.muted && (peakLimiterGainReductionDb(postGain, channelLimiterThresholdDbfs()) > 0 || outputLevel >= LIMITER_THRESHOLD);
 
   return {
-    participantId: channel.participantId,
-    inputLevel: channel.inputLevel,
-    outputLevel,
-    gainDb,
-    manualGainDb: channel.manualGainDb,
-    noiseSuppression,
-    limiterActive,
-    muted: channel.muted,
-    status: getStatus(channel.muted, gainDb)
+    channel: {
+      participantId: channel.participantId,
+      inputLevel: channel.inputLevel,
+      outputLevel,
+      gainDb,
+      manualGainDb: channel.manualGainDb,
+      noiseSuppression,
+      limiterActive,
+      muted: channel.muted,
+      status: getStatus(channel.muted, gainDb)
+    },
+    pcm: postGain
   };
+}
+
+// The channel-level brickwall threshold expressed in dBFS: the 0-100 LIMITER
+// threshold maps to the amplitude a sine of that level would reach.
+function channelLimiterThresholdDbfs(): number {
+  const amplitude = LIMITER_THRESHOLD / 100;
+  // amplitude is the sine peak; convert to dBFS of that peak.
+  return 20 * Math.log10(amplitude);
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+// Combined RMS dBFS of a stereo pair: the RMS of the average channel power, so
+// equal-power-panned sources contribute their full level instead of being
+// halved by a mono fold-down.
+function stereoRmsDbfs(left: Float32Array, right: Float32Array): number {
+  const leftDbfs = computeRmsDbfs(left);
+  const rightDbfs = computeRmsDbfs(right);
+  const leftPower = dbfsToLinear(leftDbfs) ** 2;
+  const rightPower = dbfsToLinear(rightDbfs) ** 2;
+  const meanPower = (leftPower + rightPower) / 2;
+  return linearToDbfs(Math.sqrt(meanPower));
 }
 
 function calculateGain(level: number) {
