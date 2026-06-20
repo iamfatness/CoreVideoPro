@@ -36,6 +36,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly string _currentRoomId;
     private readonly string _currentRoomName;
     private AudioMixerWindow? _audioMixerWindow;
+    private ProductionSettingsWindow? _productionSettingsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
 
     [ObservableProperty]
@@ -1697,6 +1698,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             _audioMixerWindow.WindowClosed -= OnAudioMixerWindowClosed;
             _audioMixerWindow = null;
+        }
+    }
+
+    [RelayCommand]
+    private void OpenProductionSettings()
+    {
+        if (_productionSettingsWindow is not null)
+        {
+            _productionSettingsWindow.Activate();
+            return;
+        }
+
+        _productionSettingsWindow = new ProductionSettingsWindow(this);
+        _productionSettingsWindow.WindowClosed += OnProductionSettingsWindowClosed;
+        _productionSettingsWindow.Activate();
+    }
+
+    private void OnProductionSettingsWindowClosed(object? sender, EventArgs e)
+    {
+        if (_productionSettingsWindow is not null)
+        {
+            _productionSettingsWindow.WindowClosed -= OnProductionSettingsWindowClosed;
+            _productionSettingsWindow = null;
         }
     }
 

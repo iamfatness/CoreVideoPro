@@ -1,0 +1,317 @@
+<Window
+    x:Class="CoreVideoPro.WinUI.Views.ProductionSettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls"
+    Title="Production settings">
+    <Grid Background="{StaticResource StudioBackgroundBrush}" Padding="16" RowSpacing="14">
+        <Grid.Resources>
+            <ResourceDictionary>
+                <ResourceDictionary.MergedDictionaries>
+                    <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+                </ResourceDictionary.MergedDictionaries>
+
+                <Style x:Key="SettingsLabel" TargetType="TextBlock">
+                    <Setter Property="FontSize" Value="10" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
+                    <Setter Property="CharacterSpacing" Value="40" />
+                </Style>
+
+                <Style x:Key="SettingsValue" TargetType="TextBlock">
+                    <Setter Property="FontSize" Value="12" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Foreground" Value="{StaticResource StudioTextBrush}" />
+                    <Setter Property="TextWrapping" Value="WrapWholeWords" />
+                </Style>
+            </ResourceDictionary>
+        </Grid.Resources>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" ColumnSpacing="14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+                <TextBlock Text="Production settings"
+                           FontSize="19"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource StudioTextBrush}" />
+                <TextBlock Text="{x:Bind ViewModel.StreamConfigurationSummary, Mode=OneWay}"
+                           Style="{StaticResource OperatorSummary}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Border Style="{StaticResource OperatorReadoutBorder}" MinWidth="148">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="CANVAS" Style="{StaticResource SettingsLabel}" />
+                        <TextBlock Text="{x:Bind ViewModel.CanvasProfileSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource OperatorReadoutBorder}" MinWidth="148">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="STREAM" Style="{StaticResource SettingsLabel}" />
+                        <TextBlock Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource OperatorReadoutBorder}" MinWidth="148">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="RECORD" Style="{StaticResource SettingsLabel}" />
+                        <TextBlock Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <Grid ColumnSpacing="14" RowSpacing="14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.05*" />
+                    <ColumnDefinition Width="1.2*" />
+                    <ColumnDefinition Width="1.05*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Render profiles" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Set the canvas independently from stream and record output profiles."
+                                   Style="{StaticResource OperatorSummary}" />
+                        <Grid ColumnSpacing="10" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="128" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <ComboBox Header="Canvas size"
+                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                      SelectedValue="{x:Bind ViewModel.CanvasResolution, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                            <ComboBox Grid.Column="1"
+                                      Header="FPS"
+                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                      SelectedValue="{x:Bind ViewModel.CanvasFps, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+
+                            <ComboBox Grid.Row="1"
+                                      Header="Stream render"
+                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                      SelectedValue="{x:Bind ViewModel.StreamRenderResolution, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                            <ComboBox Grid.Row="1" Grid.Column="1"
+                                      Header="FPS"
+                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                      SelectedValue="{x:Bind ViewModel.StreamRenderFps, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+
+                            <ComboBox Grid.Row="2"
+                                      Header="Record render"
+                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                      SelectedValue="{x:Bind ViewModel.RecordingRenderResolution, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                            <ComboBox Grid.Row="2" Grid.Column="1"
+                                      Header="FPS"
+                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                      SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Streaming destinations" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <CheckBox Content="RTMP / RTMPS"
+                                      IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
+                            <CheckBox Grid.Column="1"
+                                      Content="NDI program"
+                                      IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
+                            <CheckBox Grid.Column="2"
+                                      Content="SRT transport"
+                                      IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
+                        </Grid>
+                        <TextBlock Text="{x:Bind ViewModel.StreamDestinationSummary, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+
+                        <Grid ColumnSpacing="10" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="132" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox Header="Protocol"
+                                      ItemsSource="{x:Bind ViewModel.StreamRtmpProtocolOptions}"
+                                      SelectedItem="{x:Bind ViewModel.StreamRtmpProtocol, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                            <TextBox Grid.Column="1"
+                                     Header="RTMP server URL"
+                                     PlaceholderText="rtmps://live.example.com/app"
+                                     Text="{x:Bind ViewModel.StreamRtmpServerUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Row="1" Grid.ColumnSpan="2"
+                                     Header="RTMP stream key"
+                                     PlaceholderText="Paste destination stream key"
+                                     Text="{x:Bind ViewModel.StreamRtmpStreamKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
+                                       Text="{x:Bind ViewModel.StreamRtmpSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Master audio" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="5">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="18" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="L" Foreground="{StaticResource StudioMutedBrush}" FontWeight="Bold" />
+                                    <cvcontrols:AudioLevelMeter Grid.Column="1"
+                                                                Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                                                                SegmentCount="30" />
+                                </Grid>
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="18" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="R" Foreground="{StaticResource StudioMutedBrush}" FontWeight="Bold" />
+                                    <cvcontrols:AudioLevelMeter Grid.Column="1"
+                                                                Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
+                                                                SegmentCount="30" />
+                                </Grid>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="4" MinWidth="118">
+                                <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
+                                           FontSize="16"
+                                           FontWeight="Bold"
+                                           Foreground="{StaticResource StudioTextBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.TruePeakLabel, Mode=OneWay}"
+                                           Style="{StaticResource OperatorSummary}" />
+                                <TextBlock Text="{x:Bind ViewModel.Transport.MasterMeterLabel, Mode=OneWay}"
+                                           Style="{StaticResource OperatorSummary}" />
+                            </StackPanel>
+                        </Grid>
+                        <CheckBox Content="{x:Bind ViewModel.MasterLimiterModeLabel, Mode=OneWay}"
+                                  IsChecked="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="NDI output" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBox Header="Program name"
+                                 Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBox Header="Group"
+                                 Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="{x:Bind ViewModel.StreamNdiSummary, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="SRT transport" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="10" RowSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="132" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox Header="Mode"
+                                      ItemsSource="{x:Bind ViewModel.StreamSrtModeOptions}"
+                                      SelectedItem="{x:Bind ViewModel.StreamSrtMode, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                            <TextBox Grid.Column="1"
+                                     Header="Port"
+                                     Text="{x:Bind ViewModel.StreamSrtPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Row="1" Grid.ColumnSpan="2"
+                                     Header="Host"
+                                     PlaceholderText="receiver.example.com"
+                                     Text="{x:Bind ViewModel.StreamSrtHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Row="2"
+                                     Header="Latency ms"
+                                     Text="{x:Bind ViewModel.StreamSrtLatencyMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <ComboBox Grid.Row="2" Grid.Column="1"
+                                      Header="Key length"
+                                      ItemsSource="{x:Bind ViewModel.StreamSrtKeyLengthOptions}"
+                                      SelectedItem="{x:Bind ViewModel.StreamSrtKeyLength, Mode=TwoWay}"
+                                      HorizontalAlignment="Stretch" />
+                            <TextBox Grid.Row="3" Grid.ColumnSpan="2"
+                                     Header="Stream ID"
+                                     PlaceholderText="Optional receiver routing ID"
+                                     Text="{x:Bind ViewModel.StreamSrtStreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Row="4" Grid.ColumnSpan="2"
+                                     Header="Passphrase"
+                                     Text="{x:Bind ViewModel.StreamSrtPassphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </Grid>
+                        <TextBlock Text="{x:Bind ViewModel.StreamSrtSummary, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource OperatorSectionBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Recording" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Header="Format"
+                                     Text="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBox Grid.Column="1"
+                                     Header="Quality"
+                                     Text="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        </Grid>
+                        <TextBox Header="Filename prefix"
+                                 Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBox Header="Target folder"
+                                 Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="{x:Bind ViewModel.RecordingOptionsSummary, Mode=OneWay}"
+                                   Style="{StaticResource OperatorSummary}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+    </Grid>
+</Window>

@@ -725,198 +725,9 @@
                         </StackPanel>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            ToolTipService.ToolTip="Configure stream destinations and recording options">
+                            Command="{x:Bind ViewModel.OpenProductionSettingsCommand}"
+                            ToolTipService.ToolTip="Open production settings">
                         <FontIcon Glyph="&#xE713;" FontSize="16" />
-                        <Button.Flyout>
-                            <Flyout Placement="Top">
-                                <ScrollViewer MaxHeight="560" VerticalScrollBarVisibility="Auto">
-                                <StackPanel Spacing="14" Width="480">
-                                    <TextBlock Text="Output settings" FontSize="14" FontWeight="SemiBold" />
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="Render profiles" Style="{StaticResource OutputStatLabel}" />
-                                        <Grid ColumnSpacing="8" RowSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="132" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <ComboBox Header="Stream size"
-                                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
-                                                      SelectedValue="{x:Bind ViewModel.StreamRenderResolution, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                            <ComboBox Grid.Column="1"
-                                                      Header="FPS"
-                                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
-                                                      SelectedValue="{x:Bind ViewModel.StreamRenderFps, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
-                                                       Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       TextWrapping="WrapWholeWords" />
-                                            <ComboBox Grid.Row="2"
-                                                      Header="Record size"
-                                                      ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
-                                                      SelectedValue="{x:Bind ViewModel.RecordingRenderResolution, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                            <ComboBox Grid.Row="2" Grid.Column="1"
-                                                      Header="FPS"
-                                                      ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
-                                                      SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                            <TextBlock Grid.Row="3" Grid.ColumnSpan="2"
-                                                       Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       TextWrapping="WrapWholeWords" />
-                                        </Grid>
-                                    </StackPanel>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="Stream destinations" Style="{StaticResource OutputStatLabel}" />
-                                        <StackPanel Orientation="Horizontal" Spacing="10">
-                                            <CheckBox Content="RTMP"
-                                                      IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
-                                            <CheckBox Content="NDI"
-                                                      IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
-                                            <CheckBox Content="SRT"
-                                                      IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
-                                        </StackPanel>
-                                        <TextBlock Text="{x:Bind ViewModel.StreamDestinationSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                        <TextBlock Text="{x:Bind ViewModel.StreamConfigurationSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioAccentBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="RTMP" Style="{StaticResource OutputStatLabel}" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="120" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <ComboBox Header="Protocol"
-                                                      ItemsSource="{x:Bind ViewModel.StreamRtmpProtocolOptions}"
-                                                      SelectedItem="{x:Bind ViewModel.StreamRtmpProtocol, Mode=TwoWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                            <TextBox Grid.Column="1"
-                                                     Header="Server URL"
-                                                     PlaceholderText="live.example.com/app"
-                                                     Text="{x:Bind ViewModel.StreamRtmpServerUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
-                                        <TextBox Header="Stream key"
-                                                 PlaceholderText="Paste stream key"
-                                                 Text="{x:Bind ViewModel.StreamRtmpStreamKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <TextBlock Text="{x:Bind ViewModel.StreamRtmpSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="NDI" Style="{StaticResource OutputStatLabel}" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBox Header="Program name"
-                                                     Text="{x:Bind ViewModel.StreamNdiProgramName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Column="1"
-                                                     Header="Group"
-                                                     Text="{x:Bind ViewModel.StreamNdiGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
-                                        <TextBlock Text="{x:Bind ViewModel.StreamNdiSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="SRT" Style="{StaticResource OutputStatLabel}" />
-                                        <Grid ColumnSpacing="8" RowSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="132" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <ComboBox Header="Mode"
-                                                      ItemsSource="{x:Bind ViewModel.StreamSrtModeOptions}"
-                                                      SelectedItem="{x:Bind ViewModel.StreamSrtMode, Mode=TwoWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                            <TextBox Grid.Column="1"
-                                                     Header="Port"
-                                                     Text="{x:Bind ViewModel.StreamSrtPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Row="1" Grid.ColumnSpan="2"
-                                                     Header="Host"
-                                                     PlaceholderText="receiver.example.com"
-                                                     Text="{x:Bind ViewModel.StreamSrtHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Row="2"
-                                                     Header="Latency ms"
-                                                     Text="{x:Bind ViewModel.StreamSrtLatencyMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <ComboBox Grid.Row="2" Grid.Column="1"
-                                                      Header="Key length"
-                                                      ItemsSource="{x:Bind ViewModel.StreamSrtKeyLengthOptions}"
-                                                      SelectedItem="{x:Bind ViewModel.StreamSrtKeyLength, Mode=TwoWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                            <TextBox Grid.Row="3" Grid.ColumnSpan="2"
-                                                     Header="Stream ID"
-                                                     PlaceholderText="Optional receiver routing ID"
-                                                     Text="{x:Bind ViewModel.StreamSrtStreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Row="4" Grid.ColumnSpan="2"
-                                                     Header="Passphrase"
-                                                     Text="{x:Bind ViewModel.StreamSrtPassphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
-                                        <TextBlock Text="{x:Bind ViewModel.StreamSrtSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="Record options" Style="{StaticResource OutputStatLabel}" />
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBox Header="Format"
-                                                     Text="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Column="1"
-                                                     Header="Quality"
-                                                     Text="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        </Grid>
-                                        <TextBox Header="Filename prefix"
-                                                 Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <TextBox Header="Target folder"
-                                                 Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                        <TextBlock Text="{x:Bind ViewModel.RecordingOptionsSummary, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                </StackPanel>
-                                </ScrollViewer>
-                            </Flyout>
-                        </Button.Flyout>
                     </Button>
                 </StackPanel>
 
@@ -1000,44 +811,63 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <StackPanel Spacing="4" MinWidth="180">
-                            <Grid>
-                                <TextBlock Text="MASTER AUDIO" FontSize="10" FontWeight="ExtraBold"
-                                           Foreground="#8FDCC8" CharacterSpacing="60" />
-                                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                        <Border MinWidth="292"
+                                Padding="10,7"
+                                Background="#0C1118"
+                                BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6">
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="MASTER"
+                                               FontSize="10"
+                                               FontWeight="ExtraBold"
+                                               Foreground="#8FDCC8"
+                                               CharacterSpacing="60" />
+                                    <Grid ColumnSpacing="7">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="12" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="L" FontSize="9" FontWeight="ExtraBold"
+                                                   Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
+                                        <cvcontrols:AudioLevelMeter Grid.Column="1"
+                                                                    Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                                                                    SegmentCount="24" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="7">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="12" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="R" FontSize="9" FontWeight="ExtraBold"
+                                                   Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
+                                        <cvcontrols:AudioLevelMeter Grid.Column="1"
+                                                                    Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
+                                                                    SegmentCount="24" />
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="2" MinWidth="88" VerticalAlignment="Center">
                                     <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
-                                               FontSize="10" FontWeight="SemiBold" Foreground="#E8F2EC" />
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Foreground="#E8F2EC"
+                                               HorizontalAlignment="Right" />
+                                    <TextBlock Text="{x:Bind ViewModel.TruePeakLabel, Mode=OneWay}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               HorizontalAlignment="Right" />
                                     <TextBlock Text="{x:Bind ViewModel.Transport.MasterMeterLabel, Mode=OneWay}"
-                                               FontSize="10" Foreground="#6C7A72" />
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               HorizontalAlignment="Right" />
                                 </StackPanel>
                             </Grid>
-                            <Grid ColumnSpacing="6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="120" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="L" FontSize="9" FontWeight="ExtraBold"
-                                           Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
-                                <Border Grid.Column="1" Height="6" CornerRadius="3" Background="#14FFFFFF">
-                                    <Border HorizontalAlignment="Left" Height="6" CornerRadius="3"
-                                            Width="{x:Bind ViewModel.Transport.MasterLevelLeftBarWidth, Mode=OneWay}"
-                                            Background="#3DDC97" />
-                                </Border>
-                            </Grid>
-                            <Grid ColumnSpacing="6">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="120" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="R" FontSize="9" FontWeight="ExtraBold"
-                                           Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
-                                <Border Grid.Column="1" Height="6" CornerRadius="3" Background="#14FFFFFF">
-                                    <Border HorizontalAlignment="Left" Height="6" CornerRadius="3"
-                                            Width="{x:Bind ViewModel.Transport.MasterLevelRightBarWidth, Mode=OneWay}"
-                                            Background="#3DDC97" />
-                                </Border>
-                            </Grid>
-                        </StackPanel>
+                        </Border>
 
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                             <FontIcon Glyph="&#xE767;" FontSize="16" Foreground="#C6D4CC" />
