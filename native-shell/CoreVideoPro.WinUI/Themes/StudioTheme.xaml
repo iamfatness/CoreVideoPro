@@ -67,8 +67,9 @@
     </Style>
 
     <Style x:Key="StudioNavButton" TargetType="Button" BasedOn="{StaticResource StudioGhostButton}">
-        <Setter Property="Padding" Value="16,10" />
-        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Padding" Value="12,8" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="FontSize" Value="12" />
     </Style>
 </ResourceDictionary>

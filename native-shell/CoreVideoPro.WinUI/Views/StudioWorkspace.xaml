@@ -105,9 +105,9 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="18,14" Background="{StaticResource StudioSurfaceBrush}"
+        <Border Grid.Row="0" Padding="12,10" Background="{StaticResource StudioSurfaceBrush}"
                   BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,0,0,1">
-            <Grid ColumnSpacing="16">
+            <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -126,7 +126,12 @@
                     </StackPanel>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4">
+                <ScrollViewer Grid.Column="1"
+                              HorizontalScrollBarVisibility="Auto"
+                              HorizontalScrollMode="Enabled"
+                              VerticalScrollBarVisibility="Disabled"
+                              VerticalScrollMode="Disabled">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4">
                     <Button Content="Studio" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.StudioTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StudioTabChrome.BorderBrush, Mode=OneWay}"
@@ -180,9 +185,10 @@
                             BorderBrush="{x:Bind ViewModel.AutomationTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.AutomationTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="automation" />
-                </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <Button Command="{x:Bind ViewModel.ToggleEngineCommand}"
                             IsEnabled="{x:Bind ViewModel.CanToggleCapture, Mode=OneWay}"
                             Background="{x:Bind ViewModel.EngineToggleBackground, Mode=OneWay}"
@@ -196,7 +202,7 @@
                         </StackPanel>
                     </Button>
                     <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}" FontSize="11"
-                               Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="260"
+                               Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="180"
                                TextTrimming="CharacterEllipsis" />
                     <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="1"
                             CornerRadius="12" Padding="10,4">
@@ -213,9 +219,9 @@
         <Grid Grid.Row="1" Padding="8" ColumnSpacing="6"
               Visibility="{x:Bind ViewModel.IsStudioTab, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*" MinWidth="170" MaxWidth="240" />
-                <ColumnDefinition Width="5*" MinWidth="420" />
-                <ColumnDefinition Width="2*" MinWidth="160" MaxWidth="230" />
+                <ColumnDefinition Width="190" MinWidth="150" MaxWidth="210" />
+                <ColumnDefinition Width="*" MinWidth="360" />
+                <ColumnDefinition Width="190" MinWidth="140" MaxWidth="210" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -376,10 +382,6 @@
                                             Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
                                             Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
                                             Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}" />
-                                        <cvcontrols:VideoSurfaceHost
-                                            VerticalAlignment="Top" HorizontalAlignment="Right"
-                                            MaxWidth="160" MaxHeight="92" Margin="8" Opacity="0.88"
-                                            SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
@@ -410,10 +412,6 @@
                                             Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
                                             Routes="{x:Bind ViewModel.PreviewSceneRoutes, Mode=OneWay}"
                                             IsPreview="True" />
-                                        <cvcontrols:VideoSurfaceHost
-                                            VerticalAlignment="Top" HorizontalAlignment="Right"
-                                            MaxWidth="150" MaxHeight="86" Margin="8" Opacity="0.82"
-                                            SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
@@ -595,7 +593,11 @@
 
         <Border Grid.Row="2" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
                 Background="#11161A">
-            <Grid ColumnSpacing="8">
+            <Grid ColumnSpacing="8" RowSpacing="6">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -643,22 +645,22 @@
                 </StackPanel>
 
                 <!-- Center: output status + transport controls -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                             HorizontalAlignment="Center" VerticalAlignment="Center">
                     <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" VerticalAlignment="Center"
                                Foreground="{StaticResource StudioMutedBrush}" FontSize="11" Margin="0,0,8,0"
-                               MaxWidth="220" TextTrimming="CharacterEllipsis" />
-                    <Button Style="{StaticResource TakeButton}" MinWidth="96" MinHeight="44"
+                               MaxWidth="160" TextTrimming="CharacterEllipsis" />
+                    <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
                             Command="{x:Bind ViewModel.TakeCommand}"
                             IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
                             ToolTipService.ToolTip="Promote the Preview scene to Program (PVW → PGM).">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="14" />
+                            <TextBlock Text="Take" FontWeight="ExtraBold" FontSize="13" />
                             <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.6" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="96" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
-                            FontSize="14" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
+                    <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                            FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RecordButtonForeground, Mode=OneWay}">
@@ -670,8 +672,8 @@
                             <TextBlock Text="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="96" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
-                            FontSize="14" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
+                    <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                            FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}">
@@ -680,7 +682,7 @@
                             <TextBlock Text="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="44" MinHeight="44" CornerRadius="8" BorderThickness="1"
+                    <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
                             ToolTipService.ToolTip="Configure stream destinations and recording options">
                         <FontIcon Glyph="&#xE713;" FontSize="16" />
                         <Button.Flyout>
@@ -731,9 +733,9 @@
                 </StackPanel>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->
-                <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Auto"
+                <ScrollViewer Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                             <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
                             <TextBlock Text="OUTPUTS" FontSize="11" FontWeight="ExtraBold"
