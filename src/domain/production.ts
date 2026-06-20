@@ -41,7 +41,7 @@ export type Participant = {
   health: FeedHealth;
 };
 
-export type CaptureDeviceVendor = "blackmagic" | "aja";
+export type CaptureDeviceVendor = "blackmagic" | "aja" | "corevideo";
 
 export type CaptureDeviceConnectionState =
   | "disconnected"
@@ -67,6 +67,9 @@ export type CaptureDeviceState = {
   connectionState: CaptureDeviceConnectionState;
   signalPresent: boolean;
   droppedFrames: number;
+  // Real per-source frame counter (F1): populated-pixel frames this device has
+  // published. Mirrors CaptureDeviceInfo.framesIngested in the native core.
+  framesIngested: number;
   audioSyncOffsetMs: number;
 };
 

@@ -1,11 +1,17 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace corevideo::modules {
+
+// ===========================================================================
+// VIDEO frame transport (F1 — real frame-pixel transport)
+// ===========================================================================
 
 struct VideoFrame {
   std::string participantId;
@@ -26,6 +32,86 @@ struct VideoFrame {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
   }
+};
+
+// Bounded, ref-counted BGRA frame pool. High-rate sources (test pattern today,
+// UVC/DeckLink/SRT later) acquire a recycled buffer per frame instead of
+// allocating, and back-pressure surfaces as a dropped-frame counter when every
+// buffer is still referenced downstream.
+//
+// A buffer handed out by `acquire()` is wrapped in a shared_ptr whose deleter
+// returns it to the free list, so the buffer can be aliased directly into a
+// VideoFrame::pixels (which is `shared_ptr<const std::vector<uint8_t>>`). The
+// pool stays alive as long as any outstanding buffer references it.
+class FramePool : public std::enable_shared_from_this<FramePool> {
+ public:
+  static std::shared_ptr<FramePool> create(size_t capacity, size_t bytesPerBuffer) {
+    // enable_shared_from_this requires construction through a shared_ptr.
+    return std::shared_ptr<FramePool>(new FramePool(capacity, bytesPerBuffer));
+  }
+
+  // Acquire a recycled buffer sized to at least `bytes`. Returns nullptr when
+  // the pool is exhausted (all `capacity` buffers are still referenced); the
+  // caller treats that as a dropped frame. The returned buffer's contents are
+  // not cleared — the caller fully overwrites it.
+  std::shared_ptr<std::vector<uint8_t>> acquire(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<uint8_t>* raw = nullptr;
+    if (!free_.empty()) {
+      raw = free_.back();
+      free_.pop_back();
+    } else if (allocated_ < capacity_) {
+      raw = new std::vector<uint8_t>();
+      ++allocated_;
+    } else {
+      droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+      return nullptr;
+    }
+    if (raw->size() < bytes) {
+      raw->resize(bytes);
+    }
+    ++outstanding_;
+    auto self = shared_from_this();
+    return std::shared_ptr<std::vector<uint8_t>>(raw, [self](std::vector<uint8_t>* buffer) {
+      self->release(buffer);
+    });
+  }
+
+  [[nodiscard]] int64_t droppedFrames() const { return droppedFrames_.load(std::memory_order_relaxed); }
+  [[nodiscard]] size_t capacity() const { return capacity_; }
+  [[nodiscard]] size_t outstanding() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return outstanding_;
+  }
+
+ private:
+  FramePool(size_t capacity, size_t bytesPerBuffer)
+      : capacity_(capacity == 0 ? 1 : capacity), bytesPerBuffer_(bytesPerBuffer) {}
+
+  void release(std::vector<uint8_t>* buffer) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (outstanding_ > 0) {
+      --outstanding_;
+    }
+    // Keep capacity-bounded buffers warm; never grow the free list past the
+    // pool capacity so memory stays bounded.
+    if (free_.size() < capacity_) {
+      free_.push_back(buffer);
+    } else {
+      delete buffer;
+      if (allocated_ > 0) {
+        --allocated_;
+      }
+    }
+  }
+
+  mutable std::mutex mutex_;
+  const size_t capacity_;
+  const size_t bytesPerBuffer_;
+  size_t allocated_ = 0;
+  size_t outstanding_ = 0;
+  std::vector<std::vector<uint8_t>*> free_;
+  std::atomic<int64_t> droppedFrames_{0};
 };
 
 struct AudioFrame {
@@ -258,6 +344,10 @@ struct CaptureDeviceInfo {
   std::string connectionState = "detected";
   bool signalPresent = false;
   int64_t droppedFrames = 0;
+  // Real per-source frame counter (F1): the number of populated-pixel frames
+  // this device has published through pollVideoFrames(). Stays 0 for
+  // metadata-only / probe-only devices until a real adapter is producing data.
+  int64_t framesIngested = 0;
   int audioSyncOffsetMs = 0;
   std::string warning;
 };
@@ -279,6 +369,45 @@ class IZoomCaptureSource {
   virtual ~IZoomCaptureSource() = default;
   virtual std::vector<VideoFrame> pollVideoFrames() = 0;
   virtual std::vector<AudioFrame> pollAudioFrames() = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Decoder-stage seam (F1).
+//
+// Compressed sources (SRT ingest, NDI receive) deliver encoded packets, not
+// pixels. This is the *seam only*: an interface that turns codec-tagged packets
+// into populated-pixel VideoFrames so those sources can join the same F1 frame
+// path the test pattern uses. No codec is implemented here — a real FFmpeg
+// libavcodec decoder lives behind COREVIDEO_ENABLE_DEV_ADAPTERS +
+// COREVIDEO_WITH_FFMPEG_DECODE and is wired in later (Phase B). The default
+// build resolves the factory to nullptr, so callers must treat a missing
+// decoder as "no pixels yet" and fall back to the synthetic slate.
+// ---------------------------------------------------------------------------
+
+struct EncodedVideoPacket {
+  std::string participantId;
+  // Lowercase codec id, e.g. "h264", "hevc", "av1". Empty means unknown; a real
+  // decoder rejects packets whose codec it was not opened for.
+  std::string codec;
+  int64_t timestampMs = 0;
+  int64_t frameId = 0;
+  bool keyframe = false;
+  std::vector<uint8_t> data;
+};
+
+class IVideoDecoder {
+ public:
+  virtual ~IVideoDecoder() = default;
+  // Lowercase codec id this decoder instance was opened for.
+  [[nodiscard]] virtual std::string codec() const = 0;
+  // True only once a real decode backend is built and initialized. The default
+  // build has no decoder, so this is the honesty gate the capture sources and
+  // profileCapabilities() consult before claiming decoded pixels.
+  [[nodiscard]] virtual bool ready() const = 0;
+  // Decode one packet. Returns false (and leaves `out` untouched) when the
+  // decoder is not ready, the codec does not match, or the backend produced no
+  // frame for this packet (e.g. a packet that only advances reference state).
+  virtual bool decode(const EncodedVideoPacket& packet, VideoFrame& out) = 0;
 };
 
 class ICompositor {
@@ -347,5 +476,18 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
+
+// Deterministic test-pattern capture device. Always available (it is part of
+// the stub) and emits real BGRA frames through pollVideoFrames() so the F1
+// frame path can be exercised end to end without hardware. `id` keys the
+// device so it can be routed via capture:<id> into scenes/program.
+std::unique_ptr<ICaptureDevice> createTestPatternCaptureDevice(
+    std::string id = "test-pattern-1", int width = 1280, int height = 720, int frameRate = 30);
+
+// Decoder-stage seam factory (F1). Returns a real FFmpeg-backed decoder for the
+// requested codec only when COREVIDEO_ENABLE_DEV_ADAPTERS +
+// COREVIDEO_WITH_FFMPEG_DECODE are built; otherwise returns nullptr so the
+// default build never claims decode it cannot do.
+std::unique_ptr<IVideoDecoder> createVideoDecoder(const std::string& codec);
 
 }  // namespace corevideo::modules
