@@ -32,16 +32,15 @@
                             <Border Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
                                     <TextBlock Text="Loudness" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock FontSize="12">
-                                        <Run Text="{x:Bind ViewModel.AudioMix.LoudnessLufs, Mode=OneWay}" />
-                                        <Run Text=" LUFS" />
-                                    </TextBlock>
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
+                                               FontSize="12" />
                                 </StackPanel>
                             </Border>
                             <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
                                     <TextBlock Text="Limiter" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="Idle" FontSize="12" />
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}"
+                                               FontSize="12" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -89,7 +88,8 @@
                             <Border Style="{StaticResource OperatorReadoutBorder}">
                                 <StackPanel Spacing="2">
                                     <TextBlock Text="Integrated" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="-16 LUFS" FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
+                                               FontSize="12" FontWeight="SemiBold" />
                                 </StackPanel>
                             </Border>
                             <Border Grid.Column="1" Style="{StaticResource OperatorReadoutBorder}">

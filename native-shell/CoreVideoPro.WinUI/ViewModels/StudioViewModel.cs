@@ -354,11 +354,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string PreviewSceneSummary => PreviewScene.Name;
 
-    public string LoudnessTargetLabel =>
-        $"target {(int)Math.Round(_bridge.LastSnapshot?.AudioMixSession.LoudnessLufs ?? -16)} LUFS";
+    public string LoudnessTargetLabel => "target -16 LUFS";
 
     public string LoudnessLevelLabel =>
-        _bridge.LastSnapshot?.AudioMixSession.LimiterActive == true ? "limiting" : "on target";
+        _bridge.LastSnapshot?.AudioMixSession is { } audio
+            ? audio.LimiterActive
+                ? "limiting"
+                : audio.LoudnessLufs <= -59
+                    ? "awaiting audio"
+                    : audio.LoudnessLufs < -18
+                        ? "below target"
+                        : audio.LoudnessLufs > -14
+                            ? "above target"
+                            : "on target"
+            : "awaiting audio";
 
     public string TruePeakLabel => "—";
 
@@ -705,7 +714,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<ParticipantListItem> ParticipantListItems { get; private set; } = [];
 
-    public string ProgramResolutionLabel =>
+    private string _programResolutionLabel = "1080p60";
+    public string ProgramResolutionLabel
+    {
+        get => _programResolutionLabel;
+        private set => SetProperty(ref _programResolutionLabel, value);
+    }
+
+    private string ProgramFrameResolutionLabel =>
         ProgramSurface.LastFrame is { Width: > 0, Height: > 0 } frame
             ? $"{frame.Width}×{frame.Height} {frame.Fps:0.#}"
             : "1920×1080 60";
@@ -2045,9 +2061,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(RecommendedConfidence));
         OnPropertyChanged(nameof(AutoProductionReason));
         OnPropertyChanged(nameof(CaptionQualitySummary));
+        RefreshAudioReadoutBindings();
+    }
+
+    private void RefreshAudioReadoutBindings()
+    {
         OnPropertyChanged(nameof(AudioMix));
         OnPropertyChanged(nameof(LoudnessTargetLabel));
         OnPropertyChanged(nameof(LoudnessLevelLabel));
+        OnPropertyChanged(nameof(TruePeakLabel));
     }
 
     private void RefreshAudioMixChannels()
@@ -2465,6 +2487,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Always apply meeting/ZoomStatus/roster fields from the snapshot BEFORE any
         // early-return so meeting status keeps updating even when capture is unsubscribed.
         ApplyMeetingFieldsFromSnapshot(snapshot);
+        var programResolutionLabel = ResolveProgramResolutionLabel(snapshot);
+        ProgramResolutionLabel = programResolutionLabel;
+        Transport.ApplySnapshot(
+            snapshot,
+            snapshot.Recording?.Active == true,
+            LiveProductionSync.IsStreamingLive(snapshot),
+            programResolutionLabel);
+        RefreshAudioReadoutBindings();
 
         if (!ZoomCaptureSubscribed)
         {
@@ -2484,11 +2514,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext);
         ApplyLiveProductionPatch(patch);
         ApplyGraphicsAndCaptionStateFromSnapshot(snapshot);
-        Transport.ApplySnapshot(
-            snapshot,
-            snapshot.Recording?.Active == true,
-            LiveProductionSync.IsStreamingLive(snapshot),
-            ResolveProgramResolutionLabel(snapshot));
     }
 
     private LiveProductionSync.LiveProductionSyncContext BuildLiveProductionContext() =>
