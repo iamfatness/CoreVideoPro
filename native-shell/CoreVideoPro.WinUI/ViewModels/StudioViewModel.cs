@@ -21,6 +21,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 {
     private const string MultiviewSoloSceneAId = "multiview-solo-a";
     private const string MultiviewSoloSceneBId = "multiview-solo-b";
+    private const string ManualOneUpLayout = "full";
     private const int MaxSrtIngestSources = 8;
 
     private readonly MediaCoreBridgeService _bridge = new();
@@ -457,7 +458,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<ParticipantSurfaceTile> ProgramSceneTiles { get; private set; } = [];
 
-    public string PreviewSceneSummary => PreviewScene.Name;
+    public string ProgramSceneSummary => ResolveOnAirSceneLabel(ActiveSceneId);
+
+    public string PreviewSceneSummary => ResolveOnAirSceneLabel(PreviewSceneId);
 
     public string LowerThirdKeyStatus =>
         $"{ProgramLowerThirdKey.PhaseLabel} - {ProgramLowerThirdKey.SourceLabel}";
@@ -1303,6 +1306,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         RefreshSceneItems();
         OnPropertyChanged(nameof(ProgramScene));
+        OnPropertyChanged(nameof(ProgramSceneSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
         SchedulePreviewRoutingRefresh();
@@ -1313,6 +1318,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
         SchedulePreviewRoutingRefresh();
@@ -1489,7 +1495,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         routes.Add(BuildSoloRoute(scene.Id, tile));
 
         PreviewSceneId = scene.Id;
-        CommandStatus = $"{tile.Participant.Name} queued full-frame on preview";
+        OnPropertyChanged(nameof(PreviewSceneSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
+        CommandStatus = $"{tile.Participant.Name} queued as manual one-up preview";
         SchedulePreviewRoutingRefresh();
     }
 
@@ -1508,9 +1516,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var scene = new Scene
         {
             Id = sceneId,
-            Name = sceneId == MultiviewSoloSceneAId ? "Multiview Solo A" : "Multiview Solo B",
-            Layout = "full",
-            Automation = "Multiview source"
+            Name = "Manual one-up",
+            Layout = ManualOneUpLayout,
+            Automation = "Manual source selection"
         };
 
         _scenes.Add(scene);
@@ -1616,8 +1624,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ActiveSceneId = takenSceneId;
         PreviewSceneId = previousProgramSceneId;
         RefreshPreviewRoutingState();
-        var scene = Scenes.First(s => s.Id == ActiveSceneId);
-        CommandStatus = $"{scene.Name} taken with fade";
+        CommandStatus = $"{ProgramSceneSummary} taken with fade";
         OutputStatus = "Program updated";
 
         if (_bridge.Running)
@@ -5060,9 +5067,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string SceneRailSummary =>
         $"{Scenes.Count} scenes · PGM {ProgramScene.Name} · PVW {PreviewScene.Name}";
 
+    public string SceneRailDisplaySummary =>
+        $"{VisibleScenes.Count} scenes - PGM {ProgramSceneSummary} - PVW {PreviewSceneSummary}";
+
+    private IReadOnlyList<Scene> VisibleScenes =>
+        Scenes
+            .Where(scene => !IsInternalMultiviewSoloScene(scene.Id))
+            .ToList();
+
     private void RefreshSceneItems()
     {
-        SceneItems = Scenes
+        SceneItems = VisibleScenes
             .Select((scene, index) => new SceneDisplayItem
             {
                 Scene = scene,
@@ -5074,7 +5089,57 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             })
             .ToList();
         OnPropertyChanged(nameof(SceneItems));
-        OnPropertyChanged(nameof(SceneRailSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
+    }
+
+    private static bool IsInternalMultiviewSoloScene(string sceneId) =>
+        string.Equals(sceneId, MultiviewSoloSceneAId, StringComparison.Ordinal) ||
+        string.Equals(sceneId, MultiviewSoloSceneBId, StringComparison.Ordinal);
+
+    private string ResolveOnAirSceneLabel(string sceneId)
+    {
+        if (!IsInternalMultiviewSoloScene(sceneId))
+        {
+            return Scenes.FirstOrDefault(scene => scene.Id == sceneId)?.Name ?? "Unknown";
+        }
+
+        var route = GetMutableRoutes(sceneId).FirstOrDefault();
+        if (route is null)
+        {
+            return "Manual one-up";
+        }
+
+        var sourceLabel = ResolveRouteSourceLabel(route);
+        return string.IsNullOrWhiteSpace(sourceLabel)
+            ? "Manual one-up"
+            : $"Manual one-up: {sourceLabel}";
+    }
+
+    private string? ResolveRouteSourceLabel(SourceRoute route)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice)
+        {
+            return route.CaptureDeviceId is { Length: > 0 } deviceId
+                ? CaptureDevices.FirstOrDefault(device =>
+                    string.Equals(device.Id, deviceId, StringComparison.Ordinal)) is { } device
+                    ? $"{device.Name} - {device.FormatLabel}"
+                    : deviceId
+                : "Capture input";
+        }
+
+        if (route.ParticipantId is { Length: > 0 } participantId)
+        {
+            return RoomVideoParticipants.FirstOrDefault(participant =>
+                string.Equals(participant.Id, participantId, StringComparison.Ordinal))?.Name ?? participantId;
+        }
+
+        return route.Mode switch
+        {
+            SourceRouteMode.ActiveSpeaker => "Active speaker",
+            SourceRouteMode.ScreenShare => "Screen share",
+            SourceRouteMode.Spotlight => "Spotlight",
+            _ => null
+        };
     }
 
     private void InitializeSceneRoutes()

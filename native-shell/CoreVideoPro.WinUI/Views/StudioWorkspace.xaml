@@ -236,7 +236,7 @@
                     <StackPanel Spacing="2">
                         <TextBlock Text="Scenes" FontWeight="SemiBold" FontSize="14"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.SceneRailSummary, Mode=OneWay}" FontSize="11"
+                        <TextBlock Text="{x:Bind ViewModel.SceneRailDisplaySummary, Mode=OneWay}" FontSize="11"
                                    Foreground="{StaticResource StudioTextSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
 
@@ -248,18 +248,18 @@
                         <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="1" CornerRadius="6" Padding="8,5">
                             <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="#F0A85C"
                                        TextTrimming="CharacterEllipsis"
-                                       ToolTipService.ToolTip="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}">
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}">
                                 <Run Text="PGM " />
-                                <Run Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" />
+                                <Run Text="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}" />
                             </TextBlock>
                         </Border>
                         <Border Grid.Column="1" Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
                                 BorderThickness="1" CornerRadius="6" Padding="8,5">
                             <TextBlock FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioAccentBrush}"
                                        TextTrimming="CharacterEllipsis"
-                                       ToolTipService.ToolTip="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}">
+                                       ToolTipService.ToolTip="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}">
                                 <Run Text="PVW " />
-                                <Run Text="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}" />
+                                <Run Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" />
                             </TextBlock>
                         </Border>
                     </Grid>
@@ -372,7 +372,7 @@
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBlock Text="PREVIEW" FontWeight="ExtraBold" FontSize="11"
                                                Foreground="{StaticResource StudioAccentBrush}" CharacterSpacing="60" />
-                                    <TextBlock Text="{x:Bind ViewModel.PreviewScene.Name, Mode=OneWay}" FontSize="11"
+                                    <TextBlock Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" FontSize="11"
                                                Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
                             </Border>
@@ -420,7 +420,7 @@
                             <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <TextBlock Text="PROGRAM" FontWeight="ExtraBold" FontSize="11" Foreground="#F0A85C" CharacterSpacing="60" />
-                                    <TextBlock Text="{x:Bind ViewModel.ProgramScene.Name, Mode=OneWay}" FontSize="11"
+                                    <TextBlock Text="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}" FontSize="11"
                                                Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
                             </Border>
