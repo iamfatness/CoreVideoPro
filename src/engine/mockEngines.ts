@@ -24,6 +24,7 @@ import {
 import { SimulatedZoomSession } from "./simulatedZoomSession";
 import { SimulatedOutputSession } from "./outputSession";
 import { planAutoProduction } from "./autoProductionDirector";
+import { heuristicDirectorStrategy, type DirectorStrategy } from "./directorStrategy";
 
 export class MockZoomCaptureEngine implements ZoomCaptureEngine {
   private session = new SimulatedZoomSession();
@@ -50,12 +51,24 @@ export class MockZoomCaptureEngine implements ZoomCaptureEngine {
 }
 
 export class RuleBasedAiProductionEngine implements AiProductionEngine {
+  /**
+   * Optional pluggable director strategy. Defaults to the always-on heuristic.
+   * A future model-backed strategy plugs in here; `planAutoProduction` always
+   * gates its proposal and silently falls back to the heuristic on any
+   * failure/invalid proposal, so passing a strategy can never reduce safety.
+   */
+  private readonly directorStrategy: DirectorStrategy;
+
+  constructor(directorStrategy: DirectorStrategy = heuristicDirectorStrategy) {
+    this.directorStrategy = directorStrategy;
+  }
+
   async buildMagicScene(request: MagicSceneRequest): Promise<MagicSceneResult> {
     return buildMagicScene(request);
   }
 
   async recommendAutoProduction(state: ProductionState, snapshot: ZoomSessionSnapshot): Promise<AutoProductionState> {
-    return recommendAutoProduction(state, snapshot);
+    return recommendAutoProduction(state, snapshot, this.directorStrategy);
   }
 }
 
@@ -181,7 +194,8 @@ export function buildMagicScene(request: MagicSceneRequest): MagicSceneResult {
 
 export function recommendAutoProduction(
   state: ProductionState,
-  snapshot: ZoomSessionSnapshot
+  snapshot: ZoomSessionSnapshot,
+  directorStrategy: DirectorStrategy = heuristicDirectorStrategy
 ): AutoProductionState {
-  return planAutoProduction(state, snapshot);
+  return planAutoProduction(state, snapshot, snapshot.elapsedSeconds * 1000, directorStrategy);
 }

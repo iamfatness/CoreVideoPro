@@ -1,5 +1,13 @@
 import type { AutoProductionState, Participant, ProductionState } from "../domain/production";
 import type { ZoomSessionSnapshot } from "./contracts";
+import {
+  heuristicDirectorStrategy,
+  proposeWithFallback,
+  selectBaseProposal,
+  type DirectorProposal,
+  type DirectorSignals,
+  type DirectorStrategy
+} from "./directorStrategy";
 
 export type AutoProductionRuleId =
   | "hold-empty"
@@ -14,26 +22,49 @@ export const SCREEN_SHARE_ENTER_HOLD_MS = 2500;
 export const SCREEN_SHARE_EXIT_HOLD_MS = 3500;
 export const SCENE_CHANGE_HOLD_MS = 4000;
 
+/**
+ * Plan the next auto-production action.
+ *
+ * The optional {@link DirectorStrategy} is the pluggable seam from
+ * `directorStrategy.ts`: it only *proposes* a scene. The deterministic
+ * stabilizer (anti-thrash holds, producer override, confidence-gated take)
+ * below always gates the proposal, and any strategy failure/invalid proposal
+ * silently degrades to the always-on heuristic — so a future model-backed
+ * strategy can never bypass the director's safety instincts.
+ */
 export function planAutoProduction(
   state: ProductionState,
   snapshot: ZoomSessionSnapshot,
-  elapsedMs = snapshot.elapsedSeconds * 1000
+  elapsedMs = snapshot.elapsedSeconds * 1000,
+  strategy: DirectorStrategy = heuristicDirectorStrategy
 ): AutoProductionState {
   const liveParticipants = snapshot.participants.filter((participant) => participant.health !== "video-off");
-  if (snapshot.meetingState !== "in_meeting" || liveParticipants.length === 0) {
+  const hasLiveVideo = liveParticipants.length > 0;
+  // All-muted / no-live-video room: there is nothing safe to switch to, so hold
+  // the current program scene at maximum confidence (the safety floor).
+  if (snapshot.meetingState !== "in_meeting" || !hasLiveVideo) {
+    const reason =
+      snapshot.meetingState !== "in_meeting"
+        ? "No live Zoom participants are available, so hold the current program scene."
+        : "No participant has live video right now, so hold the current program scene.";
     return {
       recommendedSceneId: state.activeSceneId,
       confidence: 99,
-      reason: "No live Zoom participants are available, so hold the current program scene.",
+      reason,
       action: "hold",
       lastAppliedSceneId: state.activeSceneId,
       ruleId: "hold-empty",
       heldSceneId: state.activeSceneId,
-      signals: ["meeting unavailable", "no live participants"]
+      signals:
+        snapshot.meetingState !== "in_meeting"
+          ? ["meeting unavailable", "no live participants"]
+          : ["no live video", `${snapshot.participants.length} participant${snapshot.participants.length === 1 ? "" : "s"} present`]
     };
   }
 
-  const rule = selectAutomationRule(liveParticipants, snapshot);
+  const signals: DirectorSignals = { state, snapshot, liveParticipants, elapsedMs };
+  const proposal = proposeWithFallback(signals, strategy).proposal;
+  const rule = toAutomationRule(proposal);
   const targetSceneId = resolveTargetSceneId(state, rule, snapshot, elapsedMs);
   const recommendedScene = state.scenes.find((scene) => scene.id === targetSceneId);
   const alreadyProgram = targetSceneId === state.activeSceneId;
@@ -90,9 +121,25 @@ export function planAutoProduction(
   };
 }
 
+/** The selection a director proposal reduces to inside this module. */
+export type AutomationRule = {
+  ruleId: DirectorProposal["ruleId"];
+  recommendedSceneId: string;
+  confidence: number;
+};
+
+/** Map a (possibly strategy-supplied) proposal into the local rule shape. */
+function toAutomationRule(proposal: DirectorProposal): AutomationRule {
+  return {
+    ruleId: proposal.ruleId,
+    recommendedSceneId: proposal.recommendedSceneId,
+    confidence: proposal.confidence
+  };
+}
+
 function resolveTargetSceneId(
   state: ProductionState,
-  rule: ReturnType<typeof selectAutomationRule>,
+  rule: AutomationRule,
   snapshot: ZoomSessionSnapshot,
   elapsedMs: number
 ) {
@@ -115,36 +162,17 @@ function resolveTargetSceneId(
   return previous.pendingSceneId!;
 }
 
-function selectAutomationRule(participants: Participant[], snapshot: ZoomSessionSnapshot) {
-  if (snapshot.screenShareActive || participants.some((participant) => participant.isScreenSharing)) {
-    return {
-      ruleId: "screen-share-priority" as const,
-      recommendedSceneId: "speaker-slides",
-      confidence: 96
-    };
-  }
-
-  if (participants.length === 1) {
-    return {
-      ruleId: "single-speaker" as const,
-      recommendedSceneId: "intro",
-      confidence: 91
-    };
-  }
-
-  if (participants.length === 2) {
-    return {
-      ruleId: "focused-interview" as const,
-      recommendedSceneId: "interview",
-      confidence: 90
-    };
-  }
-
-  return {
-    ruleId: "panel-discussion" as const,
-    recommendedSceneId: "panel",
-    confidence: 92
-  };
+/**
+ * The base (uncalibrated) heuristic selection, kept exported for back-compat and
+ * direct callers/tests. The richer, program-aware calibration (hysteresis,
+ * dominant-speaker stability, degraded-feed penalties) lives in the
+ * {@link HeuristicDirectorStrategy} and is what `planAutoProduction` uses.
+ */
+export function selectAutomationRule(
+  participants: Participant[],
+  snapshot: ZoomSessionSnapshot
+): AutomationRule {
+  return toAutomationRule(selectBaseProposal(participants, snapshot));
 }
 
 function stabilizeSceneRecommendation(input: {
@@ -275,7 +303,7 @@ function producerPreviewOverride(state: ProductionState, recommendedSceneId: str
 }
 
 function buildRecommendationReason(
-  rule: ReturnType<typeof selectAutomationRule>,
+  rule: AutomationRule,
   snapshot: ZoomSessionSnapshot,
   sceneName: string
 ) {
@@ -294,12 +322,19 @@ function buildRecommendationReason(
   return `${snapshot.participants.length} participants are live without slides, so ${sceneName} keeps everyone visible.`;
 }
 
-function buildAutomationSignals(snapshot: ZoomSessionSnapshot, participants: Participant[], rule: ReturnType<typeof selectAutomationRule>) {
+function buildAutomationSignals(snapshot: ZoomSessionSnapshot, participants: Participant[], rule: AutomationRule) {
   const activeSpeaker = participants.find((participant) => participant.isActiveSpeaker);
+  const activeSpeakerCount = participants.filter((participant) => participant.isActiveSpeaker).length;
+  const degraded = participants.filter(
+    (participant) => participant.health === "recovering" || participant.health === "low-resolution"
+  ).length;
   return [
     `${participants.length} live participant${participants.length === 1 ? "" : "s"}`,
     snapshot.screenShareActive ? "screen share active" : "screen share inactive",
-    activeSpeaker ? `active speaker ${activeSpeaker.name}` : "active speaker unavailable",
+    activeSpeaker
+      ? `active speaker ${activeSpeaker.name}${activeSpeakerCount > 1 ? ` (+${activeSpeakerCount - 1} cross-talk)` : ""}`
+      : "active speaker unavailable",
+    degraded > 0 ? `${degraded} degraded feed${degraded === 1 ? "" : "s"}` : "all feeds healthy",
     `rule ${rule.ruleId}`
   ];
 }

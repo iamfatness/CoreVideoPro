@@ -63,6 +63,15 @@ export interface ZoomCaptureEngine {
   advanceSimulation?(): Promise<ZoomSessionSnapshot>;
 }
 
+/**
+ * `recommendAutoProduction` is backed by the deterministic auto-director. The
+ * scene *proposal* is produced by a pluggable `DirectorStrategy`
+ * (`./directorStrategy`); an implementation MAY accept an optional strategy
+ * (see `RuleBasedAiProductionEngine`). The director always gates the proposal
+ * with its anti-thrash holds and falls back to the always-on heuristic on any
+ * strategy failure, so the contract's behavior stays deterministic and safe
+ * regardless of which strategy is supplied.
+ */
 export interface AiProductionEngine {
   buildMagicScene(request: MagicSceneRequest): Promise<MagicSceneResult>;
   recommendAutoProduction(state: ProductionState, snapshot: ZoomSessionSnapshot): Promise<AutoProductionState>;
