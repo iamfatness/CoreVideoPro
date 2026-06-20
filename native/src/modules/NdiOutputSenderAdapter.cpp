@@ -271,7 +271,10 @@ class NdiOutputSender final : public IOutputSender {
       const std::vector<std::string>& destinations,
       const ProgramFrame* frame,
       double elapsedMs,
-      const std::vector<OutputDestinationSettings>& destinationSettings = {}) override {
+      const std::vector<OutputDestinationSettings>& destinationSettings = {},
+      const std::vector<float>* programAudioPcm = nullptr,
+      int audioChannels = 0,
+      int audioSampleRate = 0) override {
     const bool wantsNdi = std::find(destinations.begin(), destinations.end(), "ndi") != destinations.end();
     if (!wantsNdi) {
       destroySender();
@@ -352,7 +355,7 @@ class NdiOutputSender final : public IOutputSender {
     }
 
     submitProgramVideo(*frame);
-    submitProgramAudioKeepAlive();
+    submitProgramAudio(programAudioPcm, audioChannels, audioSampleRate);
     refreshConnectionCount();
 
     sender_.status = "live";
@@ -456,9 +459,42 @@ class NdiOutputSender final : public IOutputSender {
     api_.send_video(sendInstance_, &video);
   }
 
-  // Until the audio-carrying sync(...) signature lands, push a short silent
-  // buffer so receivers see a continuous audio clock alongside video. Once the
-  // program-audio tap is available this becomes the real send_audio_v2 path.
+  // Send the real F2 program-audio tap to NDI receivers. The tap is interleaved
+  // stereo float; NDI's audio_frame_v2 is planar, so deinterleave (mono fans out
+  // to both channels) into [L...][R...]. Falls back to a silent keep-alive buffer
+  // when no PCM is routed this tick so receivers keep a continuous audio clock.
+  void submitProgramAudio(const std::vector<float>* pcm, int channels, int sampleRate) {
+    if (pcm == nullptr || pcm->empty() || channels <= 0) {
+      submitProgramAudioKeepAlive();
+      return;
+    }
+    const int outChannels = 2;
+    const int samplesPerChannel = static_cast<int>(pcm->size() / static_cast<size_t>(channels));
+    if (samplesPerChannel <= 0) {
+      submitProgramAudioKeepAlive();
+      return;
+    }
+    audioBuffer_.assign(static_cast<size_t>(samplesPerChannel) * static_cast<size_t>(outChannels), 0.0f);
+    for (int i = 0; i < samplesPerChannel; ++i) {
+      const float left = (*pcm)[static_cast<size_t>(i) * static_cast<size_t>(channels)];
+      const float right = channels == 1 ? left : (*pcm)[static_cast<size_t>(i) * static_cast<size_t>(channels) + 1];
+      audioBuffer_[static_cast<size_t>(i)] = left;
+      audioBuffer_[static_cast<size_t>(samplesPerChannel) + static_cast<size_t>(i)] = right;
+    }
+    NDIlib_audio_frame_v2_t audio{};
+    audio.sample_rate = sampleRate > 0 ? sampleRate : 48000;
+    audio.no_channels = outChannels;
+    audio.no_samples = samplesPerChannel;
+    audio.timecode = INT64_MAX;
+    audio.p_data = audioBuffer_.data();
+    audio.channel_stride_in_bytes = samplesPerChannel * static_cast<int>(sizeof(float));
+    audio.p_metadata = nullptr;
+    audio.timestamp = 0;
+    api_.send_audio(sendInstance_, &audio);
+  }
+
+  // Push a short silent buffer so receivers see a continuous audio clock when no
+  // program PCM is routed this tick.
   void submitProgramAudioKeepAlive() {
     constexpr int kChannels = 2;
     const int samplesPerChannel = 48000 / (std::max)(1, configuredFps_);
