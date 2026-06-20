@@ -51,6 +51,21 @@ bool blitVideoFrameIntoPreviewRect(
     const CompositorLayerRect& rect,
     float opacity);
 
+// Like blitVideoFrameIntoPreviewRect, but applies per-source framing (Item 8):
+// the frame is sampled from the normalized source-UV window [u0,v0]-[u1,v1] and
+// drawn into the on-screen `contentRect` (which is inset/centered for letterbox
+// fit modes). This is the CPU mirror of the D3D11 framing UV transform so the
+// software preview samples the same source region as the GPU program.
+bool blitVideoFrameFramed(
+    ProgramFramePreviewPixels& preview,
+    const VideoFrame& frame,
+    const CompositorLayerRect& contentRect,
+    float u0,
+    float v0,
+    float u1,
+    float v1,
+    float opacity);
+
 [[nodiscard]] rpc::Json programSharedTextureJson(const ProgramFrame& frame);
 
 [[nodiscard]] rpc::Json programSharedTextureEvent(const ProgramFrame& frame);

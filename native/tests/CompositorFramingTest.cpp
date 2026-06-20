@@ -200,3 +200,52 @@ TEST(CompositorFraming, DegenerateSourceFallsBackToFullWindow) {
   EXPECT_TRUE(nearly(uvHeight(framing), 1.f));
   EXPECT_TRUE(!framing.hasLetterbox);
 }
+
+// --- Item 9: overlay keyPhase animation transform. ---
+
+using corevideo::compositor::computeOverlayKeyTransform;
+
+// "hidden" is invisible; "on-air" is fully settled (alpha 1, no slide, scale 1).
+TEST(CompositorFraming, OverlayKeyPhaseHiddenAndOnAir) {
+  const auto hidden = computeOverlayKeyTransform("hidden", 0.f, "lower-left");
+  EXPECT_TRUE(!hidden.visible);
+  EXPECT_TRUE(nearly(hidden.alpha, 0.f));
+
+  const auto onAir = computeOverlayKeyTransform("on-air", 1.f, "lower-left");
+  EXPECT_TRUE(onAir.visible);
+  EXPECT_TRUE(nearly(onAir.alpha, 1.f));
+  EXPECT_TRUE(nearly(onAir.slideY, 0.f));
+  EXPECT_TRUE(nearly(onAir.contentScale, 1.f));
+}
+
+// "building-in" eases alpha 0 -> 1 and slide -> 0 monotonically over progress.
+TEST(CompositorFraming, OverlayKeyPhaseBuildingInAnimatesOverProgress) {
+  const auto start = computeOverlayKeyTransform("building-in", 0.f, "lower-left");
+  const auto mid = computeOverlayKeyTransform("building-in", 0.5f, "lower-left");
+  const auto end = computeOverlayKeyTransform("building-in", 1.f, "lower-left");
+
+  EXPECT_TRUE(start.alpha < mid.alpha);
+  EXPECT_TRUE(mid.alpha < end.alpha);
+  EXPECT_TRUE(nearly(start.alpha, 0.f));
+  EXPECT_TRUE(nearly(end.alpha, 1.f));
+  // Slide shrinks toward zero as the overlay settles in.
+  EXPECT_TRUE(std::abs(start.slideY) > std::abs(end.slideY));
+  EXPECT_TRUE(nearly(end.slideY, 0.f));
+}
+
+// "building-out" fades alpha 1 -> 0 and slides away.
+TEST(CompositorFraming, OverlayKeyPhaseBuildingOutFadesOut) {
+  const auto start = computeOverlayKeyTransform("building-out", 0.f, "lower-left");
+  const auto end = computeOverlayKeyTransform("building-out", 1.f, "lower-left");
+  EXPECT_TRUE(nearly(start.alpha, 1.f));
+  EXPECT_TRUE(end.alpha < 0.01f);
+  EXPECT_TRUE(!end.visible);
+}
+
+// keyPosition flips the slide direction: lower-third slides up (+), upper down.
+TEST(CompositorFraming, OverlayKeyPositionFlipsSlideDirection) {
+  const auto lower = computeOverlayKeyTransform("building-in", 0.f, "lower-left");
+  const auto upper = computeOverlayKeyTransform("building-in", 0.f, "upper-left");
+  EXPECT_TRUE(lower.slideY > 0.f);
+  EXPECT_TRUE(upper.slideY < 0.f);
+}
