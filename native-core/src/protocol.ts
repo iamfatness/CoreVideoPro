@@ -346,6 +346,22 @@ export type MediaCoreEvent = {
   commandType?: MediaCoreCommand["type"];
 };
 
+export type MediaCoreCaptureAudioSource = {
+  captureDeviceId: string;
+  audioDeviceId?: string | null;
+  audioDeviceName?: string | null;
+  audioSyncOffsetMs: number;
+  paired: boolean;
+};
+
+export type MediaCoreCaptureAudioSources = {
+  status: "idle" | "ready";
+  sourceCount: number;
+  pairedCount: number;
+  sources: MediaCoreCaptureAudioSource[];
+  summary: string;
+};
+
 export type MediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;
@@ -365,6 +381,7 @@ export type MediaCoreDiagnosticsSnapshot = {
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
   audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
+  captureAudioSources: MediaCoreCaptureAudioSources;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
   mediaPlayback: MediaCoreMediaPlayback;
@@ -495,6 +512,15 @@ export type MediaCoreCommand =
   | {
       type: "sync-audio-routing-matrix";
       sends: MediaCoreAudioRoutingSend[];
+    }
+  | {
+      type: "sync-capture-audio-sources";
+      sources: Array<{
+        captureDeviceId: string;
+        audioDeviceId?: string | null;
+        audioDeviceName?: string | null;
+        audioSyncOffsetMs?: number;
+      }>;
     }
   | {
       type: "push-caption-cue";
@@ -682,6 +708,7 @@ export type MediaCoreStateSnapshot = {
   recording?: MediaCoreRecordingSession;
   audioMixSession: MediaCoreAudioMixSession;
   audioRoutingMatrix: MediaCoreAudioRoutingMatrix;
+  captureAudioSources: MediaCoreCaptureAudioSources;
   captionTrack: MediaCoreCaptionTrack;
   brandKit: MediaCoreBrandKit;
   mediaPlayback: MediaCoreMediaPlayback;

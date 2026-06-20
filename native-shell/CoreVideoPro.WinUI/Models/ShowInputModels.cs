@@ -36,6 +36,9 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
     private string? _captureDeviceId;
 
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string? _audioDeviceId;
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
     private bool _inShow;
 
     public string SlotLabel => $"Input {SlotNumber:00}";
@@ -60,31 +63,43 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
     public bool IsSourcePickerEnabled =>
         Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest;
 
+    public bool IsAudioPickerEnabled =>
+        Kind is ShowInputKind.UvcWebcam or ShowInputKind.Blackmagic or ShowInputKind.Aja;
+
     partial void OnKindChanged(ShowInputKind value)
     {
         if (value == ShowInputKind.Unassigned)
         {
             ParticipantId = null;
             CaptureDeviceId = null;
+            AudioDeviceId = null;
             InShow = false;
         }
         else if (value == ShowInputKind.ZoomParticipant)
         {
             CaptureDeviceId = null;
+            AudioDeviceId = null;
         }
         else
         {
             ParticipantId = null;
+            if (value == ShowInputKind.SrtIngest)
+            {
+                AudioDeviceId = null;
+            }
         }
 
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
+        OnPropertyChanged(nameof(IsAudioPickerEnabled));
     }
 
     partial void OnParticipantIdChanged(string? value) => OnPropertyChanged(nameof(IsAssigned));
 
     partial void OnCaptureDeviceIdChanged(string? value) => OnPropertyChanged(nameof(IsAssigned));
+
+    partial void OnAudioDeviceIdChanged(string? value) => OnPropertyChanged(nameof(IsAudioPickerEnabled));
 
     partial void OnInShowChanged(bool value) => OnPropertyChanged(nameof(IsAssigned));
 }

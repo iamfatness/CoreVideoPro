@@ -51,6 +51,7 @@ class MediaCore {
   void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncAudioRoutingMatrix(const rpc::Json& command);
+  void syncCaptureAudioSources(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
@@ -63,6 +64,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
+  [[nodiscard]] rpc::Json captureAudioSourcesState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json brandKitState() const;
   [[nodiscard]] rpc::Json mediaPlaybackState() const;
@@ -162,6 +164,14 @@ class MediaCore {
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
+  struct CaptureAudioSourceInput {
+    std::string captureDeviceId;
+    std::string audioDeviceId;
+    std::string audioDeviceName;
+    int audioSyncOffsetMs = 0;
+  };
+  std::vector<CaptureAudioSourceInput> captureAudioSources_;
+  bool captureAudioSourcesSynced_ = false;
   bool captionEnabled_ = true;
   std::string captionText_;
   std::string captionSpeaker_;

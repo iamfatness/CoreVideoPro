@@ -395,6 +395,34 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesCaptureAudioSourcePairings()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "capture-input", "mix", null, CaptureDeviceId: "uvc-01")],
+            Participants = Participants,
+            CaptureAudioSources =
+            [
+                new("uvc-01", "mic-01", "USB Microphone", 40),
+                new("uvc-02", null, null, -20)
+            ]
+        });
+
+        var captureAudio = commands.Single(command => command.Type == "sync-capture-audio-sources");
+        Assert.NotNull(captureAudio.ExtensionData);
+        var sources = captureAudio.ExtensionData!["sources"].EnumerateArray().ToList();
+
+        Assert.Equal(2, sources.Count);
+        Assert.Equal("uvc-01", sources[0].GetProperty("captureDeviceId").GetString());
+        Assert.Equal("mic-01", sources[0].GetProperty("audioDeviceId").GetString());
+        Assert.Equal("USB Microphone", sources[0].GetProperty("audioDeviceName").GetString());
+        Assert.Equal(40, sources[0].GetProperty("audioSyncOffsetMs").GetInt32());
+        Assert.Equal("uvc-02", sources[1].GetProperty("captureDeviceId").GetString());
+        Assert.Equal(-20, sources[1].GetProperty("audioSyncOffsetMs").GetInt32());
+    }
+
+    [Fact]
     public void PushesMediaPlaybackCommandOnlyWhenAnAssetIsSelected()
     {
         var withoutSelection = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

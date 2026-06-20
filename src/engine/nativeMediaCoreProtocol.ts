@@ -149,6 +149,15 @@ export type NativeMediaCoreCommand =
       sends: NativeMediaCoreAudioRoutingSend[];
     }
   | {
+      type: "sync-capture-audio-sources";
+      sources: Array<{
+        captureDeviceId: string;
+        audioDeviceId?: string | null;
+        audioDeviceName?: string | null;
+        audioSyncOffsetMs?: number;
+      }>;
+    }
+  | {
       type: "push-caption-cue";
       text: string;
       speaker?: string;

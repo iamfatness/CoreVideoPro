@@ -22,7 +22,8 @@ public static class MediaCoreCommandBuilder
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context.AudioMixChannels),
-            BuildAudioRoutingMatrixCommand(context.AudioRoutingSends)
+            BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
+            BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
         };
 
         commands.AddRange(BuildOverlayCommands(context.Graphics));
@@ -234,6 +235,18 @@ public static class MediaCoreCommandBuilder
                 sourceId = send.SourceId,
                 busId = send.BusId,
                 gainDb = send.GainDb
+            }).ToList()
+        });
+
+    private static NativeMediaCoreCommand BuildCaptureAudioSourcesCommand(IReadOnlyList<MediaCoreCaptureAudioSourceWire> sources) =>
+        Command("sync-capture-audio-sources", new Dictionary<string, object?>
+        {
+            ["sources"] = sources.Select(source => new
+            {
+                captureDeviceId = source.CaptureDeviceId,
+                audioDeviceId = source.AudioDeviceId,
+                audioDeviceName = source.AudioDeviceName,
+                audioSyncOffsetMs = source.AudioSyncOffsetMs
             }).ToList()
         });
 

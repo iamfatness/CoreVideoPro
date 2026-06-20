@@ -8,14 +8,20 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 {
     private readonly ShowInputSlot _slot;
     private readonly Action _onChanged;
+    private readonly Action<string?, string?> _onAudioDeviceChanged;
     private IReadOnlyList<Participant> _participants = [];
     private IReadOnlyList<CaptureDevice> _captureDevices = [];
+    private IReadOnlyList<AudioCaptureDevice> _audioDevices = [];
     private bool _suppressChangedCallback;
 
-    public ShowInputSlotViewModel(ShowInputSlot slot, Action onChanged)
+    public ShowInputSlotViewModel(
+        ShowInputSlot slot,
+        Action onChanged,
+        Action<string?, string?>? onAudioDeviceChanged = null)
     {
         _slot = slot;
         _onChanged = onChanged;
+        _onAudioDeviceChanged = onAudioDeviceChanged ?? ((_, _) => { });
         _slot.PropertyChanged += (_, _) =>
         {
             if (!_suppressChangedCallback)
@@ -71,6 +77,23 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             }
 
             _slot.CaptureDeviceId = value;
+            SyncAudioDeviceFromCaptureDevice();
+            OnSlotPropertyChanged();
+        }
+    }
+
+    public string? AudioDeviceId
+    {
+        get => _slot.AudioDeviceId;
+        set
+        {
+            if (_slot.AudioDeviceId == value)
+            {
+                return;
+            }
+
+            _slot.AudioDeviceId = string.IsNullOrWhiteSpace(value) ? null : value;
+            _onAudioDeviceChanged(CaptureDeviceId, _slot.AudioDeviceId);
             OnSlotPropertyChanged();
         }
     }
@@ -93,6 +116,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public bool IsSourcePickerEnabled => _slot.IsSourcePickerEnabled;
 
     public bool ShowInShowToggle => true;
+
+    public bool ShowAudioDevicePicker => _slot.IsAudioPickerEnabled;
 
     public string? SelectedSourceId
     {
@@ -119,16 +144,21 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public IReadOnlyList<ShowInputSourceOption> SourceOptions { get; private set; } = [];
 
+    public IReadOnlyList<ShowInputSourceOption> AudioDeviceOptions { get; private set; } = [];
+
     public void RefreshSourceOptions(
         IReadOnlyList<Participant> participants,
-        IReadOnlyList<CaptureDevice> captureDevices)
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyList<AudioCaptureDevice>? audioDevices = null)
     {
         _participants = participants;
         _captureDevices = captureDevices;
+        _audioDevices = audioDevices ?? [];
         _suppressChangedCallback = true;
         try
         {
             SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices);
+            AudioDeviceOptions = ShowInputRosterService.BuildAudioSourceOptions(_audioDevices);
             if (Kind == ShowInputKind.ZoomParticipant &&
                 (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
             {
@@ -139,6 +169,13 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             {
                 CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;
             }
+
+            SyncAudioDeviceFromCaptureDevice();
+            if (!ShowAudioDevicePicker ||
+                (!string.IsNullOrWhiteSpace(AudioDeviceId) && !AudioDeviceOptions.Any(option => option.Value == AudioDeviceId)))
+            {
+                _slot.AudioDeviceId = null;
+            }
         }
         finally
         {
@@ -146,9 +183,25 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         }
 
         OnPropertyChanged(nameof(SourceOptions));
+        OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
+        OnPropertyChanged(nameof(AudioDeviceId));
+        OnPropertyChanged(nameof(ShowAudioDevicePicker));
         OnPropertyChanged(nameof(SourceColorGradeId));
+    }
+
+    private void SyncAudioDeviceFromCaptureDevice()
+    {
+        if (string.IsNullOrWhiteSpace(CaptureDeviceId))
+        {
+            _slot.AudioDeviceId = null;
+            return;
+        }
+
+        var captureDevice = _captureDevices.FirstOrDefault(device =>
+            string.Equals(device.Id, CaptureDeviceId, StringComparison.Ordinal));
+        _slot.AudioDeviceId = ShowAudioDevicePicker ? captureDevice?.AssignedAudioDeviceId : null;
     }
 
     private void OnSlotPropertyChanged()
@@ -156,8 +209,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Kind));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
+        OnPropertyChanged(nameof(AudioDeviceId));
         OnPropertyChanged(nameof(InShow));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
+        OnPropertyChanged(nameof(ShowAudioDevicePicker));
         OnPropertyChanged(nameof(ShowInShowToggle));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(SourceColorGradeId));

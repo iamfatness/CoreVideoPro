@@ -145,6 +145,20 @@
                                             <Run Text=" · " />
                                             <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
                                         </TextBlock>
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Text="{x:Bind AssignedAudioLabel, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}" />
+                                            <ComboBox x:Name="CaptureMicCombo"
+                                                      ItemsSource="{Binding ViewModel.AudioCaptureSourceOptions, ElementName=SourcesInputsRoot}"
+                                                      SelectedValue="{x:Bind AssignedAudioDeviceId, Mode=OneWay}"
+                                                      SelectedValuePath="Value"
+                                                      DisplayMemberPath="Label"
+                                                      Header="Paired microphone"
+                                                      PlaceholderText="No paired microphone"
+                                                      SelectionChanged="OnCaptureDeviceMicChanged"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -307,6 +321,7 @@
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto" />
                                             <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
                                         <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12"
                                                    VerticalAlignment="Center" />
@@ -334,7 +349,17 @@
                                                       IsOn="{x:Bind InShow, Mode=TwoWay}"
                                                       IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}"
                                                       VerticalAlignment="Center" />
-                                        <Button Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2"
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Spacing="4"
+                                                    Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="Paired microphone" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <ComboBox x:Name="InputMicCombo"
+                                                      ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
+                                                      SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
+                                                      SelectedValuePath="Value"
+                                                      DisplayMemberPath="Label"
+                                                      HorizontalAlignment="Stretch" />
+                                        </StackPanel>
+                                        <Button Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2"
                                                 Content="Color grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"

@@ -26,6 +26,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
+    private readonly AudioCaptureDeviceDiscoveryService _audioCaptureDiscovery = new();
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
@@ -300,6 +301,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<CaptureDevice> CaptureDevices { get; } = [];
 
+    public ObservableCollection<AudioCaptureDevice> AudioCaptureDevices { get; } = [];
+
+    public IReadOnlyList<ShowInputSourceOption> AudioCaptureSourceOptions =>
+        ShowInputRosterService.BuildAudioSourceOptions(AudioCaptureDevices);
+
     public IReadOnlyList<FeedHealthRow> FeedHealthRows { get; private set; } = [];
 
     [ObservableProperty]
@@ -562,7 +568,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
+        _audioCaptureDiscovery.StartWatching(() => _ = RefreshAudioCaptureDevicesAsync());
         _ = RefreshCaptureDevicesAsync();
+        _ = RefreshAudioCaptureDevicesAsync();
         _ = StartMediaCoreOnLaunchAsync();
     }
 
@@ -2386,6 +2394,85 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RefreshCaptureDevices() => _ = RefreshCaptureDevicesAsync();
 
+    private async Task RefreshAudioCaptureDevicesAsync()
+    {
+        IReadOnlyList<AudioCaptureDevice> discovered;
+        try
+        {
+            discovered = await _audioCaptureDiscovery.DiscoverDevicesAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            discovered = [];
+        }
+
+        RunOnUiThread(() => ApplyDiscoveredAudioCaptureDevices(discovered));
+    }
+
+    private void ApplyDiscoveredAudioCaptureDevices(IReadOnlyList<AudioCaptureDevice> discovered)
+    {
+        AudioCaptureDevices.Clear();
+        foreach (var device in discovered)
+        {
+            AudioCaptureDevices.Add(device);
+        }
+
+        NormalizeCaptureAudioAssignments();
+        RefreshShowInputEditors();
+        OnPropertyChanged(nameof(AudioCaptureDevices));
+        OnPropertyChanged(nameof(AudioCaptureSourceOptions));
+    }
+
+    private void NormalizeCaptureAudioAssignments()
+    {
+        var audioById = AudioCaptureDevices.ToDictionary(device => device.Id, StringComparer.Ordinal);
+        foreach (var captureDevice in CaptureDevices)
+        {
+            if (string.IsNullOrWhiteSpace(captureDevice.AssignedAudioDeviceId) ||
+                !audioById.TryGetValue(captureDevice.AssignedAudioDeviceId, out var audioDevice))
+            {
+                captureDevice.AssignedAudioDeviceId = null;
+                captureDevice.AssignedAudioDeviceName = null;
+            }
+            else
+            {
+                captureDevice.AssignedAudioDeviceName = audioDevice.Name;
+            }
+
+            captureDevice.NotifyAudioAssignmentChanged();
+        }
+    }
+
+    public void SetCaptureDeviceAudioSource(string? captureDeviceId, string? audioDeviceId)
+    {
+        if (string.IsNullOrWhiteSpace(captureDeviceId) ||
+            CaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, captureDeviceId, StringComparison.Ordinal)) is not { } captureDevice)
+        {
+            return;
+        }
+
+        var normalizedAudioDeviceId = string.IsNullOrWhiteSpace(audioDeviceId) ? null : audioDeviceId;
+        var audioDevice = normalizedAudioDeviceId is null
+            ? null
+            : AudioCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, normalizedAudioDeviceId, StringComparison.Ordinal));
+
+        captureDevice.AssignedAudioDeviceId = audioDevice?.Id;
+        captureDevice.AssignedAudioDeviceName = audioDevice?.Name;
+        captureDevice.NotifyAudioAssignmentChanged();
+
+        foreach (var slot in ShowInputs.Where(slot =>
+            string.Equals(slot.CaptureDeviceId, captureDevice.Id, StringComparison.Ordinal)))
+        {
+            slot.AudioDeviceId = captureDevice.AssignedAudioDeviceId;
+        }
+
+        RefreshShowInputEditors();
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
     [RelayCommand]
     private async Task ConnectCaptureDeviceAsync(string deviceId)
     {
@@ -2723,12 +2810,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.SignalPresent = prior.SignalPresent;
                 device.SelectedInputId = prior.SelectedInputId;
                 device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
+                device.AssignedAudioDeviceId = prior.AssignedAudioDeviceId;
+                device.AssignedAudioDeviceName = prior.AssignedAudioDeviceName;
                 device.ApplyFormatTelemetry(prior.Width, prior.Height, prior.FrameRate);
             }
 
             CaptureDevices.Add(device);
         }
 
+        NormalizeCaptureAudioAssignments();
         RefreshDualCaptureSourceOptions();
         RefreshCaptureFleetSummary();
         RefreshShowInputEditors();
@@ -2770,12 +2860,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             next.SignalPresent = prior.SignalPresent;
             next.SelectedInputId = prior.SelectedInputId;
             next.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
+            next.AssignedAudioDeviceId = prior.AssignedAudioDeviceId;
+            next.AssignedAudioDeviceName = prior.AssignedAudioDeviceName;
             next.ObservedFrameWidth = prior.ObservedFrameWidth;
             next.ObservedFrameHeight = prior.ObservedFrameHeight;
             next.ObservedFrameRate = prior.ObservedFrameRate;
             CaptureDevices[index] = next;
         }
 
+        NormalizeCaptureAudioAssignments();
         RefreshDualCaptureSourceOptions();
         RefreshCaptureFleetSummary();
         OnPropertyChanged(nameof(HasCaptureDevices));
@@ -3012,6 +3105,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Select(cell => new MediaCoreAudioRoutingSendWire(cell.SourceId, cell.Bus.Id, cell.GainDb))
             .ToList();
 
+        var captureAudioSources = CaptureDevices
+            .Where(device => !string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase))
+            .Select(device => new MediaCoreCaptureAudioSourceWire(
+                device.Id,
+                device.AssignedAudioDeviceId,
+                device.AssignedAudioDeviceName,
+                device.AudioSyncOffsetMs))
+            .ToList();
+
         var isoParticipantIds = BuildIsoParticipantTargets();
 
         if (isoParticipantIds.Count == 0)
@@ -3063,6 +3165,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.DefaultOverlayBehavior),
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
+            CaptureAudioSources = captureAudioSources,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker,
             SelectedMediaAssetId = SelectedMediaAssetId,
@@ -3958,7 +4061,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ShowInputEditors.Clear();
         foreach (var slot in ShowInputs)
         {
-            ShowInputEditors.Add(new ShowInputSlotViewModel(slot, OnShowInputChanged));
+            ShowInputEditors.Add(new ShowInputSlotViewModel(slot, OnShowInputChanged, SetCaptureDeviceAudioSource));
         }
 
         RefreshShowInputEditors();
@@ -3968,7 +4071,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var editor in ShowInputEditors)
         {
-            editor.RefreshSourceOptions(RoomVideoParticipants, CaptureDevices);
+            editor.RefreshSourceOptions(RoomVideoParticipants, CaptureDevices, AudioCaptureDevices);
         }
 
         OnPropertyChanged(nameof(ShowInputSummary));
@@ -4655,6 +4758,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _surfaces.Dispose();
         _captureFrameReader.Dispose();
         _captureDiscovery.Dispose();
+        _audioCaptureDiscovery.Dispose();
         _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);
         LaunchLog.Write("shutdown: studio view model disposed");

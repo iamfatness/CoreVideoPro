@@ -50,6 +50,20 @@ public sealed partial class SourcesInputsPage : UserControl
 
         sourceCombo.SelectionChanged -= OnShowInputSourceChanged;
         sourceCombo.SelectionChanged += OnShowInputSourceChanged;
+
+        var inputMicCombo = FindDescendant<ComboBox>(root, "InputMicCombo");
+        if (inputMicCombo is not null)
+        {
+            inputMicCombo.SelectionChanged -= OnShowInputMicChanged;
+            inputMicCombo.SelectionChanged += OnShowInputMicChanged;
+        }
+
+        var captureMicCombo = FindDescendant<ComboBox>(root, "CaptureMicCombo");
+        if (captureMicCombo is not null)
+        {
+            captureMicCombo.SelectionChanged -= OnCaptureDeviceMicChanged;
+            captureMicCombo.SelectionChanged += OnCaptureDeviceMicChanged;
+        }
     }
 
     private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
@@ -74,6 +88,29 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         editor.SelectedSourceId = sourceId;
+    }
+
+    private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo ||
+            combo.DataContext is not ShowInputSlotViewModel editor ||
+            combo.SelectedValue is not string audioDeviceId)
+        {
+            return;
+        }
+
+        editor.AudioDeviceId = audioDeviceId;
+    }
+
+    private void OnCaptureDeviceMicChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo ||
+            combo.DataContext is not CaptureDevice captureDevice)
+        {
+            return;
+        }
+
+        ViewModel?.SetCaptureDeviceAudioSource(captureDevice.Id, combo.SelectedValue as string);
     }
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement

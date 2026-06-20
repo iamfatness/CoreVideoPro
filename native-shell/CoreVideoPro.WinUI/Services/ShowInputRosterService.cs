@@ -92,6 +92,17 @@ public static class ShowInputRosterService
             })
         ];
 
+    public static IReadOnlyList<ShowInputSourceOption> BuildAudioSourceOptions(
+        IReadOnlyList<AudioCaptureDevice> audioDevices) =>
+        [
+            new ShowInputSourceOption { Value = string.Empty, Label = "No paired microphone" },
+            .. audioDevices.Select(device => new ShowInputSourceOption
+            {
+                Value = device.Id,
+                Label = device.Name
+            })
+        ];
+
     public static IReadOnlyList<ParticipantSurfaceTile> BuildMultiviewTiles(
         IReadOnlyList<ShowInputSlot> slots,
         IReadOnlyList<Participant> participants,

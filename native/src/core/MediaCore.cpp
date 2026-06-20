@@ -380,6 +380,7 @@ rpc::Json MediaCore::sessionState() const {
       {"profile", profile()},
       {"audioMixSession", audioMixSessionState()},
       {"audioRoutingMatrix", audioRoutingMatrixState()},
+      {"captureAudioSources", captureAudioSourcesState()},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
       {"mediaPlayback", mediaPlaybackState()},
@@ -623,6 +624,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     syncParticipantAudioMix(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
+  } else if (type == "sync-capture-audio-sources") {
+    syncCaptureAudioSources(command);
   } else if (type == "push-caption-cue") {
     pushCaptionCue(command);
   } else if (type == "set-caption-enabled") {
@@ -1045,6 +1048,32 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
   audioRoutingWarnings_ = std::move(warnings);
 }
 
+void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
+  captureAudioSources_.clear();
+  captureAudioSourcesSynced_ = true;
+
+  const rpc::Json* sources = command.get("sources");
+  if (!sources || !sources->isArray()) {
+    return;
+  }
+
+  for (const auto& source : sources->asArray()) {
+    CaptureAudioSourceInput input;
+    input.captureDeviceId = source.getString("captureDeviceId");
+    if (input.captureDeviceId.empty()) {
+      continue;
+    }
+
+    input.audioDeviceId = source.getString("audioDeviceId");
+    input.audioDeviceName = source.getString("audioDeviceName");
+    input.audioSyncOffsetMs = static_cast<int>(source.get("audioSyncOffsetMs")
+                                                   ? source.get("audioSyncOffsetMs")->asNumber()
+                                                   : 0);
+    input.audioSyncOffsetMs = std::max(-500, std::min(500, input.audioSyncOffsetMs));
+    captureAudioSources_.push_back(std::move(input));
+  }
+}
+
 void MediaCore::pushCaptionCue(const rpc::Json& command) {
   captionWarnings_.clear();
   const std::string text = command.getString("text");
@@ -1378,6 +1407,36 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
       {"sends", sends},
       {"summary", summary.str()},
       {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::captureAudioSourcesState() const {
+  rpc::Json::Array sources;
+  int pairedCount = 0;
+  for (const auto& source : captureAudioSources_) {
+    if (!source.audioDeviceId.empty()) {
+      ++pairedCount;
+    }
+
+    sources.emplace_back(rpc::Json::Object{
+        {"captureDeviceId", source.captureDeviceId},
+        {"audioDeviceId", source.audioDeviceId},
+        {"audioDeviceName", source.audioDeviceName},
+        {"audioSyncOffsetMs", source.audioSyncOffsetMs},
+        {"paired", !source.audioDeviceId.empty()},
+    });
+  }
+
+  std::ostringstream summary;
+  summary << pairedCount << " of " << captureAudioSources_.size() << " capture source"
+          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with microphone input.";
+
+  return rpc::Json::Object{
+      {"status", captureAudioSourcesSynced_ ? "ready" : "idle"},
+      {"sourceCount", static_cast<int>(captureAudioSources_.size())},
+      {"pairedCount", pairedCount},
+      {"sources", sources},
+      {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
   };
 }
 

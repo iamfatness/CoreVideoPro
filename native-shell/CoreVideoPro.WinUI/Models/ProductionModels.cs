@@ -124,6 +124,13 @@ public sealed class CaptureDeviceInput
     public required string Label { get; init; }
 }
 
+public sealed class AudioCaptureDevice
+{
+    public required string Id { get; init; }
+    public required string NativeDeviceId { get; init; }
+    public required string Name { get; init; }
+}
+
 public partial class CaptureDevice : ObservableObject
 {
     public required string Id { get; init; }
@@ -132,6 +139,26 @@ public partial class CaptureDevice : ObservableObject
     public required string Name { get; init; }
     public required IReadOnlyList<CaptureDeviceInput> Inputs { get; init; }
     public required string SelectedInputId { get; set; }
+
+    private string? _assignedAudioDeviceId;
+    public string? AssignedAudioDeviceId
+    {
+        get => _assignedAudioDeviceId;
+        set => SetProperty(ref _assignedAudioDeviceId, value);
+    }
+
+    private string? _assignedAudioDeviceName;
+    public string? AssignedAudioDeviceName
+    {
+        get => _assignedAudioDeviceName;
+        set
+        {
+            if (SetProperty(ref _assignedAudioDeviceName, value))
+            {
+                OnPropertyChanged(nameof(AssignedAudioLabel));
+            }
+        }
+    }
 
     private int _width;
     public int Width
@@ -237,6 +264,18 @@ public partial class CaptureDevice : ObservableObject
         : AudioSyncOffsetMs > 0
             ? $"Audio delayed +{AudioSyncOffsetMs} ms"
             : $"Audio advanced {AudioSyncOffsetMs} ms";
+
+    public string AssignedAudioLabel =>
+        string.IsNullOrWhiteSpace(AssignedAudioDeviceName)
+            ? "Audio source: none"
+            : $"Audio source: {AssignedAudioDeviceName}";
+
+    public void NotifyAudioAssignmentChanged()
+    {
+        OnPropertyChanged(nameof(AssignedAudioDeviceId));
+        OnPropertyChanged(nameof(AssignedAudioDeviceName));
+        OnPropertyChanged(nameof(AssignedAudioLabel));
+    }
 
     public string ResolutionLabel => Width > 0 && Height > 0 ? $"{Width}x{Height}" : "Format pending";
 

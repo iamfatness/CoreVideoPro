@@ -51,6 +51,12 @@ public sealed record MediaCoreAudioRoutingSendWire(
     string BusId,
     double GainDb);
 
+public sealed record MediaCoreCaptureAudioSourceWire(
+    string CaptureDeviceId,
+    string? AudioDeviceId,
+    string? AudioDeviceName,
+    int AudioSyncOffsetMs);
+
 public sealed record MediaCoreColorGradeWire(
     string Lut,
     int Exposure,
@@ -138,6 +144,7 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public IReadOnlyList<MediaCoreAudioMixChannelWire> AudioMixChannels { get; init; } = [];
     public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];
+    public IReadOnlyList<MediaCoreCaptureAudioSourceWire> CaptureAudioSources { get; init; } = [];
     public string? CaptionText { get; init; }
     public string? CaptionSpeaker { get; init; }
     public string? SelectedMediaAssetId { get; init; }

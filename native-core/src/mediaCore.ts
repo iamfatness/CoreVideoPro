@@ -42,6 +42,7 @@ type TransformState = Extract<MediaCoreCommand, { type: "set-participant-transfo
 type OverlayState = Extract<MediaCoreCommand, { type: "set-overlay-asset" }>;
 type OutputState = Extract<MediaCoreCommand, { type: "start-program-output" }>;
 type MediaPlaybackCommand = Extract<MediaCoreCommand, { type: "set-media-playback" }>;
+type CaptureAudioSourceCommand = Extract<MediaCoreCommand, { type: "sync-capture-audio-sources" }>;
 
 type MediaPlaybackState = {
   mediaAssetId?: string;
@@ -105,6 +106,8 @@ export class MediaCoreRuntime {
   private readonly recordingSink = new RecordingSink();
   private readonly audioMixSession = new AudioMixSessionModel();
   private readonly audioRoutingMatrix = new AudioRoutingMatrixModel();
+  private captureAudioSources: CaptureAudioSourceCommand["sources"] = [];
+  private captureAudioSourcesSynced = false;
   private readonly captionTrack = new CaptionTrackModel();
   private readonly brandKitState = new BrandKitStateModel();
   private mediaPlayback: MediaPlaybackState = { playing: false };
@@ -397,6 +400,21 @@ export class MediaCoreRuntime {
         return;
       }
 
+      if (command.type === "sync-capture-audio-sources") {
+        this.captureAudioSourcesSynced = true;
+        this.captureAudioSources = Array.isArray(command.sources)
+          ? command.sources
+              .filter((source) => source.captureDeviceId)
+              .map((source) => ({
+                captureDeviceId: source.captureDeviceId,
+                audioDeviceId: source.audioDeviceId ?? null,
+                audioDeviceName: source.audioDeviceName ?? null,
+                audioSyncOffsetMs: Math.max(-500, Math.min(500, source.audioSyncOffsetMs ?? 0))
+              }))
+          : [];
+        return;
+      }
+
       if (command.type === "push-caption-cue") {
         const track = this.captionTrack.pushCue(command.text, command.atMs, command.speaker);
         if (track.warnings.length > 0) {
@@ -486,6 +504,7 @@ export class MediaCoreRuntime {
     const outputHealth = this.buildOutputHealth(recording, this.programFrame, encoderSession, outputSenderSession);
     const audioMixSession = this.audioMixSession.snapshot();
     const audioRoutingMatrix = this.audioRoutingMatrix.snapshot();
+    const captureAudioSources = this.captureAudioSourcesSnapshot();
     const captionTrack = this.captionTrack.snapshot();
     const brandKit = this.brandKitState.snapshot();
     const mediaPlayback = this.buildMediaPlaybackSnapshot();
@@ -543,6 +562,7 @@ export class MediaCoreRuntime {
       recording,
       audioMixSession,
       audioRoutingMatrix,
+      captureAudioSources,
       captionTrack,
       brandKit,
       mediaPlayback,
@@ -558,6 +578,7 @@ export class MediaCoreRuntime {
         outputSenderSession,
         audioMixSession,
         audioRoutingMatrix,
+        captureAudioSources,
         captionTrack,
         brandKit,
         mediaPlayback,
@@ -673,6 +694,27 @@ export class MediaCoreRuntime {
     return [...health.values()];
   }
 
+  private captureAudioSourcesSnapshot(): MediaCoreStateSnapshot["captureAudioSources"] {
+    const sources = this.captureAudioSources.map((source) => ({
+      captureDeviceId: source.captureDeviceId,
+      audioDeviceId: source.audioDeviceId ?? null,
+      audioDeviceName: source.audioDeviceName ?? null,
+      audioSyncOffsetMs: Math.max(-500, Math.min(500, source.audioSyncOffsetMs ?? 0)),
+      paired: Boolean(source.audioDeviceId)
+    }));
+    const pairedCount = sources.filter((source) => source.paired).length;
+
+    return {
+      sourceCount: sources.length,
+      pairedCount,
+      sources,
+      status: this.captureAudioSourcesSynced ? "ready" : "idle",
+      summary: this.captureAudioSourcesSynced
+        ? `${pairedCount} of ${sources.length} capture source${sources.length === 1 ? "" : "s"} paired with microphone input.`
+        : "Capture audio source pairing idle."
+    };
+  }
+
   private diagnostics(
     outputHealth: MediaCoreOutputHealth[],
     warnings: string[],
@@ -683,6 +725,7 @@ export class MediaCoreRuntime {
     outputSenderSession: MediaCoreOutputSenderSession,
     audioMixSession: MediaCoreStateSnapshot["audioMixSession"],
     audioRoutingMatrix: MediaCoreStateSnapshot["audioRoutingMatrix"],
+    captureAudioSources: MediaCoreStateSnapshot["captureAudioSources"],
     captionTrack: MediaCoreStateSnapshot["captionTrack"],
     brandKit: MediaCoreStateSnapshot["brandKit"],
     mediaPlayback: MediaCoreMediaPlayback,
@@ -707,6 +750,7 @@ export class MediaCoreRuntime {
       recording,
       audioMixSession,
       audioRoutingMatrix,
+      captureAudioSources,
       captionTrack,
       brandKit,
       mediaPlayback,
