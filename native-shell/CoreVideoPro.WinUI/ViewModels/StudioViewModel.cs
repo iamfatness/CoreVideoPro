@@ -34,6 +34,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly ZoomOAuthAppCoordinator _zoomOAuthCoordinator;
     private readonly string _currentRoomId;
     private readonly string _currentRoomName;
+    private AudioMixerWindow? _audioMixerWindow;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -1616,6 +1617,91 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedParticipantId = participantId;
     }
 
+    [RelayCommand]
+    private void OpenAudioMixer()
+    {
+        if (_audioMixerWindow is not null)
+        {
+            _audioMixerWindow.Activate();
+            return;
+        }
+
+        _audioMixerWindow = new AudioMixerWindow(this);
+        _audioMixerWindow.WindowClosed += OnAudioMixerWindowClosed;
+        _audioMixerWindow.Activate();
+    }
+
+    private void OnAudioMixerWindowClosed(object? sender, EventArgs e)
+    {
+        if (_audioMixerWindow is not null)
+        {
+            _audioMixerWindow.WindowClosed -= OnAudioMixerWindowClosed;
+            _audioMixerWindow = null;
+        }
+    }
+
+    public void SetMixerManualGain(string participantId, double gainDb)
+    {
+        var mix = _audioMixChannels.FirstOrDefault(item =>
+            string.Equals(item.ParticipantId, participantId, StringComparison.Ordinal));
+        if (mix is null)
+        {
+            return;
+        }
+
+        mix.ManualGainDb = Math.Clamp(Math.Round(gainDb, 1), -24, 24);
+        RefreshMixerBindings(participantId);
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public void SetMixerPan(string participantId, double pan)
+    {
+        var mix = _audioMixChannels.FirstOrDefault(item =>
+            string.Equals(item.ParticipantId, participantId, StringComparison.Ordinal));
+        if (mix is null)
+        {
+            return;
+        }
+
+        mix.Pan = Math.Clamp(Math.Round(pan, 2), -1, 1);
+        RefreshMixerBindings(participantId);
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public void ToggleMixerMute(string participantId)
+    {
+        var mix = _audioMixChannels.FirstOrDefault(item =>
+            string.Equals(item.ParticipantId, participantId, StringComparison.Ordinal));
+        if (mix is null)
+        {
+            return;
+        }
+
+        SelectedParticipantId = participantId;
+        mix.Muted = !mix.Muted;
+        RefreshMixerBindings(participantId);
+        CommandStatus = mix.Muted
+            ? $"{SelectedParticipant?.Name} muted in mix"
+            : $"{SelectedParticipant?.Name} unmuted in mix";
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    private void RefreshMixerBindings(string participantId)
+    {
+        if (!string.Equals(SelectedParticipantId, participantId, StringComparison.Ordinal))
+        {
+            SelectedParticipantId = participantId;
+        }
+
+        RefreshAudioParticipantRows();
+        RefreshAudioReadoutBindings();
+        OnPropertyChanged(nameof(SelectedAudioMix));
+        OnPropertyChanged(nameof(SelectedGainLabel));
+        OnPropertyChanged(nameof(SelectedManualGainLabel));
+        OnPropertyChanged(nameof(SelectedMuteButtonLabel));
+        OnPropertyChanged(nameof(SelectedOutputLevel));
+    }
+
     /// <summary>
     /// Opens the per-source color grade pop-out for a Zoom participant or capture source.
     /// Saved grades are attached to matching scene routes and sent to native per layer.
@@ -2404,11 +2490,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.Muted = !mix.Muted;
-        OnPropertyChanged(nameof(SelectedAudioMix));
-        OnPropertyChanged(nameof(SelectedMuteButtonLabel));
+        RefreshMixerBindings(mix.ParticipantId);
         CommandStatus = mix.Muted
             ? $"{SelectedParticipant?.Name} muted in mix"
             : $"{SelectedParticipant?.Name} unmuted in mix";
+        _ = TrySyncMediaCoreAsync();
     }
 
     private void RefreshCaptureFleetSummary()
@@ -3802,6 +3888,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
                     OutputLevel = mix?.OutputLevel ?? participant.AudioLevel,
+                    ManualGainDb = mix?.ManualGainDb ?? 0,
+                    Pan = mix?.Pan ?? 0,
+                    Lufs = mix?.Lufs ?? -60,
+                    TruePeakDb = mix?.TruePeakDb ?? -60,
+                    Muted = mix?.Muted ?? participant.IsMuted,
                     GainLabel = mix is null ? "0.0 dB" : $"{(mix.ManualGainDb > 0 ? "+" : "")}{mix.ManualGainDb:0.0} dB",
                     PanLabel = mix is null || Math.Abs(mix.Pan) < 0.01
                         ? "C"
@@ -3809,10 +3900,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                             ? $"L {Math.Abs(mix.Pan):0.00}"
                             : $"R {mix.Pan:0.00}",
                     LufsLabel = mix is null ? "-60.0 LUFS" : $"{mix.Lufs:0.0} LUFS",
+                    TruePeakLabel = mix is null ? "-60.0 dBTP" : $"{mix.TruePeakDb:0.0} dBTP",
                     BusLabel = ResolvePrimaryAudioBusLabel(participant.Id),
                     InsertLabel = mix is null || mix.PluginInserts.Count == 0
                         ? "No inserts"
                         : string.Join(" + ", mix.PluginInserts),
+                    MuteButtonLabel = mix?.Muted == true ? "Unmute" : "Mute",
+                    MuteStateLabel = mix?.Muted == true ? "Muted" : "Live",
                     IsSelected = participant.Id == SelectedParticipantId
                 };
             })

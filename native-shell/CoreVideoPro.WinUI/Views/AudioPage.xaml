@@ -23,7 +23,17 @@
             <StackPanel Spacing="12">
                 <Border Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}" />
+                            <Button Grid.Column="1" Content="Pop out mixer"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    MinWidth="132"
+                                    Command="{x:Bind ViewModel.OpenAudioMixerCommand}" />
+                        </Grid>
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />

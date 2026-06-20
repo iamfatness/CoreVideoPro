@@ -402,11 +402,19 @@ public sealed class AudioParticipantRow
     public required string Name { get; init; }
     public required string Subtitle { get; init; }
     public required int OutputLevel { get; init; }
+    public required double ManualGainDb { get; init; }
+    public required double Pan { get; init; }
+    public required double Lufs { get; init; }
+    public required double TruePeakDb { get; init; }
+    public required bool Muted { get; init; }
     public required string GainLabel { get; init; }
     public required string PanLabel { get; init; }
     public required string LufsLabel { get; init; }
+    public required string TruePeakLabel { get; init; }
     public required string BusLabel { get; init; }
     public required string InsertLabel { get; init; }
+    public required string MuteButtonLabel { get; init; }
+    public required string MuteStateLabel { get; init; }
     public required bool IsSelected { get; init; }
 }
 
