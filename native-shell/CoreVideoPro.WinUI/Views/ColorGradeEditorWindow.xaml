@@ -5,108 +5,153 @@
     xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
     Title="Color grade">
 
-    <Grid Background="{StaticResource StudioBackgroundBrush}" Padding="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <Grid Background="{StaticResource StudioBackgroundBrush}" Padding="16" ColumnSpacing="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*" />
+            <ColumnDefinition Width="360" />
+        </Grid.ColumnDefinitions>
 
-        <!-- Header: source/participant name -->
-        <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,12">
-            <TextBlock Text="{x:Bind ViewModel.HeaderTitle, Mode=OneWay}"
-                       FontSize="16" FontWeight="Bold"
-                       Foreground="{StaticResource StudioTextBrush}"
-                       TextWrapping="WrapWholeWords" />
-            <TextBlock Text="{x:Bind ViewModel.Summary, Mode=OneWay}"
-                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
-                       TextWrapping="WrapWholeWords" />
-        </StackPanel>
+        <Grid RowSpacing="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <StackPanel Spacing="14">
-                <!-- LUT preset -->
-                <StackPanel Spacing="4">
-                    <TextBlock Text="LUT preset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                    <ComboBox ItemsSource="{x:Bind vm:ColorGradeEditorViewModel.LutOptions}"
-                              SelectedItem="{x:Bind ViewModel.Lut, Mode=TwoWay}"
-                              HorizontalAlignment="Stretch" />
-                </StackPanel>
-
-                <!-- Exposure -->
-                <StackPanel Spacing="2">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Exposure" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Exposure, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
-                    </Grid>
-                    <Slider Minimum="-50" Maximum="50" StepFrequency="1"
-                            Value="{x:Bind ViewModel.Exposure, Mode=TwoWay}" />
-                </StackPanel>
-
-                <!-- Contrast -->
-                <StackPanel Spacing="2">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Contrast" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Contrast, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
-                    </Grid>
-                    <Slider Minimum="-50" Maximum="50" StepFrequency="1"
-                            Value="{x:Bind ViewModel.Contrast, Mode=TwoWay}" />
-                </StackPanel>
-
-                <!-- Saturation -->
-                <StackPanel Spacing="2">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Saturation" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Saturation, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
-                    </Grid>
-                    <Slider Minimum="-50" Maximum="50" StepFrequency="1"
-                            Value="{x:Bind ViewModel.Saturation, Mode=TwoWay}" />
-                </StackPanel>
-
-                <!-- Temperature -->
-                <StackPanel Spacing="2">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Temperature" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Temperature, Mode=OneWay}"
-                                   FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
-                    </Grid>
-                    <Slider Minimum="-50" Maximum="50" StepFrequency="1"
-                            Value="{x:Bind ViewModel.Temperature, Mode=TwoWay}" />
-                </StackPanel>
+            <StackPanel Spacing="4">
+                <TextBlock Text="{x:Bind ViewModel.HeaderTitle, Mode=OneWay}"
+                           FontSize="16"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource StudioTextBrush}"
+                           TextWrapping="WrapWholeWords" />
+                <TextBlock Text="{x:Bind ViewModel.PreviewStatus, Mode=OneWay}"
+                           FontSize="11"
+                           Foreground="{StaticResource StudioMutedBrush}"
+                           TextWrapping="WrapWholeWords" />
             </StackPanel>
-        </ScrollViewer>
 
-        <!-- Footer: Save + Close -->
-        <Grid Grid.Row="2" ColumnSpacing="8" Margin="0,16,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Button Grid.Column="0" Content="Save"
-                    HorizontalAlignment="Stretch"
-                    Command="{x:Bind ViewModel.SaveCommand}" />
-            <Button Grid.Column="1" Content="Close"
-                    HorizontalAlignment="Stretch"
-                    Command="{x:Bind ViewModel.CloseCommand}" />
+            <Border Grid.Row="1"
+                    Background="#020304"
+                    BorderBrush="{StaticResource StudioBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6">
+                <Grid>
+                    <Image x:Name="GradedPreviewImage"
+                           Stretch="Uniform"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Stretch" />
+                    <StackPanel x:Name="PreviewPlaceholder"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Width="280"
+                                Spacing="6">
+                        <TextBlock Text="Waiting for source video"
+                                   Foreground="{StaticResource StudioTextBrush}"
+                                   FontWeight="SemiBold"
+                                   TextAlignment="Center" />
+                        <TextBlock Text="Turn the source on or select a live capture/Zoom feed to grade against real frames."
+                                   Foreground="{StaticResource StudioMutedBrush}"
+                                   FontSize="12"
+                                   TextWrapping="WrapWholeWords"
+                                   TextAlignment="Center" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <TextBlock Grid.Row="2"
+                       Text="{x:Bind ViewModel.Summary, Mode=OneWay}"
+                       FontSize="12"
+                       Foreground="{StaticResource StudioMutedBrush}"
+                       TextWrapping="WrapWholeWords" />
+        </Grid>
+
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="LUT preset" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                        <ComboBox ItemsSource="{x:Bind vm:ColorGradeEditorViewModel.LutOptions}"
+                                  SelectedItem="{x:Bind ViewModel.Lut, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Exposure" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Exposure, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
+                        </Grid>
+                        <Slider Minimum="-50" Maximum="50" StepFrequency="1"
+                                Value="{x:Bind ViewModel.Exposure, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Contrast" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Contrast, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
+                        </Grid>
+                        <Slider Minimum="-50" Maximum="50" StepFrequency="1"
+                                Value="{x:Bind ViewModel.Contrast, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Saturation" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Saturation, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
+                        </Grid>
+                        <Slider Minimum="-50" Maximum="50" StepFrequency="1"
+                                Value="{x:Bind ViewModel.Saturation, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="2">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Temperature" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Temperature, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioTextBrush}" />
+                        </Grid>
+                        <Slider Minimum="-50" Maximum="50" StepFrequency="1"
+                                Value="{x:Bind ViewModel.Temperature, Mode=TwoWay}" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid Grid.Row="1" ColumnSpacing="8" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0"
+                        Content="Done"
+                        HorizontalAlignment="Stretch"
+                        Command="{x:Bind ViewModel.SaveCommand}" />
+                <Button Grid.Column="1"
+                        Content="Close"
+                        HorizontalAlignment="Stretch"
+                        Command="{x:Bind ViewModel.CloseCommand}" />
+            </Grid>
         </Grid>
     </Grid>
 </Window>

@@ -4,18 +4,18 @@ using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using System.ComponentModel;
 using WinRT.Interop;
 
 namespace CoreVideoPro.WinUI.Views;
 
 /// <summary>
-/// Small pop-out window for editing a single source's color grade. UI-only this round:
-/// the grade is handed back to the host VM via the editor VM's GradeSaved event.
+/// Pop-out window for editing a single source's color grade with a live preview.
 /// </summary>
 public sealed partial class ColorGradeEditorWindow : Window
 {
-    private const int WindowWidth = 400;
-    private const int WindowHeight = 520;
+    private const int WindowWidth = 920;
+    private const int WindowHeight = 640;
 
     public ColorGradeEditorWindow(ColorGradeEditorViewModel viewModel)
     {
@@ -24,9 +24,11 @@ public sealed partial class ColorGradeEditorWindow : Window
 
         ViewModel.GradeSaved += OnGradeSaved;
         ViewModel.Closed += OnEditorClosed;
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
         Closed += OnWindowClosed;
 
         ApplyChromeAndSize();
+        RefreshPreviewImage();
     }
 
     /// <summary>Mirrors how pages expose their bound view-model.</summary>
@@ -40,7 +42,36 @@ public sealed partial class ColorGradeEditorWindow : Window
     {
         ViewModel.GradeSaved -= OnGradeSaved;
         ViewModel.Closed -= OnEditorClosed;
+        ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
         Closed -= OnWindowClosed;
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ColorGradeEditorViewModel.GradedPreviewBgra) or
+            nameof(ColorGradeEditorViewModel.GradedPreviewWidth) or
+            nameof(ColorGradeEditorViewModel.GradedPreviewHeight) or
+            nameof(ColorGradeEditorViewModel.HasPreview))
+        {
+            RefreshPreviewImage();
+        }
+    }
+
+    private void RefreshPreviewImage()
+    {
+        if (ViewModel.HasPreview)
+        {
+            BgraPreviewHelper.SetPreview(
+                GradedPreviewImage,
+                ViewModel.GradedPreviewBgra,
+                ViewModel.GradedPreviewWidth,
+                ViewModel.GradedPreviewHeight);
+            PreviewPlaceholder.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        BgraPreviewHelper.ClearPreview(GradedPreviewImage);
+        PreviewPlaceholder.Visibility = Visibility.Visible;
     }
 
     private void ApplyChromeAndSize()

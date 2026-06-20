@@ -39,6 +39,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private AudioMixerWindow? _audioMixerWindow;
     private ProductionSettingsWindow? _productionSettingsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
+    private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -1962,10 +1963,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sourceName = ResolveColorGradeSourceName(normalizedSourceId);
 
         var seed = ResolveStoredColorGrade(normalizedSourceId);
-        var editorViewModel = new ColorGradeEditorViewModel(normalizedSourceId, sourceName, seed);
+        var editorViewModel = new ColorGradeEditorViewModel(
+            normalizedSourceId,
+            sourceName,
+            seed,
+            ResolveColorGradePreviewSurface(normalizedSourceId));
+        editorViewModel.GradeChanged += OnSourceColorGradeChanged;
         editorViewModel.GradeSaved += OnSourceColorGradeSaved;
 
         var window = new ColorGradeEditorWindow(editorViewModel);
+        window.Closed += (_, _) =>
+        {
+            editorViewModel.GradeChanged -= OnSourceColorGradeChanged;
+            editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
+            _openColorGradeEditors.Remove(editorViewModel);
+        };
+        _openColorGradeEditors.Add(editorViewModel);
         window.Activate();
     }
 
@@ -1980,14 +1993,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
+        ApplyLiveColorGrade(editorViewModel, grade, $"Color grade set for {editorViewModel.SourceName}: {grade.Summary}");
+    }
+
+    private void OnSourceColorGradeChanged(object? sender, ColorGrade grade)
+    {
+        if (sender is not ColorGradeEditorViewModel editorViewModel)
+        {
+            return;
+        }
+
+        ApplyLiveColorGrade(editorViewModel, grade, $"Color grade live for {editorViewModel.SourceName}: {grade.Summary}");
+    }
+
+    private void ApplyLiveColorGrade(ColorGradeEditorViewModel editorViewModel, ColorGrade grade, string status)
+    {
         _sourceColorGrades[editorViewModel.SourceId] = grade;
         ApplyColorGradeToMatchingRoutes(editorViewModel.SourceId, grade);
-        CommandStatus = $"Color grade saved for {editorViewModel.SourceName}: {grade.Summary}";
+        CommandStatus = status;
 
         SyncPreviewCanvasLayers(GetMutableRoutes(PreviewSceneId));
         RefreshPreviewRoutingState();
         _ = SyncColorGradeChangeAsync();
+    }
+
+    private VideoSurfaceState? ResolveColorGradePreviewSurface(string sourceId)
+    {
+        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
+        {
+            var captureDeviceId = sourceId["capture:".Length..];
+            return _surfaces.CaptureDeviceSurfaces.TryGetValue(captureDeviceId, out var captureSurface)
+                ? captureSurface
+                : BuildCaptureSceneTile(captureDeviceId)?.Surface;
+        }
+
+        return MultiviewTiles
+            .FirstOrDefault(tile => string.Equals(tile.Participant.Id, sourceId, StringComparison.Ordinal))
+            ?.Surface;
+    }
+
+    private void RefreshOpenColorGradeEditorPreviews()
+    {
+        foreach (var editor in _openColorGradeEditors.ToList())
+        {
+            editor.SetPreviewSurface(ResolveColorGradePreviewSurface(editor.SourceId));
+        }
     }
 
     private async Task SyncColorGradeChangeAsync()
@@ -4397,6 +4447,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramSurface = _surfaces.ProgramSurface;
         PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
         ScheduleMultiviewGridRefresh();
     }
