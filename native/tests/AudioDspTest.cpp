@@ -424,3 +424,156 @@ TEST(AudioDsp, AnalyzeFlagsSilentPcmAsSilence) {
   const AudioParticipantMixMetrics metrics = analyzeAudioParticipantFrame(frame);
   EXPECT_TRUE(metrics.silenceDetected);
 }
+
+// --- Routing-matrix bus mix --------------------------------------------------
+
+TEST(AudioDsp, RoutedBusMixSumsSourcesWithCrosspointGain) {
+  std::vector<float> a(8, 0.25f);  // mono, 8 sample-frames
+  std::vector<float> b(8, 0.10f);
+  const std::vector<RoutedAudioSource> sources = {
+      {"a", &a, 1, 1.0, 0.0, false, false},
+      {"b", &b, 1, 1.0, 0.0, false, false},
+  };
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {
+      {"a", "master", 1.0},
+      {"b", "master", 1.0},
+      {"a", "iso-1", 1.0},
+  };
+  const auto buses = mixRoutedBuses(sources, crosspoints);
+
+  const auto master = buses.find("master");
+  const auto iso = buses.find("iso-1");
+  EXPECT_TRUE(master != buses.end());
+  EXPECT_TRUE(iso != buses.end());
+  EXPECT_TRUE(master->second.size() == 16u);            // 8 frames * 2 channels
+  EXPECT_TRUE(std::abs(master->second[0] - 0.35f) < kTightTol);  // 0.25 + 0.10
+  EXPECT_TRUE(std::abs(iso->second[0] - 0.25f) < kTightTol);     // a only
+}
+
+TEST(AudioDsp, RoutedBusMixHalvesWithMinusSixDbCrosspoint) {
+  std::vector<float> a(4, 0.8f);
+  const std::vector<RoutedAudioSource> sources = {{"a", &a, 1, 1.0, 0.0, false, false}};
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", dbfsToLinear(-6.0206)}};
+  const auto buses = mixRoutedBuses(sources, crosspoints);
+  const auto master = buses.find("master");
+  EXPECT_TRUE(master != buses.end());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.4f) < 1e-3);  // -6 dB halves 0.8
+}
+
+TEST(AudioDsp, RoutedBusMixSoloExcludesNonSoloedSources) {
+  std::vector<float> a(4, 0.5f);
+  std::vector<float> b(4, 0.5f);
+  const std::vector<RoutedAudioSource> sources = {
+      {"a", &a, 1, 1.0, 0.0, false, true},   // solo
+      {"b", &b, 1, 1.0, 0.0, false, false},
+  };
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", 1.0}, {"b", "master", 1.0}};
+  const auto buses = mixRoutedBuses(sources, crosspoints);
+  const auto master = buses.find("master");
+  EXPECT_TRUE(master != buses.end());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.5f) < kTightTol);  // only the soloed source
+}
+
+TEST(AudioDsp, RoutedBusMixMutedSourceContributesNothing) {
+  std::vector<float> a(4, 0.8f);
+  std::vector<float> b(4, 0.2f);
+  const std::vector<RoutedAudioSource> sources = {
+      {"a", &a, 1, 1.0, 0.0, true, false},   // muted
+      {"b", &b, 1, 1.0, 0.0, false, false},
+  };
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", 1.0}, {"b", "master", 1.0}};
+  const auto buses = mixRoutedBuses(sources, crosspoints);
+  const auto master = buses.find("master");
+  EXPECT_TRUE(master != buses.end());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.2f) < kTightTol);  // muted source dropped
+}
+
+TEST(AudioDsp, RoutedBusMixPanBiasesStereoBalance) {
+  std::vector<float> a(4, 0.5f);
+  const std::vector<RoutedAudioSource> sources = {{"a", &a, 1, 1.0, 1.0, false, false}};  // hard right
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", 1.0}};
+  const auto buses = mixRoutedBuses(sources, crosspoints);
+  const auto master = buses.find("master");
+  EXPECT_TRUE(master != buses.end());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.0f) < kTightTol);  // left muted by pan
+  EXPECT_TRUE(std::abs(master->second[1] - 0.5f) < kTightTol);  // right full
+}
+
+TEST(AudioDsp, RoutedBusMixWithoutCrosspointsProducesNoBuses) {
+  std::vector<float> a(4, 0.5f);
+  const std::vector<RoutedAudioSource> sources = {{"a", &a, 1, 1.0, 0.0, false, false}};
+  const auto buses = mixRoutedBuses(sources, {});
+  EXPECT_TRUE(buses.empty());
+}
+
+// --- BS.1770 integrated loudness meter ---------------------------------------
+
+TEST(AudioDsp, IntegratedLoudnessSilenceStaysBelowGate) {
+  const double rate = 48000.0;
+  std::vector<float> silence(static_cast<size_t>(rate * 1.5), 0.0f);
+  Bs1770IntegratedMeter meter(rate);
+  meter.process(silence.data(), silence.data(), silence.size());
+  // Every block falls below the -70 LUFS absolute gate -> floor.
+  EXPECT_TRUE(meter.integratedLufs() <= -70.0);
+}
+
+TEST(AudioDsp, IntegratedLoudnessMatchesSteadyToneShortTerm) {
+  const double rate = 48000.0;
+  const auto tone = makeSine(1000.0, 0.5, rate, static_cast<size_t>(rate * 2));  // 2 s steady
+  Bs1770IntegratedMeter meter(rate);
+  meter.process(tone.data(), tone.data(), tone.size());
+  // A steady tone: every gated block has the same loudness, so the integrated
+  // value matches the short-term loudness of the same signal.
+  const double integrated = meter.integratedLufs();
+  const double shortTerm = computeShortTermLufs(tone.data(), tone.data(), tone.size(), rate);
+  EXPECT_TRUE(std::abs(integrated - shortTerm) < 1.0);
+}
+
+TEST(AudioDsp, IntegratedLoudnessAbsoluteGateDropsSilentSection) {
+  const double rate = 48000.0;
+  const auto loud = makeSine(1000.0, 0.5, rate, static_cast<size_t>(rate * 1));
+  std::vector<float> silence(static_cast<size_t>(rate * 1), 0.0f);
+
+  Bs1770IntegratedMeter gated(rate);
+  gated.process(loud.data(), loud.data(), loud.size());
+  gated.process(silence.data(), silence.data(), silence.size());
+
+  Bs1770IntegratedMeter loudOnly(rate);
+  loudOnly.process(loud.data(), loud.data(), loud.size());
+
+  // The silent second is gated out, so the integrated loudness tracks the loud
+  // section rather than being dragged toward silence.
+  EXPECT_TRUE(std::abs(gated.integratedLufs() - loudOnly.integratedLufs()) < 1.0);
+}
+
+// --- Bus insert chain (built-in dynamics) ------------------------------------
+
+TEST(AudioDsp, CompressorReducesHotSignalPeak) {
+  std::vector<float> samples(256, 0.9f);  // ~-0.9 dBFS, well above the threshold
+  const double reduction = applyCompressor(samples.data(), samples.size(), -18.0, 4.0);
+  EXPECT_TRUE(reduction > 0.0);
+  // 4:1 above -18 dBFS pulls a -0.9 dBFS signal down well below -10 dBFS.
+  EXPECT_TRUE(computeSamplePeakDbfs(samples.data(), samples.size()) < -10.0);
+}
+
+TEST(AudioDsp, CompressorLeavesQuietSignalUntouched) {
+  std::vector<float> samples(256, 0.05f);  // ~-26 dBFS, below the -18 threshold
+  const double reduction = applyCompressor(samples.data(), samples.size(), -18.0, 4.0);
+  EXPECT_TRUE(std::abs(reduction) < kTightTol);
+  EXPECT_TRUE(std::abs(samples[0] - 0.05f) < kTightTol);
+}
+
+TEST(AudioDsp, BusInsertChainAppliesLimiterAndPassesThroughOthers) {
+  std::vector<float> samples(256, 0.95f);
+  const int applied = applyBusInsertChain(samples.data(), samples.size(), 48000.0, {"Built-in EQ", "Limiter"});
+  EXPECT_EQ(applied, 1);  // limiter processes audio; EQ is a pass-through for now
+  // Limiter brickwalls to -1 dBFS, so the 0.95 peak is pulled down to ~0.891.
+  EXPECT_TRUE(computeSamplePeakDbfs(samples.data(), samples.size()) <= -0.9);
+}
+
+TEST(AudioDsp, BusInsertChainWithNoKnownInsertsIsNoOp) {
+  std::vector<float> samples(64, 0.4f);
+  const int applied = applyBusInsertChain(samples.data(), samples.size(), 48000.0, {"Built-in EQ", "Reverb"});
+  EXPECT_EQ(applied, 0);
+  EXPECT_TRUE(std::abs(samples[0] - 0.4f) < kTightTol);
+}

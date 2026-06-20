@@ -163,6 +163,69 @@ PCM (today it passes on a synthetic counter, `MediaCore.cpp:1856`). Add a DSP un
 test: known input samples → expected RMS/peak/LUFS within tolerance, and limiter
 reduces a hot signal.
 
+**Status (2026-06-20) — monitor output landed.** The `Beep()` placeholder is
+gone. `IAudioMixer` now exposes a real stereo MON-bus PCM tap
+(`monitorBusPcm()`/`monitorBusSampleRate()`/`monitorBusChannels()`) summed from
+participant PCM and brickwall-limited to −1 dBFS in `DevSafeAudioMixer`. A new
+`IAudioMonitorOutput` module plays that bus: the default build wires a safe
+in-memory stub (`createStubAudioMonitorOutput`), and a dev-gated
+`createWasapiMonitorOutput` (`COREVIDEO_WITH_WASAPI_MONITOR`, links `ole32`)
+drives a real shared-mode WASAPI render endpoint with device selection, mix-format
+conversion (float32/16/32-bit PCM), and overflow-drop. MediaCore opens/stops it
+from `sync-audio-monitor` and pushes the MON bus each tick. Covered by
+`MediaCoreAudioMonitor.*` tests; the real WASAPI path still needs a dev-rig smoke
+pass (audible output to a chosen endpoint).
+
+**Status (2026-06-20) — routing-matrix sample mix + program/ISO taps landed.**
+The routing matrix now mixes **real PCM**, not just crosspoint state. New pure
+kernel `mixRoutedBuses` (`AudioDsp.h`) runs each source's channel strip (fader
+gain → stereo pan → mute/solo) then sums every crosspoint into stereo buses,
+brickwall-limited to −1 dBFS. MediaCore's tick builds the sources from the polled
+PCM frames + synced participant mix and the crosspoints from the synced routing
+sends, then exposes a **program tap** (the stereo `master` bus) and **ISO taps**
+(`iso-*`) via `programAudioTapPcm()` / `audioBusTapPcm()`; the routing-matrix
+snapshot gains a measured `busTaps` array (per-bus peak/RMS dBFS, frame count).
+Covered by `AudioDsp.RoutedBusMix*` and
+`MediaCoreAudioMonitor.RoutingMatrixMixesPcmIntoProgramAndIsoTaps`.
+
+**Status (2026-06-20) — recording now muxes real program audio.** The synthetic
+capture source emits real PCM tones, and `IEncoderSink` gained `submitAudio()`
+(stub sink counts muxed packets/samples). MediaCore's recording tick feeds the
+program audio (routed `master` tap, else the default program mix) into the
+encoder, and the recording proof's `audioPacketsObserved`/`audioPresent` are now
+sourced from **real muxed PCM** (plus new `audioSampleCount`/`audioChannels`/
+`audioSampleRate` proof fields), replacing the synthetic frame counter at the old
+`MediaCore.cpp:1856`. Verified: `MediaCoreCommand.RecordsRealProgramAudioPcmIntoMux`
+(165 native tests green) **and** `native-recording-proof.mjs` passing against the
+built `corevideo-native.exe` (program=28/iso=28 frames).
+
+**Status (2026-06-20) — BS.1770 master meter on the program tap.** The
+`audioMixSession` snapshot gained a `masterMeter` object measured from the real
+program audio each tick (routed `master` tap, else the default program mix):
+`momentaryLufs` (400 ms) and `shortTermLufs` (3 s) over a rolling deinterleaved
+window via the existing K-weighted kernels, `truePeakDbfs` (4× oversample), and a
+spec-gated `integratedLufs`, plus `windowMs`. This replaces the
+level-lookup *for the program meter*; the legacy per-channel `loudnessLufs`
+estimate is retained for the channel strip readout. The integrated value comes
+from a reusable incremental `Bs1770IntegratedMeter` (`AudioDsp.h`): continuous
+K-weighting, 400 ms gating blocks at 100 ms hops (75% overlap), absolute (-70
+LUFS) then relative (-10 LU) gating per BS.1770-4. Covered by
+`MediaCoreCommand.MeasuresBs1770MasterLoudnessOnProgramTap` and
+`AudioDsp.IntegratedLoudness*` (169 native tests green).
+
+**Status (2026-06-20) — per-bus inserts act on samples.** Bus insert chains now
+process the routed bus PCM each tick (`applyBusInsertChain` in `AudioDsp.h`,
+driven from the routing sends' `busPluginInserts`): recognized built-in dynamics
+run on the audio — `applyCompressor` (static 4:1 over -18 dBFS) and the limiter
+(-1 dBFS) — while EQ/gate/third-party inserts remain acknowledged pass-throughs
+until a real VST/AU host lands. Program/ISO taps and the master meter therefore
+reflect insert processing. Covered by `AudioDsp.Compressor*`,
+`AudioDsp.BusInsertChain*`, and
+`MediaCoreAudioMonitor.BusInsertCompressorActsOnRoutedBusPcm` (174 native tests
+green). **Remaining F2:** a real VST/AU insert host (load actual plugin binaries —
+needs a dev host, not stub-testable) and the MF encoder adapter's own
+`submitAudio` (dev-gated, default no-op today).
+
 ### F3 — Real compositor pixel pipeline (framing + raster)
 
 This is items 8 and 9; specced there. It is a foundation because **all** outputs
@@ -201,6 +264,18 @@ Each item lists: **Current**, **Spec (done = )**, **Plan**, **Gate/tests**, **Fl
   rig; stub build still green. `nativeCaptureDeviceEngineAdapter` test for the new
   device kind.
 - **Flag.** `COREVIDEO_WITH_UVC` (new) + `COREVIDEO_ENABLE_DEV_ADAPTERS`.
+- **Status (2026-06-20) — test-pattern ingest path proven (F1 gate).** The stub
+  `FakeCaptureDevice` now emits real BGRA frames for connected+signal devices: a
+  deterministic 7-bar SMPTE test pattern (`makeTestPatternBgra`) delivered as a
+  first-class `VideoFrame` with `participantId "capture:<deviceId>"`. The existing
+  tick already merges `captureDevice->pollVideoFrames()` and maps `capture-input`
+  routes to `capture:<deviceId>` layers, so a routed capture source now composites
+  **real pixels** into the program frame. Covered by `CaptureIngest.*` (184 native
+  tests green): the device emits correctly-sized populated pixels, a no-signal
+  device stays silent, and a routed capture frame yields non-empty program-frame
+  pixels showing the pattern (not the synthetic slate). **Remaining item 1
+  (dev-gated):** the real `UvcCaptureDevice`/WinUI bridge delivering live camera
+  frames + embedded UVC audio.
 
 ### Item 2 — AJA / Blackmagic (DeckLink)
 
@@ -336,6 +411,16 @@ Each item lists: **Current**, **Spec (done = )**, **Plan**, **Gate/tests**, **Fl
   sync; an H.265/AV1 attempt either streams on a verified path or warns+falls back
   deterministically (unit-test the matrix). Validate via `validate-record-stream.mjs`.
 - **Flag.** `COREVIDEO_WITH_RTMP_OUTPUT` (exists).
+- **Status (2026-06-20) — codec/container compatibility matrix landed.** New pure
+  `resolveRtmpCompatibility` (`modules/RtmpCompatibility.h`): H.264+AAC/FLV is the
+  guaranteed baseline; H.265/AV1 either ride enhanced-RTMP (advisory warning) when
+  opted in, or deterministically fall back to H.264 with a clear warning. The RTMP
+  adapter now selects its FFmpeg video encoder from the resolved codec and surfaces
+  the compatibility note in `runtimeDetail`. Covered by `RtmpCompatibility.*` (181
+  native tests green); compiles under `-DCOREVIDEO_WITH_RTMP_OUTPUT=ON`. Remaining
+  item 7: feed the real F2 program-audio tap into FFmpeg (replace `anullsrc`),
+  enable the E-RTMP opt-in via a destination setting, and the POSIX pipe path —
+  all dev-rig/runtime work.
 
 ### Item 8 — Scene source framing in native output (F3, framing)
 

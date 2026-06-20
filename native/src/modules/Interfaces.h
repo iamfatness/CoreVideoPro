@@ -182,6 +182,10 @@ struct OutputSession {
   std::string recordingContainerFormat;
   std::string recordingVideoCodec;
   std::string recordingAudioCodec;
+  int64_t recordingAudioPacketCount = 0;
+  int64_t recordingAudioSampleCount = 0;
+  int recordingAudioChannels = 0;
+  int recordingAudioSampleRate = 0;
   bool recordingMetadataValid = false;
   std::string recordingWarning;
   std::string recordingError;
@@ -293,6 +297,40 @@ class IAudioMixer {
   virtual ~IAudioMixer() = default;
   virtual int64_t mix(const std::vector<AudioFrame>& frames) = 0;
   virtual AudioMixMetrics session() const = 0;
+  // Most recent monitor (MON) bus as interleaved float PCM in [-1, 1] with
+  // `monitorBusChannels()` channels at `monitorBusSampleRate()` Hz. Empty when
+  // the last mix carried no real PCM signal (e.g. metadata-only frames), in
+  // which case the monitor output stays armed but silent. Defaulted here so
+  // mixers that have not yet grown a real bus tap stay valid.
+  [[nodiscard]] virtual const std::vector<float>& monitorBusPcm() const {
+    static const std::vector<float> kEmptyBus;
+    return kEmptyBus;
+  }
+  [[nodiscard]] virtual int monitorBusSampleRate() const { return 48000; }
+  [[nodiscard]] virtual int monitorBusChannels() const { return 2; }
+};
+
+// Real-time playout of the monitor (MON) bus to a host render device. The
+// renderer never touches this directly; MediaCore opens it from the
+// `sync-audio-monitor` command and pushes the mixer's monitor bus each tick.
+// The default build wires a safe in-memory stub; a dev-gated WASAPI adapter
+// drives a real Windows endpoint (createWasapiMonitorOutput, see below).
+class IAudioMonitorOutput {
+ public:
+  virtual ~IAudioMonitorOutput() = default;
+  // Opens (or re-targets) the render endpoint for `deviceId` ("" = system
+  // default). `sampleRate`/`channels` describe the source bus; the adapter
+  // converts to the device's own mix format. Returns true when a render
+  // endpoint is ready. Idempotent for an already-open identical device.
+  virtual bool start(const std::string& deviceId, int sampleRate, int channels) = 0;
+  virtual void stop() = 0;
+  // Submits `frameCount` interleaved sample-frames of `channels` float samples
+  // in [-1, 1], scaled by linear `volume`. Returns true when the samples were
+  // accepted by the endpoint. Real-time: may drop overflow rather than block.
+  virtual bool render(const float* interleaved, int frameCount, int channels, double volume) = 0;
+  [[nodiscard]] virtual bool active() const = 0;
+  [[nodiscard]] virtual std::string deviceName() const = 0;
+  [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
 };
 
 class IEncoderSink {
@@ -301,6 +339,17 @@ class IEncoderSink {
   virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;
   virtual void submit(const ProgramFrame& frame) = 0;
+  // Mux real program-audio PCM alongside the video frames. `interleaved` holds
+  // `frameCount` sample-frames of `channels` float samples in [-1, 1] at
+  // `sampleRate` Hz. Default no-op so encoders that don't yet handle audio stay
+  // valid; the stub recording sink counts the muxed packets/samples so the
+  // recording proof can assert real audio, not a synthetic frame counter.
+  virtual void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) {
+    (void)interleaved;
+    (void)frameCount;
+    (void)channels;
+    (void)sampleRate;
+  }
   virtual OutputSession session() const = 0;
 };
 
@@ -332,6 +381,7 @@ struct ModuleSet {
   std::unique_ptr<IZoomCaptureSource> zoom;
   std::unique_ptr<ICompositor> compositor;
   std::unique_ptr<IAudioMixer> mixer;
+  std::unique_ptr<IAudioMonitorOutput> monitorOutput;
   std::unique_ptr<IEncoderSink> encoder;
   std::unique_ptr<IOutputSender> outputSender;
   std::unique_ptr<ICaptureDevice> captureDevice;
@@ -340,6 +390,8 @@ struct ModuleSet {
 ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
+std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
 std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();

@@ -3,8 +3,11 @@
 #include "modules/Interfaces.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -196,6 +199,120 @@ inline double computeMomentaryLufs(const float* left, const float* right, size_t
   return computeStereoLoudnessLufs(left, right, count, sampleRate, 0.400);
 }
 
+// ---------------------------------------------------------------------------
+// Incremental ITU-R BS.1770-4 integrated loudness meter (stereo).
+//
+// Feed PCM over time; the K-weighting filters run continuously across feeds so
+// there is no per-chunk discontinuity. Loudness is integrated over 400 ms gating
+// blocks with 100 ms hops (75% overlap), with the two-stage gating from the
+// spec: an absolute gate at -70 LUFS, then a relative gate at -10 LU below the
+// mean loudness of the absolute-gated blocks. `integratedLufs()` returns the
+// gated mean over all blocks observed so far (kAudioDbfsFloor when none pass the
+// gate). Deterministic. Block history is capped at ~1 hour to stay bounded.
+// ---------------------------------------------------------------------------
+class Bs1770IntegratedMeter {
+ public:
+  explicit Bs1770IntegratedMeter(double sampleRate = 48000.0) { reset(sampleRate); }
+
+  void reset(double sampleRate) {
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    stage1_ = bs1770Stage1(sampleRate_);
+    stage2_ = bs1770Stage2(sampleRate_);
+    stateL1_ = stateL2_ = stateR1_ = stateR2_ = AudioBiquadState{};
+    blockSamples_ = std::max<size_t>(1, static_cast<size_t>(std::llround(0.400 * sampleRate_)));
+    hopSamples_ = std::max<size_t>(1, static_cast<size_t>(std::llround(0.100 * sampleRate_)));
+    ring_.assign(blockSamples_, 0.0);
+    ringPos_ = 0;
+    ringFilled_ = 0;
+    sinceHop_ = 0;
+    runningSum_ = 0.0;
+    blocks_.clear();
+  }
+
+  [[nodiscard]] double sampleRateHz() const { return sampleRate_; }
+
+  // Feed `count` sample-frames of deinterleaved stereo (mono callers pass the
+  // same pointer for left and right).
+  void process(const float* left, const float* right, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+      const double weightedL = biquadProcessSample(stage2_, stateL2_, biquadProcessSample(stage1_, stateL1_, left ? static_cast<double>(left[index]) : 0.0));
+      const double weightedR = biquadProcessSample(stage2_, stateR2_, biquadProcessSample(stage1_, stateR1_, right ? static_cast<double>(right[index]) : 0.0));
+      const double energy = weightedL * weightedL + weightedR * weightedR;
+      // Sliding sum over the trailing 400 ms ring.
+      runningSum_ += energy - ring_[ringPos_];
+      ring_[ringPos_] = energy;
+      ringPos_ = (ringPos_ + 1) % blockSamples_;
+      if (ringFilled_ < blockSamples_) {
+        ++ringFilled_;
+      }
+      if (++sinceHop_ >= hopSamples_) {
+        sinceHop_ = 0;
+        if (ringFilled_ >= blockSamples_) {
+          const double meanSquare = runningSum_ / static_cast<double>(blockSamples_);
+          blocks_.push_back(meanSquare > 0.0 ? meanSquare : 0.0);
+          if (blocks_.size() > kMaxBlocks) {
+            blocks_.pop_front();
+          }
+        }
+      }
+    }
+  }
+
+  [[nodiscard]] double integratedLufs() const {
+    if (blocks_.empty()) {
+      return kAudioDbfsFloor;
+    }
+    const auto blockLoudness = [](double meanSquare) {
+      return meanSquare > 0.0 ? -0.691 + 10.0 * std::log10(meanSquare) : kAudioDbfsFloor;
+    };
+    // Absolute gate at -70 LUFS.
+    double absSum = 0.0;
+    size_t absCount = 0;
+    for (double meanSquare : blocks_) {
+      if (blockLoudness(meanSquare) >= -70.0) {
+        absSum += meanSquare;
+        ++absCount;
+      }
+    }
+    if (absCount == 0) {
+      return kAudioDbfsFloor;
+    }
+    // Relative gate: -10 LU below the mean loudness of the absolute-gated blocks.
+    const double relativeThreshold = -0.691 + 10.0 * std::log10(absSum / static_cast<double>(absCount)) - 10.0;
+    double relSum = 0.0;
+    size_t relCount = 0;
+    for (double meanSquare : blocks_) {
+      const double loudness = blockLoudness(meanSquare);
+      if (loudness >= -70.0 && loudness >= relativeThreshold) {
+        relSum += meanSquare;
+        ++relCount;
+      }
+    }
+    if (relCount == 0) {
+      return kAudioDbfsFloor;
+    }
+    return -0.691 + 10.0 * std::log10(relSum / static_cast<double>(relCount));
+  }
+
+ private:
+  static constexpr size_t kMaxBlocks = 36000;  // ~1 hour of 100 ms hops
+  double sampleRate_ = 48000.0;
+  AudioBiquadCoefficients stage1_;
+  AudioBiquadCoefficients stage2_;
+  AudioBiquadState stateL1_;
+  AudioBiquadState stateL2_;
+  AudioBiquadState stateR1_;
+  AudioBiquadState stateR2_;
+  size_t blockSamples_ = 1;
+  size_t hopSamples_ = 1;
+  std::vector<double> ring_;
+  size_t ringPos_ = 0;
+  size_t ringFilled_ = 0;
+  size_t sinceHop_ = 0;
+  double runningSum_ = 0.0;
+  std::deque<double> blocks_;
+};
+
 // Short-term (3 s) loudness in LUFS for a stereo signal.
 inline double computeShortTermLufs(const float* left, const float* right, size_t count, double sampleRate) {
   return computeStereoLoudnessLufs(left, right, count, sampleRate, 3.000);
@@ -241,6 +358,40 @@ inline double applyPeakLimiter(float* samples, size_t count, double thresholdDbf
 }
 
 // ---------------------------------------------------------------------------
+// Static downward compressor (no attack/release smoothing).
+//
+// Samples whose magnitude exceeds `thresholdDbfs` are reduced toward the
+// threshold by `ratio` (e.g. 4.0 == 4:1): the dB amount over threshold is
+// divided by the ratio. Applied in place, deterministic, and interleave-safe
+// (each sample is shaped on its own magnitude). Returns the largest gain
+// reduction applied in dB (>= 0; 0 when nothing crossed the threshold). This is
+// a built-in dynamics stand-in for the eventual VST insert host.
+// ---------------------------------------------------------------------------
+inline double applyCompressor(float* samples, size_t count, double thresholdDbfs, double ratio) {
+  if (samples == nullptr || count == 0 || ratio <= 1.0) {
+    return 0.0;
+  }
+  const double threshold = dbfsToLinear(thresholdDbfs);
+  double maxReductionDb = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const double value = static_cast<double>(samples[index]);
+    const double magnitude = std::fabs(value);
+    if (magnitude <= threshold || magnitude <= 0.0) {
+      continue;
+    }
+    const double overDb = linearToDbfs(magnitude) - thresholdDbfs;  // > 0
+    const double compressedDb = thresholdDbfs + overDb / ratio;
+    const double gain = dbfsToLinear(compressedDb) / magnitude;  // < 1
+    samples[index] = static_cast<float>(value * gain);
+    const double reductionDb = -linearToDbfs(gain);
+    if (reductionDb > maxReductionDb) {
+      maxReductionDb = reductionDb;
+    }
+  }
+  return maxReductionDb;
+}
+
+// ---------------------------------------------------------------------------
 // Bus mix.
 //
 // Sums N source PCM buffers, each scaled by a per-source linear gain, into a
@@ -281,6 +432,124 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
     const double mixed = softClip ? softClipSample(sum) : std::max(-1.0, std::min(1.0, sum));
     destination[index] = static_cast<float>(mixed);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Routing-matrix bus mix (program / ISO / aux taps).
+//
+// Mixes participant sources into named stereo buses through the operator's
+// routing-matrix crosspoints, producing real PCM the outputs (program encode,
+// ISO record) consume. Each source runs its channel strip first — fader gain,
+// stereo pan/balance, mute, and solo — then every crosspoint sends the panned
+// source into a destination bus at the crosspoint's gain. Buses are stereo
+// (interleaved L/R); mono sources are duplicated to both channels. Solo on any
+// active source restricts the whole mix to soloed sources; muted sources
+// contribute nothing. Each bus is brickwall-limited to -1 dBFS so summed
+// crosspoints never clip. Pure and deterministic: same inputs -> same buses.
+// ---------------------------------------------------------------------------
+struct RoutedAudioSource {
+  std::string sourceId;
+  const std::vector<float>* pcm = nullptr;  // interleaved, not owned
+  int channels = 1;
+  double gainLinear = 1.0;  // channel-strip fader gain (linear)
+  double pan = 0.0;         // -1 hard left .. 0 center .. +1 hard right
+  bool muted = false;
+  bool solo = false;
+};
+
+struct RoutedAudioCrosspoint {
+  std::string sourceId;
+  std::string busId;
+  double gainLinear = 1.0;  // per-crosspoint send gain (linear)
+};
+
+inline std::map<std::string, std::vector<float>> mixRoutedBuses(
+    const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints) {
+  bool soloActive = false;
+  for (const auto& source : sources) {
+    if (source.solo && !source.muted) {
+      soloActive = true;
+      break;
+    }
+  }
+
+  // Resolve each active source to its panned stereo signal once, keyed by id.
+  std::map<std::string, std::vector<float>> sourceStereo;
+  for (const auto& source : sources) {
+    if (source.pcm == nullptr || source.channels <= 0 || source.muted) {
+      continue;
+    }
+    if (soloActive && !source.solo) {
+      continue;
+    }
+    const size_t frames = source.pcm->size() / static_cast<size_t>(source.channels);
+    if (frames == 0) {
+      continue;
+    }
+    // Linear balance: panning toward one side attenuates the opposite channel.
+    const double leftWeight = source.pan <= 0.0 ? 1.0 : (1.0 - source.pan);
+    const double rightWeight = source.pan >= 0.0 ? 1.0 : (1.0 + source.pan);
+    std::vector<float> stereo(frames * 2, 0.0f);
+    for (size_t index = 0; index < frames; ++index) {
+      const float left = (*source.pcm)[index * static_cast<size_t>(source.channels)];
+      const float right =
+          source.channels == 1 ? left : (*source.pcm)[index * static_cast<size_t>(source.channels) + 1];
+      stereo[index * 2] = static_cast<float>(left * source.gainLinear * leftWeight);
+      stereo[index * 2 + 1] = static_cast<float>(right * source.gainLinear * rightWeight);
+    }
+    sourceStereo[source.sourceId] = std::move(stereo);
+  }
+
+  std::map<std::string, std::vector<float>> buses;
+  for (const auto& crosspoint : crosspoints) {
+    const auto found = sourceStereo.find(crosspoint.sourceId);
+    if (found == sourceStereo.end()) {
+      continue;  // source missing, muted, or excluded by solo
+    }
+    const auto& panned = found->second;
+    auto& bus = buses[crosspoint.busId];
+    if (bus.size() < panned.size()) {
+      bus.resize(panned.size(), 0.0f);
+    }
+    for (size_t index = 0; index < panned.size(); ++index) {
+      bus[index] += static_cast<float>(panned[index] * crosspoint.gainLinear);
+    }
+  }
+
+  for (auto& [busId, bus] : buses) {
+    (void)busId;
+    applyPeakLimiter(bus.data(), bus.size(), -1.0);
+  }
+  return buses;
+}
+
+// Apply a bus's named insert chain to its interleaved PCM, in order. Recognized
+// built-in dynamics inserts process the audio (compressor, limiter); other
+// inserts (EQ, gate, third-party plugins) are acknowledged pass-throughs until a
+// real VST/AU insert host lands. Returns the number of inserts that actually
+// processed audio. In place, deterministic.
+inline int applyBusInsertChain(float* samples, size_t count, double sampleRate, const std::vector<std::string>& inserts) {
+  (void)sampleRate;
+  if (samples == nullptr || count == 0) {
+    return 0;
+  }
+  int applied = 0;
+  for (const auto& insert : inserts) {
+    std::string lowered;
+    lowered.reserve(insert.size());
+    for (const char character : insert) {
+      lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+    if (lowered.find("limiter") != std::string::npos) {
+      applyPeakLimiter(samples, count, -1.0);
+      ++applied;
+    } else if (lowered.find("compressor") != std::string::npos) {
+      applyCompressor(samples, count, -18.0, 4.0);
+      ++applied;
+    }
+    // EQ / gate / third-party inserts: pass-through until the plugin host lands.
+  }
+  return applied;
 }
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,10 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingContainerFormat.clear();
     session_.recordingVideoCodec.clear();
     session_.recordingAudioCodec.clear();
+    session_.recordingAudioPacketCount = 0;
+    session_.recordingAudioSampleCount = 0;
+    session_.recordingAudioChannels = 0;
+    session_.recordingAudioSampleRate = 0;
     session_.recordingMetadataValid = false;
     session_.recordingWarning.clear();
     session_.recordingError.clear();
@@ -101,6 +105,23 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
                                       !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty() &&
                                       !session_.recordingAudioCodec.empty();
+  }
+
+  void submitAudio(const float* interleaved, int frameCount, int channels, int sampleRate) override {
+    if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
+      return;
+    }
+    if (!containsDestination(session_.destinations, "recording")) {
+      return;
+    }
+    // One muxed audio packet per delivered buffer, plus the real sample total,
+    // with the muxed PCM payload folded into the recording size. This is the
+    // honest "audio packets observed" signal the recording proof checks.
+    ++session_.recordingAudioPacketCount;
+    session_.recordingAudioSampleCount += static_cast<int64_t>(frameCount);
+    session_.recordingAudioChannels = channels;
+    session_.recordingAudioSampleRate = sampleRate;
+    session_.recordingBytesWritten += static_cast<int64_t>(frameCount) * channels * 2;  // 16-bit muxed PCM
   }
 
   OutputSession session() const override { return session_; }

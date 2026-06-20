@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/RtmpCompatibility.h"
 
 #include <algorithm>
 #include <chrono>
@@ -356,6 +357,12 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.bitrateMbps = settings ? (std::max)(0.5, settings->targetBitrateMbps) : sender_.bitrateMbps;
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
+    // Surface a codec/container compatibility note (e.g. H.265 -> H.264 fallback)
+    // so the operator sees why the on-air codec may differ from the request.
+    const auto codecCompatibility = resolveRtmpCompatibility(configuredVideoCodec_, /*allowEnhancedRtmp=*/false);
+    if (!codecCompatibility.warning.empty()) {
+      runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + codecCompatibility.warning;
+    }
     runtimeAvailable_ = runtimeProbe_.available;
     if (!runtimeProbe_.ffmpegExecutable.empty()) {
       ffmpegExecutable_ = runtimeProbe_.ffmpegExecutable;
@@ -515,7 +522,11 @@ class RtmpOutputSender final : public IOutputSender {
     const int bufferKbps = bitrateKbps * 2;
     std::ostringstream args;
     const int fps = (std::max)(1, configuredFps_);
-    const auto videoEncoder = ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_);
+    // Resolve the requested codec to an RTMP-compatible one (H.265/AV1 fall back
+    // to H.264 unless enhanced-RTMP is enabled) so the encoded stream always
+    // matches what the FLV transport can carry.
+    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, /*allowEnhancedRtmp=*/false);
+    const auto videoEncoder = ffmpegVideoEncoderFor(compatibility.videoCodec, configuredEncoderMode_);
     args << " -hide_banner -loglevel warning"
          << " -f rawvideo -pix_fmt bgra -s " << width << "x" << height
          << " -r " << fps << " -i pipe:0"

@@ -2,6 +2,7 @@
 
 #include "compositor/CompositorLayout.h"
 #include "core/Protocol.h"
+#include "modules/AudioDsp.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 
@@ -72,21 +73,6 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     result.push_back(std::move(destination));
   }
   return result;
-}
-
-bool playMonitorPulse(double volume, int masterLevel) {
-#ifdef _WIN32
-  if (volume <= 0.0 || masterLevel <= 0) {
-    return false;
-  }
-  const auto frequency = static_cast<DWORD>(440 + std::min(420, masterLevel * 4));
-  const auto durationMs = static_cast<DWORD>(12 + std::min(20, masterLevel / 4));
-  return Beep(frequency, durationMs) != 0;
-#else
-  (void)volume;
-  (void)masterLevel;
-  return false;
-#endif
 }
 
 rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
@@ -1071,14 +1057,36 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   audioMonitorWarning_.clear();
 
   if (!audioMonitorEnabled_) {
+    if (modules_.monitorOutput) {
+      modules_.monitorOutput->stop();
+    }
     audioMonitorStatus_ = "muted";
     return;
   }
 
   if (audioMonitorDeviceId_.empty()) {
+    if (modules_.monitorOutput) {
+      modules_.monitorOutput->stop();
+    }
     audioMonitorStatus_ = "missing-device";
     audioMonitorWarning_ = "Audio monitor is enabled but no render device is selected.";
     return;
+  }
+
+  // Open (or re-target) the real render endpoint for the selected device. The
+  // mixer describes the source bus format; the output adapter converts to the
+  // device's own mix format.
+  if (modules_.monitorOutput) {
+    const int sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+    const int channels = modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
+    if (!modules_.monitorOutput->start(audioMonitorDeviceId_, sampleRate, channels)) {
+      audioMonitorStatus_ = "unavailable";
+      const auto outputWarnings = modules_.monitorOutput->warnings();
+      audioMonitorWarning_ = outputWarnings.empty()
+                                 ? "Native audio monitor output device could not be opened."
+                                 : outputWarnings.front();
+      return;
+    }
   }
 
   audioMonitorStatus_ = mixedAudioFrameCount_ > 0 ? "playing" : "armed";
@@ -1413,6 +1421,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"monitorVolume", audioMonitorVolume_},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"participants", participants},
+          {"masterMeter", masterMeterState()},
           {"summary", nativeMix.summary},
           {"warnings", warnings},
       };
@@ -1432,6 +1441,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"monitorVolume", audioMonitorVolume_},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"participants", rpc::Json::Array{}},
+        {"masterMeter", masterMeterState()},
         {"summary", "Audio mix idle."},
         {"warnings", audioMonitorWarning_.empty() ? rpc::Json::Array{} : rpc::Json::Array{audioMonitorWarning_}},
     };
@@ -1538,8 +1548,62 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"monitorVolume", audioMonitorVolume_},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"participants", participants},
+      {"masterMeter", masterMeterState()},
       {"summary", summaryText},
       {"warnings", warnings},
+  };
+}
+
+void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate) {
+  if (interleaved.empty() || channels <= 0 || sampleRate <= 0) {
+    return;  // no new program signal this tick; hold the last meter values
+  }
+  const size_t frames = interleaved.size() / static_cast<size_t>(channels);
+  if (frames == 0) {
+    return;
+  }
+
+  std::vector<float> chunkL(frames);
+  std::vector<float> chunkR(frames);
+  for (size_t index = 0; index < frames; ++index) {
+    chunkL[index] = interleaved[index * static_cast<size_t>(channels)];
+    chunkR[index] = channels == 1 ? chunkL[index] : interleaved[index * static_cast<size_t>(channels) + 1];
+  }
+
+  const double rate = static_cast<double>(sampleRate);
+  // Integrated loudness: feed the continuous BS.1770 meter, which forms 400 ms
+  // gating blocks (100 ms hop) and applies the absolute (-70 LUFS) then relative
+  // (-10 LU) gates per the spec.
+  if (programIntegratedMeter_.sampleRateHz() != rate) {
+    programIntegratedMeter_.reset(rate);
+  }
+  programIntegratedMeter_.process(chunkL.data(), chunkR.data(), frames);
+
+  // Roll the windowed buffer and trim to the 3 s short-term window.
+  programMeterL_.insert(programMeterL_.end(), chunkL.begin(), chunkL.end());
+  programMeterR_.insert(programMeterR_.end(), chunkR.begin(), chunkR.end());
+  const size_t maxSamples = static_cast<size_t>(sampleRate) * 3u;
+  if (programMeterL_.size() > maxSamples) {
+    programMeterL_.erase(programMeterL_.begin(), programMeterL_.end() - static_cast<std::ptrdiff_t>(maxSamples));
+    programMeterR_.erase(programMeterR_.begin(), programMeterR_.end() - static_cast<std::ptrdiff_t>(maxSamples));
+  }
+
+  const size_t windowed = programMeterL_.size();
+  programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
+  programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
+  programTruePeakDbfs_ = std::max(modules::computeTruePeakDbfs(programMeterL_.data(), windowed, 4),
+                                  modules::computeTruePeakDbfs(programMeterR_.data(), windowed, 4));
+  programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
+}
+
+rpc::Json MediaCore::masterMeterState() const {
+  const int windowMs = programMeterL_.empty() ? 0 : static_cast<int>((programMeterL_.size() * 1000) / 48000);
+  return rpc::Json::Object{
+      {"momentaryLufs", programLufsMomentary_},
+      {"shortTermLufs", programLufsShortTerm_},
+      {"integratedLufs", programLufsIntegrated_},
+      {"truePeakDbfs", programTruePeakDbfs_},
+      {"windowMs", windowMs},
   };
 }
 
@@ -1618,6 +1682,23 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
     busProcessing.emplace_back(rpc::Json::Object{{"busId", bus}, {"pluginInserts", inserts}});
   }
 
+  // Measured PCM taps from the real routing-matrix bus mix this tick. Only buses
+  // that actually received signal appear here, so an operator/test can confirm
+  // real samples are flowing (not just routed crosspoint state).
+  rpc::Json::Array busTaps;
+  for (const auto& [busId, pcm] : routedBusPcm_) {
+    if (pcm.empty()) {
+      continue;
+    }
+    busTaps.emplace_back(rpc::Json::Object{
+        {"busId", busId},
+        {"channels", 2},
+        {"frames", static_cast<int>(pcm.size() / 2)},
+        {"peakDbfs", modules::computeSamplePeakDbfs(pcm.data(), pcm.size())},
+        {"rmsDbfs", modules::computeRmsDbfs(pcm.data(), pcm.size())},
+    });
+  }
+
   std::ostringstream summary;
   summary << audioRoutingSends_.size() << " send" << (audioRoutingSends_.size() == 1 ? "" : "s") << " from "
           << routedSources.size() << " source" << (routedSources.size() == 1 ? "" : "s") << " across " << routedBusCount
@@ -1629,10 +1710,33 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
       {"routedSourceCount", static_cast<int>(routedSources.size())},
       {"busSourceCounts", busSourceCounts},
       {"busProcessing", busProcessing},
+      {"busTaps", busTaps},
+      {"programTapFrames", static_cast<int>(programAudioTapPcm().size() / 2)},
       {"sends", sends},
       {"summary", summary.str()},
       {"warnings", warnings},
   };
+}
+
+const std::vector<float>& MediaCore::programAudioTapPcm() const {
+  return audioBusTapPcm("master");
+}
+
+std::vector<std::string> MediaCore::routedAudioBusIds() const {
+  std::vector<std::string> ids;
+  ids.reserve(routedBusPcm_.size());
+  for (const auto& [busId, pcm] : routedBusPcm_) {
+    if (!pcm.empty()) {
+      ids.push_back(busId);
+    }
+  }
+  return ids;
+}
+
+const std::vector<float>& MediaCore::audioBusTapPcm(const std::string& busId) const {
+  static const std::vector<float> kEmptyTap;
+  const auto found = routedBusPcm_.find(busId);
+  return found == routedBusPcm_.end() ? kEmptyTap : found->second;
 }
 
 rpc::Json MediaCore::captureAudioSourcesState() const {
@@ -1968,6 +2072,9 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"isoFrameCount", static_cast<double>(isoFramesWritten)},
            {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
            {"audioPresent", audioPresent},
+           {"audioSampleCount", static_cast<double>(session.recordingAudioSampleCount)},
+           {"audioChannels", session.recordingAudioChannels},
+           {"audioSampleRate", session.recordingAudioSampleRate},
            {"metadataValid", metadataValid},
            {"containerFormat", containerFormat},
            {"videoCodec", videoCodec},
@@ -2138,18 +2245,96 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty() && audioMonitorVolume_ > 0.0 && mixedAudioFrameCount_ > 0) {
-    const int monitorLevel = modules_.mixer->session().masterLevel > 0 ? modules_.mixer->session().masterLevel : 60;
-    if (playMonitorPulse(audioMonitorVolume_, monitorLevel)) {
-      audioMonitorStatus_ = "playing";
-      ++audioMonitorFramesPlayed_;
-    } else {
+  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
+    if (audioMonitorVolume_ <= 0.0) {
+      // Enabled and armed, but the operator pulled the monitor fader to zero.
+      audioMonitorStatus_ = "armed";
+    } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
       audioMonitorStatus_ = "unavailable";
-      audioMonitorWarning_ = "Native audio monitor could not open the default Windows playback path.";
+      if (audioMonitorWarning_.empty()) {
+        audioMonitorWarning_ = "Native audio monitor output device is not open.";
+      }
+    } else {
+      const auto& monitorBus = modules_.mixer->monitorBusPcm();
+      const int channels = std::max(1, modules_.mixer->monitorBusChannels());
+      const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
+      if (frameCount <= 0) {
+        // Device is open but the mix carried no real PCM signal this tick.
+        audioMonitorStatus_ = "armed";
+      } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
+        audioMonitorStatus_ = "playing";
+        audioMonitorFramesPlayed_ += frameCount;
+      } else {
+        audioMonitorStatus_ = "unavailable";
+        const auto outputWarnings = modules_.monitorOutput->warnings();
+        audioMonitorWarning_ = outputWarnings.empty()
+                                   ? "Native audio monitor could not render to the selected device."
+                                   : outputWarnings.back();
+      }
     }
-  } else if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
-    audioMonitorStatus_ = "armed";
   }
+  // Mix the routing-matrix crosspoints over real PCM into program/ISO/aux bus
+  // taps. Each polled audio frame is a source; its channel strip (gain/pan/
+  // mute/solo) comes from the synced participant mix and the synced routing
+  // sends are the crosspoints. Outputs read these taps via programAudioTapPcm()
+  // and audioBusTapPcm().
+  {
+    std::vector<modules::RoutedAudioSource> routedSources;
+    routedSources.reserve(audioFrames.size());
+    for (const auto& frame : audioFrames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      modules::RoutedAudioSource source;
+      source.sourceId = frame.participantId;
+      source.pcm = &frame.pcm;
+      source.channels = frame.channels;
+      for (const auto& channel : audioChannels_) {
+        if (channel.participantId == frame.participantId) {
+          source.muted = channel.muted;
+          source.solo = channel.solo;
+          source.pan = channel.pan;
+          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+          break;
+        }
+      }
+      routedSources.push_back(source);
+    }
+    std::vector<modules::RoutedAudioCrosspoint> crosspoints;
+    crosspoints.reserve(audioRoutingSends_.size());
+    for (const auto& send : audioRoutingSends_) {
+      crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
+    }
+    routedBusPcm_ = modules::mixRoutedBuses(routedSources, crosspoints);
+    // Apply each bus's insert chain to its summed PCM so inserts act on samples,
+    // not just routing state. The per-bus insert list is taken from the routing
+    // sends, matching the routing-matrix snapshot's busProcessing view.
+    if (!routedBusPcm_.empty()) {
+      std::map<std::string, std::vector<std::string>> busInserts;
+      for (const auto& send : audioRoutingSends_) {
+        if (!send.busPluginInserts.empty()) {
+          busInserts[send.busId] = send.busPluginInserts;
+        }
+      }
+      for (auto& [busId, pcm] : routedBusPcm_) {
+        const auto found = busInserts.find(busId);
+        if (found != busInserts.end() && !pcm.empty()) {
+          modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
+        }
+      }
+    }
+  }
+
+  // Measure BS.1770 master loudness + true peak on the program audio (routed
+  // master bus, else the default program mix) so the master meter reflects the
+  // real signal rather than a level lookup.
+  {
+    const std::vector<float>& programAudio =
+        !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
+    const int meterChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
+    updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
+  }
+
   const auto renderPlan = buildCompositorRenderPlan(videoFrames);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   if (lastProgramFrame_.preview.bgra.empty()) {
@@ -2168,7 +2353,18 @@ void MediaCore::renderSyntheticTick() {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
     recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
-    recordingAudioPacketsObserved_ += static_cast<int64_t>(audioFrames.size());
+    // Mux the real program audio so the recording carries actual PCM, not a
+    // synthetic frame counter. Prefer the routed master bus; fall back to the
+    // mixer's default program mix when audio is not routed through the matrix.
+    const std::vector<float>& programAudio =
+        !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
+    const int audioChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
+    if (!programAudio.empty() && audioChannels > 0) {
+      modules_.encoder->submitAudio(programAudio.data(),
+                                    static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
+                                    audioChannels, modules_.mixer->monitorBusSampleRate());
+    }
+    recordingAudioPacketsObserved_ = modules_.encoder->session().recordingAudioPacketCount;
     recordingElapsedMs_ += static_cast<double>(frameIntervalMs);
   }
 }

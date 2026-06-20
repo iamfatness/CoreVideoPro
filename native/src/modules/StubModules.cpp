@@ -26,13 +26,33 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
   }
 
   std::vector<AudioFrame> pollAudioFrames() override {
+    // Emit real PCM tones (not just metadata) so the mixer/monitor/recording
+    // paths carry an actual signal end to end. A distinct frequency per speaker
+    // keeps the synthetic mix non-silent and deterministic.
     return {
-        {"synthetic-speaker-1", 48000, 1, frameNumber_ * 16},
-        {"synthetic-speaker-2", 48000, 1, frameNumber_ * 16},
+        makeSyntheticAudioFrame("synthetic-speaker-1", 220.0),
+        makeSyntheticAudioFrame("synthetic-speaker-2", 330.0),
     };
   }
 
  private:
+  AudioFrame makeSyntheticAudioFrame(const std::string& participantId, double frequencyHz) {
+    AudioFrame frame;
+    frame.participantId = participantId;
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.timestampMs = frameNumber_ * 16;
+    frame.sampleCount = 480;  // 10 ms at 48 kHz
+    frame.pcm.resize(static_cast<size_t>(frame.sampleCount));
+    constexpr double amplitude = 0.12;  // well below full scale; clearly audible
+    const int64_t baseSample = frameNumber_ * frame.sampleCount;
+    for (int index = 0; index < frame.sampleCount; ++index) {
+      const double phase = 2.0 * kAudioPi * frequencyHz * static_cast<double>(baseSample + index) / 48000.0;
+      frame.pcm[static_cast<size_t>(index)] = static_cast<float>(amplitude * std::sin(phase));
+    }
+    return frame;
+  }
+
   int64_t frameNumber_ = 0;
 };
 
@@ -243,15 +263,105 @@ class DevSafeAudioMixer final : public IAudioMixer {
       lastParticipantTimestamps_[bounded.participantId] = bounded.timestampMs;
     }
     session_ = summarizeAudioMixMetrics(std::move(participants), mixedFrameCount_);
+    buildMonitorBus(frames);
     return mixedFrameCount_;
   }
 
   AudioMixMetrics session() const override { return session_; }
 
+  const std::vector<float>& monitorBusPcm() const override { return monitorBusPcm_; }
+  int monitorBusSampleRate() const override { return kMonitorBusSampleRate; }
+  int monitorBusChannels() const override { return kMonitorBusChannels; }
+
  private:
+  // Sum every participant frame that carries real PCM into a stereo monitor bus
+  // and brickwall-limit it to -1 dBFS so the summed signal never clips the
+  // render device. Mono sources fan out to both channels; the first two
+  // channels of multichannel sources feed L/R. Frames without PCM (metadata
+  // only) contribute nothing, leaving the bus empty so the monitor stays armed
+  // but silent rather than playing a fabricated tone.
+  void buildMonitorBus(const std::vector<AudioFrame>& frames) {
+    monitorBusPcm_.clear();
+    size_t busFrames = 0;
+    bool anyPcm = false;
+    for (const auto& frame : frames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      anyPcm = true;
+      busFrames = std::max(busFrames, frame.pcm.size() / static_cast<size_t>(frame.channels));
+    }
+    if (!anyPcm || busFrames == 0) {
+      return;
+    }
+    monitorBusPcm_.assign(busFrames * static_cast<size_t>(kMonitorBusChannels), 0.0f);
+    for (const auto& frame : frames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      const size_t sourceFrames = frame.pcm.size() / static_cast<size_t>(frame.channels);
+      for (size_t index = 0; index < sourceFrames; ++index) {
+        const float left = frame.pcm[index * static_cast<size_t>(frame.channels)];
+        const float right = frame.channels == 1
+                                ? left
+                                : frame.pcm[index * static_cast<size_t>(frame.channels) + 1];
+        monitorBusPcm_[index * kMonitorBusChannels] += left;
+        monitorBusPcm_[index * kMonitorBusChannels + 1] += right;
+      }
+    }
+    applyPeakLimiter(monitorBusPcm_.data(), monitorBusPcm_.size(), -1.0);
+  }
+
+  static constexpr int kMonitorBusSampleRate = 48000;
+  static constexpr int kMonitorBusChannels = 2;
   int64_t mixedFrameCount_ = 0;
   std::map<std::string, int64_t> lastParticipantTimestamps_;
   AudioMixMetrics session_;
+  std::vector<float> monitorBusPcm_;
+};
+
+// Default monitor output: a safe, host-independent stand-in that "accepts" the
+// monitor bus without touching any audio hardware. Keeps MediaCore's monitor
+// path exercisable in the stub build and in CI; the dev-gated WASAPI adapter
+// (createWasapiMonitorOutput) replaces it on a real Windows rig.
+class StubAudioMonitorOutput final : public IAudioMonitorOutput {
+ public:
+  bool start(const std::string& deviceId, int sampleRate, int channels) override {
+    deviceId_ = deviceId;
+    sampleRate_ = sampleRate;
+    channels_ = channels;
+    deviceName_ = deviceId.empty() ? "Stub Monitor (system default)" : "Stub Monitor (" + deviceId + ")";
+    active_ = true;
+    return true;
+  }
+
+  void stop() override { active_ = false; }
+
+  bool render(const float* interleaved, int frameCount, int channels, double volume) override {
+    if (!active_ || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
+      return false;
+    }
+    framesRendered_ += static_cast<int64_t>(frameCount);
+    lastVolume_ = volume;
+    return true;
+  }
+
+  bool active() const override { return active_; }
+  std::string deviceName() const override { return deviceName_; }
+  std::vector<std::string> warnings() const override { return {}; }
+
+  // Test/introspection accessors (not part of the interface).
+  int64_t framesRendered() const { return framesRendered_; }
+  double lastVolume() const { return lastVolume_; }
+
+ private:
+  bool active_ = false;
+  std::string deviceId_;
+  std::string deviceName_;
+  int sampleRate_ = 48000;
+  int channels_ = 2;
+  int64_t framesRendered_ = 0;
+  double lastVolume_ = 0.0;
 };
 
 bool isNetworkDestination(const std::string& destination) {
@@ -434,10 +544,62 @@ class SyntheticOutputSender final : public IOutputSender {
   std::map<std::string, OutputSender> senders_;
 };
 
+// Deterministic 7-bar SMPTE-style BGRA test pattern, shared (immutable) so each
+// poll hands out a cheap reference rather than reallocating the buffer.
+std::shared_ptr<const std::vector<uint8_t>> makeTestPatternBgra(int width, int height) {
+  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  static const uint8_t bars[7][3] = {
+      // B, G, R
+      {255, 255, 255},  // white
+      {0, 255, 255},    // yellow
+      {255, 255, 0},    // cyan
+      {0, 255, 0},      // green  (center bar)
+      {255, 0, 255},    // magenta
+      {0, 0, 255},      // red
+      {255, 0, 0},      // blue
+  };
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const int bar = std::min(6, x * 7 / std::max(1, width));
+      const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
+      (*pixels)[offset + 0] = bars[bar][0];
+      (*pixels)[offset + 1] = bars[bar][1];
+      (*pixels)[offset + 2] = bars[bar][2];
+      (*pixels)[offset + 3] = 255;
+    }
+  }
+  return pixels;
+}
+
 class FakeCaptureDevice final : public ICaptureDevice {
  public:
   std::vector<CaptureDeviceInfo> enumerate() const override {
     return devices_;
+  }
+
+  // Connected devices with signal flow a real test-pattern frame into the native
+  // core as a first-class capture source (participantId "capture:<deviceId>"),
+  // so a scene route can composite a real-pixel program frame from a UVC/SDI
+  // input exactly like the hardware adapters will.
+  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+    std::vector<VideoFrame> frames;
+    for (const auto& device : devices_) {
+      if (device.connectionState != "connected" || !device.signalPresent) {
+        continue;
+      }
+      VideoFrame frame;
+      frame.participantId = "capture:" + device.id;
+      frame.width = kCaptureWidth;
+      frame.height = kCaptureHeight;
+      frame.timestampMs = timestampMs;
+      frame.pixels = testPattern_;
+      frame.pixelWidth = kCaptureWidth;
+      frame.pixelHeight = kCaptureHeight;
+      frame.pixelStride = kCaptureWidth * 4;
+      frame.frameId = ++frameId_;
+      frames.push_back(std::move(frame));
+    }
+    return frames;
   }
 
   std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
@@ -473,6 +635,10 @@ class FakeCaptureDevice final : public ICaptureDevice {
   }
 
  private:
+  static constexpr int kCaptureWidth = 640;
+  static constexpr int kCaptureHeight = 360;
+  std::shared_ptr<const std::vector<uint8_t>> testPattern_ = makeTestPatternBgra(kCaptureWidth, kCaptureHeight);
+  int64_t frameId_ = 0;
   std::vector<CaptureDeviceInfo> devices_ = {
       {"decklink-1",
        "DeckLink Mini Recorder 4K",
@@ -574,16 +740,24 @@ ModuleSet createStubModules() {
   modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
+  modules.monitorOutput = createStubAudioMonitorOutput();
   modules.encoder = createStubRecordingEncoderSink();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
   modules.captureDevice = std::make_unique<FakeCaptureDevice>();
   return modules;
 }
 
+std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput() {
+  return std::make_unique<StubAudioMonitorOutput>();
+}
+
 ModuleSet createDefaultModules() {
   auto modules = createStubModules();
   if (auto compositor = createD3D11Compositor()) {
     modules.compositor = std::move(compositor);
+  }
+  if (auto monitorOutput = createWasapiMonitorOutput()) {
+    modules.monitorOutput = std::move(monitorOutput);
   }
   if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);

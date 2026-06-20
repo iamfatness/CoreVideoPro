@@ -1,9 +1,11 @@
 #pragma once
 
+#include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -31,6 +33,15 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
+
+  // Real-time PCM taps produced by the routing-matrix bus mix each tick, for the
+  // outputs to consume (program encode, ISO record). The program tap is the
+  // stereo "master" bus; ISO taps are the "iso-*" buses. Interleaved stereo
+  // float in [-1, 1]; empty until a synced routing matrix routes PCM-bearing
+  // sources to a bus.
+  [[nodiscard]] const std::vector<float>& programAudioTapPcm() const;
+  [[nodiscard]] std::vector<std::string> routedAudioBusIds() const;
+  [[nodiscard]] const std::vector<float>& audioBusTapPcm(const std::string& busId) const;
 
  private:
   void loadSceneGraph(const rpc::Json& command);
@@ -65,6 +76,8 @@ class MediaCore {
   void enqueueProgramSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
+  void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
+  [[nodiscard]] rpc::Json masterMeterState() const;
   [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
   [[nodiscard]] rpc::Json captureAudioSourcesState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
@@ -125,6 +138,16 @@ class MediaCore {
   modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
   int64_t mixedAudioFrameCount_ = 0;
+  std::map<std::string, std::vector<float>> routedBusPcm_;
+  // Rolling deinterleaved program audio (<= 3 s) feeding the BS.1770 master
+  // meter, plus the gated running accumulation for integrated loudness.
+  std::vector<float> programMeterL_;
+  std::vector<float> programMeterR_;
+  modules::Bs1770IntegratedMeter programIntegratedMeter_{48000.0};
+  double programLufsMomentary_ = -120.0;
+  double programLufsShortTerm_ = -120.0;
+  double programLufsIntegrated_ = -120.0;
+  double programTruePeakDbfs_ = -120.0;
   modules::ProgramFrame lastProgramFrame_;
   std::string encoderLifecycleStatus_ = "idle";
   std::string encoderLastTransition_ = "Encoder session idle.";

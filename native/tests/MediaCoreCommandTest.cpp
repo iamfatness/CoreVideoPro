@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,68 @@ bool jsonArrayContains(const corevideo::rpc::Json& array, const std::string& val
     return entry.isString() && entry.asString() == value;
   });
 }
+
+// Emits one stereo PCM audio frame per poll so the monitor path has a real
+// signal to render through an injected monitor output (the default synthetic
+// source is metadata-only).
+class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    return {corevideo::modules::VideoFrame{"pcm-speaker", 1280, 720, ++tick_ * 16}};
+  }
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "pcm-speaker";
+    frame.sampleRate = 48000;
+    frame.channels = 2;
+    frame.sampleCount = 480;
+    frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.5f);
+    return {frame};
+  }
+
+ private:
+  int64_t tick_ = 0;
+};
+
+// Records what MediaCore's monitor path pushed, so a test can assert that real
+// sample-frames reached the device at the operator's volume.
+class RecordingMonitorOutput final : public corevideo::modules::IAudioMonitorOutput {
+ public:
+  bool start(const std::string& deviceId, int, int) override {
+    lastDeviceId = deviceId;
+    active_ = true;
+    ++startCount;
+    return true;
+  }
+  void stop() override {
+    active_ = false;
+    ++stopCount;
+  }
+  bool render(const float* interleaved, int frameCount, int channels, double volume) override {
+    if (!active_ || interleaved == nullptr || frameCount <= 0) {
+      return false;
+    }
+    framesRendered += frameCount;
+    lastChannels = channels;
+    lastVolume = volume;
+    ++renderCalls;
+    return true;
+  }
+  bool active() const override { return active_; }
+  std::string deviceName() const override { return "Recording Monitor"; }
+  std::vector<std::string> warnings() const override { return {}; }
+
+  std::string lastDeviceId;
+  int startCount = 0;
+  int stopCount = 0;
+  int renderCalls = 0;
+  int64_t framesRendered = 0;
+  int lastChannels = 0;
+  double lastVolume = 0.0;
+
+ private:
+  bool active_ = false;
+};
 
 }  // namespace
 
@@ -825,6 +888,249 @@ TEST(MediaCoreCommand, SyncsAudioMonitorState) {
   EXPECT_EQ(audio->get("monitorVolume")->asNumber(), 0.75);
   EXPECT_TRUE(audio->getString("monitorStatus") == "armed" || audio->getString("monitorStatus") == "playing" ||
               audio->getString("monitorStatus") == "unavailable");
+}
+
+TEST(MediaCoreAudioMonitor, MixerSumsParticipantPcmIntoStereoMonitorBus) {
+  auto modules = corevideo::modules::createStubModules();
+
+  corevideo::modules::AudioFrame mono;
+  mono.participantId = "mono";
+  mono.channels = 1;
+  mono.sampleCount = 4;
+  mono.pcm = {0.25f, 0.25f, 0.25f, 0.25f};
+
+  corevideo::modules::AudioFrame stereo;
+  stereo.participantId = "stereo";
+  stereo.channels = 2;
+  stereo.sampleCount = 4;
+  stereo.pcm = {0.10f, -0.10f, 0.10f, -0.10f, 0.10f, -0.10f, 0.10f, -0.10f};
+
+  modules.mixer->mix({mono, stereo});
+
+  EXPECT_EQ(modules.mixer->monitorBusChannels(), 2);
+  EXPECT_EQ(modules.mixer->monitorBusSampleRate(), 48000);
+  const auto& bus = modules.mixer->monitorBusPcm();
+  ASSERT_TRUE(bus.size() == 8u);  // 4 sample-frames * 2 channels
+  // Peak (0.35) sits below the -1 dBFS limiter threshold, so sums pass through.
+  EXPECT_TRUE(std::fabs(bus[0] - 0.35f) < 1e-4f);   // L: mono 0.25 + stereo.L 0.10
+  EXPECT_TRUE(std::fabs(bus[1] - 0.15f) < 1e-4f);   // R: mono 0.25 + stereo.R -0.10
+}
+
+TEST(MediaCoreAudioMonitor, MixerMonitorBusIsEmptyWithoutPcm) {
+  auto modules = corevideo::modules::createStubModules();
+
+  corevideo::modules::AudioFrame metadataOnly;
+  metadataOnly.participantId = "metadata";
+  metadataOnly.channels = 1;
+  metadataOnly.sampleCount = 480;
+  metadataOnly.rmsLevel = 0.5;
+
+  modules.mixer->mix({metadataOnly});
+
+  EXPECT_TRUE(modules.mixer->monitorBusPcm().empty());
+}
+
+TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  auto* monitor = new RecordingMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "render-stereo"},
+          {"deviceName", "Studio Monitors"},
+          {"volume", 0.5},
+      },
+  });
+
+  const auto* audio = state.get("audioMixSession");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_EQ(audio->getString("monitorStatus"), "playing");
+  EXPECT_TRUE(audio->get("monitorFramesPlayed")->asNumber() > 0);
+
+  EXPECT_TRUE(monitor->active());
+  EXPECT_GE(monitor->startCount, 1);
+  EXPECT_EQ(monitor->lastDeviceId, "render-stereo");
+  EXPECT_TRUE(monitor->framesRendered > 0);
+  EXPECT_EQ(monitor->lastChannels, 2);
+  EXPECT_TRUE(std::fabs(monitor->lastVolume - 0.5) < 1e-6);
+}
+
+TEST(MediaCoreAudioMonitor, DisablingMonitorStopsTheOutputDevice) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  auto* monitor = new RecordingMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto armed = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "render-stereo"},
+          {"volume", 0.8},
+      },
+  });
+  (void)armed;
+  EXPECT_TRUE(monitor->active());
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", false},
+      },
+  });
+  EXPECT_FALSE(monitor->active());
+  EXPECT_GE(monitor->stopCount, 1);
+  ASSERT_NE(state.get("audioMixSession"), nullptr);
+  EXPECT_EQ(state.get("audioMixSession")->getString("monitorStatus"), "muted");
+}
+
+TEST(MediaCoreAudioMonitor, RoutingMatrixMixesPcmIntoProgramAndIsoTaps) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "iso-1"}, {"gainDb", 0}},
+           }},
+      },
+  });
+
+  const auto* matrix = state.get("audioRoutingMatrix");
+  ASSERT_NE(matrix, nullptr);
+  const auto* busTaps = matrix->get("busTaps");
+  ASSERT_NE(busTaps, nullptr);
+
+  bool sawMaster = false;
+  bool sawIso = false;
+  for (const auto& tap : busTaps->asArray()) {
+    if (tap.getString("busId") == "master") {
+      sawMaster = true;
+      EXPECT_EQ(tap.get("frames")->asNumber(), 480);  // PcmTestZoomSource emits 480 frames
+      EXPECT_EQ(tap.get("channels")->asNumber(), 2);
+    }
+    if (tap.getString("busId") == "iso-1") {
+      sawIso = true;
+    }
+  }
+  EXPECT_TRUE(sawMaster);
+  EXPECT_TRUE(sawIso);
+  EXPECT_EQ(matrix->get("programTapFrames")->asNumber(), 480);
+
+  // The program tap accessor exposes the master bus as interleaved stereo PCM.
+  EXPECT_TRUE(mediaCore.programAudioTapPcm().size() == 960u);  // 480 frames * 2 channels
+  const auto busIds = mediaCore.routedAudioBusIds();
+  EXPECT_TRUE(std::find(busIds.begin(), busIds.end(), "master") != busIds.end());
+  EXPECT_TRUE(std::find(busIds.begin(), busIds.end(), "iso-1") != busIds.end());
+}
+
+TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
+  // Default modules: the synthetic source now emits real PCM, so the recording
+  // proof observes muxed audio samples rather than a synthetic frame counter.
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(
+      corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{
+              {"type", "start-program-output"},
+              {"destinations", corevideo::rpc::Json::Array{"recording"}},
+              {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+          },
+          corevideo::rpc::Json::Object{
+              {"type", "set-recording-targets"},
+              {"targetFolder", "Recordings/CoreVideo Pro/native-core"},
+              {"filenamePrefix", "program"},
+              {"format", "mp4"},
+              {"quality", "high"},
+          },
+          corevideo::rpc::Json::Object{
+              {"type", "start-recording-session"},
+              {"sessionId", "audio-proof"},
+              {"startedAtMs", 1000},
+          },
+      },
+      200.0);  // ~6 ticks of real program audio
+
+  const auto* recording = state.get("recording");
+  ASSERT_NE(recording, nullptr);
+  const auto* proof = recording->get("proof");
+  ASSERT_NE(proof, nullptr);
+  EXPECT_TRUE(proof->get("audioPresent")->asBool());
+  EXPECT_GE(proof->get("audioPacketsObserved")->asNumber(), 1);
+  EXPECT_TRUE(proof->get("audioSampleCount")->asNumber() > 0);  // real muxed PCM, not a frame counter
+  EXPECT_EQ(proof->get("audioChannels")->asNumber(), 2);
+  EXPECT_EQ(proof->get("audioSampleRate")->asNumber(), 48000);
+}
+
+TEST(MediaCoreCommand, MeasuresBs1770MasterLoudnessOnProgramTap) {
+  // Default modules: the synthetic source emits real PCM tones, so the master
+  // meter measures actual BS.1770 loudness off the program tap, not a lookup.
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(
+      corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{
+              {"type", "start-program-output"},
+              {"destinations", corevideo::rpc::Json::Array{"recording"}},
+              {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+          },
+      },
+      2500.0);  // enough ticks to fill the 400 ms gating block + window
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* meter = mix->get("masterMeter");
+  ASSERT_NE(meter, nullptr);
+  // A continuous program tone reads a sane loudness/true-peak (present, below FS).
+  EXPECT_TRUE(meter->get("momentaryLufs")->asNumber() > -50.0);
+  EXPECT_TRUE(meter->get("momentaryLufs")->asNumber() < 0.0);
+  EXPECT_TRUE(meter->get("shortTermLufs")->asNumber() > -50.0);
+  EXPECT_TRUE(meter->get("integratedLufs")->asNumber() > -50.0);
+  EXPECT_TRUE(meter->get("truePeakDbfs")->asNumber() > -40.0);
+  EXPECT_TRUE(meter->get("truePeakDbfs")->asNumber() <= 1.0);
+  EXPECT_TRUE(meter->get("windowMs")->asNumber() > 0);
+}
+
+TEST(MediaCoreAudioMonitor, BusInsertCompressorActsOnRoutedBusPcm) {
+  // Route the same PCM source to the master bus with and without a compressor
+  // insert, then compare the resulting program-tap peak. The insert must shape
+  // the real bus samples, not merely live as routing state.
+  const auto programTapPeak = [](const corevideo::rpc::Json::Object& send) -> double {
+    auto modules = corevideo::modules::createStubModules();
+    modules.zoom = std::make_unique<PcmTestZoomSource>();
+    corevideo::core::MediaCore mediaCore{std::move(modules)};
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "sync-audio-routing-matrix"},
+            {"sends", corevideo::rpc::Json::Array{send}},
+        },
+    });
+    double peak = 0.0;
+    for (const float sample : mediaCore.programAudioTapPcm()) {
+      peak = std::max(peak, std::fabs(static_cast<double>(sample)));
+    }
+    return peak;
+  };
+
+  const double plainPeak =
+      programTapPeak(corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}});
+  const double compressedPeak = programTapPeak(corevideo::rpc::Json::Object{
+      {"sourceId", "pcm-speaker"},
+      {"busId", "master"},
+      {"gainDb", 0},
+      {"busPluginInserts", corevideo::rpc::Json::Array{"Compressor"}},
+  });
+
+  EXPECT_TRUE(plainPeak > 0.0);
+  EXPECT_TRUE(compressedPeak < plainPeak);  // the compressor reduced the bus peak
 }
 
 TEST(MediaCoreCommand, SyncsNetworkOutputSenderSession) {
