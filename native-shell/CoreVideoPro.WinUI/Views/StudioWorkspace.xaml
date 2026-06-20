@@ -335,11 +335,12 @@
             <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="2*" MinHeight="180" />
-                    <RowDefinition Height="*" MinHeight="120" />
+                    <RowDefinition x:Name="ProgramPreviewRow" Height="2*" MinHeight="180" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition x:Name="MultiviewRow" Height="*" MinHeight="120" />
                 </Grid.RowDefinitions>
 
-                <Border Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                <Border x:Name="DirectorHeader" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
                     <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                         <TextBlock Text="PROGRAM + PREVIEW" FontWeight="Bold" FontSize="12"
                                    Foreground="{StaticResource StudioTextBrush}" />
@@ -439,7 +440,26 @@
                     </Border>
                 </Grid>
 
-                <Border Grid.Row="2" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                <Border x:Name="ProgramMultiviewSplitter"
+                        Grid.Row="2"
+                        Background="#223139"
+                        BorderBrush="#3DDC97"
+                        BorderThickness="0,1"
+                        CornerRadius="3"
+                        VerticalAlignment="Stretch"
+                        ToolTipService.ToolTip="Drag to resize Program/Preview and Multiview"
+                        PointerPressed="OnProgramMultiviewSplitterPointerPressed"
+                        PointerMoved="OnProgramMultiviewSplitterPointerMoved"
+                        PointerReleased="OnProgramMultiviewSplitterPointerReleased"
+                        PointerCanceled="OnProgramMultiviewSplitterPointerReleased">
+                    <Rectangle Fill="#3DDC97"
+                               Height="2"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Center"
+                               Opacity="0.75" />
+                </Border>
+
+                <Border Grid.Row="3" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
                     <Grid RowSpacing="6">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
