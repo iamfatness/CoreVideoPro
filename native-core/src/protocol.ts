@@ -420,6 +420,14 @@ export type MediaCoreCommand =
       text?: string;
       imageUri?: string;
       position: "top-right" | "bottom-right" | "center" | "lower-third";
+      enabled?: boolean;
+      sourceId?: string;
+      sourceName?: string;
+      title?: string;
+      org?: string;
+      keyPosition?: "lower-left" | "upper-left";
+      keyPhase?: "hidden" | "building-in" | "on-air" | "building-out";
+      keyer?: "upstream" | "downstream";
     }
   | {
       type: "set-zoom-source-roster";

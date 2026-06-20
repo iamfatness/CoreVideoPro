@@ -432,7 +432,8 @@
                                             VerticalAlignment="Stretch"
                                             Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
                                             Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
-                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}" />
+                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}"
+                                            LowerThirdKey="{x:Bind ViewModel.ProgramLowerThirdKey, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>

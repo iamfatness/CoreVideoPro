@@ -26,7 +26,7 @@ public static class MediaCoreCommandBuilder
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
         };
 
-        commands.AddRange(BuildOverlayCommands(context.Graphics));
+        commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey));
         commands.AddRange(BuildCaptionCommands(context.CaptionText, context.CaptionSpeaker));
 
         var mediaPlaybackCommand = BuildMediaPlaybackCommand(context);
@@ -251,15 +251,51 @@ public static class MediaCoreCommandBuilder
             }).ToList()
         });
 
-    private static IEnumerable<NativeMediaCoreCommand> BuildOverlayCommands(IReadOnlyList<MediaCoreGraphicWire> graphics) =>
-        graphics
-            .Where(graphic => graphic.Enabled)
-            .Select(graphic => Command("set-overlay-asset", new Dictionary<string, object?>
+    private static IEnumerable<NativeMediaCoreCommand> BuildOverlayCommands(
+        IReadOnlyList<MediaCoreGraphicWire> graphics,
+        MediaCoreLowerThirdKeyWire? lowerThirdKey)
+    {
+        if (lowerThirdKey is { Enabled: true } && !string.IsNullOrWhiteSpace(lowerThirdKey.SourceName))
+        {
+            yield return Command("set-overlay-asset", new Dictionary<string, object?>
+            {
+                ["overlayId"] = "key:lower-third",
+                ["text"] = lowerThirdKey.SourceName,
+                ["position"] = "lower-third",
+                ["enabled"] = true,
+                ["sourceId"] = lowerThirdKey.SourceId,
+                ["sourceName"] = lowerThirdKey.SourceName,
+                ["title"] = lowerThirdKey.Title,
+                ["org"] = lowerThirdKey.Org,
+                ["keyPosition"] = lowerThirdKey.Position,
+                ["keyPhase"] = lowerThirdKey.Phase,
+                ["keyer"] = "downstream"
+            });
+        }
+        else
+        {
+            yield return Command("set-overlay-asset", new Dictionary<string, object?>
+            {
+                ["overlayId"] = "key:lower-third",
+                ["text"] = string.Empty,
+                ["position"] = "lower-third",
+                ["enabled"] = false,
+                ["keyPhase"] = "hidden",
+                ["keyer"] = "downstream"
+            });
+        }
+
+        foreach (var graphic in graphics.Where(graphic => graphic.Enabled))
+        {
+            yield return Command("set-overlay-asset", new Dictionary<string, object?>
             {
                 ["overlayId"] = graphic.Id,
                 ["text"] = graphic.Text,
-                ["position"] = graphic.Position
-            }));
+                ["position"] = graphic.Position,
+                ["enabled"] = true
+            });
+        }
+    }
 
     private static IEnumerable<NativeMediaCoreCommand> BuildCaptionCommands(string? captionText, string? captionSpeaker)
     {

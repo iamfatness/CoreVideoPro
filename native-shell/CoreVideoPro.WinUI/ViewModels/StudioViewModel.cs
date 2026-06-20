@@ -36,6 +36,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly string _currentRoomId;
     private readonly string _currentRoomName;
     private AudioMixerWindow? _audioMixerWindow;
+    private CancellationTokenSource? _lowerThirdKeyTransitionCts;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -168,6 +169,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _lowerThirdOrg = string.Empty;
+
+    [ObservableProperty]
+    private LowerThirdKeyState _programLowerThirdKey = LowerThirdKeyState.Hidden();
 
     [ObservableProperty]
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
@@ -416,6 +420,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<ParticipantSurfaceTile> ProgramSceneTiles { get; private set; } = [];
 
     public string PreviewSceneSummary => PreviewScene.Name;
+
+    public string LowerThirdKeyStatus =>
+        $"{ProgramLowerThirdKey.PhaseLabel} - {ProgramLowerThirdKey.SourceLabel}";
+
+    public string LowerThirdKeySummary =>
+        ProgramLowerThirdKey.IsVisible
+            ? $"{ProgramLowerThirdKey.SourceName} keyed from program source"
+            : "Lower-third key follows the active program source.";
 
     public string LoudnessTargetLabel => "target -16 LUFS";
 
@@ -1142,6 +1154,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ProgramScene));
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
+        SchedulePreviewRoutingRefresh();
     }
 
     partial void OnPreviewSceneIdChanged(string value)
@@ -1173,6 +1186,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(ProgramResolutionLabel));
         RefreshTransportState();
+    }
+
+    partial void OnProgramLowerThirdKeyChanged(LowerThirdKeyState value)
+    {
+        OnPropertyChanged(nameof(LowerThirdKeyStatus));
+        OnPropertyChanged(nameof(LowerThirdKeySummary));
     }
 
     partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
@@ -1227,6 +1246,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AutomationScenePolicySummary));
         OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
         OnPropertyChanged(nameof(AutomationTakeModeLabel));
+        RefreshProgramLowerThirdKeyPosition();
         RefreshProductionReadouts();
     }
 
@@ -1945,6 +1965,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         graphic.Enabled = !graphic.Enabled;
         CommandStatus = $"{graphic.Name} {(graphic.Enabled ? "enabled" : "disabled")} on program";
         OnPropertyChanged(nameof(EnabledGraphics));
+        RefreshProgramLowerThirdKeyPosition();
 
         if (_bridge.Running)
         {
@@ -1991,6 +2012,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         });
 
         OnPropertyChanged(nameof(EnabledGraphics));
+        RefreshProgramLowerThirdKeyPosition();
         CommandStatus = $"{label} added";
         _ = TrySyncMediaCoreAsync();
     }
@@ -2146,28 +2168,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         changed |= SetAutomationGraphic("lower-third", AutomationLowerThirdsEnabled);
         changed |= SetAutomationGraphic("caption", AutomationCaptionsEnabled);
 
-        var activeSpeaker = RoomVideoParticipants.FirstOrDefault(participant => participant.IsActiveSpeaker) ??
-            RoomVideoParticipants.FirstOrDefault();
-        if (AutomationLowerThirdsEnabled && activeSpeaker is not null)
-        {
-            if (!string.Equals(LowerThirdName, activeSpeaker.Name, StringComparison.Ordinal))
-            {
-                LowerThirdName = activeSpeaker.Name;
-                changed = true;
-            }
-
-            if (!string.Equals(LowerThirdTitle, activeSpeaker.Title, StringComparison.Ordinal))
-            {
-                LowerThirdTitle = activeSpeaker.Title;
-                changed = true;
-            }
-
-            if (!string.Equals(LowerThirdOrg, activeSpeaker.RoleLabel, StringComparison.Ordinal))
-            {
-                LowerThirdOrg = activeSpeaker.RoleLabel;
-                changed = true;
-            }
-        }
+        RefreshProgramLowerThirdKeyPosition();
 
         if (!AutomationCaptionsEnabled)
         {
@@ -3227,6 +3228,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     graphic.Position,
                     graphic.Enabled))
                 .ToList(),
+            LowerThirdKey = ProgramLowerThirdKey.IsVisible
+                ? new MediaCoreLowerThirdKeyWire(
+                    ProgramLowerThirdKey.SourceId,
+                    ProgramLowerThirdKey.SourceName,
+                    ProgramLowerThirdKey.Title,
+                    ProgramLowerThirdKey.Org,
+                    ProgramLowerThirdKey.Position,
+                    ProgramLowerThirdKey.Phase,
+                    ProgramLowerThirdKey.Enabled)
+                : null,
             ColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
                 ColorGrade.Exposure,
@@ -3860,6 +3871,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LowerThirdName = string.Empty;
         LowerThirdTitle = string.Empty;
         LowerThirdOrg = string.Empty;
+        ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
         _captionTranscriptPatches.Clear();
         CaptionTranscript = [];
         OnPropertyChanged(nameof(CaptionTranscript));
@@ -4520,7 +4532,141 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ProgramSceneTiles = sceneTiles;
             OnPropertyChanged(nameof(ProgramSceneRoutes));
             OnPropertyChanged(nameof(ProgramSceneTiles));
+            UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(workingRoutes));
         }
+    }
+
+    public void RefreshProgramLowerThirdKeyPosition() =>
+        UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(ProgramSceneRoutes), force: true);
+
+    private void UpdateProgramLowerThirdKey(LowerThirdSource? source, bool force = false)
+    {
+        var lowerThirdEnabled = AutomationLowerThirdsEnabled ||
+            Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase));
+
+        if (!lowerThirdEnabled || source is null)
+        {
+            _lowerThirdKeyTransitionCts?.Cancel();
+            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
+            _ = TrySyncMediaCoreAsync();
+            return;
+        }
+
+        if (!force &&
+            ProgramLowerThirdKey.Enabled &&
+            string.Equals(ProgramLowerThirdKey.SourceId, source.SourceId, StringComparison.Ordinal) &&
+            string.Equals(ProgramLowerThirdKey.SourceName, source.SourceName, StringComparison.Ordinal))
+        {
+            var next = BuildLowerThirdKey(source, "on-air");
+            if (ProgramLowerThirdKey != next)
+            {
+                ProgramLowerThirdKey = next;
+                _ = TrySyncMediaCoreAsync();
+            }
+            return;
+        }
+
+        _lowerThirdKeyTransitionCts?.Cancel();
+        var transitionCts = new CancellationTokenSource();
+        _lowerThirdKeyTransitionCts = transitionCts;
+        _ = RunLowerThirdKeyTransitionAsync(source, ProgramLowerThirdKey.IsVisible, transitionCts.Token);
+    }
+
+    private async Task RunLowerThirdKeyTransitionAsync(LowerThirdSource source, bool hasCurrentKey, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (hasCurrentKey)
+            {
+                ProgramLowerThirdKey = ProgramLowerThirdKey with { Phase = "building-out" };
+                _ = TrySyncMediaCoreAsync();
+                await Task.Delay(160, cancellationToken).ConfigureAwait(true);
+            }
+
+            ProgramLowerThirdKey = BuildLowerThirdKey(source, "building-in");
+            LowerThirdName = source.SourceName;
+            LowerThirdTitle = source.Title;
+            LowerThirdOrg = source.Org;
+            _ = TrySyncMediaCoreAsync();
+            await Task.Delay(220, cancellationToken).ConfigureAwait(true);
+            ProgramLowerThirdKey = BuildLowerThirdKey(source, "on-air");
+            _ = TrySyncMediaCoreAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private LowerThirdKeyState BuildLowerThirdKey(LowerThirdSource source, string phase) =>
+        new()
+        {
+            SourceId = source.SourceId,
+            SourceName = source.SourceName,
+            Title = source.Title,
+            Org = source.Org,
+            Position = Overlays.LowerThirdPosition,
+            Phase = phase,
+            Enabled = true
+        };
+
+    private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
+    {
+        var sources = workingRoutes
+            .OrderBy(route => route.ZIndex)
+            .Select(ResolveLowerThirdSource)
+            .Where(source => source is not null)
+            .Cast<LowerThirdSource>()
+            .ToList();
+
+        if (sources.Count == 0)
+        {
+            return null;
+        }
+
+        return sources.FirstOrDefault(source => source.IsActiveSpeaker)
+               ?? sources.FirstOrDefault(source => source.IsScreenShare)
+               ?? sources[0];
+    }
+
+    private LowerThirdSource? ResolveLowerThirdSource(SourceRoute route)
+    {
+        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
+        {
+            var device = CaptureDevices.FirstOrDefault(item =>
+                string.Equals(item.Id, captureDeviceId, StringComparison.Ordinal));
+            return device is null
+                ? null
+                : new LowerThirdSource(
+                    $"capture:{device.Id}",
+                    device.Name,
+                    device.Vendor,
+                    device.ResolutionLabel,
+                    IsActiveSpeaker: false,
+                    IsScreenShare: false);
+        }
+
+        var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
+        if (participant is null)
+        {
+            return null;
+        }
+
+        var isScreenShare = route.Mode == SourceRouteMode.ScreenShare || participant.IsScreenSharing;
+        var title = isScreenShare
+            ? "Screen share"
+            : string.IsNullOrWhiteSpace(participant.Title)
+                ? participant.RoleLabel
+                : participant.Title;
+
+        return new LowerThirdSource(
+            participant.Id,
+            participant.Name,
+            title,
+            string.IsNullOrWhiteSpace(participant.BreakoutRoomName)
+                ? participant.RoleLabel
+                : participant.BreakoutRoomName,
+            participant.IsActiveSpeaker,
+            isScreenShare);
     }
 
     private static void ReconcileRoutes(List<SourceRoute> mutableRoutes, IReadOnlyList<SourceRoute> defaults)
@@ -4902,4 +5048,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _surfaces.OnProgramFramePreview(preview);
         Settings.ObserveProgramPreviewFrame(preview);
     }
+
+    private sealed record LowerThirdSource(
+        string SourceId,
+        string SourceName,
+        string Title,
+        string Org,
+        bool IsActiveSpeaker,
+        bool IsScreenShare);
 }

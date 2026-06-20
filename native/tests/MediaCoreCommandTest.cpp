@@ -65,6 +65,60 @@ TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   EXPECT_EQ(state.get("health")->getString("status"), "live");
 }
 
+TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
+  corevideo::core::MediaCore mediaCore;
+  const auto first = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "David Chen"},
+          {"position", "lower-third"},
+          {"sourceId", "p2"},
+          {"sourceName", "David Chen"},
+          {"keyPhase", "building-in"},
+      },
+  });
+  const auto second = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "David Chen"},
+          {"position", "lower-third"},
+          {"sourceId", "p2"},
+          {"sourceName", "David Chen"},
+          {"keyPhase", "on-air"},
+      },
+  });
+
+  EXPECT_EQ(first.get("overlayCount")->asNumber(), 1);
+  EXPECT_EQ(second.get("overlayCount")->asNumber(), 1);
+}
+
+TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {
+  corevideo::core::MediaCore mediaCore;
+  const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "David Chen"},
+          {"position", "lower-third"},
+          {"enabled", true},
+      },
+  });
+  EXPECT_EQ(active.get("overlayCount")->asNumber(), 1);
+
+  const auto cleared = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"position", "lower-third"},
+          {"enabled", false},
+      },
+  });
+
+  EXPECT_EQ(cleared.get("overlayCount")->asNumber(), 0);
+}
+
 TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{

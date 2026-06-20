@@ -228,7 +228,11 @@ public sealed class MediaCoreCommandBuilderTests
         var recording = commands.Single(command => command.Type == "start-recording-session");
         Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
         Assert.Equal("3840x2160", GetObject(recording, "renderProfile").GetProperty("resolution").GetString());
-        Assert.DoesNotContain(commands, command => command.Type == "set-overlay-asset");
+
+        var lowerThirdKey = commands.Single(command =>
+            command.Type == "set-overlay-asset" &&
+            GetString(command, "overlayId") == "key:lower-third");
+        Assert.False(lowerThirdKey.ExtensionData!["enabled"].GetBoolean());
     }
 
     [Fact]
@@ -348,6 +352,40 @@ public sealed class MediaCoreCommandBuilderTests
 
         var screenShare = commands.Single(command => command.Type == "set-screen-share-source");
         Assert.Equal("p2", GetString(screenShare, "participantId"));
+    }
+
+    [Fact]
+    public void SerializesLowerThirdKeyAsStableOverlay()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "fixed", "isolated", "p2")],
+            Participants = Participants,
+            LowerThirdKey = new MediaCoreLowerThirdKeyWire(
+                "p2",
+                "David Chen",
+                "Chief Product Officer",
+                "Main room",
+                "lower-left",
+                "building-in",
+                Enabled: true)
+        });
+
+        var lowerThird = commands.Single(command =>
+            command.Type == "set-overlay-asset" &&
+            GetString(command, "overlayId") == "key:lower-third");
+
+        Assert.Equal("David Chen", GetString(lowerThird, "text"));
+        Assert.Equal("lower-third", GetString(lowerThird, "position"));
+        Assert.True(lowerThird.ExtensionData!["enabled"].GetBoolean());
+        Assert.Equal("p2", GetString(lowerThird, "sourceId"));
+        Assert.Equal("David Chen", GetString(lowerThird, "sourceName"));
+        Assert.Equal("Chief Product Officer", GetString(lowerThird, "title"));
+        Assert.Equal("Main room", GetString(lowerThird, "org"));
+        Assert.Equal("lower-left", GetString(lowerThird, "keyPosition"));
+        Assert.Equal("building-in", GetString(lowerThird, "keyPhase"));
+        Assert.Equal("downstream", GetString(lowerThird, "keyer"));
     }
 
     [Fact]

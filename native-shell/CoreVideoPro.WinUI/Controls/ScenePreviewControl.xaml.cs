@@ -40,6 +40,13 @@ public sealed partial class ScenePreviewControl : UserControl
             typeof(ScenePreviewControl),
             new PropertyMetadata(null, OnLayoutInputsChanged));
 
+    public static readonly DependencyProperty LowerThirdKeyProperty =
+        DependencyProperty.Register(
+            nameof(LowerThirdKey),
+            typeof(LowerThirdKeyState),
+            typeof(ScenePreviewControl),
+            new PropertyMetadata(null, OnLowerThirdKeyChanged));
+
     public ScenePreviewControl()
     {
         InitializeComponent();
@@ -69,6 +76,12 @@ public sealed partial class ScenePreviewControl : UserControl
         set => SetValue(RoutesProperty, value);
     }
 
+    public LowerThirdKeyState? LowerThirdKey
+    {
+        get => (LowerThirdKeyState?)GetValue(LowerThirdKeyProperty);
+        set => SetValue(LowerThirdKeyProperty, value);
+    }
+
     private static void OnLayoutInputsChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
         ((ScenePreviewControl)sender).ApplyLayout();
 
@@ -77,7 +90,45 @@ public sealed partial class ScenePreviewControl : UserControl
         if (sender is ScenePreviewControl control)
         {
             control.Opacity = control.IsPreview ? 0.94 : 1;
+            control.ApplyLowerThirdKey();
         }
+    }
+
+    private static void OnLowerThirdKeyChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
+        ((ScenePreviewControl)sender).ApplyLowerThirdKey();
+
+    private void ApplyLowerThirdKey()
+    {
+        var key = LowerThirdKey;
+        if (IsPreview || key is not { IsVisible: true })
+        {
+            LowerThirdKeyOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        LowerThirdKeyOverlay.Visibility = Visibility.Visible;
+        LowerThirdSourceName.Text = key.SourceName;
+        LowerThirdTitle.Text = key.Title;
+        LowerThirdOrg.Text = string.IsNullOrWhiteSpace(key.Org) ? string.Empty : $"| {key.Org}";
+
+        if (key.Position.Contains("upper", StringComparison.OrdinalIgnoreCase))
+        {
+            LowerThirdKeyOverlay.VerticalAlignment = VerticalAlignment.Top;
+            LowerThirdKeyOverlay.Margin = new Thickness(34, 38, 0, 0);
+        }
+        else
+        {
+            LowerThirdKeyOverlay.VerticalAlignment = VerticalAlignment.Bottom;
+            LowerThirdKeyOverlay.Margin = new Thickness(34, 0, 0, 38);
+        }
+
+        LowerThirdKeyOverlay.Opacity = key.Phase switch
+        {
+            "building-out" => 0.28,
+            "building-in" => 0.86,
+            _ => 1.0
+        };
+        LowerThirdKeyTransform.X = key.Phase == "building-out" ? -80 : 0;
     }
 
     private void ApplyLayout()
@@ -91,6 +142,7 @@ public sealed partial class ScenePreviewControl : UserControl
             }
 
             BuildCanvasLayout(routes);
+            ApplyLowerThirdKey();
             return;
         }
 
@@ -127,6 +179,8 @@ public sealed partial class ScenePreviewControl : UserControl
                 BuildSpeakerSlidesLayout(participants);
                 break;
         }
+
+        ApplyLowerThirdKey();
     }
 
     private void BuildCanvasLayout(IReadOnlyList<SourceRoute> routes)

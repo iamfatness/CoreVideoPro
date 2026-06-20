@@ -198,6 +198,10 @@ export class MediaCoreRuntime {
       }
 
       if (command.type === "set-overlay-asset") {
+        if (command.enabled === false) {
+          this.overlays.delete(command.overlayId);
+          return;
+        }
         this.overlays.set(command.overlayId, command);
         if (!command.text && !command.imageUri) {
           this.warn(warnings, "program", "Overlay has no asset", `${command.overlayId} overlay has no text or image asset.`, command.type, command.overlayId);

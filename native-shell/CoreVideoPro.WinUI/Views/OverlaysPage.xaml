@@ -254,6 +254,18 @@
                     <TextBlock Text="{x:Bind ViewModel.Overlays.CaptionStyleSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
 
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Lower-third keyer" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.LowerThirdKeyStatus, Mode=OneWay}"
+                                       FontSize="13" FontWeight="SemiBold" />
+                            <TextBlock Text="{x:Bind ViewModel.LowerThirdKeySummary, Mode=OneWay}"
+                                       FontSize="11"
+                                       Foreground="{StaticResource StudioMutedBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
+
                     <Grid ColumnSpacing="8" RowSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />

@@ -812,8 +812,16 @@ void MediaCore::setParticipantTransform(const rpc::Json&) {
   ++transformCount_;
 }
 
-void MediaCore::setOverlayAsset(const rpc::Json&) {
-  ++overlayCount_;
+void MediaCore::setOverlayAsset(const rpc::Json& command) {
+  const std::string overlayId = command.getString("overlayId", "overlay:" + std::to_string(overlayIds_.size() + 1));
+  if (command.get("enabled") && !command.get("enabled")->asBool()) {
+    overlayIds_.erase(overlayId);
+    overlayCount_ = static_cast<int>(overlayIds_.size());
+    return;
+  }
+
+  overlayIds_.insert(overlayId);
+  overlayCount_ = static_cast<int>(overlayIds_.size());
 }
 
 void MediaCore::startProgramOutput(const rpc::Json& command) {

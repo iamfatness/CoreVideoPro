@@ -393,6 +393,39 @@ public partial class GraphicOverlay : ObservableObject
     partial void OnEnabledChanged(bool value) => OnPropertyChanged(nameof(StatusLabel));
 }
 
+public sealed record LowerThirdKeyState
+{
+    public string SourceId { get; init; } = string.Empty;
+    public string SourceName { get; init; } = string.Empty;
+    public string Title { get; init; } = string.Empty;
+    public string Org { get; init; } = string.Empty;
+    public string Position { get; init; } = "lower-left";
+    public string Phase { get; init; } = "hidden";
+    public bool Enabled { get; init; }
+
+    public bool IsVisible => Enabled && !string.IsNullOrWhiteSpace(SourceName) && Phase != "hidden";
+
+    public string PhaseLabel => Phase switch
+    {
+        "building-in" => "Building in",
+        "building-out" => "Building out",
+        "on-air" => "On air",
+        _ => "Key off"
+    };
+
+    public string SourceLabel => IsVisible ? SourceName : "No source keyed";
+
+    public static LowerThirdKeyState Hidden(string position = "lower-left") =>
+        new()
+        {
+            SourceId = string.Empty,
+            SourceName = string.Empty,
+            Position = position,
+            Phase = "hidden",
+            Enabled = false
+        };
+}
+
 public sealed class BrandKit
 {
     public required string Name { get; init; }

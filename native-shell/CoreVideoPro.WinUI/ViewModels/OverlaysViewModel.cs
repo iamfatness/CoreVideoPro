@@ -225,6 +225,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
         OnPropertyChanged(nameof(LowerThirdPositionLabel));
         OnPropertyChanged(nameof(LowerThirdHorizontalAlignment));
         OnPropertyChanged(nameof(LowerThirdVerticalAlignment));
+        _studio.RefreshProgramLowerThirdKeyPosition();
     }
 
     partial void OnCaptionPositionChanged(string value)

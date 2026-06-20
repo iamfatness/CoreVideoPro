@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace corevideo::core {
@@ -103,6 +104,7 @@ class MediaCore {
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
+  std::unordered_set<std::string> overlayIds_;
   std::string outputProfileId_ = "canvas-1080p60";
   std::string outputResolution_ = "1920x1080";
   int outputWidth_ = 1920;

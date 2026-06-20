@@ -35,6 +35,15 @@ public sealed record MediaCoreGraphicWire(
     string Position,
     bool Enabled);
 
+public sealed record MediaCoreLowerThirdKeyWire(
+    string SourceId,
+    string SourceName,
+    string Title,
+    string Org,
+    string Position,
+    string Phase,
+    bool Enabled);
+
 public sealed record MediaCoreAudioMixChannelWire(
     string ParticipantId,
     int InputLevel,
@@ -140,6 +149,7 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreOutputProfileWire RecordingOutputProfile { get; init; } = DefaultRecordingOutputProfile;
     public MediaCoreRecordingTargetsWire RecordingTargets { get; init; } = DefaultRecordingTargets;
     public IReadOnlyList<MediaCoreGraphicWire> Graphics { get; init; } = [];
+    public MediaCoreLowerThirdKeyWire? LowerThirdKey { get; init; }
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public bool AudioLimiterEnabled { get; init; } = true;

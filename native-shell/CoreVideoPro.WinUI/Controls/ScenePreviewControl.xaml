@@ -18,7 +18,56 @@
                         <GradientStop Color="#94100E0C" Offset="1" />
                     </LinearGradientBrush>
                 </Border.Background>
-                <Grid x:Name="LayoutRoot" />
+                <Grid>
+                    <Grid x:Name="LayoutRoot" />
+                    <Border x:Name="LowerThirdKeyOverlay"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Bottom"
+                            Margin="34,0,0,38"
+                            MinWidth="430"
+                            MaxWidth="920"
+                            Padding="18,12"
+                            CornerRadius="8"
+                            BorderThickness="1"
+                            Visibility="Collapsed">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="LowerThirdKeyTransform" />
+                        </Border.RenderTransform>
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                <GradientStop Color="#F20B1116" Offset="0" />
+                                <GradientStop Color="#D4111D24" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <Border.BorderBrush>
+                            <SolidColorBrush Color="#993DDC97" />
+                        </Border.BorderBrush>
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="5" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Background="#3DDC97" CornerRadius="3" />
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock x:Name="LowerThirdSourceName"
+                                           FontSize="28"
+                                           FontWeight="SemiBold"
+                                           Foreground="#F7FBF8"
+                                           TextTrimming="CharacterEllipsis" />
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <TextBlock x:Name="LowerThirdTitle"
+                                               FontSize="14"
+                                               Foreground="#F0A85C"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock x:Name="LowerThirdOrg"
+                                               FontSize="14"
+                                               Foreground="#B9C9C2"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
             </Border>
         </Grid>
     </Viewbox>
