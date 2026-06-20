@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -180,6 +181,99 @@ TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {
   });
 
   EXPECT_EQ(cleared.get("overlayCount")->asNumber(), 0);
+}
+
+TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
+  corevideo::core::MediaCore mediaCore;
+  // Enable a lower-third overlay; the first tick captures the building-in
+  // animation (low alpha), later ticks settle it on-air.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"position", "lower-third"},
+          {"title", "ADA OTIENO"},
+          {"org", "AETHELRED LABS"},
+          {"keyPosition", "lower-left"},
+      },
+  });
+
+  auto bandDistinctColors = [](const corevideo::rpc::Json& previewEvent) -> size_t {
+    const auto* preview = previewEvent.get("preview");
+    if (!preview) {
+      return 0;
+    }
+    const int width = static_cast<int>(preview->get("width")->asNumber());
+    const int height = static_cast<int>(preview->get("height")->asNumber());
+    const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+    std::set<uint32_t> colors;
+    const int top = static_cast<int>(0.78f * height);
+    const int bottom = static_cast<int>(0.94f * height);
+    for (int y = top; y < bottom; ++y) {
+      for (int x = 0; x < width; ++x) {
+        const size_t offset = (static_cast<size_t>(y) * width + x) * 4u;
+        if (offset + 3 >= decoded.size()) {
+          continue;
+        }
+        colors.insert((static_cast<uint32_t>(decoded[offset + 3]) << 24) |
+                      (static_cast<uint32_t>(decoded[offset + 2]) << 16) |
+                      (static_cast<uint32_t>(decoded[offset + 1]) << 8) |
+                      static_cast<uint32_t>(decoded[offset + 0]));
+      }
+    }
+    return colors.size();
+  };
+
+  const auto earlyPreviews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(earlyPreviews.empty());
+  const size_t earlyColors = bandDistinctColors(earlyPreviews.back());
+
+  // Advance several ticks so the building-in animation settles on-air.
+  for (int i = 0; i < 12; ++i) {
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  const auto settledPreviews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(settledPreviews.empty());
+  const size_t settledColors = bandDistinctColors(settledPreviews.back());
+
+  // Settled overlay rasters real text/brand pixels (non-uniform band) and is
+  // more opaque/legible than the first building-in frame.
+  EXPECT_TRUE(settledColors > 2u);
+  EXPECT_TRUE(settledColors >= earlyColors);
+}
+
+TEST(MediaCoreCommand, CaptionCueRastersStyledLowerBand) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "push-caption-cue"},
+          {"text", "TESTING LIVE CAPTIONS"},
+          {"speaker", "ADA"},
+      },
+  });
+
+  const auto previews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  ASSERT_NE(preview, nullptr);
+  const int width = static_cast<int>(preview->get("width")->asNumber());
+  const int height = static_cast<int>(preview->get("height")->asNumber());
+  const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  std::set<uint32_t> colors;
+  const int top = static_cast<int>(0.86f * height);
+  const int bottom = static_cast<int>(0.96f * height);
+  for (int y = top; y < bottom; ++y) {
+    for (int x = static_cast<int>(0.08f * width); x < static_cast<int>(0.92f * width); ++x) {
+      const size_t offset = (static_cast<size_t>(y) * width + x) * 4u;
+      if (offset + 3 >= decoded.size()) {
+        continue;
+      }
+      colors.insert((static_cast<uint32_t>(decoded[offset + 2]) << 16) |
+                    (static_cast<uint32_t>(decoded[offset + 1]) << 8) |
+                    static_cast<uint32_t>(decoded[offset + 0]));
+    }
+  }
+  EXPECT_TRUE(colors.size() > 2u);
 }
 
 TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) {
