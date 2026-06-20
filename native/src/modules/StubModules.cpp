@@ -487,7 +487,8 @@ class FakeCaptureDevice final : public ICaptureDevice {
        60,
        "connected",
        true,
-       0,
+       0,  // droppedFrames
+       0,  // framesIngested (probe-only: no real pixels yet)
        0,
        ""},
       {"aja-io-1",
@@ -503,7 +504,8 @@ class FakeCaptureDevice final : public ICaptureDevice {
        30,
        "detected",
        false,
-       0,
+       0,  // droppedFrames
+       0,  // framesIngested (probe-only: no real pixels yet)
        0,
        ""},
   };

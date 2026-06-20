@@ -69,6 +69,26 @@ TEST(ContractParity, CoreEventTypesMatchNativeProtocolMirror) {
   EXPECT_NE(nodeProtocol.find("frameId"), std::string::npos);
 }
 
+TEST(ContractParity, CaptureDeviceSnapshotFieldsMirroredInProtocolMirrors) {
+  // F1: the real per-source counters (framesIngested/droppedFrames) and the rest
+  // of the capture-device snapshot shape emitted by MediaCore::captureDeviceJson
+  // must appear byte-for-byte in both protocol mirrors.
+  const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
+  const std::string rendererProtocol = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");
+  const std::string domain = readRepoFile("src/domain/production.ts");
+  ASSERT_FALSE(nodeProtocol.empty());
+  ASSERT_FALSE(rendererProtocol.empty());
+  ASSERT_FALSE(domain.empty());
+
+  expectAllStringsPresent(nodeProtocol, corevideo::core::kCaptureDeviceSnapshotFields);
+  expectAllStringsPresent(rendererProtocol, corevideo::core::kCaptureDeviceSnapshotFields);
+
+  // The renderer-facing domain shape (CaptureDeviceState) carries the same real
+  // F1 counters so the snapshot reports measured values, not synthetic ones.
+  EXPECT_NE(domain.find("framesIngested"), std::string::npos);
+  EXPECT_NE(domain.find("droppedFrames"), std::string::npos);
+}
+
 TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
   const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
   ASSERT_FALSE(nodeProtocol.empty());

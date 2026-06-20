@@ -95,4 +95,24 @@ inline constexpr std::array<std::string_view, 3> kCoreEventTypes = {
     "program-shared-texture",
 };
 
+// Capture-device snapshot field contract (F1 — real frame-pixel transport).
+// These JSON keys are emitted by MediaCore::captureDeviceJson and must be
+// mirrored byte-for-byte by the Node and renderer protocol mirrors. The F1
+// additions are the real per-source counters `framesIngested` (populated-pixel
+// frames a device has published) and `droppedFrames` (pool back-pressure).
+inline constexpr std::array<std::string_view, 12> kCaptureDeviceSnapshotFields = {
+    "id",
+    "vendor",
+    "name",
+    "selectedInputId",
+    "resolution",
+    "frameRate",
+    "connectionState",
+    "signalPresent",
+    "droppedFrames",
+    "framesIngested",
+    "audioSyncOffsetMs",
+    "warning",
+};
+
 }  // namespace corevideo::core
