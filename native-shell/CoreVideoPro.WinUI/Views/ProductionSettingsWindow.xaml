@@ -234,6 +234,40 @@
                                   IsChecked="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
                         <TextBlock Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
                                    Style="{StaticResource OperatorSummary}" />
+                        <Border Background="#0A0F14"
+                                BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="10">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Monitor output" Style="{StaticResource SettingsLabel}" />
+                                <ComboBox Header="Device"
+                                          ItemsSource="{x:Bind ViewModel.AudioRenderDevices, Mode=OneWay}"
+                                          SelectedValue="{x:Bind ViewModel.SelectedAudioMonitorDeviceId, Mode=TwoWay}"
+                                          SelectedValuePath="Id"
+                                          DisplayMemberPath="Name"
+                                          HorizontalAlignment="Stretch" />
+                                <ToggleSwitch Header="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"
+                                              IsOn="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="48" />
+                                    </Grid.ColumnDefinitions>
+                                    <Slider Minimum="0"
+                                            Maximum="1"
+                                            Value="{x:Bind ViewModel.AudioMonitorVolume, Mode=TwoWay}"
+                                            StepFrequency="0.05" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{x:Bind ViewModel.AudioMonitorVolumeLabel, Mode=OneWay}"
+                                               Style="{StaticResource SettingsValue}"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+                                <TextBlock Text="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}"
+                                           Style="{StaticResource OperatorSummary}" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 

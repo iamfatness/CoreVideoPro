@@ -131,6 +131,13 @@ public sealed class AudioCaptureDevice
     public required string Name { get; init; }
 }
 
+public sealed class AudioRenderDevice
+{
+    public required string Id { get; init; }
+    public required string NativeDeviceId { get; init; }
+    public required string Name { get; init; }
+}
+
 public partial class CaptureDevice : ObservableObject
 {
     public required string Id { get; init; }

@@ -27,6 +27,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly MediaBinService _mediaBinService = new();
     private readonly CaptureDeviceDiscoveryService _captureDiscovery = new();
     private readonly AudioCaptureDeviceDiscoveryService _audioCaptureDiscovery = new();
+    private readonly AudioRenderDeviceDiscoveryService _audioRenderDiscovery = new();
     private readonly CaptureDeviceFrameReaderService _captureFrameReader = new();
     private readonly VideoSurfaceCoordinator _surfaces = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
@@ -71,6 +72,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private bool _masterLimiterEnabled = true;
+
+    [ObservableProperty]
+    private bool _audioMonitoringEnabled;
+
+    [ObservableProperty]
+    private string _selectedAudioMonitorDeviceId = string.Empty;
+
+    [ObservableProperty]
+    private double _audioMonitorVolume = 0.75;
 
     [ObservableProperty]
     private bool _streamRtmpEnabled = true;
@@ -311,6 +321,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<AudioCaptureDevice> AudioCaptureDevices { get; } = [];
 
+    public ObservableCollection<AudioRenderDevice> AudioRenderDevices { get; } = [];
+
     public IReadOnlyList<ShowInputSourceOption> AudioCaptureSourceOptions =>
         ShowInputRosterService.BuildAudioSourceOptions(AudioCaptureDevices);
 
@@ -506,6 +518,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "Master protection is armed; activity only lights when peaks reach the ceiling."
             : "Master protection is bypassed; no limiting is applied.";
 
+    public string SelectedAudioMonitorDeviceName =>
+        AudioRenderDevices.FirstOrDefault(device =>
+            string.Equals(device.Id, SelectedAudioMonitorDeviceId, StringComparison.Ordinal))?.Name ??
+        "No monitor output selected";
+
+    public string AudioMonitorVolumeLabel => $"{AudioMonitorVolume * 100:0}%";
+
+    public string AudioMonitorStatus =>
+        AudioMonitoringEnabled
+            ? $"Monitor target - {SelectedAudioMonitorDeviceName}"
+            : "Monitor muted";
+
+    public string AudioMonitorEngineStatus =>
+        _bridge.LastSnapshot?.AudioMixSession is { } audio
+            ? audio.MasterLevel <= 0 && audio.MixedFrameCount <= 0
+                ? "No mixed audio frames from the media engine."
+                : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames. Native playback tap pending."
+            : "Waiting for media engine audio telemetry.";
+
     public StudioViewModel()
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
@@ -596,8 +627,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _audioCaptureDiscovery.StartWatching(() => _ = RefreshAudioCaptureDevicesAsync());
+        _audioRenderDiscovery.StartWatching(() => _ = RefreshAudioRenderDevicesAsync());
         _ = RefreshCaptureDevicesAsync();
         _ = RefreshAudioCaptureDevicesAsync();
+        _ = RefreshAudioRenderDevicesAsync();
         _ = StartMediaCoreOnLaunchAsync();
     }
 
@@ -1053,6 +1086,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
     }
+
+    partial void OnAudioMonitoringEnabledChanged(bool value) => RefreshAudioMonitorBindings();
+
+    partial void OnSelectedAudioMonitorDeviceIdChanged(string value) => RefreshAudioMonitorBindings();
+
+    partial void OnAudioMonitorVolumeChanged(double value) => RefreshAudioMonitorBindings();
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
@@ -2548,6 +2587,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    private async Task RefreshAudioRenderDevicesAsync()
+    {
+        IReadOnlyList<AudioRenderDevice> discovered;
+        try
+        {
+            discovered = await _audioRenderDiscovery.DiscoverDevicesAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            discovered = [];
+        }
+
+        RunOnUiThread(() => ApplyDiscoveredAudioRenderDevices(discovered));
+    }
+
+    private void ApplyDiscoveredAudioRenderDevices(IReadOnlyList<AudioRenderDevice> discovered)
+    {
+        AudioRenderDevices.Clear();
+        foreach (var device in discovered)
+        {
+            AudioRenderDevices.Add(device);
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedAudioMonitorDeviceId) ||
+            AudioRenderDevices.All(device => !string.Equals(device.Id, SelectedAudioMonitorDeviceId, StringComparison.Ordinal)))
+        {
+            SelectedAudioMonitorDeviceId = AudioRenderDevices.FirstOrDefault()?.Id ?? string.Empty;
+        }
+
+        OnPropertyChanged(nameof(AudioRenderDevices));
+        RefreshAudioMonitorBindings();
+    }
+
     public void SetCaptureDeviceAudioSource(string? captureDeviceId, string? audioDeviceId)
     {
         if (string.IsNullOrWhiteSpace(captureDeviceId) ||
@@ -3091,6 +3163,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MasterLimiterModeLabel));
         OnPropertyChanged(nameof(MasterLimiterActivityLabel));
         OnPropertyChanged(nameof(MasterLimiterSummary));
+        RefreshAudioMonitorBindings();
+    }
+
+    private void RefreshAudioMonitorBindings()
+    {
+        OnPropertyChanged(nameof(SelectedAudioMonitorDeviceName));
+        OnPropertyChanged(nameof(AudioMonitorVolumeLabel));
+        OnPropertyChanged(nameof(AudioMonitorStatus));
+        OnPropertyChanged(nameof(AudioMonitorEngineStatus));
     }
 
     private void RefreshAudioMixChannels()
@@ -5013,6 +5094,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _captureFrameReader.Dispose();
         _captureDiscovery.Dispose();
         _audioCaptureDiscovery.Dispose();
+        _audioRenderDiscovery.Dispose();
         _zoomOAuthCoordinator.Dispose();
         await _bridge.DisposeAsync().ConfigureAwait(false);
         LaunchLog.Write("shutdown: studio view model disposed");
