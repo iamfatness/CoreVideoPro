@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using System.Text.Json;
 
 namespace CoreVideoPro.MediaCore.Services;
 
@@ -65,6 +66,9 @@ public static class SyntheticMediaCore
         var routeCount = TryGetRouteCount(sceneGraph);
         var outputs = TryGetStringArray(outputCommand, "destinations");
         var isoParticipantIds = TryGetStringArray(outputCommand, "isoParticipantIds");
+        var recordingOutputProfile = TryGetObject(outputCommand, "recordingOutputProfile") ??
+            TryGetObject(recordingCommand, "renderProfile");
+        var recordingCodec = NormalizeVideoCodec(TryGetString(recordingOutputProfile, "codec"));
         var sourceCount = commands.Count(command => command.Type == "set-zoom-source-roster");
         var hasProgramOutput = outputCommand is not null;
         var programFrameCount = hasProgramOutput ? frameNumber : 0;
@@ -146,7 +150,7 @@ public static class SyntheticMediaCore
                 Quality = TryGetString(recordingCommand, "quality") ?? "high",
                 Encoder = new NativeMediaCoreRecordingEncoder
                 {
-                    Codec = "h264",
+                    Codec = recordingCodec,
                     HardwareAccelerated = true,
                     TargetBitrateMbps = 18
                 },
@@ -424,6 +428,36 @@ public static class SyntheticMediaCore
         }
 
         return value.GetString();
+    }
+
+    private static string? TryGetString(JsonElement? element, string propertyName)
+    {
+        if (element is not { ValueKind: System.Text.Json.JsonValueKind.Object } value ||
+            !value.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != System.Text.Json.JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return property.GetString();
+    }
+
+    private static JsonElement? TryGetObject(NativeMediaCoreCommand? command, string propertyName)
+    {
+        if (command?.ExtensionData is null ||
+            !command.ExtensionData.TryGetValue(propertyName, out var value) ||
+            value.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return value;
+    }
+
+    private static string NormalizeVideoCodec(string? codec)
+    {
+        var normalized = codec?.Trim().ToLowerInvariant().Replace("hevc", "h265");
+        return normalized is "h264" or "h265" or "av1" ? normalized : "h264";
     }
 
     private static IReadOnlyList<string> TryGetStringArray(NativeMediaCoreCommand? command, string propertyName)

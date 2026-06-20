@@ -151,10 +151,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _streamRenderFps = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Fps.ToString();
 
     [ObservableProperty]
+    private string _streamVideoCodec = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Codec;
+
+    [ObservableProperty]
     private string _recordingRenderResolution = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Resolution;
 
     [ObservableProperty]
     private string _recordingRenderFps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Fps.ToString();
+
+    [ObservableProperty]
+    private string _recordingVideoCodec = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Codec;
 
     [ObservableProperty]
     private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
@@ -741,14 +747,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new() { Value = "60", Label = "60 fps" }
     ];
 
+    public IReadOnlyList<RouteSelectOption> VideoCodecOptions { get; } =
+    [
+        new() { Value = "h264", Label = "H.264 / AVC" },
+        new() { Value = "h265", Label = "H.265 / HEVC" },
+        new() { Value = "av1", Label = "AV1" }
+    ];
+
     public string CanvasProfileSummary =>
         $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
 
     public string StreamRenderProfileSummary =>
-        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps render";
+        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)}";
 
     public string RecordingRenderProfileSummary =>
-        $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps render";
+        $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)}";
 
     public string StreamDestinationSummary
     {
@@ -1184,9 +1197,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamRenderFpsChanged(string value) => OnOutputProfileChanged();
 
+    partial void OnStreamVideoCodecChanged(string value) => OnOutputProfileChanged();
+
     partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingRenderFpsChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnRecordingVideoCodecChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
 
@@ -3424,9 +3441,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamDestinations = BuildSelectedStreamDestinations(),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
-            CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps),
-            StreamOutputProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps),
-            RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps),
+            CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264"),
+            StreamOutputProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps, StreamVideoCodec),
+            RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps, RecordingVideoCodec),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
@@ -3693,7 +3710,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static MediaCoreOutputProfileWire BuildRequestedOutputProfile(
         string scope,
         string? resolution,
-        string? fpsText)
+        string? fpsText,
+        string? codec)
     {
         var normalizedResolution = NormalizeResolutionText(resolution);
         var parts = normalizedResolution.Split('x', StringSplitOptions.RemoveEmptyEntries);
@@ -3709,8 +3727,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Width: width,
             Height: height,
             Fps: fps,
-            TargetBitrateMbps: EstimateTargetBitrateMbps(width, height, fps));
+            TargetBitrateMbps: EstimateTargetBitrateMbps(width, height, fps),
+            Codec: NormalizeVideoCodec(codec));
     }
+
+    private static string NormalizeVideoCodec(string? codec)
+    {
+        var normalized = codec?.Trim().ToLowerInvariant().Replace("hevc", "h265");
+        return normalized is "h264" or "h265" or "av1" ? normalized : "h264";
+    }
+
+    private static string FormatVideoCodec(string? codec) => NormalizeVideoCodec(codec) switch
+    {
+        "h265" => "H.265",
+        "av1" => "AV1",
+        _ => "H.264"
+    };
 
     private static string NormalizeResolutionText(string? value)
     {
@@ -3753,7 +3785,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnOutputProfileChanged()
     {
-        var canvasProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps);
+        var canvasProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
         ProgramResolutionLabel = TransportFormatting.ShortResolutionLabel(canvasProfile.Resolution, canvasProfile.Fps);
         OnPropertyChanged(nameof(CanvasProfileSummary));
         OnPropertyChanged(nameof(StreamRenderProfileSummary));

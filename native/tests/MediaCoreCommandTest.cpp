@@ -672,6 +672,26 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
           {"type", "start-program-output"},
           {"destinations", corevideo::rpc::Json::Array{"recording", "rtmp"}},
           {"isoParticipantIds", corevideo::rpc::Json::Array{"participant-1"}},
+          {"streamOutputProfile",
+           corevideo::rpc::Json::Object{
+               {"profileId", "stream-1080p60"},
+               {"resolution", "1920x1080"},
+               {"width", 1920},
+               {"height", 1080},
+               {"fps", 60},
+               {"targetBitrateMbps", 8.0},
+               {"codec", "h265"},
+           }},
+          {"recordingOutputProfile",
+           corevideo::rpc::Json::Object{
+               {"profileId", "recording-1080p60-av1"},
+               {"resolution", "1920x1080"},
+               {"width", 1920},
+               {"height", 1080},
+               {"fps", 60},
+               {"targetBitrateMbps", 8.0},
+               {"codec", "av1"},
+           }},
       },
       corevideo::rpc::Json::Object{
           {"type", "set-recording-targets"},
@@ -700,7 +720,7 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   EXPECT_EQ(recording->getString("sessionId"), "show-1");
   EXPECT_EQ(recording->getString("status"), "recording");
   EXPECT_EQ(recording->getString("writerStatus"), "writing");
-  EXPECT_EQ(recording->get("encoder")->getString("codec"), "h264");
+  EXPECT_EQ(recording->get("encoder")->getString("codec"), "av1");
   EXPECT_GE(recording->get("totalFramesWritten")->asNumber(), 1);
   EXPECT_GE(recording->get("streams")->asArray().size(), 2);
 
@@ -713,7 +733,7 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   EXPECT_TRUE(proof->get("audioPresent")->asBool());
   EXPECT_TRUE(proof->get("metadataValid")->asBool());
   EXPECT_EQ(proof->getString("containerFormat"), "mp4");
-  EXPECT_EQ(proof->getString("videoCodec"), "h264");
+  EXPECT_EQ(proof->getString("videoCodec"), "av1");
   EXPECT_EQ(proof->getString("audioCodec"), "aac");
   EXPECT_EQ(proof->get("width")->asNumber(), 1920);
   EXPECT_EQ(proof->get("height")->asNumber(), 1080);

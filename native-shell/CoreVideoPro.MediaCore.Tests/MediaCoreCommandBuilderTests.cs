@@ -167,8 +167,8 @@ public sealed class MediaCoreCommandBuilderTests
             Recording = true,
             Streaming = true,
             CanvasOutputProfile = new MediaCoreOutputProfileWire("canvas-4k60", "3840x2160", 3840, 2160, 60, 28),
-            StreamOutputProfile = new MediaCoreOutputProfileWire("stream-1080p30", "1920x1080", 1920, 1080, 30, 4.1),
-            RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-4k60", "3840x2160", 3840, 2160, 60, 28),
+            StreamOutputProfile = new MediaCoreOutputProfileWire("stream-1080p30", "1920x1080", 1920, 1080, 30, 4.1, "h265"),
+            RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-4k60", "3840x2160", 3840, 2160, 60, 28, "av1"),
             StreamDestinations = ["rtmp", "ndi", "srt"],
             StreamDestinationSettings =
             [
@@ -203,7 +203,9 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Empty(GetStringArray(output, "isoParticipantIds"));
         Assert.Equal("stream-1080p30", GetObject(output, "streamOutputProfile").GetProperty("profileId").GetString());
         Assert.Equal(30, GetObject(output, "streamOutputProfile").GetProperty("fps").GetInt32());
+        Assert.Equal("h265", GetObject(output, "streamOutputProfile").GetProperty("codec").GetString());
         Assert.Equal("recording-4k60", GetObject(output, "recordingOutputProfile").GetProperty("profileId").GetString());
+        Assert.Equal("av1", GetObject(output, "recordingOutputProfile").GetProperty("codec").GetString());
         var destinationSettings = GetObjectArray(output, "destinationSettings");
         Assert.Equal(["rtmp", "ndi", "srt"], destinationSettings.Select(destination => destination.GetProperty("id").GetString()));
         Assert.Equal("rtmps", destinationSettings[0].GetProperty("protocol").GetString());
@@ -224,10 +226,12 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
         Assert.Equal("corevideo-recording", GetString(targets, "filenamePrefix"));
         Assert.Equal("recording-4k60", GetObject(targets, "renderProfile").GetProperty("profileId").GetString());
+        Assert.Equal("av1", GetObject(targets, "renderProfile").GetProperty("codec").GetString());
 
         var recording = commands.Single(command => command.Type == "start-recording-session");
         Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
         Assert.Equal("3840x2160", GetObject(recording, "renderProfile").GetProperty("resolution").GetString());
+        Assert.Equal("av1", GetObject(recording, "renderProfile").GetProperty("codec").GetString());
 
         var lowerThirdKey = commands.Single(command =>
             command.Type == "set-overlay-asset" &&

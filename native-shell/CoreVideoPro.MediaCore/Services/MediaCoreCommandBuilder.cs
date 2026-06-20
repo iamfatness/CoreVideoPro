@@ -423,7 +423,8 @@ public static class MediaCoreCommandBuilder
             ["width"] = profile.Width,
             ["height"] = profile.Height,
             ["fps"] = profile.Fps,
-            ["targetBitrateMbps"] = profile.TargetBitrateMbps
+            ["targetBitrateMbps"] = profile.TargetBitrateMbps,
+            ["codec"] = profile.Codec
         };
 
     private static NativeMediaCoreCommand Command(string type, IReadOnlyDictionary<string, object?> payload) =>

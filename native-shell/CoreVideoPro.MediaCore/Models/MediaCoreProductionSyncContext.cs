@@ -128,7 +128,8 @@ public sealed record MediaCoreOutputProfileWire(
     int Width,
     int Height,
     int Fps,
-    double TargetBitrateMbps);
+    double TargetBitrateMbps,
+    string Codec = "h264");
 
 /// <summary>
 /// Production inputs for building a media-core-sync command batch.

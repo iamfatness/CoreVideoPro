@@ -28,4 +28,37 @@ public sealed class SyntheticMediaCoreTests
         Assert.False(snapshot.AudioMixSession.LimiterEnabled);
         Assert.False(snapshot.Diagnostics.AudioMixSession.LimiterEnabled);
     }
+
+    [Fact]
+    public void SynthesizeSnapshotReflectsRequestedRecordingVideoCodec()
+    {
+        var renderProfile = JsonSerializer.SerializeToElement(new
+        {
+            profileId = "recording-av1",
+            resolution = "1920x1080",
+            width = 1920,
+            height = 1080,
+            fps = 60,
+            targetBitrateMbps = 8,
+            codec = "av1"
+        });
+
+        var snapshot = SyntheticMediaCore.SynthesizeSnapshot(
+            [
+                new NativeMediaCoreCommand
+                {
+                    Type = "start-recording-session",
+                    ExtensionData = new Dictionary<string, JsonElement>
+                    {
+                        ["renderProfile"] = renderProfile
+                    }
+                }
+            ],
+            elapsedMs: 1000,
+            frameNumber: 1);
+
+        Assert.NotNull(snapshot.Recording);
+        Assert.Equal("av1", snapshot.Recording!.Encoder.Codec);
+        Assert.Equal("av1", snapshot.Diagnostics.Recording!.Encoder.Codec);
+    }
 }

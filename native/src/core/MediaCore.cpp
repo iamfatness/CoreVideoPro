@@ -736,6 +736,10 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   outputHeight_ = clampIntValue(static_cast<int>(command.getNumber("height", outputHeight_)), 180, 2160);
   outputFps_ = clampIntValue(static_cast<int>(command.getNumber("fps", outputFps_)), 1, 120);
   outputTargetBitrateMbps_ = std::max(0.5, std::min(80.0, command.getNumber("targetBitrateMbps", outputTargetBitrateMbps_)));
+  const std::string codec = command.getString("codec", streamVideoCodec_);
+  if (codec == "h264" || codec == "h265" || codec == "hevc" || codec == "av1") {
+    streamVideoCodec_ = codec == "hevc" ? "h265" : codec;
+  }
   outputResolution_ = command.getString("resolution", std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_));
   if (outputResolution_.empty()) {
     outputResolution_ = std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_);
@@ -744,6 +748,18 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   if (outputProfileId_.empty()) {
     outputProfileId_ = "canvas-" + outputResolution_ + "-" + std::to_string(outputFps_);
   }
+}
+
+namespace {
+std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback) {
+  if (codec == "h264" || codec == "h265" || codec == "av1") {
+    return codec;
+  }
+  if (codec == "hevc") {
+    return "h265";
+  }
+  return fallback.empty() ? "h264" : fallback;
+}
 }
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
@@ -825,6 +841,20 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
 }
 
 void MediaCore::startProgramOutput(const rpc::Json& command) {
+  if (const rpc::Json* streamProfile = command.get("streamOutputProfile"); streamProfile && streamProfile->isObject()) {
+    outputWidth_ = clampIntValue(static_cast<int>(streamProfile->getNumber("width", outputWidth_)), 320, 3840);
+    outputHeight_ = clampIntValue(static_cast<int>(streamProfile->getNumber("height", outputHeight_)), 180, 2160);
+    outputFps_ = clampIntValue(static_cast<int>(streamProfile->getNumber("fps", outputFps_)), 1, 120);
+    outputTargetBitrateMbps_ = std::max(0.5, std::min(80.0, streamProfile->getNumber("targetBitrateMbps", outputTargetBitrateMbps_)));
+    streamVideoCodec_ = normalizeVideoCodec(streamProfile->getString("codec", streamVideoCodec_), streamVideoCodec_);
+  }
+  if (const rpc::Json* recordingProfile = command.get("recordingOutputProfile"); recordingProfile && recordingProfile->isObject()) {
+    recordingOutputWidth_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("width", recordingOutputWidth_)), 320, 3840);
+    recordingOutputHeight_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("height", recordingOutputHeight_)), 180, 2160);
+    recordingOutputFps_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("fps", recordingOutputFps_)), 1, 120);
+    recordingTargetBitrateMbps_ = std::max(0.5, std::min(80.0, recordingProfile->getNumber("targetBitrateMbps", recordingTargetBitrateMbps_)));
+    recordingVideoCodec_ = normalizeVideoCodec(recordingProfile->getString("codec", recordingVideoCodec_), recordingVideoCodec_);
+  }
   configureEncoderRecordingRequest();
   modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
@@ -933,12 +963,12 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.format = recordingFormat_;
   request.quality = recordingQuality_;
   request.isoParticipantIds = recordingIsoParticipantIds_;
-  request.width = lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_;
-  request.height = lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_;
-  request.fps = outputFps_;
-  request.videoCodec = "h264";
+  request.width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : (lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_);
+  request.height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : (lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_);
+  request.fps = recordingOutputFps_ > 0 ? recordingOutputFps_ : outputFps_;
+  request.videoCodec = normalizeVideoCodec(recordingVideoCodec_, "h264");
   request.audioCodec = "aac";
-  request.targetBitrateMbps = 10;
+  request.targetBitrateMbps = static_cast<int>(std::max(1.0, recordingTargetBitrateMbps_));
   modules_.encoder->configureRecording(request);
 }
 

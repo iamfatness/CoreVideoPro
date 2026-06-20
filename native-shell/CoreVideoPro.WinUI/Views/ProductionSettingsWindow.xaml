@@ -141,6 +141,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="180" />
                                 </Grid.ColumnDefinitions>
                                 <ComboBox Header="Stream render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
@@ -155,6 +156,13 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Column="2"
+                                          Header="Stream codec"
+                                          ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamVideoCodec, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
                                 <ComboBox Grid.Row="1"
                                           Header="Recording render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
@@ -166,6 +174,13 @@
                                           Header="Recording FPS"
                                           ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
                                           SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Row="1" Grid.Column="2"
+                                          Header="Recording codec"
+                                          ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingVideoCodec, Mode=TwoWay}"
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
@@ -407,6 +422,12 @@
                                Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
+                            <ComboBox Header="Recording video codec"
+                                      ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                      SelectedValue="{x:Bind ViewModel.RecordingVideoCodec, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
