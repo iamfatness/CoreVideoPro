@@ -8,6 +8,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 {
     private readonly ShowInputSlot _slot;
     private readonly Action _onChanged;
+    private IReadOnlyList<Participant> _participants = [];
+    private IReadOnlyList<CaptureDevice> _captureDevices = [];
     private bool _suppressChangedCallback;
 
     public ShowInputSlotViewModel(ShowInputSlot slot, Action onChanged)
@@ -38,6 +40,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             }
 
             _slot.Kind = value;
+            RefreshSourceOptions(_participants, _captureDevices);
             OnSlotPropertyChanged();
         }
     }
@@ -120,6 +123,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices)
     {
+        _participants = participants;
+        _captureDevices = captureDevices;
         _suppressChangedCallback = true;
         try
         {

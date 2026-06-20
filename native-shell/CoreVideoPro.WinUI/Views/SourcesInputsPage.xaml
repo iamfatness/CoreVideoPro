@@ -295,7 +295,7 @@
                                         <StackPanel Grid.Column="2" Spacing="4">
                                             <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="SourceCombo"
-                                                      ItemsSource="{x:Bind SourceOptions}"
+                                                      ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
                                                       SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
