@@ -1,10 +1,12 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
+using CoreVideoPro.WinUI.Services;
 using Windows.Graphics.Imaging;
 using Windows.Media.Capture;
 using Windows.Media.Capture.Frames;
 using Windows.Media.MediaProperties;
+using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -24,10 +26,18 @@ public sealed partial class CaptureDevicePreviewHost : UserControl
             typeof(CaptureDevicePreviewHost),
             new PropertyMetadata(false, OnPreviewPropertyChanged));
 
+    public static readonly DependencyProperty StableDeviceIdProperty =
+        DependencyProperty.Register(
+            nameof(StableDeviceId),
+            typeof(string),
+            typeof(CaptureDevicePreviewHost),
+            new PropertyMetadata(null));
+
     private MediaCapture? _capture;
     private MediaFrameReader? _reader;
     private string? _activeDeviceId;
     private bool _paintingFrame;
+    private int _frameId;
 
     public CaptureDevicePreviewHost()
     {
@@ -45,6 +55,12 @@ public sealed partial class CaptureDevicePreviewHost : UserControl
     {
         get => (bool)GetValue(IsOnlineProperty);
         set => SetValue(IsOnlineProperty, value);
+    }
+
+    public string? StableDeviceId
+    {
+        get => (string?)GetValue(StableDeviceIdProperty);
+        set => SetValue(StableDeviceIdProperty, value);
     }
 
     public string StatusTitle { get; private set; } = "Camera preview idle";
@@ -120,6 +136,7 @@ public sealed partial class CaptureDevicePreviewHost : UserControl
         PreviewImage.Visibility = Visibility.Collapsed;
         PreviewImage.Source = null;
         _activeDeviceId = null;
+        _frameId = 0;
 
         if (_reader is not null)
         {
@@ -176,6 +193,7 @@ public sealed partial class CaptureDevicePreviewHost : UserControl
         {
             try
             {
+                PublishFrame(displayBitmap);
                 var source = new SoftwareBitmapSource();
                 await source.SetBitmapAsync(displayBitmap);
                 PreviewImage.Source = source;
@@ -185,6 +203,28 @@ public sealed partial class CaptureDevicePreviewHost : UserControl
                 displayBitmap.Dispose();
                 _paintingFrame = false;
             }
+        });
+    }
+
+    private void PublishFrame(SoftwareBitmap bitmap)
+    {
+        if (string.IsNullOrWhiteSpace(StableDeviceId) ||
+            bitmap.PixelWidth <= 0 ||
+            bitmap.PixelHeight <= 0)
+        {
+            return;
+        }
+
+        var bytes = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+        bitmap.CopyToBuffer(bytes.AsBuffer());
+        CaptureDeviceFrameRouter.Publish(new CaptureDeviceFrame
+        {
+            DeviceId = StableDeviceId,
+            Bgra = bytes,
+            Width = bitmap.PixelWidth,
+            Height = bitmap.PixelHeight,
+            FrameId = Interlocked.Increment(ref _frameId),
+            TimestampMs = Environment.TickCount64
         });
     }
 

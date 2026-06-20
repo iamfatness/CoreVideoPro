@@ -15,6 +15,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private readonly object _gate = new();
     private readonly Dictionary<string, FrameRateTracker> _trackers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VideoSurfaceState> _participantSurfaces = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, VideoSurfaceState> _captureDeviceSurfaces = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ZoomVideoFrame> _pendingFrames = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastUiUpdateMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _lastAppliedFrameId = new(StringComparer.Ordinal);
@@ -77,6 +78,17 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                     };
                 })
                 .ToList();
+        }
+    }
+
+    public IReadOnlyDictionary<string, VideoSurfaceState> CaptureDeviceSurfaces
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _captureDeviceSurfaces.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+            }
         }
     }
 
@@ -157,6 +169,52 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             {
                 return;
             }
+        }
+
+        NotifyChanged();
+    }
+
+    public void OnCaptureDeviceFrame(CaptureDeviceFrame frame)
+    {
+        if (frame.Bgra.Length == 0 || frame.Width <= 0 || frame.Height <= 0)
+        {
+            return;
+        }
+
+        var trackerKey = CaptureDeviceKey(frame.DeviceId);
+        var now = Environment.TickCount64;
+        lock (_gate)
+        {
+            if (_lastAppliedFrameId.TryGetValue(trackerKey, out var appliedFrameId) && frame.FrameId <= appliedFrameId)
+            {
+                return;
+            }
+
+            if (_lastUiUpdateMs.TryGetValue(trackerKey, out var lastUpdateMs) &&
+                now - lastUpdateMs < UiUpdateIntervalMs)
+            {
+                return;
+            }
+
+            var fps = TrackFps(trackerKey, frame.FrameId);
+            var metadata = new VideoFrameMetadata
+            {
+                ParticipantId = frame.DeviceId,
+                Width = frame.Width,
+                Height = frame.Height,
+                FrameId = frame.FrameId,
+                Fps = fps,
+                Renderer = "winrt-mediaframe",
+                Health = "live",
+                TimestampMs = frame.TimestampMs
+            };
+
+            _captureDeviceSurfaces[frame.DeviceId] = VideoSurfaceState
+                .Waiting(VideoSurfaceKind.Multiview, trackerKey, frame.DeviceId)
+                .WithFrame(metadata, "Capture feed live", $"Frame {frame.FrameId} - {metadata.ResolutionLabel} - {metadata.FpsLabel}")
+                .WithPreviewPixels(frame.Bgra, frame.Width, frame.Height);
+            _lastUiUpdateMs[trackerKey] = now;
+            _lastAppliedFrameId[trackerKey] = frame.FrameId;
         }
 
         NotifyChanged();
@@ -430,6 +488,8 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         _pendingFrames.Remove(trackerKey);
         return true;
     }
+
+    private static string CaptureDeviceKey(string deviceId) => $"capture:{deviceId}";
 
     private string ResolveRenderer(NativeMediaCoreStateSnapshot snapshot)
     {

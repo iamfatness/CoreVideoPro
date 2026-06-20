@@ -53,6 +53,43 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void BuildMultiviewTiles_UsesLiveCaptureSurfaceWhenFramesArrive()
+    {
+        var slots = new[]
+        {
+            new ShowInputSlot
+            {
+                SlotNumber = 1,
+                Kind = ShowInputKind.UvcWebcam,
+                CaptureDeviceId = "cam-uvc",
+                InShow = true
+            }
+        };
+        var devices = new[]
+        {
+            Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: true)
+        };
+        var surface = VideoSurfaceState
+            .Waiting(VideoSurfaceKind.Multiview, "capture:cam-uvc", "USB Capture")
+            .WithPreviewPixels([0, 0, 0, 255], 1, 1);
+
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
+            slots,
+            [],
+            devices,
+            [],
+            new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal)
+            {
+                ["cam-uvc"] = surface
+            });
+
+        var tile = Assert.Single(tiles);
+        Assert.True(tile.Surface.HasPreviewBitmap);
+        Assert.Equal("capture:cam-uvc", tile.Surface.SurfaceKey);
+        Assert.Equal("USB Capture - 1920x1080", tile.Surface.Title);
+    }
+
+    [Fact]
     public void SameMultiviewTileStructure_MatchesParticipantAndSlotOrderOnly()
     {
         var first = ShowInputRosterService.BuildMultiviewTiles(

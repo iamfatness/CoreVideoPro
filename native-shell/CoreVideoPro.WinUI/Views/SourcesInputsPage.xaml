@@ -119,6 +119,7 @@
                                                 BorderThickness="1"
                                                 CornerRadius="6">
                                             <controls:CaptureDevicePreviewHost DeviceId="{x:Bind NativeDeviceId, Mode=OneWay}"
+                                                                               StableDeviceId="{x:Bind Id, Mode=OneWay}"
                                                                                IsOnline="{x:Bind IsConnected, Mode=OneWay}" />
                                         </Border>
                                         <Button Content="Bring online as program source"

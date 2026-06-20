@@ -76,16 +76,18 @@ public static class ShowInputRosterService
         IReadOnlyList<ShowInputSlot> slots,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<ParticipantSurfaceTile> participantTiles)
+        IReadOnlyList<ParticipantSurfaceTile> participantTiles,
+        IReadOnlyDictionary<string, VideoSurfaceState>? captureSurfaces = null)
     {
         var tilesByParticipant = participantTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         var devicesById = captureDevices.ToDictionary(device => device.Id, device => device);
         var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
+        captureSurfaces ??= new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal);
 
         return slots
             .Where(slot => slot.InShow && slot.IsAssigned && HasResolvedSource(slot, participantsById, devicesById))
             .Take(MaxMultiviewBoxes)
-            .Select(slot => ToSurfaceTile(slot, participantsById, devicesById, tilesByParticipant))
+            .Select(slot => ToSurfaceTile(slot, participantsById, devicesById, tilesByParticipant, captureSurfaces))
             .ToList();
     }
 
@@ -137,7 +139,8 @@ public static class ShowInputRosterService
         ShowInputSlot slot,
         IReadOnlyDictionary<string, Participant> participantsById,
         IReadOnlyDictionary<string, CaptureDevice> devicesById,
-        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant)
+        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant,
+        IReadOnlyDictionary<string, VideoSurfaceState> captureSurfaces)
     {
         if (slot.Kind == ShowInputKind.ZoomParticipant &&
             slot.ParticipantId is not null &&
@@ -169,6 +172,24 @@ public static class ShowInputRosterService
         if (slot.CaptureDeviceId is not null && devicesById.TryGetValue(slot.CaptureDeviceId, out var device))
         {
             var label = $"{device.Name} - {device.ResolutionLabel}";
+            var hasLiveSurface = captureSurfaces.TryGetValue(device.Id, out var liveSurface) &&
+                liveSurface.HasPreviewBitmap;
+            var surface = hasLiveSurface
+                ? liveSurface! with
+                {
+                    SurfaceKey = $"capture:{device.Id}",
+                    Kind = VideoSurfaceKind.Multiview,
+                    Title = label
+                }
+                : (device.IsConnected
+                    ? VideoSurfaceState.CaptureSourceOnline(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)
+                    : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)) with
+                    {
+                        DetailLine = device.IsConnected
+                            ? $"{device.ConnectionLabel} - {device.SignalLabel} - waiting for capture frames"
+                            : "Connect device in Sources to bring online."
+                    };
+
             return new ParticipantSurfaceTile
             {
                 Participant = new Participant
@@ -177,16 +198,9 @@ public static class ShowInputRosterService
                     Name = label,
                     Title = slot.KindLabel,
                     Role = ParticipantRole.Guest,
-                    Health = device.IsConnected ? FeedHealth.Live : FeedHealth.VideoOff
+                    Health = hasLiveSurface ? FeedHealth.Live : device.IsConnected ? FeedHealth.Live : FeedHealth.VideoOff
                 },
-                Surface = (device.IsConnected
-                    ? VideoSurfaceState.CaptureSourceOnline(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)
-                    : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)) with
-                {
-                    DetailLine = device.IsConnected
-                        ? $"{device.ConnectionLabel} - {device.SignalLabel} - waiting for capture frames"
-                        : "Connect device in Sources to bring online."
-                },
+                Surface = surface,
                 SourceIndex = slot.SlotNumber
             };
         }

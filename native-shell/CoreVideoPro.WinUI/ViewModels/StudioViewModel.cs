@@ -417,6 +417,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
+        CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged += RefreshSurfaceBindings;
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
@@ -2570,7 +2571,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ShowInputs,
             RoomVideoParticipants,
             CaptureDevices,
-            MultiviewTiles).ToList();
+            MultiviewTiles,
+            _surfaces.CaptureDeviceSurfaces).ToList();
 
         if (SelectedMediaAssetId is not null && FindMediaAsset(SelectedMediaAssetId) is { } asset)
         {
@@ -2913,6 +2915,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
+        CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged -= RefreshSurfaceBindings;
 
         ForceShutdownMediaCore();
@@ -2955,6 +2958,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _surfaces.OnZoomVideoFrame(frame);
         Settings.ObserveZoomVideoFrame(frame);
     }
+
+    private void OnCaptureDeviceFrameReceived(CaptureDeviceFrame frame) =>
+        _surfaces.OnCaptureDeviceFrame(frame);
 
     private void OnProgramFramePreviewReceived(ProgramFramePreview preview)
     {
