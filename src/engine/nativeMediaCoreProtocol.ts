@@ -222,6 +222,8 @@ export type NativeMediaCoreParticipantAudioChannel = {
   inputLevel: number;
   outputLevel: number;
   gainDb: number;
+  rmsDbfs: number;
+  peakDbfs: number;
   manualGainDb?: number;
   noiseSuppression: boolean;
   limiterActive: boolean;

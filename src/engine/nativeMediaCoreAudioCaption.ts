@@ -8,6 +8,7 @@ import type {
 } from "./nativeMediaCoreProtocol";
 import {
   computeRmsDbfs,
+  computeSamplePeakDbfs,
   computeShortTermLufs,
   dbfsToLinear,
   linearToDbfs,
@@ -279,6 +280,11 @@ function measureParticipantChannel(channel: NativeAudioMixChannelInput): Measure
   }
 
   const outputLevel = channel.muted ? 0 : rmsDbfsToLevel(computeRmsDbfs(postGain));
+  // MEASURED per-participant metrics: the RMS and sample-peak dBFS of the same
+  // post-gain synthesized PCM that feeds the program mix. A muted channel is a
+  // silent buffer, so both kernels return the digital-silence floor.
+  const rmsDbfs = round1(computeRmsDbfs(postGain));
+  const peakDbfs = round1(computeSamplePeakDbfs(postGain));
   // The channel limiter would engage if the synthesized post-gain peak exceeds
   // the channel threshold; reuse the level-based threshold the protocol uses.
   const limiterActive = !channel.muted && (peakLimiterGainReductionDb(postGain, channelLimiterThresholdDbfs()) > 0 || outputLevel >= LIMITER_THRESHOLD);
@@ -289,6 +295,8 @@ function measureParticipantChannel(channel: NativeAudioMixChannelInput): Measure
       inputLevel: channel.inputLevel,
       outputLevel,
       gainDb,
+      rmsDbfs,
+      peakDbfs,
       manualGainDb: channel.manualGainDb,
       noiseSuppression,
       limiterActive,

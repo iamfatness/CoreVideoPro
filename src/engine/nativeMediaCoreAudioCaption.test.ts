@@ -96,6 +96,26 @@ describe("NativeAudioMixSessionSimulator", () => {
     expect(channel?.outputLevel).toBeGreaterThanOrEqual(66);
     expect(channel?.outputLevel).toBeLessThanOrEqual(70);
   });
+
+  it("measures per-participant rmsDbfs and peakDbfs from the synthesized post-gain PCM", () => {
+    const snapshot = new NativeAudioMixSessionSimulator().sync([
+      { participantId: "audible", inputLevel: 68, muted: false, noiseSuppression: false },
+      { participantId: "silent", inputLevel: 80, muted: true, noiseSuppression: false }
+    ]);
+    const audible = snapshot.participants[0];
+    const muted = snapshot.participants[1];
+
+    // A sine peaks ~3 dB above its RMS; both are negative dBFS below full scale.
+    expect(audible?.rmsDbfs).toBeLessThan(0);
+    expect(audible?.peakDbfs).toBeLessThanOrEqual(0);
+    expect(audible?.peakDbfs).toBeGreaterThan(audible!.rmsDbfs);
+    expect(Number.isFinite(audible?.rmsDbfs)).toBe(true);
+    expect(Number.isFinite(audible?.peakDbfs)).toBe(true);
+
+    // A muted channel is digital silence -> the kernel floor for both metrics.
+    expect(muted?.rmsDbfs).toBe(-120);
+    expect(muted?.peakDbfs).toBe(-120);
+  });
 });
 
 describe("NativeCaptionTrackSimulator", () => {

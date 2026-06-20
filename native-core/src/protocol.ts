@@ -591,6 +591,8 @@ export type MediaCoreParticipantAudioChannel = {
   inputLevel: number;
   outputLevel: number;
   gainDb: number;
+  rmsDbfs: number;
+  peakDbfs: number;
   manualGainDb?: number;
   pan?: number;
   solo?: boolean;

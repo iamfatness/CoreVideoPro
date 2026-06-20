@@ -76,6 +76,15 @@ describe("media core sync engine", () => {
     });
     expect(snapshot.audioMixSession.status).toBe("warning");
     expect(snapshot.audioMixSession.participants.length).toBeGreaterThan(0);
+    // Each participant channel carries the measured per-channel rms/peak metrics.
+    snapshot.audioMixSession.participants.forEach((channel) => {
+      expect(typeof channel.rmsDbfs).toBe("number");
+      expect(typeof channel.peakDbfs).toBe("number");
+      expect(Number.isFinite(channel.rmsDbfs)).toBe(true);
+      expect(Number.isFinite(channel.peakDbfs)).toBe(true);
+      // Sample peak is always at or above RMS for the same buffer.
+      expect(channel.peakDbfs).toBeGreaterThanOrEqual(channel.rmsDbfs);
+    });
     expect(snapshot.captionTrack.status).toBe("warning");
     expect(snapshot.captionTrack.currentCue?.text).toBe(initialProduction.captionOverlay.text.trim());
     expect(snapshot.lastCommandTypes).toEqual(

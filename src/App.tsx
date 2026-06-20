@@ -2487,6 +2487,22 @@ export function App({ engines, runtime }: AppProps) {
               <ControlReadout label="Audio mix" value={mediaCoreSnapshot?.audioMixSession.summary ?? "Pending"} />
               <ControlReadout label="Mix level" value={`${mediaCoreSnapshot?.audioMixSession.masterLevel ?? 0}%`} />
               <ControlReadout label="Mix loudness" value={`${mediaCoreSnapshot?.audioMixSession.loudnessLufs ?? -60} LUFS`} />
+              <ControlReadout
+                label="Mix peak"
+                value={
+                  mediaCoreSnapshot?.audioMixSession.participants.length
+                    ? `${Math.max(...mediaCoreSnapshot.audioMixSession.participants.map((channel) => channel.peakDbfs)).toFixed(1)} dBFS`
+                    : "Pending"
+                }
+              />
+              <ControlReadout
+                label="Mix RMS"
+                value={
+                  mediaCoreSnapshot?.audioMixSession.participants.length
+                    ? `${Math.max(...mediaCoreSnapshot.audioMixSession.participants.map((channel) => channel.rmsDbfs)).toFixed(1)} dBFS`
+                    : "Pending"
+                }
+              />
               <ControlReadout label="Audio routing" value={mediaCoreSnapshot?.audioRoutingMatrix.summary ?? "Pending"} />
               <ControlReadout label="Routed sends" value={`${mediaCoreSnapshot?.audioRoutingMatrix.routedSendCount ?? 0}`} />
               <ControlReadout

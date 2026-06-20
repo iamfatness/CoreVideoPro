@@ -1,6 +1,7 @@
 import type { MediaCoreAudioMixSession, MediaCoreParticipantAudioChannel } from "./protocol.js";
 import {
   computeRmsDbfs,
+  computeSamplePeakDbfs,
   computeShortTermLufs,
   dbfsToLinear,
   linearToDbfs,
@@ -271,6 +272,11 @@ function measureParticipantChannel(channel: AudioMixChannelInput): MeasuredParti
   }
 
   const outputLevel = channel.muted ? 0 : rmsDbfsToLevel(computeRmsDbfs(postGain));
+  // MEASURED per-participant metrics: the RMS and sample-peak dBFS of the same
+  // post-gain synthesized PCM that feeds the program mix. A muted channel is a
+  // silent buffer, so both kernels return AUDIO_DBFS_FLOOR deterministically.
+  const rmsDbfs = round1(computeRmsDbfs(postGain));
+  const peakDbfs = round1(computeSamplePeakDbfs(postGain));
   const limiterActive =
     !channel.muted && (peakLimiterGainReductionDb(postGain, channelLimiterThresholdDbfs()) > 0 || outputLevel >= LIMITER_THRESHOLD);
 
@@ -280,6 +286,8 @@ function measureParticipantChannel(channel: AudioMixChannelInput): MeasuredParti
       inputLevel: channel.inputLevel,
       outputLevel,
       gainDb,
+      rmsDbfs,
+      peakDbfs,
       manualGainDb: channel.manualGainDb,
       pan: channel.pan,
       solo: channel.solo,
