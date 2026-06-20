@@ -5,7 +5,7 @@ getting from the current codebase to a usable alpha build._
 
 ## 1. Where we are today
 
-CoreVideo Pro is a native Windows production app (OBS-class) that builds live
+CoreVideo Pro is a native Windows production app for building live
 shows from Zoom participants. The architecture is a typed renderer ↔ native-core
 boundary:
 
@@ -19,7 +19,7 @@ WinUI shell (C#) ──▶ MediaCore bridge (C#, JSON-RPC) ──▶ native medi
 
 The codebase is well-architected with a clean mock→native seam, and is roughly
 **~70% of the way to a credible alpha**. The hardest piece (real Zoom raw
-ingest) is already proven in the vendored OBS-plugin engine.
+ingest) is already proven in the vendored native capture engine.
 
 ### What is real vs. simulated
 
@@ -51,7 +51,7 @@ operator can:
 
 1. Join a real Zoom meeting and see clean participant feeds + metadata.
 2. Map participants/devices to **Inputs 1–10**.
-3. Route video and audio with a clear, fast UI (Dante-style matrix — see §4).
+3. Route video and audio with a clear, fast crosspoint matrix (see §4).
 4. Build scenes on a **fully-visible 16:9 canvas** (no scroll-to-build).
 5. Click Magic Scene / Set & Forget and get a polished, stable show.
 6. Record a stable 1080p MP4 to disk.
@@ -62,7 +62,7 @@ operator can:
 
 ### Track A — Operator UX restructure (this is the active track)
 - [x] **Scene builder canvas scales to the window** — full 16:9 always visible,
-      OBS-style, no scroll-to-build. _(done — see SourcesPage/SceneCanvasEditor)_
+      no scroll-to-build. _(done — see SourcesPage/SceneCanvasEditor)_
 - [ ] **Inputs / Sources / Routing / Scenes IA** — split the overloaded Scenes
       screen into a clean signal-flow (see §4). Pending design sign-off.
 - [ ] Error/empty/loading states, onboarding, and state-transition clarity.
@@ -87,12 +87,11 @@ operator can:
 The current "Scenes" tab does too much: canvas editing, per-source route-mode
 dropdowns, capture-device discovery, feed health, and the Input 1–10 multiview
 all live on one scrolling page. The proposal separates concerns along the path a
-signal actually travels, which mirrors how vMix / TriCaster / Dante Controller
-organize the same problem:
+signal actually travels:
 
 ```
  Sources ──▶ Inputs (1–10) ──▶ Routing (matrix) ──▶ Scenes (canvas) ──▶ Outputs
- (devices,    (stable slots a    (Dante-style       (compositor /        (record,
+ (devices,    (stable slots a    (crosspoint        (compositor /        (record,
   Zoom,        scene/route can    crosspoint grid    16:9 canvas with      stream)
   media)       reference)         for V + A)         Inputs as layers)
 ```
@@ -102,13 +101,13 @@ organize the same problem:
   editor + capture discovery + feed health, made the home for "what is plugged
   in." Maps source → Input 01–10.
 
-- **Routing tab (new)** — two Dante-controller-style crosspoint matrices:
+- **Routing tab (new)** — two production crosspoint matrices:
   - **Video matrix:** sources (Inputs 01–10, Active Speaker, Screen Share, Media)
     × destinations (Program, Preview, ISO A–D, Multiview, Aux/Stream). Click a
     crosspoint to route.
   - **Audio matrix:** audio sources (Input mics, Zoom mix, Media) × buses
     (Program L/R, ISO tracks, Monitor/Aux, Stream), crosspoints carry on/off
-    (+ gain). This is the Dante audio experience.
+    (+ gain).
   - This is where today's per-layer `Mode` and `AudioRole` move to.
 
 - **Scenes tab** — pure compositor. The 16:9 canvas (now always fully visible).

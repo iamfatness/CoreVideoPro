@@ -1276,7 +1276,7 @@ int main()
             std::string on_behalf_token = json_str(line, "on_behalf_token");
             std::string user_zak = json_str(line, "user_zak");
             std::string app_privilege_token = json_str(line, "app_privilege_token");
-            if (display_name.empty()) display_name = "OBS";
+            if (display_name.empty()) display_name = "CoreVideo Pro";
             EngineIpc::write(R"({"cmd":"debug","stage":"join_received","meeting_id":")" +
                 json_escape(meeting_id) + R"(","has_on_behalf_token":)" +
                 std::string(on_behalf_token.empty() ? "false" : "true") +

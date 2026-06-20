@@ -164,7 +164,7 @@
                             BorderBrush="{x:Bind ViewModel.RoutingTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RoutingTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="routing"
-                            ToolTipService.ToolTip="Routing — Dante-style audio gain matrix" />
+                            ToolTipService.ToolTip="Routing - audio and video crosspoint matrix" />
                     <Button Content="Overlays" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.OverlaysTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OverlaysTabChrome.BorderBrush, Mode=OneWay}"

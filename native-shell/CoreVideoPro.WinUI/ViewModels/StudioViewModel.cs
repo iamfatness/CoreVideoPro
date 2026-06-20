@@ -1048,7 +1048,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         "Build scenes in Sources · assign show inputs for multiview";
 
     public string SceneBuilderHint =>
-        "Open the Scenes tab to drag sources on the 16:9 canvas like OBS";
+        "Open the Scenes tab to drag sources on the 16:9 canvas";
 
     public int PreviewSlotCount => PreviewCanvasLayers.Count;
 

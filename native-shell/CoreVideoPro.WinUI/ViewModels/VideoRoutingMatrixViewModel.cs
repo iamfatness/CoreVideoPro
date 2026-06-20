@@ -71,7 +71,7 @@ public sealed class VideoRoutingSourceRowViewModel
 }
 
 /// <summary>
-/// Dante-style video routing matrix: sources (rows) × destinations (columns), each
+/// Video routing matrix: sources (rows) × destinations (columns), each
 /// crosspoint carrying an on/off route only (no gain). Clicking a cell toggles its
 /// route directly — there is no shared editor, unlike the audio gain matrix.
 /// </summary>

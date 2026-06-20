@@ -26,7 +26,7 @@ The product promise:
 
 > Join Zoom (and plug in a camera if you have one), click Magic Scene, review the auto-built show, then stream or record.
 
-CoreVideo Pro is not an OBS companion and has no OBS dependency. It owns the full production stack:
+CoreVideo Pro is a standalone production app with no dependency on any external switcher. It owns the full production stack:
 
 - Zoom-native capture.
 - Local Blackmagic/AJA capture device sources.
@@ -147,7 +147,7 @@ Core capabilities:
 - Low end-to-end latency (target sub-100ms capture-to-preview) with a manual A/V sync offset control to align local camera audio/video against Zoom audio.
 - Source health: signal-present, format mismatch, dropped-frame, and device-disconnected states surfaced like Zoom feed health.
 
-Explicitly out of scope for MVP (MimoLive-style depth we are not chasing yet): multi-camera PTZ control, NDI source/output, simultaneous multi-device ISO recording, and remote producer/contribution surfaces. A single local capture source (most commonly the host's camera) covers the dominant "Zoom-plus-host-cam" use case; multi-device support is a Phase 2 expansion once core demand is validated.
+Explicitly out of scope for MVP: multi-camera PTZ control, NDI source/output, simultaneous multi-device ISO recording, and remote producer/contribution surfaces. A single local capture source (most commonly the host's camera) covers the dominant "Zoom-plus-host-cam" use case; multi-device support is a Phase 2 expansion once core demand is validated.
 
 ## Target Users
 
@@ -265,7 +265,7 @@ Each template is a one-click apply: selecting it maps current participants into 
 - Second local capture device support.
 - Per-speaker caption attribution.
 
-### Phase 2+ (Not in MVP, MimoLive-style depth deferred intentionally)
+### Phase 2+ (Advanced Production Depth Deferred Intentionally)
 
 - NDI input/output.
 - SRT output.
@@ -644,7 +644,7 @@ Against MimoLive:
 
 - PTZ camera control.
 - Remote producer/contribution surfaces.
-- Full layer-compositing depth comparable to MimoLive.
+- Full layer-compositing depth for advanced productions.
 
 Only pursue Phase 3 items if MVP/Phase 2 usage data shows demand - these are the areas where matching MimoLive's complexity would undermine the "ruthless simplicity" positioning unless customers are explicitly asking for them.
 
@@ -785,4 +785,4 @@ Only pursue Phase 3 items if MVP/Phase 2 usage data shows demand - these are the
 - User can stream to RTMP.
 - Set & Forget mode can produce a basic interview or webinar without constant operator input.
 - Manual overrides always work.
-- App has no dependency on OBS.
+- App has no dependency on external switcher software.

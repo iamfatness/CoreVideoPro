@@ -12,7 +12,7 @@ option(COREVIDEO_WITH_SRT_OUTPUT "Build the SRT output sender adapter. Requires 
 option(COREVIDEO_WITH_SRT_INGEST "Build the SRT ingest capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine for real transport." OFF)
 option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
 option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
-option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored OBS-free Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
+option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored standalone Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
 set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ or h/, plus lib/)")
 
@@ -182,7 +182,7 @@ add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
 # ---------------------------------------------------------------------------
-# Vendored Zoom capture engine (proven, OBS-free) from the CoreVideo plugin.
+# Vendored standalone Zoom capture engine.
 # Built only on a dev machine that has the Zoom Meeting SDK; excluded from the
 # default in-container stub build so `-DCOREVIDEO_STUB=ON` stays green.
 # See native/zoom-engine/README.md for provenance and sync instructions.

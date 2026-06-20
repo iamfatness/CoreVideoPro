@@ -4,7 +4,7 @@
 
 ## Decision
 
-The **vendored, OBS-free Zoom capture engine** (`native/zoom-engine/`, built as
+The **vendored standalone Zoom capture engine** (`native/zoom-engine/`, built as
 `corevideo-zoom-engine`) is the **primary and only active** Zoom capture path for
 Demo 1 and the MVP. It is the proven engine from the shipping CoreVideo plugin —
 it already joins Zoom and delivers per-participant raw I420 video/audio over
@@ -12,7 +12,7 @@ shared memory, on both macOS and Windows.
 
 ## Why
 
-- Proven in production (ships in the OBS plugin) — lowest risk to "join + see feeds".
+- Proven in production in prior CoreVideo work — lowest risk to "join + see feeds".
 - Cross-platform (mac + Windows) vs. the adapter's Windows-only state.
 - Crash-isolated separate process, matching the `MediaCoreSupervisor` model.
 - Lets Demo 1 land in days, not weeks — reuse over rewrite.

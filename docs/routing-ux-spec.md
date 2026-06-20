@@ -8,14 +8,14 @@ implementation PRs will follow. Companion to `docs/alpha-plan.md` §4._
 1. **Three tabs**, where the **Sources tab _is_ the Inputs 1–10 mapping** (no
    separate Sources/Inputs split).
 2. **Audio routing is a gain matrix** — every crosspoint carries on/off **and** a
-   level (dB), i.e. a DSP-style crosspoint mixer, not just Dante on/off.
+   level (dB), i.e. a full crosspoint mixer, not just on/off switching.
 3. **Design-first**: lock this before writing routing code.
 
 ## Signal flow
 
 ```
  Sources / Inputs (1–10) ──▶ Routing (video + audio matrices) ──▶ Scenes (canvas) ──▶ Outputs
-   what's plugged in           Dante-style crosspoint grids         compositor /        record /
+   what's plugged in           production crosspoint grids          compositor /        record /
    and which input it feeds     (audio cells carry gain)            16:9 canvas         stream
 ```
 
@@ -62,11 +62,11 @@ needed for this tab — it is a relocation + visual upgrade of today's "Show inp
 
 ---
 
-## Tab 2 — Routing (new) — Dante-style crosspoint matrices
+## Tab 2 — Routing (new) — production crosspoint matrices
 
 Two matrices, switchable by a **Video / Audio** segmented control. Rows are
-**sources**, columns are **destinations/buses** (the Dante Controller convention is
-TX × RX; we use sources × destinations and label clearly).
+**sources**, columns are **destinations/buses**. We use sources × destinations and
+label them clearly.
 
 ### 2a. Video matrix — on/off crosspoints
 
@@ -126,7 +126,7 @@ that gain. This is a crosspoint mixer: one source can sit in the Program mix at
 
 ## Tab 3 — Scenes (canvas only)
 
-The 16:9 OBS canvas (now always fully visible — shipped in PR #126). The **"Add
+The 16:9 scene canvas (now always fully visible — shipped in PR #126). The **"Add
 source"** affordance lists **Inputs 1–10** (only those assigned), plus the dynamic
 pseudo-sources **Active Speaker / Screen Share / Media**.
 

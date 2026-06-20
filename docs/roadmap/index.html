@@ -114,7 +114,7 @@
           <li>Full operator console UI on simulated data</li>
           <li>Native shell + typed IPC bridge + <code>MediaCoreSupervisor</code> (A-series)</li>
           <li>Native core skeleton + JSON-RPC + stub modules; gated dev adapters: Zoom SDK, D3D11 compositor, MF encoder, RTMP (B-series)</li>
-          <li>Vendored <b>proven OBS-free Zoom capture engine</b> + renderer frame path (canvas tiles)</li>
+          <li>Vendored <b>standalone Zoom capture engine</b> + renderer frame path (canvas tiles)</li>
           <li>Zoom media spine orchestration, SDK readiness, capability-gated outputs</li>
         </ul>
       </div>
@@ -134,7 +134,7 @@
   <!-- Sprint 1 -->
   <div class="sprint next">
     <div class="s-head"><span class="s-tag">Sprint 1 · NEXT</span><h3 class="s-title">First Live Demo — Join &amp; See Feeds</h3><span class="s-week">week 1</span></div>
-    <div class="s-demo"><b>Demo:</b> join a real Zoom meeting and watch live individual participant tiles appear, with the roster and the active speaker highlighted — in CoreVideo Pro, not OBS.</div>
+    <div class="s-demo"><b>Demo:</b> join a real Zoom meeting and watch live individual participant tiles appear, with the roster and the active speaker highlighted inside CoreVideo Pro.</div>
     <div class="grid2">
       <div><h4>Goals</h4><ul>
         <li>Build the vendored capture engine on the dev machine against the Zoom SDK</li>
@@ -252,7 +252,7 @@
       <tr><td>5</td><td>Stream to RTMP</td><td class="st wip">Sprint 3</td></tr>
       <tr><td>6</td><td>Set &amp; Forget produces a show unattended</td><td class="st wip">logic ✓ · live in S5</td></tr>
       <tr><td>7</td><td>Manual overrides always work</td><td class="st ok">✓ built</td></tr>
-      <tr><td>8</td><td>No dependency on OBS</td><td class="st ok">✓ standalone</td></tr>
+      <tr><td>8</td><td>No dependency on external switcher software</td><td class="st ok">✓ standalone</td></tr>
     </tbody>
   </table>
 

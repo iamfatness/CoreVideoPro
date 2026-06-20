@@ -28,7 +28,7 @@
                 <StackPanel Spacing="2">
                     <TextBlock Text="Routing" FontSize="16" FontWeight="Bold"
                                Foreground="{StaticResource StudioTextBrush}" />
-                    <TextBlock Text="Dante-style crosspoint matrices — pick Video or Audio, then click a crosspoint to route a source."
+                    <TextBlock Text="Crosspoint matrices - pick Video or Audio, then click a cell to route a source."
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                 </StackPanel>
             </StackPanel>

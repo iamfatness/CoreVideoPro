@@ -1,7 +1,7 @@
 namespace CoreVideoPro.WinUI.Models;
 
 /// <summary>
-/// Normalized 0–1 rectangle within the 16:9 program frame (OBS canvas coordinates).
+/// Normalized 0-1 rectangle within the 16:9 program frame.
 /// </summary>
 public sealed class NormalizedCanvasRect
 {

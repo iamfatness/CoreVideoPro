@@ -73,7 +73,7 @@ The product depends on a native media core for real-time Zoom ingest, GPU compos
 - Multi-destination and recording preflight tests for arming targets, output readiness, live target health, aggregate bitrate, and network warning behavior.
 - ISO recording tests for selected participant feeds, output-session status, native bridge payloads, support-bundle runway, and UI controls.
 - Native host and media-core protocol tests proving the UI shell is not the real-time video engine.
-- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to OBS or browser capture APIs.
+- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to browser capture APIs.
 - Native audio-mix and caption-track tests in `native-core` and the renderer sync/mapper layers proving participant leveling and live caption cues round-trip through the media-core snapshot contract.
 - Audio routing matrix tests in `native-core` (`mediaCore.test.ts`), the renderer command builder and sync engine (`nativeMediaCoreCommands.test.ts`, `mediaCoreSync.test.ts`), and the C++ media core (`ContractParityTest.cpp`, `MediaCoreCommandTest.cpp`) proving routed source-to-bus sends round-trip with gain clamping, per-bus source counts, and out-of-range/unrouted-source warnings.
 - Auto-director hold tests and brand-kit command tests proving unattended production stays stable and on-brand through the media-core snapshot contract.

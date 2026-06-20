@@ -139,8 +139,8 @@ export function describeNdiSource(sourceName: NdiSourceName): string {
 export function ndiReceiverSuggestions(): string[] {
   return [
     "NDI Monitor (NewTek / Vizrt)",
-    "vMix / Wirecast (direct NDI input)",
-    "OBS NDI plugin",
+    "desktop production software with direct NDI input",
+    "NDI-compatible recording or switching tools",
     "Blackmagic Web Presenter HD",
     "any NDI-capable hardware switcher"
   ];

@@ -93,7 +93,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
   const auto payloadZak = payload.getString("userZak");
   if (!payloadJwt.empty()) {
     config_.sdkJwt = payloadJwt;
-    // Broker JWT auth replaces embedded public-app-key auth (OBS plugin pattern).
+    // Broker JWT auth replaces embedded public-app-key auth.
     config_.publicAppKey.clear();
   }
   if (!payloadZak.empty()) {

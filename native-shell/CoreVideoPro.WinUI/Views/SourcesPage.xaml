@@ -15,7 +15,7 @@
     </UserControl.Resources>
 
     <!--
-        OBS-style Scenes screen (canvas only). The 16:9 canvas lives in a
+        Scene builder workspace (canvas only). The 16:9 canvas lives in a
         viewport-bounded region (single star-sized row) so it is always fully
         visible and scales with the window — no scroll-to-build. The operations
         docks (feed health, capture devices, show inputs) now live on the Sources
@@ -54,7 +54,7 @@
                                 <StackPanel Spacing="2">
                                     <TextBlock Text="Scene builder" FontSize="18" FontWeight="Bold"
                                                Foreground="{StaticResource StudioTextBrush}" />
-                                    <TextBlock Text="OBS-style canvas — drag sources anywhere on the 16:9 frame. Presets are starting points."
+                                    <TextBlock Text="Freeform canvas - drag sources anywhere on the 16:9 frame. Presets are starting points."
                                                FontSize="12" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </StackPanel>

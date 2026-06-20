@@ -3,7 +3,7 @@ using CoreVideoPro.WinUI.Models;
 namespace CoreVideoPro.WinUI.Services;
 
 /// <summary>
-/// Layout presets seed the OBS-style canvas; operators can drag sources freely afterward.
+/// Layout presets seed the scene canvas; operators can drag sources freely afterward.
 /// </summary>
 public static class SceneCanvasLayoutService
 {

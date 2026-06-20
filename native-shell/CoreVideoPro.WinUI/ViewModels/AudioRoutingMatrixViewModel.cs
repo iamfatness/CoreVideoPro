@@ -75,7 +75,7 @@ public sealed class AudioRoutingSourceRowViewModel
 }
 
 /// <summary>
-/// Dante-style audio routing matrix: sources (rows) × buses (columns), each
+/// Audio routing matrix: sources (rows) × buses (columns), each
 /// crosspoint carrying an on/off route plus a gain. Editing happens through the
 /// selected crosspoint so the UI stays a single shared gain editor.
 /// </summary>

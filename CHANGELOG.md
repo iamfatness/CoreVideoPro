@@ -8,7 +8,7 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
-- Native Studio **Routing tab** with a Dante-style audio gain matrix: assigned
+- Native Studio **Routing tab** with an audio crosspoint gain matrix: assigned
   Inputs (1–10) plus the Zoom program mix and media as rows, program/ISO/monitor/
   stream buses as columns, and per-crosspoint on/off + gain (dB) editing. Edits
   local production state; native command wiring (`sync-audio-routing-matrix`) and

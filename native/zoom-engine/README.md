@@ -1,8 +1,8 @@
 # Vendored Zoom capture engine
 
-This is the proven, **OBS-free** Zoom Meeting SDK capture engine vendored from the
-CoreVideo OBS plugin. It is a standalone child process (`ZoomObsEngine` in the
-plugin, built here as `corevideo-zoom-engine`) that:
+This is the proven standalone Zoom Meeting SDK capture engine vendored from prior
+CoreVideo work. It is a standalone child process built here as
+`corevideo-zoom-engine` that:
 
 - initializes the Zoom Meeting SDK and authenticates (JWT or public app key),
 - joins a meeting,
@@ -15,15 +15,15 @@ plugin, built here as `corevideo-zoom-engine`) that:
 
 ## Provenance
 
-Copied verbatim from `iamfatness/corevideo` (the OBS plugin) with only
-include-path rewrites from `../../src/engine-ipc.h` to `engine-ipc.h` so the
-flattened `shared/` header can be used. The engine has no `libobs`/Qt/`blog`
-dependencies, so no other edits were needed.
+Copied from `iamfatness/corevideo` with only include-path rewrites from
+`../../src/engine-ipc.h` to `engine-ipc.h` so the flattened `shared/` header can
+be used. The engine has no external switcher UI dependencies, so no other edits
+were needed.
 
 Source files:
-- `engine/` ← plugin `engine/src/` (`main`, `engine-video`, `engine-audio`,
-  `engine-share`, `engine-writer.h`)
-- `shared/engine-ipc.h` ← plugin `src/engine-ipc.h`
+- `engine/` from the prior capture engine (`main`, `engine-video`,
+  `engine-audio`, `engine-share`, `engine-writer.h`)
+- `shared/engine-ipc.h` from the prior capture IPC header
 
 ## Building (dev machine only)
 
@@ -61,6 +61,6 @@ process; do not commit or log them.
 
 ## Keeping it in sync
 
-This is a vendored copy, not a submodule. If the plugin engine changes, re-copy
-`engine/src/*` and `src/engine-ipc.h` and re-apply the include-path rewrites
-above. Keep this engine OBS-free so it stays portable to this app.
+This is a vendored copy, not a submodule. If the upstream capture engine changes,
+re-copy `engine/src/*` and `src/engine-ipc.h` and re-apply the include-path
+rewrites above. Keep this engine standalone so it stays portable to this app.
