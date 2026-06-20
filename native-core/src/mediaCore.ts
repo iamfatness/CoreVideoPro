@@ -151,15 +151,22 @@ export class MediaCoreRuntime {
       };
     }
 
-    const warnings = this.apply(request.commands);
-    this.tick(this.elapsedMs);
+    if (request.type === "sync") {
+      const warnings = this.apply(request.commands);
+      this.tick(this.elapsedMs);
 
-    return {
-      id: request.id,
-      ok: true,
-      appliedCommandCount: request.commands.length,
-      state: this.snapshot(warnings)
-    };
+      return {
+        id: request.id,
+        ok: true,
+        appliedCommandCount: request.commands.length,
+        state: this.snapshot(warnings)
+      };
+    }
+
+    // zoom-media-spine-sync is intercepted by the service layer (see service.ts)
+    // and never reaches MediaCore.handle; reject it defensively so the request
+    // union stays exhaustively narrowed.
+    throw new Error(`MediaCore.handle received unsupported request type: ${(request as { type: string }).type}`);
   }
 
   apply(commands: MediaCoreCommand[]) {

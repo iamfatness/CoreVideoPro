@@ -51,7 +51,7 @@ public sealed class RoutingMatrixViewModelTests
     }
 
     [Fact]
-    public void AudioRouting_IsoBusAllowsOnlyOneSourceAndRemoveSelectedClearsIt()
+    public void AudioRouting_IsoBusAllowsOnlyOneSourceAndTogglingClearsIt()
     {
         var viewModel = new AudioRoutingMatrixViewModel();
         viewModel.Build(
@@ -70,10 +70,12 @@ public sealed class RoutingMatrixViewModelTests
         Assert.True(secondIso.IsRouted);
         Assert.Same(secondIso, viewModel.SelectedCrosspoint);
 
-        viewModel.RemoveSelectedCommand.Execute(null);
+        // RemoveSelectedCommand was replaced by toggle-off: re-selecting a routed
+        // crosspoint clears the route and the selection.
+        viewModel.SelectCrosspointCommand.Execute(secondIso);
 
         Assert.False(secondIso.IsRouted);
-        Assert.Same(secondIso, viewModel.SelectedCrosspoint);
+        Assert.Null(viewModel.SelectedCrosspoint);
     }
 
     [Fact]
