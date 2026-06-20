@@ -145,6 +145,33 @@
                                             <Run Text=" · " />
                                             <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
                                         </TextBlock>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{x:Bind AudioSyncLabel, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       VerticalAlignment="Center" />
+                                            <Button Grid.Column="1"
+                                                    Content="-20 ms"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
+                                                    CommandParameter="{x:Bind Id}" />
+                                            <Button Grid.Column="2"
+                                                    Content="+20 ms"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
+                                                    CommandParameter="{x:Bind Id}" />
+                                            <Button Grid.Column="3"
+                                                    Content="Reset"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Command="{Binding ViewModel.ResetCaptureAudioSyncCommand, ElementName=SourcesInputsRoot}"
+                                                    CommandParameter="{x:Bind Id}" />
+                                        </Grid>
                                         <Button Content="Bring online as program source"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"

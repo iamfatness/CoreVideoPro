@@ -36,6 +36,7 @@ class MediaCore {
   void setParticipantTransform(const rpc::Json& command);
   void setOverlayAsset(const rpc::Json& command);
   void setColorGrade(const rpc::Json& command);
+  void setOutputProfile(const rpc::Json& command);
   void startProgramOutput(const rpc::Json& command);
   void prepareEncoderSession(const rpc::Json& command);
   void startEncoderSession(const rpc::Json& command);
@@ -100,6 +101,12 @@ class MediaCore {
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
+  std::string outputProfileId_ = "canvas-1080p60";
+  std::string outputResolution_ = "1920x1080";
+  int outputWidth_ = 1920;
+  int outputHeight_ = 1080;
+  int outputFps_ = 60;
+  double outputTargetBitrateMbps_ = 8.2;
   modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
   int64_t mixedAudioFrameCount_ = 0;

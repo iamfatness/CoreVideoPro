@@ -356,6 +356,36 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task SetCaptureAudioSyncOffsetAsync(
+        string deviceId,
+        int offsetMs,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "set-capture-audio-sync-offset",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId,
+                    ["offsetMs"] = offsetMs
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            if (response.RootElement.TryGetProperty("ok", out var okElement) && okElement.GetBoolean())
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"capture audio sync failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+        }
+    }
+
     private static bool IsWireSnapshotResponse(JsonDocument response)
     {
         var root = response.RootElement;

@@ -72,6 +72,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _formatFps;
         private long _lastFrameTimestampMs;
         private long _lastFramePublishFailureLogMs;
+        private double _measuredFps;
+        private int _fpsSampleCount;
 
         public CaptureSession(string stableDeviceId, string nativeDeviceId)
         {
@@ -283,7 +285,35 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
 
             var elapsed = timestampMs - previous;
-            return elapsed > 0 ? Math.Clamp((int)Math.Round(1000.0 / elapsed), 1, 240) : 0;
+            if (elapsed <= 0)
+            {
+                return _measuredFps > 0 ? (int)Math.Round(_measuredFps) : 0;
+            }
+
+            var instantFps = Math.Clamp(1000.0 / elapsed, 1.0, 240.0);
+            _fpsSampleCount++;
+            _measuredFps = _measuredFps <= 0
+                ? instantFps
+                : (_measuredFps * 0.88) + (instantFps * 0.12);
+            return SnapFrameRate(_measuredFps, _fpsSampleCount);
+        }
+
+        private static int SnapFrameRate(double fps, int sampleCount)
+        {
+            if (sampleCount < 8)
+            {
+                return Math.Clamp((int)Math.Round(fps), 1, 240);
+            }
+
+            foreach (var standard in new[] { 24, 25, 30, 50, 60, 120 })
+            {
+                if (Math.Abs(fps - standard) <= Math.Max(1.5, standard * 0.06))
+                {
+                    return standard;
+                }
+            }
+
+            return Math.Clamp((int)Math.Round(fps), 1, 240);
         }
 
         public async ValueTask DisposeAsync()

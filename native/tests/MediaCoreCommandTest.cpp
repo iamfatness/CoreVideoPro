@@ -188,8 +188,8 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_EQ(profile.getString("name"), "CoreVideo Pro Native Media Core Stub");
   EXPECT_EQ(profile.getString("renderer"), "software");
 #endif
-  EXPECT_EQ(profile.getString("maxProgramResolution"), "1920x1080");
-  EXPECT_EQ(profile.get("maxProgramFps")->asNumber(), 30);
+  EXPECT_EQ(profile.getString("maxProgramResolution"), "3840x2160");
+  EXPECT_EQ(profile.get("maxProgramFps")->asNumber(), 60);
   EXPECT_GE(profile.get("maxParticipantFeeds")->asNumber(), 8);
   EXPECT_GE(profile.get("maxIsoRecordings")->asNumber(), 8);
   ASSERT_NE(profile.get("capabilities"), nullptr);
@@ -625,7 +625,7 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
 
   const auto* proof = recording->get("proof");
   ASSERT_NE(proof, nullptr);
-  EXPECT_GE(proof->get("durationMs")->asNumber(), 33);
+  EXPECT_GE(proof->get("durationMs")->asNumber(), 16);
   EXPECT_GE(proof->get("programFrameCount")->asNumber(), 1);
   EXPECT_GE(proof->get("isoFrameCount")->asNumber(), 1);
   EXPECT_GE(proof->get("audioPacketsObserved")->asNumber(), 1);
@@ -636,10 +636,10 @@ TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   EXPECT_EQ(proof->getString("audioCodec"), "aac");
   EXPECT_EQ(proof->get("width")->asNumber(), 1920);
   EXPECT_EQ(proof->get("height")->asNumber(), 1080);
-  EXPECT_EQ(proof->get("frameRate")->asNumber(), 30);
+  EXPECT_EQ(proof->get("frameRate")->asNumber(), 60);
 
   const auto& programStream = recording->get("streams")->asArray()[0];
-  EXPECT_GE(programStream.get("durationMs")->asNumber(), 33);
+  EXPECT_GE(programStream.get("durationMs")->asNumber(), 16);
   EXPECT_TRUE(programStream.get("hasAudio")->asBool());
   EXPECT_TRUE(programStream.get("metadataValid")->asBool());
 }
@@ -887,6 +887,37 @@ TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
   const auto rendered = mediaCore.applyCommands(corevideo::rpc::Json::Array{}, 33);
   EXPECT_TRUE(rendered.get("programFrame")->get("layerCount")->asNumber() > 0);
   EXPECT_NE(rendered.get("programFrame")->get("renderPlanSignature")->asNumber(), 0);
+}
+
+TEST(MediaCoreCommand, AppliesOutputProfileToRenderCadence) {
+  corevideo::core::MediaCore mediaCore;
+  const auto snapshot = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-output-profile"},
+          {"profileId", "canvas-4k60"},
+          {"resolution", "3840x2160"},
+          {"width", 3840},
+          {"height", 2160},
+          {"fps", 60},
+          {"targetBitrateMbps", 28.0},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "profile-scene"},
+          {"routes",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"routeId", "speaker"}, {"mode", "fixed"}, {"participantId", "synthetic-speaker-1"}},
+           }},
+      },
+  });
+
+  EXPECT_EQ(snapshot.get("outputProfile")->getString("profileId"), "canvas-4k60");
+  EXPECT_EQ(snapshot.get("outputProfile")->get("width")->asNumber(), 3840);
+  EXPECT_EQ(snapshot.get("outputProfile")->get("height")->asNumber(), 2160);
+  EXPECT_EQ(snapshot.get("outputProfile")->get("fps")->asNumber(), 60);
+  EXPECT_EQ(snapshot.get("programFrame")->get("width")->asNumber(), 3840);
+  EXPECT_EQ(snapshot.get("programFrame")->get("height")->asNumber(), 2160);
+  EXPECT_EQ(snapshot.get("programFrame")->get("fps")->asNumber(), 60);
 }
 
 TEST(GpuCompositorAdapter, FactoryIsDisabledUnlessD3D11GateIsEnabled) {

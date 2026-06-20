@@ -219,7 +219,24 @@ public partial class CaptureDevice : ObservableObject
     [ObservableProperty]
     private bool _signalPresent;
 
-    public int AudioSyncOffsetMs { get; set; }
+    private int _audioSyncOffsetMs;
+    public int AudioSyncOffsetMs
+    {
+        get => _audioSyncOffsetMs;
+        set
+        {
+            if (SetProperty(ref _audioSyncOffsetMs, value))
+            {
+                OnPropertyChanged(nameof(AudioSyncLabel));
+            }
+        }
+    }
+
+    public string AudioSyncLabel => AudioSyncOffsetMs == 0
+        ? "Audio sync 0 ms"
+        : AudioSyncOffsetMs > 0
+            ? $"Audio delayed +{AudioSyncOffsetMs} ms"
+            : $"Audio advanced {AudioSyncOffsetMs} ms";
 
     public string ResolutionLabel => Width > 0 && Height > 0 ? $"{Width}x{Height}" : "Format pending";
 

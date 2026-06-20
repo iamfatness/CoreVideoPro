@@ -535,6 +535,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         private int _lastFrameId;
         private long _lastTimestampMs;
         private double _fps;
+        private int _sampleCount;
 
         public double Record(int frameId, long timestampMs)
         {
@@ -543,13 +544,37 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                 var deltaMs = timestampMs - _lastTimestampMs;
                 if (deltaMs > 0)
                 {
-                    _fps = 1000.0 / deltaMs;
+                    var framesAdvanced = Math.Max(1, frameId - _lastFrameId);
+                    var instantFps = Math.Clamp(framesAdvanced * 1000.0 / deltaMs, 1.0, 240.0);
+                    _sampleCount++;
+                    _fps = _fps <= 0 ? instantFps : (_fps * 0.86) + (instantFps * 0.14);
                 }
             }
 
             _lastFrameId = frameId;
             _lastTimestampMs = timestampMs;
-            return _fps;
+            return SnapFrameRate(_fps, _sampleCount);
+        }
+
+        private static double SnapFrameRate(double fps, int sampleCount)
+        {
+            if (fps <= 0)
+            {
+                return 0;
+            }
+
+            if (sampleCount >= 6)
+            {
+                foreach (var standard in new[] { 24, 25, 30, 50, 60, 120 })
+                {
+                    if (Math.Abs(fps - standard) <= Math.Max(1.5, standard * 0.06))
+                    {
+                        return standard;
+                    }
+                }
+            }
+
+            return Math.Round(fps, 1);
         }
     }
 }

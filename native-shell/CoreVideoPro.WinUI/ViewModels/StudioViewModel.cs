@@ -2356,6 +2356,45 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private Task NudgeCaptureAudioEarlierAsync(string deviceId) =>
+        SetCaptureAudioSyncOffsetAsync(deviceId, ResolveCaptureAudioSyncOffset(deviceId) - 20);
+
+    [RelayCommand]
+    private Task NudgeCaptureAudioLaterAsync(string deviceId) =>
+        SetCaptureAudioSyncOffsetAsync(deviceId, ResolveCaptureAudioSyncOffset(deviceId) + 20);
+
+    [RelayCommand]
+    private Task ResetCaptureAudioSyncAsync(string deviceId) =>
+        SetCaptureAudioSyncOffsetAsync(deviceId, 0);
+
+    private async Task SetCaptureAudioSyncOffsetAsync(string deviceId, int offsetMs)
+    {
+        var device = CaptureDevices.FirstOrDefault(item => string.Equals(item.Id, deviceId, StringComparison.Ordinal));
+        if (device is null)
+        {
+            return;
+        }
+
+        var clamped = Math.Clamp(offsetMs, -500, 500);
+        device.AudioSyncOffsetMs = clamped;
+        RefreshCaptureFleetSummary();
+
+        try
+        {
+            await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
+            await _bridge.SetCaptureAudioSyncOffsetAsync(deviceId, clamped).ConfigureAwait(false);
+            RunOnUiThread(() => CommandStatus = $"{device.Name} audio sync set to {clamped} ms");
+        }
+        catch (Exception ex)
+        {
+            RunOnUiThread(() => CommandStatus = $"{device.Name} audio sync not applied: {ex.Message}");
+        }
+    }
+
+    private int ResolveCaptureAudioSyncOffset(string deviceId) =>
+        CaptureDevices.FirstOrDefault(item => string.Equals(item.Id, deviceId, StringComparison.Ordinal))?.AudioSyncOffsetMs ?? 0;
+
+    [RelayCommand]
     private void ToggleSelectedParticipantMute()
     {
         var mix = SelectedAudioMix;

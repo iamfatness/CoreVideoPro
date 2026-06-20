@@ -118,6 +118,27 @@ rpc::Json::Array captureDeviceArray(const std::vector<modules::CaptureDeviceInfo
   return result;
 }
 
+int clampIntValue(int value, int minValue, int maxValue) {
+  return std::max(minValue, std::min(maxValue, value));
+}
+
+rpc::Json outputProfileJson(
+    const std::string& profileId,
+    const std::string& resolution,
+    int width,
+    int height,
+    int fps,
+    double targetBitrateMbps) {
+  return rpc::Json::Object{
+      {"profileId", profileId},
+      {"resolution", resolution},
+      {"width", width},
+      {"height", height},
+      {"fps", fps},
+      {"targetBitrateMbps", targetBitrateMbps},
+  };
+}
+
 const rpc::Json* findParticipant(const rpc::Json::Array& participants, const std::string& participantId) {
   auto found = std::find_if(participants.begin(), participants.end(), [&](const rpc::Json& participant) {
     return participant.getString("sdkUserId") == participantId;
@@ -181,8 +202,8 @@ rpc::Json MediaCore::profile() const {
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
       {"encoder", encoderSession.encoderName},
-      {"maxProgramResolution", "1920x1080"},
-      {"maxProgramFps", 30},
+      {"maxProgramResolution", "3840x2160"},
+      {"maxProgramFps", 60},
       {"maxParticipantFeeds", 8},
       {"maxIsoRecordings", 8},
       {"capabilities", capabilityArray(renderer, encoderSession)},
@@ -328,6 +349,7 @@ rpc::Json MediaCore::sessionState() const {
       {"overlayCount", overlayCount_},
       {"outputs", stringArray(session.destinations)},
       {"isoParticipantIds", stringArray(session.isoParticipantIds)},
+      {"outputProfile", outputProfileJson(outputProfileId_, outputResolution_, outputWidth_, outputHeight_, outputFps_, outputTargetBitrateMbps_)},
       {"encoder", session.encoderName},
       {"codec", session.codec},
       {"hardwareEncoder", session.hardwareAccelerated},
@@ -343,6 +365,8 @@ rpc::Json MediaCore::sessionState() const {
            {"health", lastProgramFrame_.health},
            {"width", lastProgramFrame_.width},
            {"height", lastProgramFrame_.height},
+           {"fps", outputFps_},
+           {"timestampMs", static_cast<double>(lastProgramFrame_.frameNumber * (1000.0 / std::max(1, outputFps_)))},
            {"layerCount", lastProgramFrame_.layerCount},
            {"gpuComposed", lastProgramFrame_.gpuComposed},
            {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
@@ -571,6 +595,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-output-profile") {
+    setOutputProfile(command);
   } else if (type == "start-program-output") {
     startProgramOutput(command);
   } else if (type == "prepare-encoder-session") {
@@ -700,6 +726,21 @@ void MediaCore::simulateBreakoutRoomChange(const rpc::Json& command) {
 
 void MediaCore::setColorGrade(const rpc::Json& command) {
   colorGrade_ = readColorGrade(command);
+}
+
+void MediaCore::setOutputProfile(const rpc::Json& command) {
+  outputWidth_ = clampIntValue(static_cast<int>(command.getNumber("width", outputWidth_)), 320, 3840);
+  outputHeight_ = clampIntValue(static_cast<int>(command.getNumber("height", outputHeight_)), 180, 2160);
+  outputFps_ = clampIntValue(static_cast<int>(command.getNumber("fps", outputFps_)), 1, 120);
+  outputTargetBitrateMbps_ = std::max(0.5, std::min(80.0, command.getNumber("targetBitrateMbps", outputTargetBitrateMbps_)));
+  outputResolution_ = command.getString("resolution", std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_));
+  if (outputResolution_.empty()) {
+    outputResolution_ = std::to_string(outputWidth_) + "x" + std::to_string(outputHeight_);
+  }
+  outputProfileId_ = command.getString("profileId", outputProfileId_);
+  if (outputProfileId_.empty()) {
+    outputProfileId_ = "canvas-" + outputResolution_ + "-" + std::to_string(outputFps_);
+  }
 }
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
@@ -881,9 +922,9 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.format = recordingFormat_;
   request.quality = recordingQuality_;
   request.isoParticipantIds = recordingIsoParticipantIds_;
-  request.width = lastProgramFrame_.width > 0 ? lastProgramFrame_.width : 1920;
-  request.height = lastProgramFrame_.height > 0 ? lastProgramFrame_.height : 1080;
-  request.fps = 30;
+  request.width = lastProgramFrame_.width > 0 ? lastProgramFrame_.width : outputWidth_;
+  request.height = lastProgramFrame_.height > 0 ? lastProgramFrame_.height : outputHeight_;
+  request.fps = outputFps_;
   request.videoCodec = "h264";
   request.audioCodec = "aac";
   request.targetBitrateMbps = 10;
@@ -1666,9 +1707,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   modules::CompositorRenderPlan renderPlan;
   renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
   renderPlan.sceneId = sceneId_;
-  renderPlan.width = 1920;
-  renderPlan.height = 1080;
-  renderPlan.fps = 30;
+  renderPlan.width = outputWidth_;
+  renderPlan.height = outputHeight_;
+  renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade_;
   renderPlan.warnings = sceneValidationWarnings_;
 
@@ -1738,7 +1779,8 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 }
 
 void MediaCore::renderSyntheticTick() {
-  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 33;
+  const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
+  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * frameIntervalMs;
   // Tap the latest decoded Zoom frames (real BGRA pixels) and ingest them into
   // the RealZoomCaptureSource so pollVideoFrames() returns pixels. Reading them
   // here does NOT drain the stdout/event queue that feeds the multiview tiles.
@@ -1811,7 +1853,7 @@ void MediaCore::renderSyntheticTick() {
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
     recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
     recordingAudioPacketsObserved_ += static_cast<int64_t>(audioFrames.size());
-    recordingElapsedMs_ += 33;
+    recordingElapsedMs_ += static_cast<double>(frameIntervalMs);
   }
 }
 
