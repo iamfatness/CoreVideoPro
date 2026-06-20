@@ -708,19 +708,19 @@
                         <FontIcon Glyph="&#xE713;" FontSize="16" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
-                                <ScrollViewer MaxHeight="640" VerticalScrollBarVisibility="Auto">
-                                <StackPanel Spacing="12" Width="520">
+                                <ScrollViewer MaxHeight="560" VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="14" Width="480">
                                     <TextBlock Text="Output settings" FontSize="14" FontWeight="SemiBold" />
                                     <StackPanel Spacing="6">
                                         <TextBlock Text="Render profiles" Style="{StaticResource OutputStatLabel}" />
                                         <Grid ColumnSpacing="8" RowSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="120" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="120" />
+                                                <ColumnDefinition Width="132" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
@@ -737,26 +737,26 @@
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       HorizontalAlignment="Stretch" />
-                                            <ComboBox Grid.Column="2"
+                                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                                                       Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                            <ComboBox Grid.Row="2"
                                                       Header="Record size"
                                                       ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
                                                       SelectedValue="{x:Bind ViewModel.RecordingRenderResolution, Mode=TwoWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       HorizontalAlignment="Stretch" />
-                                            <ComboBox Grid.Column="3"
+                                            <ComboBox Grid.Row="2" Grid.Column="1"
                                                       Header="FPS"
                                                       ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
                                                       SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       HorizontalAlignment="Stretch" />
-                                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
-                                                       Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       TextWrapping="WrapWholeWords" />
-                                            <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2"
+                                            <TextBlock Grid.Row="3" Grid.ColumnSpan="2"
                                                        Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}"
                                                        FontSize="11"
                                                        Foreground="{StaticResource StudioMutedBrush}"
@@ -829,10 +829,11 @@
                                         <Grid ColumnSpacing="8" RowSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="110" />
-                                                <ColumnDefinition Width="120" />
+                                                <ColumnDefinition Width="132" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
@@ -842,25 +843,25 @@
                                                       SelectedItem="{x:Bind ViewModel.StreamSrtMode, Mode=TwoWay}"
                                                       HorizontalAlignment="Stretch" />
                                             <TextBox Grid.Column="1"
+                                                     Header="Port"
+                                                     Text="{x:Bind ViewModel.StreamSrtPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <TextBox Grid.Row="1" Grid.ColumnSpan="2"
                                                      Header="Host"
                                                      PlaceholderText="receiver.example.com"
                                                      Text="{x:Bind ViewModel.StreamSrtHost, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Column="2"
-                                                     Header="Port"
-                                                     Text="{x:Bind ViewModel.StreamSrtPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Row="1"
+                                            <TextBox Grid.Row="2"
                                                      Header="Latency ms"
                                                      Text="{x:Bind ViewModel.StreamSrtLatencyMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
-                                                     Header="Stream ID"
-                                                     PlaceholderText="Optional receiver routing ID"
-                                                     Text="{x:Bind ViewModel.StreamSrtStreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                            <ComboBox Grid.Row="2"
+                                            <ComboBox Grid.Row="2" Grid.Column="1"
                                                       Header="Key length"
                                                       ItemsSource="{x:Bind ViewModel.StreamSrtKeyLengthOptions}"
                                                       SelectedItem="{x:Bind ViewModel.StreamSrtKeyLength, Mode=TwoWay}"
                                                       HorizontalAlignment="Stretch" />
-                                            <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
+                                            <TextBox Grid.Row="3" Grid.ColumnSpan="2"
+                                                     Header="Stream ID"
+                                                     PlaceholderText="Optional receiver routing ID"
+                                                     Text="{x:Bind ViewModel.StreamSrtStreamId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <TextBox Grid.Row="4" Grid.ColumnSpan="2"
                                                      Header="Passphrase"
                                                      Text="{x:Bind ViewModel.StreamSrtPassphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                         </Grid>
