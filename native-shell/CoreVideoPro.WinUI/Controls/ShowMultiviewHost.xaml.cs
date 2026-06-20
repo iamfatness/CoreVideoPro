@@ -87,7 +87,14 @@ public sealed partial class ShowMultiviewHost : UserControl
         var patchIndex = 0;
         foreach (var child in LayoutSurface.Children)
         {
-            if (child is not AspectRatioHost aspectHost || aspectHost.Child is not BroadcastMultiviewTile multiviewTile)
+            var multiviewTile = child switch
+            {
+                BroadcastMultiviewTile direct => direct,
+                AspectRatioHost { Child: BroadcastMultiviewTile nested } => nested,
+                _ => null
+            };
+
+            if (multiviewTile is null)
             {
                 continue;
             }
