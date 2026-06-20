@@ -39,6 +39,8 @@ public sealed partial class ProductionSettingsWindow : Window
 
     private void OnRecordingClicked(object sender, RoutedEventArgs args) => ShowPanel(RecordingPanel);
 
+    private void OnLicenseClicked(object sender, RoutedEventArgs args) => ShowPanel(LicensePanel);
+
     private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowPanel(FfmpegPanel);
 
     private void ShowPanel(FrameworkElement activePanel)
@@ -47,6 +49,7 @@ public sealed partial class ProductionSettingsWindow : Window
         StreamingPanel.Visibility = activePanel == StreamingPanel ? Visibility.Visible : Visibility.Collapsed;
         AudioPanel.Visibility = activePanel == AudioPanel ? Visibility.Visible : Visibility.Collapsed;
         RecordingPanel.Visibility = activePanel == RecordingPanel ? Visibility.Visible : Visibility.Collapsed;
+        LicensePanel.Visibility = activePanel == LicensePanel ? Visibility.Visible : Visibility.Collapsed;
         FfmpegPanel.Visibility = activePanel == FfmpegPanel ? Visibility.Visible : Visibility.Collapsed;
     }
 
