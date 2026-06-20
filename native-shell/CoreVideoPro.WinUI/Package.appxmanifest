@@ -41,6 +41,11 @@
       </uap:VisualElements>
       <Extensions>
         <desktop:Extension Category="windows.fullTrustProcess" EntryPoint="Windows.FullTrustApplication" />
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="corevideopro">
+            <uap:DisplayName>CoreVideo Pro OAuth Callback</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
       </Extensions>
     </Application>
   </Applications>

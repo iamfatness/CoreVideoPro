@@ -12,8 +12,12 @@
  *   --timeout-ms 30000 --poll-ms 250 --min-recording-bytes 1 --min-program-frames 3
  *   --destinations recording,rtmp --session-id record-stream-proof
  *   --allow-rtmp-warning (default true)
+ *   --soak-seconds <n>        Extend the run to a longer soak (raises timeout floor).
+ *   --max-dropped-frames <n>  Assert recordingDroppedFrames <= n (default 0).
+ *   --ffprobe                 Probe the produced mp4 (when ffprobe is on PATH) for a
+ *                             valid moov + video & audio streams; skips gracefully.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,8 +28,14 @@ const buildDir = join(repoRoot, "native", "build-dev");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 
 const args = parseArgs(process.argv.slice(2));
-const timeoutMs = numberArg(args["timeout-ms"], 30000);
+const soakSeconds = numberArg(args["soak-seconds"], 0);
+// A soak run extends the timeout floor so the harness keeps polling for the full
+// requested window even after the baseline criteria are met.
+const baseTimeoutMs = numberArg(args["timeout-ms"], 30000);
+const timeoutMs = Math.max(baseTimeoutMs, soakSeconds * 1000);
 const pollMs = numberArg(args["poll-ms"], 250);
+const maxDroppedFrames = numberArg(args["max-dropped-frames"], 0);
+const ffprobeEnabled = booleanArg(args.ffprobe);
 const minRecordingBytes = numberArg(args["min-recording-bytes"], 1);
 const minProgramFrames = numberArg(args["min-program-frames"], 3);
 const sessionId = args["session-id"] ?? "record-stream-proof";
@@ -109,7 +119,8 @@ try {
   await validationLoop();
   const report = buildReport("passed");
   printReport(report);
-  cleanup(0);
+  // buildReport may downgrade to "failed" (e.g. a report-time ffprobe failure).
+  cleanup(report.status === "passed" ? 0 : 1);
 } catch (error) {
   const report = buildReport("failed", error instanceof Error ? error.message : String(error));
   printReport(report);
@@ -168,6 +179,11 @@ function buildArmCommands() {
 
 async function validationLoop() {
   const deadline = startedAt + timeoutMs;
+  // soakDeadline is the minimum wall-clock the loop must keep running once the
+  // baseline criteria are met. For a non-soak run it is 0, so the loop returns
+  // as soon as criteria are satisfied (preserving the default behavior).
+  const soakDeadline = soakSeconds > 0 ? startedAt + soakSeconds * 1000 : 0;
+  let criteriaSatisfied = false;
 
   while (Date.now() < deadline) {
     const elapsedMs = Date.now() - startedAt;
@@ -182,9 +198,19 @@ async function validationLoop() {
 
     await send("ping").catch(() => undefined);
     if (criteriaMet()) {
-      return;
+      criteriaSatisfied = true;
+      // For a soak run keep polling (and accumulating dropped-frame evidence)
+      // until the soak window elapses; otherwise return immediately.
+      if (Date.now() >= soakDeadline) {
+        return;
+      }
     }
     await sleep(pollMs);
+  }
+
+  if (criteriaSatisfied) {
+    // Soak window fully elapsed with criteria continuously satisfied.
+    return;
   }
 
   throw new Error("Timed out before record/stream criteria were met.");
@@ -392,13 +418,28 @@ function recordingEvidence() {
   const metadataValid = Boolean(proof.metadataValid ?? health.recordingMetadataValid);
   const audioPresent = Boolean(proof.audioPresent ?? numberOrZero(proof.audioPacketsObserved) > 0);
 
+  const droppedFrames = Math.max(
+    numberOrZero(recording.totalDroppedFrames),
+    numberOrZero(recording.recordingDroppedFrames),
+    numberOrZero(health.recordingDroppedFrames),
+    ...((recording.streams ?? []).map((stream) => numberOrZero(stream.droppedFrames)))
+  );
+  const droppedFramesOk = droppedFrames <= maxDroppedFrames;
+
   return {
-    pass: (artifactBytes >= minRecordingBytes || bytesWritten >= minRecordingBytes) && proofFrameCount >= minProgramFrames && metadataValid,
+    pass:
+      (artifactBytes >= minRecordingBytes || bytesWritten >= minRecordingBytes) &&
+      proofFrameCount >= minProgramFrames &&
+      metadataValid &&
+      droppedFramesOk,
     artifactPath: artifactPath ?? artifactCandidates[0] ?? null,
     artifactExists: Boolean(artifactPath),
     artifactBytes,
     bytesWritten,
     framesWritten,
+    droppedFrames,
+    maxDroppedFrames,
+    droppedFramesOk,
     proof: {
       durationMs: proofDurationMs,
       videoFrameCount: proofFrameCount,
@@ -420,6 +461,7 @@ function recordingEvidence() {
       kind: stream.kind ?? null,
       status: stream.status ?? null,
       framesWritten: numberOrZero(stream.framesWritten),
+      droppedFrames: numberOrZero(stream.droppedFrames),
       durationMs: numberOrZero(stream.durationMs),
       bytesWritten: numberOrZero(stream.bytesWritten),
       hasAudio: Boolean(stream.hasAudio),
@@ -589,6 +631,89 @@ function readFfmpegPackagingSignal() {
   }
 }
 
+// Optional container probe. When --ffprobe is set and ffprobe is resolvable on
+// PATH, probe the produced recording artifact for a valid moov (format duration)
+// plus at least one video and one audio stream. Skips gracefully (status:
+// "skipped"/"unavailable"/"file-missing") when ffprobe or the file is absent so
+// the harness stays runnable in stub/CI environments.
+function ffprobeContainerCheck(recording) {
+  if (!ffprobeEnabled) {
+    return { enabled: false, status: "disabled" };
+  }
+
+  const artifactPath = recording?.artifactPath ?? null;
+  if (!artifactPath || !existsSync(artifactPath)) {
+    return { enabled: true, status: "file-missing", artifactPath };
+  }
+
+  if (!ffprobeAvailable()) {
+    return { enabled: true, status: "unavailable", artifactPath, detail: "ffprobe not found on PATH" };
+  }
+
+  let result;
+  try {
+    result = spawnSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        artifactPath,
+      ],
+      { encoding: "utf8", timeout: 20000 }
+    );
+  } catch (error) {
+    return { enabled: true, status: "error", artifactPath, detail: error instanceof Error ? error.message : String(error) };
+  }
+
+  if (result.error || result.status !== 0) {
+    return {
+      enabled: true,
+      status: "error",
+      artifactPath,
+      detail: (result.stderr || result.error?.message || `ffprobe exit ${result.status}`).toString().trim(),
+    };
+  }
+
+  let probe;
+  try {
+    probe = JSON.parse(result.stdout);
+  } catch (error) {
+    return { enabled: true, status: "error", artifactPath, detail: `unparseable ffprobe output: ${error instanceof Error ? error.message : String(error)}` };
+  }
+
+  const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  const videoStreams = streams.filter((stream) => stream.codec_type === "video").length;
+  const audioStreams = streams.filter((stream) => stream.codec_type === "audio").length;
+  // A valid moov box yields a parseable format block with a numeric duration.
+  const durationSeconds = Number(probe.format?.duration);
+  const moovValid = Number.isFinite(durationSeconds) && durationSeconds > 0;
+  const pass = moovValid && videoStreams >= 1 && audioStreams >= 1;
+
+  return {
+    enabled: true,
+    status: pass ? "passed" : "failed",
+    artifactPath,
+    moovValid,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+    videoStreams,
+    audioStreams,
+    formatName: probe.format?.format_name ?? null,
+  };
+}
+
+function ffprobeAvailable() {
+  try {
+    const probe = spawnSync("ffprobe", ["-version"], { encoding: "utf8", timeout: 10000 });
+    return !probe.error && probe.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function criteriaMet() {
   const outputs = latestSnapshot?.outputs ?? [];
   const wantsRecording = destinations.includes("recording");
@@ -628,16 +753,31 @@ function buildReport(status, failureReason) {
   const encodedFrames = encodedFrameEvidence();
   const recording = recordingEvidence();
   const rtmp = rtmpEvidence();
+  const ffprobe = ffprobeContainerCheck(recording);
+  // The ffprobe check only contributes a failure when it actively fails or
+  // errors; skipped/unavailable/disabled/file-missing states pass through so the
+  // harness stays runnable without ffprobe or a real artifact.
+  const ffprobeOk = !(ffprobe.status === "failed" || ffprobe.status === "error");
   const proof = {
     compositor: compositor.pass,
     encodedFrames: encodedFrames.pass,
     recordingBytes: !destinations.includes("recording") || recording.pass,
     rtmpSendProof: !destinations.includes("rtmp") || rtmp.pass,
+    droppedFrames: !destinations.includes("recording") || recording.droppedFramesOk,
+    ffprobeContainer: ffprobeOk,
   };
 
+  // A report-time ffprobe failure downgrades an otherwise-passing run.
+  let effectiveStatus = status;
+  let effectiveFailureReason = failureReason ?? null;
+  if (effectiveStatus === "passed" && !ffprobeOk) {
+    effectiveStatus = "failed";
+    effectiveFailureReason = `ffprobe container check ${ffprobe.status}: ${ffprobe.detail ?? "video+audio streams or moov not found"}`;
+  }
+
   return {
-    status,
-    failureReason: failureReason ?? null,
+    status: effectiveStatus,
+    failureReason: effectiveFailureReason,
     elapsedMs: Date.now() - startedAt,
     sceneId: latestSnapshot?.sceneId ?? sceneId,
     outputs: latestSnapshot?.outputs ?? [],
@@ -648,6 +788,7 @@ function buildReport(status, failureReason) {
     encodedFrames,
     recording,
     rtmp,
+    ffprobe,
     encoder: {
       name: latestSnapshot?.encoder ?? latestHealth?.encoder ?? null,
       codec: latestSnapshot?.codec ?? latestHealth?.codec ?? null,
@@ -660,14 +801,17 @@ function buildReport(status, failureReason) {
       minRecordingBytes,
       minProgramFrames,
       allowRtmpWarning,
+      maxDroppedFrames,
+      soakSeconds,
+      ffprobe: ffprobeEnabled,
     },
-    recommendations: buildRecommendations(compositor, encodedFrames, recording, rtmp),
+    recommendations: buildRecommendations(compositor, encodedFrames, recording, rtmp, ffprobe),
     warnings: collectWarnings(),
     recentStderr: stderrLines.slice(-10),
   };
 }
 
-function buildRecommendations(compositor, encodedFrames, recording, rtmp) {
+function buildRecommendations(compositor, encodedFrames, recording, rtmp, ffprobe) {
   const recommendations = [];
   if (!compositor.pass) {
     recommendations.push("Compositor did not publish enough program-frame evidence; confirm the scene graph loads and the native core is emitting program-frame-preview events.");
@@ -695,6 +839,18 @@ function buildRecommendations(compositor, encodedFrames, recording, rtmp) {
   }
   if (destinations.includes("rtmp") && rtmp.present && !rtmp.sendProofSeen) {
     recommendations.push("RTMP sender was present but no send-proof artifact was readable; check temp directory permissions.");
+  }
+  if (destinations.includes("recording") && !recording.droppedFramesOk) {
+    recommendations.push(`Recording dropped ${recording.droppedFrames} frame(s) (max allowed ${maxDroppedFrames}); investigate encoder backpressure or raise --max-dropped-frames.`);
+  }
+  if (ffprobe?.status === "failed") {
+    recommendations.push("ffprobe could not confirm a valid moov plus video+audio streams in the recording artifact; inspect the muxer/container before relying on this build.");
+  }
+  if (ffprobe?.status === "error") {
+    recommendations.push(`ffprobe errored while probing the recording artifact: ${ffprobe.detail ?? "unknown"}.`);
+  }
+  if (ffprobe?.status === "unavailable") {
+    recommendations.push("ffprobe was requested via --ffprobe but is not on PATH; install FFmpeg to enable the container check.");
   }
   return recommendations;
 }

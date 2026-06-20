@@ -118,8 +118,18 @@ try {
   if (!recording?.active || recording.status !== "recording") {
     throw new Error(`expected active recording snapshot, got ${recording?.status ?? "missing"}.`);
   }
-  if (!recording.programPath?.endsWith("alpha-proof-program-0.mp4")) {
-    throw new Error(`unexpected program path: ${recording.programPath ?? "missing"}.`);
+  // Path-agnostic program-path check: the STUB encoder writes a deterministic
+  // "-program-0.mp4" suffix while the real Media Foundation adapter writes a
+  // timestamped "-program-<ts>.mp4". Match the prefix + ".mp4" and accept ANY
+  // suffix so this proof passes against both builds. Prefer the real artifact
+  // path (set by the MF adapter) and fall back to the snapshot programPath or
+  // the program stream path.
+  const programStreamPath = Array.isArray(recording.streams)
+    ? recording.streams.find((stream) => stream?.kind === "program")?.path
+    : undefined;
+  const programArtifactPath = recording.artifactPath ?? recording.programPath ?? programStreamPath;
+  if (!isProgramArtifactPath(programArtifactPath, "alpha-proof")) {
+    throw new Error(`unexpected program path: ${programArtifactPath ?? "missing"}.`);
   }
   if (!Array.isArray(recording.streams) || recording.streams.length < 2) {
     throw new Error("expected program plus at least one ISO stream.");
@@ -140,16 +150,47 @@ try {
       `recording proof metadata is not valid mp4 (metadataValid=${proof.metadataValid}, container=${proof.containerFormat}).`,
     );
   }
+  // Resolution assertion hook: the MediaCore recording snapshot surfaces the
+  // recorded geometry via proof.width/proof.height (sourced from the encoder's
+  // recordingWidth/recordingHeight). When present, assert the real 1920x1080
+  // program resolution. The STUB build leaves these at 0 (no real program
+  // frames pushed here), so we only enforce when the fields are populated.
+  const recordedWidth = Number(proof.width);
+  const recordedHeight = Number(proof.height);
+  const hasResolution = Number.isFinite(recordedWidth) && recordedWidth > 0 &&
+    Number.isFinite(recordedHeight) && recordedHeight > 0;
+  if (hasResolution && (recordedWidth !== 1920 || recordedHeight !== 1080)) {
+    throw new Error(
+      `recording proof resolution mismatch: expected 1920x1080, got ${recordedWidth}x${recordedHeight}.`,
+    );
+  }
 
   clearTimeout(timeout);
   cleanup();
   console.log("[recording-proof] native recording proof passed");
   console.log(`  runner: ${runner}`);
-  console.log(`  program: ${recording.programPath}`);
+  console.log(`  program: ${programArtifactPath}`);
   console.log(`  streams: ${recording.streams.length}`);
   console.log(`  frames: program=${proof.programFrameCount} iso=${proof.isoFrameCount} durationMs=${proof.durationMs}`);
+  console.log(`  resolution: ${hasResolution ? `${recordedWidth}x${recordedHeight}` : "not surfaced (stub)"}`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+function isProgramArtifactPath(value, filenamePrefix) {
+  if (typeof value !== "string" || value.length === 0) {
+    return false;
+  }
+  // Normalize path separators and take the final path segment.
+  const fileName = value.replace(/\\/g, "/").split("/").pop() ?? value;
+  // Match "<prefix>-program-<anySuffix>.mp4": deterministic "-0" (stub) or a
+  // timestamp (real Media Foundation adapter), or any other suffix.
+  const pattern = new RegExp(`^${escapeRegExp(filenamePrefix)}-program-.+\\.mp4$`);
+  return pattern.test(fileName);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function onLine(line) {
