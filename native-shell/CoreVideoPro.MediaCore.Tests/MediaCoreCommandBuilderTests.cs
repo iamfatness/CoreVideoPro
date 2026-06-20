@@ -181,7 +181,8 @@ public sealed class MediaCoreCommandBuilderTests
                     FfmpegBinDirectory: "C:\\ffmpeg\\bin",
                     Fps: 30,
                     TargetBitrateMbps: 4.1,
-                    VideoCodec: "h265"),
+                    VideoCodec: "h265",
+                    EncoderMode: "nvenc"),
                 new("ndi", "NDI", NdiName: "CoreVideo Pro Program", NdiGroup: "public"),
                 new(
                     "srt",
@@ -224,6 +225,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal(30, destinationSettings[0].GetProperty("fps").GetInt32());
         Assert.Equal(4.1, destinationSettings[0].GetProperty("targetBitrateMbps").GetDouble());
         Assert.Equal("h265", destinationSettings[0].GetProperty("videoCodec").GetString());
+        Assert.Equal("nvenc", destinationSettings[0].GetProperty("encoderMode").GetString());
         Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
         Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
         Assert.Equal("caller", destinationSettings[2].GetProperty("mode").GetString());

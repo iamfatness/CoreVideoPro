@@ -124,7 +124,8 @@ public sealed record MediaCoreStreamDestinationWire(
     string? FfmpegBinDirectory = null,
     int? Fps = null,
     double? TargetBitrateMbps = null,
-    string? VideoCodec = null);
+    string? VideoCodec = null,
+    string? EncoderMode = null);
 
 public sealed record MediaCoreSrtIngestSourceWire(
     string Id,

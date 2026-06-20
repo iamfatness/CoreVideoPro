@@ -231,6 +231,7 @@ struct OutputDestinationSettings {
   int fps = 30;
   double targetBitrateMbps = 6.0;
   std::string videoCodec = "h264";
+  std::string encoderMode = "auto";
 };
 
 struct CaptureDeviceInfo {

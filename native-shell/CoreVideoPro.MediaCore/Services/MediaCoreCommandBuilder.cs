@@ -388,7 +388,8 @@ public static class MediaCoreCommandBuilder
                 ["ffmpegBinDirectory"] = destination.FfmpegBinDirectory,
                 ["fps"] = destination.Fps,
                 ["targetBitrateMbps"] = destination.TargetBitrateMbps,
-                ["videoCodec"] = destination.VideoCodec
+                ["videoCodec"] = destination.VideoCodec,
+                ["encoderMode"] = destination.EncoderMode
             }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -126,6 +127,32 @@ std::string trimTrailingSlash(std::string value) {
   return value;
 }
 
+std::string lowercaseAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value;
+}
+
+std::string normalizeVideoCodec(std::string value) {
+  value = lowercaseAscii(std::move(value));
+  if (value == "hevc") {
+    return "h265";
+  }
+  if (value == "h264" || value == "h265" || value == "av1") {
+    return value;
+  }
+  return "h264";
+}
+
+std::string normalizeEncoderMode(std::string value) {
+  value = lowercaseAscii(std::move(value));
+  if (value == "nvenc" || value == "qsv" || value == "amf" || value == "cpu") {
+    return value;
+  }
+  return "auto";
+}
+
 std::string buildRtmpEndpoint(const OutputDestinationSettings& settings) {
   std::string endpoint = trimTrailingSlash(settings.url);
   if (!settings.streamKey.empty()) {
@@ -235,6 +262,64 @@ std::string quoteArgument(const std::string& value) {
   return quoted;
 }
 
+std::string ffmpegVideoEncoderFor(const std::string& codec, const std::string& encoderMode) {
+  const auto normalizedCodec = normalizeVideoCodec(codec);
+  const auto normalizedMode = normalizeEncoderMode(encoderMode);
+  if (normalizedMode == "nvenc") {
+    if (normalizedCodec == "h265") {
+      return "hevc_nvenc";
+    }
+    if (normalizedCodec == "av1") {
+      return "av1_nvenc";
+    }
+    return "h264_nvenc";
+  }
+  if (normalizedMode == "qsv") {
+    if (normalizedCodec == "h265") {
+      return "hevc_qsv";
+    }
+    if (normalizedCodec == "av1") {
+      return "av1_qsv";
+    }
+    return "h264_qsv";
+  }
+  if (normalizedMode == "amf") {
+    if (normalizedCodec == "h265") {
+      return "hevc_amf";
+    }
+    if (normalizedCodec == "av1") {
+      return "av1_amf";
+    }
+    return "h264_amf";
+  }
+  if (normalizedCodec == "h265") {
+    return "libx265";
+  }
+  if (normalizedCodec == "av1") {
+    return "libsvtav1";
+  }
+  return "libx264";
+}
+
+std::string encoderSpecificArguments(const std::string& encoderName) {
+  if (encoderName.find("_nvenc") != std::string::npos) {
+    return " -preset p4 -tune ll -rc cbr";
+  }
+  if (encoderName.find("_qsv") != std::string::npos) {
+    return " -preset veryfast";
+  }
+  if (encoderName.find("_amf") != std::string::npos) {
+    return " -quality speed -rc cbr";
+  }
+  if (encoderName == "libsvtav1") {
+    return " -preset 8";
+  }
+  if (encoderName == "libx265") {
+    return " -preset veryfast -tune zerolatency";
+  }
+  return " -preset veryfast -tune zerolatency";
+}
+
 class RtmpOutputSender final : public IOutputSender {
  public:
   explicit RtmpOutputSender(RuntimeProbe runtimeProbe)
@@ -266,6 +351,8 @@ class RtmpOutputSender final : public IOutputSender {
     configuredStreamKey_ = settings ? settings->streamKey : configuredStreamKey_;
     configuredFfmpegBinDirectory_ = settings ? settings->ffmpegBinDirectory : configuredFfmpegBinDirectory_;
     configuredFps_ = settings ? (std::max)(1, settings->fps) : configuredFps_;
+    configuredVideoCodec_ = settings ? normalizeVideoCodec(settings->videoCodec) : configuredVideoCodec_;
+    configuredEncoderMode_ = settings ? normalizeEncoderMode(settings->encoderMode) : configuredEncoderMode_;
     sender_.bitrateMbps = settings ? (std::max)(0.5, settings->targetBitrateMbps) : sender_.bitrateMbps;
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
@@ -399,7 +486,9 @@ class RtmpOutputSender final : public IOutputSender {
     const bool executableChanged = ffmpegExecutable_ != activeFfmpegExecutable_;
     const bool fpsChanged = configuredFps_ != activeFps_;
     const bool bitrateChanged = sender_.bitrateMbps != activeBitrateMbps_;
-    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged) {
+    const bool codecChanged = configuredVideoCodec_ != activeVideoCodec_;
+    const bool encoderModeChanged = configuredEncoderMode_ != activeEncoderMode_;
+    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !codecChanged && !encoderModeChanged) {
       return true;
     }
 
@@ -410,6 +499,8 @@ class RtmpOutputSender final : public IOutputSender {
     activeFfmpegExecutable_ = ffmpegExecutable_;
     activeFps_ = configuredFps_;
     activeBitrateMbps_ = sender_.bitrateMbps;
+    activeVideoCodec_ = configuredVideoCodec_;
+    activeEncoderMode_ = configuredEncoderMode_;
     if (startFfmpegProcess(frame.preview.width, frame.preview.height)) {
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
@@ -424,12 +515,13 @@ class RtmpOutputSender final : public IOutputSender {
     const int bufferKbps = bitrateKbps * 2;
     std::ostringstream args;
     const int fps = (std::max)(1, configuredFps_);
+    const auto videoEncoder = ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_);
     args << " -hide_banner -loglevel warning"
          << " -f rawvideo -pix_fmt bgra -s " << width << "x" << height
          << " -r " << fps << " -i pipe:0"
          << " -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
          << " -map 0:v:0 -map 1:a:0"
-         << " -c:v libx264 -preset veryfast -tune zerolatency"
+         << " -c:v " << videoEncoder << encoderSpecificArguments(videoEncoder)
          << " -b:v " << bitrateKbps << "k -maxrate " << bitrateKbps << "k -bufsize " << bufferKbps << "k"
          << " -g " << (fps * 2) << " -pix_fmt yuv420p"
          << " -c:a aac -b:a 160k -ar 48000"
@@ -518,7 +610,10 @@ class RtmpOutputSender final : public IOutputSender {
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
               ",\"endpoint\":" + jsonString(redactedEndpoint(configuredEndpoint_, configuredStreamKey_)) +
-              ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) + "}");
+              ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
+              ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
+              ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
+              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_)) + "}");
     return true;
 #else
     (void)width;
@@ -597,7 +692,10 @@ class RtmpOutputSender final : public IOutputSender {
               std::string(runtimeAvailable_ ? "true" : "false") +
               ",\"runtimeDetail\":" + jsonString(runtimeDetail_) +
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
-              ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages corevideo-ffmpeg-runtime.json when FFmpeg DLLs are copied or unavailable\"}");
+              ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
+              ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
+              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_)) +
+              ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
   void appendSendProof(const ProgramFrame* frame, const std::string& status) {
@@ -609,7 +707,10 @@ class RtmpOutputSender final : public IOutputSender {
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
               ",\"width\":" + std::to_string(frame->width) +
               ",\"height\":" + std::to_string(frame->height) +
-              ",\"renderPlanId\":" + jsonString(frame->renderPlanId);
+              ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
+              ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
+              ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
+              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_));
     }
     line += "}";
     writeLine(line);
@@ -642,9 +743,13 @@ class RtmpOutputSender final : public IOutputSender {
   std::string configuredEndpoint_;
   std::string configuredStreamKey_;
   std::string configuredFfmpegBinDirectory_;
+  std::string configuredVideoCodec_ = "h264";
+  std::string configuredEncoderMode_ = "auto";
   std::string ffmpegExecutable_;
   std::string activeEndpoint_;
   std::string activeFfmpegExecutable_;
+  std::string activeVideoCodec_;
+  std::string activeEncoderMode_;
   int ffmpegFrameWidth_ = 0;
   int ffmpegFrameHeight_ = 0;
   int configuredFps_ = 30;

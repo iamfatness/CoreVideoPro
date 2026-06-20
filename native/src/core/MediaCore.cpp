@@ -68,6 +68,7 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     destination.fps = static_cast<int>(value.getNumber("fps", destination.fps));
     destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
     destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
+    destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
     result.push_back(std::move(destination));
   }
   return result;

@@ -161,6 +161,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _streamVideoCodec = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Codec;
 
     [ObservableProperty]
+    private string _streamEncoderMode = "auto";
+
+    [ObservableProperty]
     private string _recordingRenderResolution = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Resolution;
 
     [ObservableProperty]
@@ -775,11 +778,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new() { Value = "av1", Label = "AV1" }
     ];
 
+    public IReadOnlyList<RouteSelectOption> StreamEncoderModeOptions { get; } =
+    [
+        new() { Value = "auto", Label = "Auto" },
+        new() { Value = "nvenc", Label = "NVIDIA NVENC" },
+        new() { Value = "qsv", Label = "Intel QuickSync" },
+        new() { Value = "amf", Label = "AMD AMF" },
+        new() { Value = "cpu", Label = "CPU / software" }
+    ];
+
     public string CanvasProfileSummary =>
         $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
 
     public string StreamRenderProfileSummary =>
-        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)}";
+        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)} - {FormatStreamEncoderMode(StreamEncoderMode)}";
 
     public string RecordingRenderProfileSummary =>
         $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)}";
@@ -1253,6 +1265,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamRenderFpsChanged(string value) => OnOutputProfileChanged();
 
     partial void OnStreamVideoCodecChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnStreamEncoderModeChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
 
@@ -3950,7 +3964,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 FfmpegBinDirectory: NormalizeOptionalOutputText(FfmpegBinDirectory),
                 Fps: streamProfile.Fps,
                 TargetBitrateMbps: streamProfile.TargetBitrateMbps,
-                VideoCodec: streamProfile.Codec));
+                VideoCodec: streamProfile.Codec,
+                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
         }
 
         if (StreamNdiEnabled)
@@ -4152,6 +4167,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         "h265" => "H.265",
         "av1" => "AV1",
         _ => "H.264"
+    };
+
+    private static string NormalizeStreamEncoderMode(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "auto" or "nvenc" or "qsv" or "amf" or "cpu" ? normalized : "auto";
+    }
+
+    private static string FormatStreamEncoderMode(string? value) => NormalizeStreamEncoderMode(value) switch
+    {
+        "nvenc" => "NVENC",
+        "qsv" => "QuickSync",
+        "amf" => "AMF",
+        "cpu" => "CPU",
+        _ => "Auto encoder"
     };
 
     private static string NormalizeResolutionText(string? value)

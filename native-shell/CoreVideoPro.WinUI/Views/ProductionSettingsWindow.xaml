@@ -225,6 +225,53 @@
 
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
+                            <TextBlock Text="Encoding" Style="{StaticResource SettingsLabel}" />
+                            <Grid ColumnSpacing="12" RowSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="180" />
+                                    <ColumnDefinition Width="220" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <ComboBox Header="Render size"
+                                          ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamRenderResolution, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Column="1"
+                                          Header="FPS"
+                                          ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamRenderFps, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Column="2"
+                                          Header="Codec"
+                                          ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamVideoCodec, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Row="1"
+                                          Grid.ColumnSpan="3"
+                                          Header="Hardware encoder"
+                                          ItemsSource="{x:Bind ViewModel.StreamEncoderModeOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamEncoderMode, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                            </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
                             <TextBlock Text="RTMP / RTMPS" Style="{StaticResource SettingsLabel}" />
                             <Grid ColumnSpacing="12" RowSpacing="12">
                                 <Grid.ColumnDefinitions>
