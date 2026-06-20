@@ -191,7 +191,22 @@ export type NativeMediaCoreCommand =
       mediaAssetId: string;
       mediaAssetName: string;
       playing: boolean;
+    }
+  | {
+      type: "recommend-auto-production";
     };
+
+/**
+ * Deterministic on-device AI director recommendation, surfaced in the snapshot.
+ * Mirrors the C++ Director kernel output (native/src/core/Director.h) and the
+ * TS reference DirectorProposal from src/engine/localDirectorProvider.ts.
+ */
+export type NativeMediaCoreAutoProduction = {
+  ruleId: string;
+  recommendedSceneId: string;
+  confidence: number;
+  rationale: string;
+};
 
 export type NativeMediaCoreMediaPlaybackStatus = "idle" | "playing" | "paused";
 
@@ -604,6 +619,8 @@ export type NativeMediaCoreStateSnapshot = {
   diagnostics: NativeMediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];
+  /** Deterministic on-device AI director scene recommendation. */
+  autoProduction?: NativeMediaCoreAutoProduction;
   /** Optional wire field: Zoom meeting state (e.g. in_meeting, idle). */
   meetingState?: string;
   /** Optional wire field: active speaker participant id from Zoom runtime. */

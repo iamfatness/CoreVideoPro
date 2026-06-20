@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -782,6 +783,43 @@ public static class ProductionStateHelper
             Action = "suggest"
         };
     }
+
+    /// <summary>
+    /// Prefer the deterministic native AI director recommendation (computed in the
+    /// C++ media core's Director kernel and surfaced in the snapshot). Falls back to
+    /// the count-only C# heuristic when the native recommendation is unavailable
+    /// (no meeting joined, native call not yet wired, or an empty payload).
+    /// </summary>
+    public static AutoProductionState BuildAutomationRecommendation(
+        NativeMediaCoreAutoProduction? nativeRecommendation,
+        IReadOnlyList<Participant> participants,
+        IReadOnlyList<Scene> scenes,
+        bool preferScreenShare = true,
+        int panelParticipantThreshold = 4)
+    {
+        if (nativeRecommendation is not null &&
+            !string.IsNullOrWhiteSpace(nativeRecommendation.RecommendedSceneId) &&
+            participants.Count > 0)
+        {
+            return new AutoProductionState
+            {
+                RecommendedSceneId = nativeRecommendation.RecommendedSceneId,
+                Confidence = Math.Clamp(nativeRecommendation.Confidence, 0, 100),
+                Reason = string.IsNullOrWhiteSpace(nativeRecommendation.Rationale)
+                    ? "Native AI director recommendation."
+                    : nativeRecommendation.Rationale,
+                Action = ResolveNativeRecommendationAction(nativeRecommendation.RuleId)
+            };
+        }
+
+        return BuildAutomationRecommendation(participants, scenes, preferScreenShare, panelParticipantThreshold);
+    }
+
+    private static string ResolveNativeRecommendationAction(string ruleId) => ruleId switch
+    {
+        "screen-share-priority" => "hold",
+        _ => "suggest"
+    };
 
     public static string BuildSceneIntelligenceSummary(
         IReadOnlyList<Participant> participants,

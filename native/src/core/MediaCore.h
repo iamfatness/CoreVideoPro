@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Director.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
@@ -33,6 +34,13 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
+
+  // Deterministic on-device AI director: derives the richer signal bundle from
+  // the core's current state (participant feeds, audio metrics, screen share,
+  // feed health) and returns a scene recommendation (ruleId, recommendedSceneId,
+  // confidence, rationale). Pure read of state; mutates nothing.
+  [[nodiscard]] DirectorSignals deriveDirectorSignals() const;
+  [[nodiscard]] DirectorRecommendation recommendAutoProduction() const;
 
   // Real-time PCM taps produced by the routing-matrix bus mix each tick, for the
   // outputs to consume (program encode, ISO record). The program tap is the
@@ -83,6 +91,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json brandKitState() const;
   [[nodiscard]] rpc::Json mediaPlaybackState() const;
+  [[nodiscard]] rpc::Json autoProductionState() const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;

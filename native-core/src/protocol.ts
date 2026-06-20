@@ -558,7 +558,22 @@ export type MediaCoreCommand =
       mediaAssetId: string;
       mediaAssetName: string;
       playing: boolean;
+    }
+  | {
+      type: "recommend-auto-production";
     };
+
+/**
+ * Deterministic on-device AI director recommendation, surfaced in the snapshot.
+ * Mirrors the C++ Director kernel output (native/src/core/Director.h) and the
+ * TS reference DirectorProposal from src/engine/localDirectorProvider.ts.
+ */
+export type MediaCoreAutoProduction = {
+  ruleId: string;
+  recommendedSceneId: string;
+  confidence: number;
+  rationale: string;
+};
 
 export type MediaCoreMediaPlaybackStatus = "idle" | "playing" | "paused";
 
@@ -729,6 +744,8 @@ export type MediaCoreStateSnapshot = {
   diagnostics: MediaCoreDiagnosticsSnapshot;
   lastCommandTypes: string[];
   warnings: string[];
+  /** Deterministic on-device AI director scene recommendation. */
+  autoProduction?: MediaCoreAutoProduction;
 };
 
 export type MediaCoreResponse =

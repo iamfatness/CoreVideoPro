@@ -454,6 +454,19 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
     public IReadOnlyList<string> LastCommandTypes { get; init; } = [];
 }
 
+/// <summary>
+/// Deterministic on-device AI director recommendation, surfaced by the native
+/// core in the snapshot. Mirrors the C++ Director kernel (native/src/core/Director.h)
+/// and the TS protocol type MediaCoreAutoProduction.
+/// </summary>
+public sealed record NativeMediaCoreAutoProduction
+{
+    public string RuleId { get; init; } = string.Empty;
+    public string RecommendedSceneId { get; init; } = string.Empty;
+    public int Confidence { get; init; }
+    public string Rationale { get; init; } = string.Empty;
+}
+
 public sealed record NativeMediaCoreStateSnapshot
 {
     public string? SceneId { get; init; }
@@ -507,6 +520,8 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreDiagnosticsSnapshot Diagnostics { get; init; } = new();
     public IReadOnlyList<string> LastCommandTypes { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
+    /// <summary>Deterministic on-device AI director scene recommendation from the native core.</summary>
+    public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     /// <summary>Optional wire field: Zoom meeting state (e.g. in_meeting, idle). Stub until native core publishes it.</summary>
     public string? MeetingState { get; init; }
     /// <summary>Optional wire field: active breakout room id. Stub until native core publishes it.</summary>

@@ -3665,6 +3665,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshProductionReadouts()
     {
         _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation(
+            _bridge.LastSnapshot?.AutoProduction,
             RoomVideoParticipants,
             Scenes,
             AutomationPreferScreenShare,

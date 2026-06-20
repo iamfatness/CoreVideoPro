@@ -422,6 +422,7 @@ rpc::Json MediaCore::sessionState() const {
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
       {"mediaPlayback", mediaPlaybackState()},
+      {"autoProduction", autoProductionState()},
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
       {"breakoutRoomName", breakoutRoomName_},
@@ -678,8 +679,92 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     configureSrtIngestSources(command);
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
+  } else if (type == "recommend-auto-production") {
+    // Pure query: the recommendation is derived from current state and surfaced
+    // in the snapshot (see autoProductionState()), so there is nothing to mutate.
   }
   return sessionState();
+}
+
+DirectorSignals MediaCore::deriveDirectorSignals() const {
+  // Derive the richer director signal bundle from the core's current state. This
+  // mirrors the pure summarizers in src/engine/directorSignals.ts: we treat the
+  // participants whose video is on as the "live" feeds the director reasons over,
+  // and derive conversational dynamics, engagement, and feed-health roll-ups from
+  // the same roster the renderer would.
+  DirectorSignals signals;
+
+  const auto capture = zoomSnapshot();
+  const rpc::Json* participants = capture.get("participants");
+  if (!participants || !participants->isArray()) {
+    return signals;
+  }
+
+  int liveCount = 0;
+  int degradedCount = 0;
+  int activeContributorCount = 0;
+  int talkingCount = 0;
+  double audioLevelSum = 0.0;
+  std::string lastTalkingId;
+
+  for (const auto& participant : participants->asArray()) {
+    if (!participant.isObject()) {
+      continue;
+    }
+    const bool videoOn = participant.get("videoOn") && participant.get("videoOn")->asBool();
+    const bool muted = participant.get("muted") && participant.get("muted")->asBool();
+    const bool talking = participant.get("talking") && participant.get("talking")->asBool();
+    const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
+    const double audioLevel = participant.getNumber("audioLevel", 0.0);
+    const std::string networkQuality = participant.getString("networkQuality", "good");
+
+    if (sharingScreen) {
+      signals.screenShareActive = true;
+      signals.screenShareHasSharer = true;
+      if (signals.screenShareSharerName.empty()) {
+        signals.screenShareSharerName = participant.getString("displayName");
+      }
+    }
+
+    // A "live" feed is one whose video is on (i.e. not video-off).
+    if (!videoOn) {
+      continue;
+    }
+    ++liveCount;
+    if (networkQuality == "recovering" || networkQuality == "low") {
+      ++degradedCount;
+    }
+    if (!muted || talking) {
+      ++activeContributorCount;
+    }
+    audioLevelSum += audioLevel;  // audioLevel is reported 0-100
+    if (talking) {
+      ++talkingCount;
+      lastTalkingId = participant.getString("userId");
+    }
+  }
+
+  signals.liveCount = liveCount;
+  signals.degradedCount = degradedCount;
+  signals.activeContributorCount = activeContributorCount;
+  signals.meanAudioLevel = liveCount == 0 ? 0.0 : (audioLevelSum / liveCount) / 100.0;
+  signals.hasDominantSpeaker = talkingCount == 1;
+  signals.crossTalk = talkingCount >= 2;
+  return signals;
+}
+
+DirectorRecommendation MediaCore::recommendAutoProduction() const {
+  return recommendScene(deriveDirectorSignals());
+}
+
+rpc::Json MediaCore::autoProductionState() const {
+  const auto recommendation = recommendAutoProduction();
+  return rpc::Json::Object{
+      {"ruleId", recommendation.ruleId},
+      {"recommendedSceneId", recommendation.recommendedSceneId},
+      {"confidence", recommendation.confidence},
+      {"rationale", recommendation.rationale},
+  };
 }
 
 rpc::Json MediaCore::zoomReadinessState() const {

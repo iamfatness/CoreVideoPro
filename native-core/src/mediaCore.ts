@@ -1,4 +1,5 @@
 import type {
+  MediaCoreAutoProduction,
   MediaCoreCommand,
   MediaCoreColorGrade,
   MediaCoreDestination,
@@ -502,6 +503,76 @@ export class MediaCoreRuntime {
     };
   }
 
+  /**
+   * Deterministic on-device AI director recommendation, mirroring the C++
+   * Director kernel (native/src/core/Director.h) and the renderer reference
+   * selectLocalProposal (src/engine/localDirectorProvider.ts). Pure read of the
+   * current Zoom source roster; mutates nothing.
+   */
+  private buildAutoProductionSnapshot(): MediaCoreAutoProduction {
+    const liveSources = this.sources.filter((source) => source.health !== "video-off");
+    const liveCount = liveSources.length;
+    const degradedCount = liveSources.filter(
+      (source) => source.health === "recovering" || source.health === "low-resolution"
+    ).length;
+    const contributors = liveSources.filter((source) => !source.isMuted || source.isActiveSpeaker).length;
+    const energy =
+      liveCount === 0 ? 0 : liveSources.reduce((sum, source) => sum + source.audioLevel, 0) / liveCount / 100;
+    const degradePenalty = Math.min(8, degradedCount * 2);
+    const activeSpeakers = liveSources.filter((source) => source.isActiveSpeaker);
+    const hasDominant = activeSpeakers.length === 1;
+    const crossTalk = activeSpeakers.length >= 2;
+    const sharer = this.sources.find((source) => source.isScreenSharing);
+    const clamp = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
+
+    if (sharer) {
+      return {
+        ruleId: "screen-share-priority",
+        recommendedSceneId: "speaker-slides",
+        confidence: clamp(96 + (sharer.participantId ? 1 : -2) - degradePenalty),
+        rationale: sharer.displayName
+          ? `${sharer.displayName} is sharing; lead with the shared surface.`
+          : "Active screen share is the safest live layout."
+      };
+    }
+
+    if (liveCount <= 1) {
+      return {
+        ruleId: "single-speaker",
+        recommendedSceneId: "intro",
+        confidence: clamp(90 + energy * 6 - degradePenalty),
+        rationale: "Single live participant; host-focus framing."
+      };
+    }
+
+    if (hasDominant && contributors <= 1) {
+      return {
+        ruleId: "single-speaker",
+        recommendedSceneId: "intro",
+        confidence: clamp(89 + energy * 6 - degradePenalty),
+        rationale: "A single dominant speaker is carrying the room; host-focus is cleaner than a grid."
+      };
+    }
+
+    if (liveCount === 2) {
+      return {
+        ruleId: "focused-interview",
+        recommendedSceneId: "interview",
+        confidence: clamp((hasDominant ? 92 : 89) - (crossTalk ? 4 : 0) - degradePenalty),
+        rationale: "Two live contributors; keep the conversation two-up."
+      };
+    }
+
+    const panelConfidence =
+      90 + (contributors >= 3 ? 3 : 0) + (energy > 0.4 ? 2 : 0) - (crossTalk ? 2 : 0) - degradePenalty;
+    return {
+      ruleId: "panel-discussion",
+      recommendedSceneId: "panel",
+      confidence: clamp(panelConfidence),
+      rationale: "Multiple live contributors without slides; keep everyone visible."
+    };
+  }
+
   snapshot(warnings: string[] = []): MediaCoreStateSnapshot {
     const recording = applyIsoRecordingReadiness(
       this.recordingSink.snapshot(),
@@ -596,7 +667,8 @@ export class MediaCoreRuntime {
         operatorActions
       ),
       lastCommandTypes: this.lastCommandTypes,
-      warnings: allWarnings
+      warnings: allWarnings,
+      autoProduction: this.buildAutoProductionSnapshot()
     };
   }
 

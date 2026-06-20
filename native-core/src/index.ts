@@ -24,6 +24,7 @@ export type {
 } from "./zoomMediaSpine.js";
 export type { ZoomMediaSpineServiceRequest, ZoomMediaSpineServiceResponse } from "./zoomMediaSpineServiceProtocol.js";
 export type {
+  MediaCoreAutoProduction,
   MediaCoreCommand,
   MediaCoreAudioRoutingBus,
   MediaCoreAudioRoutingBusSummary,
