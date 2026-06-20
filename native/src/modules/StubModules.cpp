@@ -96,6 +96,10 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
     mixHash(hash, layer.rect.y);
     mixHash(hash, layer.rect.width);
     mixHash(hash, layer.rect.height);
+    mixHash(hash, layer.fitMode);
+    mixHash(hash, layer.borderStyle);
+    mixHash(hash, layer.borderColor);
+    mixHash(hash, layer.borderThickness);
     mixHash(hash, compositorLayerOpacity(layer));
   }
   return hash == 0 ? 1u : hash;

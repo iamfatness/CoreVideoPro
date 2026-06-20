@@ -79,7 +79,11 @@ export function withRenderPlanId(renderPlan: Omit<MediaCoreRenderPlan, "renderPl
       sourceId: route.sourceId,
       participantId: route.participantId,
       kind: route.kind,
-      status: route.status
+      status: route.status,
+      fitMode: route.fitMode,
+      borderStyle: route.borderStyle,
+      borderColor: route.borderColor,
+      borderThickness: route.borderThickness
     })),
     layers: renderPlan.layers.map((layer) => ({
       layerId: layer.layerId,
@@ -88,7 +92,11 @@ export function withRenderPlanId(renderPlan: Omit<MediaCoreRenderPlan, "renderPl
       participantId: layer.participantId,
       overlayId: layer.overlayId,
       position: layer.position,
-      order: layer.order
+      order: layer.order,
+      fitMode: layer.fitMode,
+      borderStyle: layer.borderStyle,
+      borderColor: layer.borderColor,
+      borderThickness: layer.borderThickness
     }))
   });
 

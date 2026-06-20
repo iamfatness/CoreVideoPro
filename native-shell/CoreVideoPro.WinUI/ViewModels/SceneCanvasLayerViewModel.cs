@@ -36,6 +36,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _y = route.CanvasRect?.Y ?? 0;
         _width = route.CanvasRect?.Width ?? 1;
         _height = route.CanvasRect?.Height ?? 1;
+        _fitMode = SceneRoutingService.NormalizeFitMode(route.FitMode);
+        _borderStyle = SceneRoutingService.NormalizeBorderStyle(route.BorderStyle);
+        _borderColor = SceneRoutingService.NormalizeBorderColor(route.BorderColor);
+        _borderThickness = Math.Clamp(route.BorderThickness, 0, 12);
         ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs);
     }
 
@@ -46,6 +50,22 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     public IReadOnlyList<RouteSelectOption> ModeOptions { get; } = SceneRoutingService.RouteModeOptions;
 
     public IReadOnlyList<RouteSelectOption> AudioRoleOptions { get; } = SceneRoutingService.AudioRoleOptions;
+
+    public IReadOnlyList<RouteSelectOption> FitModeOptions { get; } =
+    [
+        new() { Value = "fill", Label = "Fill / crop" },
+        new() { Value = "fit", Label = "Fit / letterbox" },
+        new() { Value = "stretch", Label = "Stretch" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> BorderStyleOptions { get; } =
+    [
+        new() { Value = "accent", Label = "Accent" },
+        new() { Value = "solid", Label = "Custom color" },
+        new() { Value = "program", Label = "Program amber" },
+        new() { Value = "warning", Label = "Warning red" },
+        new() { Value = "none", Label = "None" }
+    ];
 
     public IReadOnlyList<RouteSelectOption> ParticipantOptions { get; private set; } = [];
 
@@ -69,6 +89,18 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     [ObservableProperty]
     private double _height;
+
+    [ObservableProperty]
+    private string _fitMode;
+
+    [ObservableProperty]
+    private string _borderStyle;
+
+    [ObservableProperty]
+    private string _borderColor;
+
+    [ObservableProperty]
+    private double _borderThickness;
 
     [ObservableProperty]
     private VideoSurfaceState _surface = VideoSurfaceState.Waiting(
@@ -113,6 +145,14 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _onChanged(this);
     }
 
+    partial void OnFitModeChanged(string value) => ApplyVisualChange();
+
+    partial void OnBorderStyleChanged(string value) => ApplyVisualChange();
+
+    partial void OnBorderColorChanged(string value) => ApplyVisualChange();
+
+    partial void OnBorderThicknessChanged(double value) => ApplyVisualChange();
+
     public void SyncFromRoute(
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
@@ -132,6 +172,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             Y = _route.CanvasRect?.Y ?? 0;
             Width = _route.CanvasRect?.Width ?? 1;
             Height = _route.CanvasRect?.Height ?? 1;
+            FitMode = SceneRoutingService.NormalizeFitMode(_route.FitMode);
+            BorderStyle = SceneRoutingService.NormalizeBorderStyle(_route.BorderStyle);
+            BorderColor = SceneRoutingService.NormalizeBorderColor(_route.BorderColor);
+            BorderThickness = Math.Clamp(_route.BorderThickness, 0, 12);
             OnPropertyChanged(nameof(ParticipantOptions));
         }
         finally
@@ -222,7 +266,22 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             Height = Height
         };
         _route.CanvasRect.Clamp();
+        _route.FitMode = SceneRoutingService.NormalizeFitMode(FitMode);
+        _route.BorderStyle = SceneRoutingService.NormalizeBorderStyle(BorderStyle);
+        _route.BorderColor = SceneRoutingService.NormalizeBorderColor(BorderColor);
+        _route.BorderThickness = Math.Clamp(BorderThickness, 0, 12);
         _route.ZIndex = LayerIndex;
+    }
+
+    private void ApplyVisualChange()
+    {
+        if (_suppressChangeNotification)
+        {
+            return;
+        }
+
+        ApplyRoute();
+        _onChanged(this);
     }
 
     private void RefreshSourceOptions()

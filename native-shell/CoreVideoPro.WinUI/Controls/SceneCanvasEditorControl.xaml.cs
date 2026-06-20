@@ -83,6 +83,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             }
 
             UpdateLayerSurface(frame, layer.Surface);
+            UpdateLayerVisuals(frame, layer);
             ApplyLayerGeometry(frame, layer);
             ApplySelectionStyle(frame, ReferenceEquals(layer, _selectedLayer));
         }
@@ -104,6 +105,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             Name = "LayerPreview",
             SurfaceState = layer.Surface,
+            SourceFit = layer.FitMode,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             IsHitTestVisible = false
@@ -185,6 +187,26 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
     }
 
+    private static void UpdateLayerVisuals(Border frame, SceneCanvasLayerViewModel layer)
+    {
+        frame.BorderBrush = BrushForBorderStyle(layer.BorderStyle, layer.BorderColor);
+        frame.BorderThickness = new Thickness(layer.BorderStyle == "none" ? 0 : Math.Clamp(layer.BorderThickness, 0, 12));
+
+        if (frame.Child is not Grid content)
+        {
+            return;
+        }
+
+        foreach (var child in content.Children)
+        {
+            if (child is VideoSurfaceHost host)
+            {
+                host.SourceFit = layer.FitMode;
+                return;
+            }
+        }
+    }
+
     private static void ApplyLayerGeometry(Border frame, SceneCanvasLayerViewModel layer)
     {
         Canvas.SetLeft(frame, layer.X * DesignWidth);
@@ -195,10 +217,19 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private void ApplySelectionStyle(Border frame, bool isSelected)
     {
-        frame.BorderBrush = new SolidColorBrush(isSelected
-            ? Color.FromArgb(255, 68, 193, 161)
-            : Color.FromArgb(160, 68, 193, 161));
-        frame.BorderThickness = new Thickness(isSelected ? 3 : 1.5);
+        if (frame.Tag is not SceneCanvasLayerViewModel layer)
+        {
+            return;
+        }
+
+        frame.BorderBrush = isSelected
+            ? new SolidColorBrush(Color.FromArgb(255, 68, 193, 161))
+            : BrushForBorderStyle(layer.BorderStyle, layer.BorderColor);
+        frame.BorderThickness = new Thickness(isSelected
+            ? Math.Max(3, layer.BorderThickness)
+            : layer.BorderStyle == "none"
+                ? 0
+                : Math.Clamp(layer.BorderThickness, 0, 12));
     }
 
     private void UpdateSelectionStyles()
@@ -283,5 +314,34 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         _dragStartRect = null;
         InteractionChanged?.Invoke(this, false);
         e.Handled = true;
+    }
+
+    private static SolidColorBrush BrushForBorderStyle(string style, string color) =>
+        style switch
+        {
+            "program" => new SolidColorBrush(Color.FromArgb(255, 240, 168, 92)),
+            "warning" => new SolidColorBrush(Color.FromArgb(255, 224, 90, 90)),
+            "none" => new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)),
+            _ => BrushFromHex(style == "solid" ? color : "#44C1A1")
+        };
+
+    private static SolidColorBrush BrushFromHex(string hex)
+    {
+        hex = (hex ?? "#44C1A1").Trim().TrimStart('#');
+        if (hex.Length == 6)
+        {
+            hex = "FF" + hex;
+        }
+
+        if (hex.Length != 8 || !uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var value))
+        {
+            value = 0xFF44C1A1;
+        }
+
+        return new SolidColorBrush(Color.FromArgb(
+            (byte)((value >> 24) & 0xFF),
+            (byte)((value >> 16) & 0xFF),
+            (byte)((value >> 8) & 0xFF),
+            (byte)(value & 0xFF)));
     }
 }

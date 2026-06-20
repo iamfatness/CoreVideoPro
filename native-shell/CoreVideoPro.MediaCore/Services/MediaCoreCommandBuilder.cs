@@ -69,7 +69,11 @@ public static class MediaCoreCommandBuilder
                     ["mode"] = route.Mode,
                     ["audioRole"] = route.AudioRole,
                     ["participantId"] = route.ParticipantId,
-                    ["captureDeviceId"] = route.CaptureDeviceId
+                    ["captureDeviceId"] = route.CaptureDeviceId,
+                    ["fitMode"] = route.FitMode,
+                    ["borderStyle"] = route.BorderStyle,
+                    ["borderColor"] = route.BorderColor,
+                    ["borderThickness"] = route.BorderThickness
                 };
 
                 if (route.RectX is not null && route.RectY is not null &&

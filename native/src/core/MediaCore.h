@@ -81,6 +81,10 @@ class MediaCore {
     float rectHeight = 0.f;
     int zIndex = 0;
     bool hasRect = false;
+    std::string fitMode = "fill";
+    std::string borderStyle = "accent";
+    std::string borderColor = "#44C1A1";
+    float borderThickness = 2.f;
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;

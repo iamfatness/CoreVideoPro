@@ -2320,7 +2320,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 route.CanvasRect?.Width,
                 route.CanvasRect?.Height,
                 route.ZIndex,
-                CaptureDeviceId: route.CaptureDeviceId))
+                CaptureDeviceId: route.CaptureDeviceId,
+                FitMode: route.FitMode,
+                BorderStyle: route.BorderStyle,
+                BorderColor: route.BorderColor,
+                BorderThickness: route.BorderThickness))
             .ToList();
 
         var participants = RoomVideoParticipants

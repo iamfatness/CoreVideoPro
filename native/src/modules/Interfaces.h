@@ -128,6 +128,10 @@ struct CompositorRenderPlanLayer {
   int order = 0;
   CompositorLayerRect rect;
   float opacity = 1.f;
+  std::string fitMode = "fill";
+  std::string borderStyle = "accent";
+  std::string borderColor = "#44C1A1";
+  float borderThickness = 2.f;
 };
 
 struct CompositorRenderPlan {

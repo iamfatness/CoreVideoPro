@@ -15,6 +15,13 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             typeof(VideoSurfaceHost),
             new PropertyMetadata(null, OnSurfaceStateChanged));
 
+    public static readonly DependencyProperty SourceFitProperty =
+        DependencyProperty.Register(
+            nameof(SourceFit),
+            typeof(string),
+            typeof(VideoSurfaceHost),
+            new PropertyMetadata("fit", OnSourceFitChanged));
+
     private readonly Direct3D11InteropService _direct3DInterop = new();
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
@@ -32,6 +39,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         get => (VideoSurfaceState?)GetValue(SurfaceStateProperty);
         set => SetValue(SurfaceStateProperty, value);
+    }
+
+    public string SourceFit
+    {
+        get => (string)GetValue(SourceFitProperty);
+        set => SetValue(SourceFitProperty, value);
     }
 
     public string SurfaceKey => SurfaceState?.SurfaceKey ?? "unknown";
@@ -175,6 +188,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         }
     }
 
+    private static void OnSourceFitChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is VideoSurfaceHost host)
+        {
+            host.ApplySourceFit();
+        }
+    }
+
     private bool IsProgramSurface =>
         string.Equals(SurfaceKey, "program", StringComparison.Ordinal) ||
         SurfaceState?.Kind == VideoSurfaceKind.Program;
@@ -250,6 +271,16 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         PreviewImage.Visibility = Visibility.Collapsed;
         PlaceholderPanel.Visibility = Visibility.Visible;
+    }
+
+    private void ApplySourceFit()
+    {
+        PreviewImage.Stretch = SourceFit switch
+        {
+            "fill" => Stretch.UniformToFill,
+            "stretch" => Stretch.Fill,
+            _ => Stretch.Uniform
+        };
     }
 
     private void RefreshPathBindings()

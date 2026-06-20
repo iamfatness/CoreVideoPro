@@ -76,6 +76,10 @@ export type MediaCoreResolvedRoute = {
   participantId?: string;
   kind?: MediaCoreFrameKind;
   status: "resolved" | "missing" | "disabled";
+  fitMode?: "fill" | "fit" | "stretch";
+  borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
+  borderColor?: string;
+  borderThickness?: number;
   warning?: string;
 };
 
@@ -87,6 +91,10 @@ export type MediaCoreRenderPlanLayer = {
   overlayId?: string;
   order: number;
   routeId?: string;
+  fitMode?: "fill" | "fit" | "stretch";
+  borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
+  borderColor?: string;
+  borderThickness?: number;
   position?: "top-right" | "bottom-right" | "center" | "lower-third";
 };
 
@@ -373,6 +381,10 @@ export type MediaCoreCommand =
         mode: MediaCoreRouteMode;
         participantId?: string;
         audioRole: MediaCoreAudioRole;
+        fitMode?: "fill" | "fit" | "stretch";
+        borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
+        borderColor?: string;
+        borderThickness?: number;
       }>;
     }
   | {

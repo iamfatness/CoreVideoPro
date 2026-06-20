@@ -29,6 +29,34 @@ public sealed partial class ParticipantTileControl : UserControl
             typeof(ParticipantTileControl),
             new PropertyMetadata(null, OnSurfaceStateChanged));
 
+    public static readonly DependencyProperty SourceFitProperty =
+        DependencyProperty.Register(
+            nameof(SourceFit),
+            typeof(string),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata("fill", OnVisualChromeChanged));
+
+    public static readonly DependencyProperty SourceBorderStyleProperty =
+        DependencyProperty.Register(
+            nameof(SourceBorderStyle),
+            typeof(string),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata("default", OnVisualChromeChanged));
+
+    public static readonly DependencyProperty SourceBorderColorProperty =
+        DependencyProperty.Register(
+            nameof(SourceBorderColor),
+            typeof(string),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata("#44C1A1", OnVisualChromeChanged));
+
+    public static readonly DependencyProperty SourceBorderThicknessProperty =
+        DependencyProperty.Register(
+            nameof(SourceBorderThickness),
+            typeof(double),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata(1d, OnVisualChromeChanged));
+
     public ParticipantTileControl()
     {
         InitializeComponent();
@@ -50,6 +78,30 @@ public sealed partial class ParticipantTileControl : UserControl
     {
         get => (VideoSurfaceState?)GetValue(SurfaceStateProperty);
         set => SetValue(SurfaceStateProperty, value);
+    }
+
+    public string SourceFit
+    {
+        get => (string)GetValue(SourceFitProperty);
+        set => SetValue(SourceFitProperty, value);
+    }
+
+    public string SourceBorderStyle
+    {
+        get => (string)GetValue(SourceBorderStyleProperty);
+        set => SetValue(SourceBorderStyleProperty, value);
+    }
+
+    public string SourceBorderColor
+    {
+        get => (string)GetValue(SourceBorderColorProperty);
+        set => SetValue(SourceBorderColorProperty, value);
+    }
+
+    public double SourceBorderThickness
+    {
+        get => (double)GetValue(SourceBorderThicknessProperty);
+        set => SetValue(SourceBorderThicknessProperty, value);
     }
 
     public string ParticipantName => Participant?.Name ?? string.Empty;
@@ -85,8 +137,31 @@ public sealed partial class ParticipantTileControl : UserControl
         }
     }
 
+    private static void OnVisualChromeChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is ParticipantTileControl tile)
+        {
+            tile.ApplySourceFit();
+            tile.ApplyActiveSpeakerStyle();
+        }
+    }
+
     private void ApplyActiveSpeakerStyle()
     {
+        var borderStyle = SourceBorderStyle;
+        if (borderStyle is "none")
+        {
+            TileBorder.BorderThickness = new Thickness(0);
+            return;
+        }
+
+        if (borderStyle is "solid" or "accent" or "program" or "warning")
+        {
+            TileBorder.BorderBrush = BrushForBorderStyle(borderStyle, SourceBorderColor);
+            TileBorder.BorderThickness = new Thickness(Math.Clamp(SourceBorderThickness, 0, 12));
+            return;
+        }
+
         if (IsActiveSpeaker)
         {
             TileBorder.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 240, 168, 92));
@@ -125,5 +200,44 @@ public sealed partial class ParticipantTileControl : UserControl
         PlaceholderPanel.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
         InitialsBadge.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
         InitialsText.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void ApplySourceFit()
+    {
+        PreviewImage.Stretch = SourceFit switch
+        {
+            "fit" => Stretch.Uniform,
+            "stretch" => Stretch.Fill,
+            _ => Stretch.UniformToFill
+        };
+    }
+
+    private static SolidColorBrush BrushForBorderStyle(string style, string color) =>
+        style switch
+        {
+            "program" => new SolidColorBrush(Windows.UI.Color.FromArgb(255, 240, 168, 92)),
+            "warning" => new SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 90, 90)),
+            "accent" => new SolidColorBrush(Windows.UI.Color.FromArgb(255, 68, 193, 161)),
+            _ => BrushFromHex(color)
+        };
+
+    private static SolidColorBrush BrushFromHex(string hex)
+    {
+        hex = (hex ?? "#44C1A1").Trim().TrimStart('#');
+        if (hex.Length == 6)
+        {
+            hex = "FF" + hex;
+        }
+
+        if (hex.Length != 8 || !uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var value))
+        {
+            value = 0xFF44C1A1;
+        }
+
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(
+            (byte)((value >> 24) & 0xFF),
+            (byte)((value >> 16) & 0xFF),
+            (byte)((value >> 8) & 0xFF),
+            (byte)(value & 0xFF)));
     }
 }

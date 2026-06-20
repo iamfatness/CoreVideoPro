@@ -56,7 +56,11 @@ export function buildRenderPlan(input: {
       sourceId: route.sourceId,
       participantId: route.participantId,
       order: index,
-      routeId: route.routeId
+      routeId: route.routeId,
+      fitMode: route.fitMode,
+      borderStyle: route.borderStyle,
+      borderColor: route.borderColor,
+      borderThickness: route.borderThickness
     }));
 
   const overlayLayers = input.overlays.map((overlay, index) => ({
@@ -97,7 +101,7 @@ function resolveRoute(
   if (route.mode === "screen-share") {
     const screenSource = resolveScreenShare(sources, screenShareParticipantId);
     return screenSource
-      ? resolvedRoute(route.routeId, route.mode, route.audioRole, screenSource, "screen-share")
+      ? resolvedRoute(route, screenSource, "screen-share")
       : missingRoute(route.routeId, route.mode, route.audioRole, "Screen share route requested but no active screen share source is available.");
   }
 
@@ -115,7 +119,7 @@ function resolveRoute(
     return missingRoute(route.routeId, route.mode, route.audioRole, `${source.displayName} has no clean video feed.`);
   }
 
-  return resolvedRoute(route.routeId, route.mode, route.audioRole, source, "participant-video");
+  return resolvedRoute(route, source, "participant-video");
 }
 
 function resolveScreenShare(sources: MediaCoreZoomSource[], screenShareParticipantId?: string) {
@@ -127,19 +131,21 @@ function resolveScreenShare(sources: MediaCoreZoomSource[], screenShareParticipa
 }
 
 function resolvedRoute(
-  routeId: string,
-  mode: MediaCoreRouteMode,
-  audioRole: SceneGraphState["routes"][number]["audioRole"],
+  route: SceneGraphState["routes"][number],
   source: MediaCoreZoomSource,
   kind: "participant-video" | "screen-share"
 ): MediaCoreResolvedRoute {
   return {
-    routeId,
-    mode,
-    audioRole,
+    routeId: route.routeId,
+    mode: route.mode,
+    audioRole: route.audioRole,
     sourceId: kind === "screen-share" ? `screen-share:${source.participantId}` : source.sourceId,
     participantId: source.participantId,
     kind,
+    fitMode: route.fitMode,
+    borderStyle: route.borderStyle,
+    borderColor: route.borderColor,
+    borderThickness: route.borderThickness,
     status: "resolved"
   };
 }

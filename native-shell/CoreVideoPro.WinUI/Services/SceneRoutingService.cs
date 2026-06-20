@@ -280,6 +280,10 @@ public static class SceneRoutingService
         }
 
         normalized.CanvasRect = route.CanvasRect?.Clone();
+        normalized.FitMode = NormalizeFitMode(route.FitMode);
+        normalized.BorderStyle = NormalizeBorderStyle(route.BorderStyle);
+        normalized.BorderColor = NormalizeBorderColor(route.BorderColor);
+        normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
         normalized.ZIndex = route.ZIndex;
         return normalized;
     }
@@ -294,6 +298,10 @@ public static class SceneRoutingService
         route.SpotlightIndex = normalized.SpotlightIndex;
         route.AudioRole = normalized.AudioRole;
         route.CanvasRect = normalized.CanvasRect?.Clone();
+        route.FitMode = normalized.FitMode;
+        route.BorderStyle = normalized.BorderStyle;
+        route.BorderColor = normalized.BorderColor;
+        route.BorderThickness = normalized.BorderThickness;
         route.ZIndex = normalized.ZIndex;
     }
 
@@ -306,7 +314,41 @@ public static class SceneRoutingService
         target.SpotlightIndex = source.SpotlightIndex;
         target.AudioRole = source.AudioRole;
         target.CanvasRect = source.CanvasRect?.Clone();
+        target.FitMode = NormalizeFitMode(source.FitMode);
+        target.BorderStyle = NormalizeBorderStyle(source.BorderStyle);
+        target.BorderColor = NormalizeBorderColor(source.BorderColor);
+        target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
         target.ZIndex = source.ZIndex;
+    }
+
+    public static string NormalizeFitMode(string? value) =>
+        value switch
+        {
+            "fit" or "fill" or "stretch" => value,
+            _ => SourceRouteVisualDefaults.FitMode
+        };
+
+    public static string NormalizeBorderStyle(string? value) =>
+        value switch
+        {
+            "none" or "solid" or "accent" or "program" or "warning" => value,
+            _ => SourceRouteVisualDefaults.BorderStyle
+        };
+
+    public static string NormalizeBorderColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return SourceRouteVisualDefaults.BorderColor;
+        }
+
+        var color = value.Trim();
+        if (!color.StartsWith('#'))
+        {
+            color = "#" + color;
+        }
+
+        return color.Length is 7 or 9 ? color.ToUpperInvariant() : SourceRouteVisualDefaults.BorderColor;
     }
 
     public static string? RouteToSlot(SourceRoute route)

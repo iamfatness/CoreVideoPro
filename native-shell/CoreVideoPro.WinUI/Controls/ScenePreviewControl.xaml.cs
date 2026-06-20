@@ -167,6 +167,10 @@ public sealed partial class ScenePreviewControl : UserControl
                 Participant = tile.Participant,
                 TileVariant = "canvas",
                 SurfaceState = tile.Surface,
+                SourceFit = route.FitMode,
+                SourceBorderStyle = route.BorderStyle,
+                SourceBorderColor = route.BorderColor,
+                SourceBorderThickness = route.BorderThickness,
                 Width = rect.Width * designWidth,
                 Height = rect.Height * designHeight,
                 Tag = GetCanvasRouteKey(route)
@@ -221,6 +225,10 @@ public sealed partial class ScenePreviewControl : UserControl
 
             layer.Participant = tile.Participant;
             layer.SurfaceState = tile.Surface;
+            layer.SourceFit = route.FitMode;
+            layer.SourceBorderStyle = route.BorderStyle;
+            layer.SourceBorderColor = route.BorderColor;
+            layer.SourceBorderThickness = route.BorderThickness;
             layer.Width = rect.Width * designWidth;
             layer.Height = rect.Height * designHeight;
             Canvas.SetLeft(layer, rect.X * designWidth);
@@ -231,7 +239,7 @@ public sealed partial class ScenePreviewControl : UserControl
     }
 
     private static string GetCanvasRouteKey(SourceRoute route) =>
-        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}";
+        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}|{route.FitMode}|{route.BorderStyle}|{route.BorderColor}|{route.BorderThickness:0.##}";
 
     private static ParticipantSurfaceTile? ResolveRouteTile(
         SourceRoute route,

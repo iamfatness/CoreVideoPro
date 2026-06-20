@@ -75,6 +75,58 @@ describe("ProgramCompositor", () => {
     expect(first.renderPlanId).not.toBe(changed.renderPlanId);
   });
 
+  it("carries scene source fit and border styling into resolved render layers", () => {
+    const styledSceneGraph: Extract<MediaCoreCommand, { type: "load-scene-graph" }> = {
+      type: "load-scene-graph",
+      sceneId: "styled-interview",
+      routes: [
+        {
+          routeId: "active",
+          mode: "active-speaker",
+          audioRole: "mix",
+          fitMode: "fit",
+          borderStyle: "program",
+          borderColor: "#FFAA33",
+          borderThickness: 5
+        }
+      ]
+    };
+
+    const first = buildRenderPlan({
+      sceneGraph: styledSceneGraph,
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+    const changedBorder = buildRenderPlan({
+      sceneGraph: {
+        ...styledSceneGraph,
+        routes: [{ ...styledSceneGraph.routes[0], borderThickness: 2 }]
+      },
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+
+    expect(first.routes[0]).toMatchObject({
+      fitMode: "fit",
+      borderStyle: "program",
+      borderColor: "#FFAA33",
+      borderThickness: 5
+    });
+    expect(first.layers[0]).toMatchObject({
+      fitMode: "fit",
+      borderStyle: "program",
+      borderColor: "#FFAA33",
+      borderThickness: 5
+    });
+    expect(first.renderPlanId).not.toBe(changedBorder.renderPlanId);
+  });
+
   it("reconfigures when the render plan id changes and marks incomplete plans degraded", () => {
     const compositor = new ProgramCompositor();
     const livePlan = buildRenderPlan({

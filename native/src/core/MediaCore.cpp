@@ -703,6 +703,17 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
         state.rectHeight = static_cast<float>(rect->getNumber("height", 1.0));
         state.hasRect = state.rectWidth > 0.f && state.rectHeight > 0.f;
       }
+      state.fitMode = route.getString("fitMode", "fill");
+      if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
+        state.fitMode = "fill";
+      }
+      state.borderStyle = route.getString("borderStyle", "accent");
+      if (state.borderStyle != "none" && state.borderStyle != "solid" && state.borderStyle != "accent" &&
+          state.borderStyle != "program" && state.borderStyle != "warning") {
+        state.borderStyle = "accent";
+      }
+      state.borderColor = route.getString("borderColor", "#44C1A1");
+      state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
       if (state.routeId.empty()) {
         sceneValidationWarnings_.push_back("Scene route " + std::to_string(routeIndex) + " is missing routeId.");
         state.routeId = "invalid-route-" + std::to_string(routeIndex);
@@ -1623,6 +1634,10 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
         layer.rect = {layout.x, layout.y, layout.width, layout.height};
         layer.order = videoLayerIndex;
       }
+      layer.fitMode = route.fitMode;
+      layer.borderStyle = route.borderStyle;
+      layer.borderColor = route.borderColor;
+      layer.borderThickness = route.borderThickness;
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
     }
