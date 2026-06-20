@@ -362,6 +362,33 @@ export type MediaCoreCaptureAudioSources = {
   summary: string;
 };
 
+// Capture-device snapshot mirror (F1 — real frame-pixel transport). Mirrors the
+// JSON emitted by MediaCore::captureDeviceJson (native/src/core/Protocol.h
+// kCaptureDeviceSnapshotFields) byte-for-byte. The F1 additions are the real
+// per-source counters `framesIngested` (populated-pixel frames published) and
+// `droppedFrames` (frame-pool back-pressure).
+export type MediaCoreCaptureDeviceInput = {
+  id: string;
+  label: string;
+  hasEmbeddedAudio: boolean;
+};
+
+export type MediaCoreCaptureDeviceSnapshot = {
+  id: string;
+  vendor: string;
+  name: string;
+  inputs: MediaCoreCaptureDeviceInput[];
+  selectedInputId: string;
+  resolution: { width: number; height: number };
+  frameRate: number;
+  connectionState: string;
+  signalPresent: boolean;
+  droppedFrames: number;
+  framesIngested: number;
+  audioSyncOffsetMs: number;
+  warning?: string;
+};
+
 export type MediaCoreDiagnosticsSnapshot = {
   generatedAtMs: number;
   sceneId?: string;

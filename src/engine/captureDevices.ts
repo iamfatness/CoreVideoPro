@@ -18,6 +18,7 @@ export function createTestCaptureDevices(): CaptureDeviceState[] {
       connectionState: "connected",
       signalPresent: true,
       droppedFrames: 0,
+      framesIngested: 0,
       audioSyncOffsetMs: 0
     },
     {
@@ -34,6 +35,7 @@ export function createTestCaptureDevices(): CaptureDeviceState[] {
       connectionState: "detected",
       signalPresent: false,
       droppedFrames: 0,
+      framesIngested: 0,
       audioSyncOffsetMs: 0
     }
   ];

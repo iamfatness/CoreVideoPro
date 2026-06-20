@@ -36,6 +36,7 @@ add_library(corevideo_native
   src/modules/SrtOutputSenderAdapter.cpp
   src/modules/StubRecordingEncoder.cpp
   src/modules/StubModules.cpp
+  src/modules/TestPatternCaptureDevice.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp
@@ -249,6 +250,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
+    tests/TestPatternFrameTransportTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
     tests/ZoomEngineProcessTest.cpp

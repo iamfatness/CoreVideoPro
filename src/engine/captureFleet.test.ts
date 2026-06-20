@@ -14,6 +14,7 @@ function device(overrides: Partial<CaptureDeviceState>): CaptureDeviceState {
     connectionState: "connected",
     signalPresent: true,
     droppedFrames: 0,
+    framesIngested: 0,
     audioSyncOffsetMs: 0,
     ...overrides
   };

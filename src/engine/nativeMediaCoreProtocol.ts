@@ -500,6 +500,35 @@ export type NativeMediaCoreOutputHealth = {
   droppedFrames: number;
 };
 
+// Capture-device snapshot mirror (F1 — real frame-pixel transport). Mirrors the
+// JSON emitted by MediaCore::captureDeviceJson (native/src/core/Protocol.h
+// kCaptureDeviceSnapshotFields) byte-for-byte. The F1 additions are the real
+// per-source counters `framesIngested` (populated-pixel frames published) and
+// `droppedFrames` (frame-pool back-pressure). The renderer-facing domain shape
+// is CaptureDeviceState (src/domain/production.ts), which carries the same
+// counters one-to-one.
+export type NativeMediaCoreCaptureDeviceInput = {
+  id: string;
+  label: string;
+  hasEmbeddedAudio: boolean;
+};
+
+export type NativeMediaCoreCaptureDeviceSnapshot = {
+  id: string;
+  vendor: string;
+  name: string;
+  inputs: NativeMediaCoreCaptureDeviceInput[];
+  selectedInputId: string;
+  resolution: { width: number; height: number };
+  frameRate: number;
+  connectionState: string;
+  signalPresent: boolean;
+  droppedFrames: number;
+  framesIngested: number;
+  audioSyncOffsetMs: number;
+  warning?: string;
+};
+
 export type NativeMediaCoreOutputSender = {
   senderId: string;
   destination: "rtmp" | "ndi" | "srt" | "webrtc";

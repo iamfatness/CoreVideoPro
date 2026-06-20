@@ -151,6 +151,7 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
       {"connectionState", device.connectionState},
       {"signalPresent", device.signalPresent},
       {"droppedFrames", static_cast<double>(device.droppedFrames)},
+      {"framesIngested", static_cast<double>(device.framesIngested)},
       {"audioSyncOffsetMs", device.audioSyncOffsetMs},
   };
   if (!device.warning.empty()) {

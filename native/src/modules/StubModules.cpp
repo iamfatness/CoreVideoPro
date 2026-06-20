@@ -487,7 +487,8 @@ class FakeCaptureDevice final : public ICaptureDevice {
        60,
        "connected",
        true,
-       0,
+       0,  // droppedFrames
+       0,  // framesIngested (probe-only: no real pixels yet)
        0,
        ""},
       {"aja-io-1",
@@ -503,7 +504,8 @@ class FakeCaptureDevice final : public ICaptureDevice {
        30,
        "detected",
        false,
-       0,
+       0,  // droppedFrames
+       0,  // framesIngested (probe-only: no real pixels yet)
        0,
        ""},
   };
@@ -576,7 +578,14 @@ ModuleSet createStubModules() {
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
   modules.encoder = createStubRecordingEncoderSink();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
-  modules.captureDevice = std::make_unique<FakeCaptureDevice>();
+  // The deterministic test-pattern device is part of the stub so the F1 frame
+  // path (real BGRA source -> compositor -> ProgramFrame) is exercisable with
+  // no hardware. It is composited alongside the metadata-only FakeCaptureDevice
+  // so existing probe-only device enumeration/state behavior is unchanged.
+  std::vector<std::unique_ptr<ICaptureDevice>> stubCaptureDevices;
+  stubCaptureDevices.push_back(std::make_unique<FakeCaptureDevice>());
+  stubCaptureDevices.push_back(createTestPatternCaptureDevice());
+  modules.captureDevice = std::make_unique<CompositeCaptureDevice>(std::move(stubCaptureDevices));
   return modules;
 }
 
