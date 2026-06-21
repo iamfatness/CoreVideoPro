@@ -41,9 +41,9 @@ public static class CaptureDeviceFormatSelector
         var normalized = NormalizeSubtype(subtype);
         return normalized switch
         {
-            "BGRA8" or "BGRA" or "ARGB32" => 96,
-            "YUY2" => 88,
-            "NV12" => 82,
+            "YUY2" => 96,
+            "NV12" => 92,
+            "BGRA8" or "BGRA" or "ARGB32" => 76,
             "I420" => 68,
             "P010" => 62,
             "MJPG" or "MJPEG" => 55,
@@ -170,7 +170,18 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             var errors = new List<string>();
             foreach (var format in BuildStartupCandidates(source, formats))
             {
-                var telemetry = await TryStartReaderAsync(source, format).ConfigureAwait(false);
+                CaptureDeviceFormatTelemetry? telemetry = null;
+                try
+                {
+                    telemetry = await TryStartReaderAsync(source, format).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write(
+                        $"capture: format failed {_stableDeviceId} {FormatLabel(format)}: {ex.GetType().Name}: {ex.Message}");
+                    await DisposeReaderAsync().ConfigureAwait(false);
+                }
+
                 if (telemetry is not null)
                 {
                     return telemetry;
@@ -393,11 +404,6 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             IReadOnlyList<MediaFrameFormat> rankedFormats)
         {
             var candidates = new List<MediaFrameFormat>();
-            if (source.CurrentFormat?.VideoFormat is not null)
-            {
-                candidates.Add(source.CurrentFormat);
-            }
-
             foreach (var format in rankedFormats)
             {
                 if (candidates.Any(candidate => SameFormat(candidate, format)))
@@ -410,6 +416,12 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 {
                     break;
                 }
+            }
+
+            if (source.CurrentFormat?.VideoFormat is not null &&
+                !candidates.Any(candidate => SameFormat(candidate, source.CurrentFormat)))
+            {
+                candidates.Add(source.CurrentFormat);
             }
 
             return candidates;

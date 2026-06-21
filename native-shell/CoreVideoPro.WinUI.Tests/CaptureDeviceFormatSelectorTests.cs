@@ -26,13 +26,13 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Fact]
-    public void Score_PrefersBgraCompatibleFormatsOverPlanarRawWhenResolutionAndFpsMatch()
+    public void Score_PrefersNativeUvcTransportFormatsOverSyntheticBgraWhenResolutionAndFpsMatch()
     {
         var bgra = new CaptureDeviceFormatCandidate(1920, 1080, 60, "ARGB32");
         var nv12 = new CaptureDeviceFormatCandidate(1920, 1080, 60, "NV12");
 
         Assert.True(
-            CaptureDeviceFormatSelector.Score(bgra) > CaptureDeviceFormatSelector.Score(nv12));
+            CaptureDeviceFormatSelector.Score(nv12) > CaptureDeviceFormatSelector.Score(bgra));
     }
 
     [Fact]
