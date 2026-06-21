@@ -34,11 +34,14 @@ public static class CaptureDeviceFormatSelector
         }
 
         var area = (double)format.Width * format.Height;
+        var fullHdArea = 1920.0 * 1080.0;
         var aspect = format.Height > 0 ? (double)format.Width / format.Height : 0;
         var score = 0.0;
 
-        score += Math.Min(area, 1920 * 1080) / 1000.0;
-        score -= area > 1920 * 1080 ? (area - (1920 * 1080)) / 2000.0 : 0;
+        score += Math.Min(area, fullHdArea) / 1000.0;
+        score -= area > fullHdArea ? (area - fullHdArea) / 900.0 : 0;
+        score += format.Width == 1920 && format.Height == 1080 ? 420.0 : 0.0;
+        score += format.Width == 1280 && format.Height == 720 ? 180.0 : 0.0;
         score += Math.Min(format.Fps, 60) * 8.0;
         score -= Math.Abs(aspect - (16.0 / 9.0)) * 120.0;
         score += SubtypeScore(format.Subtype);
@@ -508,6 +511,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             IReadOnlyList<MediaFrameFormat> rankedFormats)
         {
             var candidates = new List<MediaFrameFormat>();
+            if (source.CurrentFormat?.VideoFormat is not null)
+            {
+                candidates.Add(source.CurrentFormat);
+            }
+
             foreach (var format in rankedFormats)
             {
                 if (candidates.Any(candidate => SameFormat(candidate, format)))
@@ -520,12 +528,6 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 {
                     break;
                 }
-            }
-
-            if (source.CurrentFormat?.VideoFormat is not null &&
-                !candidates.Any(candidate => SameFormat(candidate, source.CurrentFormat)))
-            {
-                candidates.Add(source.CurrentFormat);
             }
 
             return candidates;

@@ -83,4 +83,14 @@ public sealed class CaptureDeviceFormatSelectorTests
         Assert.True(
             CaptureDeviceFormatSelector.Score(wide) > CaptureDeviceFormatSelector.Score(square));
     }
+
+    [Fact]
+    public void Score_PrefersFullHdCaptureModeOverUnstableFourKStartupMode()
+    {
+        var fullHd = new CaptureDeviceFormatCandidate(1920, 1080, 60, "YUY2");
+        var fourK = new CaptureDeviceFormatCandidate(3840, 2160, 30, "MJPG");
+
+        Assert.True(
+            CaptureDeviceFormatSelector.Score(fullHd) > CaptureDeviceFormatSelector.Score(fourK));
+    }
 }
