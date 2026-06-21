@@ -209,6 +209,63 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void SourceFraming_DragPanUsesActualFillTravelNotBoxSize()
+    {
+        var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
+            viewportWidth: 900,
+            viewportHeight: 900,
+            sourceWidth: 1600,
+            sourceHeight: 900,
+            fitMode: "fill",
+            sourceScale: 1,
+            startOffsetX: 0,
+            startOffsetY: 0,
+            dragDeltaX: 350,
+            dragDeltaY: 0);
+
+        Assert.Equal(-1, offset.X, precision: 3);
+        Assert.Equal(0, offset.Y, precision: 3);
+    }
+
+    [Fact]
+    public void SourceFraming_DragPanSlowsDownWhenZoomCreatesMoreTravel()
+    {
+        var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
+            viewportWidth: 900,
+            viewportHeight: 900,
+            sourceWidth: 1600,
+            sourceHeight: 900,
+            fitMode: "fill",
+            sourceScale: 2,
+            startOffsetX: 0,
+            startOffsetY: 0,
+            dragDeltaX: 350,
+            dragDeltaY: 0);
+
+        Assert.Equal(-0.3, offset.X, precision: 2);
+        Assert.Equal(0, offset.Y, precision: 3);
+    }
+
+    [Fact]
+    public void SourceFraming_DragPanPositionsDownscaledSourceInsideBox()
+    {
+        var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
+            viewportWidth: 900,
+            viewportHeight: 900,
+            sourceWidth: 900,
+            sourceHeight: 900,
+            fitMode: "stretch",
+            sourceScale: 0.5,
+            startOffsetX: 0,
+            startOffsetY: 0,
+            dragDeltaX: 225,
+            dragDeltaY: 225);
+
+        Assert.Equal(1, offset.X, precision: 3);
+        Assert.Equal(1, offset.Y, precision: 3);
+    }
+
+    [Fact]
     public void SourceFraming_FitModeCentersLetterboxedSourceAndStillAllowsZoomPan()
     {
         var centered = SourceFramingLayoutService.Resolve(900, 900, 1600, 900, "fit", 1, 0, 0);

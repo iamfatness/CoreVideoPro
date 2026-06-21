@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -325,9 +326,18 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             var boxWidth = Math.Max(_dragStartRect.Width, MinLayerSize);
             var boxHeight = Math.Max(_dragStartRect.Height, MinLayerSize);
-            var sourceOffsetX = _dragStartSourceOffsetX - (deltaX / boxWidth) * 2;
-            var sourceOffsetY = _dragStartSourceOffsetY - (deltaY / boxHeight) * 2;
-            _dragLayer.SetSourceOffset(sourceOffsetX, sourceOffsetY, notify: false);
+            var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
+                boxWidth * DesignWidth,
+                boxHeight * DesignHeight,
+                _dragLayer.Surface.FramingSourceWidth,
+                _dragLayer.Surface.FramingSourceHeight,
+                _dragLayer.FitMode,
+                _dragLayer.SourceScale,
+                _dragStartSourceOffsetX,
+                _dragStartSourceOffsetY,
+                deltaX * DesignWidth,
+                deltaY * DesignHeight);
+            _dragLayer.SetSourceOffset(offset.X, offset.Y, notify: false);
             UpdateLayerVisuals(frame, _dragLayer);
         }
         else

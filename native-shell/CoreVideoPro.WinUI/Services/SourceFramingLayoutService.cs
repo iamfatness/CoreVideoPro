@@ -6,6 +6,10 @@ public sealed record SourceFramingLayout(
     double TranslateX,
     double TranslateY);
 
+public sealed record SourceFramingOffset(
+    double X,
+    double Y);
+
 public static class SourceFramingLayoutService
 {
     public static SourceFramingLayout Resolve(
@@ -79,4 +83,55 @@ public static class SourceFramingLayoutService
 
         return new SourceFramingLayout(width, height, translateX, translateY);
     }
+
+    public static SourceFramingOffset ResolveOffsetAfterDrag(
+        double viewportWidth,
+        double viewportHeight,
+        double sourceWidth,
+        double sourceHeight,
+        string? fitMode,
+        double sourceScale,
+        double startOffsetX,
+        double startOffsetY,
+        double dragDeltaX,
+        double dragDeltaY)
+    {
+        var layout = Resolve(
+            viewportWidth,
+            viewportHeight,
+            sourceWidth,
+            sourceHeight,
+            fitMode,
+            sourceScale,
+            startOffsetX,
+            startOffsetY);
+
+        var offsetX = ResolveDraggedOffset(startOffsetX, dragDeltaX, layout.Width, viewportWidth);
+        var offsetY = ResolveDraggedOffset(startOffsetY, dragDeltaY, layout.Height, viewportHeight);
+        return new SourceFramingOffset(offsetX, offsetY);
+    }
+
+    private static double ResolveDraggedOffset(
+        double startOffset,
+        double dragDelta,
+        double contentLength,
+        double viewportLength)
+    {
+        if (viewportLength <= 0 || contentLength <= 0 || !double.IsFinite(dragDelta))
+        {
+            return NormalizeOffset(startOffset);
+        }
+
+        var travel = Math.Abs(contentLength - viewportLength);
+        if (travel <= 0.001)
+        {
+            return NormalizeOffset(startOffset);
+        }
+
+        var direction = contentLength >= viewportLength ? -1 : 1;
+        return NormalizeOffset(startOffset + direction * (dragDelta / travel) * 2);
+    }
+
+    private static double NormalizeOffset(double value) =>
+        double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), -1, 1) : 0;
 }
