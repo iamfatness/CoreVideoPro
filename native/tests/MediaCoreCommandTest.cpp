@@ -971,6 +971,33 @@ TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   EXPECT_NE(mix->getString("summary").find("native DSP mix"), std::string::npos);
 }
 
+TEST(MediaCoreCommand, AudioMixSessionUsesRealPcmMetersForSyncedChannels) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"participantId", "pcm-speaker"},
+               {"inputLevel", 0},
+               {"muted", false},
+           },
+       }},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* participant = findParticipantMix(*mix, "pcm-speaker");
+  ASSERT_NE(participant, nullptr);
+  EXPECT_TRUE(participant->get("inputLevel")->asNumber() > 0);
+  EXPECT_TRUE(participant->get("outputLevel")->asNumber() > 0);
+  EXPECT_TRUE(participant->get("rmsDbfs")->asNumber() > -20.0);
+  EXPECT_TRUE(participant->get("peakDbfs")->asNumber() > -10.0);
+}
+
 TEST(AudioDsp, BoundsFramesAndTracksInternalBridgeFaultMetrics) {
   corevideo::modules::AudioFrame frame;
   frame.participantId = "host";

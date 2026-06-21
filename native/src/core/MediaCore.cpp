@@ -1635,6 +1635,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
   rpc::Json::Array participants;
   rpc::Json::Array warnings;
   std::unordered_set<std::string> warningSet;
+  const auto nativeMix = modules_.mixer->session();
+  std::map<std::string, modules::AudioParticipantMixMetrics> nativeMetricsByParticipant;
+  for (const auto& participant : nativeMix.participants) {
+    nativeMetricsByParticipant[participant.participantId] = participant;
+  }
+
   int masterTotal = 0;
   int audibleCount = 0;
   bool limiterWouldReduce = false;
@@ -1646,12 +1652,17 @@ rpc::Json MediaCore::audioMixSessionState() const {
   int insertCount = 0;
 
   for (const auto& channel : audioChannels_) {
-    const int smartGainDb = calculateSmartGainDb(channel.inputLevel);
+    const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
+    const modules::AudioParticipantMixMetrics* measured =
+        nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
+    const int measuredInputLevel = measured ? measured->inputLevel : channel.inputLevel;
+    const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
     const int gainDb = channel.muted ? -60 : static_cast<int>(clampDouble(smartGainDb + (channel.hasManualGain ? channel.manualGainDb : 0), -12, 12));
-    const bool noiseSuppression = channel.noiseSuppression || channel.inputLevel < 35;
-    const int outputLevel = channel.muted ? 0 : clampInt(channel.inputLevel + gainDb * 4, 0, 100);
+    const bool noiseSuppression = channel.noiseSuppression || measuredInputLevel < 35 ||
+                                  (measured && measured->noiseSuppressionActive);
+    const int outputLevel = channel.muted ? 0 : clampInt(measuredInputLevel + gainDb * 4, 0, 100);
     const bool channelLimiterWouldReduce = outputLevel >= 88;
-    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce;
+    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce || (measured && measured->limiterActive);
     if (!channel.muted) {
       masterTotal += outputLevel;
       ++audibleCount;
@@ -1667,7 +1678,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         warnings.emplace_back("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
       }
     }
-    if (noiseSuppression && channel.inputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
+    if (noiseSuppression && measuredInputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
       warnings.emplace_back("Noise suppression active on low-level sources.");
     }
 
@@ -1683,20 +1694,18 @@ rpc::Json MediaCore::audioMixSessionState() const {
 
     rpc::Json::Object participant{
         {"participantId", channel.participantId},
-        {"inputLevel", channel.inputLevel},
+        {"inputLevel", measuredInputLevel},
         {"outputLevel", outputLevel},
         {"gainDb", gainDb},
-        // Derived deterministically from the 0-100 outputLevel (muted -> 0 ->
-        // silence floor); see deriveRmsDbfs/derivePeakDbfs for the sine model.
-        {"rmsDbfs", deriveRmsDbfs(outputLevel)},
-        {"peakDbfs", derivePeakDbfs(outputLevel)},
+        {"rmsDbfs", measured ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(outputLevel)},
+        {"peakDbfs", measured ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(outputLevel)},
         {"pan", channel.pan},
         {"solo", channel.solo},
         {"noiseSuppression", noiseSuppression},
-        {"limiterActive", audioLimiterEnabled_ && channelLimiterWouldReduce},
+        {"limiterActive", audioLimiterEnabled_ && (channelLimiterWouldReduce || (measured && measured->limiterActive))},
         {"muted", channel.muted},
         {"pluginInserts", pluginInserts},
-        {"status", audioStatusFor(channel.muted, gainDb)},
+        {"status", channel.muted ? "muted" : measured && !measured->status.empty() ? measured->status : audioStatusFor(false, gainDb)},
     };
     if (channel.hasManualGain) {
       participant.emplace("manualGainDb", channel.manualGainDb);
