@@ -208,6 +208,26 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void SourceFraming_FillCentersWideSourceInTallSuperSourceTile()
+    {
+        var centered = SourceFramingLayoutService.Resolve(
+            viewportWidth: 376,
+            viewportHeight: 441,
+            sourceWidth: 1920,
+            sourceHeight: 1080,
+            fitMode: "fill",
+            sourceScale: 1,
+            sourceOffsetX: 0,
+            sourceOffsetY: 0);
+
+        Assert.True(centered.Width > 376);
+        Assert.Equal(441, centered.Height, precision: 3);
+        Assert.True(centered.TranslateX < 0);
+        Assert.True(centered.TranslateX + centered.Width > 376);
+        Assert.Equal((376 - centered.Width) * 0.5, centered.TranslateX, precision: 3);
+    }
+
+    [Fact]
     public void VideoSurfaceState_FramingSourceUsesNaturalSourceDimensions()
     {
         var surface = VideoSurfaceState

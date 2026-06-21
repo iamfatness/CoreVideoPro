@@ -82,6 +82,7 @@ public sealed partial class ParticipantTileControl : UserControl
     public ParticipantTileControl()
     {
         InitializeComponent();
+        Loaded += OnLoaded;
         SizeChanged += OnSizeChanged;
     }
 
@@ -163,6 +164,8 @@ public sealed partial class ParticipantTileControl : UserControl
 
     public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
 
+    private bool _sourceFramingRefreshScheduled;
+
     private static void OnParticipantChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ParticipantTileControl tile)
@@ -187,6 +190,7 @@ public sealed partial class ParticipantTileControl : UserControl
             tile.Bindings.Update();
             tile.UpdatePreviewBitmap();
             tile.ApplySourceFraming();
+            tile.ScheduleSourceFramingRefresh();
         }
     }
 
@@ -196,6 +200,7 @@ public sealed partial class ParticipantTileControl : UserControl
         {
             tile.ApplySourceFit();
             tile.ApplyActiveSpeakerStyle();
+            tile.ScheduleSourceFramingRefresh();
         }
     }
 
@@ -204,11 +209,21 @@ public sealed partial class ParticipantTileControl : UserControl
         if (sender is ParticipantTileControl tile)
         {
             tile.ApplySourceFraming();
+            tile.ScheduleSourceFramingRefresh();
         }
     }
 
-    private void OnSizeChanged(object sender, SizeChangedEventArgs e) =>
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
         ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+    }
+
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+    }
 
     private void ApplyActiveSpeakerStyle()
     {
@@ -251,6 +266,7 @@ public sealed partial class ParticipantTileControl : UserControl
             PlaceholderPanel.Visibility = Visibility.Visible;
             InitialsBadge.Visibility = Visibility.Visible;
             InitialsText.Visibility = Visibility.Visible;
+            ScheduleSourceFramingRefresh();
             return;
         }
 
@@ -261,6 +277,7 @@ public sealed partial class ParticipantTileControl : UserControl
             PlaceholderPanel.Visibility = Visibility.Collapsed;
             InitialsBadge.Visibility = Visibility.Collapsed;
             InitialsText.Visibility = Visibility.Collapsed;
+            ScheduleSourceFramingRefresh();
             return;
         }
 
@@ -274,6 +291,7 @@ public sealed partial class ParticipantTileControl : UserControl
         PlaceholderPanel.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
         InitialsBadge.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
         InitialsText.Visibility = hasPreview ? Visibility.Collapsed : Visibility.Visible;
+        ScheduleSourceFramingRefresh();
     }
 
     private void ApplySourceFit()
@@ -283,14 +301,21 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private void ApplySourceFraming()
     {
+        var viewportWidth = TileViewport.ActualWidth > 0 ? TileViewport.ActualWidth : ActualWidth;
+        var viewportHeight = TileViewport.ActualHeight > 0 ? TileViewport.ActualHeight : ActualHeight;
+        if (viewportWidth <= 0 || viewportHeight <= 0)
+        {
+            return;
+        }
+
         TileViewport.Clip = new RectangleGeometry
         {
-            Rect = new Rect(0, 0, ActualWidth, ActualHeight)
+            Rect = new Rect(0, 0, viewportWidth, viewportHeight)
         };
 
         var layout = SourceFramingLayoutService.Resolve(
-            ActualWidth,
-            ActualHeight,
+            viewportWidth,
+            viewportHeight,
             SurfaceState?.FramingSourceWidth ?? 0,
             SurfaceState?.FramingSourceHeight ?? 0,
             SourceFit,
@@ -313,6 +338,21 @@ public sealed partial class ParticipantTileControl : UserControl
             X = layout.TranslateX,
             Y = layout.TranslateY
         };
+    }
+
+    private void ScheduleSourceFramingRefresh()
+    {
+        if (_sourceFramingRefreshScheduled)
+        {
+            return;
+        }
+
+        _sourceFramingRefreshScheduled = true;
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            _sourceFramingRefreshScheduled = false;
+            ApplySourceFraming();
+        });
     }
 
     private static SolidColorBrush BrushForBorderStyle(string style, string color) =>

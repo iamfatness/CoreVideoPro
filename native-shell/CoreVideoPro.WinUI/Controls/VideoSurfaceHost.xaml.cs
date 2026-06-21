@@ -245,6 +245,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         if (sender is VideoSurfaceHost host)
         {
             host.ApplySourceFit();
+            host.ScheduleSourceFramingRefresh();
         }
     }
 
@@ -253,6 +254,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         if (sender is VideoSurfaceHost host)
         {
             host.ApplySourceFraming();
+            host.ScheduleSourceFramingRefresh();
         }
     }
 
@@ -311,6 +313,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             BgraPreviewHelper.ClearPreview(PreviewImage);
             _lastPreviewSurfaceKey = null;
             PlaceholderPanel.Visibility = Visibility.Visible;
+            ScheduleSourceFramingRefresh();
             return;
         }
 
@@ -319,11 +322,13 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             BgraPreviewHelper.ClearPreview(PreviewImage);
             PreviewImage.Visibility = Visibility.Collapsed;
             PlaceholderPanel.Visibility = Visibility.Collapsed;
+            ScheduleSourceFramingRefresh();
             return;
         }
 
         if (IsGpuPathActive)
         {
+            ScheduleSourceFramingRefresh();
             return;
         }
 
@@ -343,11 +348,13 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         {
             PreviewImage.Visibility = Visibility.Visible;
             PlaceholderPanel.Visibility = Visibility.Collapsed;
+            ScheduleSourceFramingRefresh();
             return;
         }
 
         PreviewImage.Visibility = Visibility.Collapsed;
         PlaceholderPanel.Visibility = Visibility.Visible;
+        ScheduleSourceFramingRefresh();
     }
 
     private void ApplySourceFit()
@@ -357,14 +364,21 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void ApplySourceFraming()
     {
+        var viewportWidth = SurfaceViewport.ActualWidth > 0 ? SurfaceViewport.ActualWidth : ActualWidth;
+        var viewportHeight = SurfaceViewport.ActualHeight > 0 ? SurfaceViewport.ActualHeight : ActualHeight;
+        if (viewportWidth <= 0 || viewportHeight <= 0)
+        {
+            return;
+        }
+
         SurfaceViewport.Clip = new RectangleGeometry
         {
-            Rect = new Rect(0, 0, ActualWidth, ActualHeight)
+            Rect = new Rect(0, 0, viewportWidth, viewportHeight)
         };
 
         var layout = SourceFramingLayoutService.Resolve(
-            ActualWidth,
-            ActualHeight,
+            viewportWidth,
+            viewportHeight,
             SurfaceState?.FramingSourceWidth ?? 0,
             SurfaceState?.FramingSourceHeight ?? 0,
             SourceFit,
