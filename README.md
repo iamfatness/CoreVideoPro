@@ -86,8 +86,21 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 
 ## Commands
 
+**Run the app (Windows), one command:**
+
 ```powershell
 npm install
+npm run app                 # builds the best-available native core, then builds + launches the WinUI app
+```
+
+`npm run app` auto-picks the media-core tier it can build on your machine — **full**
+(Zoom + D3D11 + RTMP + audio, needs the Zoom SDK), **audio** (real Windows audio,
+synthetic video), or **stub** (all synthetic) — rebuilds it only when stale, then
+launches and prints which tier you got. Force a rebuild with `npm run app -- -Rebuild`.
+
+Other commands:
+
+```powershell
 npm run dev                 # operator UI against mock engines (any platform)
 npm run dev:native-core     # Node media-core service (in-container parity)
 npm run typecheck
