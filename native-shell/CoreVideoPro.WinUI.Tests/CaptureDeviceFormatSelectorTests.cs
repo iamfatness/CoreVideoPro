@@ -75,9 +75,12 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Fact]
-    public void ShouldPreferRankedFormatsBeforeCurrent_OnlyForCaptureCardsAndUvc()
+    public void ShouldPreferRankedFormatsBeforeCurrent_DoesNotBypassNativeCaptureCardDefault()
     {
-        Assert.True(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(allowsLateFirstFrame: true));
+        Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+            allowsLateFirstFrame: true,
+            currentSubtype: "NV12",
+            bestRankedSubtype: "YUY2"));
         Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
             allowsLateFirstFrame: false,
             currentSubtype: "NV12",

@@ -77,11 +77,7 @@ public static class CaptureDeviceFormatSelector
         string? currentSubtype = null,
         string? bestRankedSubtype = null)
     {
-        if (allowsLateFirstFrame)
-        {
-            return true;
-        }
-
+        _ = allowsLateFirstFrame;
         return IsSyntheticBgraSubtype(currentSubtype) &&
             SubtypeScore(bestRankedSubtype) > SubtypeScore(currentSubtype);
     }
