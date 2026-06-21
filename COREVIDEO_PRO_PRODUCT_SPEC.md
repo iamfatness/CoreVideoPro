@@ -1,5 +1,12 @@
 # CoreVideo Pro Product Spec and MVP Plan
 
+> **Implementation status (2026-06-21).** This document is the product vision and MVP
+> plan. The shipping architecture is a **WinUI 3 (.NET 9) shell embedding a React/TypeScript
+> operator UI over a C++20 media core**, **Windows-first** (macOS is a roadmap target, not
+> yet implemented). Electron was evaluated and removed. See [`README.md`](README.md) for the
+> as-built architecture and current capability status. Where this spec says "cross-platform"
+> or recommends Qt/Tauri, treat it as the original evaluation, not the current stack.
+
 ## Name, Tagline, and Positioning
 
 ### CoreVideo Pro
@@ -280,20 +287,21 @@ Each template is a one-click apply: selecting it maps current participants into 
 
 ### Desktop App
 
-Recommended: **Qt 6 + C++/QML**.
+**As built: WinUI 3 (.NET 9) shell + embedded React/TypeScript operator UI + C++20 media core.**
 
-Reasons:
+The operator console is a React/Vite app hosted by a native **WinUI 3** desktop shell
+(`native-shell/CoreVideoPro.WinUI`); a native C++ Win32 Studio shell (`studio/`) provides a
+fast desktop validation harness. The UI talks to the C++ media core over a typed JSON-line
+command/snapshot protocol. Current platform is **Windows-first**; macOS is a roadmap target.
 
-- Cross-platform Mac and Windows desktop support.
-- Strong fit for native media SDKs.
-- Good performance and packaging control.
-- Lower friction with Zoom Meeting SDK, NDI, hardware encoders, and platform audio/video APIs.
+> Earlier evaluation considered **Qt 6 + C++/QML** and **Tauri + React/TypeScript + Rust/C++**
+> for cross-platform reach. The project chose a WinUI shell + React UI + C++ media core to ship
+> the Windows product fastest while keeping the renderer out of the real-time media pipeline.
 
-Alternative: **Tauri + React/TypeScript UI + Rust/C++ media core**.
-
-Use this only if the team prioritizes web UI iteration and is comfortable maintaining native bridges for all media paths.
-
-Architectural constraint: Electron, Tauri, React, or any web renderer may host the operator interface, but must not own the real-time media pipeline. Direct Zoom media ingest, frame transforms, chroma key, scene graph rendering, overlays, audio mixing, recording, ISO capture, and streaming must live in a native media core behind typed IPC.
+Architectural constraint (unchanged): React, or any web renderer, may host the operator
+interface but must **not** own the real-time media pipeline. Direct Zoom media ingest, frame
+transforms, chroma key, scene graph rendering, overlays, audio mixing, recording, ISO capture,
+and streaming live in the native C++ media core behind typed IPC.
 
 ### Media Core
 
@@ -572,7 +580,7 @@ Template selection considers:
 | Real-time AI captions/overlays | Core feature | External/manual | Limited | External/manual |
 | Pro scene depth | Focused, not exhaustive | Excellent | Medium | Excellent |
 | Hybrid local capture (Blackmagic/AJA) as first-class source | MVP, plug-and-play | Yes, advanced config | No | Yes, advanced config |
-| Cross-platform Mac + Windows | Yes | Windows-first | Mac-focused | Mac-focused |
+| Cross-platform Mac + Windows | Windows now; macOS on roadmap | Windows-first | Mac-focused | Mac-focused |
 | NDI/PTZ/ISO recording/remote surfaces | Phase 2+, deferred | Strong | Limited | Strong |
 | Output protocols at MVP | RTMP + local file | RTMP/NDI/SRT/etc. | RTMP + local file | RTMP/NDI/etc. |
 | Best for Zoom-based remote shows | Yes | Powerful but complex | Easy but less flexible | Capable but less AI-native and more complex |

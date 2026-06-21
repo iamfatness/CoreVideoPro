@@ -10,11 +10,15 @@ Active product paths:
 - `native-core/` - Node mirror for protocol/runtime tests while native parity hardens.
 - `src/` - shared operator state, contracts, and renderer logic that can be hosted by native shells.
 
-Active briefs:
+Active records:
 
-- `02-track-b-native-media-core.md` - C++20 native media-core process skeleton and interface-isolated SDK adapters.
-- `04-track-b-next-milestones.md` - next native media-core milestones.
-- `06-decision-zoom-capture-path.md` - Zoom capture path decision.
+- `06-decision-zoom-capture-path.md` - decision record: the vendored standalone Zoom
+  capture engine (`native/zoom-engine/`) is the primary Zoom capture path.
+
+The earlier native-media-core build briefs (skeleton + next-milestones dispatch
+prompts) have been completed and are superseded by
+[`../native-production-completion-plan.md`](../native-production-completion-plan.md),
+which carries the current per-feature plan and status.
 
 Ground rules:
 
