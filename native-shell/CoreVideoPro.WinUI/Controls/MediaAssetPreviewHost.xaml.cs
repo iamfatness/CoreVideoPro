@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Media.Core;
 using Windows.Media.Playback;
@@ -35,6 +36,13 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             typeof(string),
             typeof(MediaAssetPreviewHost),
             new PropertyMetadata(null, OnPreviewPropertyChanged));
+
+    public static readonly DependencyProperty PreviewStretchProperty =
+        DependencyProperty.Register(
+            nameof(PreviewStretch),
+            typeof(Stretch),
+            typeof(MediaAssetPreviewHost),
+            new PropertyMetadata(Stretch.Uniform, OnPreviewPropertyChanged));
 
     private static readonly HashSet<string> CompletedPlaybackKeys = new(StringComparer.Ordinal);
     private static readonly object CompletedPlaybackGate = new();
@@ -74,6 +82,12 @@ public sealed partial class MediaAssetPreviewHost : UserControl
     {
         get => (string?)GetValue(PlaybackKeyProperty);
         set => SetValue(PlaybackKeyProperty, value);
+    }
+
+    public Stretch PreviewStretch
+    {
+        get => (Stretch)GetValue(PreviewStretchProperty);
+        set => SetValue(PreviewStretchProperty, value);
     }
 
     public string EmptyTitle =>

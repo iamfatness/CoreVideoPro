@@ -2427,6 +2427,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
     layer.order = -100;
     layer.rect = {0.f, 0.f, 1.f, 1.f};
     layer.fitMode = "fill";
+    layer.sourceScale = 1.f;
+    layer.sourceOffsetX = 0.f;
+    layer.sourceOffsetY = 0.f;
     layer.borderStyle = "none";
     layer.borderThickness = 0.f;
     renderPlan.layers.push_back(std::move(layer));

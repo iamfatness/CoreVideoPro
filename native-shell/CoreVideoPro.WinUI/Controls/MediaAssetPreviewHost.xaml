@@ -15,11 +15,11 @@
     <Grid Background="#050608">
         <MediaPlayerElement x:Name="VideoPreview"
                             AreTransportControlsEnabled="True"
-                            Stretch="Uniform"
+                            Stretch="{x:Bind PreviewStretch, Mode=OneWay}"
                             Visibility="Collapsed" />
 
         <Image x:Name="ImagePreview"
-               Stretch="Uniform"
+               Stretch="{x:Bind PreviewStretch, Mode=OneWay}"
                HorizontalAlignment="Stretch"
                VerticalAlignment="Stretch"
                Visibility="Collapsed" />
