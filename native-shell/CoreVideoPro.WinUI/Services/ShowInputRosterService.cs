@@ -171,11 +171,42 @@ public static class ShowInputRosterService
         var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
         captureSurfaces ??= new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal);
 
-        return slots
+        var assignedDeviceIds = new HashSet<string>(
+            slots
+                .Where(slot => slot.InShow &&
+                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+                    !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
+                .Select(slot => slot.CaptureDeviceId!),
+            StringComparer.Ordinal);
+
+        var routedTiles = slots
             .Where(slot => slot.InShow && slot.IsAssigned && HasResolvedSource(slot, participantsById, devicesById))
             .Take(MaxMultiviewBoxes)
             .Select(slot => ToSurfaceTile(slot, participantsById, devicesById, tilesByParticipant, captureSurfaces))
             .ToList();
+
+        if (routedTiles.Count >= MaxMultiviewBoxes)
+        {
+            return routedTiles;
+        }
+
+        var nextSourceIndex = routedTiles.Count == 0
+            ? 1
+            : routedTiles.Max(tile => tile.SourceIndex) + 1;
+        foreach (var device in captureDevices.Where(device =>
+                     device.IsConnected &&
+                     !assignedDeviceIds.Contains(device.Id) &&
+                     captureSurfaces.TryGetValue(device.Id, out var surface) &&
+                     surface.HasPreviewBitmap))
+        {
+            routedTiles.Add(ToFallbackCaptureTile(device, captureSurfaces[device.Id], nextSourceIndex++));
+            if (routedTiles.Count >= MaxMultiviewBoxes)
+            {
+                break;
+            }
+        }
+
+        return routedTiles;
     }
 
     public static int CountActiveShowInputs(IReadOnlyList<ShowInputSlot> slots) =>
@@ -294,4 +325,40 @@ public static class ShowInputRosterService
 
         return ParticipantSurfaceTile.EmptySlot(slot.SlotNumber);
     }
+
+    private static ParticipantSurfaceTile ToFallbackCaptureTile(
+        CaptureDevice device,
+        VideoSurfaceState liveSurface,
+        int sourceIndex)
+    {
+        var label = $"{device.Name} - {device.ResolutionLabel}";
+        return new ParticipantSurfaceTile
+        {
+            Participant = new Participant
+            {
+                Id = $"capture:{device.Id}",
+                Name = label,
+                Title = ResolveCaptureTitle(device),
+                Role = ParticipantRole.Guest,
+                Health = FeedHealth.Live
+            },
+            Surface = liveSurface with
+            {
+                SurfaceKey = $"capture:{device.Id}",
+                Kind = VideoSurfaceKind.Multiview,
+                Title = label,
+                DetailLine = "Live capture fallback - assign to a Show Input to lock its slot."
+            },
+            SourceIndex = sourceIndex
+        };
+    }
+
+    private static string ResolveCaptureTitle(CaptureDevice device) =>
+        device.Vendor.ToLowerInvariant() switch
+        {
+            "blackmagic" => "Blackmagic SDI/HDMI",
+            "aja" => "AJA SDI/HDMI",
+            "srt" => "SRT ingest",
+            _ => "UVC webcam"
+        };
 }

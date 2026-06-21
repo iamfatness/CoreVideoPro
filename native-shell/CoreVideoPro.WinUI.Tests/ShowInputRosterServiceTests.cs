@@ -201,6 +201,53 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void BuildMultiviewTiles_AddsLiveUnassignedCaptureDeviceAsFallback()
+    {
+        var surface = VideoSurfaceState
+            .Waiting(VideoSurfaceKind.Multiview, "capture:elgato", "Game Capture HD60 S+")
+            .WithPreviewPixels([0, 0, 0, 255], 1, 1);
+
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.Unassigned, InShow = true }],
+            [],
+            [Device("elgato", "Game Capture HD60 S+", "uvc", 1920, 1080, 60, connected: true)],
+            [],
+            new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal)
+            {
+                ["elgato"] = surface
+            });
+
+        var tile = Assert.Single(tiles);
+        Assert.Equal("capture:elgato", tile.Participant.Id);
+        Assert.Equal("UVC webcam", tile.Participant.Title);
+        Assert.True(tile.Surface.HasPreviewBitmap);
+        Assert.Contains("Live capture fallback", tile.Surface.DetailLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildMultiviewTiles_DoesNotDuplicateAssignedLiveCaptureFallback()
+    {
+        var surface = VideoSurfaceState
+            .Waiting(VideoSurfaceKind.Multiview, "capture:cam-uvc", "USB Capture")
+            .WithPreviewPixels([0, 0, 0, 255], 1, 1);
+
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
+            [new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-uvc", InShow = true }],
+            [],
+            [Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: true)],
+            [],
+            new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal)
+            {
+                ["cam-uvc"] = surface
+            });
+
+        var tile = Assert.Single(tiles);
+        Assert.Equal(1, tile.SourceIndex);
+        Assert.Equal("capture:cam-uvc", tile.Participant.Id);
+        Assert.DoesNotContain("fallback", tile.Surface.DetailLine, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void SameMultiviewTileStructure_MatchesParticipantAndSlotOrderOnly()
     {
         var first = ShowInputRosterService.BuildMultiviewTiles(
