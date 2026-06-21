@@ -108,7 +108,9 @@ Write-Host "[build-studio] building native media core..." -ForegroundColor Cyan
 Invoke-VsDevCommand -VsDevCmd $vsDevCmd -Commands @(
   (Invoke-CMakeConfigure -CMake $cmake -SourceDir $NativeDir -BuildDir $NativeBuildDir -ExtraArgs @(
       "-DCOREVIDEO_STUB=ON",
-      "-DCOREVIDEO_ENABLE_DEV_ADAPTERS=OFF",
+      "-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON",
+      "-DCOREVIDEO_WITH_WASAPI_MONITOR=ON",
+      "-DCOREVIDEO_WITH_WASAPI_CAPTURE=ON",
       "-DBUILD_TESTING=OFF"
     )),
   (Invoke-CMakeBuild -CMake $cmake -BuildDir $NativeBuildDir -Config $Config -Targets @("corevideo-native"))

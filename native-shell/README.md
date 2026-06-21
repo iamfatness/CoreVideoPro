@@ -25,6 +25,14 @@
 
 The WinUI shell requires `corevideo-native.exe`. Build it under `native/build*` before launching the app.
 
+For operator testing on Windows, use the Studio build script so local audio capture and monitor output are real WASAPI adapters instead of stub-only PCM:
+
+```powershell
+.\scripts\build-studio.ps1 -Config Release
+```
+
+The portable stub build stays useful for CI and protocol tests:
+
 ```powershell
 cmake -S native -B native/build -DCOREVIDEO_STUB=ON -DCOREVIDEO_ENABLE_DEV_ADAPTERS=OFF -DBUILD_TESTING=ON
 cmake --build native/build --config Release --target corevideo-native corevideo-native-tests
@@ -39,7 +47,7 @@ npm run test:native-shell-smoke
 npm run test:native-shell-dev-readiness
 ```
 
-For a full dev-machine build with Zoom SDK, D3D11 compositor, and hardware adapters, use `scripts/build-native-dev.ps1` instead (`COREVIDEO_STUB=OFF`).
+For a full dev-machine build with Zoom SDK, D3D11 compositor, RTMP, and hardware adapters, use `scripts/build-native-dev.ps1` instead (`COREVIDEO_STUB=OFF`).
 
 ## Quick Start
 
