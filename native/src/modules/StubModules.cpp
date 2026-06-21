@@ -39,33 +39,12 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
   }
 
   std::vector<AudioFrame> pollAudioFrames() override {
-    // Emit real PCM tones (not just metadata) so the mixer/monitor/recording
-    // paths carry an actual signal end to end. A distinct frequency per speaker
-    // keeps the synthetic mix non-silent and deterministic.
-    return {
-        makeSyntheticAudioFrame("synthetic-speaker-1", 220.0),
-        makeSyntheticAudioFrame("synthetic-speaker-2", 330.0),
-    };
+    // Fallback video keeps the UI renderable without a meeting. Audio must stay
+    // silent here so meters and monitor output only represent real routed PCM.
+    return {};
   }
 
  private:
-  AudioFrame makeSyntheticAudioFrame(const std::string& participantId, double frequencyHz) {
-    AudioFrame frame;
-    frame.participantId = participantId;
-    frame.sampleRate = 48000;
-    frame.channels = 1;
-    frame.timestampMs = frameNumber_ * 16;
-    frame.sampleCount = 480;  // 10 ms at 48 kHz
-    frame.pcm.resize(static_cast<size_t>(frame.sampleCount));
-    constexpr double amplitude = 0.12;  // well below full scale; clearly audible
-    const int64_t baseSample = frameNumber_ * frame.sampleCount;
-    for (int index = 0; index < frame.sampleCount; ++index) {
-      const double phase = 2.0 * kAudioPi * frequencyHz * static_cast<double>(baseSample + index) / 48000.0;
-      frame.pcm[static_cast<size_t>(index)] = static_cast<float>(amplitude * std::sin(phase));
-    }
-    return frame;
-  }
-
   int64_t frameNumber_ = 0;
 };
 

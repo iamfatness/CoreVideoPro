@@ -85,6 +85,41 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
   int64_t tick_ = 0;
 };
 
+class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = "pcm-speaker";
+    frame.width = 1280;
+    frame.height = 720;
+    frame.naturalWidth = 1280;
+    frame.naturalHeight = 720;
+    frame.timestampMs = ++tick_ * 16;
+    return {frame};
+  }
+
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "pcm-speaker";
+    frame.sampleRate = 48000;
+    frame.channels = 2;
+    frame.sampleCount = 480;
+    frame.pcm.resize(static_cast<size_t>(frame.sampleCount) * frame.channels);
+    const int64_t baseSample = tick_ * frame.sampleCount;
+    for (int index = 0; index < frame.sampleCount; ++index) {
+      const double phase = 2.0 * corevideo::modules::kAudioPi * 440.0 *
+                           static_cast<double>(baseSample + index) / 48000.0;
+      const auto sample = static_cast<float>(0.25 * std::sin(phase));
+      frame.pcm[static_cast<size_t>(index) * 2] = sample;
+      frame.pcm[static_cast<size_t>(index) * 2 + 1] = sample;
+    }
+    return {frame};
+  }
+
+ private:
+  int64_t tick_ = 0;
+};
+
 class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
@@ -371,6 +406,30 @@ TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
   EXPECT_TRUE(std::abs(monitorPtr->lastFirstSample - 0.2506f) < 0.01f);
   EXPECT_EQ(state.get("audioMixSession")->getString("monitorStatus"), "playing");
   EXPECT_TRUE(state.get("audioMixSession")->get("monitorFramesPlayed")->asNumber() > 0);
+}
+
+TEST(MediaCoreCommand, DefaultFallbackDoesNotFabricateAudioSignal) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "stub-render"},
+          {"deviceName", "Stub Render"},
+          {"volume", 0.75},
+      },
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_EQ(mix->getString("status"), "idle");
+  EXPECT_EQ(mix->get("masterLevel")->asNumber(), 0);
+  EXPECT_EQ(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_EQ(mix->getString("monitorStatus"), "armed");
+  EXPECT_EQ(mix->get("monitorFramesPlayed")->asNumber(), 0);
+  ASSERT_NE(mix->get("participants"), nullptr);
+  EXPECT_TRUE(mix->get("participants")->asArray().empty());
 }
 
 TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
@@ -970,7 +1029,9 @@ TEST(MediaCoreCommand, ClampsAndWarnsOnInvalidAudioRoutingSends) {
 }
 
 TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
-  corevideo::core::MediaCore mediaCore;
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{"recording"}},
@@ -982,7 +1043,7 @@ TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   EXPECT_TRUE(mix->getString("status") == "live" || mix->getString("status") == "warning");
   EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() > 0);
   EXPECT_TRUE(mix->get("masterLevel")->asNumber() > 0);
-  EXPECT_EQ(mix->get("participants")->asArray().size(), 2u);
+  EXPECT_EQ(mix->get("participants")->asArray().size(), 1u);
   EXPECT_NE(mix->getString("summary").find("native DSP mix"), std::string::npos);
 }
 
@@ -1065,7 +1126,9 @@ TEST(AudioDsp, TracksSilenceWithoutLeakingInternalMetricsIntoPublicAudioMixShape
   EXPECT_EQ(session.silenceCount, 1);
   EXPECT_EQ(session.status, "warning");
 
-  corevideo::core::MediaCore mediaCore;
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{"recording"}},
@@ -1103,7 +1166,9 @@ TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
 }
 
 TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
-  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "prepare-encoder-session"},
@@ -1400,9 +1465,9 @@ TEST(MediaCoreAudioMonitor, RoutingMatrixMixesPcmIntoProgramAndIsoTaps) {
 }
 
 TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
-  // Stub modules: the synthetic source emits real PCM, so the recording
-  // proof observes muxed audio samples rather than a synthetic frame counter.
-  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
   const auto state = mediaCore.applyCommands(
       corevideo::rpc::Json::Array{
           corevideo::rpc::Json::Object{
@@ -1437,9 +1502,9 @@ TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
 }
 
 TEST(MediaCoreCommand, MeasuresBs1770MasterLoudnessOnProgramTap) {
-  // Default modules: the synthetic source emits real PCM tones, so the master
-  // meter measures actual BS.1770 loudness off the program tap, not a lookup.
-  corevideo::core::MediaCore mediaCore;
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<SinePcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
   const auto state = mediaCore.applyCommands(
       corevideo::rpc::Json::Array{
           corevideo::rpc::Json::Object{
@@ -1826,7 +1891,7 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
 
   const auto* mix = state.get("audioMixSession");
   ASSERT_NE(mix, nullptr);
-  EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() >= 4);
+  EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() >= 2);
   EXPECT_EQ(mix->getString("monitorStatus"), "stub-monitor");
   EXPECT_TRUE(mix->get("monitorFramesPlayed")->asNumber() > 0);
 
