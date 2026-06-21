@@ -63,9 +63,21 @@ public static class StudioStreamOutputValidation
             return "RTMP protocol selection must match the server URL scheme.";
         }
 
-        if (string.IsNullOrWhiteSpace(streamKey))
+        if (string.IsNullOrWhiteSpace(uri.AbsolutePath) ||
+            uri.AbsolutePath.Trim('/').Length == 0)
+        {
+            return "RTMP server URL must include an application path.";
+        }
+
+        var normalizedStreamKey = NormalizeText(streamKey, string.Empty);
+        if (normalizedStreamKey.Length == 0)
         {
             return "Configure RTMP stream key before streaming.";
+        }
+
+        if (normalizedStreamKey.Any(char.IsWhiteSpace))
+        {
+            return "RTMP stream key cannot contain whitespace.";
         }
 
         return null;

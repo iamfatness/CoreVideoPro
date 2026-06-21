@@ -45,6 +45,30 @@ public sealed class StudioStreamOutputValidationTests
     }
 
     [Theory]
+    [InlineData("live.example.com")]
+    [InlineData("rtmps://live.example.com")]
+    public void Rtmp_RejectsServerUrlWithoutApplicationPath(string serverUrl)
+    {
+        var error = StudioStreamOutputValidation.ValidateRtmp(
+            "rtmps",
+            serverUrl,
+            "stream-key");
+
+        Assert.Equal("RTMP server URL must include an application path.", error);
+    }
+
+    [Fact]
+    public void Rtmp_RejectsStreamKeyWithWhitespace()
+    {
+        var error = StudioStreamOutputValidation.ValidateRtmp(
+            "rtmps",
+            "live.example.com/app",
+            "stream key");
+
+        Assert.Equal("RTMP stream key cannot contain whitespace.", error);
+    }
+
+    [Theory]
     [InlineData("caller")]
     [InlineData("listener")]
     [InlineData("rendezvous")]
