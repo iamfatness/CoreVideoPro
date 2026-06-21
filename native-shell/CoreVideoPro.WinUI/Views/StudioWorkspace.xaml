@@ -879,7 +879,8 @@
                             HorizontalAlignment="Center" VerticalAlignment="Center">
                     <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" VerticalAlignment="Center"
                                Foreground="{StaticResource StudioMutedBrush}" FontSize="11" Margin="0,0,8,0"
-                               MaxWidth="160" TextTrimming="CharacterEllipsis" />
+                               MaxWidth="160" TextTrimming="CharacterEllipsis"
+                               ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" />
                     <StackPanel Orientation="Horizontal" Spacing="0">
                         <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
                                 CornerRadius="8,0,0,8"
