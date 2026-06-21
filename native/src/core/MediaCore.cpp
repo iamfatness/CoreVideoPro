@@ -1996,11 +1996,16 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       ++pairedCount;
     }
 
+    // Dev-gated hardware kinds need a real adapter the portable build can't
+    // provide, so carry the caveat on the source row too (not just the aggregate).
+    std::string hardwareCaveat;
     if (!source.audioDeviceId.empty() && source.audioSourceKind == "asio-input") {
-      addWarning("ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.");
+      hardwareCaveat = "ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.";
+    } else if (!source.audioDeviceId.empty() && source.audioSourceKind == "embedded-capture-audio") {
+      hardwareCaveat = "Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.";
     }
-    if (!source.audioDeviceId.empty() && source.audioSourceKind == "embedded-capture-audio") {
-      addWarning("Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.");
+    if (!hardwareCaveat.empty()) {
+      addWarning(hardwareCaveat);
     }
 
     const auto metric = metricsByCaptureId.find(source.captureDeviceId);
@@ -2013,6 +2018,11 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     } else if (streaming && framesReceived <= 0) {
       sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);
+    }
+    // Fall back to the hardware caveat when no more-specific warning applies, so
+    // ASIO/embedded rows are never silently clean in a build without the adapter.
+    if (sourceWarning.empty()) {
+      sourceWarning = hardwareCaveat;
     }
     if (streaming) {
       ++streamingCount;
