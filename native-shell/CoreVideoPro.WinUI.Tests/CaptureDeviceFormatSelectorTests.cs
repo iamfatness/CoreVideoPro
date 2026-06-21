@@ -100,6 +100,23 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Fact]
+    public void ShouldKeepReaderOnlineAfterOutputSubtypeTimeout_OnlyKeepsFinalOutputFallback()
+    {
+        Assert.False(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterOutputSubtypeTimeout(
+            keepFormatOnlineAfterFirstFrameTimeout: true,
+            outputSubtypeIndex: 0,
+            outputSubtypeCount: 2));
+        Assert.False(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterOutputSubtypeTimeout(
+            keepFormatOnlineAfterFirstFrameTimeout: false,
+            outputSubtypeIndex: 1,
+            outputSubtypeCount: 2));
+        Assert.True(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterOutputSubtypeTimeout(
+            keepFormatOnlineAfterFirstFrameTimeout: true,
+            outputSubtypeIndex: 1,
+            outputSubtypeCount: 2));
+    }
+
+    [Fact]
     public void ShouldPreferRankedFormatsBeforeCurrent_DoesNotBypassNativeCaptureCardDefault()
     {
         Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(

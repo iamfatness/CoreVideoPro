@@ -77,6 +77,14 @@ public static class CaptureDeviceFormatSelector
         candidateCount > 0 &&
         candidateIndex == candidateCount - 1;
 
+    public static bool ShouldKeepReaderOnlineAfterOutputSubtypeTimeout(
+        bool keepFormatOnlineAfterFirstFrameTimeout,
+        int outputSubtypeIndex,
+        int outputSubtypeCount) =>
+        keepFormatOnlineAfterFirstFrameTimeout &&
+        outputSubtypeCount > 0 &&
+        outputSubtypeIndex == outputSubtypeCount - 1;
+
     public static bool ShouldPreferRankedFormatsBeforeCurrent(
         bool allowsLateFirstFrame,
         string? currentSubtype = null,
@@ -583,15 +591,20 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
 
             CaptureFormatTelemetry(source);
-            foreach (var outputSubtype in CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(format.Subtype))
+            var outputSubtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(format.Subtype);
+            for (var i = 0; i < outputSubtypes.Count; i++)
             {
+                var outputSubtype = outputSubtypes[i];
                 try
                 {
                     var telemetry = await TryStartReaderWithOutputSubtypeAsync(
                         source,
                         outputSubtype,
                         FormatLabel(format),
-                        keepOnlineAfterFirstFrameTimeout).ConfigureAwait(false);
+                        CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterOutputSubtypeTimeout(
+                            keepOnlineAfterFirstFrameTimeout,
+                            i,
+                            outputSubtypes.Count)).ConfigureAwait(false);
                     if (telemetry is not null)
                     {
                         return telemetry;
