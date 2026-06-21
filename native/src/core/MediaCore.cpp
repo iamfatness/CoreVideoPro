@@ -1248,6 +1248,24 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
 
 namespace {
 
+bool sameCaptureAudioSourceConfig(const modules::CaptureAudioSourceConfig& left,
+                                  const modules::CaptureAudioSourceConfig& right) {
+  return left.captureDeviceId == right.captureDeviceId &&
+         left.audioDeviceId == right.audioDeviceId &&
+         left.audioDeviceName == right.audioDeviceName &&
+         left.audioSourceKind == right.audioSourceKind &&
+         left.nativeAudioDeviceId == right.nativeAudioDeviceId &&
+         left.audioDriverName == right.audioDriverName &&
+         left.audioSyncOffsetMs == right.audioSyncOffsetMs &&
+         left.embedded == right.embedded;
+}
+
+bool sameCaptureAudioSourceConfigs(const std::vector<modules::CaptureAudioSourceConfig>& left,
+                                   const std::vector<modules::CaptureAudioSourceConfig>& right) {
+  return left.size() == right.size() &&
+         std::equal(left.begin(), left.end(), right.begin(), sameCaptureAudioSourceConfig);
+}
+
 constexpr double kMinAudioRoutingGainDb = -60.0;
 constexpr double kMaxAudioRoutingGainDb = 10.0;
 
@@ -1341,7 +1359,10 @@ void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
   const rpc::Json* sources = command.get("sources");
   if (!sources || !sources->isArray()) {
     if (modules_.audioCapture) {
-      modules_.audioCapture->configure(moduleSources);
+      if (!sameCaptureAudioSourceConfigs(lastCaptureAudioSourceConfigs_, moduleSources)) {
+        modules_.audioCapture->configure(moduleSources);
+        lastCaptureAudioSourceConfigs_ = moduleSources;
+      }
     }
     return;
   }
@@ -1378,7 +1399,10 @@ void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
     captureAudioSources_.push_back(std::move(input));
   }
   if (modules_.audioCapture) {
-    modules_.audioCapture->configure(moduleSources);
+    if (!sameCaptureAudioSourceConfigs(lastCaptureAudioSourceConfigs_, moduleSources)) {
+      modules_.audioCapture->configure(moduleSources);
+      lastCaptureAudioSourceConfigs_ = moduleSources;
+    }
   }
 }
 

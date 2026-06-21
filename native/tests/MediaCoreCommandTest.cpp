@@ -205,6 +205,21 @@ class RecordingMonitorOutput final : public corevideo::modules::IAudioMonitorOut
   bool active_ = false;
 };
 
+class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptureSource {
+ public:
+  void configure(const std::vector<corevideo::modules::CaptureAudioSourceConfig>& sources) override {
+    ++configureCount;
+    lastSources = sources;
+  }
+
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames(int64_t) override {
+    return {};
+  }
+
+  int configureCount = 0;
+  std::vector<corevideo::modules::CaptureAudioSourceConfig> lastSources;
+};
+
 }  // namespace
 
 TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
@@ -1709,6 +1724,68 @@ TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
   EXPECT_TRUE(sources[0].get("embedded")->asBool());
   EXPECT_EQ(sources[1].getString("audioSourceKind"), "asio-input");
   EXPECT_EQ(sources[1].getString("audioDriverName"), "ASIO");
+}
+
+TEST(MediaCoreCommand, CaptureAudioSourceSyncDoesNotRestartUnchangedAdapter) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* audioCapture = new RecordingAudioCaptureSource();
+  modules.audioCapture.reset(audioCapture);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto command = corevideo::rpc::Json::Object{
+      {"type", "sync-capture-audio-sources"},
+      {"sources",
+       corevideo::rpc::Json::Array{
+           corevideo::rpc::Json::Object{
+               {"captureDeviceId", "local-machine-audio"},
+               {"audioDeviceId", "system-loopback"},
+               {"audioDeviceName", "System audio loopback"},
+               {"audioSourceKind", "wasapi-loopback"},
+               {"nativeAudioDeviceId", "default-render"},
+               {"audioDriverName", "WASAPI"},
+               {"audioSyncOffsetMs", 0},
+           },
+       }},
+  };
+
+  const auto firstState = mediaCore.applyCommands(corevideo::rpc::Json::Array{command});
+  const auto secondState = mediaCore.applyCommands(corevideo::rpc::Json::Array{command});
+  (void)firstState;
+  (void)secondState;
+
+  EXPECT_EQ(audioCapture->configureCount, 1);
+  EXPECT_TRUE(audioCapture->lastSources.size() == 1u);
+  if (audioCapture->lastSources.empty()) {
+    return;
+  }
+  EXPECT_EQ(audioCapture->lastSources[0].captureDeviceId, "local-machine-audio");
+  EXPECT_EQ(audioCapture->lastSources[0].audioSourceKind, "wasapi-loopback");
+
+  const auto changedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+                   {"audioSyncOffsetMs", 25},
+               },
+           }},
+      },
+  });
+  (void)changedState;
+
+  EXPECT_EQ(audioCapture->configureCount, 2);
+  EXPECT_TRUE(audioCapture->lastSources.size() == 1u);
+  if (audioCapture->lastSources.empty()) {
+    return;
+  }
+  EXPECT_EQ(audioCapture->lastSources[0].audioSyncOffsetMs, 25);
 }
 
 TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {

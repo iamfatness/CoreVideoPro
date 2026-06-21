@@ -270,6 +270,7 @@ class MediaCore {
     bool embedded = false;
   };
   std::vector<CaptureAudioSourceInput> captureAudioSources_;
+  std::vector<modules::CaptureAudioSourceConfig> lastCaptureAudioSourceConfigs_;
   bool captureAudioSourcesSynced_ = false;
   bool captionEnabled_ = true;
   std::string captionText_;
