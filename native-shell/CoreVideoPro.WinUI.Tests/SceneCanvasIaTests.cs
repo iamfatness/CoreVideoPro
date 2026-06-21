@@ -147,6 +147,34 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void ApplyPreset_RecentersExistingSources()
+    {
+        var routes = new[]
+        {
+            SceneRoutingService.BuildAddedSourceRoute("scene-1", 0, "input-01"),
+            SceneRoutingService.BuildAddedSourceRoute("scene-1", 1, "input-02")
+        };
+        routes[0].FitMode = "fit";
+        routes[0].SourceScale = 2;
+        routes[0].SourceOffsetX = -1;
+        routes[0].SourceOffsetY = 1;
+        routes[1].FitMode = "stretch";
+        routes[1].SourceScale = 0.5;
+        routes[1].SourceOffsetX = 1;
+        routes[1].SourceOffsetY = -1;
+
+        SceneCanvasLayoutService.ApplyPreset("speaker-slides", routes);
+
+        foreach (var route in routes)
+        {
+            Assert.Equal(SourceRouteVisualDefaults.FitMode, route.FitMode);
+            Assert.Equal(SourceRouteVisualDefaults.SourceScale, route.SourceScale);
+            Assert.Equal(SourceRouteVisualDefaults.SourceOffsetX, route.SourceOffsetX);
+            Assert.Equal(SourceRouteVisualDefaults.SourceOffsetY, route.SourceOffsetY);
+        }
+    }
+
+    [Fact]
     public void BuildAddedSourceRoute_MediaWithoutSelectionStaysParked()
     {
         var route = SceneRoutingService.BuildAddedSourceRoute("scene-1", 2, "media");

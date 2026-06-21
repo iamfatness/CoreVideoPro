@@ -43,6 +43,10 @@ public static class SceneCanvasLayoutService
         for (var index = 0; index < routes.Count; index++)
         {
             routes[index].CanvasRect = rects[Math.Min(index, rects.Count - 1)].Clone();
+            routes[index].FitMode = SourceRouteVisualDefaults.FitMode;
+            routes[index].SourceScale = SourceRouteVisualDefaults.SourceScale;
+            routes[index].SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+            routes[index].SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
             routes[index].ZIndex = index;
         }
     }

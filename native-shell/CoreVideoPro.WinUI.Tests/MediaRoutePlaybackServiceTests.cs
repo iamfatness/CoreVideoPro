@@ -7,62 +7,59 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class MediaRoutePlaybackServiceTests
 {
     [Fact]
-    public void ShouldPlayMediaRoute_DoesNotAutoplayPreviewJustBecauseAssetIsOnProgram()
+    public void ShouldPlaySceneMediaRoute_DoesNotAutoplayPreviewJustBecauseAssetIsOnProgram()
     {
         var programRoutes = new[]
         {
             MediaRoute("intro")
         };
 
-        var shouldPlay = MediaRoutePlaybackService.ShouldPlayMediaRoute(
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: null,
-            selectedMediaAssetPlaying: false,
             programRoutes);
 
         Assert.False(shouldPlay);
     }
 
     [Fact]
-    public void ShouldPlayMediaRoute_AutoplaysWhenMediaRouteIsOnProgram()
+    public void ShouldPlaySceneMediaRoute_AutoplaysWhenMediaRouteIsOnProgram()
     {
         var programRoutes = new[]
         {
             MediaRoute("intro")
         };
 
-        var shouldPlay = MediaRoutePlaybackService.ShouldPlayMediaRoute(
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: true,
-            selectedMediaAssetId: null,
-            selectedMediaAssetPlaying: false,
             programRoutes);
 
         Assert.True(shouldPlay);
     }
 
     [Fact]
-    public void ShouldPlayMediaRoute_AllowsExplicitSelectedPlaybackInPreview()
+    public void ShouldPlaySceneMediaRoute_DoesNotPlaySelectedMediaInPreview()
     {
-        var shouldPlay = MediaRoutePlaybackService.ShouldPlayMediaRoute(
+        var programRoutes = new[]
+        {
+            MediaRoute("intro")
+        };
+
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: "intro",
-            selectedMediaAssetPlaying: true,
-            programRoutes: []);
+            programRoutes);
 
-        Assert.True(shouldPlay);
+        Assert.False(shouldPlay);
     }
 
     [Fact]
-    public void ShouldPlayMediaRoute_DoesNotPlayUnselectedPreviewCue()
+    public void ShouldPlaySceneMediaRoute_DoesNotPlayUnselectedPreviewCue()
     {
-        var shouldPlay = MediaRoutePlaybackService.ShouldPlayMediaRoute(
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
-            selectedMediaAssetId: "outro",
-            selectedMediaAssetPlaying: true,
             programRoutes: []);
 
         Assert.False(shouldPlay);

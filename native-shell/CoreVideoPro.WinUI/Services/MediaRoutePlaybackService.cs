@@ -4,22 +4,14 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class MediaRoutePlaybackService
 {
-    public static bool ShouldPlayMediaRoute(
+    public static bool ShouldPlaySceneMediaRoute(
         string mediaAssetId,
         bool isProgramScene,
-        string? selectedMediaAssetId,
-        bool selectedMediaAssetPlaying,
         IReadOnlyList<SourceRoute> programRoutes)
     {
         if (string.IsNullOrWhiteSpace(mediaAssetId))
         {
             return false;
-        }
-
-        if (selectedMediaAssetPlaying &&
-            string.Equals(selectedMediaAssetId, mediaAssetId, StringComparison.Ordinal))
-        {
-            return true;
         }
 
         return isProgramScene && IsMediaAssetRoutedOnProgram(mediaAssetId, programRoutes);

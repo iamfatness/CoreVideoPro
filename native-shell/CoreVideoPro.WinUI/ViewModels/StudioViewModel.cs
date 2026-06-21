@@ -6278,11 +6278,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : null;
 
     private bool ShouldAutoPlayMediaRoute(string mediaAssetId, bool isProgramScene) =>
-        MediaRoutePlaybackService.ShouldPlayMediaRoute(
+        MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             mediaAssetId,
             isProgramScene,
-            SelectedMediaAssetId,
-            SelectedMediaAssetPlaying,
             GetResolvedProgramRoutes());
 
     private IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>

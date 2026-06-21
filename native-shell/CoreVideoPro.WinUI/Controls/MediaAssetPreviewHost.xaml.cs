@@ -53,6 +53,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
     private string? _loadedImagePath;
     private string? _loadedPlaybackKey;
     private bool _playbackCompleted;
+    private bool _lastIsPlaying;
 
     public MediaAssetPreviewHost()
     {
@@ -156,6 +157,10 @@ public sealed partial class MediaAssetPreviewHost : UserControl
                 _loadedMediaType = mediaType;
                 _loadedPlaybackKey = playbackKey;
                 _playbackCompleted = IsPlaybackKeyCompleted(playbackKey);
+                if (!IsPlaying)
+                {
+                    _player.PlaybackSession.Position = TimeSpan.Zero;
+                }
             }
 
             VideoPreview.Visibility = Visibility.Visible;
@@ -169,13 +174,18 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             {
                 if (!IsPlaying)
                 {
-                    ClearCompletedPlaybackKey(playbackKey);
-                    _playbackCompleted = false;
-                    _player.PlaybackSession.Position = TimeSpan.Zero;
+                    if (_lastIsPlaying)
+                    {
+                        ClearCompletedPlaybackKey(playbackKey);
+                        _playbackCompleted = false;
+                        _player.PlaybackSession.Position = TimeSpan.Zero;
+                    }
                 }
 
                 _player.Pause();
             }
+
+            _lastIsPlaying = IsPlaying;
         }
     }
 
@@ -265,6 +275,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
         _loadedMediaType = null;
         _loadedPlaybackKey = null;
         _playbackCompleted = false;
+        _lastIsPlaying = false;
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
