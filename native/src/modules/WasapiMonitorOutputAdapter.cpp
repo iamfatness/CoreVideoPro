@@ -39,6 +39,7 @@ namespace corevideo::modules {
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 
@@ -57,6 +58,25 @@ std::string wideToUtf8(const wchar_t* wide) {
   std::string out(static_cast<size_t>(needed - 1), '\0');
   ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
   return out;
+}
+
+std::string asciiLowerMonitor(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return value;
+}
+
+std::string normalizeWasapiEndpointId(std::string value) {
+  value = asciiLowerMonitor(std::move(value));
+  constexpr const char* kWinRtMmdevapiMarker = "mmdevapi#";
+  const auto marker = value.find(kWinRtMmdevapiMarker);
+  if (marker == std::string::npos) {
+    return value;
+  }
+
+  const auto idStart = marker + std::strlen(kWinRtMmdevapiMarker);
+  const auto idEnd = value.find('#', idStart);
+  return value.substr(idStart, idEnd == std::string::npos ? std::string::npos : idEnd - idStart);
 }
 
 template <typename T>
@@ -246,6 +266,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     IMMDevice* match = nullptr;
     UINT count = 0;
     collection->GetCount(&count);
+    const auto requestedEndpointId = normalizeWasapiEndpointId(deviceId);
     for (UINT index = 0; index < count && match == nullptr; ++index) {
       IMMDevice* candidate = nullptr;
       if (FAILED(collection->Item(index, &candidate)) || candidate == nullptr) {
@@ -253,9 +274,9 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       }
       LPWSTR rawId = nullptr;
       if (SUCCEEDED(candidate->GetId(&rawId)) && rawId != nullptr) {
-        const std::string id = wideToUtf8(rawId);
+        const std::string id = normalizeWasapiEndpointId(wideToUtf8(rawId));
         ::CoTaskMemFree(rawId);
-        if (id == deviceId || readFriendlyName(candidate, std::string{}) == deviceId) {
+        if (id == requestedEndpointId || readFriendlyName(candidate, std::string{}) == deviceId) {
           match = candidate;  // keep reference, do not release
           continue;
         }
