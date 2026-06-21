@@ -342,6 +342,7 @@ public sealed class SceneCanvasIaTests
             participants: [new Participant { Id = "p1", Name = "Host" }],
             captureDevices: [],
             showInputs: [],
+            mediaAssets: [],
             _ => { });
 
         layer.SetSourceOffset(2, -2);
@@ -380,12 +381,56 @@ public sealed class SceneCanvasIaTests
             participants,
             captureDevices: [],
             showInputs: [],
+            mediaAssets: [],
             _ => changes++);
 
         layer.ParticipantId = "p2";
 
         Assert.True(changes > 0);
         Assert.Equal(SourceAudioRole.Mix, route.AudioRole);
+    }
+
+    [Fact]
+    public void Layer_SourcePickerListsMediaAssetsAsCanvasSources()
+    {
+        var route = new SourceRoute
+        {
+            Id = "scene-1-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p1",
+            CanvasRect = new NormalizedCanvasRect { X = 0.25, Y = 0.2, Width = 0.4, Height = 0.3 },
+            AudioRole = SourceAudioRole.Mix
+        };
+
+        var changes = 0;
+        var layer = new SceneCanvasLayerViewModel(
+            0,
+            route,
+            participants: [new Participant { Id = "p1", Name = "Host" }],
+            captureDevices: [],
+            showInputs: [],
+            mediaAssets:
+            [
+                new MediaAsset { Id = "intro", Name = "Intro Clip", Kind = "video", FilePath = "C:\\media\\intro.mp4" },
+                new MediaAsset { Id = "notes", Name = "Run Sheet", Kind = "pdf", FilePath = "C:\\media\\run.pdf" }
+            ],
+            _ => changes++);
+
+        Assert.Contains(layer.ParticipantOptions, option => option.Value == "media:intro" && option.Label == "Media - Intro Clip");
+        Assert.DoesNotContain(layer.ParticipantOptions, option => option.Value == "media:notes");
+
+        layer.ParticipantId = "media:intro";
+
+        Assert.True(changes > 0);
+        Assert.Equal(SourceRouteMode.Fixed, route.Mode);
+        Assert.Equal("media:intro", route.ParticipantId);
+        Assert.Null(route.CaptureDeviceId);
+        Assert.Null(route.ShowInputSlotNumber);
+        Assert.NotNull(route.CanvasRect);
+        Assert.Equal(0.25, route.CanvasRect.X, precision: 3);
+        Assert.Equal(0.2, route.CanvasRect.Y, precision: 3);
+        Assert.Equal(0.4, route.CanvasRect.Width, precision: 3);
+        Assert.Equal(0.3, route.CanvasRect.Height, precision: 3);
     }
 
     [Fact]

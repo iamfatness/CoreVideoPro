@@ -490,6 +490,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? $"{asset.Name} is behind {PreviewScene.Name}"
             : $"No SuperSource background for {PreviewScene.Name}";
 
+    private IReadOnlyList<MediaAsset> VisualMediaAssets =>
+        MediaBinGroups
+            .SelectMany(group => group.Assets)
+            .Where(IsVisualMediaAsset)
+            .ToList();
+
     public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
 
     public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
@@ -3172,6 +3178,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SuperSourceBackgroundOptions));
         PruneMissingSceneBackgrounds();
         RefreshSceneBackgroundSelection();
+        SyncPreviewCanvasLayers(GetMutableRoutes(PreviewSceneId));
         RefreshMultiviewGridTiles();
         RefreshProductionReadouts();
     }
@@ -6882,7 +6889,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             for (var index = 0; index < routes.Count; index++)
             {
-                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
+                PreviewCanvasLayers[index].SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
                 PreviewCanvasLayers[index].SetSurface(ResolveLayerSurface(routes[index], index));
             }
 
@@ -6899,6 +6906,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RoomVideoParticipants,
                 CaptureDevices,
                 ShowInputs,
+                VisualMediaAssets,
                 OnPreviewCanvasLayerChanged));
             PreviewCanvasLayers[^1].SetSurface(ResolveLayerSurface(routes[index], index));
         }
@@ -7225,7 +7233,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
         ApplyKnownColorGradeToRoute(routes[layer.LayerIndex]);
-        layer.SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
+        layer.SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
         layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";

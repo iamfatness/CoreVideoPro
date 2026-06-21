@@ -8,11 +8,13 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 {
     private const string CaptureValuePrefix = "capture:";
+    private const string MediaValuePrefix = "media:";
     private readonly Action<SceneCanvasLayerViewModel> _onChanged;
     private readonly SourceRoute _route;
     private IReadOnlyList<Participant> _participants;
     private IReadOnlyList<CaptureDevice> _captureDevices;
     private IReadOnlyList<ShowInputSlot> _showInputs;
+    private IReadOnlyList<MediaAsset> _mediaAssets;
     private bool _suppressChangeNotification;
 
     public SceneCanvasLayerViewModel(
@@ -21,6 +23,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
         IReadOnlyList<ShowInputSlot> showInputs,
+        IReadOnlyList<MediaAsset> mediaAssets,
         Action<SceneCanvasLayerViewModel> onChanged)
     {
         LayerIndex = layerIndex;
@@ -29,9 +32,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _participants = participants;
         _captureDevices = captureDevices;
         _showInputs = showInputs;
+        _mediaAssets = mediaAssets;
 
         _mode = SceneRoutingService.ModeToWire(route.Mode);
-        _participantId = ResolveSourceId(route, participants, captureDevices, showInputs);
+        _participantId = ResolveSourceId(route, participants, captureDevices, showInputs, mediaAssets);
         _audioRole = SceneRoutingService.AudioRoleToWire(route.AudioRole);
         _x = route.CanvasRect?.X ?? 0;
         _y = route.CanvasRect?.Y ?? 0;
@@ -44,7 +48,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _sourceScale = SceneRoutingService.NormalizeSourceScale(route.SourceScale);
         _sourceOffsetX = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetX);
         _sourceOffsetY = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetY);
-        ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs);
+        ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs, mediaAssets);
     }
 
     public int LayerIndex { get; }
@@ -187,7 +191,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     public void SyncFromRoute(
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<ShowInputSlot> showInputs)
+        IReadOnlyList<ShowInputSlot> showInputs,
+        IReadOnlyList<MediaAsset> mediaAssets)
     {
         _suppressChangeNotification = true;
         try
@@ -195,9 +200,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             _participants = participants;
             _captureDevices = captureDevices;
             _showInputs = showInputs;
+            _mediaAssets = mediaAssets;
             Mode = SceneRoutingService.ModeToWire(_route.Mode);
-            ParticipantOptions = BuildSourceOptions(Mode, participants, captureDevices, showInputs);
-            ParticipantId = ResolveSourceId(_route, participants, captureDevices, showInputs);
+            ParticipantOptions = BuildSourceOptions(Mode, participants, captureDevices, showInputs, mediaAssets);
+            ParticipantId = ResolveSourceId(_route, participants, captureDevices, showInputs, mediaAssets);
             AudioRole = SceneRoutingService.AudioRoleToWire(_route.AudioRole);
             X = _route.CanvasRect?.X ?? 0;
             Y = _route.CanvasRect?.Y ?? 0;
@@ -272,7 +278,15 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
         else
         {
-            if (TryParseCaptureDeviceValue(ParticipantId, out var captureDeviceId))
+            if (TryParseMediaAssetValue(ParticipantId, out var mediaAssetId))
+            {
+                _route.Mode = SourceRouteMode.Fixed;
+                _route.ParticipantId = ShowInputRosterService.ToMediaSourceId(mediaAssetId);
+                _route.CaptureDeviceId = null;
+                _route.ShowInputSlotNumber = null;
+                _route.SpotlightIndex = null;
+            }
+            else if (TryParseCaptureDeviceValue(ParticipantId, out var captureDeviceId))
             {
                 _route.Mode = SourceRouteMode.CaptureDevice;
                 _route.ParticipantId = null;
@@ -338,7 +352,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     private void RefreshSourceOptions()
     {
-        ParticipantOptions = BuildSourceOptions(Mode, _participants, _captureDevices, _showInputs);
+        ParticipantOptions = BuildSourceOptions(Mode, _participants, _captureDevices, _showInputs, _mediaAssets);
         if (!ParticipantOptions.Any(option => option.Value == ParticipantId))
         {
             ParticipantId = ParticipantOptions.FirstOrDefault()?.Value ?? string.Empty;
@@ -369,12 +383,19 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         SourceRoute route,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<ShowInputSlot> showInputs)
+        IReadOnlyList<ShowInputSlot> showInputs,
+        IReadOnlyList<MediaAsset> mediaAssets)
     {
         if (route.ShowInputSlotNumber is { } slotNumber &&
             showInputs.Any(slot => slot.SlotNumber == slotNumber))
         {
             return FormatShowInputValue(slotNumber);
+        }
+
+        if (ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId) &&
+            mediaAssets.Any(asset => string.Equals(asset.Id, mediaAssetId, StringComparison.Ordinal)))
+        {
+            return FormatMediaAssetValue(mediaAssetId);
         }
 
         return route.Mode == SourceRouteMode.CaptureDevice
@@ -386,7 +407,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         string mode,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<ShowInputSlot> showInputs)
+        IReadOnlyList<ShowInputSlot> showInputs,
+        IReadOnlyList<MediaAsset> mediaAssets)
     {
         var showInputOptions = showInputs
             .Where(slot => slot.InShow && slot.IsAssigned)
@@ -411,13 +433,27 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
                 Label = participant.Name
             });
 
+        var mediaOptions = mediaAssets
+            .Where(IsVisualMediaAsset)
+            .Select(asset => new RouteSelectOption
+            {
+                Value = FormatMediaAssetValue(asset.Id),
+                Label = $"Media - {asset.Name}"
+            });
+
         return showInputOptions
             .Concat(captureOptions)
+            .Concat(mediaOptions)
             .Concat(participantOptions)
             .ToList();
     }
 
     private static string FormatShowInputValue(int slotNumber) => $"input-{slotNumber:00}";
+
+    private static string FormatMediaAssetValue(string value) =>
+        string.IsNullOrWhiteSpace(value) || value.StartsWith(MediaValuePrefix, StringComparison.OrdinalIgnoreCase)
+            ? value
+            : $"{MediaValuePrefix}{value}";
 
     private static string FormatCaptureDeviceValue(string value) =>
         string.IsNullOrWhiteSpace(value) || value.StartsWith(CaptureValuePrefix, StringComparison.OrdinalIgnoreCase)
@@ -444,6 +480,24 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         captureDeviceId = value[CaptureValuePrefix.Length..];
         return captureDeviceId.Length > 0;
     }
+
+    private static bool TryParseMediaAssetValue(string? value, out string mediaAssetId)
+    {
+        mediaAssetId = string.Empty;
+        if (string.IsNullOrWhiteSpace(value) ||
+            !value.StartsWith(MediaValuePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        mediaAssetId = value[MediaValuePrefix.Length..];
+        return mediaAssetId.Length > 0;
+    }
+
+    private static bool IsVisualMediaAsset(MediaAsset asset) =>
+        asset.Kind.Equals("video", StringComparison.OrdinalIgnoreCase) ||
+        asset.Kind.Equals("image", StringComparison.OrdinalIgnoreCase) ||
+        asset.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveShowInputSourceLabel(
         ShowInputSlot slot,
