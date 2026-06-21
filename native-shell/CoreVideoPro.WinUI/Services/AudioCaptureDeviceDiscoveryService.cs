@@ -33,24 +33,35 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
 
             var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
 
-            return wasapiDevices
+            return SortForOperatorSelection(wasapiDevices
                 .Concat(loopbackDevices)
                 .Concat(DiscoverAsioDevices())
                 .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .OrderBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                .Select(group => group.First()));
         }
         catch
         {
             var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
-            return loopbackDevices
-                .Concat(DiscoverAsioDevices())
-                .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            return SortForOperatorSelection(loopbackDevices.Concat(DiscoverAsioDevices()));
         }
     }
+
+    public static IReadOnlyList<AudioCaptureDevice> SortForOperatorSelection(IEnumerable<AudioCaptureDevice> devices) =>
+        devices
+            .OrderBy(device => SourceKindPriority(device.SourceKind))
+            .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public static int SourceKindPriority(string? sourceKind) =>
+        sourceKind?.Trim().ToLowerInvariant() switch
+        {
+            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => 0,
+            "wasapi-input" or "wasapi-capture" => 1,
+            "embedded-capture-audio" => 2,
+            "asio-input" => 3,
+            _ => 4
+        };
 
     public static IReadOnlyList<AudioCaptureDevice> CreateEmbeddedCaptureAudioDevices(IEnumerable<CaptureDevice> captureDevices) =>
         captureDevices

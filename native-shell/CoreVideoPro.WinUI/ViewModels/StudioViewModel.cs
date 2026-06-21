@@ -3416,7 +3416,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Concat(AudioCaptureDeviceDiscoveryService.CreateEmbeddedCaptureAudioDevices(CaptureDevices))
             .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
-            .OrderBy(device => device.SourceKind.Equals("embedded-capture-audio", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .OrderBy(device => AudioCaptureDeviceDiscoveryService.SourceKindPriority(device.SourceKind))
             .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
