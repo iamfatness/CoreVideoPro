@@ -24,6 +24,31 @@ public static class SceneRoutingService
         new() { Value = "audience", Label = "Audience" }
     ];
 
+    /// <summary>
+    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-10 plus the auto roles
+    /// (Active Speaker / Screen Share / Media). The <c>input-NN</c> values mirror the per-layer
+    /// source picker so an added layer references an Input directly.
+    /// </summary>
+    public static IReadOnlyList<RouteSelectOption> AddSourceOptions { get; } = BuildAddSourceOptions();
+
+    private static IReadOnlyList<RouteSelectOption> BuildAddSourceOptions()
+    {
+        var options = new List<RouteSelectOption>();
+        for (var slot = 1; slot <= ShowInputRosterService.MaxShowInputs; slot++)
+        {
+            options.Add(new RouteSelectOption
+            {
+                Value = $"input-{slot:00}",
+                Label = $"Input {slot}"
+            });
+        }
+
+        options.Add(new RouteSelectOption { Value = "active-speaker", Label = "Active Speaker" });
+        options.Add(new RouteSelectOption { Value = "screen-share", Label = "Screen Share" });
+        options.Add(new RouteSelectOption { Value = "media", Label = "Media" });
+        return options;
+    }
+
     public static string ModeToWire(SourceRouteMode mode) => mode switch
     {
         SourceRouteMode.Fixed => "fixed",
@@ -67,7 +92,10 @@ public static class SceneRoutingService
         IReadOnlyList<SourceRoute>? existingRoutes,
         IReadOnlyList<Participant> participants)
     {
-        var slotCount = GetRouteSlotCount(scene, participants);
+        // Honour any operator-added sources beyond the layout's default slot count: the
+        // "Add source" affordance appends routes to the working set, and reconciliation must
+        // not truncate them back to the layout capacity.
+        var slotCount = Math.Max(GetRouteSlotCount(scene, participants), existingRoutes?.Count ?? 0);
         var slotDefaults = scene.Layout == "speaker-slides"
             ? GetSlotDefaults(scene, existingRoutes, participants).Concat(["screen-share"]).ToList()
             : GetSlotDefaults(scene, existingRoutes, participants);

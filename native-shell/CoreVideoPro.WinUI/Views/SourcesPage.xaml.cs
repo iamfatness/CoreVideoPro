@@ -65,7 +65,27 @@ public sealed partial class SourcesPage : UserControl
             next.PreviewCanvasLayers.CollectionChanged += OnPreviewCanvasLayersChanged;
         }
 
+        PopulateAddSourceFlyout(next);
         RefreshSceneCanvasEditor();
+    }
+
+    private void PopulateAddSourceFlyout(StudioViewModel? viewModel)
+    {
+        AddSourceFlyout.Items.Clear();
+        if (viewModel is null)
+        {
+            return;
+        }
+
+        foreach (var option in viewModel.AddSourceOptions)
+        {
+            AddSourceFlyout.Items.Add(new MenuFlyoutItem
+            {
+                Text = option.Label,
+                Command = viewModel.AddCanvasSourceCommand,
+                CommandParameter = option.Value
+            });
+        }
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

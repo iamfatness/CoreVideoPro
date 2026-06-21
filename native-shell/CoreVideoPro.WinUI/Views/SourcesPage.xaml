@@ -158,20 +158,34 @@
                     </Grid>
                 </Grid>
 
-                <!-- Sources-in-scene dock (per-layer routing; moves to the Routing tab in the IA rework) -->
+                <!-- Sources-in-scene dock. Route(Mode) and AudioRole now live on the Routing tab
+                     (single source of truth): audio is governed by the Audio routing matrix, and
+                     program/iso routing by the Video routing matrix. This dock keeps only the
+                     per-source picker (which Input a layer references) plus framing/look controls. -->
                 <Grid Grid.Column="1" RowSpacing="8">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
                     <StackPanel Spacing="2">
                         <TextBlock Text="Sources in scene" Style="{StaticResource OperatorSectionTitle}" />
-                        <TextBlock Text="Route and audio role for each source on the canvas."
+                        <TextBlock Text="Pick the input each source references and frame it. Route and audio are set on the Routing tab."
                                    FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                     </StackPanel>
 
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <!-- Add source -> Inputs (1-10) + Active Speaker / Screen Share / Media (per §4 IA). -->
+                    <Button Grid.Row="1" Content="Add source" HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            Style="{StaticResource OperatorGhostButton}"
+                            IsEnabled="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay}">
+                        <Button.Flyout>
+                            <MenuFlyout x:Name="AddSourceFlyout" />
+                        </Button.Flyout>
+                    </Button>
+
+                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Spacing="8">
                             <TextBlock Text="Pick a scene on the Studio tab to populate sources."
                                        FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"
@@ -186,28 +200,12 @@
                                             <StackPanel Spacing="6">
                                                 <TextBlock Text="{x:Bind LayerLabel}" FontWeight="SemiBold" FontSize="13" />
                                                 <StackPanel Spacing="2">
-                                                    <TextBlock Text="Route" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <ComboBox ItemsSource="{x:Bind ModeOptions}"
-                                                              SelectedValue="{x:Bind Mode, Mode=TwoWay}"
-                                                              SelectedValuePath="Value"
-                                                              DisplayMemberPath="Label"
-                                                              HorizontalAlignment="Stretch" />
-                                                </StackPanel>
-                                                <StackPanel Spacing="2">
                                                     <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                                     <ComboBox ItemsSource="{x:Bind ParticipantOptions}"
                                                               SelectedValue="{x:Bind ParticipantId, Mode=TwoWay}"
                                                               SelectedValuePath="Value"
                                                               DisplayMemberPath="Label"
                                                               IsEnabled="{x:Bind IsParticipantPickerEnabled, Mode=OneWay}"
-                                                              HorizontalAlignment="Stretch" />
-                                                </StackPanel>
-                                                <StackPanel Spacing="2">
-                                                    <TextBlock Text="Audio" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <ComboBox ItemsSource="{x:Bind AudioRoleOptions}"
-                                                              SelectedValue="{x:Bind AudioRole, Mode=TwoWay}"
-                                                              SelectedValuePath="Value"
-                                                              DisplayMemberPath="Label"
                                                               HorizontalAlignment="Stretch" />
                                                 </StackPanel>
                                                 <Grid ColumnSpacing="8">

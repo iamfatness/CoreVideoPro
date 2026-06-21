@@ -439,6 +439,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public ObservableCollection<SceneCanvasLayerViewModel> PreviewCanvasLayers { get; } = [];
 
+    /// <summary>
+    /// "Add source" picker for the scene canvas (§4 IA): Inputs 1-10 plus the auto roles
+    /// (Active Speaker / Screen Share / Media). Sourced from <see cref="SceneRoutingService"/>
+    /// so the layer references an Input directly.
+    /// </summary>
+    public IReadOnlyList<RouteSelectOption> AddSourceOptions { get; } = SceneRoutingService.AddSourceOptions;
+
     public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
 
     public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
@@ -5966,6 +5973,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Surface = surface,
             SourceIndex = 1
         };
+    }
+
+    [RelayCommand]
+    private void AddCanvasSource(string? optionValue)
+    {
+        if (string.IsNullOrWhiteSpace(optionValue))
+        {
+            return;
+        }
+
+        var routes = GetMutableRoutes(PreviewSceneId);
+        var index = routes.Count;
+        var route = BuildAddedCanvasRoute(PreviewSceneId, index, optionValue);
+        SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
+        routes.Add(route);
+
+        var label = AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
+        CommandStatus = $"{label} added to {PreviewScene.Name}";
+
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
+        SchedulePreviewRoutingRefresh();
+    }
+
+    private static SourceRoute BuildAddedCanvasRoute(string sceneId, int index, string optionValue)
+    {
+        var route = new SourceRoute
+        {
+            Id = $"{sceneId}-add-{Guid.NewGuid():N}"[..(sceneId.Length + 12)],
+            Mode = SourceRouteMode.None,
+            AudioRole = SourceAudioRole.Mix,
+            CanvasRect = new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 },
+            ZIndex = index
+        };
+
+        if (optionValue.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(optionValue.AsSpan(6), out var slotNumber))
+        {
+            route.Mode = SourceRouteMode.Fixed;
+            route.ShowInputSlotNumber = slotNumber;
+        }
+        else
+        {
+            route.Mode = optionValue switch
+            {
+                "active-speaker" => SourceRouteMode.ActiveSpeaker,
+                "screen-share" => SourceRouteMode.ScreenShare,
+                _ => SourceRouteMode.None
+            };
+        }
+
+        return route;
     }
 
     public void ApplyCanvasPreset(string presetWire)
