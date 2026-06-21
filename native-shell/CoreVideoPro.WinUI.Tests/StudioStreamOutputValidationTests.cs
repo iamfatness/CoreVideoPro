@@ -6,6 +6,72 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class StudioStreamOutputValidationTests
 {
     [Fact]
+    public void Destinations_RejectsEmptySelectionBeforeStreaming()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: false,
+            ndiEnabled: false,
+            srtEnabled: false,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "",
+            rtmpStreamKey: "",
+            ndiProgramName: "",
+            srtMode: "caller",
+            srtHost: "",
+            srtPort: "",
+            srtLatencyMs: "",
+            srtStreamId: "",
+            srtKeyLength: "0",
+            srtPassphrase: "");
+
+        Assert.Equal("Select at least one stream destination.", error);
+    }
+
+    [Fact]
+    public void Destinations_RejectsInvalidEnabledDestinationBeforeLiveResync()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: true,
+            ndiEnabled: false,
+            srtEnabled: false,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "live.example.com",
+            rtmpStreamKey: "stream-key",
+            ndiProgramName: "",
+            srtMode: "caller",
+            srtHost: "",
+            srtPort: "",
+            srtLatencyMs: "",
+            srtStreamId: "",
+            srtKeyLength: "0",
+            srtPassphrase: "");
+
+        Assert.Equal("RTMP server URL must include an application path.", error);
+    }
+
+    [Fact]
+    public void Destinations_AcceptsConfiguredRtmpNdiAndSrt()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: true,
+            ndiEnabled: true,
+            srtEnabled: true,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "live.example.com/app",
+            rtmpStreamKey: "stream-key",
+            ndiProgramName: "CoreVideo Pro Program",
+            srtMode: "caller",
+            srtHost: "receiver.example.com",
+            srtPort: "9000",
+            srtLatencyMs: "120",
+            srtStreamId: "publish/live/main",
+            srtKeyLength: "16",
+            srtPassphrase: "secret-passphrase");
+
+        Assert.Null(error);
+    }
+
+    [Fact]
     public void Rtmp_AllowsSchemeLessServerUrlAndBuildsSelectedProtocolUrl()
     {
         var error = StudioStreamOutputValidation.ValidateRtmp(

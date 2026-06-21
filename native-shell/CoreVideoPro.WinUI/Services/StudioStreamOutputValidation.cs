@@ -32,6 +32,46 @@ public static class StudioStreamOutputValidation
         return $"{NormalizeRtmpProtocol(protocol)}://{normalizedUrl}";
     }
 
+    public static string? ValidateSelectedDestinations(
+        bool rtmpEnabled,
+        bool ndiEnabled,
+        bool srtEnabled,
+        string? rtmpProtocol,
+        string? rtmpServerUrl,
+        string? rtmpStreamKey,
+        string? ndiProgramName,
+        string? srtMode,
+        string? srtHost,
+        string? srtPort,
+        string? srtLatencyMs,
+        string? srtStreamId,
+        string? srtKeyLength,
+        string? srtPassphrase)
+    {
+        if (!rtmpEnabled && !ndiEnabled && !srtEnabled)
+        {
+            return "Select at least one stream destination.";
+        }
+
+        if (rtmpEnabled && ValidateRtmp(rtmpProtocol, rtmpServerUrl, rtmpStreamKey) is { Length: > 0 } rtmpError)
+        {
+            return rtmpError;
+        }
+
+        if (ndiEnabled && string.IsNullOrWhiteSpace(ndiProgramName))
+        {
+            return "Configure an NDI program name before streaming.";
+        }
+
+        if (srtEnabled &&
+            ValidateSrt(srtMode, srtHost, srtPort, srtLatencyMs, srtStreamId, srtKeyLength, srtPassphrase) is { Length: > 0 } srtError)
+        {
+            return srtError;
+        }
+
+        return null;
+    }
+
     public static string? ValidateRtmp(string? protocol, string? serverUrl, string? streamKey)
     {
         var normalizedProtocol = NormalizeText(protocol, "rtmps").ToLowerInvariant();

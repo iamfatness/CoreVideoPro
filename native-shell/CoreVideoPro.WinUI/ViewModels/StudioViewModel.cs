@@ -2040,13 +2040,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var starting = !Streaming;
         try
         {
-            if (starting && BuildSelectedStreamDestinations().Count == 0)
-            {
-                OutputStatus = "Select at least one stream destination.";
-                OutputSessionStatus = OutputStatus;
-                return;
-            }
-
             if (starting && ValidateStreamDestinations() is { Length: > 0 } validationError)
             {
                 OutputStatus = validationError;
@@ -4938,25 +4931,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
-    private string? ValidateStreamDestinations()
-    {
-        if (StreamRtmpEnabled && ValidateRtmpSettings() is { Length: > 0 } rtmpError)
-        {
-            return rtmpError;
-        }
-
-        if (StreamNdiEnabled && !IsNdiConfigured())
-        {
-            return "Configure an NDI program name before streaming.";
-        }
-
-        if (StreamSrtEnabled && ValidateSrtSettings() is { Length: > 0 } srtError)
-        {
-            return srtError;
-        }
-
-        return null;
-    }
+    private string? ValidateStreamDestinations() =>
+        StudioStreamOutputValidation.ValidateSelectedDestinations(
+            StreamRtmpEnabled,
+            StreamNdiEnabled,
+            StreamSrtEnabled,
+            StreamRtmpProtocol,
+            StreamRtmpServerUrl,
+            StreamRtmpStreamKey,
+            StreamNdiProgramName,
+            StreamSrtMode,
+            StreamSrtHost,
+            StreamSrtPort,
+            StreamSrtLatencyMs,
+            StreamSrtStreamId,
+            StreamSrtKeyLength,
+            StreamSrtPassphrase);
 
     private bool IsRtmpConfigured()
         => ValidateRtmpSettings() is null;
@@ -5173,13 +5163,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (ValidateStreamDestinations() is { Length: > 0 } validationError)
+        {
+            OutputStatus = validationError;
+            OutputSessionStatus = validationError;
+            return;
+        }
+
         try
         {
             await SyncActiveSceneAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            OutputStatus = ex.Message;
+            RunOnUiThread(() =>
+            {
+                OutputStatus = $"Streaming settings sync failed: {ex.Message}";
+                OutputSessionStatus = OutputStatus;
+            });
         }
     }
 
@@ -5198,7 +5199,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            OutputStatus = ex.Message;
+            RunOnUiThread(() =>
+            {
+                OutputStatus = $"Recording settings sync failed: {ex.Message}";
+                OutputSessionStatus = OutputStatus;
+            });
         }
     }
 
