@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Services;
+using Windows.Media.MediaProperties;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -42,7 +43,31 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Theory]
+    [InlineData("YUY2")]
+    [InlineData("NV12")]
+    [InlineData("I420")]
+    [InlineData("P010")]
+    [InlineData("MJPG")]
+    public void ReaderOutputSubtypesForFormat_TriesNativeUvcSubtypeBeforeBgraConversion(string subtype)
+    {
+        var subtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(subtype);
+
+        Assert.Equal(subtype, subtypes[0]);
+        Assert.Equal(MediaEncodingSubtypes.Bgra8, subtypes[1]);
+    }
+
+    [Fact]
+    public void ReaderOutputSubtypesForFormat_UsesBgraForSyntheticOrUnknownFormats()
+    {
+        Assert.Equal([MediaEncodingSubtypes.Bgra8], CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat("ARGB32"));
+        Assert.Equal([MediaEncodingSubtypes.Bgra8], CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat("unknown"));
+    }
+
+    [Theory]
     [InlineData("Elgato USB-C Capture")]
+    [InlineData("HD60 S+")]
+    [InlineData("HDMI Capture")]
+    [InlineData("Elgato Virtual Camera")]
     [InlineData("Cam Link 4K")]
     [InlineData("USB Video Capture")]
     [InlineData("UVC HDMI")]
@@ -80,6 +105,10 @@ public sealed class CaptureDeviceFormatSelectorTests
         Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
             allowsLateFirstFrame: true,
             currentSubtype: "NV12",
+            bestRankedSubtype: "YUY2"));
+        Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+            allowsLateFirstFrame: true,
+            currentSubtype: "ARGB32",
             bestRankedSubtype: "YUY2"));
         Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
             allowsLateFirstFrame: false,

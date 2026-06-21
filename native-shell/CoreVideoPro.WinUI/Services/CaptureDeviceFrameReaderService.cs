@@ -17,11 +17,16 @@ public sealed record CaptureDeviceFormatCandidate(
 
 public static class CaptureDeviceFormatSelector
 {
+    private static readonly string[] BgraReaderOutputSubtypes = [MediaEncodingSubtypes.Bgra8];
+
     public static bool AllowsLateFirstFrame(string? deviceName)
     {
         var normalized = deviceName?.Trim().ToUpperInvariant() ?? string.Empty;
         return normalized.Contains("ELGATO", StringComparison.Ordinal) ||
             normalized.Contains("CAM LINK", StringComparison.Ordinal) ||
+            normalized.Contains("HD60", StringComparison.Ordinal) ||
+            normalized.Contains("HDMI", StringComparison.Ordinal) ||
+            normalized.Contains("VIRTUAL CAMERA", StringComparison.Ordinal) ||
             normalized.Contains("CAPTURE", StringComparison.Ordinal) ||
             normalized.Contains("UVC", StringComparison.Ordinal);
     }
@@ -77,7 +82,11 @@ public static class CaptureDeviceFormatSelector
         string? currentSubtype = null,
         string? bestRankedSubtype = null)
     {
-        _ = allowsLateFirstFrame;
+        if (allowsLateFirstFrame)
+        {
+            return false;
+        }
+
         return IsSyntheticBgraSubtype(currentSubtype) &&
             SubtypeScore(bestRankedSubtype) > SubtypeScore(currentSubtype);
     }
@@ -90,6 +99,17 @@ public static class CaptureDeviceFormatSelector
             "{30323449-0000-0010-8000-00AA00389B71}" => "I420",
             _ => normalized
         };
+    }
+
+    public static IReadOnlyList<string> ReaderOutputSubtypesForFormat(string? formatSubtype)
+    {
+        var normalized = NormalizeSubtype(formatSubtype);
+        if (normalized is "YUY2" or "NV12" or "I420" or "P010" or "MJPG" or "MJPEG")
+        {
+            return [normalized, MediaEncodingSubtypes.Bgra8];
+        }
+
+        return BgraReaderOutputSubtypes;
     }
 
     private static bool IsSyntheticBgraSubtype(string? subtype)
@@ -126,6 +146,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 device.Id,
                 device.NativeDeviceId,
                 CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name));
+            LaunchLog.Write(
+                $"capture: opening {device.Id} name=\"{device.Name}\" lateFirstFrame={CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name)}");
             var startTask = StartSessionAsync(device.Id, session);
             _startingSessions[device.Id] = startTask;
             _ = startTask.ContinueWith(
@@ -273,6 +295,15 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             LaunchLog.Write(
                 $"capture: supported formats {_stableDeviceId} {string.Join("; ", formats.Take(8).Select(FormatLabel))}");
 
+            if (_allowLateFirstFrame)
+            {
+                var currentTelemetry = await TryStartCurrentReaderAsync(source).ConfigureAwait(false);
+                if (currentTelemetry is not null)
+                {
+                    return currentTelemetry;
+                }
+            }
+
             var errors = new List<string>();
             var candidates = BuildStartupCandidates(
                 source,
@@ -316,6 +347,44 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     : $"Frame reader produced no frames after trying: {string.Join(", ", errors)}");
         }
 
+        private async Task<CaptureDeviceFormatTelemetry?> TryStartCurrentReaderAsync(MediaFrameSource source)
+        {
+            await DisposeReaderAsync().ConfigureAwait(false);
+            Interlocked.Exchange(ref _loggedFirstPublishedFrame, 0);
+            _firstFramePublished = new TaskCompletionSource<CaptureDeviceFormatTelemetry>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            CaptureFormatTelemetry(source);
+
+            var currentLabel = source.CurrentFormat?.VideoFormat is null
+                ? "driver-default"
+                : FormatLabel(source.CurrentFormat);
+            LaunchLog.Write($"capture: trying current/default stream {_stableDeviceId} {currentLabel}");
+
+            foreach (var outputSubtype in CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(source.CurrentFormat?.Subtype))
+            {
+                try
+                {
+                    var telemetry = await TryStartReaderWithOutputSubtypeAsync(
+                        source,
+                        outputSubtype,
+                        currentLabel,
+                        keepOnlineAfterFirstFrameTimeout: false).ConfigureAwait(false);
+                    if (telemetry is not null)
+                    {
+                        return telemetry;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write(
+                        $"capture: current/default reader failed {_stableDeviceId} {currentLabel} output={outputSubtype}: {DescribeException(ex)}");
+                    await DisposeReaderAsync().ConfigureAwait(false);
+                }
+            }
+
+            return null;
+        }
+
         private void OnFrameArrived(MediaFrameReader sender, MediaFrameArrivedEventArgs args)
         {
             if (Interlocked.Exchange(ref _publishingFrame, 1) == 1)
@@ -342,6 +411,13 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 var bytes = CopyBgraBytes(bgra);
                 var now = Environment.TickCount64;
                 var fps = ResolveFrameRate(now);
+                if (_formatWidth <= 0 || _formatHeight <= 0)
+                {
+                    _formatWidth = bgra.PixelWidth;
+                    _formatHeight = bgra.PixelHeight;
+                    _formatFps = fps;
+                }
+
                 if (Interlocked.Exchange(ref _loggedFirstPublishedFrame, 1) == 0)
                 {
                     LaunchLog.Write($"capture: first frame published {_stableDeviceId} {bgra.PixelWidth}x{bgra.PixelHeight} {fps}fps");
@@ -485,7 +561,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             _firstFramePublished = new TaskCompletionSource<CaptureDeviceFormatTelemetry>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
 
-            if (!ReferenceEquals(format, source.CurrentFormat))
+            if (source.CurrentFormat is null || !SameFormat(format, source.CurrentFormat))
             {
                 await source.SetFormatAsync(format).AsTask().ConfigureAwait(false);
                 var video = format.VideoFormat;
@@ -494,17 +570,49 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
 
             CaptureFormatTelemetry(source);
-            _reader = await _capture!.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8).AsTask().ConfigureAwait(false);
+            foreach (var outputSubtype in CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(format.Subtype))
+            {
+                try
+                {
+                    var telemetry = await TryStartReaderWithOutputSubtypeAsync(
+                        source,
+                        outputSubtype,
+                        FormatLabel(format),
+                        keepOnlineAfterFirstFrameTimeout).ConfigureAwait(false);
+                    if (telemetry is not null)
+                    {
+                        return telemetry;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write(
+                        $"capture: reader output failed {_stableDeviceId} {FormatLabel(format)} output={outputSubtype}: {DescribeException(ex)}");
+                    await DisposeReaderAsync().ConfigureAwait(false);
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<CaptureDeviceFormatTelemetry?> TryStartReaderWithOutputSubtypeAsync(
+            MediaFrameSource source,
+            string outputSubtype,
+            string formatLabel,
+            bool keepOnlineAfterFirstFrameTimeout)
+        {
+            await DisposeReaderAsync().ConfigureAwait(false);
+            _reader = await _capture!.CreateFrameReaderAsync(source, outputSubtype).AsTask().ConfigureAwait(false);
             _reader.FrameArrived += OnFrameArrived;
             var status = await _reader.StartAsync().AsTask().ConfigureAwait(false);
             if (status != MediaFrameReaderStartStatus.Success)
             {
-                LaunchLog.Write($"capture: reader start failed {_stableDeviceId} {FormatLabel(format)} status={status}");
+                LaunchLog.Write($"capture: reader start failed {_stableDeviceId} {formatLabel} output={outputSubtype} status={status}");
                 await DisposeReaderAsync().ConfigureAwait(false);
                 return null;
             }
 
-            LaunchLog.Write($"capture: started {_stableDeviceId} {_formatWidth}x{_formatHeight} {_formatFps}fps");
+            LaunchLog.Write($"capture: started {_stableDeviceId} {_formatWidth}x{_formatHeight} {_formatFps}fps output={outputSubtype}");
             var completed = await Task.WhenAny(_firstFramePublished.Task, Task.Delay(1500)).ConfigureAwait(false);
             if (completed == _firstFramePublished.Task)
             {
@@ -513,11 +621,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
             if (keepOnlineAfterFirstFrameTimeout)
             {
-                LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; keeping reader online for late HDMI signal");
+                LaunchLog.Write($"capture: no first frame {_stableDeviceId} {formatLabel} output={outputSubtype}; keeping reader online for late HDMI signal");
                 return FormatTelemetry;
             }
 
-            LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; trying fallback");
+            LaunchLog.Write($"capture: no first frame {_stableDeviceId} {formatLabel} output={outputSubtype}; trying fallback");
             await DisposeReaderAsync().ConfigureAwait(false);
             return null;
         }
