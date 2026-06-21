@@ -1549,7 +1549,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedOutputLevel));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
         OnPropertyChanged(nameof(VstBridgeStatusLabel));
-        RefreshAudioParticipantRows();
+        RefreshAudioParticipantSelectionRows();
     }
 
     partial void OnProgramSurfaceChanged(VideoSurfaceState value)
@@ -2401,7 +2401,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         SelectedParticipantId = participantId;
         mix.Muted = !mix.Muted;
-        RefreshMixerBindings(participantId);
+        RefreshMixerValueBindings(participantId);
+        RefreshAudioProcessingTargets();
+        OnPropertyChanged(nameof(SelectedMuteButtonLabel));
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
         CommandStatus = mix.Muted
             ? $"{SelectedParticipant?.Name} muted in mix"
             : $"{SelectedParticipant?.Name} unmuted in mix";
@@ -2427,7 +2430,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = normalized.StartsWith("VST", StringComparison.OrdinalIgnoreCase)
             ? $"Added {normalized} scan slot. Live VST processing requires the native bridge."
             : $"Added {normalized} to {SelectedParticipant?.Name ?? "selected channel"}";
-        RefreshMixerBindings(mix.ParticipantId);
+        RefreshMixerValueBindings(mix.ParticipantId);
+        RefreshAudioProcessingTargets();
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2441,7 +2446,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         mix.PluginInserts.Clear();
         CommandStatus = $"Insert chain cleared for {SelectedParticipant?.Name ?? "selected channel"}";
-        RefreshMixerBindings(mix.ParticipantId);
+        RefreshMixerValueBindings(mix.ParticipantId);
+        RefreshAudioProcessingTargets();
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -3680,7 +3687,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.Muted = !mix.Muted;
-        RefreshMixerBindings(mix.ParticipantId);
+        RefreshMixerValueBindings(mix.ParticipantId);
+        RefreshAudioProcessingTargets();
+        OnPropertyChanged(nameof(SelectedMuteButtonLabel));
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
         CommandStatus = mix.Muted
             ? $"{SelectedParticipant?.Name} muted in mix"
             : $"{SelectedParticipant?.Name} unmuted in mix";
@@ -5611,6 +5621,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MuteStateLabel = mix.Muted ? "Muted" : "Live",
             IsSelected = mix.ParticipantId == SelectedParticipantId
         });
+    }
+
+    private void RefreshAudioParticipantSelectionRows()
+    {
+        foreach (var row in AudioParticipantRows)
+        {
+            row.IsSelected = string.Equals(row.Id, SelectedParticipantId, StringComparison.Ordinal);
+        }
     }
 
     private static void UpdateAudioParticipantRow(AudioParticipantRow target, AudioParticipantRow source)
