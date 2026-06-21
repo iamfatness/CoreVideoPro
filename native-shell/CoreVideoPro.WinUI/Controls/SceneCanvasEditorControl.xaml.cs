@@ -46,13 +46,21 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var viewportWidth = CanvasScrollViewer.ActualWidth > 0
             ? CanvasScrollViewer.ActualWidth
             : ActualWidth;
-        if (viewportWidth <= 0)
+        var viewportHeight = CanvasScrollViewer.ActualHeight > 0
+            ? CanvasScrollViewer.ActualHeight
+            : ActualHeight;
+
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            viewportWidth,
+            viewportHeight,
+            DesignWidth / DesignHeight);
+        if (fitSize.Width <= 0 || fitSize.Height <= 0)
         {
             return;
         }
 
-        CanvasViewbox.Width = viewportWidth;
-        CanvasViewbox.Height = viewportWidth * DesignHeight / DesignWidth;
+        CanvasViewbox.Width = fitSize.Width;
+        CanvasViewbox.Height = fitSize.Height;
     }
 
     public void SetLayers(IReadOnlyList<SceneCanvasLayerViewModel>? layers, SceneCanvasLayerViewModel? selectedLayer)

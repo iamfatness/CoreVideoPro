@@ -306,6 +306,30 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void SceneCanvasViewport_FitsCanvasInsideAvailableEditorSpace()
+    {
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            availableWidth: 1000,
+            availableHeight: 420,
+            canvasAspectRatio: 16.0 / 9);
+
+        Assert.Equal(746.667, fitSize.Width, precision: 3);
+        Assert.Equal(420, fitSize.Height, precision: 3);
+    }
+
+    [Fact]
+    public void SceneCanvasViewport_UsesAvailableWidthWhenHeightHasRoom()
+    {
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            availableWidth: 1000,
+            availableHeight: 900,
+            canvasAspectRatio: 16.0 / 9);
+
+        Assert.Equal(1000, fitSize.Width, precision: 3);
+        Assert.Equal(562.5, fitSize.Height, precision: 3);
+    }
+
+    [Fact]
     public void SourceFraming_FillCentersWideSourceInTallSuperSourceTile()
     {
         var centered = SourceFramingLayoutService.Resolve(
