@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using Xunit;
 
@@ -113,5 +114,40 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatStudioMonitorSummary(audio, capture, true, "Studio Headphones");
 
         Assert.Equal("Monitor armed, waiting for audio - Studio Headphones - no PCM on MON bus", status);
+    }
+
+    [Fact]
+    public void BuildWaitingForPcmAudioMixChannel_ClearsStaleMeterSignalButPreservesOperatorControls()
+    {
+        var prior = new ParticipantAudioMix
+        {
+            ParticipantId = "local-machine-audio",
+            OutputLevel = 74,
+            GainDb = 2,
+            ManualGainDb = 3.5,
+            Pan = -0.25,
+            Solo = true,
+            NoiseSuppression = true,
+            Muted = true,
+            Status = "native-pcm",
+            Lufs = -18.2,
+            TruePeakDb = -4.5,
+            PluginInserts = ["Compressor"]
+        };
+
+        var waiting = StudioViewModel.BuildWaitingForPcmAudioMixChannel("local-machine-audio", prior);
+
+        Assert.Equal("local-machine-audio", waiting.ParticipantId);
+        Assert.Equal(0, waiting.OutputLevel);
+        Assert.Equal(0, waiting.GainDb);
+        Assert.Equal(-120, waiting.Lufs);
+        Assert.Equal(-120, waiting.TruePeakDb);
+        Assert.Equal("waiting-for-pcm", waiting.Status);
+        Assert.Equal(3.5, waiting.ManualGainDb);
+        Assert.Equal(-0.25, waiting.Pan);
+        Assert.True(waiting.Solo);
+        Assert.True(waiting.NoiseSuppression);
+        Assert.True(waiting.Muted);
+        Assert.Equal(["Compressor"], waiting.PluginInserts);
     }
 }

@@ -4548,26 +4548,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
 
             var prior = existing.GetValueOrDefault(sourceId);
-            mergedById[sourceId] = new ParticipantAudioMix
-            {
-                ParticipantId = sourceId,
-                OutputLevel = prior?.OutputLevel ?? 0,
-                GainDb = prior?.GainDb ?? 0,
-                ManualGainDb = prior?.ManualGainDb ?? 0,
-                Pan = prior?.Pan ?? 0,
-                Solo = prior?.Solo ?? false,
-                NoiseSuppression = prior?.NoiseSuppression ?? false,
-                Muted = prior?.Muted ?? false,
-                Status = prior?.Status ?? "waiting-for-pcm",
-                Lufs = prior?.Lufs ?? -120,
-                TruePeakDb = prior?.TruePeakDb ?? -120,
-                PluginInserts = prior?.PluginInserts.ToList() ?? []
-            };
+            mergedById[sourceId] = BuildWaitingForPcmAudioMixChannel(sourceId, prior);
         }
 
         _audioMixChannels.Clear();
         _audioMixChannels.AddRange(mergedById.Values);
     }
+
+    public static ParticipantAudioMix BuildWaitingForPcmAudioMixChannel(
+        string sourceId,
+        ParticipantAudioMix? prior) =>
+        new()
+        {
+            ParticipantId = sourceId,
+            OutputLevel = 0,
+            GainDb = 0,
+            ManualGainDb = prior?.ManualGainDb ?? 0,
+            Pan = prior?.Pan ?? 0,
+            Solo = prior?.Solo ?? false,
+            NoiseSuppression = prior?.NoiseSuppression ?? false,
+            Muted = prior?.Muted ?? false,
+            Status = "waiting-for-pcm",
+            Lufs = -120,
+            TruePeakDb = -120,
+            PluginInserts = prior?.PluginInserts.ToList() ?? []
+        };
 
     private string BuildAutoProductionReadout()
     {
