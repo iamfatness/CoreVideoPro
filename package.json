@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "app": "powershell -ExecutionPolicy Bypass -File scripts/app.ps1",
     "build": "tsc -b && vite build",
     "build:native-core": "npm run build --workspace native-core",
     "build:native-dev": "powershell -ExecutionPolicy Bypass -File scripts/build-native-dev.ps1",
