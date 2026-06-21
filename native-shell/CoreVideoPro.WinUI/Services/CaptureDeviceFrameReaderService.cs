@@ -72,6 +72,20 @@ public static class CaptureDeviceFormatSelector
         candidateCount > 0 &&
         candidateIndex == candidateCount - 1;
 
+    public static bool ShouldPreferRankedFormatsBeforeCurrent(
+        bool allowsLateFirstFrame,
+        string? currentSubtype = null,
+        string? bestRankedSubtype = null)
+    {
+        if (allowsLateFirstFrame)
+        {
+            return true;
+        }
+
+        return IsSyntheticBgraSubtype(currentSubtype) &&
+            SubtypeScore(bestRankedSubtype) > SubtypeScore(currentSubtype);
+    }
+
     public static string NormalizeSubtype(string? subtype)
     {
         var normalized = subtype?.Trim().ToUpperInvariant() ?? string.Empty;
@@ -80,6 +94,12 @@ public static class CaptureDeviceFormatSelector
             "{30323449-0000-0010-8000-00AA00389B71}" => "I420",
             _ => normalized
         };
+    }
+
+    private static bool IsSyntheticBgraSubtype(string? subtype)
+    {
+        var normalized = NormalizeSubtype(subtype);
+        return normalized is "BGRA8" or "BGRA" or "ARGB32";
     }
 }
 
@@ -258,7 +278,13 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 $"capture: supported formats {_stableDeviceId} {string.Join("; ", formats.Take(8).Select(FormatLabel))}");
 
             var errors = new List<string>();
-            var candidates = BuildStartupCandidates(source, formats);
+            var candidates = BuildStartupCandidates(
+                source,
+                formats,
+                CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+                    _allowLateFirstFrame,
+                    source.CurrentFormat?.Subtype,
+                    formats.FirstOrDefault()?.Subtype));
             for (var i = 0; i < candidates.Count; i++)
             {
                 var format = candidates[i];
@@ -508,14 +534,19 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         private static IReadOnlyList<MediaFrameFormat> BuildStartupCandidates(
             MediaFrameSource source,
-            IReadOnlyList<MediaFrameFormat> rankedFormats)
+            IReadOnlyList<MediaFrameFormat> rankedFormats,
+            bool preferRankedFormatsBeforeCurrent)
         {
             var candidates = new List<MediaFrameFormat>();
-            if (source.CurrentFormat?.VideoFormat is not null)
+            var currentFormat = source.CurrentFormat?.VideoFormat is not null
+                ? source.CurrentFormat
+                : null;
+            if (!preferRankedFormatsBeforeCurrent && currentFormat is not null)
             {
-                candidates.Add(source.CurrentFormat);
+                candidates.Add(currentFormat);
             }
 
+            var rankedCandidateLimit = currentFormat is not null && preferRankedFormatsBeforeCurrent ? 7 : 8;
             foreach (var format in rankedFormats)
             {
                 if (candidates.Any(candidate => SameFormat(candidate, format)))
@@ -524,10 +555,15 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 }
 
                 candidates.Add(format);
-                if (candidates.Count >= 8)
+                if (candidates.Count >= rankedCandidateLimit)
                 {
                     break;
                 }
+            }
+
+            if (currentFormat is not null && !candidates.Any(candidate => SameFormat(candidate, currentFormat)))
+            {
+                candidates.Add(currentFormat);
             }
 
             return candidates;

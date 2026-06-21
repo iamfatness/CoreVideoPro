@@ -75,6 +75,25 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Fact]
+    public void ShouldPreferRankedFormatsBeforeCurrent_OnlyForCaptureCardsAndUvc()
+    {
+        Assert.True(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(allowsLateFirstFrame: true));
+        Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+            allowsLateFirstFrame: false,
+            currentSubtype: "NV12",
+            bestRankedSubtype: "YUY2"));
+    }
+
+    [Fact]
+    public void ShouldPreferRankedFormatsBeforeCurrent_WhenCurrentFormatIsSyntheticBgra()
+    {
+        Assert.True(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+            allowsLateFirstFrame: false,
+            currentSubtype: "ARGB32",
+            bestRankedSubtype: "YUY2"));
+    }
+
+    [Fact]
     public void Score_PenalizesNonWideAspectModesThatCauseStretchedUvcTiles()
     {
         var wide = new CaptureDeviceFormatCandidate(1920, 1080, 30, "NV12");
