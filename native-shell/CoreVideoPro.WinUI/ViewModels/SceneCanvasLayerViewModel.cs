@@ -66,6 +66,9 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         new() { Value = "stretch", Label = "Stretch" }
     ];
 
+    public string FramingSummary =>
+        $"Center cut | zoom {SourceScale:0.##} | pan {SourceOffsetX:0.##} | tilt {SourceOffsetY:0.##}";
+
     public IReadOnlyList<RouteSelectOption> BorderStyleOptions { get; } =
     [
         new() { Value = "accent", Label = "Accent" },
@@ -218,6 +221,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
+            OnPropertyChanged(nameof(FramingSummary));
             OnPropertyChanged(nameof(ParticipantOptions));
         }
         finally
@@ -337,6 +341,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.ZIndex = LayerIndex;
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(ColorGradeSummary));
+        OnPropertyChanged(nameof(FramingSummary));
     }
 
     private void ApplyVisualChange()

@@ -91,6 +91,12 @@ public static class MediaCoreCommandBuilder
                     ["sourceScale"] = route.SourceScale,
                     ["sourceOffsetX"] = route.SourceOffsetX,
                     ["sourceOffsetY"] = route.SourceOffsetY,
+                    ["ptz"] = new Dictionary<string, object?>
+                    {
+                        ["zoom"] = route.SourceScale,
+                        ["pan"] = route.SourceOffsetX,
+                        ["tilt"] = route.SourceOffsetY
+                    },
                     ["mediaAssetId"] = route.MediaAssetId,
                     ["mediaAssetName"] = route.MediaAssetName,
                     ["mediaAssetKind"] = route.MediaAssetKind,

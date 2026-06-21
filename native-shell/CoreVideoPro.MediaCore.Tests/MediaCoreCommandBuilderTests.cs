@@ -96,6 +96,44 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesPerSourcePtzForSceneGraphRoutes()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "custom-canvas",
+            SceneRoutes =
+            [
+                new(
+                    "canvas-1",
+                    "fixed",
+                    "mix",
+                    "p1",
+                    0,
+                    0,
+                    0.25,
+                    0.5,
+                    0,
+                    FitMode: "fill",
+                    SourceScale: 1.5,
+                    SourceOffsetX: -0.25,
+                    SourceOffsetY: 0.35)
+            ],
+            Participants = Participants
+        });
+
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"]
+            .EnumerateArray()
+            .Single();
+        var ptz = route.GetProperty("ptz");
+
+        Assert.Equal("fill", route.GetProperty("fitMode").GetString());
+        Assert.Equal(1.5, ptz.GetProperty("zoom").GetDouble());
+        Assert.Equal(-0.25, ptz.GetProperty("pan").GetDouble());
+        Assert.Equal(0.35, ptz.GetProperty("tilt").GetDouble());
+    }
+
+    [Fact]
     public void SerializesMediaAssetPayloadForSceneGraphRoutes()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

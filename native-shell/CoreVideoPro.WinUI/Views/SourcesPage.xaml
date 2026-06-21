@@ -271,6 +271,10 @@
                                                                     MinHeight="28"
                                                                     Command="{x:Bind ResetFramingCommand}" />
                                                         </Grid>
+                                                        <TextBlock Text="{x:Bind FramingSummary, Mode=OneWay}"
+                                                                   FontSize="10"
+                                                                   Foreground="{StaticResource StudioMutedBrush}"
+                                                                   TextWrapping="WrapWholeWords" />
                                                         <Grid ColumnSpacing="8">
                                                             <Grid.ColumnDefinitions>
                                                                 <ColumnDefinition Width="42" />
@@ -299,7 +303,7 @@
                                                                 <ColumnDefinition Width="*" />
                                                                 <ColumnDefinition Width="54" />
                                                             </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="X" FontSize="10"
+                                                            <TextBlock Text="Pan" FontSize="10"
                                                                        Foreground="{StaticResource StudioMutedBrush}"
                                                                        VerticalAlignment="Center" />
                                                             <Slider Grid.Column="1"
@@ -321,7 +325,7 @@
                                                                 <ColumnDefinition Width="*" />
                                                                 <ColumnDefinition Width="54" />
                                                             </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="Y" FontSize="10"
+                                                            <TextBlock Text="Tilt" FontSize="10"
                                                                        Foreground="{StaticResource StudioMutedBrush}"
                                                                        VerticalAlignment="Center" />
                                                             <Slider Grid.Column="1"

@@ -86,6 +86,21 @@ public sealed class SceneCanvasIaTests
             layerCount: expectedCount).Count);
     }
 
+    [Fact]
+    public void EightUpPreset_UsesFourByTwoGrid()
+    {
+        var rects = SceneCanvasLayoutService.BuildPresetRects(SceneCanvasPreset.EightUp, 8);
+
+        Assert.Equal(8, rects.Count);
+        Assert.Equal(4, rects.Select(rect => rect.X).Distinct().Count());
+        Assert.Equal(2, rects.Select(rect => rect.Y).Distinct().Count());
+        Assert.All(rects, rect =>
+        {
+            Assert.Equal(0.235, rect.Width, precision: 3);
+            Assert.Equal(0.49, rect.Height, precision: 3);
+        });
+    }
+
     [Theory]
     [InlineData("single", 1)]
     [InlineData("two-up", 2)]
