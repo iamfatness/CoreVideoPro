@@ -91,7 +91,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _audioMonitorVolume = 0.75;
 
     [ObservableProperty]
-    private bool _localAudioSourceEnabled;
+    private bool _localAudioSourceEnabled = true;
 
     [ObservableProperty]
     private string _selectedLocalAudioCaptureDeviceId = string.Empty;
