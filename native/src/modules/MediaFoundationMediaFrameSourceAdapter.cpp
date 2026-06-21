@@ -228,6 +228,11 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       }
       return false;
     }
+    if (!state.wasPlaying) {
+      state.reader = {};
+      state.ended = false;
+      state.frameId = 0;
+    }
     state.wasPlaying = true;
     if (!state.reader && !openVideoReader(path, state)) {
       warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program playback.");
