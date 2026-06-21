@@ -104,6 +104,38 @@ public sealed class SceneCanvasIaTests
         Assert.Equal(expectedCount, defaults.Count);
     }
 
+    [Theory]
+    [InlineData("single", 1)]
+    [InlineData("two-up", 2)]
+    [InlineData("three-up", 3)]
+    [InlineData("four-up", 4)]
+    [InlineData("five-up", 5)]
+    [InlineData("six-up", 6)]
+    [InlineData("seven-up", 7)]
+    [InlineData("eight-up", 8)]
+    public void ApplyInputSlotTemplate_CreatesExactInputSlotsForCanvasPreset(string preset, int expectedCount)
+    {
+        var routes = Enumerable.Range(0, 10)
+            .Select(index => SceneRoutingService.BuildAddedSourceRoute("scene-1", index, $"input-{index + 1}"))
+            .ToList();
+
+        SceneRoutingService.ApplyInputSlotTemplate(routes, "scene-1", expectedCount);
+        SceneCanvasLayoutService.ApplyPreset(preset, routes);
+
+        Assert.Equal(expectedCount, routes.Count);
+        for (var index = 0; index < routes.Count; index++)
+        {
+            Assert.Equal(SourceRouteMode.Fixed, routes[index].Mode);
+            Assert.Equal(index + 1, routes[index].ShowInputSlotNumber);
+            Assert.Null(routes[index].ParticipantId);
+            Assert.Null(routes[index].CaptureDeviceId);
+            Assert.Null(routes[index].SpotlightIndex);
+            Assert.Equal(SourceAudioRole.Mix, routes[index].AudioRole);
+            Assert.Equal(index, routes[index].ZIndex);
+            Assert.NotNull(routes[index].CanvasRect);
+        }
+    }
+
     [Fact]
     public void BuildAddedSourceRoute_MediaWithoutSelectionStaysParked()
     {

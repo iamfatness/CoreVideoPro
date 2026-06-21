@@ -127,6 +127,32 @@ public static class SceneRoutingService
         return route;
     }
 
+    public static void ApplyInputSlotTemplate(IList<SourceRoute> routes, string sceneId, int slotCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(slotCount);
+
+        while (routes.Count > slotCount)
+        {
+            routes.RemoveAt(routes.Count - 1);
+        }
+
+        while (routes.Count < slotCount)
+        {
+            routes.Add(BuildAddedSourceRoute(sceneId, routes.Count, $"input-{routes.Count + 1}"));
+        }
+
+        for (var index = 0; index < routes.Count; index++)
+        {
+            routes[index].Mode = SourceRouteMode.Fixed;
+            routes[index].ParticipantId = null;
+            routes[index].CaptureDeviceId = null;
+            routes[index].ShowInputSlotNumber = index + 1;
+            routes[index].SpotlightIndex = null;
+            routes[index].AudioRole = SourceAudioRole.Mix;
+            routes[index].ZIndex = index;
+        }
+    }
+
     public static IReadOnlyList<SourceRoute> GetRouteDefaults(
         Scene scene,
         IReadOnlyList<SourceRoute>? existingRoutes,

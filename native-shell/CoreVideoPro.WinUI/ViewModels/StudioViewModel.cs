@@ -7174,7 +7174,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var routes = GetMutableRoutes(PreviewSceneId);
         if (SceneCanvasLayoutService.TemplateSlotCount(presetWire) is { } slotCount)
         {
-            ApplyInputSlotTemplate(routes, slotCount);
+            SceneRoutingService.ApplyInputSlotTemplate(routes, PreviewSceneId, slotCount);
         }
 
         SceneCanvasLayoutService.ApplyPreset(presetWire, routes);
@@ -7209,29 +7209,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(ProgramSceneSummary));
         OnPropertyChanged(nameof(PreviewSceneSummary));
         OnPropertyChanged(nameof(SceneRailDisplaySummary));
-    }
-
-    private void ApplyInputSlotTemplate(List<SourceRoute> routes, int slotCount)
-    {
-        while (routes.Count > slotCount)
-        {
-            routes.RemoveAt(routes.Count - 1);
-        }
-
-        while (routes.Count < slotCount)
-        {
-            routes.Add(SceneRoutingService.BuildAddedSourceRoute(PreviewSceneId, routes.Count, $"input-{routes.Count + 1}"));
-        }
-
-        for (var index = 0; index < routes.Count; index++)
-        {
-            routes[index].Mode = SourceRouteMode.Fixed;
-            routes[index].ShowInputSlotNumber = index + 1;
-            routes[index].ParticipantId = null;
-            routes[index].CaptureDeviceId = null;
-            routes[index].SpotlightIndex = null;
-            routes[index].AudioRole = SourceAudioRole.Mix;
-        }
     }
 
     public void CommitPreviewCanvasLayer(SceneCanvasLayerViewModel layer) =>
