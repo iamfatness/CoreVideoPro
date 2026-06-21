@@ -56,8 +56,8 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
     public static int SourceKindPriority(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() switch
         {
-            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => 0,
-            "wasapi-input" or "wasapi-capture" => 1,
+            "wasapi-input" or "wasapi-capture" => 0,
+            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => 1,
             "embedded-capture-audio" => 2,
             "asio-input" => 3,
             _ => 4

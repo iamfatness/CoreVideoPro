@@ -4389,7 +4389,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : !string.IsNullOrWhiteSpace(source.AudioDeviceId)
                 ? source.AudioDeviceId
                 : source.CaptureDeviceId;
-        var state = source.CaptureStreaming ? "streaming" : source.Paired ? "paired idle" : "not paired";
+        var loopbackIdle = source.CaptureStreaming &&
+            source.CaptureFramesReceived <= 0 &&
+            IsLoopbackAudioSourceKind(source.AudioSourceKind);
+        var state = loopbackIdle
+            ? "loopback idle - play audio through this output or choose an input"
+            : source.CaptureStreaming ? "streaming" : source.Paired ? "paired idle" : "not paired";
         var format = source.CaptureSampleRate > 0 && source.CaptureChannels > 0
             ? $" {source.CaptureSampleRate} Hz/{source.CaptureChannels} ch"
             : string.Empty;
@@ -4404,6 +4409,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : string.Empty;
         return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{format}{warning}";
     }
+
+    private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
+        sourceKind?.Trim().ToLowerInvariant() is
+            "loopback" or
+            "wasapi-loopback" or
+            "wasapi-render-loopback" or
+            "system-loopback";
 
     private void RefreshLocalAudioSourceBindings()
     {
