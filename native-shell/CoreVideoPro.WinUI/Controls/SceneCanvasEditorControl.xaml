@@ -55,12 +55,21 @@
 
         <Border Grid.Row="1" Background="#06090D" BorderBrush="{StaticResource StudioBorderBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="8">
-            <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+            <ScrollViewer x:Name="CanvasScrollViewer"
+                          HorizontalScrollBarVisibility="Disabled"
+                          HorizontalScrollMode="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          VerticalScrollMode="Enabled">
+            <Viewbox x:Name="CanvasViewbox"
+                     Stretch="Uniform"
+                     HorizontalAlignment="Left"
+                     VerticalAlignment="Top">
                 <Grid x:Name="DesignSurface" Width="1600" Height="900" Background="#0A1016">
                     <Border BorderBrush="#22303A" BorderThickness="1" />
                     <Canvas x:Name="LayerCanvas" />
                 </Grid>
             </Viewbox>
+            </ScrollViewer>
         </Border>
     </Grid>
 </UserControl>

@@ -33,9 +33,27 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     public SceneCanvasEditorControl()
     {
         InitializeComponent();
+        SizeChanged += OnEditorSizeChanged;
     }
 
     public bool IsInteracting => _dragLayer is not null;
+
+    private void OnEditorSizeChanged(object sender, SizeChangedEventArgs e) =>
+        ResizeCanvasViewport();
+
+    private void ResizeCanvasViewport()
+    {
+        var viewportWidth = CanvasScrollViewer.ActualWidth > 0
+            ? CanvasScrollViewer.ActualWidth
+            : ActualWidth;
+        if (viewportWidth <= 0)
+        {
+            return;
+        }
+
+        CanvasViewbox.Width = viewportWidth;
+        CanvasViewbox.Height = viewportWidth * DesignHeight / DesignWidth;
+    }
 
     public void SetLayers(IReadOnlyList<SceneCanvasLayerViewModel>? layers, SceneCanvasLayerViewModel? selectedLayer)
     {
@@ -44,6 +62,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             return;
         }
 
+        ResizeCanvasViewport();
         _selectedLayer = selectedLayer;
         SyncLayers(layers ?? Array.Empty<SceneCanvasLayerViewModel>());
     }
