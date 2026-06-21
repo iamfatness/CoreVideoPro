@@ -189,6 +189,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         SourceScale = SourceRouteVisualDefaults.SourceScale;
         SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
         SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+        FitMode = SourceRouteVisualDefaults.FitMode;
     }
 
     public void SyncFromRoute(
@@ -338,6 +339,11 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.SourceScale = SceneRoutingService.NormalizeSourceScale(SourceScale);
         _route.SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(SourceOffsetX);
         _route.SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(SourceOffsetY);
+        _route.SourceFramingModified = SceneRoutingService.HasModifiedSourceFraming(
+            _route.FitMode,
+            _route.SourceScale,
+            _route.SourceOffsetX,
+            _route.SourceOffsetY);
         _route.ZIndex = LayerIndex;
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(ColorGradeSummary));

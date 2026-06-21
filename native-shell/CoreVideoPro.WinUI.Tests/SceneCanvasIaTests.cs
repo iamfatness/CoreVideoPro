@@ -226,6 +226,61 @@ public sealed class SceneCanvasIaTests
         Assert.Equal(SourceRouteVisualDefaults.SourceScale, route.SourceScale);
         Assert.Equal(0, route.SourceOffsetX);
         Assert.Equal(0, route.SourceOffsetY);
+        Assert.False(route.SourceFramingModified);
+    }
+
+    [Fact]
+    public void NormalizeRouteUpdate_RecentersStaleUnmodifiedSourceFraming()
+    {
+        var stale = new SourceRoute
+        {
+            Id = "scene-1-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p1",
+            AudioRole = SourceAudioRole.Mix,
+            FitMode = "fit",
+            SourceScale = 2,
+            SourceOffsetX = -1,
+            SourceOffsetY = 1,
+            SourceFramingModified = false
+        };
+
+        var normalized = SceneRoutingService.NormalizeRouteUpdate(
+            stale,
+            [new Participant { Id = "p1", Name = "Host" }]);
+
+        Assert.Equal(SourceRouteVisualDefaults.FitMode, normalized.FitMode);
+        Assert.Equal(SourceRouteVisualDefaults.SourceScale, normalized.SourceScale);
+        Assert.Equal(SourceRouteVisualDefaults.SourceOffsetX, normalized.SourceOffsetX);
+        Assert.Equal(SourceRouteVisualDefaults.SourceOffsetY, normalized.SourceOffsetY);
+        Assert.False(normalized.SourceFramingModified);
+    }
+
+    [Fact]
+    public void NormalizeRouteUpdate_PreservesOperatorModifiedSourceFraming()
+    {
+        var adjusted = new SourceRoute
+        {
+            Id = "scene-1-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p1",
+            AudioRole = SourceAudioRole.Mix,
+            FitMode = "fill",
+            SourceScale = 1.5,
+            SourceOffsetX = -0.25,
+            SourceOffsetY = 0.35,
+            SourceFramingModified = true
+        };
+
+        var normalized = SceneRoutingService.NormalizeRouteUpdate(
+            adjusted,
+            [new Participant { Id = "p1", Name = "Host" }]);
+
+        Assert.Equal("fill", normalized.FitMode);
+        Assert.Equal(1.5, normalized.SourceScale);
+        Assert.Equal(-0.25, normalized.SourceOffsetX);
+        Assert.Equal(0.35, normalized.SourceOffsetY);
+        Assert.True(normalized.SourceFramingModified);
     }
 
     [Fact]

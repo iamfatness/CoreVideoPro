@@ -103,6 +103,7 @@ public static class SceneRoutingService
             SourceScale = SourceRouteVisualDefaults.SourceScale,
             SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX,
             SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY,
+            SourceFramingModified = false,
             ZIndex = index
         };
 
@@ -157,6 +158,7 @@ public static class SceneRoutingService
             routes[index].SourceScale = SourceRouteVisualDefaults.SourceScale;
             routes[index].SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
             routes[index].SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+            routes[index].SourceFramingModified = false;
             routes[index].ZIndex = index;
         }
     }
@@ -382,13 +384,30 @@ public static class SceneRoutingService
         }
 
         normalized.CanvasRect = route.CanvasRect?.Clone();
-        normalized.FitMode = NormalizeFitMode(route.FitMode);
+        if (route.SourceFramingModified)
+        {
+            normalized.FitMode = NormalizeFitMode(route.FitMode);
+            normalized.SourceScale = NormalizeSourceScale(route.SourceScale);
+            normalized.SourceOffsetX = NormalizeSourceOffset(route.SourceOffsetX);
+            normalized.SourceOffsetY = NormalizeSourceOffset(route.SourceOffsetY);
+            normalized.SourceFramingModified = HasModifiedSourceFraming(
+                normalized.FitMode,
+                normalized.SourceScale,
+                normalized.SourceOffsetX,
+                normalized.SourceOffsetY);
+        }
+        else
+        {
+            normalized.FitMode = SourceRouteVisualDefaults.FitMode;
+            normalized.SourceScale = SourceRouteVisualDefaults.SourceScale;
+            normalized.SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+            normalized.SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+            normalized.SourceFramingModified = false;
+        }
+
         normalized.BorderStyle = NormalizeBorderStyle(route.BorderStyle);
         normalized.BorderColor = NormalizeBorderColor(route.BorderColor);
         normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
-        normalized.SourceScale = NormalizeSourceScale(route.SourceScale);
-        normalized.SourceOffsetX = NormalizeSourceOffset(route.SourceOffsetX);
-        normalized.SourceOffsetY = NormalizeSourceOffset(route.SourceOffsetY);
         normalized.ColorGrade = route.ColorGrade;
         normalized.ZIndex = route.ZIndex;
         return normalized;
@@ -411,6 +430,7 @@ public static class SceneRoutingService
         route.SourceScale = normalized.SourceScale;
         route.SourceOffsetX = normalized.SourceOffsetX;
         route.SourceOffsetY = normalized.SourceOffsetY;
+        route.SourceFramingModified = normalized.SourceFramingModified;
         route.ColorGrade = normalized.ColorGrade;
         route.ZIndex = normalized.ZIndex;
     }
@@ -424,13 +444,30 @@ public static class SceneRoutingService
         target.SpotlightIndex = source.SpotlightIndex;
         target.AudioRole = source.AudioRole;
         target.CanvasRect = source.CanvasRect?.Clone();
-        target.FitMode = NormalizeFitMode(source.FitMode);
+        if (source.SourceFramingModified)
+        {
+            target.FitMode = NormalizeFitMode(source.FitMode);
+            target.SourceScale = NormalizeSourceScale(source.SourceScale);
+            target.SourceOffsetX = NormalizeSourceOffset(source.SourceOffsetX);
+            target.SourceOffsetY = NormalizeSourceOffset(source.SourceOffsetY);
+            target.SourceFramingModified = HasModifiedSourceFraming(
+                target.FitMode,
+                target.SourceScale,
+                target.SourceOffsetX,
+                target.SourceOffsetY);
+        }
+        else
+        {
+            target.FitMode = SourceRouteVisualDefaults.FitMode;
+            target.SourceScale = SourceRouteVisualDefaults.SourceScale;
+            target.SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+            target.SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+            target.SourceFramingModified = false;
+        }
+
         target.BorderStyle = NormalizeBorderStyle(source.BorderStyle);
         target.BorderColor = NormalizeBorderColor(source.BorderColor);
         target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
-        target.SourceScale = NormalizeSourceScale(source.SourceScale);
-        target.SourceOffsetX = NormalizeSourceOffset(source.SourceOffsetX);
-        target.SourceOffsetY = NormalizeSourceOffset(source.SourceOffsetY);
         target.ColorGrade = source.ColorGrade;
         target.ZIndex = source.ZIndex;
     }
@@ -470,6 +507,16 @@ public static class SceneRoutingService
 
     public static double NormalizeSourceOffset(double value) =>
         double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), -1, 1) : 0;
+
+    public static bool HasModifiedSourceFraming(
+        string? fitMode,
+        double sourceScale,
+        double sourceOffsetX,
+        double sourceOffsetY) =>
+        NormalizeFitMode(fitMode) != SourceRouteVisualDefaults.FitMode ||
+        Math.Abs(NormalizeSourceScale(sourceScale) - SourceRouteVisualDefaults.SourceScale) > 0.001 ||
+        Math.Abs(NormalizeSourceOffset(sourceOffsetX) - SourceRouteVisualDefaults.SourceOffsetX) > 0.001 ||
+        Math.Abs(NormalizeSourceOffset(sourceOffsetY) - SourceRouteVisualDefaults.SourceOffsetY) > 0.001;
 
     public static string? RouteToSlot(SourceRoute route)
     {

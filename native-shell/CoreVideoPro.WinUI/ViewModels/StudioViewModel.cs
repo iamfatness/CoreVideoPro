@@ -655,8 +655,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "Monitor muted";
 
     public string AudioMonitorEngineStatus =>
-        _bridge.LastSnapshot?.AudioMixSession is { } audio
-            ? FormatAudioMonitorEngineStatus(audio)
+        _bridge.LastSnapshot is { } snapshot
+            ? FormatAudioMonitorEngineStatus(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
             : "Waiting for media engine audio telemetry.";
 
     public string AudioMeterSourceSummary =>
@@ -682,10 +682,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "No paired local/capture audio sources reported by native core.";
 
     public string StudioMonitorSummary =>
-        _bridge.LastSnapshot?.AudioMixSession is { } audio
-            ? AudioMonitoringEnabled
-                ? $"Monitor {FormatMonitorStatus(audio)} - {SelectedAudioMonitorDeviceName}"
-                : "Monitor off"
+        _bridge.LastSnapshot is { } snapshot
+            ? FormatStudioMonitorSummary(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                AudioMonitoringEnabled,
+                SelectedAudioMonitorDeviceName)
             : "Monitor waiting for media engine";
 
     public string SelectedLocalAudioCaptureDeviceName =>
@@ -4296,6 +4298,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public static string FormatAudioMonitorEngineStatus(NativeMediaCoreAudioMixSession audio)
+        => FormatAudioMonitorEngineStatus(audio, capture: null);
+
+    public static string FormatAudioMonitorEngineStatus(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources? capture)
     {
         if (audio.MixedFrameCount <= 0)
         {
@@ -4305,7 +4312,63 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var monitorState = audio.MonitorEnabled
             ? FormatMonitorStatus(audio)
             : "muted";
-        return $"{audio.MixedFrameCount} mixed frames - monitor {monitorState}";
+        var status = $"{audio.MixedFrameCount} mixed frames - monitor {monitorState}";
+        if (capture is null)
+        {
+            return status;
+        }
+
+        if (!audio.MonitorEnabled && capture.RoutedMonitorFrames > 0)
+        {
+            return $"{status} - MON bus has {capture.RoutedMonitorFrames} frames ready";
+        }
+
+        if (audio.MonitorEnabled && capture.RoutedMonitorFrames <= 0)
+        {
+            return $"{status} - no PCM on MON bus";
+        }
+
+        if (audio.MonitorEnabled && audio.MonitorFramesPlayed <= 0 && capture.RoutedMonitorFrames > 0)
+        {
+            return $"{status} - MON bus {capture.RoutedMonitorFrames} frames, no hardware playback frames";
+        }
+
+        if (audio.MonitorEnabled && capture.RoutedMonitorFrames > 0)
+        {
+            return $"{status} - MON bus {capture.RoutedMonitorFrames} frames";
+        }
+
+        return status;
+    }
+
+    public static string FormatStudioMonitorSummary(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources capture,
+        bool monitorToggleEnabled,
+        string selectedDeviceName)
+    {
+        var monBus = capture.RoutedMonitorFrames > 0
+            ? $"MON bus {capture.RoutedMonitorFrames} frames"
+            : "no PCM on MON bus";
+        if (!monitorToggleEnabled || !audio.MonitorEnabled)
+        {
+            return $"Monitor off - {monBus}";
+        }
+
+        var device = string.IsNullOrWhiteSpace(selectedDeviceName)
+            ? "No monitor output selected"
+            : selectedDeviceName;
+        if (audio.MonitorStatus == "missing-device")
+        {
+            return $"Monitor needs output device - {monBus}";
+        }
+
+        if (audio.MonitorFramesPlayed <= 0 && capture.RoutedMonitorFrames > 0)
+        {
+            return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}, no hardware playback frames";
+        }
+
+        return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}";
     }
 
     public static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>

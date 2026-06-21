@@ -45,6 +45,7 @@ public sealed class SourceRoute
     public double SourceScale { get; set; } = SourceRouteVisualDefaults.SourceScale;
     public double SourceOffsetX { get; set; } = SourceRouteVisualDefaults.SourceOffsetX;
     public double SourceOffsetY { get; set; } = SourceRouteVisualDefaults.SourceOffsetY;
+    public bool SourceFramingModified { get; set; }
     public ColorGrade? ColorGrade { get; set; }
     public int ZIndex { get; set; }
 
@@ -66,6 +67,7 @@ public sealed class SourceRoute
             SourceScale = SourceScale,
             SourceOffsetX = SourceOffsetX,
             SourceOffsetY = SourceOffsetY,
+            SourceFramingModified = SourceFramingModified,
             ColorGrade = ColorGrade,
             ZIndex = ZIndex
         };

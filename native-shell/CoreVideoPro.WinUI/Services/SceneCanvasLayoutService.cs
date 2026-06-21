@@ -47,6 +47,7 @@ public static class SceneCanvasLayoutService
             routes[index].SourceScale = SourceRouteVisualDefaults.SourceScale;
             routes[index].SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
             routes[index].SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+            routes[index].SourceFramingModified = false;
             routes[index].ZIndex = index;
         }
     }
