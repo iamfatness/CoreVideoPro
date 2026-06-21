@@ -50,32 +50,36 @@ public static class MediaCorePaths
     public static string? ResolveNativeCoreExecutable()
     {
         var repo = RepoRoot;
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "corevideo-native.exe"),
-            Path.Combine(repo, "native", "build-dev", "corevideo-native.exe"),
-            Path.Combine(repo, "native", "build-dev", "Release", "corevideo-native.exe"),
-            Path.Combine(repo, "native", "build", "corevideo-native.exe"),
-            Path.Combine(repo, "native", "build", "Release", "corevideo-native.exe")
-        };
+        var candidates = BuildNativeCoreExecutableCandidates(repo, AppContext.BaseDirectory);
 
         return candidates.FirstOrDefault(File.Exists);
     }
+
+    public static IReadOnlyList<string> BuildNativeCoreExecutableCandidates(string repoRoot, string appBaseDirectory) =>
+    [
+        Path.Combine(appBaseDirectory, "corevideo-native.exe"),
+        Path.Combine(repoRoot, "native", "build", "corevideo-native.exe"),
+        Path.Combine(repoRoot, "native", "build", "Release", "corevideo-native.exe"),
+        Path.Combine(repoRoot, "native", "build-dev", "corevideo-native.exe"),
+        Path.Combine(repoRoot, "native", "build-dev", "Release", "corevideo-native.exe")
+    ];
 
     public static string? ResolveZoomEngineExecutable()
     {
         var repo = RepoRoot;
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "corevideo-zoom-engine.exe"),
-            Path.Combine(repo, "native", "build-dev", "corevideo-zoom-engine.exe"),
-            Path.Combine(repo, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"),
-            Path.Combine(repo, "native", "build", "corevideo-zoom-engine.exe"),
-            Path.Combine(repo, "native", "build", "Release", "corevideo-zoom-engine.exe")
-        };
+        var candidates = BuildZoomEngineExecutableCandidates(repo, AppContext.BaseDirectory);
 
         return candidates.FirstOrDefault(File.Exists);
     }
+
+    public static IReadOnlyList<string> BuildZoomEngineExecutableCandidates(string repoRoot, string appBaseDirectory) =>
+    [
+        Path.Combine(appBaseDirectory, "corevideo-zoom-engine.exe"),
+        Path.Combine(repoRoot, "native", "build", "corevideo-zoom-engine.exe"),
+        Path.Combine(repoRoot, "native", "build", "Release", "corevideo-zoom-engine.exe"),
+        Path.Combine(repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"),
+        Path.Combine(repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe")
+    ];
 
     public static string ResolveMediaCoreWorkingDirectory()
     {

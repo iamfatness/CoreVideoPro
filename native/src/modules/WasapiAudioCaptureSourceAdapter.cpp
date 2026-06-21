@@ -29,6 +29,7 @@ namespace corevideo::modules {
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 
@@ -46,6 +47,25 @@ std::string wideToUtf8Capture(const wchar_t* wide) {
   std::string out(static_cast<size_t>(needed - 1), '\0');
   ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), needed, nullptr, nullptr);
   return out;
+}
+
+std::string asciiLowerCapture(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return value;
+}
+
+std::string normalizeWasapiEndpointId(std::string value) {
+  value = asciiLowerCapture(std::move(value));
+  constexpr const char* kWinRtMmdevapiMarker = "mmdevapi#";
+  const auto marker = value.find(kWinRtMmdevapiMarker);
+  if (marker == std::string::npos) {
+    return value;
+  }
+
+  const auto idStart = marker + std::strlen(kWinRtMmdevapiMarker);
+  const auto idEnd = value.find('#', idStart);
+  return value.substr(idStart, idEnd == std::string::npos ? std::string::npos : idEnd - idStart);
 }
 
 template <typename T>
@@ -258,17 +278,21 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     IMMDevice* match = nullptr;
     UINT count = 0;
     collection->GetCount(&count);
+    const auto requestedEndpointId = normalizeWasapiEndpointId(requested);
     for (UINT index = 0; index < count && match == nullptr; ++index) {
       IMMDevice* candidate = nullptr;
       if (FAILED(collection->Item(index, &candidate)) || candidate == nullptr) {
         continue;
       }
       LPWSTR rawId = nullptr;
-      const bool idMatches = SUCCEEDED(candidate->GetId(&rawId)) && rawId != nullptr && wideToUtf8Capture(rawId) == requested;
+      const bool idMatches = SUCCEEDED(candidate->GetId(&rawId)) &&
+                             rawId != nullptr &&
+                             normalizeWasapiEndpointId(wideToUtf8Capture(rawId)) == requestedEndpointId;
       if (rawId != nullptr) {
         ::CoTaskMemFree(rawId);
       }
-      const bool nameMatches = !config.audioDeviceName.empty() && friendlyName(candidate) == config.audioDeviceName;
+      const bool nameMatches = !config.audioDeviceName.empty() &&
+                               asciiLowerCapture(friendlyName(candidate)) == asciiLowerCapture(config.audioDeviceName);
       if (idMatches || nameMatches) {
         match = candidate;
         continue;

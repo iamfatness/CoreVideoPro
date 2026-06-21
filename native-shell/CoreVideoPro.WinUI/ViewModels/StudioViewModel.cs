@@ -43,6 +43,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
+    private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
+    private string? _lastAudioTelemetrySignature;
     private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
 
     [ObservableProperty]
@@ -4164,10 +4166,137 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
     }
 
+    private void MaybeLogAudioTelemetry(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var audio = snapshot.AudioMixSession;
+        var capture = snapshot.CaptureAudioSources;
+        var matrix = snapshot.AudioRoutingMatrix;
+        var now = DateTimeOffset.UtcNow;
+        var signature =
+            $"{LocalAudioSourceEnabled}|{SelectedLocalAudioCaptureDeviceId}|{SelectedAudioMonitorDeviceId}|{AudioMonitoringEnabled}|" +
+            $"{audio.Status}|{audio.MixedFrameCount}|{audio.MonitorStatus}|{audio.MonitorFramesPlayed}|" +
+            $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|{capture.CaptureFramesReceived}|{capture.RoutedMasterFrames}|{capture.RoutedMonitorFrames}|" +
+            $"{matrix.Status}|{matrix.RoutedSendCount}|{matrix.ProgramTapFrames}|{matrix.BusTaps.Count}|" +
+            $"{FirstOrEmpty(audio.Warnings)}|{FirstOrEmpty(capture.Warnings)}|{FirstOrEmpty(matrix.Warnings)}|" +
+            $"{BuildCaptureAudioSourceTelemetry(capture)}";
+
+        if (string.Equals(signature, _lastAudioTelemetrySignature, StringComparison.Ordinal) &&
+            now - _lastAudioTelemetryLoggedAt < TimeSpan.FromSeconds(5))
+        {
+            return;
+        }
+
+        _lastAudioTelemetrySignature = signature;
+        _lastAudioTelemetryLoggedAt = now;
+
+        LaunchLog.Write(
+            "audio: telemetry " +
+            $"localEnabled={LocalAudioSourceEnabled} " +
+            $"localDevice={TelemetryValue(SelectedLocalAudioCaptureDeviceName)} " +
+            $"localStatus={TelemetryValue(LocalAudioSourceStatus)} " +
+            $"monitorEnabled={AudioMonitoringEnabled} " +
+            $"monitorDevice={TelemetryValue(SelectedAudioMonitorDeviceName)} " +
+            $"mixStatus={TelemetryValue(audio.Status)} " +
+            $"mixedFrames={audio.MixedFrameCount} " +
+            $"master={audio.MasterLevel} " +
+            $"monitorStatus={TelemetryValue(audio.MonitorStatus ?? "unknown")} " +
+            $"monitorFrames={audio.MonitorFramesPlayed} " +
+            $"captureStatus={TelemetryValue(capture.Status)} " +
+            $"captureSources={capture.StreamingCount}/{capture.SourceCount} " +
+            $"captureFrames={capture.CaptureFramesReceived} " +
+            $"routedMaster={capture.RoutedMasterFrames} " +
+            $"routedMon={capture.RoutedMonitorFrames} " +
+            $"routeStatus={TelemetryValue(matrix.Status)} " +
+            $"routedSends={matrix.RoutedSendCount} " +
+            $"programTapFrames={matrix.ProgramTapFrames} " +
+            $"busTaps={TelemetryValue(BuildAudioBusTapTelemetry(matrix), 256)} " +
+            $"sources={TelemetryValue(BuildCaptureAudioSourceTelemetry(capture), 512)} " +
+            $"warnings={TelemetryValue(BuildAudioWarningTelemetry(audio, capture, matrix), 384)}");
+    }
+
     private void OnAudioMonitorSettingsChanged()
     {
         RefreshAudioMonitorBindings();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    private static string BuildAudioWarningTelemetry(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources capture,
+        NativeMediaCoreAudioRoutingMatrix matrix)
+    {
+        var warnings = audio.Warnings
+            .Concat(capture.Warnings)
+            .Concat(matrix.Warnings)
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .Distinct(StringComparer.Ordinal)
+            .Take(3)
+            .ToArray();
+        return warnings.Length == 0 ? "none" : string.Join("|", warnings);
+    }
+
+    private static string BuildCaptureAudioSourceTelemetry(NativeMediaCoreCaptureAudioSources capture)
+    {
+        if (capture.Sources.Count == 0)
+        {
+            return "none";
+        }
+
+        return string.Join(
+            ",",
+            capture.Sources
+                .OrderByDescending(source => source.Paired)
+                .ThenByDescending(source => source.CaptureStreaming)
+                .ThenBy(source => source.CaptureDeviceId, StringComparer.Ordinal)
+                .ThenBy(source => source.SourceId, StringComparer.Ordinal)
+                .Take(8)
+                .Select(source =>
+                    $"{TelemetryValue(source.CaptureDeviceId)}:" +
+                    $"{TelemetryValue(source.SourceId ?? "unpaired")}:" +
+                    $"{TelemetryValue(source.AudioSourceKind ?? "unknown")}:" +
+                    $"paired={source.Paired}:" +
+                    $"streaming={source.CaptureStreaming}:" +
+                    $"frames={source.CaptureFramesReceived}:" +
+                    $"fmt={source.CaptureSampleRate}x{source.CaptureChannels}:" +
+                    $"warning={TelemetryValue(source.Warning ?? "none")}"));
+    }
+
+    private static string BuildAudioBusTapTelemetry(NativeMediaCoreAudioRoutingMatrix matrix)
+    {
+        if (matrix.BusTaps.Count == 0)
+        {
+            return "none";
+        }
+
+        return string.Join(
+            ",",
+            matrix.BusTaps
+                .OrderByDescending(tap => tap.Frames)
+                .Take(6)
+                .Select(tap =>
+                    $"{TelemetryValue(tap.BusId)}:{tap.Frames}f:{tap.PeakDbfs:0.0}dB"));
+    }
+
+    private static string FirstOrEmpty(IReadOnlyList<string> values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static string TelemetryValue(string? value, int maxLength = 96)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "none";
+        }
+
+        var cleaned = value
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Replace(";", ",", StringComparison.Ordinal);
+        if (maxLength <= 3)
+        {
+            return cleaned.Length <= maxLength ? cleaned : cleaned[..Math.Max(0, maxLength)];
+        }
+
+        return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
     }
 
     private static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>
@@ -5161,6 +5290,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MasterLimiterEnabled);
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
+        MaybeLogAudioTelemetry(snapshot);
         Settings.RefreshDiagnosticsReadout();
 
         if (!ZoomCaptureSubscribed)
