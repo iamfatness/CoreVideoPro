@@ -670,6 +670,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             },
             zoomStatusChanged: status => ZoomStatus = status,
             onMeetingJoined: () => ActiveTab = StudioTab.Studio);
+        Settings.ConfigureOutputDestinations(BuildSupportBundleOutputDestinations);
         _zoomOAuthCoordinator.SetStatusChangedHandler(message =>
         {
             Settings.OauthStatusMessage = message;
@@ -4389,6 +4390,63 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             EngineStatus = $"Media core recovering (restart {health.RestartCount})";
         }
+
+        Settings.RefreshDiagnosticsReadout();
+    }
+
+    /// <summary>
+    /// Supplies the configured stream outputs (RTMP/SRT/NDI) for the support bundle.
+    /// Endpoints and stream keys are redacted by <see cref="SupportBundleBuilder"/>.
+    /// </summary>
+    private IReadOnlyList<SupportBundleOutputDestination> BuildSupportBundleOutputDestinations()
+    {
+        var destinations = new List<SupportBundleOutputDestination>();
+
+        if (!string.IsNullOrWhiteSpace(StreamRtmpServerUrl) || !string.IsNullOrWhiteSpace(StreamRtmpStreamKey))
+        {
+            destinations.Add(new SupportBundleOutputDestination
+            {
+                Id = "rtmp",
+                Name = "RTMP",
+                Protocol = StreamRtmpProtocol,
+                Enabled = !string.IsNullOrWhiteSpace(StreamRtmpServerUrl),
+                Active = Streaming,
+                Endpoint = StreamRtmpServerUrl,
+                StreamKey = StreamRtmpStreamKey
+            });
+        }
+
+        if (StreamSrtEnabled || !string.IsNullOrWhiteSpace(StreamSrtHost))
+        {
+            destinations.Add(new SupportBundleOutputDestination
+            {
+                Id = "srt",
+                Name = "SRT",
+                Protocol = "srt",
+                Enabled = StreamSrtEnabled,
+                Active = Streaming && StreamSrtEnabled,
+                Endpoint = string.IsNullOrWhiteSpace(StreamSrtHost)
+                    ? null
+                    : $"srt://{StreamSrtHost}:{StreamSrtPort}",
+                StreamKey = StreamSrtPassphrase
+            });
+        }
+
+        if (StreamNdiEnabled)
+        {
+            destinations.Add(new SupportBundleOutputDestination
+            {
+                Id = "ndi",
+                Name = "NDI",
+                Protocol = "ndi",
+                Enabled = StreamNdiEnabled,
+                Active = Streaming && StreamNdiEnabled,
+                Endpoint = StreamNdiProgramName,
+                StreamKey = null
+            });
+        }
+
+        return destinations;
     }
 
     private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) =>
@@ -4411,6 +4469,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             programResolutionLabel,
             MasterLimiterEnabled);
         RefreshAudioReadoutBindings();
+        Settings.RefreshDiagnosticsReadout();
 
         if (!ZoomCaptureSubscribed)
         {

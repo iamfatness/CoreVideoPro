@@ -50,6 +50,28 @@ public sealed class MediaCoreHealth
     public int RestartCount { get; init; }
     public bool Recovering { get; init; }
     public bool Stopped { get; init; }
+
+    /// <summary>
+    /// Bounded, most-recent-last history of media-core child exits. Mirrors the
+    /// React shell's SupportBundleCrashEvent[] (src/engine/supportBundle.ts).
+    /// </summary>
+    public IReadOnlyList<MediaCoreCrashEvent> CrashEvents { get; init; } = [];
+}
+
+/// <summary>
+/// A single media-core child process exit captured by the supervisor. Mirrors
+/// the React shell's SupportBundleCrashEvent (src/domain/production.ts).
+/// </summary>
+public sealed record MediaCoreCrashEvent
+{
+    /// <summary>ISO-8601 (UTC) timestamp of the observed child exit.</summary>
+    public required string At { get; init; }
+
+    /// <summary>Child process exit code, or null when it could not be read.</summary>
+    public int? ExitCode { get; init; }
+
+    /// <summary>Cumulative restart count after this exit was observed.</summary>
+    public int RestartCount { get; init; }
 }
 
 public sealed class NativeMediaCoreColorGrade

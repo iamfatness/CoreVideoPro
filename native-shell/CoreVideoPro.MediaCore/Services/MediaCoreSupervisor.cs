@@ -29,6 +29,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private Timer? _frameDrainTimer;
     private int _nextId;
     private int _restarts;
+    private const int MaxCrashEvents = 20;
+    private readonly LinkedList<MediaCoreCrashEvent> _crashEvents = new();
     private bool _stopped = true;
     private bool _recovering;
     private bool _syncInFlight;
@@ -47,12 +49,22 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
 
-    public MediaCoreHealth Health => new()
+    public MediaCoreHealth Health
     {
-        RestartCount = _restarts,
-        Recovering = _recovering,
-        Stopped = _stopped
-    };
+        get
+        {
+            lock (_gate)
+            {
+                return new MediaCoreHealth
+                {
+                    RestartCount = _restarts,
+                    Recovering = _recovering,
+                    Stopped = _stopped,
+                    CrashEvents = _crashEvents.ToArray()
+                };
+            }
+        }
+    }
 
     public bool Running
     {
@@ -593,6 +605,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
             _restarts++;
             _recovering = true;
+            RecordCrashEvent(sender as Process, _restarts);
             RaiseHealth();
             StatusChanged?.Invoke($"Media core recovering (restart {_restarts})");
 
@@ -829,6 +842,37 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     }
 
     private string NextId() => $"core-{Interlocked.Increment(ref _nextId)}";
+
+    /// <summary>
+    /// Records a child exit into the bounded crash buffer. Caller must hold <see cref="_gate"/>.
+    /// </summary>
+    private void RecordCrashEvent(Process? exited, int restartCount)
+    {
+        int? exitCode = null;
+        try
+        {
+            if (exited is { HasExited: true })
+            {
+                exitCode = exited.ExitCode;
+            }
+        }
+        catch
+        {
+            // Exit code may be unavailable; record as null.
+        }
+
+        _crashEvents.AddLast(new MediaCoreCrashEvent
+        {
+            At = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture),
+            ExitCode = exitCode,
+            RestartCount = restartCount
+        });
+
+        while (_crashEvents.Count > MaxCrashEvents)
+        {
+            _crashEvents.RemoveFirst();
+        }
+    }
 
     private void RaiseHealth() => HealthChanged?.Invoke(Health);
 

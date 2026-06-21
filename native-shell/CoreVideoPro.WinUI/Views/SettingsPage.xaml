@@ -253,6 +253,52 @@
                     </StackPanel>
                 </StackPanel>
             </Border>
+
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="Diagnostics &amp; support" Style="{StaticResource StudioSectionTitle}" />
+                    <TextBlock Style="{StaticResource StudioBody}"
+                               Text="Recovery state, output / feed / encoder warnings, and recent operator actions and events. Export a redacted support bundle (no stream keys or endpoints) for escalation." />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Style="{StaticResource StudioGhostButton}"
+                                Content="Export support bundle"
+                                Command="{x:Bind ViewModel.ExportSupportBundleCommand}" />
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource StudioBody}" FontSize="11"
+                               Foreground="{StaticResource StudioTextSecondaryBrush}"
+                               TextWrapping="Wrap"
+                               Text="{x:Bind ViewModel.SupportBundleStatus, Mode=OneWay}"
+                               Visibility="{x:Bind ViewModel.ShowSupportBundleStatus, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.DiagnosticsReadout, Mode=OneWay}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:ZoomEngineEvidenceItem">
+                                <Border Background="{StaticResource StudioFieldBrush}"
+                                        BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                                    <StackPanel Spacing="4">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="0.36*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{x:Bind Label}" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                            <TextBlock Grid.Column="1" Text="{x:Bind Value}" FontSize="12"
+                                                       Foreground="{StaticResource StudioTextBrush}"
+                                                       TextWrapping="Wrap" />
+                                        </Grid>
+                                        <TextBlock Text="{x:Bind Detail}" Style="{StaticResource StudioBody}"
+                                                   Visibility="{x:Bind ShowDetail, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </StackPanel>
+            </Border>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

@@ -65,8 +65,13 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     private ZoomSdkReadinessReport _sdkReadiness = CreateDefaultReport();
     private IReadOnlyList<ZoomEngineEvidenceItem> _zoomEngineEvidence = [];
+    private IReadOnlyList<ZoomEngineEvidenceItem> _diagnosticsReadout = [];
+    private Func<IReadOnlyList<SupportBundleOutputDestination>>? _outputDestinationsFactory;
     private FirstFrameValidationEvidence _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From();
     private Stopwatch? _firstFrameStopwatch;
+
+    [ObservableProperty]
+    private string _supportBundleStatus = string.Empty;
 
     public ObservableCollection<RecentZoomMeeting> RecentMeetings { get; } = [];
 
@@ -93,7 +98,22 @@ public sealed partial class SettingsViewModel : ObservableObject
         _ = RefreshOAuthStatusAsync();
         _ = LoadRecentMeetingsAsync();
         RefreshSdkReadiness();
+        RefreshDiagnosticsReadout();
     }
+
+    /// <summary>
+    /// Lets the shell supply redactable output destinations (RTMP/SRT/NDI endpoint
+    /// + stream key) for the support bundle. Endpoints/keys are redacted on export.
+    /// </summary>
+    public void ConfigureOutputDestinations(Func<IReadOnlyList<SupportBundleOutputDestination>>? factory) =>
+        _outputDestinationsFactory = factory;
+
+    public IReadOnlyList<ZoomEngineEvidenceItem> DiagnosticsReadout => _diagnosticsReadout;
+
+    public bool ShowSupportBundleStatus => !string.IsNullOrWhiteSpace(SupportBundleStatus);
+
+    partial void OnSupportBundleStatusChanged(string value) =>
+        OnPropertyChanged(nameof(ShowSupportBundleStatus));
 
     public bool ShowZoomOAuthControls => _oauth?.Manifest.BrokerConfigured == true;
 
@@ -272,6 +292,151 @@ public sealed partial class SettingsViewModel : ObservableObject
 
         _zoomEngineEvidence = BuildZoomEngineEvidence(snapshot ?? _bridge.LastSnapshot);
         OnPropertyChanged(nameof(ZoomEngineEvidence));
+        RefreshDiagnosticsReadout();
+    }
+
+    /// <summary>
+    /// Recovery / output / feed / encoder warnings + recent operator actions and
+    /// event log surfaced as an actionable readout. Sourced from the latest
+    /// media-core snapshot warnings and supervisor health.
+    /// </summary>
+    public void RefreshDiagnosticsReadout()
+    {
+        _diagnosticsReadout = BuildDiagnosticsReadout(_bridge.LastSnapshot, _bridge.Health);
+        OnPropertyChanged(nameof(DiagnosticsReadout));
+    }
+
+    [RelayCommand]
+    private async Task ExportSupportBundleAsync()
+    {
+        RefreshDiagnosticsReadout();
+        try
+        {
+            var path = SupportBundleBuilder.DefaultBundlePath();
+            var outputs = _outputDestinationsFactory?.Invoke();
+            await SupportBundleBuilder.WriteAsync(
+                path,
+                _bridge.LastSnapshot,
+                _bridge.Health,
+                new SupportBundleAppInfo(),
+                outputs).ConfigureAwait(true);
+            SupportBundleStatus = $"Support bundle exported to {path}";
+            LaunchLog.Write($"support-bundle: exported to {path}");
+        }
+        catch (Exception ex)
+        {
+            SupportBundleStatus = $"Support bundle export failed: {ex.Message}";
+            LaunchLog.Write($"support-bundle: export failed {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static IReadOnlyList<ZoomEngineEvidenceItem> BuildDiagnosticsReadout(
+        NativeMediaCoreStateSnapshot? snapshot,
+        MediaCoreHealth health)
+    {
+        var items = new List<ZoomEngineEvidenceItem>();
+
+        var recovering = health.Recovering;
+        var recoveryStatus = recovering
+            ? ZoomSdkReadinessStatus.Warning
+            : health.RestartCount > 0
+                ? ZoomSdkReadinessStatus.Warning
+                : ZoomSdkReadinessStatus.Ready;
+        var latestCrash = health.CrashEvents.Count > 0 ? health.CrashEvents[^1] : null;
+        items.Add(new ZoomEngineEvidenceItem
+        {
+            Label = "Recovery",
+            Value = recovering
+                ? "recovering"
+                : health.RestartCount > 0 ? $"recovered ({health.RestartCount} restart{(health.RestartCount == 1 ? "" : "s")})" : "stable",
+            Detail = latestCrash is null
+                ? "No media-core restarts observed this session."
+                : $"Last exit {(latestCrash.ExitCode?.ToString() ?? "unknown")} at {latestCrash.At}; total restarts {health.RestartCount}.",
+            Status = recoveryStatus
+        });
+
+        if (snapshot is null)
+        {
+            items.Add(new ZoomEngineEvidenceItem
+            {
+                Label = "Snapshot",
+                Value = "unavailable",
+                Detail = "Join a Zoom meeting or start the media core to collect diagnostics.",
+                Status = ZoomSdkReadinessStatus.Warning
+            });
+            return items;
+        }
+
+        var outputWarnings = snapshot.OutputSenderSession.Warnings
+            .Concat(snapshot.EncoderSession.Warnings)
+            .ToList();
+        items.Add(new ZoomEngineEvidenceItem
+        {
+            Label = "Output / encoder",
+            Value = outputWarnings.Count == 0
+                ? $"{snapshot.OutputSenderSession.Status} | {snapshot.EncoderSession.Status}"
+                : $"{outputWarnings.Count} warning{(outputWarnings.Count == 1 ? "" : "s")}",
+            Detail = outputWarnings.Count == 0
+                ? $"senders active={snapshot.OutputSenderSession.ActiveSenderCount}; encoder targets={snapshot.EncoderSession.Targets.Count}"
+                : string.Join(" · ", outputWarnings),
+            Status = outputWarnings.Count == 0 ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning
+        });
+
+        var feedWarnings = snapshot.SourceSnapshot.Warnings.ToList();
+        items.Add(new ZoomEngineEvidenceItem
+        {
+            Label = "Feeds",
+            Value = feedWarnings.Count == 0
+                ? $"{snapshot.SourceSnapshot.Status}"
+                : $"{feedWarnings.Count} warning{(feedWarnings.Count == 1 ? "" : "s")}",
+            Detail = feedWarnings.Count == 0
+                ? $"subscribed={snapshot.SourceSnapshot.SubscribedSourceCount}; live={snapshot.SourceSnapshot.LiveFrameCount}; stale={snapshot.SourceSnapshot.StaleFrameCount}; dropped={snapshot.SourceSnapshot.DroppedFrameCount}"
+                : string.Join(" · ", feedWarnings),
+            Status = feedWarnings.Count == 0 ? ZoomSdkReadinessStatus.Ready : ZoomSdkReadinessStatus.Warning
+        });
+
+        if (snapshot.Warnings.Count > 0)
+        {
+            items.Add(new ZoomEngineEvidenceItem
+            {
+                Label = "Media-core warnings",
+                Value = $"{snapshot.Warnings.Count}",
+                Detail = string.Join(" · ", snapshot.Warnings),
+                Status = ZoomSdkReadinessStatus.Warning
+            });
+        }
+
+        foreach (var action in snapshot.OperatorActions.Take(5))
+        {
+            items.Add(new ZoomEngineEvidenceItem
+            {
+                Label = $"Action · {action.Area}",
+                Value = action.Title,
+                Detail = action.Detail,
+                Status = action.Severity == "critical"
+                    ? ZoomSdkReadinessStatus.Blocked
+                    : action.Severity == "warning"
+                        ? ZoomSdkReadinessStatus.Warning
+                        : ZoomSdkReadinessStatus.Ready
+            });
+        }
+
+        foreach (var entry in snapshot.EventLog.TakeLast(5).Reverse())
+        {
+            items.Add(new ZoomEngineEvidenceItem
+            {
+                Label = $"Event · {entry.Area}",
+                Value = entry.Title,
+                Detail = entry.Detail,
+                Status = entry.Severity == "critical"
+                    ? ZoomSdkReadinessStatus.Blocked
+                    : entry.Severity == "warning"
+                        ? ZoomSdkReadinessStatus.Warning
+                        : ZoomSdkReadinessStatus.Ready
+            });
+        }
+
+        return items;
     }
 
     public void ObserveZoomVideoFrame(ZoomVideoFrame frame)
