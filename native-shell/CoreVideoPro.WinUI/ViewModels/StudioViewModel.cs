@@ -4436,14 +4436,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshAudioMixChannels()
     {
-        var existing = _audioMixChannels.ToDictionary(channel => channel.ParticipantId);
+        var existing = _audioMixChannels
+            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+            .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
-        var mergedById = merged.ToDictionary(channel => channel.ParticipantId, StringComparer.Ordinal);
+        var mergedById = merged
+            .Where(channel => !string.IsNullOrWhiteSpace(channel.ParticipantId))
+            .GroupBy(channel => channel.ParticipantId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
 
         if (_bridge.LastSnapshot?.AudioMixSession is { } nativeAudio)
         {
             foreach (var nativeChannel in nativeAudio.Participants)
             {
+                if (string.IsNullOrWhiteSpace(nativeChannel.ParticipantId))
+                {
+                    continue;
+                }
+
                 existing.TryGetValue(nativeChannel.ParticipantId, out var prior);
                 var channel = new ParticipantAudioMix
                 {
@@ -4732,9 +4743,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<MediaCoreAudioRoutingSendWire> audioRoutingSends)
     {
         var audioMixByParticipant = AudioMix.Participants
+            .Where(mix => !string.IsNullOrWhiteSpace(mix.ParticipantId))
             .GroupBy(mix => mix.ParticipantId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
-        var participantsById = RoomVideoParticipants.ToDictionary(participant => participant.Id, StringComparer.Ordinal);
+        var participantsById = RoomVideoParticipants
+            .Where(participant => !string.IsNullOrWhiteSpace(participant.Id))
+            .GroupBy(participant => participant.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
 
         return BuildExpectedAudioSourceIds(captureAudioSources, audioRoutingSends)
             .Select(sourceId => BuildAudioMixChannelWire(sourceId, audioMixByParticipant, participantsById))
@@ -5742,7 +5757,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshAudioParticipantRows()
     {
         RefreshAudioMixChannels();
-        var participantsById = RoomVideoParticipants.ToDictionary(participant => participant.Id, StringComparer.Ordinal);
+        var participantsById = RoomVideoParticipants
+            .Where(participant => !string.IsNullOrWhiteSpace(participant.Id))
+            .GroupBy(participant => participant.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
         var rows = _audioMixChannels
             .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
             .Select(mix =>

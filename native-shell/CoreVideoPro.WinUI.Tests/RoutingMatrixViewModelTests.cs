@@ -108,6 +108,41 @@ public sealed class RoutingMatrixViewModelTests
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "mon").IsRouted);
     }
 
+    [Fact]
+    public void AudioRouting_DuplicateSourcesDoNotCreateDuplicateRows()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+
+        viewModel.Build(
+            [
+                new RoutingSource("local-machine-audio", "Local machine audio"),
+                new RoutingSource("local-machine-audio", "Local machine audio duplicate"),
+                new RoutingSource("capture:uvc-01", "UVC audio"),
+                new RoutingSource("capture:uvc-01", "UVC audio duplicate")
+            ]);
+
+        Assert.Equal(2, viewModel.Rows.Count);
+        Assert.Single(viewModel.Rows, row => row.SourceId == "local-machine-audio");
+        Assert.Single(viewModel.Rows, row => row.SourceId == "capture:uvc-01");
+    }
+
+    [Fact]
+    public void AudioRouting_RebuildWithDuplicateExistingCellsDoesNotThrow()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1")]);
+        viewModel.Rows[0].Cells.Add(new AudioRoutingCrosspointViewModel("mic-1", "Mic 1", viewModel.BusHeaders[0])
+        {
+            IsRouted = true,
+            GainDb = -6
+        });
+
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1")]);
+
+        Assert.Single(viewModel.Rows);
+        Assert.NotNull(FindAudioCell(viewModel, "mic-1", "master"));
+    }
+
     private static VideoRoutingCrosspointViewModel FindVideoCell(
         VideoRoutingMatrixViewModel viewModel,
         string sourceId,

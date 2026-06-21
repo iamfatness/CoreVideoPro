@@ -194,10 +194,18 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
     {
         var previous = Rows
             .SelectMany(row => row.Cells)
-            .ToDictionary(cell => (cell.SourceId, cell.Bus.Id), cell => (cell.IsRouted, cell.GainDb));
+            .GroupBy(cell => (cell.SourceId, cell.Bus.Id))
+            .ToDictionary(group => group.Key, group =>
+            {
+                var last = group.Last();
+                return (last.IsRouted, last.GainDb);
+            });
 
         Rows.Clear();
-        foreach (var source in sources)
+        foreach (var source in sources
+            .Where(source => !string.IsNullOrWhiteSpace(source.Id))
+            .GroupBy(source => source.Id, StringComparer.Ordinal)
+            .Select(group => group.Last()))
         {
             var cells = BusHeaders
                 .Select(bus =>
