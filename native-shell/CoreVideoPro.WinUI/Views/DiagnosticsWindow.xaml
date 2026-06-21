@@ -95,6 +95,8 @@
                             <TextBlock Text="{x:Bind ViewModel.AudioMeterSourceSummary, Mode=OneWay}"
                                        Foreground="{StaticResource StudioTextBrush}"
                                        TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioBusTapSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
 

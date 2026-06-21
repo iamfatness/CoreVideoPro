@@ -117,6 +117,26 @@ public sealed class NativeMediaCoreCaptureAudioSources
     public required string Summary { get; init; }
 }
 
+public sealed class NativeMediaCoreAudioBusTap
+{
+    public required string BusId { get; init; }
+    public int Channels { get; init; }
+    public int Frames { get; init; }
+    public double PeakDbfs { get; init; }
+    public double RmsDbfs { get; init; }
+}
+
+public sealed class NativeMediaCoreAudioRoutingMatrix
+{
+    public required string Status { get; init; }
+    public int RoutedSendCount { get; init; }
+    public int RoutedSourceCount { get; init; }
+    public int ProgramTapFrames { get; init; }
+    public IReadOnlyList<NativeMediaCoreAudioBusTap> BusTaps { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+    public required string Summary { get; init; }
+}
+
 public sealed class RawCaptureSnapshot
 {
     public required string MeetingState { get; init; }
@@ -160,6 +180,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreWireHealth? Health { get; init; }
     public NativeMediaCoreProfile? Profile { get; init; }
     public NativeMediaCoreAudioMixSession? AudioMixSession { get; init; }
+    public NativeMediaCoreAudioRoutingMatrix? AudioRoutingMatrix { get; init; }
     public NativeMediaCoreCaptureAudioSources? CaptureAudioSources { get; init; }
     public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }
     public NativeMediaCoreBrandKit? BrandKit { get; init; }

@@ -99,6 +99,7 @@ public static class NativeMediaCoreStateMapper
             : null;
 
         var audioMixSession = wire.AudioMixSession ?? baseSnapshot.AudioMixSession;
+        var audioRoutingMatrix = wire.AudioRoutingMatrix ?? baseSnapshot.AudioRoutingMatrix;
         var captureAudioSources = wire.CaptureAudioSources ?? baseSnapshot.CaptureAudioSources;
         if (wire.CaptureAudioSources is { } captureAudio)
         {
@@ -156,6 +157,7 @@ public static class NativeMediaCoreStateMapper
             EncoderSession = encoderSession,
             Recording = recording,
             AudioMixSession = audioMixSession,
+            AudioRoutingMatrix = audioRoutingMatrix,
             CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
@@ -180,6 +182,7 @@ public static class NativeMediaCoreStateMapper
             OutputHealth = outputHealth,
             Recording = recording,
             AudioMixSession = audioMixSession,
+            AudioRoutingMatrix = audioRoutingMatrix,
             CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,

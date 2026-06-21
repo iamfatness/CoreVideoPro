@@ -458,6 +458,11 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
     public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreRecordingSession? Recording { get; init; }
     public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreAudioRoutingMatrix AudioRoutingMatrix { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "Audio routing matrix idle."
+    };
     public NativeMediaCoreCaptureAudioSources CaptureAudioSources { get; init; } = new()
     {
         Status = "idle",
@@ -530,6 +535,11 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreRecordingSession? Recording { get; init; }
     public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreAudioRoutingMatrix AudioRoutingMatrix { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "Audio routing matrix idle."
+    };
     public NativeMediaCoreCaptureAudioSources CaptureAudioSources { get; init; } = new()
     {
         Status = "idle",

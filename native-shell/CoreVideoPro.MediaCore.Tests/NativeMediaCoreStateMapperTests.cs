@@ -225,6 +225,34 @@ public sealed class NativeMediaCoreStateMapperTests
                 ],
                 Warnings = []
             },
+            AudioRoutingMatrix = new NativeMediaCoreAudioRoutingMatrix
+            {
+                Status = "live",
+                RoutedSendCount = 2,
+                RoutedSourceCount = 1,
+                ProgramTapFrames = 480,
+                Summary = "Audio routing matrix live.",
+                BusTaps =
+                [
+                    new NativeMediaCoreAudioBusTap
+                    {
+                        BusId = "master",
+                        Channels = 2,
+                        Frames = 480,
+                        PeakDbfs = -8.5,
+                        RmsDbfs = -18.25
+                    },
+                    new NativeMediaCoreAudioBusTap
+                    {
+                        BusId = "mon",
+                        Channels = 2,
+                        Frames = 480,
+                        PeakDbfs = -9.75,
+                        RmsDbfs = -20.5
+                    }
+                ],
+                Warnings = []
+            },
             CaptionTrack = new NativeMediaCoreCaptionTrack
             {
                 Enabled = true,
@@ -254,8 +282,15 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("{render-endpoint}", snapshot.CaptureAudioSources.Sources[0].NativeAudioDeviceId);
         Assert.Equal("WASAPI", snapshot.CaptureAudioSources.Sources[0].AudioDriverName);
         Assert.Equal(20, snapshot.CaptureAudioSources.Sources[0].AudioSyncOffsetMs);
+        Assert.Equal("live", snapshot.AudioRoutingMatrix.Status);
+        Assert.Equal(2, snapshot.AudioRoutingMatrix.RoutedSendCount);
+        Assert.Equal(480, snapshot.AudioRoutingMatrix.ProgramTapFrames);
+        Assert.Equal(2, snapshot.AudioRoutingMatrix.BusTaps.Count);
+        Assert.Equal("master", snapshot.AudioRoutingMatrix.BusTaps[0].BusId);
+        Assert.Equal(-8.5, snapshot.AudioRoutingMatrix.BusTaps[0].PeakDbfs);
         Assert.Equal("Welcome to the webinar.", snapshot.CaptionTrack.CurrentCue?.Text);
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
+        Assert.Equal(2, snapshot.Diagnostics.AudioRoutingMatrix.BusTaps.Count);
         Assert.Equal(960, snapshot.Diagnostics.CaptureAudioSources.CaptureFramesReceived);
         Assert.Equal(480, snapshot.Diagnostics.CaptureAudioSources.RoutedMonitorFrames);
         Assert.Equal("Sophia Martinez", snapshot.Diagnostics.CaptionTrack.CurrentCue?.Speaker);

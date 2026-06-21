@@ -47,6 +47,10 @@
                                            FontSize="11"
                                            Foreground="{StaticResource StudioMutedBrush}"
                                            TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioBusTapSummary, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
                                 <TextBlock Text="{x:Bind ViewModel.CaptureAudioSourceSummary, Mode=OneWay}"
                                            FontSize="11"
                                            Foreground="{StaticResource StudioMutedBrush}"

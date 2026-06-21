@@ -657,6 +657,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? idle.Summary
                 : "Capture audio telemetry waiting for media core.";
 
+    public string AudioBusTapSummary =>
+        _bridge.LastSnapshot?.AudioRoutingMatrix is { } matrix
+            ? BuildAudioBusTapSummary(matrix)
+            : "Audio bus tap telemetry waiting for media core.";
+
     public string CaptureAudioSourceSummary =>
         _bridge.LastSnapshot?.CaptureAudioSources is { Sources.Count: > 0 } capture
             ? string.Join(" | ", capture.Sources.Take(3).Select(FormatCaptureAudioSourceStatus))
@@ -4118,6 +4123,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
         OnPropertyChanged(nameof(AudioMeterSourceSummary));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
+        OnPropertyChanged(nameof(AudioBusTapSummary));
         OnPropertyChanged(nameof(CaptureAudioSourceSummary));
         OnPropertyChanged(nameof(StudioMonitorSummary));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
@@ -4163,6 +4169,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "no PCM frames received";
         return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - master {capture.RoutedMasterFrames}, MON {capture.RoutedMonitorFrames}, monitor {capture.MonitorFramesPlayed}";
     }
+
+    private static string BuildAudioBusTapSummary(NativeMediaCoreAudioRoutingMatrix matrix)
+    {
+        if (matrix.BusTaps.Count == 0)
+        {
+            return matrix.RoutedSendCount > 0
+                ? $"No measured PCM on routed buses yet; {matrix.RoutedSendCount} send(s) from {matrix.RoutedSourceCount} source(s)."
+                : matrix.Summary;
+        }
+
+        var taps = matrix.BusTaps
+            .OrderByDescending(tap => tap.Frames)
+            .Take(4)
+            .Select(tap => $"{FormatAudioBusLabel(tap.BusId)} {tap.Frames}f peak {tap.PeakDbfs:0.0} dBFS");
+        return $"PCM bus taps: {string.Join(", ", taps)}";
+    }
+
+    private static string FormatAudioBusLabel(string busId) =>
+        busId switch
+        {
+            "master" => "MASTER",
+            "mon" => "MON",
+            "stream" => "STREAM",
+            "pgm-l" => "PGM L",
+            "pgm-r" => "PGM R",
+            _ when busId.StartsWith("aux-", StringComparison.OrdinalIgnoreCase) =>
+                $"AUX {busId["aux-".Length..]}",
+            _ => busId.ToUpperInvariant()
+        };
 
     private string ResolveLocalAudioSourceStatus()
     {
