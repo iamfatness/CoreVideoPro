@@ -6,6 +6,8 @@ public sealed class CaptureDeviceFrame
     public required byte[] Bgra { get; init; }
     public required int Width { get; init; }
     public required int Height { get; init; }
+    public int NaturalSourceWidth { get; init; }
+    public int NaturalSourceHeight { get; init; }
     public int Fps { get; init; }
     public required int FrameId { get; init; }
     public long TimestampMs { get; init; } = Environment.TickCount64;

@@ -450,6 +450,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     Bgra = bytes,
                     Width = bgra.PixelWidth,
                     Height = bgra.PixelHeight,
+                    NaturalSourceWidth = _formatWidth > 0 ? _formatWidth : bgra.PixelWidth,
+                    NaturalSourceHeight = _formatHeight > 0 ? _formatHeight : bgra.PixelHeight,
                     Fps = fps,
                     FrameId = Interlocked.Increment(ref _frameId),
                     TimestampMs = now

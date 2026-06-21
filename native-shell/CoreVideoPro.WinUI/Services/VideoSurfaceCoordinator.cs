@@ -212,7 +212,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             _captureDeviceSurfaces[frame.DeviceId] = VideoSurfaceState
                 .Waiting(VideoSurfaceKind.Multiview, trackerKey, frame.DeviceId)
                 .WithFrame(metadata, "Capture feed live", $"Frame {frame.FrameId} - {metadata.ResolutionLabel} - {metadata.FpsLabel}")
-                .WithPreviewPixels(frame.Bgra, frame.Width, frame.Height);
+                .WithPreviewPixels(
+                    frame.Bgra,
+                    frame.Width,
+                    frame.Height,
+                    frame.NaturalSourceWidth > 0 ? frame.NaturalSourceWidth : frame.Width,
+                    frame.NaturalSourceHeight > 0 ? frame.NaturalSourceHeight : frame.Height);
             _lastUiUpdateMs[trackerKey] = now;
             _lastAppliedFrameId[trackerKey] = frame.FrameId;
         }
