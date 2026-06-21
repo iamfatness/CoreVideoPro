@@ -647,16 +647,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AudioMeterSourceSummary =>
         _bridge.LastSnapshot?.AudioMixSession is { } audio
-            ? audio.MixedFrameCount <= 0
-                ? "Meters are waiting for routed PCM from the media core."
-                : audio.Warnings.Count > 0
-                    ? $"Meters: native PCM from {audio.Participants.Count} channel(s), warning: {audio.Warnings[0]}"
-                    : $"Meters: native PCM from {audio.Participants.Count} channel(s); monitor listens to MON bus."
+            ? BuildAudioMeterSourceSummary(audio)
             : "Meters show media-core program/master bus telemetry when the engine is running.";
 
     public string CaptureAudioSignalSummary =>
         _bridge.LastSnapshot?.CaptureAudioSources is { SourceCount: > 0 } capture
-            ? $"{capture.StreamingCount}/{capture.SourceCount} capture source(s) streaming - {capture.CaptureFramesReceived} PCM frames received - master {capture.RoutedMasterFrames}, MON {capture.RoutedMonitorFrames}, monitor {capture.MonitorFramesPlayed}"
+            ? BuildCaptureAudioSignalSummary(capture)
             : _bridge.LastSnapshot?.CaptureAudioSources is { } idle
                 ? idle.Summary
                 : "Capture audio telemetry waiting for media core.";
@@ -4126,6 +4122,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _ => audio.MonitorStatus ?? "unknown"
         };
 
+    private static string BuildAudioMeterSourceSummary(NativeMediaCoreAudioMixSession audio)
+    {
+        if (audio.MixedFrameCount <= 0)
+        {
+            return audio.Participants.Count > 0
+                ? $"Meters idle: {audio.Participants.Count} channel(s) configured, no PCM mixed yet."
+                : "Meters idle: no PCM channels reported by media core.";
+        }
+
+        var sourceLabel = audio.Participants.Count == 1 ? "1 PCM channel" : $"{audio.Participants.Count} PCM channels";
+        return audio.Warnings.Count > 0
+            ? $"Meters: {sourceLabel}, warning: {audio.Warnings[0]}"
+            : $"Meters: {sourceLabel}; monitor listens to MON bus.";
+    }
+
+    private static string BuildCaptureAudioSignalSummary(NativeMediaCoreCaptureAudioSources capture)
+    {
+        var pcmState = capture.CaptureFramesReceived > 0
+            ? $"{capture.CaptureFramesReceived} PCM frames received"
+            : "no PCM frames received";
+        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - master {capture.RoutedMasterFrames}, MON {capture.RoutedMonitorFrames}, monitor {capture.MonitorFramesPlayed}";
+    }
+
     private string ResolveLocalAudioSourceStatus()
     {
         var capture = _bridge.LastSnapshot?.CaptureAudioSources;
@@ -4149,7 +4168,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var format = source.CaptureSampleRate > 0 && source.CaptureChannels > 0
             ? $" {source.CaptureSampleRate} Hz/{source.CaptureChannels} ch"
             : string.Empty;
-        return $"{label}: {state}, {source.CaptureFramesReceived} frames{format}";
+        var sourceId = !string.IsNullOrWhiteSpace(source.SourceId)
+            ? $" -> {source.SourceId}"
+            : string.Empty;
+        var kind = !string.IsNullOrWhiteSpace(source.AudioSourceKind)
+            ? $" ({source.AudioSourceKind})"
+            : string.Empty;
+        var warning = !string.IsNullOrWhiteSpace(source.Warning)
+            ? $", warning: {source.Warning}"
+            : string.Empty;
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{format}{warning}";
     }
 
     private void RefreshLocalAudioSourceBindings()
@@ -5551,7 +5579,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             Id = participant.Id,
             Name = participant.Name,
-            Subtitle = $"{participant.RoleLabel} Â· {participant.BreakoutRoomName} Â· {participant.HealthLabel}",
+            Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
             OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
             ManualGainDb = gain,
             Pan = pan,

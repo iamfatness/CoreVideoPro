@@ -208,14 +208,19 @@ public sealed class NativeMediaCoreStateMapperTests
                     new NativeMediaCoreCaptureAudioSource
                     {
                         CaptureDeviceId = "local-machine-audio",
+                        SourceId = "local-machine-audio",
                         AudioDeviceId = "default-render",
                         AudioDeviceName = "System audio",
                         AudioSourceKind = "wasapi-loopback",
+                        NativeAudioDeviceId = "{render-endpoint}",
+                        AudioDriverName = "WASAPI",
+                        AudioSyncOffsetMs = 20,
                         Paired = true,
                         CaptureStreaming = true,
                         CaptureFramesReceived = 960,
                         CaptureSampleRate = 48000,
-                        CaptureChannels = 2
+                        CaptureChannels = 2,
+                        Warning = string.Empty
                     }
                 ],
                 Warnings = []
@@ -245,6 +250,10 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal(480, snapshot.CaptureAudioSources.MonitorFramesPlayed);
         Assert.Single(snapshot.CaptureAudioSources.Sources);
         Assert.Equal("wasapi-loopback", snapshot.CaptureAudioSources.Sources[0].AudioSourceKind);
+        Assert.Equal("local-machine-audio", snapshot.CaptureAudioSources.Sources[0].SourceId);
+        Assert.Equal("{render-endpoint}", snapshot.CaptureAudioSources.Sources[0].NativeAudioDeviceId);
+        Assert.Equal("WASAPI", snapshot.CaptureAudioSources.Sources[0].AudioDriverName);
+        Assert.Equal(20, snapshot.CaptureAudioSources.Sources[0].AudioSyncOffsetMs);
         Assert.Equal("Welcome to the webinar.", snapshot.CaptionTrack.CurrentCue?.Text);
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
         Assert.Equal(960, snapshot.Diagnostics.CaptureAudioSources.CaptureFramesReceived);

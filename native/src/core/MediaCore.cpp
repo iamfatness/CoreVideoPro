@@ -2006,6 +2006,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
 
     sources.emplace_back(rpc::Json::Object{
         {"captureDeviceId", source.captureDeviceId},
+        {"sourceId", metric == metricsByCaptureId.end() ? std::string{} : metric->second.sourceId},
         {"audioDeviceId", source.audioDeviceId},
         {"audioDeviceName", source.audioDeviceName},
         {"audioSourceKind", source.audioSourceKind},
@@ -2018,6 +2019,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"captureFramesReceived", static_cast<double>(framesReceived)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
+        {"warning", metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning},
     });
   }
 

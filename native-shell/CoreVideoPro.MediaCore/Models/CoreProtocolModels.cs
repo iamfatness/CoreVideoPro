@@ -86,14 +86,20 @@ public sealed class NativeMediaCoreWireHealth
 public sealed class NativeMediaCoreCaptureAudioSource
 {
     public required string CaptureDeviceId { get; init; }
+    public string? SourceId { get; init; }
     public string? AudioDeviceId { get; init; }
     public string? AudioDeviceName { get; init; }
     public string? AudioSourceKind { get; init; }
+    public string? NativeAudioDeviceId { get; init; }
+    public string? AudioDriverName { get; init; }
+    public bool Embedded { get; init; }
+    public int AudioSyncOffsetMs { get; init; }
     public bool Paired { get; init; }
     public bool CaptureStreaming { get; init; }
     public long CaptureFramesReceived { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }
+    public string? Warning { get; init; }
 }
 
 public sealed class NativeMediaCoreCaptureAudioSources
