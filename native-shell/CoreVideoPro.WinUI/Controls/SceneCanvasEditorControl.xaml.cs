@@ -170,7 +170,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             FontSize = 14,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 237, 244, 239)),
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
         };
         content.Children.Add(panHandle);
 
@@ -295,14 +296,30 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         _dragStartSourceOffsetX = layer.SourceOffsetX;
         _dragStartSourceOffsetY = layer.SourceOffsetY;
 
-        var source = e.OriginalSource as FrameworkElement;
-        _dragMode = source?.Tag as string == "resize"
-            ? "resize"
-            : source?.Tag as string == "pan-source" ? "pan-source" : "move";
+        _dragMode = ResolveDragMode(e.OriginalSource, frame);
         frame.CapturePointer(e.Pointer);
         UpdateSelectionStyles();
         InteractionChanged?.Invoke(this, true);
         e.Handled = true;
+    }
+
+    private static string ResolveDragMode(object? originalSource, Border frame)
+    {
+        for (var current = originalSource as DependencyObject; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (ReferenceEquals(current, frame))
+            {
+                break;
+            }
+
+            if (current is FrameworkElement { Tag: string tag } &&
+                (tag == "resize" || tag == "pan-source"))
+            {
+                return tag;
+            }
+        }
+
+        return "move";
     }
 
     private void OnLayerPointerMoved(object sender, PointerRoutedEventArgs e)
