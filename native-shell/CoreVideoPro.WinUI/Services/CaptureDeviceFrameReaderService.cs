@@ -65,25 +65,63 @@ public static class CaptureDeviceFormatSelector
 
 public sealed class CaptureDeviceFrameReaderService : IDisposable
 {
+    private readonly object _gate = new();
     private readonly Dictionary<string, CaptureSession> _sessions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Task<CaptureDeviceFormatTelemetry>> _startingSessions = new(StringComparer.Ordinal);
     private static readonly StrategyBasedComWrappers MemoryBufferComWrappers = new();
 
-    public async Task<CaptureDeviceFormatTelemetry> StartAsync(CaptureDevice device)
+    public Task<CaptureDeviceFormatTelemetry> StartAsync(CaptureDevice device)
     {
-        if (_sessions.TryGetValue(device.Id, out var existing))
+        lock (_gate)
         {
-            return existing.FormatTelemetry;
-        }
+            if (_sessions.TryGetValue(device.Id, out var existing))
+            {
+                return Task.FromResult(existing.FormatTelemetry);
+            }
 
-        var session = new CaptureSession(device.Id, device.NativeDeviceId);
+            if (_startingSessions.TryGetValue(device.Id, out var pending))
+            {
+                LaunchLog.Write($"capture: joining in-flight start {device.Id}");
+                return pending;
+            }
+
+            var session = new CaptureSession(device.Id, device.NativeDeviceId);
+            var startTask = StartSessionAsync(device.Id, session);
+            _startingSessions[device.Id] = startTask;
+            _ = startTask.ContinueWith(
+                task =>
+                {
+                    lock (_gate)
+                    {
+                        if (_startingSessions.TryGetValue(device.Id, out var pending) &&
+                            ReferenceEquals(pending, task))
+                        {
+                            _startingSessions.Remove(device.Id);
+                        }
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return startTask;
+        }
+    }
+
+    private async Task<CaptureDeviceFormatTelemetry> StartSessionAsync(string deviceId, CaptureSession session)
+    {
         try
         {
             var telemetry = await session.StartAsync().ConfigureAwait(false);
-            _sessions[device.Id] = session;
+            lock (_gate)
+            {
+                _sessions[deviceId] = session;
+            }
+
             return telemetry;
         }
-        catch
+        catch (Exception ex)
         {
+            LaunchLog.Write($"capture: start failed {deviceId}: {DescribeException(ex)}");
             await session.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -91,7 +129,16 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
     public async Task StopAsync(string deviceId)
     {
-        if (!_sessions.Remove(deviceId, out var session))
+        CaptureSession? session;
+        lock (_gate)
+        {
+            if (!_sessions.Remove(deviceId, out session))
+            {
+                return;
+            }
+        }
+
+        if (session is null)
         {
             return;
         }
@@ -101,15 +148,26 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
     public void Dispose()
     {
-        foreach (var session in _sessions.Values.ToList())
+        List<CaptureSession> sessions;
+        lock (_gate)
+        {
+            sessions = _sessions.Values.ToList();
+            _sessions.Clear();
+            _startingSessions.Clear();
+        }
+
+        foreach (var session in sessions)
         {
             session.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
-
-        _sessions.Clear();
     }
 
     public sealed record CaptureDeviceFormatTelemetry(int Width, int Height, int Fps);
+
+    private static string DescribeException(Exception ex) =>
+        string.IsNullOrWhiteSpace(ex.Message)
+            ? $"{ex.GetType().Name} hr=0x{ex.HResult:X8}"
+            : $"{ex.GetType().Name} hr=0x{ex.HResult:X8}: {ex.Message}";
 
     private sealed class CaptureSession : IAsyncDisposable
     {
@@ -178,7 +236,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 catch (Exception ex)
                 {
                     LaunchLog.Write(
-                        $"capture: format failed {_stableDeviceId} {FormatLabel(format)}: {ex.GetType().Name}: {ex.Message}");
+                        $"capture: format failed {_stableDeviceId} {FormatLabel(format)}: {DescribeException(ex)}");
                     await DisposeReaderAsync().ConfigureAwait(false);
                 }
 
