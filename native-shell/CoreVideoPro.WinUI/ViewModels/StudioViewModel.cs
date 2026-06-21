@@ -6794,6 +6794,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void ApplyCanvasPreset(string presetWire)
     {
+        UpdateSceneLayout(PreviewSceneId, presetWire);
         var routes = GetMutableRoutes(PreviewSceneId);
         if (SceneCanvasLayoutService.TemplateSlotCount(presetWire) is { } slotCount)
         {
@@ -6807,6 +6808,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
+    }
+
+    private void UpdateSceneLayout(string sceneId, string layout)
+    {
+        var index = _scenes.ToList().FindIndex(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
+        if (index < 0 || string.Equals(_scenes[index].Layout, layout, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var scene = _scenes[index];
+        _scenes[index] = new Scene
+        {
+            Id = scene.Id,
+            Name = scene.Name,
+            Layout = layout,
+            Automation = scene.Automation,
+            DurationLabel = scene.DurationLabel
+        };
+
+        OnPropertyChanged(nameof(ProgramScene));
+        OnPropertyChanged(nameof(PreviewScene));
+        OnPropertyChanged(nameof(ProgramSceneSummary));
+        OnPropertyChanged(nameof(PreviewSceneSummary));
+        OnPropertyChanged(nameof(SceneRailDisplaySummary));
     }
 
     private void ApplyInputSlotTemplate(List<SourceRoute> routes, int slotCount)

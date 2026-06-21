@@ -561,10 +561,10 @@ public static class SceneRoutingService
     /// Layout slot capacity — independent of live roster so routes can be pre-built before join.
     /// </summary>
     private static int GetSceneSlotCount(Scene scene, IReadOnlyList<Participant> participants) =>
+        SceneCanvasLayoutService.TemplateSlotCount(scene.Layout) ??
         scene.Layout switch
         {
-            "two-up" => 2,
-            "smart-grid" => 6,
+            "grid" or "smart-grid" => 6,
             _ => 1
         };
 

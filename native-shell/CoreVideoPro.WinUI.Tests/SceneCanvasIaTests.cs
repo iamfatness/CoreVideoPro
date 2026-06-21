@@ -86,6 +86,24 @@ public sealed class SceneCanvasIaTests
             layerCount: expectedCount).Count);
     }
 
+    [Theory]
+    [InlineData("single", 1)]
+    [InlineData("two-up", 2)]
+    [InlineData("three-up", 3)]
+    [InlineData("four-up", 4)]
+    [InlineData("five-up", 5)]
+    [InlineData("six-up", 6)]
+    [InlineData("seven-up", 7)]
+    [InlineData("eight-up", 8)]
+    public void GetRouteDefaults_TemplateLayoutsCreateExpectedRouteCapacity(string layout, int expectedCount)
+    {
+        var scene = new Scene { Id = $"scene-{layout}", Name = layout, Layout = layout };
+
+        var defaults = SceneRoutingService.GetRouteDefaults(scene, existingRoutes: null, participants: []);
+
+        Assert.Equal(expectedCount, defaults.Count);
+    }
+
     [Fact]
     public void BuildAddedSourceRoute_MediaWithoutSelectionStaysParked()
     {
