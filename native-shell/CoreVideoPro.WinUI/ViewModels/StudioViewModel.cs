@@ -4624,9 +4624,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
-        var sceneRoutes = GetMutableRoutes(ActiveSceneId)
+        var resolvedProgramRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
-            .Select(BuildSceneRouteWire)
+            .ToList();
+        var sceneRoutes = resolvedProgramRoutes
+            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -4682,7 +4684,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             isoParticipantIds = MediaCoreProductionSyncContext.DefaultRecordingTargets.IsoParticipantIds.ToList();
         }
 
-        var selectedMediaAsset = SelectedMediaAssetId is null ? null : FindMediaAsset(SelectedMediaAssetId);
+        var playbackSelection = MediaRoutePlaybackService.ResolvePlaybackSelection(
+            SelectedMediaAssetId,
+            SelectedMediaAssetPlaying,
+            resolvedProgramRoutes);
+        var selectedMediaAsset = playbackSelection.MediaAssetId is null ? null : FindMediaAsset(playbackSelection.MediaAssetId);
 
         return new MediaCoreProductionSyncContext
         {
@@ -4746,15 +4752,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureAudioSources = captureAudioSources,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker,
-            SelectedMediaAssetId = SelectedMediaAssetId,
-            SelectedMediaAssetName = SelectedMediaAssetName,
+            SelectedMediaAssetId = selectedMediaAsset?.Id,
+            SelectedMediaAssetName = selectedMediaAsset?.Name,
             SelectedMediaAssetKind = selectedMediaAsset?.Kind,
             SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
-            SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
+            SelectedMediaAssetPlaying = selectedMediaAsset is not null && playbackSelection.Playing
         };
     }
 
-    private MediaCoreSceneRouteWire BuildSceneRouteWire(SourceRoute route)
+    private MediaCoreSceneRouteWire BuildSceneRouteWire(
+        SourceRoute route,
+        IReadOnlyList<SourceRoute> programRoutes)
     {
         var mediaAsset = TryResolveRouteMediaAsset(route);
         return new MediaCoreSceneRouteWire(
@@ -4780,7 +4788,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetName: mediaAsset?.Name,
             MediaAssetKind: mediaAsset?.Kind,
             MediaAssetPath: mediaAsset?.FilePath,
-            MediaAssetPlaying: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true));
+            MediaAssetPlaying: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true, programRoutes));
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)
@@ -6374,10 +6382,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : null;
 
     private bool ShouldAutoPlayMediaRoute(string mediaAssetId, bool isProgramScene) =>
+        ShouldAutoPlayMediaRoute(mediaAssetId, isProgramScene, GetResolvedProgramRoutes());
+
+    private static bool ShouldAutoPlayMediaRoute(
+        string mediaAssetId,
+        bool isProgramScene,
+        IReadOnlyList<SourceRoute> programRoutes) =>
         MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             mediaAssetId,
             isProgramScene,
-            GetResolvedProgramRoutes());
+            programRoutes);
 
     private IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
         GetMutableRoutes(ActiveSceneId)

@@ -111,6 +111,38 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Null(assetId);
     }
 
+    [Fact]
+    public void ResolvePlaybackSelection_AutoplaysProgramMediaRouteOverPausedManualSelection()
+    {
+        var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
+            selectedMediaAssetId: "bumper",
+            selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")]);
+
+        Assert.Equal("intro", selection.MediaAssetId);
+        Assert.True(selection.Playing);
+    }
+
+    [Fact]
+    public void ResolvePlaybackSelection_PreservesManualPlaybackWhenProgramHasNoMediaRoute()
+    {
+        var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
+            selectedMediaAssetId: "bumper",
+            selectedMediaAssetPlaying: true,
+            programRoutes:
+            [
+                new SourceRoute
+                {
+                    Id = "route-guest",
+                    Mode = SourceRouteMode.Fixed,
+                    ParticipantId = "guest-1"
+                }
+            ]);
+
+        Assert.Equal("bumper", selection.MediaAssetId);
+        Assert.True(selection.Playing);
+    }
+
     private static SourceRoute MediaRoute(string assetId) =>
         new()
         {

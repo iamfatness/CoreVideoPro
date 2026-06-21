@@ -4,6 +4,8 @@ namespace CoreVideoPro.WinUI.Services;
 
 public static class MediaRoutePlaybackService
 {
+    public sealed record PlaybackSelection(string? MediaAssetId, bool Playing);
+
     public static bool ShouldPlaySceneMediaRoute(
         string mediaAssetId,
         bool isProgramScene,
@@ -53,5 +55,19 @@ public static class MediaRoutePlaybackService
         }
 
         return null;
+    }
+
+    public static PlaybackSelection ResolvePlaybackSelection(
+        string? selectedMediaAssetId,
+        bool selectedMediaAssetPlaying,
+        IReadOnlyList<SourceRoute> programRoutes)
+    {
+        var programAssetId = ResolveProgramAutoplayAssetId(selectedMediaAssetId, programRoutes);
+        if (!string.IsNullOrWhiteSpace(programAssetId))
+        {
+            return new PlaybackSelection(programAssetId, Playing: true);
+        }
+
+        return new PlaybackSelection(selectedMediaAssetId, selectedMediaAssetPlaying);
     }
 }
