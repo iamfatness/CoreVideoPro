@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <map>
 #include <set>
 #include <sstream>
@@ -2769,14 +2770,30 @@ void MediaCore::renderSyntheticTick() {
   const std::vector<float>& outputProgramAudio =
       !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
-  modules_.outputSender->sync(
-      session.destinations,
-      &lastProgramFrame_,
-      static_cast<double>(lastProgramFrame_.frameNumber * 33),
-      outputDestinationSettings_,
-      outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
-      outputAudioChannels,
-      modules_.mixer->monitorBusSampleRate());
+  const auto failOutputSenderSync = [&](const std::string& message) {
+    const auto destination =
+        std::find(session.destinations.begin(), session.destinations.end(), "rtmp") != session.destinations.end()
+            ? "rtmp"
+            : !session.destinations.empty() ? session.destinations.front() : std::string("stream");
+    try {
+      modules_.outputSender->fail(destination, message, static_cast<double>(lastProgramFrame_.frameNumber * 33));
+    } catch (...) {
+    }
+  };
+  try {
+    modules_.outputSender->sync(
+        session.destinations,
+        &lastProgramFrame_,
+        static_cast<double>(lastProgramFrame_.frameNumber * 33),
+        outputDestinationSettings_,
+        outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
+        outputAudioChannels,
+        modules_.mixer->monitorBusSampleRate());
+  } catch (const std::exception& ex) {
+    failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
+  } catch (...) {
+    failOutputSenderSync("Output sender failed during sync.");
+  }
   if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
     ++recordingProgramFramesWritten_;
     const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;

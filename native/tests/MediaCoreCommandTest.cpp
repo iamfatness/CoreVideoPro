@@ -17,6 +17,7 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -195,6 +196,50 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
 
   std::vector<std::string> destinations_;
   std::vector<corevideo::modules::OutputDestinationSettings> destinationSettings_;
+};
+
+class ThrowingOutputSender final : public corevideo::modules::IOutputSender {
+ public:
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>&,
+      const corevideo::modules::ProgramFrame*,
+      double,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& = {},
+      const std::vector<float>* = nullptr,
+      int = 0,
+      int = 0) override {
+    throw std::runtime_error("simulated sender startup failure");
+  }
+
+  corevideo::modules::OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
+    sender_.senderId = destination + ":program";
+    sender_.destination = destination;
+    sender_.status = "failed";
+    sender_.stoppedAtMs = elapsedMs;
+    sender_.warning = message;
+    sender_.destinationHealth = "failed";
+    sender_.lastResultCode = "failed";
+    sender_.lastError = message;
+
+    corevideo::modules::OutputSenderSession session;
+    session.status = "degraded";
+    session.activeSenderCount = 0;
+    session.senders = {sender_};
+    session_ = session;
+    return session_;
+  }
+
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return session_;
+  }
+
+  corevideo::modules::OutputSenderSession session() const override {
+    return session_;
+  }
+
+ private:
+  corevideo::modules::OutputSender sender_;
+  corevideo::modules::OutputSenderSession session_;
 };
 
 // Records what MediaCore's monitor path pushed, so a test can assert that real
@@ -413,6 +458,41 @@ TEST(MediaCoreCommand, PreservesStreamDestinationSettingsForNativeSenders) {
   EXPECT_EQ(ndi.id, "ndi");
   EXPECT_EQ(ndi.ndiName, "CoreVideo Pro Program");
   EXPECT_EQ(ndi.ndiGroup, "public");
+}
+
+TEST(MediaCoreCommand, StreamingSenderFailureDoesNotEscapeRenderTick) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.outputSender = std::make_unique<ThrowingOutputSender>();
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+          {"destinationSettings",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"id", "rtmp"},
+                   {"label", "RTMP"},
+                   {"protocol", "rtmps"},
+                   {"url", "rtmps://live.example.com/app"},
+                   {"streamKey", "stream-key"}},
+           }},
+      },
+  });
+
+  const auto* output = state.get("outputSenderSession");
+  ASSERT_NE(output, nullptr);
+  EXPECT_EQ(output->getString("status"), "degraded");
+  const auto* senders = output->get("senders");
+  ASSERT_NE(senders, nullptr);
+  ASSERT_TRUE(senders->isArray());
+  ASSERT_FALSE(senders->asArray().empty());
+  const auto& sender = senders->asArray().front();
+  EXPECT_EQ(sender.getString("destination"), "rtmp");
+  EXPECT_EQ(sender.getString("status"), "failed");
+  EXPECT_EQ(sender.getString("lastResultCode"), "failed");
+  EXPECT_NE(sender.getString("lastError").find("simulated sender startup failure"), std::string::npos);
 }
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
