@@ -69,6 +69,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
     private readonly Dictionary<string, CaptureSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Task<CaptureDeviceFormatTelemetry>> _startingSessions = new(StringComparer.Ordinal);
     private static readonly StrategyBasedComWrappers MemoryBufferComWrappers = new();
+    private static readonly SemaphoreSlim MediaCaptureStartupGate = new(1, 1);
 
     public Task<CaptureDeviceFormatTelemetry> StartAsync(CaptureDevice device)
     {
@@ -109,8 +110,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
     private async Task<CaptureDeviceFormatTelemetry> StartSessionAsync(string deviceId, CaptureSession session)
     {
+        await MediaCaptureStartupGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            LaunchLog.Write($"capture: start gate entered {deviceId}");
             var telemetry = await session.StartAsync().ConfigureAwait(false);
             lock (_gate)
             {
@@ -124,6 +127,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             LaunchLog.Write($"capture: start failed {deviceId}: {DescribeException(ex)}");
             await session.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+        finally
+        {
+            MediaCaptureStartupGate.Release();
         }
     }
 
