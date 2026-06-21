@@ -123,6 +123,9 @@ public static class StudioStreamOutputValidation
         return null;
     }
 
+    public static bool CanSerializeRtmpSettings(string? protocol, string? serverUrl, string? streamKey) =>
+        ValidateRtmp(protocol, serverUrl, streamKey) is null;
+
     public static string NormalizeSrtMode(string? mode)
     {
         var normalized = NormalizeText(mode, "caller").ToLowerInvariant();
@@ -195,6 +198,19 @@ public static class StudioStreamOutputValidation
 
         return null;
     }
+
+    public static bool CanSerializeNdiSettings(string? programName) =>
+        !string.IsNullOrWhiteSpace(programName);
+
+    public static bool CanSerializeSrtSettings(
+        string? mode,
+        string? host,
+        string? portText,
+        string? latencyMsText,
+        string? streamId,
+        string? keyLengthText,
+        string? passphrase) =>
+        ValidateSrt(mode, host, portText, latencyMsText, streamId, keyLengthText, passphrase) is null;
 
     private static int? ParsePositiveInt(string? value) =>
         int.TryParse(value, out var parsed) ? parsed : null;

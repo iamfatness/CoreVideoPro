@@ -4703,7 +4703,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Participants = participants,
             Recording = Recording,
             Streaming = Streaming,
-            StreamDestinations = BuildSelectedStreamDestinations(),
+            StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
             CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264"),
@@ -4932,20 +4932,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 string.IsNullOrWhiteSpace(source.Passphrase) ? null : source.Passphrase))
             .ToList();
 
-    private IReadOnlyList<string> BuildSelectedStreamDestinations()
+    private IReadOnlyList<string> BuildSelectedStreamDestinations(bool validatedOnly = false)
     {
         var destinations = new List<string>(3);
-        if (StreamRtmpEnabled)
+        if (StreamRtmpEnabled &&
+            (!validatedOnly || StudioStreamOutputValidation.CanSerializeRtmpSettings(
+                StreamRtmpProtocol,
+                StreamRtmpServerUrl,
+                StreamRtmpStreamKey)))
         {
             destinations.Add("rtmp");
         }
 
-        if (StreamNdiEnabled)
+        if (StreamNdiEnabled &&
+            (!validatedOnly || StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName)))
         {
             destinations.Add("ndi");
         }
 
-        if (StreamSrtEnabled)
+        if (StreamSrtEnabled &&
+            (!validatedOnly || StudioStreamOutputValidation.CanSerializeSrtSettings(
+                StreamSrtMode,
+                StreamSrtHost,
+                StreamSrtPort,
+                StreamSrtLatencyMs,
+                StreamSrtStreamId,
+                StreamSrtKeyLength,
+                StreamSrtPassphrase)))
         {
             destinations.Add("srt");
         }
@@ -4957,7 +4970,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var destinations = new List<MediaCoreStreamDestinationWire>(3);
         var streamProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps, StreamVideoCodec);
-        if (StreamRtmpEnabled)
+        if (StreamRtmpEnabled &&
+            StudioStreamOutputValidation.CanSerializeRtmpSettings(
+                StreamRtmpProtocol,
+                StreamRtmpServerUrl,
+                StreamRtmpStreamKey))
         {
             destinations.Add(new MediaCoreStreamDestinationWire(
                 Id: "rtmp",
@@ -4972,7 +4989,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
         }
 
-        if (StreamNdiEnabled)
+        if (StreamNdiEnabled &&
+            StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName))
         {
             destinations.Add(new MediaCoreStreamDestinationWire(
                 Id: "ndi",
@@ -4981,7 +4999,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public")));
         }
 
-        if (StreamSrtEnabled)
+        if (StreamSrtEnabled &&
+            StudioStreamOutputValidation.CanSerializeSrtSettings(
+                StreamSrtMode,
+                StreamSrtHost,
+                StreamSrtPort,
+                StreamSrtLatencyMs,
+                StreamSrtStreamId,
+                StreamSrtKeyLength,
+                StreamSrtPassphrase))
         {
             var latencyMs = ParsePositiveInt(StreamSrtLatencyMs);
             var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);

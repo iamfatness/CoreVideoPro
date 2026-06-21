@@ -134,6 +134,20 @@ public sealed class StudioStreamOutputValidationTests
         Assert.Equal("RTMP stream key cannot contain whitespace.", error);
     }
 
+    [Fact]
+    public void Rtmp_DoesNotSerializeSettingsUntilFullyValid()
+    {
+        Assert.False(StudioStreamOutputValidation.CanSerializeRtmpSettings(
+            "rtmps",
+            "live.example.com",
+            "stream-key"));
+
+        Assert.True(StudioStreamOutputValidation.CanSerializeRtmpSettings(
+            "rtmps",
+            "live.example.com/app",
+            "stream-key"));
+    }
+
     [Theory]
     [InlineData("caller")]
     [InlineData("listener")]
@@ -180,5 +194,34 @@ public sealed class StudioStreamOutputValidationTests
             "unused-passphrase");
 
         Assert.Equal("Choose an SRT key length before entering a passphrase.", error);
+    }
+
+    [Fact]
+    public void Srt_DoesNotSerializeSettingsUntilFullyValid()
+    {
+        Assert.False(StudioStreamOutputValidation.CanSerializeSrtSettings(
+            "caller",
+            "receiver.example.com",
+            "",
+            "120",
+            "",
+            "0",
+            ""));
+
+        Assert.True(StudioStreamOutputValidation.CanSerializeSrtSettings(
+            "caller",
+            "receiver.example.com",
+            "9000",
+            "120",
+            "",
+            "0",
+            ""));
+    }
+
+    [Fact]
+    public void Ndi_DoesNotSerializeSettingsWithoutProgramName()
+    {
+        Assert.False(StudioStreamOutputValidation.CanSerializeNdiSettings(""));
+        Assert.True(StudioStreamOutputValidation.CanSerializeNdiSettings("CoreVideo Pro Program"));
     }
 }
