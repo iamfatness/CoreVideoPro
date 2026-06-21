@@ -7063,6 +7063,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         layer.ApplyRoute();
         SceneRoutingService.ApplyNormalizeRouteUpdate(routes[layer.LayerIndex], RoomVideoParticipants);
         ApplyKnownColorGradeToRoute(routes[layer.LayerIndex]);
+        layer.SyncFromRoute(RoomVideoParticipants, CaptureDevices, ShowInputs);
         layer.SetSurface(ResolveLayerSurface(routes[layer.LayerIndex], layer.LayerIndex));
 
         CommandStatus = $"{PreviewScene.Name} source {layer.LayerIndex + 1} updated on canvas";

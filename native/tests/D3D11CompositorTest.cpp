@@ -337,6 +337,36 @@ corevideo::modules::VideoFrame makeHalfBandFrame(
   return frame;
 }
 
+corevideo::modules::VideoFrame makeVerticalBandFrame(
+    const std::string& participantId,
+    int width,
+    int height,
+    uint32_t leftRgba,
+    uint32_t rightRgba) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
+  frame.pixelWidth = width;
+  frame.pixelHeight = height;
+  frame.pixelStride = width * 4;
+  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * height * 4);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const uint32_t rgba = x < width / 2 ? leftRgba : rightRgba;
+      const size_t offset = static_cast<size_t>((y * width + x) * 4);
+      (*pixels)[offset + 0] = static_cast<uint8_t>(rgba & 0xff);
+      (*pixels)[offset + 1] = static_cast<uint8_t>((rgba >> 8) & 0xff);
+      (*pixels)[offset + 2] = static_cast<uint8_t>((rgba >> 16) & 0xff);
+      (*pixels)[offset + 3] = static_cast<uint8_t>((rgba >> 24) & 0xff);
+    }
+  }
+  frame.pixels = pixels;
+  return frame;
+}
+
 corevideo::modules::CompositorRenderPlanLayer makeOverlayLayer(
     const std::string& layerId,
     float rx,
@@ -412,6 +442,38 @@ TEST(StubCompositor, FramingVerticalPanSelectsSourceBand) {
   // Panning fully up samples the top band; fully down samples the bottom band.
   EXPECT_EQ(previewPixelRgba(panUp.preview, cx, cy), topColor);
   EXPECT_EQ(previewPixelRgba(panDown.preview, cx, cy), bottomColor);
+}
+
+TEST(StubCompositor, FramingFillHorizontalPanUsesOriginalSourceEdges) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  const uint32_t leftColor = 0xff40d080u;
+  const uint32_t rightColor = 0xff8040ffu;
+
+  auto renderWithOffset = [&](float offsetX) {
+    corevideo::modules::CompositorRenderPlan renderPlan;
+    renderPlan.renderPlanId = "f3-fill-horizontal-pan";
+    renderPlan.width = 900;
+    renderPlan.height = 900;
+    corevideo::modules::CompositorRenderPlanLayer layer{
+        "src", "participant-video", "zoom:src", "src", 0, {0.f, 0.f, 1.f, 1.f}, 1.f};
+    layer.fitMode = "fill";
+    layer.borderStyle = "none";
+    layer.sourceScale = 1.f;
+    layer.sourceOffsetX = offsetX;
+    renderPlan.layers.push_back(layer);
+    return modules.compositor->render(
+        renderPlan, {makeVerticalBandFrame("src", 1600, 900, leftColor, rightColor)});
+  };
+
+  const auto panLeft = renderWithOffset(-1.f);
+  const auto panRight = renderWithOffset(1.f);
+  const int cx = panLeft.preview.width / 2;
+  const int cy = panLeft.preview.height / 2;
+
+  EXPECT_EQ(previewPixelRgba(panLeft.preview, cx, cy), leftColor);
+  EXPECT_EQ(previewPixelRgba(panRight.preview, cx, cy), rightColor);
 }
 
 TEST(StubCompositor, LowerThirdOverlayRastersRealTextPixels) {
