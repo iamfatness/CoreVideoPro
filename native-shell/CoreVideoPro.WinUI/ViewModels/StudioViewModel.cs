@@ -2036,22 +2036,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 await EnsureMediaCoreRunningAsync(starting ? "Starting media core for stream..." : "Updating media core...").ConfigureAwait(false);
                 await SyncActiveSceneAsync().ConfigureAwait(false);
-                OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
-                OutputSessionStatus = OutputStatus;
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
+                    OutputSessionStatus = OutputStatus;
+                });
             }
             catch (Exception ex)
             {
-                Streaming = previousStreaming;
                 var action = starting ? "start" : "stop";
-                RefreshOutputStatus();
-                OutputStatus = $"Streaming {action} failed: {ex.Message}";
-                OutputSessionStatus = OutputStatus;
+                RunOnUiThread(() =>
+                {
+                    Streaming = previousStreaming;
+                    RefreshOutputStatus();
+                    OutputStatus = $"Streaming {action} failed: {ex.Message}";
+                    OutputSessionStatus = OutputStatus;
+                });
             }
         }
         finally
         {
-            _streamToggleInFlight = false;
-            ToggleStreamingCommand.NotifyCanExecuteChanged();
+            RunOnUiThread(() =>
+            {
+                _streamToggleInFlight = false;
+                ToggleStreamingCommand.NotifyCanExecuteChanged();
+            });
         }
     }
 
