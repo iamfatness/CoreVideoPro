@@ -2063,6 +2063,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     OutputSessionStatus = OutputStatus;
                 });
             }
+            catch (MediaCoreSyncInFlightException)
+            {
+                // A background sync was mid-flight, so this toggle's sync was skipped
+                // for backpressure. The requested Streaming state is already set, so
+                // keep it and let a follow-up sync apply it instead of rolling back and
+                // reporting a hard failure (this is the confusing "media-..." error).
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = starting ? "Streaming starting - applying..." : "Streaming stopping - applying...";
+                    OutputSessionStatus = OutputStatus;
+                });
+                _ = RetryStreamSyncAsync(starting);
+            }
             catch (Exception ex)
             {
                 var action = starting ? "start" : "stop";
@@ -2082,6 +2095,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _streamToggleInFlight = false;
                 ToggleStreamingCommand.NotifyCanExecuteChanged();
             });
+        }
+    }
+
+    // Re-applies the production sync after a stream toggle was skipped for
+    // backpressure, so the requested Streaming state actually reaches the media
+    // core once the in-flight sync clears. Retries a few times, then gives up
+    // quietly (the periodic sync will still converge).
+    private async Task RetryStreamSyncAsync(bool starting)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            await Task.Delay(150).ConfigureAwait(false);
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
+                    OutputSessionStatus = OutputStatus;
+                    RefreshOutputStatus();
+                });
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                // Still busy; try again shortly.
+            }
+            catch (Exception ex)
+            {
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = $"Streaming sync failed: {ex.Message}";
+                    OutputSessionStatus = OutputStatus;
+                });
+                return;
+            }
         }
     }
 

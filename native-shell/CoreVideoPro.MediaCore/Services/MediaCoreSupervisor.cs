@@ -317,7 +317,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     {
         if (_syncInFlight)
         {
-            throw new InvalidOperationException("media-core sync in flight; skipped for backpressure");
+            throw new MediaCoreSyncInFlightException();
         }
 
         _syncInFlight = true;
