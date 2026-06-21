@@ -31,9 +31,15 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Media playout" Style="{StaticResource OperatorSectionTitle}" />
                         <Button Grid.Column="1"
+                                Content="Add to Preview"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddSelectedMediaAssetToPreviewCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanAddSelectedMediaAssetToPreview, Mode=OneWay}" />
+                        <Button Grid.Column="2"
                                 Content="{x:Bind ViewModel.MediaPlaybackButtonLabel, Mode=OneWay}"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ToggleSelectedMediaPlaybackCommand}"

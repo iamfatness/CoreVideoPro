@@ -87,6 +87,46 @@ public static class SceneRoutingService
         _ => SourceAudioRole.Mix
     };
 
+    public static SourceRoute BuildAddedSourceRoute(
+        string sceneId,
+        int index,
+        string optionValue,
+        string? selectedMediaAssetId = null)
+    {
+        var route = new SourceRoute
+        {
+            Id = $"{sceneId}-add-{Guid.NewGuid():N}"[..(sceneId.Length + 12)],
+            Mode = SourceRouteMode.None,
+            AudioRole = SourceAudioRole.Mix,
+            CanvasRect = new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 },
+            ZIndex = index
+        };
+
+        if (optionValue.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(optionValue.AsSpan(6), out var slotNumber))
+        {
+            route.Mode = SourceRouteMode.Fixed;
+            route.ShowInputSlotNumber = slotNumber;
+        }
+        else if (string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
+                 !string.IsNullOrWhiteSpace(selectedMediaAssetId))
+        {
+            route.Mode = SourceRouteMode.Fixed;
+            route.ParticipantId = ShowInputRosterService.ToMediaSourceId(selectedMediaAssetId.Trim());
+        }
+        else
+        {
+            route.Mode = optionValue switch
+            {
+                "active-speaker" => SourceRouteMode.ActiveSpeaker,
+                "screen-share" => SourceRouteMode.ScreenShare,
+                _ => SourceRouteMode.None
+            };
+        }
+
+        return route;
+    }
+
     public static IReadOnlyList<SourceRoute> GetRouteDefaults(
         Scene scene,
         IReadOnlyList<SourceRoute>? existingRoutes,

@@ -70,8 +70,12 @@ public sealed record VideoSurfaceState
     public byte[]? PreviewBgra { get; init; }
     public int PreviewWidth { get; init; }
     public int PreviewHeight { get; init; }
+    public int NaturalSourceWidth { get; init; }
+    public int NaturalSourceHeight { get; init; }
     public bool HasFrames => LastFrame is { FrameId: > 0 };
     public bool HasPreviewBitmap => PreviewBgra is { Length: > 0 } && PreviewWidth > 0 && PreviewHeight > 0;
+    public int FramingSourceWidth => NaturalSourceWidth > 0 ? NaturalSourceWidth : PreviewWidth > 0 ? PreviewWidth : LastFrame?.Width ?? 0;
+    public int FramingSourceHeight => NaturalSourceHeight > 0 ? NaturalSourceHeight : PreviewHeight > 0 ? PreviewHeight : LastFrame?.Height ?? 0;
     public bool AwaitingDirect3D => PendingSharedHandle is { IsValid: true };
 
     public static VideoSurfaceState Waiting(VideoSurfaceKind kind, string surfaceKey, string title) =>
@@ -161,10 +165,12 @@ public sealed record VideoSurfaceState
             MediaAssetPlaying = MediaAssetPlaying,
             PreviewBgra = PreviewBgra,
             PreviewWidth = PreviewWidth,
-            PreviewHeight = PreviewHeight
+            PreviewHeight = PreviewHeight,
+            NaturalSourceWidth = NaturalSourceWidth,
+            NaturalSourceHeight = NaturalSourceHeight
         };
 
-    public VideoSurfaceState WithPreviewPixels(byte[] bgra, int width, int height) =>
+    public VideoSurfaceState WithPreviewPixels(byte[] bgra, int width, int height, int? naturalSourceWidth = null, int? naturalSourceHeight = null) =>
         new()
         {
             SurfaceKey = SurfaceKey,
@@ -179,7 +185,9 @@ public sealed record VideoSurfaceState
             MediaAssetPlaying = MediaAssetPlaying,
             PreviewBgra = bgra,
             PreviewWidth = width,
-            PreviewHeight = height
+            PreviewHeight = height,
+            NaturalSourceWidth = naturalSourceWidth.GetValueOrDefault(width),
+            NaturalSourceHeight = naturalSourceHeight.GetValueOrDefault(height)
         };
 
     public VideoSurfaceState WithSharedHandle(SharedTextureHandle handle) =>
@@ -194,7 +202,12 @@ public sealed record VideoSurfaceState
             PendingSharedHandle = handle,
             MediaAssetPath = MediaAssetPath,
             MediaAssetKind = MediaAssetKind,
-            MediaAssetPlaying = MediaAssetPlaying
+            MediaAssetPlaying = MediaAssetPlaying,
+            PreviewBgra = PreviewBgra,
+            PreviewWidth = PreviewWidth,
+            PreviewHeight = PreviewHeight,
+            NaturalSourceWidth = NaturalSourceWidth,
+            NaturalSourceHeight = NaturalSourceHeight
         };
 }
 

@@ -35,6 +35,24 @@
                                     MinWidth="132"
                                     Command="{x:Bind ViewModel.OpenAudioMixerCommand}" />
                         </Grid>
+                        <Border Style="{StaticResource OperatorReadoutBorder}">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="What the meters show"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioMeterSourceSummary, Mode=OneWay}"
+                                           FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.CaptureAudioSignalSummary, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.CaptureAudioSourceSummary, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -87,8 +105,8 @@
                                           SelectedValuePath="Id"
                                           DisplayMemberPath="Name"
                                           HorizontalAlignment="Stretch" />
-                                <StackPanel Grid.Column="2" Spacing="4" MinWidth="180">
-                                    <ToggleSwitch Header="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"
+                                <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
+                                    <ToggleSwitch Header="Monitor"
                                                   IsOn="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" />
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>

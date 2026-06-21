@@ -46,18 +46,21 @@ public static class StudioStreamOutputValidation
             return "Configure RTMP server URL before streaming.";
         }
 
-        if (normalizedUrl.Contains("://", StringComparison.Ordinal))
+        var outputUrl = BuildRtmpUrl(normalizedProtocol, normalizedUrl);
+        if (!Uri.TryCreate(outputUrl, UriKind.Absolute, out var uri) ||
+            !RtmpProtocols.Contains(uri.Scheme))
         {
-            if (!Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri) ||
-                !RtmpProtocols.Contains(uri.Scheme))
-            {
-                return "RTMP server URL must use rtmp:// or rtmps://.";
-            }
+            return "RTMP server URL must be a valid rtmp:// or rtmps:// URL.";
+        }
 
-            if (!string.Equals(uri.Scheme, normalizedProtocol, StringComparison.OrdinalIgnoreCase))
-            {
-                return "RTMP protocol selection must match the server URL scheme.";
-            }
+        if (string.IsNullOrWhiteSpace(uri.Host))
+        {
+            return "RTMP server URL must include a host.";
+        }
+
+        if (!string.Equals(uri.Scheme, normalizedProtocol, StringComparison.OrdinalIgnoreCase))
+        {
+            return "RTMP protocol selection must match the server URL scheme.";
         }
 
         if (string.IsNullOrWhiteSpace(streamKey))

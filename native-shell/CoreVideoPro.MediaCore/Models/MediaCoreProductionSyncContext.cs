@@ -18,7 +18,19 @@ public sealed record MediaCoreSceneRouteWire(
     double? SourceScale = null,
     double? SourceOffsetX = null,
     double? SourceOffsetY = null,
-    MediaCoreColorGradeWire? ColorGrade = null);
+    MediaCoreColorGradeWire? ColorGrade = null,
+    string? MediaAssetId = null,
+    string? MediaAssetName = null,
+    string? MediaAssetKind = null,
+    string? MediaAssetPath = null,
+    bool MediaAssetPlaying = false);
+
+public sealed record MediaCoreSceneBackgroundWire(
+    string MediaAssetId,
+    string MediaAssetName,
+    string MediaAssetKind,
+    string MediaAssetPath,
+    bool Playing = true);
 
 public sealed record MediaCoreParticipantWire(
     string Id,
@@ -158,6 +170,7 @@ public sealed record MediaCoreProductionSyncContext
 {
     public required string ActiveSceneId { get; init; }
     public IReadOnlyList<MediaCoreSceneRouteWire> SceneRoutes { get; init; } = [];
+    public MediaCoreSceneBackgroundWire? SceneBackground { get; init; }
     public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
     public bool Recording { get; init; }
     public bool Streaming { get; init; }

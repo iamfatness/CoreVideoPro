@@ -15,7 +15,7 @@
 
     <Grid>
         <Border Background="#0C1118" CornerRadius="6">
-            <Grid>
+            <Grid x:Name="SurfaceViewport">
                 <!-- Future SwapChainPanel mount point; hidden until IDirect3DDevice interop is wired. -->
                 <SwapChainPanel x:Name="SwapChainHost"
                                 Visibility="Collapsed"
@@ -23,16 +23,16 @@
                                 VerticalAlignment="Stretch" />
 
                 <Image x:Name="PreviewImage"
-                       Stretch="Uniform"
-                       RenderTransformOrigin="0.5,0.5"
-                       HorizontalAlignment="Stretch"
-                       VerticalAlignment="Stretch"
+                       Stretch="Fill"
+                       HorizontalAlignment="Left"
+                       VerticalAlignment="Top"
                        Visibility="Collapsed" />
 
                 <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
                                                   FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
                                                   Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
                                                   IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
+                                                  PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
                                                   Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
 
                 <StackPanel x:Name="PlaceholderPanel"

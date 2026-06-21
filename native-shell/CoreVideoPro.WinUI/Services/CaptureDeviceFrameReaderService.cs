@@ -9,6 +9,60 @@ using Windows.Media.MediaProperties;
 
 namespace CoreVideoPro.WinUI.Services;
 
+public sealed record CaptureDeviceFormatCandidate(
+    int Width,
+    int Height,
+    double Fps,
+    string? Subtype);
+
+public static class CaptureDeviceFormatSelector
+{
+    public static double Score(CaptureDeviceFormatCandidate format)
+    {
+        if (format.Width <= 0 || format.Height <= 0)
+        {
+            return double.MinValue;
+        }
+
+        var area = (double)format.Width * format.Height;
+        var aspect = format.Height > 0 ? (double)format.Width / format.Height : 0;
+        var score = 0.0;
+
+        score += Math.Min(area, 1920 * 1080) / 1000.0;
+        score -= area > 1920 * 1080 ? (area - (1920 * 1080)) / 2000.0 : 0;
+        score += Math.Min(format.Fps, 60) * 8.0;
+        score -= Math.Abs(aspect - (16.0 / 9.0)) * 120.0;
+        score += SubtypeScore(format.Subtype);
+        return score;
+    }
+
+    public static double SubtypeScore(string? subtype)
+    {
+        var normalized = NormalizeSubtype(subtype);
+        return normalized switch
+        {
+            "BGRA8" or "BGRA" or "ARGB32" => 96,
+            "YUY2" => 88,
+            "NV12" => 82,
+            "I420" => 68,
+            "P010" => 62,
+            "MJPG" or "MJPEG" => 55,
+            "RGB24" => 45,
+            _ => 0
+        };
+    }
+
+    public static string NormalizeSubtype(string? subtype)
+    {
+        var normalized = subtype?.Trim().ToUpperInvariant() ?? string.Empty;
+        return normalized switch
+        {
+            "{30323449-0000-0010-8000-00AA00389B71}" => "I420",
+            _ => normalized
+        };
+    }
+}
+
 public sealed class CaptureDeviceFrameReaderService : IDisposable
 {
     private readonly Dictionary<string, CaptureSession> _sessions = new(StringComparer.Ordinal);
@@ -72,6 +126,9 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _formatFps;
         private long _lastFrameTimestampMs;
         private long _lastFramePublishFailureLogMs;
+        private long _lastFrameHealthLogMs;
+        private int _busyDropCount;
+        private int _publishedSinceHealthLog;
         private double _measuredFps;
         private int _fpsSampleCount;
 
@@ -105,6 +162,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 throw new InvalidOperationException("No color video frame source was exposed by this device.");
             }
 
+            await SelectPreferredFormatAsync(source).ConfigureAwait(false);
             CaptureFormatTelemetry(source);
 
             _reader = await _capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8);
@@ -123,6 +181,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         {
             if (Interlocked.Exchange(ref _publishingFrame, 1) == 1)
             {
+                Interlocked.Increment(ref _busyDropCount);
+                MaybeLogFrameHealth();
                 return;
             }
 
@@ -137,7 +197,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
                 using var converted = sourceBitmap.BitmapPixelFormat == BitmapPixelFormat.Bgra8
                     ? null
-                    : SoftwareBitmap.Convert(sourceBitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+                    : SoftwareBitmap.Convert(sourceBitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore);
                 var bgra = converted ?? sourceBitmap;
 
                 var bytes = CopyBgraBytes(bgra);
@@ -158,6 +218,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     FrameId = Interlocked.Increment(ref _frameId),
                     TimestampMs = now
                 });
+                Interlocked.Increment(ref _publishedSinceHealthLog);
+                MaybeLogFrameHealth(now);
             }
             catch (Exception ex)
             {
@@ -171,6 +233,24 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             finally
             {
                 Interlocked.Exchange(ref _publishingFrame, 0);
+            }
+        }
+
+        private void MaybeLogFrameHealth(long? timestampMs = null)
+        {
+            var now = timestampMs ?? Environment.TickCount64;
+            var previous = Interlocked.Read(ref _lastFrameHealthLogMs);
+            if (now - previous < 5000 ||
+                Interlocked.CompareExchange(ref _lastFrameHealthLogMs, now, previous) != previous)
+            {
+                return;
+            }
+
+            var busyDrops = Interlocked.Exchange(ref _busyDropCount, 0);
+            var published = Interlocked.Exchange(ref _publishedSinceHealthLog, 0);
+            if (busyDrops > 0 || published > 0)
+            {
+                LaunchLog.Write($"capture: health {_stableDeviceId} published={published} busyDrops={busyDrops}");
             }
         }
 
@@ -254,6 +334,59 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         private static int RowOffset(int startIndex, int stride, int height, int row, bool flipRows) =>
             startIndex + (flipRows ? height - 1 - row : row) * stride;
+
+        private async Task SelectPreferredFormatAsync(MediaFrameSource source)
+        {
+            var rankedFormats = source.SupportedFormats
+                .Where(format => format.VideoFormat is not null)
+                .OrderByDescending(ScoreFormat)
+                .ToList();
+            LaunchLog.Write(
+                $"capture: supported formats {_stableDeviceId} {string.Join("; ", rankedFormats.Take(8).Select(FormatLabel))}");
+
+            var preferred = rankedFormats
+                .FirstOrDefault();
+            if (preferred is null || ReferenceEquals(preferred, source.CurrentFormat))
+            {
+                return;
+            }
+
+            await source.SetFormatAsync(preferred);
+            var video = preferred.VideoFormat;
+            LaunchLog.Write(
+                $"capture: selected format {_stableDeviceId} {video?.Width ?? 0}x{video?.Height ?? 0} {FormatFps(preferred)}fps {preferred.Subtype}");
+        }
+
+        private static double ScoreFormat(MediaFrameFormat format)
+        {
+            var video = format.VideoFormat;
+            if (video is null)
+            {
+                return double.MinValue;
+            }
+
+            var width = (double)video.Width;
+            var height = (double)video.Height;
+            return CaptureDeviceFormatSelector.Score(new CaptureDeviceFormatCandidate(
+                (int)width,
+                (int)height,
+                ResolveFormatFps(format),
+                format.Subtype));
+        }
+
+        private static double ResolveFormatFps(MediaFrameFormat format) =>
+            format.FrameRate.Denominator > 0
+                ? (double)format.FrameRate.Numerator / format.FrameRate.Denominator
+                : 0.0;
+
+        private static int FormatFps(MediaFrameFormat format) =>
+            (int)Math.Round(ResolveFormatFps(format));
+
+        private static string FormatLabel(MediaFrameFormat format)
+        {
+            var video = format.VideoFormat;
+            return $"{video?.Width ?? 0}x{video?.Height ?? 0}@{FormatFps(format)} {CaptureDeviceFormatSelector.NormalizeSubtype(format.Subtype)}";
+        }
 
         private void CaptureFormatTelemetry(MediaFrameSource source)
         {

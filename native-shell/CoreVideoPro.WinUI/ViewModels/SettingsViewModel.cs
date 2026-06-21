@@ -140,7 +140,27 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public bool JoinBlockedBySdk => ZoomSdkReadinessService.ShouldBlockZoomJoin(_captureRunning(), _sdkReadiness);
 
-    public bool CanJoinZoom => !JoinBlockedBySdk;
+    public bool CanJoinZoom => ShowJoinButton;
+
+    public bool CanOpenMeetingExternally => CanEditJoinFields && !string.IsNullOrWhiteSpace(JoinMeetingUrl);
+
+    public string JoinActionHint
+    {
+        get
+        {
+            if (JoinBlockedBySdk)
+            {
+                return JoinBlockedReason;
+            }
+
+            if (ShowZoomOAuthControls && !ZoomOAuthSignedIn)
+            {
+                return "Sign in with Zoom before joining this meeting in CoreVideo.";
+            }
+
+            return "CoreVideo joins with the embedded Zoom Meeting SDK. Use Open in Zoom app for the installed Zoom client.";
+        }
+    }
 
     public bool ShowRecentMeetings => RecentMeetings.Count > 0;
 
@@ -243,6 +263,12 @@ public sealed partial class SettingsViewModel : ObservableObject
         _zoomStatusChanged?.Invoke(value == ZoomMeetingState.InMeeting ? "Zoom Live" : "Zoom Offline");
     }
 
+    partial void OnJoinMeetingUrlChanged(string value)
+    {
+        OnPropertyChanged(nameof(CanOpenMeetingExternally));
+        OnPropertyChanged(nameof(JoinActionHint));
+    }
+
     partial void OnSdkDiagnosticsExpandedChanged(bool value) => NotifySdkUi();
 
     partial void OnActivationKeyChanged(string value) => OnPropertyChanged(nameof(CanActivateLicense));
@@ -279,6 +305,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(JoinBlockedBySdk));
         OnPropertyChanged(nameof(CanJoinZoom));
         OnPropertyChanged(nameof(JoinBlockedReason));
+        OnPropertyChanged(nameof(JoinActionHint));
     }
 
     public void RefreshZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot = null)
@@ -460,8 +487,17 @@ public sealed partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task JoinZoomAsync()
     {
+        var joinDetails = ZoomMeetingUrlParser.Parse(JoinMeetingUrl);
+        if (!joinDetails.CanJoin)
+        {
+            SetJoinFailure(joinDetails.ValidationError ?? "Enter a valid Zoom meeting URL or meeting ID before joining.");
+            LaunchLog.Write($"zoom-join: blocked ({JoinStatus})");
+            return;
+        }
+
         if (JoinBlockedBySdk)
         {
+            SdkDiagnosticsExpanded = true;
             SetJoinFailure(JoinBlockedReason);
             LaunchLog.Write($"zoom-join: blocked ({JoinBlockedReason})");
             return;
@@ -475,7 +511,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         SetJoinProgress(ZoomMeetingState.Joining, "Joining meeting…");
-        LaunchLog.Write($"zoom-join: starting url={JoinMeetingUrl.Trim()}");
+        LaunchLog.Write($"zoom-join: starting meetingNumber={joinDetails.MeetingNumber ?? "unknown"}");
 
         try
         {
@@ -525,7 +561,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
             SetJoinProgress(ZoomMeetingState.Joining, "Joining meeting… (up to 60s)");
             var snapshot = await _bridge.JoinZoomAsync(
-                JoinMeetingUrl.Trim(),
+                joinDetails.MeetingUrl,
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
                 IsWebinar,
                 sdkJwt,
@@ -558,6 +594,38 @@ public sealed partial class SettingsViewModel : ObservableObject
             var message = DescribeJoinException(ex);
             LaunchLog.Write($"zoom-join: failed {ex.GetType().Name}: {message}");
             SetJoinFailure(message);
+        }
+    }
+
+    [RelayCommand]
+    private async Task OpenMeetingExternallyAsync()
+    {
+        var joinDetails = ZoomMeetingUrlParser.Parse(JoinMeetingUrl);
+        if (!joinDetails.CanJoin)
+        {
+            JoinStatus = joinDetails.ValidationError ?? "Enter a valid Zoom meeting URL or meeting ID before opening Zoom.";
+            return;
+        }
+
+        try
+        {
+            var zoomAppUri = joinDetails.ZoomAppUri;
+            if (!string.IsNullOrWhiteSpace(zoomAppUri))
+            {
+                LaunchLog.Write($"zoom-open-external: opening zoom app meetingNumber={joinDetails.MeetingNumber}");
+                await ExternalUriLauncher.OpenAsync(zoomAppUri).ConfigureAwait(true);
+                JoinStatus = "Opened meeting with the Zoom app.";
+                return;
+            }
+
+            LaunchLog.Write("zoom-open-external: opening meeting URL fallback");
+            await ExternalUriLauncher.OpenAsync(joinDetails.MeetingUrl).ConfigureAwait(true);
+            JoinStatus = "Opened meeting URL with Windows. Zoom may launch through the browser handoff.";
+        }
+        catch (Exception ex)
+        {
+            JoinStatus = $"Could not open Zoom meeting URL: {ex.Message}";
+            LaunchLog.Write($"zoom-open-external: failed {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -765,6 +833,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanEditJoinFields));
         OnPropertyChanged(nameof(ShowLeaveButton));
         OnPropertyChanged(nameof(ShowJoinButton));
+        OnPropertyChanged(nameof(CanJoinZoom));
+        OnPropertyChanged(nameof(CanOpenMeetingExternally));
+        OnPropertyChanged(nameof(JoinActionHint));
         OnPropertyChanged(nameof(MeetingStatusLine));
         _onMeetingPresenceChanged?.Invoke();
     }
@@ -782,6 +853,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowSdkDetailsButton));
         OnPropertyChanged(nameof(SdkDetailsButtonLabel));
         OnPropertyChanged(nameof(ZoomEngineEvidence));
+        OnPropertyChanged(nameof(JoinBlockedBySdk));
+        OnPropertyChanged(nameof(CanJoinZoom));
+        OnPropertyChanged(nameof(JoinBlockedReason));
+        OnPropertyChanged(nameof(JoinActionHint));
     }
 
     private void NotifyLicenseUi()

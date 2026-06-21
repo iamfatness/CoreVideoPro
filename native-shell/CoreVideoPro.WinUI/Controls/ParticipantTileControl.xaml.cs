@@ -3,6 +3,7 @@ using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -174,6 +175,7 @@ public sealed partial class ParticipantTileControl : UserControl
         if (sender is ParticipantTileControl tile)
         {
             tile.UpdatePreviewBitmap();
+            tile.ApplySourceFraming();
         }
     }
 
@@ -255,28 +257,32 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private void ApplySourceFit()
     {
-        PreviewImage.Stretch = SourceFit switch
-        {
-            "fit" => Stretch.Uniform,
-            "stretch" => Stretch.Fill,
-            _ => Stretch.UniformToFill
-        };
+        ApplySourceFraming();
     }
 
     private void ApplySourceFraming()
     {
-        var scale = double.IsFinite(SourceScale) ? Math.Clamp(SourceScale, 0.25, 4) : 1;
-        var offsetX = double.IsFinite(SourceOffsetX) ? Math.Clamp(SourceOffsetX, -1, 1) : 0;
-        var offsetY = double.IsFinite(SourceOffsetY) ? Math.Clamp(SourceOffsetY, -1, 1) : 0;
-
-        PreviewImage.RenderTransform = new CompositeTransform
+        TileViewport.Clip = new RectangleGeometry
         {
-            CenterX = ActualWidth / 2,
-            CenterY = ActualHeight / 2,
-            ScaleX = scale,
-            ScaleY = scale,
-            TranslateX = offsetX * ActualWidth * 0.5,
-            TranslateY = offsetY * ActualHeight * 0.5
+            Rect = new Rect(0, 0, ActualWidth, ActualHeight)
+        };
+
+        var layout = SourceFramingLayoutService.Resolve(
+            ActualWidth,
+            ActualHeight,
+            SurfaceState?.FramingSourceWidth ?? 0,
+            SurfaceState?.FramingSourceHeight ?? 0,
+            SourceFit,
+            SourceScale,
+            SourceOffsetX,
+            SourceOffsetY);
+
+        PreviewImage.Width = layout.Width;
+        PreviewImage.Height = layout.Height;
+        PreviewImage.RenderTransform = new TranslateTransform
+        {
+            X = layout.TranslateX,
+            Y = layout.TranslateY
         };
     }
 

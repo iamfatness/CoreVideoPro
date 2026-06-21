@@ -27,13 +27,49 @@ bool jsonArrayContains(const corevideo::rpc::Json& array, const std::string& val
   });
 }
 
+const corevideo::rpc::Json* findParticipantMix(const corevideo::rpc::Json& mix, const std::string& participantId) {
+  const auto* participants = mix.get("participants");
+  if (!participants || !participants->isArray()) {
+    return nullptr;
+  }
+  const auto& rows = participants->asArray();
+  const auto found = std::find_if(rows.begin(), rows.end(), [&](const corevideo::rpc::Json& row) {
+    return row.getString("participantId") == participantId;
+  });
+  return found == rows.end() ? nullptr : &(*found);
+}
+
+corevideo::modules::ProgramFrame makeTestProgramFrame(int64_t frameNumber) {
+  corevideo::modules::ProgramFrame frame{1920, 1080, 2, frameNumber, "mp4-plan", "d3d11"};
+  frame.preview.width = frame.width;
+  frame.preview.height = frame.height;
+  frame.preview.bgra.assign(static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 4u, 0);
+  for (int y = 0; y < frame.height; ++y) {
+    for (int x = 0; x < frame.width; ++x) {
+      const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(frame.width) + static_cast<size_t>(x)) * 4u;
+      frame.preview.bgra[offset + 0] = static_cast<uint8_t>(x % 256);
+      frame.preview.bgra[offset + 1] = static_cast<uint8_t>(y % 256);
+      frame.preview.bgra[offset + 2] = 0x40;
+      frame.preview.bgra[offset + 3] = 0xff;
+    }
+  }
+  return frame;
+}
+
 // Emits one stereo PCM audio frame per poll so the monitor path has a real
 // signal to render through an injected monitor output (the default synthetic
 // source is metadata-only).
 class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
-    return {corevideo::modules::VideoFrame{"pcm-speaker", 1280, 720, ++tick_ * 16}};
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = "pcm-speaker";
+    frame.width = 1280;
+    frame.height = 720;
+    frame.naturalWidth = 1280;
+    frame.naturalHeight = 720;
+    frame.timestampMs = ++tick_ * 16;
+    return {frame};
   }
   std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
     corevideo::modules::AudioFrame frame;
@@ -47,6 +83,83 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
 
  private:
   int64_t tick_ = 0;
+};
+
+class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      int64_t timestampMs) override {
+    ++pollCount;
+    std::vector<corevideo::modules::VideoFrame> frames;
+    for (const auto& layer : layers) {
+      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
+        continue;
+      }
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = "media:" + layer.mediaAssetId;
+      frame.width = kWidth;
+      frame.height = kHeight;
+      frame.naturalWidth = kWidth;
+      frame.naturalHeight = kHeight;
+      frame.timestampMs = timestampMs;
+      frame.pixelWidth = kWidth;
+      frame.pixelHeight = kHeight;
+      frame.pixelStride = kWidth * 4;
+      frame.frameId = pollCount;
+      auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
+      for (size_t index = 0; index < pixels->size(); index += 4) {
+        (*pixels)[index + 0] = blue;
+        (*pixels)[index + 1] = green;
+        (*pixels)[index + 2] = red;
+        (*pixels)[index + 3] = 0xff;
+      }
+      frame.pixels = std::move(pixels);
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
+
+  static constexpr int kWidth = 16;
+  static constexpr int kHeight = 16;
+  uint8_t blue = 0x22;
+  uint8_t green = 0xb4;
+  uint8_t red = 0xf1;
+  int64_t pollCount = 0;
+};
+
+class CapturingOutputSender final : public corevideo::modules::IOutputSender {
+ public:
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const corevideo::modules::ProgramFrame*,
+      double,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& destinationSettings = {},
+      const std::vector<float>* = nullptr,
+      int = 0,
+      int = 0) override {
+    destinations_ = destinations;
+    destinationSettings_ = destinationSettings;
+    corevideo::modules::OutputSenderSession session;
+    session.status = destinations.empty() ? "idle" : "live";
+    session.activeSenderCount = static_cast<int>(destinations.size());
+    return session;
+  }
+
+  corevideo::modules::OutputSenderSession fail(const std::string&, const std::string&, double) override {
+    return {};
+  }
+
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return {};
+  }
+
+  corevideo::modules::OutputSenderSession session() const override {
+    return {};
+  }
+
+  std::vector<std::string> destinations_;
+  std::vector<corevideo::modules::OutputDestinationSettings> destinationSettings_;
 };
 
 // Records what MediaCore's monitor path pushed, so a test can assert that real
@@ -70,10 +183,12 @@ class RecordingMonitorOutput final : public corevideo::modules::IAudioMonitorOut
     framesRendered += frameCount;
     lastChannels = channels;
     lastVolume = volume;
+    lastFirstSample = interleaved[0];
     ++renderCalls;
     return true;
   }
   bool active() const override { return active_; }
+  bool hardwareOutput() const override { return true; }
   std::string deviceName() const override { return "Recording Monitor"; }
   std::vector<std::string> warnings() const override { return {}; }
 
@@ -84,6 +199,7 @@ class RecordingMonitorOutput final : public corevideo::modules::IAudioMonitorOut
   int64_t framesRendered = 0;
   int lastChannels = 0;
   double lastVolume = 0.0;
+  float lastFirstSample = 0.f;
 
  private:
   bool active_ = false;
@@ -127,6 +243,119 @@ TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   EXPECT_EQ(state.get("overlayCount")->asNumber(), 1);
   EXPECT_TRUE(state.get("active")->asBool());
   EXPECT_EQ(state.get("health")->getString("status"), "live");
+}
+
+TEST(MediaCoreCommand, PreservesStreamDestinationSettingsForNativeSenders) {
+  auto modules = corevideo::modules::createStubModules();
+  auto sender = std::make_unique<CapturingOutputSender>();
+  auto* senderPtr = sender.get();
+  modules.outputSender = std::move(sender);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp", "srt", "ndi"}},
+          {"streamOutputProfile",
+           corevideo::rpc::Json::Object{
+               {"width", 1920},
+               {"height", 1080},
+               {"fps", 30},
+               {"targetBitrateMbps", 4.5},
+               {"codec", "h265"}}},
+          {"destinationSettings",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{},
+               corevideo::rpc::Json::Object{
+                   {"id", "rtmp"},
+                   {"label", "RTMP"},
+                   {"protocol", "rtmps"},
+                   {"url", "rtmps://live.example.com/app"},
+                   {"streamKey", "stream-key"},
+                   {"ffmpegBinDirectory", "C:\\ffmpeg\\bin"},
+                   {"encoderMode", "nvenc"}},
+               corevideo::rpc::Json::Object{
+                   {"id", "srt"},
+                   {"label", "SRT"},
+                   {"mode", "caller"},
+                   {"host", "receiver.example.com"},
+                   {"port", 9000},
+                   {"latencyMs", 120},
+                   {"latencyUs", 120000},
+                   {"passphrase", "secret-passphrase"},
+                   {"keyLength", 32},
+                   {"streamId", "publish/live/main"}},
+               corevideo::rpc::Json::Object{
+                   {"id", "ndi"},
+                   {"label", "NDI"},
+                   {"ndiName", "CoreVideo Pro Program"},
+                   {"ndiGroup", "public"}},
+           }},
+      },
+  });
+
+  ASSERT_TRUE(senderPtr->destinations_ == (std::vector<std::string>{"rtmp", "srt", "ndi"}));
+  ASSERT_TRUE(senderPtr->destinationSettings_.size() == 3u);
+
+  const auto& rtmp = senderPtr->destinationSettings_[0];
+  EXPECT_EQ(rtmp.id, "rtmp");
+  EXPECT_EQ(rtmp.protocol, "rtmps");
+  EXPECT_EQ(rtmp.url, "rtmps://live.example.com/app");
+  EXPECT_EQ(rtmp.streamKey, "stream-key");
+  EXPECT_EQ(rtmp.ffmpegBinDirectory, "C:\\ffmpeg\\bin");
+  EXPECT_EQ(rtmp.fps, 30);
+  EXPECT_TRUE(std::abs(rtmp.targetBitrateMbps - 4.5) < 0.001);
+  EXPECT_EQ(rtmp.videoCodec, "h265");
+  EXPECT_EQ(rtmp.encoderMode, "nvenc");
+
+  const auto& srt = senderPtr->destinationSettings_[1];
+  EXPECT_EQ(srt.id, "srt");
+  EXPECT_EQ(srt.mode, "caller");
+  EXPECT_EQ(srt.host, "receiver.example.com");
+  EXPECT_EQ(srt.port, 9000);
+  EXPECT_EQ(srt.latencyMs, 120);
+  EXPECT_EQ(srt.latencyUs, 120000);
+  EXPECT_EQ(srt.passphrase, "secret-passphrase");
+  EXPECT_EQ(srt.keyLength, 32);
+  EXPECT_EQ(srt.streamId, "publish/live/main");
+
+  const auto& ndi = senderPtr->destinationSettings_[2];
+  EXPECT_EQ(ndi.id, "ndi");
+  EXPECT_EQ(ndi.ndiName, "CoreVideo Pro Program");
+  EXPECT_EQ(ndi.ndiGroup, "public");
+}
+
+TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  auto monitor = std::make_unique<RecordingMonitorOutput>();
+  auto* monitorPtr = monitor.get();
+  modules.monitorOutput = std::move(monitor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "render-device"},
+          {"deviceName", "Render Device"},
+          {"volume", 1.0},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends", corevideo::rpc::Json::Array{
+                        corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "mon"}, {"gainDb", -6.0}},
+                    }},
+      },
+  });
+
+  EXPECT_TRUE(monitorPtr->renderCalls > 0);
+  EXPECT_EQ(monitorPtr->lastDeviceId, "render-device");
+  EXPECT_EQ(monitorPtr->lastChannels, 2);
+  EXPECT_TRUE(std::abs(monitorPtr->lastVolume - 1.0) < 0.001);
+  EXPECT_TRUE(std::abs(monitorPtr->lastFirstSample - 0.2506f) < 0.01f);
+  EXPECT_EQ(state.get("audioMixSession")->getString("monitorStatus"), "playing");
+  EXPECT_TRUE(state.get("audioMixSession")->get("monitorFramesPlayed")->asNumber() > 0);
 }
 
 TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
@@ -277,7 +506,7 @@ TEST(MediaCoreCommand, CaptionCueRastersStyledLowerBand) {
 }
 
 TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) {
-  corevideo::core::MediaCore mediaCore;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
@@ -306,7 +535,7 @@ TEST(MediaCoreCommand, SurfacesInvalidSceneGraphAsDegradedProgramFrameMetadata) 
 }
 
 TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
-  corevideo::core::MediaCore mediaCore;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto first = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
@@ -832,7 +1061,7 @@ TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
 }
 
 TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
-  corevideo::core::MediaCore mediaCore;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "prepare-encoder-session"},
@@ -981,7 +1210,7 @@ TEST(MediaCoreCommand, SyncsAudioMonitorState) {
   EXPECT_EQ(audio->getString("monitorDeviceName"), "Studio Headphones");
   EXPECT_EQ(audio->get("monitorVolume")->asNumber(), 0.75);
   EXPECT_TRUE(audio->getString("monitorStatus") == "armed" || audio->getString("monitorStatus") == "playing" ||
-              audio->getString("monitorStatus") == "unavailable");
+              audio->getString("monitorStatus") == "stub-monitor" || audio->getString("monitorStatus") == "unavailable");
 }
 
 TEST(MediaCoreAudioMonitor, MixerSumsParticipantPcmIntoStereoMonitorBus) {
@@ -1129,9 +1358,9 @@ TEST(MediaCoreAudioMonitor, RoutingMatrixMixesPcmIntoProgramAndIsoTaps) {
 }
 
 TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
-  // Default modules: the synthetic source now emits real PCM, so the recording
+  // Stub modules: the synthetic source emits real PCM, so the recording
   // proof observes muxed audio samples rather than a synthetic frame counter.
-  corevideo::core::MediaCore mediaCore;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto state = mediaCore.applyCommands(
       corevideo::rpc::Json::Array{
           corevideo::rpc::Json::Object{
@@ -1455,6 +1684,59 @@ TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
   EXPECT_EQ(sources[1].getString("audioDriverName"), "ASIO");
 }
 
+TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "stub-render"},
+          {"deviceName", "Stub Render"},
+          {"volume", 0.75},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "decklink-1"},
+                   {"audioDeviceId", "embedded-decklink-1"},
+                   {"audioDeviceName", "DeckLink Mini Recorder embedded audio"},
+                   {"audioSourceKind", "embedded-capture-audio"},
+                   {"nativeAudioDeviceId", "decklink-native-1"},
+                   {"audioDriverName", "Blackmagic DeckLink"},
+                   {"embedded", true},
+               },
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() >= 4);
+  EXPECT_EQ(mix->getString("monitorStatus"), "stub-monitor");
+  EXPECT_TRUE(mix->get("monitorFramesPlayed")->asNumber() > 0);
+
+  const auto* capture = findParticipantMix(*mix, "capture:decklink-1");
+  ASSERT_NE(capture, nullptr);
+  EXPECT_TRUE(capture->get("outputLevel")->asNumber() > 0);
+  EXPECT_TRUE(capture->get("rmsDbfs")->asNumber() > -60);
+
+  const auto* local = findParticipantMix(*mix, "local-machine-audio");
+  ASSERT_NE(local, nullptr);
+  EXPECT_TRUE(local->get("outputLevel")->asNumber() > 0);
+  EXPECT_TRUE(local->get("rmsDbfs")->asNumber() > -60);
+}
+
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
   corevideo::core::MediaCore mediaCore;
 
@@ -1588,9 +1870,9 @@ TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArme
   ASSERT_FALSE(started.recordingArtifactPath.empty());
   EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
 
-  encoder->submit({1920, 1080, 2, 42, "mp4-plan", "d3d11"});
-  encoder->submit({1920, 1080, 2, 43, "mp4-plan", "d3d11"});
-  encoder->submit({1920, 1080, 2, 44, "mp4-plan", "d3d11"});
+  encoder->submit(makeTestProgramFrame(42));
+  encoder->submit(makeTestProgramFrame(43));
+  encoder->submit(makeTestProgramFrame(44));
   const auto session = encoder->session();
   EXPECT_TRUE(session.recordingBytesWritten > 0);
   EXPECT_EQ(session.recordingVideoFrameCount, 3);
@@ -1634,13 +1916,66 @@ TEST(OutputSenderAdapter, FactoryIsDisabledUnlessRtmpGateIsEnabled) {
 #endif
 }
 
+TEST(OutputSenderAdapter, RtmpRequiresCurrentDestinationSettings) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-settings-plan", "d3d11"};
+  const auto session = sender->sync({"rtmp"}, &frame, 33);
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "rtmp-settings-missing");
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+TEST(OutputSenderAdapter, RtmpRejectsInvalidDestinationSettingsBeforeLaunchingFfmpeg) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-invalid-plan", "d3d11"};
+  corevideo::modules::OutputDestinationSettings missingKey;
+  missingKey.id = "rtmp";
+  missingKey.label = "RTMP";
+  missingKey.protocol = "rtmps";
+  missingKey.url = "rtmps://live.example.com/app";
+
+  auto session = sender->sync({"rtmp"}, &frame, 33, {missingKey});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "rtmp-settings-invalid");
+  EXPECT_NE(session.senders[0].warning.find("stream key"), std::string::npos);
+
+  corevideo::modules::OutputDestinationSettings mismatchedScheme = missingKey;
+  mismatchedScheme.protocol = "rtmp";
+  mismatchedScheme.streamKey = "stream-key";
+
+  session = sender->sync({"rtmp"}, &frame, 66, {mismatchedScheme});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "rtmp-settings-invalid");
+  EXPECT_NE(session.senders[0].warning.find("protocol"), std::string::npos);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   auto sender = corevideo::modules::createRtmpOutputSender();
   ASSERT_NE(sender, nullptr);
 
   corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-proof-plan", "d3d11"};
-  const auto session = sender->sync({"rtmp"}, &frame, 33);
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmps";
+  settings.url = "rtmps://live.example.com/app";
+  settings.streamKey = "stream-key";
+  const auto session = sender->sync({"rtmp"}, &frame, 33, {settings});
   ASSERT_FALSE(session.senders.empty());
   ASSERT_FALSE(session.senders[0].sendArtifactPath.empty());
   EXPECT_FALSE(session.senders[0].runtimeDetail.empty());
@@ -1984,5 +2319,60 @@ TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
   const uint8_t syntheticRed = static_cast<uint8_t>((syntheticColor >> 16) & 0xff);
   const bool matchesSynthetic =
       decoded[offset + 0] == syntheticBlue && decoded[offset + 1] == syntheticGreen && decoded[offset + 2] == syntheticRed;
+  EXPECT_FALSE(matchesSynthetic);
+}
+
+TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  const uint8_t expectedBlue = mediaFrames->blue;
+  const uint8_t expectedGreen = mediaFrames->green;
+  const uint8_t expectedRed = mediaFrames->red;
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-program"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "media-main"},
+                             {"mode", "fixed"},
+                             {"mediaAssetId", "clip-intro"},
+                             {"mediaAssetName", "Intro"},
+                             {"mediaAssetKind", "video"},
+                             {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                             {"mediaAssetPlaying", true},
+                             {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+                         },
+                     }},
+      },
+  });
+
+  EXPECT_GE(mediaFramesPtr->pollCount, 1);
+  const auto previews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  ASSERT_NE(preview, nullptr);
+  const int previewWidth = static_cast<int>(preview->get("width")->asNumber());
+  const int previewHeight = static_cast<int>(preview->get("height")->asNumber());
+  const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  EXPECT_EQ(decoded.size(), static_cast<size_t>(previewWidth) * static_cast<size_t>(previewHeight) * 4u);
+
+  const size_t offset =
+      (static_cast<size_t>(previewHeight / 2) * static_cast<size_t>(previewWidth) + static_cast<size_t>(previewWidth / 2)) * 4u;
+  ASSERT_TRUE(offset + 3 < decoded.size());
+  EXPECT_EQ(decoded[offset + 0], expectedBlue);
+  EXPECT_EQ(decoded[offset + 1], expectedGreen);
+  EXPECT_EQ(decoded[offset + 2], expectedRed);
+  EXPECT_EQ(decoded[offset + 3], 0xff);
+
+  const uint32_t syntheticColor = corevideo::compositor::colorFromParticipantId("media:clip-intro");
+  const bool matchesSynthetic =
+      decoded[offset + 0] == static_cast<uint8_t>(syntheticColor & 0xff) &&
+      decoded[offset + 1] == static_cast<uint8_t>((syntheticColor >> 8) & 0xff) &&
+      decoded[offset + 2] == static_cast<uint8_t>((syntheticColor >> 16) & 0xff);
   EXPECT_FALSE(matchesSynthetic);
 }

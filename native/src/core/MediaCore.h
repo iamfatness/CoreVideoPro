@@ -105,6 +105,11 @@ class MediaCore {
     std::string participantId;
     std::string captureDeviceId;
     std::string audioRole;
+    std::string mediaAssetId;
+    std::string mediaAssetName;
+    std::string mediaAssetKind;
+    std::string mediaAssetPath;
+    bool mediaAssetPlaying = false;
     float rectX = 0.f;
     float rectY = 0.f;
     float rectWidth = 0.f;
@@ -122,6 +127,15 @@ class MediaCore {
     modules::CompositorColorGrade colorGrade;
   };
 
+  struct SceneBackgroundState {
+    bool enabled = false;
+    std::string mediaAssetId;
+    std::string mediaAssetName;
+    std::string mediaAssetKind;
+    std::string mediaAssetPath;
+    bool playing = true;
+  };
+
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
   // Advances the overlay animation clock and each overlay's keyPhase progress by
   // one render tick, retiring overlays whose building-out animation has settled.
@@ -130,6 +144,7 @@ class MediaCore {
   modules::ModuleSet modules_;
   std::string sceneId_ = "unloaded";
   std::vector<SceneRouteState> sceneRoutes_;
+  SceneBackgroundState sceneBackground_;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;

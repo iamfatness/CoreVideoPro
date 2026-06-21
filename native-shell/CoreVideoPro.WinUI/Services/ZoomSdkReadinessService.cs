@@ -218,8 +218,8 @@ public static class ZoomSdkReadinessService
         };
     }
 
-    public static bool ShouldBlockZoomJoin(bool engineRunning, ZoomSdkReadinessReport readiness) =>
-        engineRunning && readiness.Status == ZoomSdkReadinessStatus.Blocked;
+    public static bool ShouldBlockZoomJoin(bool _, ZoomSdkReadinessReport readiness) =>
+        readiness.Status == ZoomSdkReadinessStatus.Blocked;
 
     private static string DescribeSdkRuntimeDetail(ZoomSdkReadinessInput input)
     {

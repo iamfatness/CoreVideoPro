@@ -130,17 +130,33 @@ TEST(CompositorFraming, ScaleTwoSamplesCenteredHalfRegion) {
   EXPECT_TRUE(nearly(framing.v1, 0.75f));
 }
 
-// Offset shifts the sampled region. With scale 2 the window is half-size, so a
-// positive X offset moves it right while staying within [0,1].
+// Offset moves the rendered source behind the destination. With scale 2 the
+// visible window is half-size at the extremes and progresses from the centered
+// position toward the right edge.
 TEST(CompositorFraming, OffsetShiftsSampledRegion) {
   const auto centered = computeSourceFraming(1000, 1000, kFullRect, "fill", 2.f, 0.f, 0.f);
   const auto shifted = computeSourceFraming(1000, 1000, kFullRect, "fill", 2.f, 0.5f, 0.f);
   // Same window size, shifted to the right (larger u0), still inside bounds.
   EXPECT_TRUE(nearly(uvWidth(shifted), uvWidth(centered)));
   EXPECT_TRUE(shifted.u0 > centered.u0);
-  // offset 0.5 of the available travel (0.5 of [0..0.5]) -> u0 = 0.25 + 0.5*0.5 = 0.5.
-  EXPECT_TRUE(nearly(shifted.u0, 0.5f));
+  EXPECT_TRUE(nearly(shifted.u0, 0.375f));
   EXPECT_TRUE(nearly(shifted.v0, 0.25f));  // Y unchanged.
+}
+
+TEST(CompositorFraming, FillPanUsesOriginalSourceEdgesAfterZoom) {
+  const LayerRect square{0.f, 0.f, 1.f, 1.f};
+  const auto centered = computeSourceFraming(1600, 900, square, "fill", 2.f, 0.f, 0.f);
+  const auto left = computeSourceFraming(1600, 900, square, "fill", 2.f, -1.f, 0.f);
+  const auto right = computeSourceFraming(1600, 900, square, "fill", 2.f, 1.f, 0.f);
+
+  // The visible source window is the square box's aspect against the original
+  // 16:9 feed, then zoomed 2x. X pan must reach the original source edges, not
+  // the edges of an intermediate cover crop.
+  EXPECT_TRUE(nearly(uvWidth(centered), 0.28125f));
+  EXPECT_TRUE(nearly(left.u0, 0.f));
+  EXPECT_TRUE(nearly(left.u1, 0.28125f));
+  EXPECT_TRUE(nearly(right.u0, 0.71875f));
+  EXPECT_TRUE(nearly(right.u1, 1.f));
 }
 
 // Offset clamps so the sampled region never leaves the source bounds.
@@ -159,6 +175,30 @@ TEST(CompositorFraming, OffsetClampsAtBounds) {
   EXPECT_TRUE(nearly(noTravel.v0, 0.f));
   EXPECT_TRUE(nearly(noTravel.u1, 1.f));
   EXPECT_TRUE(nearly(noTravel.v1, 1.f));
+}
+
+// Scaling below 1 shrinks the rendered source inside the destination instead
+// of expanding the UV window beyond the source bounds. Offset then positions
+// that smaller source inside the source box.
+TEST(CompositorFraming, ScaleBelowOnePositionsWholeSourceInsideDestination) {
+  const auto centered = computeSourceFraming(1000, 1000, kFullRect, "stretch", 0.5f, 0.f, 0.f);
+  EXPECT_TRUE(nearly(centered.u0, 0.f));
+  EXPECT_TRUE(nearly(centered.v0, 0.f));
+  EXPECT_TRUE(nearly(centered.u1, 1.f));
+  EXPECT_TRUE(nearly(centered.v1, 1.f));
+  EXPECT_TRUE(nearly(centered.contentX, 0.25f));
+  EXPECT_TRUE(nearly(centered.contentY, 0.25f));
+  EXPECT_TRUE(nearly(centered.contentW, 0.5f));
+  EXPECT_TRUE(nearly(centered.contentH, 0.5f));
+  EXPECT_TRUE(centered.hasLetterbox);
+
+  const auto lowerRight = computeSourceFraming(1000, 1000, kFullRect, "stretch", 0.5f, 1.f, 1.f);
+  EXPECT_TRUE(nearly(lowerRight.contentX, 0.5f));
+  EXPECT_TRUE(nearly(lowerRight.contentY, 0.5f));
+  EXPECT_TRUE(nearly(lowerRight.contentW, 0.5f));
+  EXPECT_TRUE(nearly(lowerRight.contentH, 0.5f));
+  EXPECT_TRUE(nearly(lowerRight.u0, 0.f));
+  EXPECT_TRUE(nearly(lowerRight.u1, 1.f));
 }
 
 // Border helper: "none" or zero thickness is invisible; styles map to colors.

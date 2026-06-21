@@ -109,17 +109,15 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       state.connectionState = COREVIDEO_SRT_INGEST_CAN_RECEIVE && state.bytesReceived > 0 ? "receiving" : "connected";
       state.signalPresent = true;
       ++state.frameId;
-      frames.push_back(VideoFrame{
-          "capture:" + deviceId,
-          state.width,
-          state.height,
-          timestampMs,
-          {},
-          0,
-          0,
-          0,
-          state.frameId,
-      });
+      VideoFrame frame;
+      frame.participantId = "capture:" + deviceId;
+      frame.width = state.width;
+      frame.height = state.height;
+      frame.naturalWidth = state.width;
+      frame.naturalHeight = state.height;
+      frame.timestampMs = timestampMs;
+      frame.frameId = state.frameId;
+      frames.push_back(std::move(frame));
     }
     return frames;
   }

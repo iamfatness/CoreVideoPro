@@ -29,7 +29,22 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             typeof(MediaAssetPreviewHost),
             new PropertyMetadata(false, OnPreviewPropertyChanged));
 
+    public static readonly DependencyProperty PlaybackKeyProperty =
+        DependencyProperty.Register(
+            nameof(PlaybackKey),
+            typeof(string),
+            typeof(MediaAssetPreviewHost),
+            new PropertyMetadata(null, OnPreviewPropertyChanged));
+
+    private static readonly HashSet<string> CompletedPlaybackKeys = new(StringComparer.Ordinal);
+    private static readonly object CompletedPlaybackGate = new();
+
     private MediaPlayer? _player;
+    private string? _loadedFilePath;
+    private string? _loadedMediaType;
+    private string? _loadedImagePath;
+    private string? _loadedPlaybackKey;
+    private bool _playbackCompleted;
 
     public MediaAssetPreviewHost()
     {
@@ -53,6 +68,12 @@ public sealed partial class MediaAssetPreviewHost : UserControl
     {
         get => (bool)GetValue(IsPlayingProperty);
         set => SetValue(IsPlayingProperty, value);
+    }
+
+    public string? PlaybackKey
+    {
+        get => (string?)GetValue(PlaybackKeyProperty);
+        set => SetValue(PlaybackKeyProperty, value);
     }
 
     public string EmptyTitle =>
@@ -83,6 +104,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
         {
             StopPlayer();
             ImagePreview.Source = null;
+            _loadedImagePath = null;
             return;
         }
 
@@ -90,7 +112,12 @@ public sealed partial class MediaAssetPreviewHost : UserControl
         if (mediaType == "image")
         {
             StopPlayer();
-            ImagePreview.Source = new BitmapImage(new Uri(FilePath));
+            if (!string.Equals(_loadedImagePath, FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                ImagePreview.Source = new BitmapImage(new Uri(FilePath));
+                _loadedImagePath = FilePath;
+            }
+
             ImagePreview.Visibility = Visibility.Visible;
             EmptyState.Visibility = Visibility.Collapsed;
             return;
@@ -98,21 +125,59 @@ public sealed partial class MediaAssetPreviewHost : UserControl
 
         if (mediaType is "video" or "audio")
         {
+            _loadedImagePath = null;
+            ImagePreview.Source = null;
             _player ??= new MediaPlayer();
+            _player.IsLoopingEnabled = false;
+            _player.MediaEnded -= OnMediaEnded;
+            _player.MediaEnded += OnMediaEnded;
             VideoPreview.SetMediaPlayer(_player);
-            _player.Source = MediaSource.CreateFromUri(new Uri(FilePath));
+            var playbackKey = ResolvePlaybackKey(FilePath);
+            if (!string.Equals(_loadedFilePath, FilePath, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(_loadedMediaType, mediaType, StringComparison.Ordinal) ||
+                !string.Equals(_loadedPlaybackKey, playbackKey, StringComparison.Ordinal))
+            {
+                _player.Source = MediaSource.CreateFromUri(new Uri(FilePath));
+                _loadedFilePath = FilePath;
+                _loadedMediaType = mediaType;
+                _loadedPlaybackKey = playbackKey;
+                _playbackCompleted = IsPlaybackKeyCompleted(playbackKey);
+            }
+
             VideoPreview.Visibility = Visibility.Visible;
             EmptyState.Visibility = Visibility.Collapsed;
 
-            if (IsPlaying)
+            if (IsPlaying && !_playbackCompleted)
             {
                 _player.Play();
             }
             else
             {
+                if (!IsPlaying)
+                {
+                    ClearCompletedPlaybackKey(playbackKey);
+                    _playbackCompleted = false;
+                    _player.PlaybackSession.Position = TimeSpan.Zero;
+                }
+
                 _player.Pause();
             }
         }
+    }
+
+    private void OnMediaEnded(MediaPlayer sender, object args)
+    {
+        _playbackCompleted = true;
+        if (_loadedPlaybackKey is { Length: > 0 } playbackKey)
+        {
+            MarkPlaybackKeyCompleted(playbackKey);
+        }
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            sender.Pause();
+            Bindings.Update();
+        });
     }
 
     private static string ResolveMediaType(string filePath, string? kind)
@@ -143,15 +208,49 @@ public sealed partial class MediaAssetPreviewHost : UserControl
         };
     }
 
+    private string ResolvePlaybackKey(string filePath) =>
+        string.IsNullOrWhiteSpace(PlaybackKey) ? filePath : PlaybackKey.Trim();
+
+    private static bool IsPlaybackKeyCompleted(string playbackKey)
+    {
+        lock (CompletedPlaybackGate)
+        {
+            return CompletedPlaybackKeys.Contains(playbackKey);
+        }
+    }
+
+    private static void MarkPlaybackKeyCompleted(string playbackKey)
+    {
+        lock (CompletedPlaybackGate)
+        {
+            CompletedPlaybackKeys.Add(playbackKey);
+        }
+    }
+
+    private static void ClearCompletedPlaybackKey(string playbackKey)
+    {
+        lock (CompletedPlaybackGate)
+        {
+            CompletedPlaybackKeys.Remove(playbackKey);
+        }
+    }
+
     private void StopPlayer()
     {
         if (_player is null)
         {
+            _loadedFilePath = null;
+            _loadedMediaType = null;
+            _loadedPlaybackKey = null;
             return;
         }
 
         _player.Pause();
         _player.Source = null;
+        _loadedFilePath = null;
+        _loadedMediaType = null;
+        _loadedPlaybackKey = null;
+        _playbackCompleted = false;
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)

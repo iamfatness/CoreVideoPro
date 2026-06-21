@@ -93,6 +93,21 @@ public sealed class RoutingMatrixViewModelTests
         Assert.NotNull(FindAudioCell(viewModel, "mic-1", "bus-01"));
     }
 
+    [Fact]
+    public void AudioRouting_NewSourcesDefaultToProgramAndMonitor()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build(
+            [
+                new RoutingSource("local-machine-audio", "Local machine audio")
+            ]);
+
+        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "master").IsRouted);
+        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "pgm-l").IsRouted);
+        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "pgm-r").IsRouted);
+        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "mon").IsRouted);
+    }
+
     private static VideoRoutingCrosspointViewModel FindVideoCell(
         VideoRoutingMatrixViewModel viewModel,
         string sourceId,

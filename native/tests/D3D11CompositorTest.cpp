@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -36,6 +37,50 @@ uint32_t blendRgbaOver(uint32_t source, uint32_t destination, float opacity) {
   const uint32_t g = mix((source >> 8) & 0xff, (destination >> 8) & 0xff);
   const uint32_t b = mix(source & 0xff, destination & 0xff);
   return 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
+corevideo::modules::VideoFrame makeMetadataFrame(const std::string& participantId, int width = 1280, int height = 720) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
+  frame.timestampMs = 16;
+  return frame;
+}
+
+corevideo::modules::VideoFrame makeLeftRightBandFrame(
+    const std::string& participantId,
+    int pixelWidth,
+    int pixelHeight,
+    int naturalWidth,
+    int naturalHeight,
+    uint32_t leftRgba,
+    uint32_t rightRgba) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.width = naturalWidth;
+  frame.height = naturalHeight;
+  frame.naturalWidth = naturalWidth;
+  frame.naturalHeight = naturalHeight;
+  frame.pixelWidth = pixelWidth;
+  frame.pixelHeight = pixelHeight;
+  frame.pixelStride = pixelWidth * 4;
+  frame.timestampMs = 16;
+  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(pixelWidth) * pixelHeight * 4);
+  for (int y = 0; y < pixelHeight; ++y) {
+    for (int x = 0; x < pixelWidth; ++x) {
+      const uint32_t rgba = x < pixelWidth / 2 ? leftRgba : rightRgba;
+      const size_t offset = static_cast<size_t>((y * pixelWidth + x) * 4);
+      (*pixels)[offset + 0] = static_cast<uint8_t>(rgba & 0xff);
+      (*pixels)[offset + 1] = static_cast<uint8_t>((rgba >> 8) & 0xff);
+      (*pixels)[offset + 2] = static_cast<uint8_t>((rgba >> 16) & 0xff);
+      (*pixels)[offset + 3] = static_cast<uint8_t>((rgba >> 24) & 0xff);
+    }
+  }
+  frame.pixels = std::move(pixels);
+  return frame;
 }
 
 corevideo::modules::CompositorRenderPlan overlappingSceneGraphPlan() {
@@ -89,7 +134,7 @@ TEST(StubCompositor, SceneGraphRenderingStaysGreenInCorevideoStub) {
   EXPECT_EQ(modules.compositor->rendererName(), "software");
 
   const auto renderPlan = overlappingSceneGraphPlan();
-  const auto frame = modules.compositor->render(renderPlan, {{"front", 1280, 720, 16}, {"back", 1280, 720, 16}});
+  const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("front"), makeMetadataFrame("back")});
 
   EXPECT_EQ(frame.renderer, "software");
   EXPECT_EQ(frame.renderPlanId, "b3-stub-scene");
@@ -113,7 +158,7 @@ TEST(StubCompositor, ProducesDeterministicPreviewAndSignatureForLayerOrder) {
   auto secondPlan = firstPlan;
   std::reverse(secondPlan.layers.begin(), secondPlan.layers.end());
 
-  const std::vector<corevideo::modules::VideoFrame> frames = {{"front", 1280, 720, 16}, {"back", 1280, 720, 16}};
+  const std::vector<corevideo::modules::VideoFrame> frames = {makeMetadataFrame("front"), makeMetadataFrame("back")};
   const auto first = modules.compositor->render(firstPlan, frames);
   const auto second = modules.compositor->render(secondPlan, frames);
 
@@ -123,6 +168,39 @@ TEST(StubCompositor, ProducesDeterministicPreviewAndSignatureForLayerOrder) {
   EXPECT_EQ(first.preview.bgra, second.preview.bgra);
 }
 
+TEST(StubCompositor, SourcePanUsesNaturalSourceDimensionsBeforePreviewPixels) {
+  auto modules = corevideo::modules::createStubModules();
+  ASSERT_NE(modules.compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "natural-framing";
+  renderPlan.width = 640;
+  renderPlan.height = 640;
+  renderPlan.layers.push_back({
+      "camera",
+      "participant-video",
+      "zoom:camera",
+      "camera",
+      0,
+      {0.f, 0.f, 1.f, 1.f},
+      1.f,
+      "fill",
+      "none",
+      "#44C1A1",
+      0.f,
+      1.f,
+      1.f,
+      0.f,
+  });
+
+  const uint32_t leftRed = 0xffff0000u;
+  const uint32_t rightBlue = 0xff0000ffu;
+  const auto source = makeLeftRightBandFrame("camera", 100, 100, 1600, 900, leftRed, rightBlue);
+  const auto frame = modules.compositor->render(renderPlan, {source});
+
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 4, frame.preview.height / 2), rightBlue);
+}
+
 TEST(StubCompositor, MarksWarnedRenderPlansDegraded) {
   auto modules = corevideo::modules::createStubModules();
   ASSERT_NE(modules.compositor, nullptr);
@@ -130,7 +208,7 @@ TEST(StubCompositor, MarksWarnedRenderPlansDegraded) {
   auto renderPlan = overlappingSceneGraphPlan();
   renderPlan.warnings.push_back("missing overlay asset");
 
-  const auto frame = modules.compositor->render(renderPlan, {{"front", 1280, 720, 16}, {"back", 1280, 720, 16}});
+  const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("front"), makeMetadataFrame("back")});
   EXPECT_EQ(frame.health, "degraded");
   EXPECT_NE(frame.programPixelSignature, 0u);
 }
@@ -195,7 +273,7 @@ TEST(StubCompositor, AppliesSemanticOverlayDepthAndOpacity) {
       1.f,
   });
 
-  const auto frame = modules.compositor->render(renderPlan, {{"speaker", 1280, 720, 16}});
+  const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("speaker")});
   const int sampleX = frame.preview.width / 2;
   const int sampleY = static_cast<int>(frame.preview.height * 0.84f);
   const uint32_t participantColor = corevideo::compositor::colorFromParticipantId("speaker");
@@ -237,6 +315,10 @@ corevideo::modules::VideoFrame makeHalfBandFrame(
     uint32_t bottomRgba) {
   corevideo::modules::VideoFrame frame;
   frame.participantId = participantId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
   frame.pixelWidth = width;
   frame.pixelHeight = height;
   frame.pixelStride = width * 4;
@@ -357,7 +439,7 @@ TEST(StubCompositor, LowerThirdOverlayRastersRealTextPixels) {
   overlay.overlay.brandColor = "#44c1a1";
   renderPlan.layers.push_back(overlay);
 
-  const auto frame = modules.compositor->render(renderPlan, {{"speaker", 1280, 720, 16}});
+  const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("speaker")});
   // The overlay band must contain many distinct colors (text glyphs + brand
   // band + accent), proving real raster rather than a single solid rect.
   // The old solid-fill overlay produced exactly one uniform color in the band;
@@ -488,7 +570,7 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
       0.f,
   });
 
-  const auto frame = modules.compositor->render(renderPlan, {{"back", 1280, 720, 16}, {"front", 1280, 720, 16}});
+  const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("back"), makeMetadataFrame("front")});
   EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::colorFromParticipantId("back"));
 }
 #endif

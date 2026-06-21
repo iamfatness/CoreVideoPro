@@ -83,6 +83,34 @@ public sealed class NativeMediaCoreWireHealth
     public IReadOnlyList<string>? Messages { get; init; }
 }
 
+public sealed class NativeMediaCoreCaptureAudioSource
+{
+    public required string CaptureDeviceId { get; init; }
+    public string? AudioDeviceId { get; init; }
+    public string? AudioDeviceName { get; init; }
+    public string? AudioSourceKind { get; init; }
+    public bool Paired { get; init; }
+    public bool CaptureStreaming { get; init; }
+    public long CaptureFramesReceived { get; init; }
+    public int CaptureSampleRate { get; init; }
+    public int CaptureChannels { get; init; }
+}
+
+public sealed class NativeMediaCoreCaptureAudioSources
+{
+    public required string Status { get; init; }
+    public int SourceCount { get; init; }
+    public int PairedCount { get; init; }
+    public int StreamingCount { get; init; }
+    public long CaptureFramesReceived { get; init; }
+    public int RoutedMasterFrames { get; init; }
+    public int RoutedMonitorFrames { get; init; }
+    public long MonitorFramesPlayed { get; init; }
+    public IReadOnlyList<NativeMediaCoreCaptureAudioSource> Sources { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+    public required string Summary { get; init; }
+}
+
 public sealed class RawCaptureSnapshot
 {
     public required string MeetingState { get; init; }
@@ -126,6 +154,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreWireHealth? Health { get; init; }
     public NativeMediaCoreProfile? Profile { get; init; }
     public NativeMediaCoreAudioMixSession? AudioMixSession { get; init; }
+    public NativeMediaCoreCaptureAudioSources? CaptureAudioSources { get; init; }
     public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }

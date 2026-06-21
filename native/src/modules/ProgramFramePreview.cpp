@@ -366,6 +366,29 @@ float compositorLayerOpacity(const CompositorRenderPlanLayer& layer) {
   return std::clamp(layer.opacity, 0.f, 1.f);
 }
 
+void mixHash(uint32_t& hash, uint8_t value) {
+  hash ^= value;
+  hash *= 16777619u;
+}
+
+void mixHash(uint32_t& hash, int value) {
+  for (int shift = 0; shift < 32; shift += 8) {
+    mixHash(hash, static_cast<uint8_t>((static_cast<uint32_t>(value) >> shift) & 0xffu));
+  }
+}
+
+void mixHash(uint32_t& hash, float value) {
+  const int quantized = static_cast<int>(std::lround(value * 10000.f));
+  mixHash(hash, quantized);
+}
+
+void mixHash(uint32_t& hash, const std::string& value) {
+  for (const unsigned char ch : value) {
+    mixHash(hash, ch);
+  }
+  mixHash(hash, static_cast<uint8_t>(0xffu));
+}
+
 CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan) {
   std::stable_sort(
       renderPlan.layers.begin(),
@@ -385,6 +408,47 @@ CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan) {
         return left.sourceId < right.sourceId;
       });
   return renderPlan;
+}
+
+uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
+  uint32_t hash = 2166136261u;
+  mixHash(hash, renderPlan.renderPlanId);
+  mixHash(hash, renderPlan.sceneId);
+  mixHash(hash, renderPlan.width);
+  mixHash(hash, renderPlan.height);
+  mixHash(hash, renderPlan.fps);
+  for (const auto& layer : renderPlan.layers) {
+    mixHash(hash, layer.layerId);
+    mixHash(hash, layer.kind);
+    mixHash(hash, layer.sourceId);
+    mixHash(hash, layer.participantId);
+    mixHash(hash, layer.mediaAssetId);
+    mixHash(hash, layer.mediaAssetName);
+    mixHash(hash, layer.mediaAssetKind);
+    mixHash(hash, layer.mediaAssetPath);
+    mixHash(hash, layer.mediaAssetPlaying ? 1 : 0);
+    mixHash(hash, layer.order);
+    mixHash(hash, layer.rect.x);
+    mixHash(hash, layer.rect.y);
+    mixHash(hash, layer.rect.width);
+    mixHash(hash, layer.rect.height);
+    mixHash(hash, layer.fitMode);
+    mixHash(hash, layer.borderStyle);
+    mixHash(hash, layer.borderColor);
+    mixHash(hash, layer.borderThickness);
+    mixHash(hash, layer.sourceScale);
+    mixHash(hash, layer.sourceOffsetX);
+    mixHash(hash, layer.sourceOffsetY);
+    mixHash(hash, layer.hasColorGrade ? 1 : 0);
+    if (layer.hasColorGrade) {
+      mixHash(hash, layer.colorGrade.exposure);
+      mixHash(hash, layer.colorGrade.contrast);
+      mixHash(hash, layer.colorGrade.saturation);
+      mixHash(hash, layer.colorGrade.temperature);
+    }
+    mixHash(hash, compositorLayerOpacity(layer));
+  }
+  return hash == 0 ? 1u : hash;
 }
 
 void fillSyntheticProgramFramePreview(
@@ -444,6 +508,9 @@ void fillSyntheticProgramFramePreview(
         if (!layer.participantId.empty()) {
           color = compositor::colorFromParticipantId(layer.participantId);
           frameForLayer = findFrameForParticipant(frames, layer.participantId);
+        } else if (!layer.mediaAssetId.empty()) {
+          color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
+          frameForLayer = findFrameForParticipant(frames, "media:" + layer.mediaAssetId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
           color = compositor::colorFromParticipantId(frameForLayer->participantId);
@@ -473,9 +540,17 @@ void fillSyntheticProgramFramePreview(
       // canvas, so its true aspect is scaled by the canvas pixel dimensions.
       int sourceWidth = renderPlan.width > 0 ? renderPlan.width : 16;
       int sourceHeight = renderPlan.height > 0 ? renderPlan.height : 9;
-      if (frameForLayer && frameForLayer->pixelWidth > 0 && frameForLayer->pixelHeight > 0) {
-        sourceWidth = frameForLayer->pixelWidth;
-        sourceHeight = frameForLayer->pixelHeight;
+      if (frameForLayer) {
+        sourceWidth = frameForLayer->naturalWidth > 0
+                          ? frameForLayer->naturalWidth
+                          : frameForLayer->width > 0
+                                ? frameForLayer->width
+                                : frameForLayer->pixelWidth > 0 ? frameForLayer->pixelWidth : sourceWidth;
+        sourceHeight = frameForLayer->naturalHeight > 0
+                           ? frameForLayer->naturalHeight
+                           : frameForLayer->height > 0
+                                 ? frameForLayer->height
+                                 : frameForLayer->pixelHeight > 0 ? frameForLayer->pixelHeight : sourceHeight;
       }
 
       // Express the rect in canvas-pixel proportions so aspect comparisons are
@@ -522,16 +597,10 @@ void fillSyntheticProgramFramePreview(
         blitVideoFrameFramed(
             preview, *frameForLayer, contentRect, framing.u0, framing.v0, framing.u1, framing.v1, layerOpacity);
       } else {
-        // The synthetic fill has no real texture, so honor zoom/pan geometry by
-        // mapping the resolved sampled UV window onto the on-screen content
-        // rect: zoom (window < full) insets the fill toward the sampled center,
-        // and pan shifts it (clamped). For default framing the window is full,
-        // so the fill covers the whole content rect.
-        const float fillX = contentX + framing.u0 * contentW;
-        const float fillY = contentY + framing.v0 * contentH;
-        const float fillW = (framing.u1 - framing.u0) * contentW;
-        const float fillH = (framing.v1 - framing.v0) * contentH;
-        fillRectBgra(preview.bgra, previewWidth, previewHeight, fillX, fillY, fillW, fillH, unpackColor(color), layerOpacity);
+        // The synthetic fill has no texture detail to pan, so draw the resolved
+        // visible source rectangle directly. This still shows scale-out
+        // placement and letterbox/empty space accurately.
+        fillRectBgra(preview.bgra, previewWidth, previewHeight, contentX, contentY, contentW, contentH, unpackColor(color), layerOpacity);
       }
 
       const auto border = compositor::computeBorderFraming(layer.borderStyle, layer.borderColor, layer.borderThickness);

@@ -208,6 +208,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   }
 
   bool active() const override { return active_; }
+  bool hardwareOutput() const override { return true; }
   std::string deviceName() const override { return deviceName_; }
   std::vector<std::string> warnings() const override { return warnings_; }
 

@@ -19,17 +19,39 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <StackPanel Orientation="Horizontal" Spacing="8">
+        <Grid ColumnSpacing="8" RowSpacing="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
             <TextBlock Text="Canvas presets" FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                        VerticalAlignment="Center" />
-            <Button Content="Full" Tag="full" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
-            <Button Content="2-up" Tag="two-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
-            <Button Content="PIP" Tag="pip" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
-            <Button Content="Grid" Tag="grid" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
-            <Button Content="Speaker+slides" Tag="speaker-slides" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
-            <TextBlock x:Name="CanvasHintText" FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+            <ScrollViewer Grid.Column="1"
+                          HorizontalScrollBarVisibility="Auto"
+                          HorizontalScrollMode="Enabled"
+                          VerticalScrollBarVisibility="Disabled"
+                          VerticalScrollMode="Disabled">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Button Content="Single" Tag="single" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="2-up" Tag="two-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="3-up" Tag="three-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="4-up" Tag="four-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="5-up" Tag="five-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="6-up" Tag="six-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="7-up" Tag="seven-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="8-up" Tag="eight-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="PIP" Tag="pip" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="Speaker+slides" Tag="speaker-slides" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                </StackPanel>
+            </ScrollViewer>
+            <TextBlock x:Name="CanvasHintText" Grid.ColumnSpan="2" Grid.Row="1"
+                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                        VerticalAlignment="Center" TextWrapping="WrapWholeWords" />
-        </StackPanel>
+        </Grid>
 
         <Border Grid.Row="1" Background="#06090D" BorderBrush="{StaticResource StudioBorderBrush}"
                 BorderThickness="1" CornerRadius="8" Padding="8">

@@ -11,6 +11,12 @@ struct VideoFrame {
   std::string participantId;
   int width = 0;
   int height = 0;
+  // Natural uncropped source dimensions. These can differ from pixelWidth /
+  // pixelHeight when a capture or preview path delivers a downscaled frame.
+  // Framing and pan/zoom use these dimensions so source XY is resolved against
+  // the original feed, not a preview-sized intermediate crop.
+  int naturalWidth = 0;
+  int naturalHeight = 0;
   int64_t timestampMs = 0;
   // Optional decoded pixel payload. When present, `pixels` holds tightly packed
   // BGRA bytes for a `pixelWidth` x `pixelHeight` image with `pixelStride` bytes
@@ -170,6 +176,11 @@ struct CompositorRenderPlanLayer {
   float sourceScale = 1.f;
   float sourceOffsetX = 0.f;
   float sourceOffsetY = 0.f;
+  std::string mediaAssetId;
+  std::string mediaAssetName;
+  std::string mediaAssetKind;
+  std::string mediaAssetPath;
+  bool mediaAssetPlaying = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;
   // Set for overlay/lower-third/caption layers. Empty (default) for video
@@ -274,6 +285,16 @@ struct OutputDestinationSettings {
   std::string url;
   std::string streamKey;
   std::string ffmpegBinDirectory;
+  std::string mode;
+  std::string host;
+  int port = 0;
+  int latencyMs = 0;
+  int latencyUs = 0;
+  std::string passphrase;
+  int keyLength = 0;
+  std::string streamId;
+  std::string ndiName;
+  std::string ndiGroup;
   int fps = 30;
   double targetBitrateMbps = 6.0;
   std::string videoCodec = "h264";
@@ -303,6 +324,28 @@ struct CaptureDeviceInfo {
   std::string warning;
 };
 
+struct CaptureAudioSourceConfig {
+  std::string captureDeviceId;
+  std::string audioDeviceId;
+  std::string audioDeviceName;
+  std::string audioSourceKind = "none";
+  std::string nativeAudioDeviceId;
+  std::string audioDriverName;
+  int audioSyncOffsetMs = 0;
+  bool embedded = false;
+};
+
+struct CaptureAudioSourceMetrics {
+  std::string captureDeviceId;
+  std::string sourceId;
+  std::string audioSourceKind;
+  bool streaming = false;
+  int64_t framesReceived = 0;
+  int sampleRate = 0;
+  int channels = 0;
+  std::string warning;
+};
+
 struct SrtIngestSourceConfig {
   std::string id;
   std::string deviceId;
@@ -322,11 +365,27 @@ class IZoomCaptureSource {
   virtual std::vector<AudioFrame> pollAudioFrames() = 0;
 };
 
+class IAudioCaptureSource {
+ public:
+  virtual ~IAudioCaptureSource() = default;
+  virtual void configure(const std::vector<CaptureAudioSourceConfig>& sources) = 0;
+  virtual std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) = 0;
+  [[nodiscard]] virtual std::vector<std::string> warnings() const { return {}; }
+  [[nodiscard]] virtual std::vector<CaptureAudioSourceMetrics> metrics() const { return {}; }
+};
+
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+};
+
+class IMediaFrameSource {
+ public:
+  virtual ~IMediaFrameSource() = default;
+  virtual std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) = 0;
+  [[nodiscard]] virtual std::vector<std::string> warnings() const { return {}; }
 };
 
 class IAudioMixer {
@@ -366,6 +425,7 @@ class IAudioMonitorOutput {
   // accepted by the endpoint. Real-time: may drop overflow rather than block.
   virtual bool render(const float* interleaved, int frameCount, int channels, double volume) = 0;
   [[nodiscard]] virtual bool active() const = 0;
+  [[nodiscard]] virtual bool hardwareOutput() const { return false; }
   [[nodiscard]] virtual std::string deviceName() const = 0;
   [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
 };
@@ -426,8 +486,10 @@ class ICaptureDevice {
 struct ModuleSet {
   std::unique_ptr<IZoomCaptureSource> zoom;
   std::unique_ptr<ICompositor> compositor;
+  std::unique_ptr<IMediaFrameSource> mediaFrames;
   std::unique_ptr<IAudioMixer> mixer;
   std::unique_ptr<IAudioMonitorOutput> monitorOutput;
+  std::unique_ptr<IAudioCaptureSource> audioCapture;
   std::unique_ptr<IEncoderSink> encoder;
   std::unique_ptr<IOutputSender> outputSender;
   std::unique_ptr<ICaptureDevice> captureDevice;
@@ -436,8 +498,11 @@ struct ModuleSet {
 ModuleSet createDefaultModules();
 ModuleSet createStubModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
+std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 std::unique_ptr<IAudioMonitorOutput> createWasapiMonitorOutput();
+std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource();
+std::unique_ptr<IAudioCaptureSource> createWasapiAudioCaptureSource();
 std::unique_ptr<IEncoderSink> createStubRecordingEncoderSink();
 std::unique_ptr<IEncoderSink> createMediaFoundationEncoderSink();
 std::unique_ptr<IOutputSender> createRtmpOutputSender();

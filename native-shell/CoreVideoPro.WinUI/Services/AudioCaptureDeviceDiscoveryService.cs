@@ -31,7 +31,10 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
                 })
                 .ToList();
 
+            var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
+
             return wasapiDevices
+                .Concat(loopbackDevices)
                 .Concat(DiscoverAsioDevices())
                 .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.First())
@@ -41,7 +44,9 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
         }
         catch
         {
-            return DiscoverAsioDevices()
+            var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
+            return loopbackDevices
+                .Concat(DiscoverAsioDevices())
                 .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -110,6 +115,33 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
 
     private void OnWatcherChanged(DeviceWatcher sender, object args) =>
         _onDevicesChanged?.Invoke();
+
+    private static async Task<IReadOnlyList<AudioCaptureDevice>> DiscoverWasapiLoopbackDevicesAsync()
+    {
+        try
+        {
+            var renderDevices = await DeviceInformation.FindAllAsync(DeviceClass.AudioRender)
+                .AsTask()
+                .ConfigureAwait(false);
+
+            return renderDevices
+                .Where(info => !string.IsNullOrWhiteSpace(info.Name))
+                .GroupBy(info => info.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new AudioCaptureDevice
+                {
+                    Id = CaptureDeviceDiscoveryMapper.CreateStableDeviceId($"loopback:{group.Key}"),
+                    NativeDeviceId = group.Key,
+                    Name = group.First().Name,
+                    SourceKind = "wasapi-loopback",
+                    DriverName = "WASAPI loopback"
+                })
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
 
     private static IEnumerable<AudioCaptureDevice> DiscoverAsioDevices()
     {

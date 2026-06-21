@@ -171,6 +171,73 @@ std::string buildRtmpEndpoint(const OutputDestinationSettings& settings) {
   return endpoint;
 }
 
+bool startsWithScheme(const std::string& value, const std::string& scheme) {
+  return value.rfind(scheme, 0) == 0;
+}
+
+bool hasWhitespace(const std::string& value) {
+  return std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+    return std::isspace(ch) != 0;
+  });
+}
+
+bool hasRtmpHostAndPath(const std::string& url) {
+  const std::string separator = "://";
+  const auto schemeEnd = url.find(separator);
+  if (schemeEnd == std::string::npos) {
+    return false;
+  }
+
+  const auto hostStart = schemeEnd + separator.size();
+  const auto pathStart = url.find('/', hostStart);
+  const auto hostEnd = pathStart == std::string::npos ? url.size() : pathStart;
+  if (hostStart >= hostEnd) {
+    return false;
+  }
+
+  if (pathStart == std::string::npos || pathStart + 1 >= url.size()) {
+    return false;
+  }
+
+  return true;
+}
+
+std::string validateRtmpSettings(const OutputDestinationSettings& settings) {
+  const std::string protocol = lowercaseAscii(settings.protocol);
+  if (protocol != "rtmp" && protocol != "rtmps") {
+    return "RTMP sender requires an rtmp or rtmps protocol.";
+  }
+
+  if (settings.url.empty()) {
+    return "RTMP sender needs a configured RTMP/RTMPS server URL.";
+  }
+
+  if (hasWhitespace(settings.url)) {
+    return "RTMP sender server URL cannot contain whitespace.";
+  }
+
+  const bool schemeMatches = protocol == "rtmp"
+                                 ? startsWithScheme(settings.url, "rtmp://")
+                                 : startsWithScheme(settings.url, "rtmps://");
+  if (!schemeMatches) {
+    return "RTMP sender protocol must match the server URL scheme.";
+  }
+
+  if (!hasRtmpHostAndPath(settings.url)) {
+    return "RTMP sender URL must include a host and application path.";
+  }
+
+  if (settings.streamKey.empty()) {
+    return "RTMP sender needs a stream key before streaming.";
+  }
+
+  if (hasWhitespace(settings.streamKey)) {
+    return "RTMP sender stream key cannot contain whitespace.";
+  }
+
+  return "";
+}
+
 std::string redactedEndpoint(const std::string& endpoint, const std::string& streamKey) {
   if (streamKey.empty()) {
     return endpoint;
@@ -408,14 +475,41 @@ class RtmpOutputSender final : public IOutputSender {
 
     ensureSender(elapsedMs);
     const auto* settings = findRtmpSettings(destinationSettings);
-    configuredEndpoint_ = settings ? buildRtmpEndpoint(*settings) : configuredEndpoint_;
-    configuredStreamKey_ = settings ? settings->streamKey : configuredStreamKey_;
-    configuredFfmpegBinDirectory_ = settings ? settings->ffmpegBinDirectory : configuredFfmpegBinDirectory_;
-    configuredFps_ = settings ? (std::max)(1, settings->fps) : configuredFps_;
-    configuredVideoCodec_ = settings ? normalizeVideoCodec(settings->videoCodec) : configuredVideoCodec_;
-    configuredEncoderMode_ = settings ? normalizeEncoderMode(settings->encoderMode) : configuredEncoderMode_;
-    configuredAllowEnhancedRtmp_ = settings ? settings->allowEnhancedRtmp : configuredAllowEnhancedRtmp_;
-    sender_.bitrateMbps = settings ? (std::max)(0.5, settings->targetBitrateMbps) : sender_.bitrateMbps;
+    if (!settings) {
+      stopFfmpegProcess();
+      configuredEndpoint_.clear();
+      configuredStreamKey_.clear();
+      sender_.status = "warning";
+      sender_.warning = "RTMP sender needs current RTMP destination settings before streaming.";
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "rtmp-settings-missing";
+      sender_.lastError = sender_.warning;
+      appendSendProof(frame, "rtmp-settings-missing");
+      return snapshot();
+    }
+
+    const auto settingsError = validateRtmpSettings(*settings);
+    if (!settingsError.empty()) {
+      stopFfmpegProcess();
+      configuredEndpoint_.clear();
+      configuredStreamKey_.clear();
+      sender_.status = "warning";
+      sender_.warning = settingsError;
+      sender_.destinationHealth = "warning";
+      sender_.lastResultCode = "rtmp-settings-invalid";
+      sender_.lastError = sender_.warning;
+      appendSendProof(frame, "rtmp-settings-invalid");
+      return snapshot();
+    }
+
+    configuredEndpoint_ = buildRtmpEndpoint(*settings);
+    configuredStreamKey_ = settings->streamKey;
+    configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
+    configuredFps_ = (std::max)(1, settings->fps);
+    configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
+    configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
+    configuredAllowEnhancedRtmp_ = settings->allowEnhancedRtmp;
+    sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     // Surface a codec/container compatibility note (e.g. H.265 -> H.264 fallback)
@@ -650,7 +744,7 @@ class RtmpOutputSender final : public IOutputSender {
       audioPipeServer_ = CreateNamedPipeA(
           audioPipeName.c_str(),
           PIPE_ACCESS_OUTBOUND,
-          PIPE_TYPE_BYTE | PIPE_WAIT,
+          PIPE_TYPE_BYTE | PIPE_NOWAIT,
           1,
           1 << 20,
           1 << 20,
@@ -901,11 +995,17 @@ class RtmpOutputSender final : public IOutputSender {
       return;
     }
     if (!audioPipeConnected_) {
-      // FFmpeg opens its input at startup; ConnectNamedPipe returns once it does
-      // (or immediately if it connected before we got here).
+      // FFmpeg opens its audio input asynchronously relative to our video pipe.
+      // Keep this non-blocking so a slow or failed FFmpeg audio-open cannot
+      // stall the media tick and take the app down when streaming starts.
       if (ConnectNamedPipe(audioPipeServer_, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
         audioPipeConnected_ = true;
       } else {
+        const DWORD error = GetLastError();
+        if (error == ERROR_PIPE_LISTENING || error == ERROR_NO_DATA || error == ERROR_PIPE_BUSY) {
+          return;
+        }
+        closeAudioPipe();
         return;
       }
     }

@@ -140,6 +140,7 @@ public sealed class AudioCaptureDevice
     public string KindLabel => SourceKind switch
     {
         "wasapi-input" => "Mic / line input",
+        "wasapi-loopback" => "System loopback",
         "asio-input" => "ASIO",
         "embedded-capture-audio" => "Embedded capture audio",
         "local-machine-audio" => "Local machine audio",
@@ -512,26 +513,45 @@ public sealed class CaptionTranscriptEntry
     public required int Confidence { get; init; }
 }
 
-public sealed class AudioParticipantRow
+public sealed class AudioParticipantRow : ObservableObject
 {
-    public required string Id { get; init; }
-    public required string Name { get; init; }
-    public required string Subtitle { get; init; }
-    public required int OutputLevel { get; init; }
-    public required double ManualGainDb { get; init; }
-    public required double Pan { get; init; }
-    public required double Lufs { get; init; }
-    public required double TruePeakDb { get; init; }
-    public required bool Muted { get; init; }
-    public required string GainLabel { get; init; }
-    public required string PanLabel { get; init; }
-    public required string LufsLabel { get; init; }
-    public required string TruePeakLabel { get; init; }
-    public required string BusLabel { get; init; }
-    public required string InsertLabel { get; init; }
-    public required string MuteButtonLabel { get; init; }
-    public required string MuteStateLabel { get; init; }
-    public required bool IsSelected { get; init; }
+    private string _id = string.Empty;
+    private string _name = string.Empty;
+    private string _subtitle = string.Empty;
+    private int _outputLevel;
+    private double _manualGainDb;
+    private double _pan;
+    private double _lufs;
+    private double _truePeakDb;
+    private bool _muted;
+    private string _gainLabel = string.Empty;
+    private string _panLabel = string.Empty;
+    private string _lufsLabel = string.Empty;
+    private string _truePeakLabel = string.Empty;
+    private string _busLabel = string.Empty;
+    private string _insertLabel = string.Empty;
+    private string _muteButtonLabel = string.Empty;
+    private string _muteStateLabel = string.Empty;
+    private bool _isSelected;
+
+    public string Id { get => _id; set => SetProperty(ref _id, value); }
+    public string Name { get => _name; set => SetProperty(ref _name, value); }
+    public string Subtitle { get => _subtitle; set => SetProperty(ref _subtitle, value); }
+    public int OutputLevel { get => _outputLevel; set => SetProperty(ref _outputLevel, value); }
+    public double ManualGainDb { get => _manualGainDb; set => SetProperty(ref _manualGainDb, value); }
+    public double Pan { get => _pan; set => SetProperty(ref _pan, value); }
+    public double Lufs { get => _lufs; set => SetProperty(ref _lufs, value); }
+    public double TruePeakDb { get => _truePeakDb; set => SetProperty(ref _truePeakDb, value); }
+    public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
+    public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }
+    public string PanLabel { get => _panLabel; set => SetProperty(ref _panLabel, value); }
+    public string LufsLabel { get => _lufsLabel; set => SetProperty(ref _lufsLabel, value); }
+    public string TruePeakLabel { get => _truePeakLabel; set => SetProperty(ref _truePeakLabel, value); }
+    public string BusLabel { get => _busLabel; set => SetProperty(ref _busLabel, value); }
+    public string InsertLabel { get => _insertLabel; set => SetProperty(ref _insertLabel, value); }
+    public string MuteButtonLabel { get => _muteButtonLabel; set => SetProperty(ref _muteButtonLabel, value); }
+    public string MuteStateLabel { get => _muteStateLabel; set => SetProperty(ref _muteStateLabel, value); }
+    public bool IsSelected { get => _isSelected; set => SetProperty(ref _isSelected, value); }
 }
 
 public sealed class ParticipantAudioMix

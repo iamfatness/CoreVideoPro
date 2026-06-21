@@ -126,10 +126,14 @@ inline uint32_t parseHexColorRgba(const std::string& value, uint32_t fallback = 
 //                                source is visible, centered, with bars.
 //             "stretch"       -> map the full source to the full destination,
 //                                ignoring aspect ratio.
-//   sourceScale: zoom. 1.0 = none; >1 samples a smaller centered region
-//                (clamped to >= a tiny epsilon so the region never collapses).
-//   sourceOffsetX/Y: pan in normalized units; shifts the sampled region and is
-//                clamped so the region stays inside the source bounds.
+//   sourceScale: source size. 1.0 = natural fit/fill/stretch size; >1 grows the
+//                rendered source and clips/pans inside the destination; <1
+//                shrinks the rendered source so it can be positioned inside the
+//                destination instead of becoming an invalid oversized UV crop.
+//   sourceOffsetX/Y: normalized source position. For oversized content it pans
+//                the rendered source behind the clipped destination; for
+//                undersized content it positions the rendered source inside the
+//                destination.
 inline SourceFraming computeSourceFraming(
     int sourceWidth,
     int sourceHeight,
@@ -139,73 +143,71 @@ inline SourceFraming computeSourceFraming(
     float sourceOffsetX,
     float sourceOffsetY) {
   SourceFraming framing;
-  // The whole destination rect is the default content area.
-  framing.contentX = dest.x;
-  framing.contentY = dest.y;
-  framing.contentW = dest.width;
-  framing.contentH = dest.height;
-
-  // --- Aspect-driven sampling window in UV before zoom/pan. ---
-  // For "stretch" the window is the full source. For "fill"/"cover" we crop the
-  // over-long axis. For "fit"/"contain" the source is shown whole and the
-  // content rect (not the UV window) shrinks.
-  float uvW = 1.f;
-  float uvH = 1.f;
   const bool validAspect = sourceWidth > 0 && sourceHeight > 0 && dest.width > 0.f && dest.height > 0.f;
+  if (!validAspect) {
+    framing.contentX = dest.x;
+    framing.contentY = dest.y;
+    framing.contentW = dest.width;
+    framing.contentH = dest.height;
+    return framing;
+  }
 
-  if (validAspect && fitMode != "stretch") {
-    const float sourceAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
-    const float destAspect = dest.width / dest.height;
-    // Aspects within a small relative tolerance are treated as matched so
-    // float rounding (e.g. 1.6/0.9 vs 1920/1080) never produces hairline bars.
-    const float ratio = sourceAspect / destAspect;
-    const bool wider = ratio > 1.f + 1e-3f;
-    const bool taller = ratio < 1.f - 1e-3f;
+  const float sourceAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
+  const float destAspect = dest.width / dest.height;
+  const float ratio = sourceAspect / destAspect;
+  const bool wider = ratio > 1.f + 1e-3f;
+  const bool taller = ratio < 1.f - 1e-3f;
+
+  float baseW = dest.width;
+  float baseH = dest.height;
+  if (fitMode != "stretch") {
     if (fitMode == "fit" || fitMode == "contain") {
-      // Letterbox: source shown whole (UV window stays full), content shrinks.
       if (wider) {
-        // Source wider than dest -> bars top/bottom.
-        framing.hasLetterbox = true;
-        const float contentH = dest.height * (destAspect / sourceAspect);
-        framing.contentY = dest.y + (dest.height - contentH) * 0.5f;
-        framing.contentH = contentH;
+        baseH = dest.width / sourceAspect;
       } else if (taller) {
-        // Source taller than dest -> bars left/right.
-        framing.hasLetterbox = true;
-        const float contentW = dest.width * (sourceAspect / destAspect);
-        framing.contentX = dest.x + (dest.width - contentW) * 0.5f;
-        framing.contentW = contentW;
+        baseW = dest.height * sourceAspect;
       }
     } else {
-      // "fill"/"cover": crop the over-long axis of the source.
       if (wider) {
-        // Source wider -> sample a narrower horizontal slice.
-        uvW = destAspect / sourceAspect;
+        baseW = dest.height * sourceAspect;
       } else if (taller) {
-        // Source taller -> sample a shorter vertical slice.
-        uvH = sourceAspect / destAspect;
+        baseH = dest.width / sourceAspect;
       }
     }
   }
 
-  // --- Zoom (sourceScale). >1 samples a smaller centered region. ---
-  const float safeScale = sourceScale > 1e-4f ? sourceScale : 1e-4f;
-  uvW /= safeScale;
-  uvH /= safeScale;
+  const float safeScale = std::clamp(sourceScale, 0.25f, 4.f);
+  const float renderW = baseW * safeScale;
+  const float renderH = baseH * safeScale;
+  const float offsetX = std::clamp(sourceOffsetX, -1.f, 1.f);
+  const float offsetY = std::clamp(sourceOffsetY, -1.f, 1.f);
+  const float travelX = std::abs(renderW - dest.width);
+  const float travelY = std::abs(renderH - dest.height);
+  const float imageX =
+      dest.x + (dest.width - renderW) * 0.5f + (renderW >= dest.width ? -offsetX : offsetX) * travelX * 0.5f;
+  const float imageY =
+      dest.y + (dest.height - renderH) * 0.5f + (renderH >= dest.height ? -offsetY : offsetY) * travelY * 0.5f;
 
-  // Center the sampling window, then apply pan and clamp to source bounds.
-  float u0 = (1.f - uvW) * 0.5f + sourceOffsetX * (1.f - uvW);
-  float v0 = (1.f - uvH) * 0.5f + sourceOffsetY * (1.f - uvH);
-  // Clamp so the window stays fully inside [0,1].
-  const float maxU0 = 1.f - uvW;
-  const float maxV0 = 1.f - uvH;
-  u0 = std::clamp(u0, 0.f, maxU0 > 0.f ? maxU0 : 0.f);
-  v0 = std::clamp(v0, 0.f, maxV0 > 0.f ? maxV0 : 0.f);
+  const float visibleX0 = std::max(dest.x, imageX);
+  const float visibleY0 = std::max(dest.y, imageY);
+  const float visibleX1 = std::min(dest.x + dest.width, imageX + renderW);
+  const float visibleY1 = std::min(dest.y + dest.height, imageY + renderH);
+  framing.contentX = visibleX0;
+  framing.contentY = visibleY0;
+  framing.contentW = std::max(0.f, visibleX1 - visibleX0);
+  framing.contentH = std::max(0.f, visibleY1 - visibleY0);
+  framing.hasLetterbox =
+      framing.contentX > dest.x + 1e-4f ||
+      framing.contentY > dest.y + 1e-4f ||
+      framing.contentX + framing.contentW < dest.x + dest.width - 1e-4f ||
+      framing.contentY + framing.contentH < dest.y + dest.height - 1e-4f;
 
-  framing.u0 = u0;
-  framing.v0 = v0;
-  framing.u1 = u0 + uvW;
-  framing.v1 = v0 + uvH;
+  if (renderW > 1e-4f && renderH > 1e-4f && framing.contentW > 0.f && framing.contentH > 0.f) {
+    framing.u0 = std::clamp((visibleX0 - imageX) / renderW, 0.f, 1.f);
+    framing.v0 = std::clamp((visibleY0 - imageY) / renderH, 0.f, 1.f);
+    framing.u1 = std::clamp((visibleX1 - imageX) / renderW, 0.f, 1.f);
+    framing.v1 = std::clamp((visibleY1 - imageY) / renderH, 0.f, 1.f);
+  }
   return framing;
 }
 

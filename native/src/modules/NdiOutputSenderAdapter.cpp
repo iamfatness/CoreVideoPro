@@ -291,10 +291,9 @@ class NdiOutputSender final : public IOutputSender {
     ensureSender(elapsedMs);
     const auto* settings = findNdiSettings(destinationSettings);
     if (settings) {
-      // The renderer carries the validated NDI source name in `streamKey`
-      // (there is no URL/key for NDI; the field is reused for the source name)
-      // or `label`. Validate it the same way the UI did before honoring it.
-      const std::string requested = !settings->streamKey.empty() ? settings->streamKey : settings->label;
+      const std::string requested = !settings->ndiName.empty()
+                                        ? settings->ndiName
+                                        : !settings->streamKey.empty() ? settings->streamKey : settings->label;
       const auto parsed = parseNdiSourceName(requested.empty() ? "Program" : requested);
       if (parsed.valid) {
         configuredSourceName_ = parsed.canonical;

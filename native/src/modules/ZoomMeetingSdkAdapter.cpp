@@ -365,7 +365,14 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       const auto previousCount = lastPolledVideoFrameCounts_[subscriptionId];
       if (state.framesReceived > previousCount) {
         recordFirstFrameTiming(subscriptionId, state.framesReceived == 1);
-        frames.push_back({request.participantId, videoWidthFor(request.kind), videoHeightFor(request.kind), ++timestampMs_});
+        VideoFrame frame;
+        frame.participantId = request.participantId;
+        frame.width = videoWidthFor(request.kind);
+        frame.height = videoHeightFor(request.kind);
+        frame.naturalWidth = frame.width;
+        frame.naturalHeight = frame.height;
+        frame.timestampMs = ++timestampMs_;
+        frames.push_back(std::move(frame));
         lastPolledVideoFrameCounts_[subscriptionId] = state.framesReceived;
       }
     }

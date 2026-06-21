@@ -211,6 +211,8 @@ class D3D11Compositor final : public ICompositor {
     frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "d3d11";
     frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
+    frame.warnings = deterministicPlan.warnings;
+    frame.renderPlanSignature = renderPlanSignature(deterministicPlan);
 
     if (!pipelineReady_ || !device_ || !context_) {
       return frame;
@@ -395,6 +397,9 @@ class D3D11Compositor final : public ICompositor {
         } else if (!layer.plan.participantId.empty()) {
           layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
+        } else if (!layer.plan.mediaAssetId.empty()) {
+          layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
+          layer.frame = frameForParticipant(frames, "media:" + layer.plan.mediaAssetId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
@@ -546,9 +551,17 @@ class D3D11Compositor final : public ICompositor {
     // content rect (letterbox) and the sampled source UV window (cover/zoom/pan).
     int sourceWidth = renderPlan.width > 0 ? renderPlan.width : 16;
     int sourceHeight = renderPlan.height > 0 ? renderPlan.height : 9;
-    if (layer.frame != nullptr && layer.frame->pixelWidth > 0 && layer.frame->pixelHeight > 0) {
-      sourceWidth = layer.frame->pixelWidth;
-      sourceHeight = layer.frame->pixelHeight;
+    if (layer.frame != nullptr) {
+      sourceWidth = layer.frame->naturalWidth > 0
+                        ? layer.frame->naturalWidth
+                        : layer.frame->width > 0
+                              ? layer.frame->width
+                              : layer.frame->pixelWidth > 0 ? layer.frame->pixelWidth : sourceWidth;
+      sourceHeight = layer.frame->naturalHeight > 0
+                         ? layer.frame->naturalHeight
+                         : layer.frame->height > 0
+                               ? layer.frame->height
+                               : layer.frame->pixelHeight > 0 ? layer.frame->pixelHeight : sourceHeight;
     }
     const compositor::LayerRect aspectRect{
         0.f,

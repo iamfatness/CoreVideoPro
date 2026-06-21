@@ -331,6 +331,8 @@ public sealed class NativeMediaCoreParticipantAudioChannel
     public int InputLevel { get; init; }
     public int OutputLevel { get; init; }
     public double GainDb { get; init; }
+    public double RmsDbfs { get; init; } = -60;
+    public double PeakDbfs { get; init; } = -60;
     public double? ManualGainDb { get; init; }
     public double? Pan { get; init; }
     public bool Solo { get; init; }
@@ -456,6 +458,11 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
     public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreRecordingSession? Recording { get; init; }
     public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreCaptureAudioSources CaptureAudioSources { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "Capture audio source pairing idle."
+    };
     public NativeMediaCoreCaptionTrack CaptionTrack { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
     {
@@ -523,6 +530,11 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreEncoderSession EncoderSession { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreRecordingSession? Recording { get; init; }
     public NativeMediaCoreAudioMixSession AudioMixSession { get; init; } = new() { Status = "idle", Summary = "Idle" };
+    public NativeMediaCoreCaptureAudioSources CaptureAudioSources { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "Capture audio source pairing idle."
+    };
     public NativeMediaCoreCaptionTrack CaptionTrack { get; init; } = new() { Status = "idle" };
     public NativeMediaCoreBrandKit BrandKit { get; init; } = new()
     {

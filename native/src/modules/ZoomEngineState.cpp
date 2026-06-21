@@ -1,6 +1,7 @@
 #include "modules/ZoomEngineState.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace corevideo::modules {
 namespace {
@@ -199,12 +200,14 @@ std::vector<VideoFrame> ZoomEngineRuntimeState::pollCompositorVideoFrames(int64_
     if (stats.kind != "participant-video" || stats.framesReceived <= 0 || stats.participantId.empty()) {
       continue;
     }
-    frames.push_back({
-        stats.participantId,
-        stats.width > 0 ? static_cast<int>(stats.width) : 1280,
-        stats.height > 0 ? static_cast<int>(stats.height) : 720,
-        timestampMs,
-    });
+    VideoFrame frame;
+    frame.participantId = stats.participantId;
+    frame.width = stats.width > 0 ? static_cast<int>(stats.width) : 1280;
+    frame.height = stats.height > 0 ? static_cast<int>(stats.height) : 720;
+    frame.naturalWidth = frame.width;
+    frame.naturalHeight = frame.height;
+    frame.timestampMs = timestampMs;
+    frames.push_back(std::move(frame));
   }
   return frames;
 }

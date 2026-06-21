@@ -31,7 +31,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Zoom feed health" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
@@ -63,7 +63,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -203,7 +203,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -294,13 +294,47 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            <Border Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Show inputs (multiview)" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="Assign up to 10 sources below. Toggle In show to put them on the Studio multiview strip."
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="10,7">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="1 Assign inputs" FontSize="11" FontWeight="Bold" />
+                                <TextBlock Text="Bind Zoom guests, media, or cameras to stable slots."
+                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="1" Background="#101820" BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="10,7">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="2 Route outputs" FontSize="11" FontWeight="Bold" />
+                                <TextBlock Text="Use Routing for ISO video and program audio."
+                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Column="2" Background="#101820" BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="10,7">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="3 Compose scenes" FontSize="11" FontWeight="Bold" />
+                                <TextBlock Text="Add Inputs to the 16:9 canvas and Take to Program."
+                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
                                    ElementPrepared="OnShowInputEditorPrepared">

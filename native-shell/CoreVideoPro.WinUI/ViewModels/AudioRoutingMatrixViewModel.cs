@@ -188,7 +188,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
     /// <summary>
     /// Rebuild the matrix for the given sources, preserving any existing crosspoint
-    /// state and defaulting new sources into the program (PGM L/R) buses at unity.
+    /// state and defaulting new sources into the program and monitor buses at unity.
     /// </summary>
     public void Build(IReadOnlyList<RoutingSource> sources)
     {
@@ -208,7 +208,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                         cell.IsRouted = state.IsRouted;
                         cell.GainDb = state.GainDb;
                     }
-                    else if (bus.Id is "master" or "pgm-l" or "pgm-r")
+                    else if (bus.Id is "master" or "pgm-l" or "pgm-r" or "mon")
                     {
                         cell.IsRouted = true;
                         cell.GainDb = 0;

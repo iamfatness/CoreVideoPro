@@ -192,6 +192,34 @@ public sealed class NativeMediaCoreStateMapperTests
                 Summary = "Program mix balanced",
                 Warnings = []
             },
+            CaptureAudioSources = new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "ready",
+                SourceCount = 1,
+                PairedCount = 1,
+                StreamingCount = 1,
+                CaptureFramesReceived = 960,
+                RoutedMasterFrames = 480,
+                RoutedMonitorFrames = 480,
+                MonitorFramesPlayed = 480,
+                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 960 PCM frames received; 480 master bus frames, 480 MON bus frames, 480 monitor playback frames.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "default-render",
+                        AudioDeviceName = "System audio",
+                        AudioSourceKind = "wasapi-loopback",
+                        Paired = true,
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 960,
+                        CaptureSampleRate = 48000,
+                        CaptureChannels = 2
+                    }
+                ],
+                Warnings = []
+            },
             CaptionTrack = new NativeMediaCoreCaptionTrack
             {
                 Enabled = true,
@@ -210,9 +238,30 @@ public sealed class NativeMediaCoreStateMapperTests
 
         Assert.Equal("Program mix balanced", snapshot.AudioMixSession.Summary);
         Assert.Equal(72, snapshot.AudioMixSession.MasterLevel);
+        Assert.Equal("ready", snapshot.CaptureAudioSources.Status);
+        Assert.Equal(960, snapshot.CaptureAudioSources.CaptureFramesReceived);
+        Assert.Equal(480, snapshot.CaptureAudioSources.RoutedMasterFrames);
+        Assert.Equal(480, snapshot.CaptureAudioSources.RoutedMonitorFrames);
+        Assert.Equal(480, snapshot.CaptureAudioSources.MonitorFramesPlayed);
+        Assert.Single(snapshot.CaptureAudioSources.Sources);
+        Assert.Equal("wasapi-loopback", snapshot.CaptureAudioSources.Sources[0].AudioSourceKind);
         Assert.Equal("Welcome to the webinar.", snapshot.CaptionTrack.CurrentCue?.Text);
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
+        Assert.Equal(960, snapshot.Diagnostics.CaptureAudioSources.CaptureFramesReceived);
+        Assert.Equal(480, snapshot.Diagnostics.CaptureAudioSources.RoutedMonitorFrames);
         Assert.Equal("Sophia Martinez", snapshot.Diagnostics.CaptionTrack.CurrentCue?.Speaker);
+        Assert.Contains(
+            "Capture audio: 1 of 1 capture source paired with audio input; 1 streaming, 960 PCM frames received; 480 master bus frames, 480 MON bus frames, 480 monitor playback frames.",
+            snapshot.AudioMixSession.Warnings);
+        Assert.Contains(
+            snapshot.Diagnostics.Warnings,
+            warning => warning.Contains("960 PCM frames received", StringComparison.Ordinal));
+        Assert.Contains(
+            snapshot.Diagnostics.Warnings,
+            warning => warning.Contains("480 MON bus frames", StringComparison.Ordinal));
+        Assert.Contains(
+            snapshot.Diagnostics.Warnings,
+            warning => warning.Contains("480 monitor playback frames", StringComparison.Ordinal));
     }
 
     [Fact]

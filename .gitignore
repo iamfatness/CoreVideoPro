@@ -4,6 +4,7 @@ desktop/preload.cjs
 desktop/main-e2e.mjs
 desktop/main-packaged.mjs
 artifacts/
+Recordings/
 native-core/zoom-runtime/
 ZoomSDK/
 native-shell/**/bin/

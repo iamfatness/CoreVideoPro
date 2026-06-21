@@ -19,6 +19,13 @@ public sealed partial class ScenePreviewControl : UserControl
             typeof(ScenePreviewControl),
             new PropertyMetadata(null, OnLayoutInputsChanged));
 
+    public static readonly DependencyProperty SceneBackgroundAssetProperty =
+        DependencyProperty.Register(
+            nameof(SceneBackgroundAsset),
+            typeof(object),
+            typeof(ScenePreviewControl),
+            new PropertyMetadata(null, OnSceneBackgroundChanged));
+
     public static readonly DependencyProperty TilesProperty =
         DependencyProperty.Register(
             nameof(Tiles),
@@ -56,6 +63,12 @@ public sealed partial class ScenePreviewControl : UserControl
     {
         get => (Scene?)GetValue(SceneProperty);
         set => SetValue(SceneProperty, value);
+    }
+
+    public object? SceneBackgroundAsset
+    {
+        get => GetValue(SceneBackgroundAssetProperty);
+        set => SetValue(SceneBackgroundAssetProperty, value);
     }
 
     public IReadOnlyList<ParticipantSurfaceTile>? Tiles
@@ -97,6 +110,31 @@ public sealed partial class ScenePreviewControl : UserControl
     private static void OnLowerThirdKeyChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
         ((ScenePreviewControl)sender).ApplyLowerThirdKey();
 
+    private static void OnSceneBackgroundChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
+        ((ScenePreviewControl)sender).ApplySceneBackground();
+
+    private void ApplySceneBackground()
+    {
+        if (SceneBackgroundAsset is not MediaAsset asset ||
+            string.IsNullOrWhiteSpace(asset.FilePath) ||
+            !File.Exists(asset.FilePath))
+        {
+            SuperSourceBackgroundHost.Visibility = Visibility.Collapsed;
+            SuperSourceBackgroundHost.FilePath = null;
+            SuperSourceBackgroundHost.Kind = null;
+            SuperSourceBackgroundHost.IsPlaying = false;
+            SuperSourceBackgroundLabel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        SuperSourceBackgroundHost.FilePath = asset.FilePath;
+        SuperSourceBackgroundHost.Kind = asset.Kind;
+        SuperSourceBackgroundHost.IsPlaying = true;
+        SuperSourceBackgroundHost.Visibility = Visibility.Visible;
+        SuperSourceBackgroundName.Text = $"SuperSource: {asset.Name}";
+        SuperSourceBackgroundLabel.Visibility = Visibility.Visible;
+    }
+
     private void ApplyLowerThirdKey()
     {
         var key = LowerThirdKey;
@@ -133,6 +171,7 @@ public sealed partial class ScenePreviewControl : UserControl
 
     private void ApplyLayout()
     {
+        ApplySceneBackground();
         var routes = Routes ?? Array.Empty<SourceRoute>();
         if (routes.Count > 0 && routes.All(route => route.CanvasRect is not null))
         {
@@ -299,7 +338,7 @@ public sealed partial class ScenePreviewControl : UserControl
     }
 
     private static string GetCanvasRouteKey(SourceRoute route) =>
-        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}|{route.FitMode}|{route.BorderStyle}|{route.BorderColor}|{route.BorderThickness:0.##}|{route.SourceScale:0.##}|{route.SourceOffsetX:0.##}|{route.SourceOffsetY:0.##}";
+        $"{route.Id}|{route.Mode}|{route.ParticipantId}|{route.CaptureDeviceId}|{route.ZIndex}|{route.FitMode}|{route.BorderStyle}|{route.BorderColor}|{route.BorderThickness:0.####}|{route.SourceScale:0.####}|{route.SourceOffsetX:0.####}|{route.SourceOffsetY:0.####}";
 
     private static ParticipantSurfaceTile? ResolveRouteTile(
         SourceRoute route,

@@ -31,6 +31,20 @@ public sealed class StudioStreamOutputValidationTests
     }
 
     [Theory]
+    [InlineData("not a valid host/app")]
+    [InlineData("rtmps:///live/app")]
+    [InlineData("http://live.example.com/app")]
+    public void Rtmp_RejectsMalformedOrUnsupportedServerUrl(string serverUrl)
+    {
+        var error = StudioStreamOutputValidation.ValidateRtmp(
+            "rtmps",
+            serverUrl,
+            "stream-key");
+
+        Assert.NotNull(error);
+    }
+
+    [Theory]
     [InlineData("caller")]
     [InlineData("listener")]
     [InlineData("rendezvous")]

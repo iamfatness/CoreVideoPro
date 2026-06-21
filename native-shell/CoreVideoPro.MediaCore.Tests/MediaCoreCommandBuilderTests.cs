@@ -96,6 +96,41 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesMediaAssetPayloadForSceneGraphRoutes()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "media-program",
+            SceneRoutes =
+            [
+                new(
+                    "media-1",
+                    "fixed",
+                    "mix",
+                    "media:clip-intro",
+                    MediaAssetId: "clip-intro",
+                    MediaAssetName: "Intro Sting",
+                    MediaAssetKind: "stinger",
+                    MediaAssetPath: @"C:\media\intro.mp4",
+                    MediaAssetPlaying: true)
+            ],
+            Participants = Participants
+        });
+
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"]
+            .EnumerateArray()
+            .Single();
+
+        Assert.Equal("media:clip-intro", route.GetProperty("participantId").GetString());
+        Assert.Equal("clip-intro", route.GetProperty("mediaAssetId").GetString());
+        Assert.Equal("Intro Sting", route.GetProperty("mediaAssetName").GetString());
+        Assert.Equal("stinger", route.GetProperty("mediaAssetKind").GetString());
+        Assert.Equal(@"C:\media\intro.mp4", route.GetProperty("mediaAssetPath").GetString());
+        Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+    }
+
+    [Fact]
     public void SerializesPerRouteColorGradeForSceneGraphRoutes()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

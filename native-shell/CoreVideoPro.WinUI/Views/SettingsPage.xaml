@@ -127,8 +127,17 @@
                                 Content="Join Zoom"
                                 Command="{x:Bind ViewModel.JoinZoomCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanJoinZoom, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.JoinActionHint, Mode=OneWay}"
+                                Visibility="{x:Bind ViewModel.ShowJoinButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                        <Button Style="{StaticResource StudioGhostButton}"
+                                Content="Open in Zoom app"
+                                Command="{x:Bind ViewModel.OpenMeetingExternallyCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanOpenMeetingExternally, Mode=OneWay}"
                                 Visibility="{x:Bind ViewModel.ShowJoinButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.JoinActionHint, Mode=OneWay}"
+                               Style="{StaticResource StudioBody}"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 

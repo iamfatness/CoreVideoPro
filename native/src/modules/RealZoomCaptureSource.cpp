@@ -68,6 +68,8 @@ std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
       frame.participantId = participantId;
       frame.width = stored.width;
       frame.height = stored.height;
+      frame.naturalWidth = stored.width;
+      frame.naturalHeight = stored.height;
       frame.timestampMs = stored.timestampMs;
       frame.pixels = stored.pixels;
       frame.pixelWidth = stored.width;

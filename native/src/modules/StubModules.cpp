@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -19,10 +20,22 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
  public:
   std::vector<VideoFrame> pollVideoFrames() override {
     ++frameNumber_;
-    return {
-        {"synthetic-speaker-1", 1280, 720, frameNumber_ * 16},
-        {"synthetic-speaker-2", 1280, 720, frameNumber_ * 16},
-    };
+    VideoFrame first;
+    first.participantId = "synthetic-speaker-1";
+    first.width = 1280;
+    first.height = 720;
+    first.naturalWidth = 1280;
+    first.naturalHeight = 720;
+    first.timestampMs = frameNumber_ * 16;
+
+    VideoFrame second;
+    second.participantId = "synthetic-speaker-2";
+    second.width = 1280;
+    second.height = 720;
+    second.naturalWidth = 1280;
+    second.naturalHeight = 720;
+    second.timestampMs = frameNumber_ * 16;
+    return {first, second};
   }
 
   std::vector<AudioFrame> pollAudioFrames() override {
@@ -76,71 +89,13 @@ uint32_t programPreviewSignature(const ProgramFramePreviewPixels& preview) {
   return hash == 0 ? 1u : hash;
 }
 
-void mixHash(uint32_t& hash, uint8_t value) {
-  hash ^= value;
-  hash *= 16777619u;
-}
-
-void mixHash(uint32_t& hash, int value) {
-  for (int shift = 0; shift < 32; shift += 8) {
-    mixHash(hash, static_cast<uint8_t>((static_cast<uint32_t>(value) >> shift) & 0xffu));
-  }
-}
-
-void mixHash(uint32_t& hash, float value) {
-  const int quantized = static_cast<int>(std::lround(value * 10000.f));
-  mixHash(hash, quantized);
-}
-
-void mixHash(uint32_t& hash, const std::string& value) {
-  for (const unsigned char ch : value) {
-    mixHash(hash, ch);
-  }
-  mixHash(hash, static_cast<uint8_t>(0xffu));
-}
-
-uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
-  uint32_t hash = 2166136261u;
-  mixHash(hash, renderPlan.renderPlanId);
-  mixHash(hash, renderPlan.sceneId);
-  mixHash(hash, renderPlan.width);
-  mixHash(hash, renderPlan.height);
-  mixHash(hash, renderPlan.fps);
-  for (const auto& layer : renderPlan.layers) {
-    mixHash(hash, layer.layerId);
-    mixHash(hash, layer.kind);
-    mixHash(hash, layer.sourceId);
-    mixHash(hash, layer.participantId);
-    mixHash(hash, layer.order);
-    mixHash(hash, layer.rect.x);
-    mixHash(hash, layer.rect.y);
-    mixHash(hash, layer.rect.width);
-    mixHash(hash, layer.rect.height);
-    mixHash(hash, layer.fitMode);
-    mixHash(hash, layer.borderStyle);
-    mixHash(hash, layer.borderColor);
-    mixHash(hash, layer.borderThickness);
-    mixHash(hash, layer.sourceScale);
-    mixHash(hash, layer.sourceOffsetX);
-    mixHash(hash, layer.sourceOffsetY);
-    mixHash(hash, layer.hasColorGrade ? 1 : 0);
-    if (layer.hasColorGrade) {
-      mixHash(hash, layer.colorGrade.exposure);
-      mixHash(hash, layer.colorGrade.contrast);
-      mixHash(hash, layer.colorGrade.saturation);
-      mixHash(hash, layer.colorGrade.temperature);
-    }
-    mixHash(hash, compositorLayerOpacity(layer));
-  }
-  return hash == 0 ? 1u : hash;
-}
-
 bool isFiniteRect(const CompositorLayerRect& rect) {
   return std::isfinite(rect.x) && std::isfinite(rect.y) && std::isfinite(rect.width) && std::isfinite(rect.height);
 }
 
 bool isKnownLayerKind(const std::string& kind) {
-  return kind.empty() || kind == "participant-video" || kind == "screen-share" || kind == "overlay" || kind == "chroma-key";
+  return kind.empty() || kind == "participant-video" || kind == "screen-share" || kind == "media-video" || kind == "media-background" ||
+         kind == "overlay" || kind == "chroma-key";
 }
 
 void addWarning(std::vector<std::string>& warnings, const std::string& warning) {
@@ -362,6 +317,87 @@ class StubAudioMonitorOutput final : public IAudioMonitorOutput {
   int channels_ = 2;
   int64_t framesRendered_ = 0;
   double lastVolume_ = 0.0;
+};
+
+std::string participantIdForCaptureAudioSource(const CaptureAudioSourceConfig& source) {
+  if (source.captureDeviceId == "local-machine-audio") {
+    return source.captureDeviceId;
+  }
+  return "capture:" + source.captureDeviceId;
+}
+
+bool captureAudioSourceEnabled(const CaptureAudioSourceConfig& source) {
+  return !source.captureDeviceId.empty() && source.audioSourceKind != "none";
+}
+
+double frequencyForCaptureAudioSource(const CaptureAudioSourceConfig& source) {
+  std::hash<std::string> hasher;
+  const auto seed = hasher(source.captureDeviceId + ":" + source.audioDeviceId + ":" + source.audioSourceKind);
+  return 176.0 + static_cast<double>(seed % 220);
+}
+
+class StubAudioCaptureSource final : public IAudioCaptureSource {
+ public:
+  void configure(const std::vector<CaptureAudioSourceConfig>& sources) override {
+    sources_.clear();
+    for (const auto& source : sources) {
+      if (captureAudioSourceEnabled(source)) {
+        sources_.push_back(source);
+      }
+    }
+  }
+
+  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    std::vector<AudioFrame> frames;
+    frames.reserve(sources_.size());
+    for (const auto& source : sources_) {
+      frames.push_back(makeFrame(source, timestampMs));
+    }
+    ++tick_;
+    return frames;
+  }
+
+  std::vector<CaptureAudioSourceMetrics> metrics() const override {
+    std::vector<CaptureAudioSourceMetrics> metrics;
+    metrics.reserve(sources_.size());
+    for (const auto& source : sources_) {
+      metrics.push_back(CaptureAudioSourceMetrics{
+          source.captureDeviceId,
+          participantIdForCaptureAudioSource(source),
+          source.audioSourceKind,
+          true,
+          tick_ * 480,
+          48000,
+          2,
+          {}});
+    }
+    return metrics;
+  }
+
+ private:
+  AudioFrame makeFrame(const CaptureAudioSourceConfig& source, int64_t timestampMs) const {
+    AudioFrame frame;
+    frame.participantId = participantIdForCaptureAudioSource(source);
+    frame.sampleRate = 48000;
+    frame.channels = 2;
+    frame.timestampMs = timestampMs + source.audioSyncOffsetMs;
+    frame.sampleCount = 480;
+    frame.pcm.resize(static_cast<size_t>(frame.sampleCount) * static_cast<size_t>(frame.channels));
+
+    const double frequencyHz = frequencyForCaptureAudioSource(source);
+    const double amplitude = source.embedded ? 0.14 : 0.10;
+    const int64_t baseSample = tick_ * frame.sampleCount;
+    for (int index = 0; index < frame.sampleCount; ++index) {
+      const double phase = 2.0 * kAudioPi * frequencyHz * static_cast<double>(baseSample + index) / frame.sampleRate;
+      const auto sample = static_cast<float>(amplitude * std::sin(phase));
+      frame.pcm[static_cast<size_t>(index) * 2] = sample;
+      frame.pcm[static_cast<size_t>(index) * 2 + 1] = sample;
+    }
+    return frame;
+  }
+
+  std::vector<CaptureAudioSourceConfig> sources_;
+  int64_t tick_ = 0;
 };
 
 bool isNetworkDestination(const std::string& destination) {
@@ -600,6 +636,8 @@ class FakeCaptureDevice final : public ICaptureDevice {
       frame.participantId = "capture:" + device.id;
       frame.width = kCaptureWidth;
       frame.height = kCaptureHeight;
+      frame.naturalWidth = kCaptureWidth;
+      frame.naturalHeight = kCaptureHeight;
       frame.timestampMs = timestampMs;
       frame.pixels = testPattern_;
       frame.pixelWidth = kCaptureWidth;
@@ -748,8 +786,10 @@ ModuleSet createStubModules() {
   // participant video yet.
   modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
+  modules.mediaFrames = nullptr;
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
   modules.monitorOutput = createStubAudioMonitorOutput();
+  modules.audioCapture = createStubAudioCaptureSource();
   modules.encoder = createStubRecordingEncoderSink();
   modules.outputSender = std::make_unique<SyntheticOutputSender>();
   modules.captureDevice = std::make_unique<FakeCaptureDevice>();
@@ -760,13 +800,23 @@ std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput() {
   return std::make_unique<StubAudioMonitorOutput>();
 }
 
+std::unique_ptr<IAudioCaptureSource> createStubAudioCaptureSource() {
+  return std::make_unique<StubAudioCaptureSource>();
+}
+
 ModuleSet createDefaultModules() {
   auto modules = createStubModules();
   if (auto compositor = createD3D11Compositor()) {
     modules.compositor = std::move(compositor);
   }
+  if (auto mediaFrames = createMediaFoundationMediaFrameSource()) {
+    modules.mediaFrames = std::move(mediaFrames);
+  }
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);
+  }
+  if (auto audioCapture = createWasapiAudioCaptureSource()) {
+    modules.audioCapture = std::move(audioCapture);
   }
   if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);

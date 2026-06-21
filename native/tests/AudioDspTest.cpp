@@ -413,6 +413,24 @@ TEST(AudioDsp, AnalyzeFallsBackToMetadataWhenNoPcm) {
   EXPECT_TRUE(std::abs(metrics.peakLevel - 0.6) < kTightTol);
 }
 
+TEST(AudioDsp, AnalyzeMissingPcmAndMetadataReportsSilence) {
+  AudioFrame frame;
+  frame.participantId = "empty-source";
+  frame.sampleRate = 48000;
+  frame.channels = 2;
+  frame.voiceActive = true;
+  frame.sampleCount = 960;
+
+  const AudioParticipantMixMetrics metrics = analyzeAudioParticipantFrame(frame);
+
+  EXPECT_TRUE(metrics.silenceDetected);
+  EXPECT_EQ(metrics.status, "silent");
+  EXPECT_EQ(metrics.inputLevel, 0);
+  EXPECT_EQ(metrics.outputLevel, 0);
+  EXPECT_TRUE(std::abs(metrics.rmsLevel) < kTightTol);
+  EXPECT_TRUE(std::abs(metrics.peakLevel) < kTightTol);
+}
+
 TEST(AudioDsp, AnalyzeFlagsSilentPcmAsSilence) {
   AudioFrame frame;
   frame.participantId = "silent-source";

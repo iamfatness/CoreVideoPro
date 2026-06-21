@@ -16,7 +16,7 @@ public static class MediaCoreCommandBuilder
             BuildZoomSourceRosterCommand(context.Participants),
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
-            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes),
+            BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground),
             BuildColorGradeCommand(context.ColorGrade),
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
@@ -60,10 +60,21 @@ public static class MediaCoreCommandBuilder
 
     public static NativeMediaCoreCommand BuildSceneGraphCommand(
         string sceneId,
-        IReadOnlyList<MediaCoreSceneRouteWire> routes) =>
+        IReadOnlyList<MediaCoreSceneRouteWire> routes,
+        MediaCoreSceneBackgroundWire? background = null) =>
         Command("load-scene-graph", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
+            ["background"] = background is null
+                ? null
+                : new Dictionary<string, object?>
+                {
+                    ["mediaAssetId"] = background.MediaAssetId,
+                    ["mediaAssetName"] = background.MediaAssetName,
+                    ["mediaAssetKind"] = background.MediaAssetKind,
+                    ["mediaAssetPath"] = background.MediaAssetPath,
+                    ["playing"] = background.Playing
+                },
             ["routes"] = routes.Select(route =>
             {
                 var payload = new Dictionary<string, object?>
@@ -80,6 +91,11 @@ public static class MediaCoreCommandBuilder
                     ["sourceScale"] = route.SourceScale,
                     ["sourceOffsetX"] = route.SourceOffsetX,
                     ["sourceOffsetY"] = route.SourceOffsetY,
+                    ["mediaAssetId"] = route.MediaAssetId,
+                    ["mediaAssetName"] = route.MediaAssetName,
+                    ["mediaAssetKind"] = route.MediaAssetKind,
+                    ["mediaAssetPath"] = route.MediaAssetPath,
+                    ["mediaAssetPlaying"] = route.MediaAssetPlaying,
                     ["colorGrade"] = route.ColorGrade is null
                         ? null
                         : new Dictionary<string, object?>

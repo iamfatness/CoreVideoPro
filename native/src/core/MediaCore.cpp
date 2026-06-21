@@ -66,12 +66,26 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     destination.url = value.getString("url");
     destination.streamKey = value.getString("streamKey");
     destination.ffmpegBinDirectory = value.getString("ffmpegBinDirectory");
+    destination.mode = value.getString("mode");
+    destination.host = value.getString("host");
+    destination.port = static_cast<int>(value.getNumber("port", destination.port));
+    destination.latencyMs = static_cast<int>(value.getNumber("latencyMs", destination.latencyMs));
+    destination.latencyUs = static_cast<int>(value.getNumber("latencyUs", destination.latencyUs));
+    destination.passphrase = value.getString("passphrase");
+    destination.keyLength = static_cast<int>(value.getNumber("keyLength", destination.keyLength));
+    destination.streamId = value.getString("streamId");
+    destination.ndiName = value.getString("ndiName");
+    destination.ndiGroup = value.getString("ndiGroup");
     destination.fps = static_cast<int>(value.getNumber("fps", destination.fps));
     destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
     destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
     destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
     if (const auto* enhanced = value.get("allowEnhancedRtmp")) {
       destination.allowEnhancedRtmp = enhanced->asBool(destination.allowEnhancedRtmp);
+    }
+    if (destination.id.empty() && destination.protocol.empty() && destination.url.empty() &&
+        destination.host.empty() && destination.ndiName.empty()) {
+      continue;
     }
     result.push_back(std::move(destination));
   }
@@ -895,6 +909,18 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph command is missing sceneId.");
   }
   sceneRoutes_.clear();
+  sceneBackground_ = {};
+  if (const rpc::Json* background = command.get("background"); background && background->isObject()) {
+    sceneBackground_.mediaAssetId = background->getString("mediaAssetId");
+    sceneBackground_.mediaAssetName = background->getString("mediaAssetName");
+    sceneBackground_.mediaAssetKind = background->getString("mediaAssetKind");
+    sceneBackground_.mediaAssetPath = background->getString("mediaAssetPath");
+    sceneBackground_.playing = !background->get("playing") || background->get("playing")->asBool();
+    sceneBackground_.enabled = !sceneBackground_.mediaAssetId.empty() && !sceneBackground_.mediaAssetPath.empty();
+    if (!sceneBackground_.enabled && !sceneBackground_.mediaAssetId.empty()) {
+      sceneValidationWarnings_.push_back("Scene background " + sceneBackground_.mediaAssetId + " is missing an asset path.");
+    }
+  }
   const rpc::Json* routes = command.get("routes");
   if (routes && routes->isArray()) {
     int routeIndex = 0;
@@ -905,6 +931,11 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.participantId = route.getString("participantId");
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
+      state.mediaAssetId = route.getString("mediaAssetId");
+      state.mediaAssetName = route.getString("mediaAssetName");
+      state.mediaAssetKind = route.getString("mediaAssetKind");
+      state.mediaAssetPath = route.getString("mediaAssetPath");
+      state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
       if (rect && rect->isObject()) {
@@ -942,6 +973,9 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       } else if (state.mode != "fixed" && state.mode != "active-speaker" && state.mode != "screen-share" && state.mode != "capture-input") {
         sceneValidationWarnings_.push_back("Scene route " + state.routeId + " has unsupported mode " + state.mode + ".");
         state.mode = "fixed";
+      }
+      if (!state.mediaAssetId.empty() && state.mediaAssetPath.empty()) {
+        sceneValidationWarnings_.push_back("Scene route " + state.routeId + " media asset " + state.mediaAssetId + " is missing an asset path.");
       }
       sceneRoutes_.push_back(std::move(state));
       ++routeIndex;
@@ -1207,7 +1241,9 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
     }
   }
 
-  audioMonitorStatus_ = mixedAudioFrameCount_ > 0 ? "playing" : "armed";
+  audioMonitorStatus_ = modules_.monitorOutput && !modules_.monitorOutput->hardwareOutput()
+                            ? "stub-monitor"
+                            : mixedAudioFrameCount_ > 0 ? "playing" : "armed";
 }
 
 namespace {
@@ -1300,9 +1336,13 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
 void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
   captureAudioSources_.clear();
   captureAudioSourcesSynced_ = true;
+  std::vector<modules::CaptureAudioSourceConfig> moduleSources;
 
   const rpc::Json* sources = command.get("sources");
   if (!sources || !sources->isArray()) {
+    if (modules_.audioCapture) {
+      modules_.audioCapture->configure(moduleSources);
+    }
     return;
   }
 
@@ -1326,7 +1366,19 @@ void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
                                                    ? source.get("audioSyncOffsetMs")->asNumber()
                                                    : 0);
     input.audioSyncOffsetMs = std::max(-500, std::min(500, input.audioSyncOffsetMs));
+    moduleSources.push_back(modules::CaptureAudioSourceConfig{
+        input.captureDeviceId,
+        input.audioDeviceId,
+        input.audioDeviceName,
+        input.audioSourceKind,
+        input.nativeAudioDeviceId,
+        input.audioDriverName,
+        input.audioSyncOffsetMs,
+        input.embedded});
     captureAudioSources_.push_back(std::move(input));
+  }
+  if (modules_.audioCapture) {
+    modules_.audioCapture->configure(moduleSources);
   }
 }
 
@@ -1524,6 +1576,11 @@ rpc::Json MediaCore::audioMixSessionState() const {
       if (!audioMonitorWarning_.empty()) {
         warnings.emplace_back(audioMonitorWarning_);
       }
+      if (modules_.audioCapture) {
+        for (const auto& warning : modules_.audioCapture->warnings()) {
+          warnings.emplace_back(warning);
+        }
+      }
 
       return rpc::Json::Object{
           {"status", nativeMix.status},
@@ -1545,6 +1602,16 @@ rpc::Json MediaCore::audioMixSessionState() const {
       };
     }
 
+    rpc::Json::Array warnings;
+    if (!audioMonitorWarning_.empty()) {
+      warnings.emplace_back(audioMonitorWarning_);
+    }
+    if (modules_.audioCapture) {
+      for (const auto& warning : modules_.audioCapture->warnings()) {
+        warnings.emplace_back(warning);
+      }
+    }
+
     return rpc::Json::Object{
         {"status", "idle"},
         {"masterLevel", 0},
@@ -1561,7 +1628,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"participants", rpc::Json::Array{}},
         {"masterMeter", masterMeterState()},
         {"summary", "Audio mix idle."},
-        {"warnings", audioMonitorWarning_.empty() ? rpc::Json::Array{} : rpc::Json::Array{audioMonitorWarning_}},
+        {"warnings", warnings},
     };
   }
 
@@ -1650,6 +1717,13 @@ rpc::Json MediaCore::audioMixSessionState() const {
   const std::string summaryText = summary.tellp() > 0 ? summary.str() + " in program mix" : "Program mix balanced";
   if (!audioMonitorWarning_.empty()) {
     warnings.emplace_back(audioMonitorWarning_);
+  }
+  if (modules_.audioCapture) {
+    for (const auto& warning : modules_.audioCapture->warnings()) {
+      if (warningSet.insert("audio-capture:" + warning).second) {
+        warnings.emplace_back(warning);
+      }
+    }
   }
 
   return rpc::Json::Object{
@@ -1861,6 +1935,22 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   rpc::Json::Array sources;
   rpc::Json::Array warnings;
   int pairedCount = 0;
+  int streamingCount = 0;
+  int64_t totalFramesReceived = 0;
+  const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
+  const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
+  std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
+  if (modules_.audioCapture) {
+    for (const auto& metric : modules_.audioCapture->metrics()) {
+      metricsByCaptureId[metric.captureDeviceId] = metric;
+      if (!metric.warning.empty()) {
+        warnings.emplace_back(metric.warning);
+      }
+    }
+    for (const auto& warning : modules_.audioCapture->warnings()) {
+      warnings.emplace_back(warning);
+    }
+  }
   for (const auto& source : captureAudioSources_) {
     if (!source.audioDeviceId.empty()) {
       ++pairedCount;
@@ -1873,6 +1963,14 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       warnings.emplace_back("Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.");
     }
 
+    const auto metric = metricsByCaptureId.find(source.captureDeviceId);
+    const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
+    const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
+    if (streaming) {
+      ++streamingCount;
+    }
+    totalFramesReceived += framesReceived;
+
     sources.emplace_back(rpc::Json::Object{
         {"captureDeviceId", source.captureDeviceId},
         {"audioDeviceId", source.audioDeviceId},
@@ -1883,17 +1981,29 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"embedded", source.embedded},
         {"audioSyncOffsetMs", source.audioSyncOffsetMs},
         {"paired", !source.audioDeviceId.empty()},
+        {"captureStreaming", streaming},
+        {"captureFramesReceived", static_cast<double>(framesReceived)},
+        {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
+        {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
     });
   }
 
   std::ostringstream summary;
   summary << pairedCount << " of " << captureAudioSources_.size() << " capture source"
-          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input.";
+          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input; "
+          << streamingCount << " streaming, " << totalFramesReceived << " PCM frames received; "
+          << routedMasterFrames << " master bus frames, " << routedMonitorFrames << " MON bus frames, "
+          << audioMonitorFramesPlayed_ << " monitor playback frames.";
 
   return rpc::Json::Object{
       {"status", captureAudioSourcesSynced_ ? "ready" : "idle"},
       {"sourceCount", static_cast<int>(captureAudioSources_.size())},
       {"pairedCount", pairedCount},
+      {"streamingCount", streamingCount},
+      {"captureFramesReceived", static_cast<double>(totalFramesReceived)},
+      {"routedMasterFrames", routedMasterFrames},
+      {"routedMonitorFrames", routedMonitorFrames},
+      {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"sources", sources},
       {"warnings", warnings},
       {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
@@ -2268,6 +2378,23 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 
   int videoLayerIndex = 0;
   const int videoLayerCount = routeCount_ > 0 ? routeCount_ : static_cast<int>(videoFrames.size());
+  if (sceneBackground_.enabled) {
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = "background:" + sceneBackground_.mediaAssetId;
+    layer.kind = "media-background";
+    layer.sourceId = "media:" + sceneBackground_.mediaAssetId;
+    layer.mediaAssetId = sceneBackground_.mediaAssetId;
+    layer.mediaAssetName = sceneBackground_.mediaAssetName;
+    layer.mediaAssetKind = sceneBackground_.mediaAssetKind;
+    layer.mediaAssetPath = sceneBackground_.mediaAssetPath;
+    layer.mediaAssetPlaying = sceneBackground_.playing;
+    layer.order = -100;
+    layer.rect = {0.f, 0.f, 1.f, 1.f};
+    layer.fitMode = "fill";
+    layer.borderStyle = "none";
+    layer.borderThickness = 0.f;
+    renderPlan.layers.push_back(std::move(layer));
+  }
   if (!sceneRoutes_.empty()) {
     renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes_.size() + overlayCount_));
     for (const auto& route : sceneRoutes_) {
@@ -2275,7 +2402,15 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
       layer.layerId = "route:" + route.routeId;
       layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
       layer.order = videoLayerIndex;
-      if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
+      if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty()) {
+        layer.kind = "media-video";
+        layer.sourceId = "media:" + route.mediaAssetId;
+        layer.mediaAssetId = route.mediaAssetId;
+        layer.mediaAssetName = route.mediaAssetName;
+        layer.mediaAssetKind = route.mediaAssetKind;
+        layer.mediaAssetPath = route.mediaAssetPath;
+        layer.mediaAssetPlaying = route.mediaAssetPlaying;
+      } else if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
         layer.participantId = "capture:" + route.captureDeviceId;
         layer.sourceId = layer.participantId;
       } else if (!route.participantId.empty()) {
@@ -2470,35 +2605,11 @@ void MediaCore::renderSyntheticTick() {
       audioFrames = engineAudioFrames;
     }
   }
-  mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
-    if (audioMonitorVolume_ <= 0.0) {
-      // Enabled and armed, but the operator pulled the monitor fader to zero.
-      audioMonitorStatus_ = "armed";
-    } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
-      audioMonitorStatus_ = "unavailable";
-      if (audioMonitorWarning_.empty()) {
-        audioMonitorWarning_ = "Native audio monitor output device is not open.";
-      }
-    } else {
-      const auto& monitorBus = modules_.mixer->monitorBusPcm();
-      const int channels = std::max(1, modules_.mixer->monitorBusChannels());
-      const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
-      if (frameCount <= 0) {
-        // Device is open but the mix carried no real PCM signal this tick.
-        audioMonitorStatus_ = "armed";
-      } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
-        audioMonitorStatus_ = "playing";
-        audioMonitorFramesPlayed_ += frameCount;
-      } else {
-        audioMonitorStatus_ = "unavailable";
-        const auto outputWarnings = modules_.monitorOutput->warnings();
-        audioMonitorWarning_ = outputWarnings.empty()
-                                   ? "Native audio monitor could not render to the selected device."
-                                   : outputWarnings.back();
-      }
-    }
+  if (modules_.audioCapture) {
+    auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
   }
+  mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
   // Mix the routing-matrix crosspoints over real PCM into program/ISO/aux bus
   // taps. Each polled audio frame is a source; its channel strip (gain/pan/
   // mute/solo) comes from the synced participant mix and the synced routing
@@ -2551,6 +2662,37 @@ void MediaCore::renderSyntheticTick() {
     }
   }
 
+  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
+    if (audioMonitorVolume_ <= 0.0) {
+      // Enabled and armed, but the operator pulled the monitor fader to zero.
+      audioMonitorStatus_ = "armed";
+    } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
+      audioMonitorStatus_ = "unavailable";
+      if (audioMonitorWarning_.empty()) {
+        audioMonitorWarning_ = "Native audio monitor output device is not open.";
+      }
+    } else {
+      const auto& routedMonitorBus = audioBusTapPcm("mon");
+      const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
+      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
+      const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
+      const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
+      if (frameCount <= 0) {
+        // Device is open but neither the routed MON bus nor fallback mix carried real PCM this tick.
+        audioMonitorStatus_ = "armed";
+      } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
+        audioMonitorStatus_ = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
+        audioMonitorFramesPlayed_ += frameCount;
+      } else {
+        audioMonitorStatus_ = "unavailable";
+        const auto outputWarnings = modules_.monitorOutput->warnings();
+        audioMonitorWarning_ = outputWarnings.empty()
+                                   ? "Native audio monitor could not render to the selected device."
+                                   : outputWarnings.back();
+      }
+    }
+  }
+
   // Measure BS.1770 master loudness + true peak on the program audio (routed
   // master bus, else the default program mix) so the master meter reflects the
   // real signal rather than a level lookup.
@@ -2565,7 +2707,16 @@ void MediaCore::renderSyntheticTick() {
   // compositor reflects this tick's keyPhase progress.
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
-  const auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  if (modules_.mediaFrames) {
+    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
+    videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
+    for (const auto& warning : modules_.mediaFrames->warnings()) {
+      if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
+        renderPlan.warnings.push_back(warning);
+      }
+    }
+  }
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   if (lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);

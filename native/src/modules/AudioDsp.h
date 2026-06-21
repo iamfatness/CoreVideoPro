@@ -752,16 +752,14 @@ inline double deterministicRmsLevel(const AudioFrame& frame, std::uint32_t hash)
   if (frame.rmsLevel > 0.0) {
     return clampAudioDouble(frame.rmsLevel, 0.0, 1.0);
   }
-  const int sampleRateBias = frame.sampleRate >= 48000 ? 5 : 0;
-  const int channelBias = frame.channels > 1 ? 4 : 0;
-  const int bucket = static_cast<int>(hash % 58u);
-  return clampAudioDouble((18 + bucket + sampleRateBias + channelBias) / 100.0, 0.0, 0.96);
+  (void)hash;
+  return 0.0;
 }
 
 // When a frame carries real PCM, measure linear RMS/peak amplitude from the
 // samples and fold them into the frame's level fields so the existing telemetry
-// path treats them exactly like producer-supplied levels. When `pcm` is empty
-// this returns the frame untouched, preserving the original metadata behavior.
+// path treats them exactly like producer-supplied levels. When `pcm` is empty,
+// only explicit producer metadata is trusted; missing metadata stays silent.
 inline AudioFrame meterAudioFrameFromPcm(const AudioFrame& frame) {
   if (frame.pcm.empty()) {
     return frame;
@@ -779,12 +777,18 @@ inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame&
   const AudioFrame frame = meterAudioFrameFromPcm(rawFrame);
   const BoundedAudioFrame bounded = boundAudioFrame(frame);
   const std::uint32_t hash = audioDspHash(frame);
+  const bool hasPcm = !frame.pcm.empty();
+  const bool hasExplicitRms = frame.rmsLevel > 0.0;
+  const bool hasExplicitPeak = frame.peakLevel > 0.0;
   const double rmsLevel = frame.rmsLevel > 0.0 ? bounded.rmsLevel : deterministicRmsLevel(frame, hash);
-  const double peakLevel = frame.peakLevel > 0.0 ? clampAudioDouble(bounded.peakLevel, rmsLevel, 1.0) : clampAudioDouble(rmsLevel + 0.12 + ((hash >> 8) % 18u) / 100.0, 0.0, 1.0);
+  const double peakLevel = frame.peakLevel > 0.0 ? clampAudioDouble(bounded.peakLevel, rmsLevel, 1.0) : rmsLevel;
   const double noiseFloorDb = frame.noiseFloorDb < 0.0 ? bounded.noiseFloorDb : -72.0 + static_cast<double>((hash >> 16) % 22u);
   const int inputLevel = frame.voiceActive ? clampAudioInt(static_cast<int>(std::lround(rmsLevel * 100.0)), 0, 100) : 0;
   const int nominalSamplesPerPacket = std::max(1, bounded.sampleRate / 50);
-  const bool silenceDetected = !bounded.voiceActive || (frame.rmsLevel > 0.0 && rmsLevel <= 0.005) || (frame.peakLevel > 0.0 && peakLevel <= 0.01);
+  const bool silenceDetected = !bounded.voiceActive ||
+                               (!hasPcm && !hasExplicitRms && !hasExplicitPeak) ||
+                               (frame.rmsLevel > 0.0 && rmsLevel <= 0.005) ||
+                               (frame.peakLevel > 0.0 && peakLevel <= 0.01);
   const bool clippingDetected = frame.peakLevel > 1.0 || peakLevel >= 0.98 || frame.rmsLevel > 1.0;
   int64_t timingDriftMs = 0;
   if (timing.hasPreviousTimestamp) {
@@ -795,7 +799,7 @@ inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame&
 
   int gainDb = 0;
   const int targetDelta = 68 - inputLevel;
-  if (!frame.voiceActive) {
+  if (!frame.voiceActive || silenceDetected) {
     gainDb = -60;
   } else if (targetDelta > 28) {
     gainDb = 6;
@@ -807,7 +811,7 @@ inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame&
     gainDb = -2;
   }
 
-  const bool noiseSuppression = frame.voiceActive && (noiseFloorDb > -48.0 || inputLevel < 32);
+  const bool noiseSuppression = frame.voiceActive && !silenceDetected && (noiseFloorDb > -48.0 || inputLevel < 32);
   int outputLevel = frame.voiceActive ? clampAudioInt(inputLevel + gainDb * 4 - (noiseSuppression ? 2 : 0), 0, 100) : 0;
   const bool limiterActive = frame.voiceActive && (peakLevel >= 0.92 || outputLevel >= 88);
   if (limiterActive) {
@@ -833,6 +837,8 @@ inline AudioParticipantMixMetrics analyzeAudioParticipantFrame(const AudioFrame&
   metrics.framesMixed = 1;
   if (metrics.muted) {
     metrics.status = "muted";
+  } else if (silenceDetected) {
+    metrics.status = "silent";
   } else if (limiterActive) {
     metrics.status = "limited";
   } else if (noiseSuppression) {

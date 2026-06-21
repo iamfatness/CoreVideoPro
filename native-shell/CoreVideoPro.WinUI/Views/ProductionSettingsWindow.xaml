@@ -409,7 +409,7 @@
                                       SelectedValuePath="Id"
                                       DisplayMemberPath="Name"
                                       HorizontalAlignment="Stretch" />
-                            <ToggleSwitch Header="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"
+                            <ToggleSwitch Header="Monitor"
                                           IsOn="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" />
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
@@ -464,8 +464,6 @@
                                                FontSize="16"
                                                FontWeight="Bold" />
                                     <TextBlock Text="{x:Bind ViewModel.TruePeakLabel, Mode=OneWay}"
-                                               Style="{StaticResource OperatorSummary}" />
-                                    <TextBlock Text="{x:Bind ViewModel.Transport.MasterMeterLabel, Mode=OneWay}"
                                                Style="{StaticResource OperatorSummary}" />
                                 </StackPanel>
                             </Grid>

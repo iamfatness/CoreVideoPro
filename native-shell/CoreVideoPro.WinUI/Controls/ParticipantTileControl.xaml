@@ -18,12 +18,11 @@
             BorderBrush="#1FEDF4EF"
             Background="#141B18"
             MinHeight="0">
-        <Grid>
+        <Grid x:Name="TileViewport">
             <Image x:Name="PreviewImage"
-                   Stretch="UniformToFill"
-                   RenderTransformOrigin="0.5,0.5"
-                   HorizontalAlignment="Stretch"
-                   VerticalAlignment="Stretch"
+                   Stretch="Fill"
+                   HorizontalAlignment="Left"
+                   VerticalAlignment="Top"
                    Visibility="Collapsed" />
 
             <Border x:Name="PlaceholderPanel" CornerRadius="8" Opacity="0.55">

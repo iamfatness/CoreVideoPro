@@ -106,7 +106,7 @@ TEST(EncoderRecordingSession, StubIgnoresAudioWhenRecordingNotSelected) {
 }
 
 TEST(EncoderRecordingSession, MediaCorePropagatesRecordingTargetsIntoEncoderSession) {
-  corevideo::core::MediaCore mediaCore;
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "set-recording-targets"},

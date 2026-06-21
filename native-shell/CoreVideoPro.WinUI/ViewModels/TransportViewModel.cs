@@ -92,9 +92,6 @@ public sealed partial class TransportViewModel : ObservableObject
     [ObservableProperty]
     private string _masterLufsLabel = "LUFS —";
 
-    [ObservableProperty]
-    private string _masterMeterLabel = "Meter —";
-
     private Brush _programStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Good);
 
     private Brush _streamStatHealthBrush = TransportFormatting.HealthBrush(OutputHealthKind.Idle);
@@ -259,7 +256,6 @@ public sealed partial class TransportViewModel : ObservableObject
             : 0;
         MasterLevelLeft = Math.Clamp(masterLevel, 0, 100);
         MasterLevelRight = MasterLevelLeft;
-        MasterMeterLabel = $"Meter {MasterLevelLeft}%";
         MasterLufsLabel = snapshot.AudioMixSession.LoudnessLufs <= -59
             ? "LUFS —"
             : $"{snapshot.AudioMixSession.LoudnessLufs:0.0} LUFS";

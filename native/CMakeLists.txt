@@ -8,6 +8,7 @@ option(COREVIDEO_WITH_ZOOM "Build the Zoom Meeting SDK capture adapter. Requires
 option(COREVIDEO_WITH_D3D11 "Build the Windows D3D11 GPU compositor adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_MF_ENCODER "Build the Windows Media Foundation hardware encoder adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WASAPI_MONITOR "Build the Windows WASAPI audio monitor output adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_WASAPI_CAPTURE "Build the Windows WASAPI audio capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_RTMP_OUTPUT "Build the RTMP output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libavformat runtime on the dev machine." OFF)
 option(COREVIDEO_WITH_SRT_OUTPUT "Build the SRT output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine." OFF)
 option(COREVIDEO_WITH_NDI_OUTPUT "Build the NDI output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libNDI runtime on the dev machine (runtime-probed)." OFF)
@@ -31,6 +32,7 @@ add_library(corevideo_native
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
+  src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
@@ -39,6 +41,7 @@ add_library(corevideo_native
   src/modules/SrtOutputSenderAdapter.cpp
   src/modules/StubRecordingEncoder.cpp
   src/modules/StubModules.cpp
+  src/modules/WasapiAudioCaptureSourceAdapter.cpp
   src/modules/WasapiMonitorOutputAdapter.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
@@ -60,6 +63,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_D3D11=$<BOOL:${COREVIDEO_WITH_D3D11}>
     COREVIDEO_WITH_MF_ENCODER=$<BOOL:${COREVIDEO_WITH_MF_ENCODER}>
     COREVIDEO_WITH_WASAPI_MONITOR=$<BOOL:${COREVIDEO_WITH_WASAPI_MONITOR}>
+    COREVIDEO_WITH_WASAPI_CAPTURE=$<BOOL:${COREVIDEO_WITH_WASAPI_CAPTURE}>
     COREVIDEO_WITH_RTMP_OUTPUT=$<BOOL:${COREVIDEO_WITH_RTMP_OUTPUT}>
     COREVIDEO_WITH_SRT_OUTPUT=$<BOOL:${COREVIDEO_WITH_SRT_OUTPUT}>
     COREVIDEO_WITH_NDI_OUTPUT=$<BOOL:${COREVIDEO_WITH_NDI_OUTPUT}>
@@ -92,7 +96,7 @@ if(COREVIDEO_WITH_MF_ENCODER)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32)
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs)
 endif()
 
 if(COREVIDEO_WITH_WASAPI_MONITOR)
@@ -101,6 +105,17 @@ if(COREVIDEO_WITH_WASAPI_MONITOR)
   endif()
   if(NOT WIN32)
     message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_MONITOR currently supports the Windows WASAPI adapter only.")
+  endif()
+
+  target_link_libraries(corevideo_native PUBLIC ole32)
+endif()
+
+if(COREVIDEO_WITH_WASAPI_CAPTURE)
+  if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+    message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_CAPTURE requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
+  endif()
+  if(NOT WIN32)
+    message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_CAPTURE currently supports the Windows WASAPI adapter only.")
   endif()
 
   target_link_libraries(corevideo_native PUBLIC ole32)

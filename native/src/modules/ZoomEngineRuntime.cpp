@@ -295,6 +295,8 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.participantId = participantId;
     frame.width = decoded.width;
     frame.height = decoded.height;
+    frame.naturalWidth = decoded.width;
+    frame.naturalHeight = decoded.height;
     frame.timestampMs = timestampMs;
     frame.pixels = decoded.pixels;
     frame.pixelWidth = decoded.width;

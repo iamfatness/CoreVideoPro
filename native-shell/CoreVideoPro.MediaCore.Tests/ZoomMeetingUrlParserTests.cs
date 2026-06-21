@@ -24,4 +24,33 @@ public sealed class ZoomMeetingUrlParserTests
         Assert.Equal("965 5347 4365", parsed.MeetingUrl);
         Assert.Null(parsed.Passcode);
     }
+
+    [Fact]
+    public void Parse_ReportsEmptyMeetingAsNotJoinable()
+    {
+        var parsed = ZoomMeetingUrlParser.Parse(" ");
+
+        Assert.False(parsed.CanJoin);
+        Assert.Equal("Enter a Zoom meeting URL or meeting ID before joining.", parsed.ValidationError);
+        Assert.Null(parsed.ZoomAppUri);
+    }
+
+    [Fact]
+    public void Parse_RejectsTextWithoutMeetingNumber()
+    {
+        var parsed = ZoomMeetingUrlParser.Parse("not a zoom meeting");
+
+        Assert.False(parsed.CanJoin);
+        Assert.Equal("Enter a valid Zoom meeting URL or a 9-12 digit meeting ID.", parsed.ValidationError);
+    }
+
+    [Fact]
+    public void Parse_BuildsZoomAppUriWithoutLeakingFullUrl()
+    {
+        var parsed = ZoomMeetingUrlParser.Parse(
+            "https://us06web.zoom.us/j/5228151336?pwd=abc 123");
+
+        Assert.True(parsed.CanJoin);
+        Assert.Equal("zoommtg://zoom.us/join?confno=5228151336&pwd=abc%20123", parsed.ZoomAppUri);
+    }
 }

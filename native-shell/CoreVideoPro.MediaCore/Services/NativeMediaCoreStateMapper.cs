@@ -99,6 +99,21 @@ public static class NativeMediaCoreStateMapper
             : null;
 
         var audioMixSession = wire.AudioMixSession ?? baseSnapshot.AudioMixSession;
+        var captureAudioSources = wire.CaptureAudioSources ?? baseSnapshot.CaptureAudioSources;
+        if (wire.CaptureAudioSources is { } captureAudio)
+        {
+            var captureWarning = $"Capture audio: {captureAudio.Summary}";
+            if (!audioMixSession.Warnings.Contains(captureWarning, StringComparer.Ordinal))
+            {
+                audioMixSession = CopyAudioMixSession(
+                    audioMixSession,
+                    audioMixSession.Warnings
+                        .Concat([captureWarning])
+                        .Concat(captureAudio.Warnings)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList());
+            }
+        }
         var captionTrack = wire.CaptionTrack ?? baseSnapshot.CaptionTrack;
         var brandKit = wire.BrandKit ?? baseSnapshot.BrandKit;
         var mergedWarnings = warnings
@@ -141,6 +156,7 @@ public static class NativeMediaCoreStateMapper
             EncoderSession = encoderSession,
             Recording = recording,
             AudioMixSession = audioMixSession,
+            CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
             Warnings = mergedWarnings
@@ -164,6 +180,7 @@ public static class NativeMediaCoreStateMapper
             OutputHealth = outputHealth,
             Recording = recording,
             AudioMixSession = audioMixSession,
+            CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
             Diagnostics = diagnostics,
@@ -189,6 +206,28 @@ public static class NativeMediaCoreStateMapper
             "failed" => "failed",
             "error" => "failed",
             _ => "live"
+        };
+
+    private static NativeMediaCoreAudioMixSession CopyAudioMixSession(
+        NativeMediaCoreAudioMixSession session,
+        IReadOnlyList<string> warnings) =>
+        new()
+        {
+            Status = session.Status,
+            MasterLevel = session.MasterLevel,
+            LoudnessLufs = session.LoudnessLufs,
+            LimiterEnabled = session.LimiterEnabled,
+            LimiterActive = session.LimiterActive,
+            MixedFrameCount = session.MixedFrameCount,
+            MonitorEnabled = session.MonitorEnabled,
+            MonitorStatus = session.MonitorStatus,
+            MonitorDeviceId = session.MonitorDeviceId,
+            MonitorDeviceName = session.MonitorDeviceName,
+            MonitorVolume = session.MonitorVolume,
+            MonitorFramesPlayed = session.MonitorFramesPlayed,
+            Participants = session.Participants,
+            Summary = session.Summary,
+            Warnings = warnings
         };
 
     private static NativeMediaCoreProgramFramePreview? DecodeProgramFramePreview(NativeMediaCoreProgramFramePreview preview)

@@ -1,0 +1,225 @@
+<Window
+    x:Class="CoreVideoPro.WinUI.Views.DiagnosticsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:CoreVideoPro.WinUI.Models"
+    Title="CoreVideo diagnostics">
+    <Grid Background="{StaticResource StudioBackgroundBrush}" Padding="14" RowSpacing="12">
+        <Grid.Resources>
+            <ResourceDictionary>
+                <ResourceDictionary.MergedDictionaries>
+                    <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
+                </ResourceDictionary.MergedDictionaries>
+
+                <Style x:Key="DiagnosticTile" TargetType="Border" BasedOn="{StaticResource OperatorReadoutBorder}">
+                    <Setter Property="MinHeight" Value="88" />
+                </Style>
+            </ResourceDictionary>
+        </Grid.Resources>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+                <TextBlock Text="CoreVideo diagnostics"
+                           FontSize="18"
+                           FontWeight="Bold"
+                           Foreground="{StaticResource StudioTextBrush}" />
+                <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}"
+                           Style="{StaticResource OperatorSummary}" />
+            </StackPanel>
+            <Button Grid.Column="1"
+                    Content="Export support bundle"
+                    Style="{StaticResource OperatorGhostButton}"
+                    MinWidth="164"
+                    Command="{x:Bind ViewModel.Settings.ExportSupportBundleCommand}" />
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="12">
+                <Grid ColumnSpacing="10" RowSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Zoom" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.ZoomStatus, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.CurrentRoomLabel, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Program" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
+                                       Foreground="{x:Bind ViewModel.Transport.ProgramStatHealthBrush, Mode=OneWay}"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="{x:Bind ViewModel.OutputSessionStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Stream" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
+                                       Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="{x:Bind ViewModel.FfmpegRuntimeStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Audio meters" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioMeterSourceSummary, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Monitor" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.StudioMonitorSummary, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Local audio" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.CaptureAudioSignalSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.CaptureAudioSourceSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="0.42*" />
+                        <ColumnDefinition Width="0.58*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Capture and feeds" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.FeedHealthSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.FeedHealthRows, Mode=OneWay}">
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="models:FeedHealthRow">
+                                        <Border Background="#0C1118"
+                                                BorderBrush="{StaticResource StudioBorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                Padding="9,7"
+                                                Margin="0,0,0,6">
+                                            <StackPanel Spacing="3">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{x:Bind Name}"
+                                                               Foreground="{StaticResource StudioTextBrush}"
+                                                               FontWeight="SemiBold"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{x:Bind StatusLabel}"
+                                                               Foreground="{StaticResource StudioTextSecondaryBrush}"
+                                                               FontSize="11" />
+                                                </Grid>
+                                                <TextBlock Text="{x:Bind Detail}"
+                                                           Style="{StaticResource OperatorSummary}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Runtime diagnostics" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="Recovery state, media-core warnings, output sender status, and recent events."
+                                       Style="{StaticResource OperatorSummary}" />
+
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.Settings.DiagnosticsReadout, Mode=OneWay}">
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="models:ZoomEngineEvidenceItem">
+                                        <Border Background="#0C1118"
+                                                BorderBrush="{StaticResource StudioBorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                Padding="10,8"
+                                                Margin="0,0,0,6">
+                                            <StackPanel Spacing="4">
+                                                <Grid ColumnSpacing="8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="0.36*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{x:Bind Label}"
+                                                               FontSize="12"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{x:Bind Value}"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource StudioTextBrush}"
+                                                               TextWrapping="WrapWholeWords" />
+                                                </Grid>
+                                                <TextBlock Text="{x:Bind Detail}"
+                                                           Style="{StaticResource OperatorSummary}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+
+        <TextBlock Grid.Row="2"
+                   Text="{x:Bind ViewModel.Settings.SupportBundleStatus, Mode=OneWay}"
+                   Foreground="{StaticResource StudioTextSecondaryBrush}"
+                   FontSize="11"
+                   TextWrapping="Wrap" />
+    </Grid>
+</Window>

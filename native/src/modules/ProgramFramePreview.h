@@ -24,6 +24,8 @@ void computeProgramFramePreviewSize(int sourceWidth, int sourceHeight, int& outW
 
 [[nodiscard]] CompositorRenderPlan sortCompositorRenderPlan(CompositorRenderPlan renderPlan);
 
+[[nodiscard]] uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan);
+
 void fillSyntheticProgramFramePreview(
     ProgramFramePreviewPixels& preview,
     const CompositorRenderPlan& renderPlan,

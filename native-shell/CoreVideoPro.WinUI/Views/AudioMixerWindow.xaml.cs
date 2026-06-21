@@ -82,7 +82,19 @@ public sealed partial class AudioMixerWindow : Window
             return;
         }
 
-        ViewModel.SetMixerManualGain(participantId, args.NewValue);
+        if (IsProgrammaticMixerValue(participantId, args.NewValue, row => row.ManualGainDb, 0.05))
+        {
+            return;
+        }
+
+        var requestedGain = args.NewValue;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_ready)
+            {
+                ViewModel.SetMixerManualGain(participantId, requestedGain);
+            }
+        });
     }
 
     private void OnPanSliderValueChanged(object sender, RangeBaseValueChangedEventArgs args)
@@ -92,7 +104,35 @@ public sealed partial class AudioMixerWindow : Window
             return;
         }
 
-        ViewModel.SetMixerPan(participantId, args.NewValue);
+        if (IsProgrammaticMixerValue(participantId, args.NewValue, row => row.Pan, 0.005))
+        {
+            return;
+        }
+
+        var requestedPan = args.NewValue;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_ready)
+            {
+                ViewModel.SetMixerPan(participantId, requestedPan);
+            }
+        });
+    }
+
+    private bool IsProgrammaticMixerValue(
+        string participantId,
+        double value,
+        Func<CoreVideoPro.WinUI.Models.AudioParticipantRow, double> selector,
+        double tolerance)
+    {
+        if (!double.IsFinite(value))
+        {
+            return true;
+        }
+
+        var row = ViewModel.AudioParticipantRows.FirstOrDefault(item =>
+            string.Equals(item.Id, participantId, StringComparison.Ordinal));
+        return row is not null && Math.Abs(selector(row) - value) <= tolerance;
     }
 
     private static bool TryResolveParticipantId(object sender, out string participantId)

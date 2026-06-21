@@ -30,8 +30,15 @@ public sealed class NormalizedCanvasRect
 
 public enum SceneCanvasPreset
 {
+    Single,
     Full,
     TwoUp,
+    ThreeUp,
+    FourUp,
+    FiveUp,
+    SixUp,
+    SevenUp,
+    EightUp,
     Pip,
     Grid,
     SpeakerSlides

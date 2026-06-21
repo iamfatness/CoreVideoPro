@@ -60,6 +60,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "[launch:native] syncing FFmpeg runtime beside publish output..." -ForegroundColor Cyan
+& (Join-Path $repoRoot "scripts\sync-ffmpeg-runtime-to-app.ps1") -AppDir $publishDir
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 $shadowedWinUi = Join-Path $publishDir "Microsoft.UI.Xaml"
 if (Test-Path $shadowedWinUi) {
     Remove-Item $shadowedWinUi -Recurse -Force

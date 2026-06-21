@@ -47,6 +47,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private readonly Direct3D11InteropService _direct3DInterop = new();
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
+    private bool _sourceFramingRefreshScheduled;
     private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
@@ -233,6 +234,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         {
             host.TryPresentPendingSharedHandle();
             host.UpdatePreviewBitmap();
+            host.ApplySourceFraming();
+            host.ScheduleSourceFramingRefresh();
             host.RefreshPathBindings();
         }
     }
@@ -259,6 +262,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+
         if (!IsProgramSurface)
         {
             return;
@@ -279,8 +285,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         _direct3DDevicePointer = 0;
     }
 
-    private void OnSizeChanged(object sender, SizeChangedEventArgs e) =>
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
         ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+    }
 
     private void OnPresentationPathChanged() =>
         DispatcherQueue.TryEnqueue(RefreshPathBindings);
@@ -343,29 +352,48 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void ApplySourceFit()
     {
-        PreviewImage.Stretch = SourceFit switch
-        {
-            "fill" => Stretch.UniformToFill,
-            "stretch" => Stretch.Fill,
-            _ => Stretch.Uniform
-        };
+        ApplySourceFraming();
     }
 
     private void ApplySourceFraming()
     {
-        var scale = double.IsFinite(SourceScale) ? Math.Clamp(SourceScale, 0.25, 4) : 1;
-        var offsetX = double.IsFinite(SourceOffsetX) ? Math.Clamp(SourceOffsetX, -1, 1) : 0;
-        var offsetY = double.IsFinite(SourceOffsetY) ? Math.Clamp(SourceOffsetY, -1, 1) : 0;
-
-        PreviewImage.RenderTransform = new CompositeTransform
+        SurfaceViewport.Clip = new RectangleGeometry
         {
-            CenterX = ActualWidth / 2,
-            CenterY = ActualHeight / 2,
-            ScaleX = scale,
-            ScaleY = scale,
-            TranslateX = offsetX * ActualWidth * 0.5,
-            TranslateY = offsetY * ActualHeight * 0.5
+            Rect = new Rect(0, 0, ActualWidth, ActualHeight)
         };
+
+        var layout = SourceFramingLayoutService.Resolve(
+            ActualWidth,
+            ActualHeight,
+            SurfaceState?.FramingSourceWidth ?? 0,
+            SurfaceState?.FramingSourceHeight ?? 0,
+            SourceFit,
+            SourceScale,
+            SourceOffsetX,
+            SourceOffsetY);
+
+        PreviewImage.Width = layout.Width;
+        PreviewImage.Height = layout.Height;
+        PreviewImage.RenderTransform = new TranslateTransform
+        {
+            X = layout.TranslateX,
+            Y = layout.TranslateY
+        };
+    }
+
+    private void ScheduleSourceFramingRefresh()
+    {
+        if (_sourceFramingRefreshScheduled)
+        {
+            return;
+        }
+
+        _sourceFramingRefreshScheduled = true;
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            _sourceFramingRefreshScheduled = false;
+            ApplySourceFraming();
+        });
     }
 
     private void RefreshPathBindings()

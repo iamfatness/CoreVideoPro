@@ -39,6 +39,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly string _currentRoomName;
     private AudioMixerWindow? _audioMixerWindow;
     private ProductionSettingsWindow? _productionSettingsWindow;
+    private DiagnosticsWindow? _diagnosticsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
@@ -215,6 +216,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private LowerThirdKeyState _programLowerThirdKey = LowerThirdKeyState.Hidden();
 
     [ObservableProperty]
+    private bool _programLowerThirdEnabled;
+
+    [ObservableProperty]
+    private double _lowerThirdBuildInMs = 220;
+
+    [ObservableProperty]
+    private double _lowerThirdBuildOutMs = 160;
+
+    [ObservableProperty]
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
 
     [ObservableProperty]
@@ -330,6 +340,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _previewSceneParticipants = "No sources assigned";
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _sceneBackgroundAssetIds = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private string? _automationPendingSceneId;
@@ -341,7 +352,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _showInputRosterLoaded;
     private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
+    private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
+    private bool _streamToggleInFlight;
     private readonly HashSet<string> _captureAutoConnectInFlight = new(StringComparer.Ordinal);
 
     public SettingsViewModel Settings { get; }
@@ -428,7 +441,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly List<ParticipantAudioMix> _audioMixChannels = [];
     private AutoProductionState _automationRecommendation = ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
-    public IReadOnlyList<AudioParticipantRow> AudioParticipantRows { get; private set; } = [];
+    public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
     public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
 
@@ -445,6 +458,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// so the layer references an Input directly.
     /// </summary>
     public IReadOnlyList<RouteSelectOption> AddSourceOptions { get; } = SceneRoutingService.AddSourceOptions;
+
+    public IReadOnlyList<RouteSelectOption> SuperSourceBackgroundOptions =>
+        new[]
+            {
+                new RouteSelectOption { Value = "__none", Label = "No background" }
+            }
+            .Concat(MediaBinGroups
+                .SelectMany(group => group.Assets)
+                .Where(IsVisualMediaAsset)
+                .OrderBy(asset => asset.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(asset => new RouteSelectOption
+                {
+                    Value = asset.Id,
+                    Label = $"{asset.Name} ({asset.Kind})"
+                }))
+            .ToList();
+
+    [ObservableProperty]
+    private string _previewSceneBackgroundAssetId = "__none";
+
+    public MediaAsset? PreviewSceneBackgroundAsset => ResolveSceneBackgroundAsset(PreviewSceneId);
+
+    public MediaAsset? ProgramSceneBackgroundAsset => ResolveSceneBackgroundAsset(ActiveSceneId);
+
+    public string SuperSourceBackgroundSummary =>
+        PreviewSceneBackgroundAsset is { } asset
+            ? $"{asset.Name} is behind {PreviewScene.Name}"
+            : $"No SuperSource background for {PreviewScene.Name}";
 
     public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
 
@@ -487,6 +528,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} keyed from program source"
             : "Lower-third key follows the active program source.";
+
+    public string StudioLowerThirdButtonLabel =>
+        ProgramLowerThirdKey.IsVisible ? "Lower third out" : "Lower third in";
+
+    public string StudioLowerThirdSourceLabel =>
+        ProgramLowerThirdKey.IsVisible
+            ? $"{ProgramLowerThirdKey.SourceName} - {ProgramLowerThirdKey.PhaseLabel}"
+            : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is { } source
+                ? $"Ready: {source.SourceName}"
+                : "Take a scene with a source first";
+
+    public string LowerThirdTimingSummary =>
+        $"Build {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
 
     public string LoudnessTargetLabel => "target -16 LUFS";
 
@@ -569,6 +623,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             string.Equals(device.Id, SelectedAudioMonitorDeviceId, StringComparison.Ordinal))?.Name ??
         "No monitor output selected";
 
+    private string SelectedAudioMonitorNativeDeviceId =>
+        AudioRenderDevices.FirstOrDefault(device =>
+            string.Equals(device.Id, SelectedAudioMonitorDeviceId, StringComparison.Ordinal))?.NativeDeviceId ??
+        string.Empty;
+
     public string AudioMonitorVolumeLabel => $"{AudioMonitorVolume * 100:0}%";
 
     public string AudioMonitorStatus =>
@@ -585,6 +644,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames - monitor muted"
             : "Waiting for media engine audio telemetry.";
 
+    public string AudioMeterSourceSummary =>
+        _bridge.LastSnapshot?.AudioMixSession is { } audio
+            ? audio.MixedFrameCount <= 0
+                ? "Meters are waiting for routed PCM from the media core."
+                : audio.Warnings.Count > 0
+                    ? $"Meters: native PCM from {audio.Participants.Count} channel(s), warning: {audio.Warnings[0]}"
+                    : $"Meters: native PCM from {audio.Participants.Count} channel(s); monitor listens to MON bus."
+            : "Meters show media-core program/master bus telemetry when the engine is running.";
+
+    public string CaptureAudioSignalSummary =>
+        _bridge.LastSnapshot?.CaptureAudioSources is { SourceCount: > 0 } capture
+            ? $"{capture.StreamingCount}/{capture.SourceCount} capture source(s) streaming - {capture.CaptureFramesReceived} PCM frames received - master {capture.RoutedMasterFrames}, MON {capture.RoutedMonitorFrames}, monitor {capture.MonitorFramesPlayed}"
+            : _bridge.LastSnapshot?.CaptureAudioSources is { } idle
+                ? idle.Summary
+                : "Capture audio telemetry waiting for media core.";
+
+    public string CaptureAudioSourceSummary =>
+        _bridge.LastSnapshot?.CaptureAudioSources is { Sources.Count: > 0 } capture
+            ? string.Join(" | ", capture.Sources.Take(3).Select(FormatCaptureAudioSourceStatus))
+            : "No paired local/capture audio sources reported by native core.";
+
+    public string StudioMonitorSummary =>
+        _bridge.LastSnapshot?.AudioMixSession is { } audio
+            ? AudioMonitoringEnabled
+                ? $"Monitor {FormatMonitorStatus(audio)} - {SelectedAudioMonitorDeviceName}"
+                : "Monitor off"
+            : "Monitor waiting for media engine";
+
     public string SelectedLocalAudioCaptureDeviceName =>
         AudioCaptureDevices.FirstOrDefault(device =>
             string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))?.DisplayLabel ??
@@ -592,7 +679,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string LocalAudioSourceStatus =>
         LocalAudioSourceEnabled
-            ? $"Local source routed - {SelectedLocalAudioCaptureDeviceName}"
+            ? ResolveLocalAudioSourceStatus()
             : "Local machine audio source disabled";
 
     public string FfmpegRuntimeStatus
@@ -663,6 +750,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 OnPropertyChanged(nameof(CanToggleCapture));
                 OnPropertyChanged(nameof(CanToggleRecording));
                 OnPropertyChanged(nameof(CaptureEngineHint));
+                NotifyShowReadinessChanged();
                 ToggleEngineCommand.NotifyCanExecuteChanged();
                 ToggleRecordingCommand.NotifyCanExecuteChanged();
             },
@@ -708,7 +796,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _audioCaptureDiscovery.StartWatching(() => _ = RefreshAudioCaptureDevicesAsync());
-        _audioRenderDiscovery.StartWatching(() => _ = RefreshAudioRenderDevicesAsync());
+        _audioRenderDiscovery.StartWatching(() =>
+        {
+            _ = RefreshAudioRenderDevicesAsync();
+            _ = RefreshAudioCaptureDevicesAsync();
+        });
         _ = RefreshCaptureDevicesAsync();
         _ = RefreshAudioCaptureDevicesAsync();
         _ = RefreshAudioRenderDevicesAsync();
@@ -1078,6 +1170,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         $"{ShowInputs.Count(slot => slot.InShow)}/{ShowInputRosterService.MaxMultiviewBoxes} in show · " +
         $"{ShowInputRosterService.MaxShowInputs} slots — pick input type + source, then toggle In show";
 
+    public string SetupProgressSummary
+    {
+        get
+        {
+            var assigned = ShowInputs.Count(slot => slot.IsAssigned);
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            return $"{assigned}/{ShowInputRosterService.MaxShowInputs} inputs assigned - {inShow} in show - {RoomVideoParticipants.Count} Zoom feeds";
+        }
+    }
+
+    public string ShowReadinessSummary
+    {
+        get
+        {
+            var assigned = ShowInputs.Count(slot => slot.IsAssigned);
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            if (!Settings.IsInMeeting)
+            {
+                return "Start by joining Zoom, then assign the live guests to Inputs 1-10.";
+            }
+
+            if (assigned == 0)
+            {
+                return "Zoom is live. Next: open Sources and assign guests, media, or a camera to Inputs 1-10.";
+            }
+
+            if (inShow == 0)
+            {
+                return "Inputs are assigned. Toggle In show for the sources you want on the multiview and in scenes.";
+            }
+
+            if (!Recording && !Streaming)
+            {
+                return "Ready to produce. Pick a scene, Take it to Program, then start Record or Stream.";
+            }
+
+            return $"Live output active. {OutputStatus}";
+        }
+    }
+
     public string MultiviewConfigureHint =>
         "Build scenes in Sources · assign show inputs for multiview";
 
@@ -1212,8 +1344,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnAudioMonitorVolumeChanged(double value) => OnAudioMonitorSettingsChanged();
 
+    partial void OnLowerThirdBuildInMsChanged(double value)
+    {
+        LowerThirdBuildInMs = Math.Clamp(value, 50, 2000);
+        OnPropertyChanged(nameof(LowerThirdTimingSummary));
+    }
+
+    partial void OnLowerThirdBuildOutMsChanged(double value)
+    {
+        LowerThirdBuildOutMs = Math.Clamp(value, 50, 2000);
+        OnPropertyChanged(nameof(LowerThirdTimingSummary));
+    }
+
+    partial void OnProgramLowerThirdEnabledChanged(bool value)
+    {
+        RefreshProgramLowerThirdKeyPosition();
+        OnPropertyChanged(nameof(StudioLowerThirdButtonLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+    }
+
+    partial void OnPreviewSceneBackgroundAssetIdChanged(string value)
+    {
+        if (_refreshingSceneBackgroundSelection)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(value) ||
+            string.Equals(value, "__none", StringComparison.Ordinal) ||
+            FindMediaAsset(value) is null)
+        {
+            _sceneBackgroundAssetIds.Remove(PreviewSceneId);
+            CommandStatus = $"SuperSource background cleared for {PreviewScene.Name}";
+        }
+        else
+        {
+            _sceneBackgroundAssetIds[PreviewSceneId] = value;
+            CommandStatus = $"{FindMediaAsset(value)?.Name ?? value} set as SuperSource background for {PreviewScene.Name}";
+        }
+
+        NotifySceneBackgroundChanged();
+        SchedulePreviewRoutingRefresh();
+    }
+
     partial void OnLocalAudioSourceEnabledChanged(bool value)
     {
+        BuildAudioRoutingMatrix();
         RefreshLocalAudioSourceBindings();
         _ = TrySyncMediaCoreAsync();
     }
@@ -1389,6 +1565,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(LowerThirdKeyStatus));
         OnPropertyChanged(nameof(LowerThirdKeySummary));
+        OnPropertyChanged(nameof(StudioLowerThirdButtonLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
     }
 
     partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
@@ -1823,36 +2001,59 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    [RelayCommand]
+    private bool CanToggleStreaming() => !_streamToggleInFlight;
+
+    [RelayCommand(CanExecute = nameof(CanToggleStreaming))]
     private async Task ToggleStreamingAsync()
     {
-        if (!Streaming && BuildSelectedStreamDestinations().Count == 0)
+        if (_streamToggleInFlight)
         {
-            OutputStatus = "Select at least one stream destination.";
-            OutputSessionStatus = OutputStatus;
             return;
         }
 
-        if (!Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        _streamToggleInFlight = true;
+        ToggleStreamingCommand.NotifyCanExecuteChanged();
+        var starting = !Streaming;
+        try
         {
-            OutputStatus = validationError;
-            OutputSessionStatus = validationError;
-            return;
-        }
+            if (starting && BuildSelectedStreamDestinations().Count == 0)
+            {
+                OutputStatus = "Select at least one stream destination.";
+                OutputSessionStatus = OutputStatus;
+                return;
+            }
 
-        Streaming = !Streaming;
-        RefreshOutputStatus();
+            if (starting && ValidateStreamDestinations() is { Length: > 0 } validationError)
+            {
+                OutputStatus = validationError;
+                OutputSessionStatus = validationError;
+                return;
+            }
 
-        if (_bridge.Running)
-        {
+            var previousStreaming = Streaming;
+            Streaming = starting;
+            RefreshOutputStatus();
+
             try
             {
+                await EnsureMediaCoreRunningAsync(starting ? "Starting media core for stream..." : "Updating media core...").ConfigureAwait(false);
                 await SyncActiveSceneAsync().ConfigureAwait(false);
+                OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
+                OutputSessionStatus = OutputStatus;
             }
             catch (Exception ex)
             {
-                OutputStatus = ex.Message;
+                Streaming = previousStreaming;
+                var action = starting ? "start" : "stop";
+                RefreshOutputStatus();
+                OutputStatus = $"Streaming {action} failed: {ex.Message}";
+                OutputSessionStatus = OutputStatus;
             }
+        }
+        finally
+        {
+            _streamToggleInFlight = false;
+            ToggleStreamingCommand.NotifyCanExecuteChanged();
         }
     }
 
@@ -1906,11 +2107,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void BuildAudioRoutingMatrix()
     {
-        var sources = BuildAssignedInputSources();
-        sources.Add(new RoutingSource("zoom-mix", "Zoom program mix"));
-        sources.Add(new RoutingSource("media", "Media playback"));
+        var sources = BuildAssignedAudioSources();
+        if (LocalAudioSourceEnabled)
+        {
+            AddUniqueRoutingSource(sources, new RoutingSource("local-machine-audio", "Local machine audio"));
+        }
+        AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom program mix"));
+        AddUniqueRoutingSource(sources, new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
         RefreshAudioProcessingTargets();
+    }
+
+    private List<RoutingSource> BuildAssignedAudioSources()
+    {
+        var sources = new List<RoutingSource>();
+        foreach (var input in ShowInputs.Where(slot => slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned))
+        {
+            var sourceId = ResolveAudioRoutingMatrixSourceId(FormatInputSourceId(input.SlotNumber));
+            AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)}"));
+        }
+
+        foreach (var captureDevice in CaptureDevices
+            .Where(device => !string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase))
+            .Where(device => !string.IsNullOrWhiteSpace(device.AssignedAudioDeviceId) ||
+                !string.IsNullOrWhiteSpace(device.AssignedAudioDeviceName)))
+        {
+            AddUniqueRoutingSource(sources, new RoutingSource($"capture:{captureDevice.Id}", $"{captureDevice.Name} audio"));
+        }
+
+        return sources;
+    }
+
+    private static void AddUniqueRoutingSource(ICollection<RoutingSource> sources, RoutingSource source)
+    {
+        if (string.IsNullOrWhiteSpace(source.Id) ||
+            sources.Any(existing => string.Equals(existing.Id, source.Id, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        sources.Add(source);
     }
 
     private void BuildVideoRoutingMatrix()
@@ -1951,13 +2187,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnAudioRoutingMatrixChanged(AudioRoutingCrosspointViewModel cell)
     {
-        if (!cell.SourceId.StartsWith("input-", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
         RefreshAudioProcessingTargets();
         _ = TrySyncMediaCoreAsync();
+        CommandStatus = $"{cell.SourceLabel} {(cell.IsRouted ? "routed to" : "removed from")} {cell.Bus.Label}";
     }
 
     private static string FormatInputSourceId(int slotNumber) => $"input-{slotNumber:00}";
@@ -2071,6 +2303,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    [RelayCommand]
+    private void OpenDiagnostics()
+    {
+        Settings.RefreshDiagnosticsReadout();
+
+        if (_diagnosticsWindow is not null)
+        {
+            _diagnosticsWindow.Activate();
+            return;
+        }
+
+        _diagnosticsWindow = new DiagnosticsWindow(this);
+        _diagnosticsWindow.WindowClosed += OnDiagnosticsWindowClosed;
+        _diagnosticsWindow.Activate();
+    }
+
+    private void OnDiagnosticsWindowClosed(object? sender, EventArgs e)
+    {
+        if (_diagnosticsWindow is not null)
+        {
+            _diagnosticsWindow.WindowClosed -= OnDiagnosticsWindowClosed;
+            _diagnosticsWindow = null;
+        }
+    }
+
     public void SetMixerManualGain(string participantId, double gainDb)
     {
         var mix = _audioMixChannels.FirstOrDefault(item =>
@@ -2080,8 +2337,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        mix.ManualGainDb = Math.Clamp(Math.Round(gainDb, 1), -24, 24);
-        RefreshMixerBindings(participantId);
+        var normalizedGain = NormalizeMixerGain(gainDb);
+        if (Math.Abs(mix.ManualGainDb - normalizedGain) < 0.05)
+        {
+            return;
+        }
+
+        mix.ManualGainDb = normalizedGain;
+        RefreshMixerBindings(participantId, selectParticipant: false);
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2094,10 +2357,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        mix.Pan = Math.Clamp(Math.Round(pan, 2), -1, 1);
-        RefreshMixerBindings(participantId);
+        var normalizedPan = NormalizeMixerPan(pan);
+        if (Math.Abs(mix.Pan - normalizedPan) < 0.005)
+        {
+            return;
+        }
+
+        mix.Pan = normalizedPan;
+        RefreshMixerBindings(participantId, selectParticipant: false);
         _ = TrySyncMediaCoreAsync();
     }
+
+    private static double NormalizeMixerGain(double value) =>
+        double.IsFinite(value)
+            ? Math.Clamp(Math.Round(value, 1), -24, 24)
+            : 0;
+
+    private static double NormalizeMixerPan(double value) =>
+        double.IsFinite(value)
+            ? Math.Clamp(Math.Round(value, 2), -1, 1)
+            : 0;
+
+    private static double NormalizeMeterDb(double value) =>
+        double.IsFinite(value)
+            ? Math.Clamp(value, -120, 12)
+            : -120;
 
     public void ToggleMixerMute(string participantId)
     {
@@ -2265,13 +2549,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return participantId.Length > 0;
     }
 
-    private void RefreshMixerBindings(string participantId)
+    private void RefreshMixerBindings(string participantId, bool selectParticipant = true)
     {
-        if (!string.Equals(SelectedParticipantId, participantId, StringComparison.Ordinal))
+        if (selectParticipant && !string.Equals(SelectedParticipantId, participantId, StringComparison.Ordinal))
         {
             SelectedParticipantId = participantId;
         }
-        SelectedAudioProcessingTargetId = FormatChannelProcessingTargetId(participantId);
+
+        if (selectParticipant)
+        {
+            SelectedAudioProcessingTargetId = FormatChannelProcessingTargetId(participantId);
+        }
 
         RefreshAudioParticipantRows();
         RefreshAudioProcessingTargets();
@@ -2502,6 +2790,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 CommandStatus = ex.Message;
             }
         }
+    }
+
+    [RelayCommand]
+    private void ToggleProgramLowerThird()
+    {
+        if (ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled)
+        {
+            ProgramLowerThirdEnabled = false;
+            foreach (var graphic in Graphics.Where(graphic =>
+                graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)))
+            {
+                graphic.Enabled = false;
+            }
+
+            CommandStatus = "Lower third keyed out";
+        }
+        else
+        {
+            ProgramLowerThirdEnabled = true;
+            CommandStatus = "Lower third keyed in";
+        }
+
+        OnPropertyChanged(nameof(EnabledGraphics));
+        RefreshProgramLowerThirdKeyPosition();
+    }
+
+    [RelayCommand]
+    private void RebuildProgramLowerThird()
+    {
+        ProgramLowerThirdEnabled = true;
+        RefreshProgramLowerThirdKeyPosition();
+        CommandStatus = "Lower third rebuilt";
     }
 
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
@@ -2756,6 +3076,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string MediaPlaybackButtonLabel => SelectedMediaAssetPlaying ? "Pause" : "Play";
 
+    public bool CanAddSelectedMediaAssetToPreview => HasSelectedMediaAsset;
+
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
     public string CaptionTranscriptEmptyGuidance =>
@@ -2781,6 +3103,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(SuperSourceBackgroundOptions));
+        PruneMissingSceneBackgrounds();
+        RefreshSceneBackgroundSelection();
         RefreshMultiviewGridTiles();
         RefreshProductionReadouts();
     }
@@ -2906,6 +3232,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
         RefreshMultiviewGridTiles();
         CommandStatus = $"{asset.Name} ready for playback";
         _ = TrySyncMediaCoreAsync();
@@ -2982,6 +3309,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         RefreshMultiviewGridTiles();
 
@@ -3194,6 +3522,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshShowInputEditors();
+        BuildAudioRoutingMatrix();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
     }
@@ -3693,6 +4022,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasMediaBinAssets));
         OnPropertyChanged(nameof(HasCaptionTranscript));
         OnPropertyChanged(nameof(FeedHealthRows));
+        NotifyShowReadinessChanged();
         OnPropertyChanged(nameof(SceneIntelligenceSummary));
         OnPropertyChanged(nameof(RecommendedSceneName));
         OnPropertyChanged(nameof(RecommendedLayout));
@@ -3726,6 +4056,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorVolumeLabel));
         OnPropertyChanged(nameof(AudioMonitorStatus));
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
+        OnPropertyChanged(nameof(AudioMeterSourceSummary));
+        OnPropertyChanged(nameof(CaptureAudioSignalSummary));
+        OnPropertyChanged(nameof(CaptureAudioSourceSummary));
+        OnPropertyChanged(nameof(StudioMonitorSummary));
+        OnPropertyChanged(nameof(LocalAudioSourceStatus));
     }
 
     private void OnAudioMonitorSettingsChanged()
@@ -3738,6 +4073,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         audio.MonitorStatus switch
         {
             "playing" => $"{audio.MonitorFramesPlayed} playback frames",
+            "stub-monitor" => "stub only - no hardware output",
             "armed" => "armed, waiting for audio",
             "missing-device" => "needs output device",
             "muted" => "muted",
@@ -3745,18 +4081,99 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _ => audio.MonitorStatus ?? "unknown"
         };
 
+    private string ResolveLocalAudioSourceStatus()
+    {
+        var capture = _bridge.LastSnapshot?.CaptureAudioSources;
+        var source = capture?.Sources.FirstOrDefault(source =>
+            string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
+        return source is null
+            ? $"Local source routed - {SelectedLocalAudioCaptureDeviceName}"
+            : $"Local source {FormatCaptureAudioSourceStatus(source)}";
+    }
+
+    private static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
+    {
+        var label = !string.IsNullOrWhiteSpace(source.AudioDeviceName)
+            ? source.AudioDeviceName
+            : !string.IsNullOrWhiteSpace(source.AudioDeviceId)
+                ? source.AudioDeviceId
+                : source.CaptureDeviceId;
+        var state = source.CaptureStreaming ? "streaming" : source.Paired ? "paired idle" : "not paired";
+        var format = source.CaptureSampleRate > 0 && source.CaptureChannels > 0
+            ? $" {source.CaptureSampleRate} Hz/{source.CaptureChannels} ch"
+            : string.Empty;
+        return $"{label}: {state}, {source.CaptureFramesReceived} frames{format}";
+    }
+
     private void RefreshLocalAudioSourceBindings()
     {
         OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
+        OnPropertyChanged(nameof(CaptureAudioSignalSummary));
+        OnPropertyChanged(nameof(CaptureAudioSourceSummary));
     }
 
     private void RefreshAudioMixChannels()
     {
         var existing = _audioMixChannels.ToDictionary(channel => channel.ParticipantId);
+        var merged = ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing).ToList();
+        var mergedById = merged.ToDictionary(channel => channel.ParticipantId, StringComparer.Ordinal);
+
+        if (_bridge.LastSnapshot?.AudioMixSession is { } nativeAudio)
+        {
+            foreach (var nativeChannel in nativeAudio.Participants)
+            {
+                existing.TryGetValue(nativeChannel.ParticipantId, out var prior);
+                var channel = new ParticipantAudioMix
+                {
+                    ParticipantId = nativeChannel.ParticipantId,
+                    OutputLevel = Math.Clamp(nativeChannel.OutputLevel, 0, 100),
+                    GainDb = nativeChannel.GainDb,
+                    ManualGainDb = prior?.ManualGainDb ?? nativeChannel.ManualGainDb ?? 0,
+                    Pan = prior?.Pan ?? nativeChannel.Pan ?? 0,
+                    Solo = prior?.Solo ?? nativeChannel.Solo,
+                    NoiseSuppression = nativeChannel.NoiseSuppression,
+                    Muted = prior?.Muted ?? nativeChannel.Muted,
+                    Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
+                    Lufs = nativeChannel.RmsDbfs,
+                    TruePeakDb = nativeChannel.PeakDbfs,
+                    PluginInserts = prior?.PluginInserts.ToList() ??
+                        nativeChannel.PluginInserts.Select(insert => insert.Name).ToList()
+                };
+
+                mergedById[channel.ParticipantId] = channel;
+            }
+        }
+
+        foreach (var sourceId in BuildExpectedAudioSourceIds())
+        {
+            if (mergedById.ContainsKey(sourceId))
+            {
+                continue;
+            }
+
+            var prior = existing.GetValueOrDefault(sourceId);
+            mergedById[sourceId] = new ParticipantAudioMix
+            {
+                ParticipantId = sourceId,
+                OutputLevel = prior?.OutputLevel ?? 0,
+                GainDb = prior?.GainDb ?? 0,
+                ManualGainDb = prior?.ManualGainDb ?? 0,
+                Pan = prior?.Pan ?? 0,
+                Solo = prior?.Solo ?? false,
+                NoiseSuppression = prior?.NoiseSuppression ?? false,
+                Muted = prior?.Muted ?? false,
+                Status = prior?.Status ?? "waiting-for-pcm",
+                Lufs = prior?.Lufs ?? -120,
+                TruePeakDb = prior?.TruePeakDb ?? -120,
+                PluginInserts = prior?.PluginInserts.ToList() ?? []
+            };
+        }
+
         _audioMixChannels.Clear();
-        _audioMixChannels.AddRange(
-            ProductionStateHelper.BuildAudioMixChannels(RoomVideoParticipants, existing));
+        _audioMixChannels.AddRange(mergedById.Values);
     }
 
     private string BuildAutoProductionReadout()
@@ -3816,25 +4233,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sceneRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
-            .Select(route => new MediaCoreSceneRouteWire(
-                route.Id,
-                SceneRoutingService.ModeToWire(route.Mode),
-                SceneRoutingService.AudioRoleToWire(route.AudioRole),
-                route.ParticipantId,
-                route.CanvasRect?.X,
-                route.CanvasRect?.Y,
-                route.CanvasRect?.Width,
-                route.CanvasRect?.Height,
-                route.ZIndex,
-                CaptureDeviceId: route.CaptureDeviceId,
-                FitMode: route.FitMode,
-                BorderStyle: route.BorderStyle,
-                BorderColor: route.BorderColor,
-                BorderThickness: route.BorderThickness,
-                SourceScale: route.SourceScale,
-                SourceOffsetX: route.SourceOffsetX,
-                SourceOffsetY: route.SourceOffsetY,
-                ColorGrade: BuildRouteColorGradeWire(route)))
+            .Select(BuildSceneRouteWire)
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -3851,28 +4250,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 MapParticipantHealth(participant.Health)))
             .ToList();
 
-        var audioMixByParticipant = AudioMix.Participants.ToDictionary(mix => mix.ParticipantId);
-        var audioChannels = RoomVideoParticipants
-            .Select(participant =>
-            {
-                audioMixByParticipant.TryGetValue(participant.Id, out var mix);
-                return new MediaCoreAudioMixChannelWire(
-                    participant.Id,
-                    mix?.OutputLevel ?? participant.AudioLevel,
-                    mix?.Muted ?? participant.IsMuted,
-                    mix?.NoiseSuppression ?? false,
-                    mix?.ManualGainDb == 0 ? null : mix?.ManualGainDb,
-                    mix?.Pan ?? 0,
-                    mix?.Solo ?? false,
-                    mix?.PluginInserts ?? []);
-            })
-            .ToList();
-
         var audioRoutingSends = AudioRoutingMatrix.Rows
             .SelectMany(row => row.Cells)
             .Where(cell => cell.IsRouted)
             .Select(cell => new MediaCoreAudioRoutingSendWire(
-                cell.SourceId,
+                ResolveAudioRoutingMatrixSourceId(cell.SourceId),
                 cell.Bus.Id,
                 cell.GainDb,
                 ResolveAudioProcessingInserts(FormatBusProcessingTargetId(cell.Bus.Id))))
@@ -3897,6 +4279,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 localAudio.IsEmbeddedCaptureAudio));
         }
 
+        RefreshAudioMixChannels();
+        var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
+
         var isoParticipantIds = BuildIsoParticipantTargets();
 
         if (isoParticipantIds.Count == 0)
@@ -3910,6 +4295,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
+            SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
             Participants = participants,
             Recording = Recording,
             Streaming = Streaming,
@@ -3959,7 +4345,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioLimiterEnabled = MasterLimiterEnabled,
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
-                SelectedAudioMonitorDeviceId,
+                SelectedAudioMonitorNativeDeviceId,
                 SelectedAudioMonitorDeviceName,
                 AudioMonitorVolume),
             AudioMixChannels = audioChannels,
@@ -3973,6 +4359,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
             SelectedMediaAssetPlaying = SelectedMediaAssetPlaying
         };
+    }
+
+    private MediaCoreSceneRouteWire BuildSceneRouteWire(SourceRoute route)
+    {
+        var mediaAsset = TryResolveRouteMediaAsset(route);
+        return new MediaCoreSceneRouteWire(
+            route.Id,
+            SceneRoutingService.ModeToWire(route.Mode),
+            SceneRoutingService.AudioRoleToWire(route.AudioRole),
+            route.ParticipantId,
+            route.CanvasRect?.X,
+            route.CanvasRect?.Y,
+            route.CanvasRect?.Width,
+            route.CanvasRect?.Height,
+            route.ZIndex,
+            CaptureDeviceId: route.CaptureDeviceId,
+            FitMode: route.FitMode,
+            BorderStyle: route.BorderStyle,
+            BorderColor: route.BorderColor,
+            BorderThickness: route.BorderThickness,
+            SourceScale: route.SourceScale,
+            SourceOffsetX: route.SourceOffsetX,
+            SourceOffsetY: route.SourceOffsetY,
+            ColorGrade: BuildRouteColorGradeWire(route),
+            MediaAssetId: mediaAsset?.Id,
+            MediaAssetName: mediaAsset?.Name,
+            MediaAssetKind: mediaAsset?.Kind,
+            MediaAssetPath: mediaAsset?.FilePath,
+            MediaAssetPlaying: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true));
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)
@@ -3992,6 +4407,106 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             audioDevice?.DriverName,
             audioDevice?.IsEmbeddedCaptureAudio ?? false);
     }
+
+    private List<MediaCoreAudioMixChannelWire> BuildAudioMixChannelWires(
+        IReadOnlyList<MediaCoreCaptureAudioSourceWire> captureAudioSources,
+        IReadOnlyList<MediaCoreAudioRoutingSendWire> audioRoutingSends)
+    {
+        var audioMixByParticipant = AudioMix.Participants
+            .GroupBy(mix => mix.ParticipantId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+        var participantsById = RoomVideoParticipants.ToDictionary(participant => participant.Id, StringComparer.Ordinal);
+
+        return BuildExpectedAudioSourceIds(captureAudioSources, audioRoutingSends)
+            .Select(sourceId => BuildAudioMixChannelWire(sourceId, audioMixByParticipant, participantsById))
+            .ToList();
+    }
+
+    private IReadOnlyList<string> BuildExpectedAudioSourceIds(
+        IReadOnlyList<MediaCoreCaptureAudioSourceWire>? captureAudioSources = null,
+        IReadOnlyList<MediaCoreAudioRoutingSendWire>? audioRoutingSends = null)
+    {
+        var sourceIds = new List<string>();
+        sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
+        sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+
+        if (captureAudioSources is not null)
+        {
+            sourceIds.AddRange(captureAudioSources
+                .Where(HasConfiguredCaptureAudio)
+                .Select(ResolveCaptureAudioChannelId));
+        }
+        else
+        {
+            sourceIds.AddRange(CaptureDevices
+                .Where(device => !string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase))
+                .Where(device => !string.IsNullOrWhiteSpace(device.AssignedAudioDeviceId) ||
+                    !string.IsNullOrWhiteSpace(device.AssignedAudioDeviceName))
+                .Select(device => $"capture:{device.Id}"));
+
+            if (LocalAudioSourceEnabled &&
+                !string.IsNullOrWhiteSpace(SelectedLocalAudioCaptureDeviceId))
+            {
+                sourceIds.Add("local-machine-audio");
+            }
+        }
+
+        if (audioRoutingSends is not null)
+        {
+            sourceIds.AddRange(audioRoutingSends
+                .Select(send => send.SourceId)
+                .Where(IsConcreteAudioSourceId));
+        }
+        else
+        {
+            sourceIds.AddRange(AudioRoutingMatrix.Rows
+                .Where(row => row.Cells.Any(cell => cell.IsRouted))
+                .Select(row => ResolveAudioRoutingMatrixSourceId(row.SourceId))
+                .Where(IsConcreteAudioSourceId));
+        }
+
+        return sourceIds
+            .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private MediaCoreAudioMixChannelWire BuildAudioMixChannelWire(
+        string sourceId,
+        IReadOnlyDictionary<string, ParticipantAudioMix> audioMixByParticipant,
+        IReadOnlyDictionary<string, Participant> participantsById)
+    {
+        audioMixByParticipant.TryGetValue(sourceId, out var mix);
+        participantsById.TryGetValue(sourceId, out var participant);
+
+        var manualGain = NormalizeMixerGain(mix?.ManualGainDb ?? 0);
+        return new MediaCoreAudioMixChannelWire(
+            sourceId,
+            Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
+            participant?.IsMuted ?? mix?.Muted ?? false,
+            mix?.NoiseSuppression ?? false,
+            Math.Abs(manualGain) < 0.05 ? null : manualGain,
+            NormalizeMixerPan(mix?.Pan ?? 0),
+            mix?.Solo ?? false,
+            mix?.PluginInserts ?? []);
+    }
+
+    private static bool HasConfiguredCaptureAudio(MediaCoreCaptureAudioSourceWire source) =>
+        source.Embedded ||
+        !string.IsNullOrWhiteSpace(source.AudioDeviceId) ||
+        !string.IsNullOrWhiteSpace(source.NativeAudioDeviceId) ||
+        string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal);
+
+    private static string ResolveCaptureAudioChannelId(MediaCoreCaptureAudioSourceWire source) =>
+        string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)
+            ? "local-machine-audio"
+            : $"capture:{source.CaptureDeviceId}";
+
+    private static bool IsConcreteAudioSourceId(string sourceId) =>
+        !string.Equals(sourceId, "zoom-mix", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(sourceId, "media", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 
     private IReadOnlyList<MediaCoreSrtIngestSourceWire> BuildSrtIngestSourceSettings() =>
         SrtIngestSources
@@ -4475,6 +4990,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LiveProductionSync.IsStreamingLive(snapshot),
             programResolutionLabel,
             MasterLimiterEnabled);
+        RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         Settings.RefreshDiagnosticsReadout();
 
@@ -4894,41 +5410,90 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshAudioParticipantRows()
     {
         RefreshAudioMixChannels();
-        AudioParticipantRows = RoomVideoParticipants
-            .Select(participant =>
+        var participantsById = RoomVideoParticipants.ToDictionary(participant => participant.Id, StringComparer.Ordinal);
+        var rows = _audioMixChannels
+            .OrderBy(channel => ResolveAudioRowSortKey(channel.ParticipantId, participantsById))
+            .Select(mix =>
             {
-                var mix = _audioMixChannels.FirstOrDefault(m => m.ParticipantId == participant.Id);
+                participantsById.TryGetValue(mix.ParticipantId, out var participant);
+                participant ??= new Participant
+                {
+                    Id = mix.ParticipantId,
+                    Name = ResolveAudioSourceDisplayName(mix.ParticipantId),
+                    Role = ParticipantRole.Guest,
+                    BreakoutRoomName = "Native PCM",
+                    Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
+                    AudioLevel = mix.OutputLevel,
+                    IsMuted = mix.Muted
+                };
+
                 return new AudioParticipantRow
                 {
                     Id = participant.Id,
                     Name = participant.Name,
                     Subtitle = $"{participant.RoleLabel} · {participant.BreakoutRoomName} · {participant.HealthLabel}",
-                    OutputLevel = mix?.OutputLevel ?? participant.AudioLevel,
-                    ManualGainDb = mix?.ManualGainDb ?? 0,
-                    Pan = mix?.Pan ?? 0,
-                    Lufs = mix?.Lufs ?? -60,
-                    TruePeakDb = mix?.TruePeakDb ?? -60,
-                    Muted = mix?.Muted ?? participant.IsMuted,
-                    GainLabel = mix is null ? "0.0 dB" : $"{(mix.ManualGainDb > 0 ? "+" : "")}{mix.ManualGainDb:0.0} dB",
-                    PanLabel = mix is null || Math.Abs(mix.Pan) < 0.01
+                    OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+                    ManualGainDb = NormalizeMixerGain(mix.ManualGainDb),
+                    Pan = NormalizeMixerPan(mix.Pan),
+                    Lufs = NormalizeMeterDb(mix.Lufs),
+                    TruePeakDb = NormalizeMeterDb(mix.TruePeakDb),
+                    Muted = mix.Muted,
+                    GainLabel = $"{(NormalizeMixerGain(mix.ManualGainDb) > 0 ? "+" : "")}{NormalizeMixerGain(mix.ManualGainDb):0.0} dB",
+                    PanLabel = Math.Abs(NormalizeMixerPan(mix.Pan)) < 0.01
                         ? "C"
-                        : mix.Pan < 0
-                            ? $"L {Math.Abs(mix.Pan):0.00}"
-                            : $"R {mix.Pan:0.00}",
-                    LufsLabel = mix is null ? "-60.0 LUFS" : $"{mix.Lufs:0.0} LUFS",
-                    TruePeakLabel = mix is null ? "-60.0 dBTP" : $"{mix.TruePeakDb:0.0} dBTP",
-                    BusLabel = ResolvePrimaryAudioBusLabel(participant.Id),
-                    InsertLabel = mix is null || mix.PluginInserts.Count == 0
+                        : NormalizeMixerPan(mix.Pan) < 0
+                            ? $"L {Math.Abs(NormalizeMixerPan(mix.Pan)):0.00}"
+                            : $"R {NormalizeMixerPan(mix.Pan):0.00}",
+                    LufsLabel = $"{NormalizeMeterDb(mix.Lufs):0.0} dBFS",
+                    TruePeakLabel = $"{NormalizeMeterDb(mix.TruePeakDb):0.0} dBTP",
+                    BusLabel = ResolvePrimaryAudioBusLabel(mix.ParticipantId),
+                    InsertLabel = mix.PluginInserts.Count == 0
                         ? "No inserts"
                         : string.Join(" + ", mix.PluginInserts),
-                    MuteButtonLabel = mix?.Muted == true ? "Unmute" : "Mute",
-                    MuteStateLabel = mix?.Muted == true ? "Muted" : "Live",
-                    IsSelected = participant.Id == SelectedParticipantId
+                    MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
+                    MuteStateLabel = mix.Muted ? "Muted" : "Live",
+                    IsSelected = mix.ParticipantId == SelectedParticipantId
                 };
             })
             .ToList();
-        OnPropertyChanged(nameof(AudioParticipantRows));
+        if (AudioParticipantRows.Count == rows.Count &&
+            AudioParticipantRows.Select(row => row.Id).SequenceEqual(rows.Select(row => row.Id), StringComparer.Ordinal))
+        {
+            for (var index = 0; index < rows.Count; index++)
+            {
+                UpdateAudioParticipantRow(AudioParticipantRows[index], rows[index]);
+            }
+        }
+        else
+        {
+            AudioParticipantRows.Clear();
+            foreach (var row in rows)
+            {
+                AudioParticipantRows.Add(row);
+            }
+        }
         RefreshAudioProcessingTargets();
+    }
+
+    private static void UpdateAudioParticipantRow(AudioParticipantRow target, AudioParticipantRow source)
+    {
+        target.Name = source.Name;
+        target.Subtitle = source.Subtitle;
+        target.OutputLevel = source.OutputLevel;
+        target.ManualGainDb = source.ManualGainDb;
+        target.Pan = source.Pan;
+        target.Lufs = source.Lufs;
+        target.TruePeakDb = source.TruePeakDb;
+        target.Muted = source.Muted;
+        target.GainLabel = source.GainLabel;
+        target.PanLabel = source.PanLabel;
+        target.LufsLabel = source.LufsLabel;
+        target.TruePeakLabel = source.TruePeakLabel;
+        target.BusLabel = source.BusLabel;
+        target.InsertLabel = source.InsertLabel;
+        target.MuteButtonLabel = source.MuteButtonLabel;
+        target.MuteStateLabel = source.MuteStateLabel;
+        target.IsSelected = source.IsSelected;
     }
 
     private void RefreshAudioProcessingTargets()
@@ -4948,6 +5513,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Kind = "Channel",
                 Detail = $"{participant.RoleLabel} channel - {ResolvePrimaryAudioBusLabel(participant.Id)}",
                 InsertLabel = FormatInsertLabel(inserts)
+            });
+        }
+
+        foreach (var mix in _audioMixChannels.Where(channel =>
+                     RoomVideoParticipants.All(participant =>
+                         !string.Equals(participant.Id, channel.ParticipantId, StringComparison.Ordinal))))
+        {
+            var targetId = FormatChannelProcessingTargetId(mix.ParticipantId);
+            targets.Add(new AudioProcessingTargetOption
+            {
+                Id = targetId,
+                Label = ResolveAudioSourceDisplayName(mix.ParticipantId),
+                Kind = "Channel",
+                Detail = $"Native PCM channel - {ResolvePrimaryAudioBusLabel(mix.ParticipantId)}",
+                InsertLabel = FormatInsertLabel(mix.PluginInserts)
             });
         }
 
@@ -5024,14 +5604,70 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string ResolvePrimaryAudioBusLabel(string participantId)
     {
         var routedBus = AudioRoutingMatrix.Rows
-            .Where(row => TryResolveRoutingSourceParticipantId(row.SourceId, out var routedParticipantId) &&
-                          string.Equals(routedParticipantId, participantId, StringComparison.Ordinal))
+            .Where(row => string.Equals(ResolveAudioRoutingMatrixSourceId(row.SourceId), participantId, StringComparison.Ordinal))
             .SelectMany(row => row.Cells)
             .Where(cell => cell.IsRouted)
             .Select(cell => cell.Bus.Label)
             .FirstOrDefault();
 
         return routedBus ?? "MASTER";
+    }
+
+    private string ResolveAudioRoutingMatrixSourceId(string sourceId)
+    {
+        if (!TryParseInputSourceId(sourceId, out var slotNumber) ||
+            ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } input)
+        {
+            return sourceId;
+        }
+
+        if (input.Kind == ShowInputKind.ZoomParticipant && input.ParticipantId is { Length: > 0 } participantId)
+        {
+            return participantId;
+        }
+
+        if (input.CaptureDeviceId is not { Length: > 0 } captureDeviceId)
+        {
+            return sourceId;
+        }
+
+        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+            ? $"capture:{captureDeviceId}"
+            : captureDeviceId;
+    }
+
+    private string ResolveAudioSourceDisplayName(string sourceId)
+    {
+        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
+        {
+            var captureId = sourceId["capture:".Length..];
+            return CaptureDevices.FirstOrDefault(device => device.Id == captureId)?.Name ?? $"Capture {captureId}";
+        }
+
+        return sourceId switch
+        {
+            "zoom-mix" => "Zoom program mix",
+            "media" => "Media playback",
+            _ => sourceId
+        };
+    }
+
+    private int ResolveAudioRowSortKey(
+        string participantId,
+        IReadOnlyDictionary<string, Participant> participantsById)
+    {
+        var index = 0;
+        foreach (var participant in RoomVideoParticipants)
+        {
+            if (string.Equals(participant.Id, participantId, StringComparison.Ordinal))
+            {
+                return index;
+            }
+
+            index++;
+        }
+
+        return 10_000 + Math.Abs(StringComparer.OrdinalIgnoreCase.GetHashCode(participantId) % 1_000);
     }
 
     private void OnSurfacesChanged() => RunOnUiThread(RefreshSurfaceBindings);
@@ -5147,6 +5783,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         OnPropertyChanged(nameof(ShowInputSummary));
         OnPropertyChanged(nameof(MultiviewHeader));
+        NotifyShowReadinessChanged();
     }
 
     private void OnShowInputChanged() => ScheduleShowInputRefresh();
@@ -5225,6 +5862,103 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         MediaBinGroups
             .SelectMany(group => group.Assets)
             .FirstOrDefault(candidate => string.Equals(candidate.Id, assetId, StringComparison.Ordinal));
+
+    private MediaAsset? TryResolveRouteMediaAsset(SourceRoute route) =>
+        route.Mode == SourceRouteMode.Fixed &&
+        ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId)
+            ? FindMediaAsset(mediaAssetId)
+            : null;
+
+    private bool ShouldAutoPlayMediaRoute(string mediaAssetId, bool isProgramScene) =>
+        MediaRoutePlaybackService.ShouldPlayMediaRoute(
+            mediaAssetId,
+            isProgramScene,
+            SelectedMediaAssetId,
+            SelectedMediaAssetPlaying,
+            GetResolvedProgramRoutes());
+
+    private IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
+        GetMutableRoutes(ActiveSceneId)
+            .Select(ResolveRouteFromShowInput)
+            .ToList();
+
+    private static bool IsVisualMediaAsset(MediaAsset asset)
+    {
+        var kind = asset.Kind.ToLowerInvariant();
+        if (kind.Contains("audio", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(asset.FilePath);
+        return extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".mov", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".webm", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".gif", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private MediaAsset? ResolveSceneBackgroundAsset(string sceneId)
+    {
+        if (!_sceneBackgroundAssetIds.TryGetValue(sceneId, out var assetId))
+        {
+            return null;
+        }
+
+        var asset = FindMediaAsset(assetId);
+        return asset is not null && IsVisualMediaAsset(asset) ? asset : null;
+    }
+
+    private void PruneMissingSceneBackgrounds()
+    {
+        foreach (var pair in _sceneBackgroundAssetIds.ToList())
+        {
+            if (FindMediaAsset(pair.Value) is null)
+            {
+                _sceneBackgroundAssetIds.Remove(pair.Key);
+            }
+        }
+    }
+
+    private void RefreshSceneBackgroundSelection()
+    {
+        _refreshingSceneBackgroundSelection = true;
+        try
+        {
+            PreviewSceneBackgroundAssetId = _sceneBackgroundAssetIds.TryGetValue(PreviewSceneId, out var assetId)
+                ? assetId
+                : "__none";
+        }
+        finally
+        {
+            _refreshingSceneBackgroundSelection = false;
+        }
+
+        NotifySceneBackgroundChanged();
+    }
+
+    private void NotifySceneBackgroundChanged()
+    {
+        OnPropertyChanged(nameof(PreviewSceneBackgroundAssetId));
+        OnPropertyChanged(nameof(PreviewSceneBackgroundAsset));
+        OnPropertyChanged(nameof(ProgramSceneBackgroundAsset));
+        OnPropertyChanged(nameof(SuperSourceBackgroundSummary));
+    }
+
+    private MediaCoreSceneBackgroundWire? BuildSceneBackgroundWire(string sceneId)
+    {
+        var asset = ResolveSceneBackgroundAsset(sceneId);
+        return asset is null
+            ? null
+            : new MediaCoreSceneBackgroundWire(
+                asset.Id,
+                asset.Name,
+                asset.Kind,
+                asset.FilePath,
+                Playing: true);
+    }
 
     private IReadOnlyList<MediaBinGroup> ApplyMediaSelection(IReadOnlyList<MediaBinGroup> groups) =>
         groups.Select(group => new MediaBinGroup
@@ -5358,6 +6092,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OutputStatus = MediaCoreBridgeService.SummarizeOutputs(snapshot);
             OutputSessionStatus = LiveProductionSync.SummarizeOutputSession(snapshot);
+            NotifyShowReadinessChanged();
             return;
         }
 
@@ -5365,12 +6100,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OutputStatus = "Outputs idle";
             OutputSessionStatus = "Outputs idle";
+            NotifyShowReadinessChanged();
             return;
         }
 
         var localStatus = LiveProductionSync.SummarizeLocalOutputs(Recording, Streaming);
         OutputStatus = localStatus;
         OutputSessionStatus = localStatus;
+        NotifyShowReadinessChanged();
     }
 
     private void RefreshTransportState()
@@ -5386,10 +6123,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LiveProductionSync.IsStreamingLive(snapshot),
                 ResolveProgramResolutionLabel(snapshot),
                 MasterLimiterEnabled);
+            NotifyShowReadinessChanged();
             return;
         }
 
         Transport.ApplyIdleState(Recording, Streaming, ProgramResolutionLabel);
+        NotifyShowReadinessChanged();
+    }
+
+    private void NotifyShowReadinessChanged()
+    {
+        OnPropertyChanged(nameof(SetupProgressSummary));
+        OnPropertyChanged(nameof(ShowReadinessSummary));
     }
 
     private void RefreshTransportAutomationState()
@@ -5548,6 +6293,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshPreviewRoutingState()
     {
+        RefreshSceneBackgroundSelection();
         RefreshSceneCompositionState(PreviewScene, PreviewSceneId, isPreview: true);
         RefreshSceneCompositionState(ProgramScene, ActiveSceneId, isPreview: false);
     }
@@ -5574,11 +6320,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         else
         {
-            var sceneTiles = BuildSceneTiles(scene, workingRoutes);
+            var sceneTiles = BuildSceneTiles(scene, workingRoutes, isProgramScene: true);
             ProgramSceneRoutes = workingRoutes;
             ProgramSceneTiles = sceneTiles;
             OnPropertyChanged(nameof(ProgramSceneRoutes));
             OnPropertyChanged(nameof(ProgramSceneTiles));
+            OnPropertyChanged(nameof(ProgramSceneBackgroundAsset));
             UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(workingRoutes));
         }
     }
@@ -5588,7 +6335,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void UpdateProgramLowerThirdKey(LowerThirdSource? source, bool force = false)
     {
-        var lowerThirdEnabled = AutomationLowerThirdsEnabled ||
+        var lowerThirdEnabled = ProgramLowerThirdEnabled ||
+            (ProductionMode == ProductionMode.SetAndForget && AutomationLowerThirdsEnabled) ||
             Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase));
 
         if (!lowerThirdEnabled || source is null)
@@ -5627,7 +6375,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 ProgramLowerThirdKey = ProgramLowerThirdKey with { Phase = "building-out" };
                 _ = TrySyncMediaCoreAsync();
-                await Task.Delay(160, cancellationToken).ConfigureAwait(true);
+                await Task.Delay((int)Math.Round(Math.Clamp(LowerThirdBuildOutMs, 50, 2000)), cancellationToken).ConfigureAwait(true);
             }
 
             ProgramLowerThirdKey = BuildLowerThirdKey(source, "building-in");
@@ -5635,7 +6383,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdTitle = source.Title;
             LowerThirdOrg = source.Org;
             _ = TrySyncMediaCoreAsync();
-            await Task.Delay(220, cancellationToken).ConfigureAwait(true);
+            await Task.Delay((int)Math.Round(Math.Clamp(LowerThirdBuildInMs, 50, 2000)), cancellationToken).ConfigureAwait(true);
             ProgramLowerThirdKey = BuildLowerThirdKey(source, "on-air");
             _ = TrySyncMediaCoreAsync();
         }
@@ -5780,24 +6528,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
 
         PreviewSceneRoutes = workingRoutes;
-        PreviewSceneTiles = BuildSceneTiles(scene, workingRoutes);
+        PreviewSceneTiles = BuildSceneTiles(scene, workingRoutes, isProgramScene: false);
         OnPropertyChanged(nameof(PreviewRouteWarnings));
         OnPropertyChanged(nameof(HasPreviewRouteWarnings));
         OnPropertyChanged(nameof(PreviewSceneTiles));
         OnPropertyChanged(nameof(PreviewSceneRoutes));
+        OnPropertyChanged(nameof(PreviewSceneBackgroundAsset));
         OnPropertyChanged(nameof(PreviewSceneParticipants));
         OnPropertyChanged(nameof(PreviewSlotCount));
         OnPropertyChanged(nameof(HasPreviewSlotEditors));
         OnPropertyChanged(nameof(SceneBuilderSlotSummary));
     }
 
-    private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(Scene scene, IReadOnlyList<SourceRoute> routes)
+    private IReadOnlyList<ParticipantSurfaceTile> BuildSceneTiles(
+        Scene scene,
+        IReadOnlyList<SourceRoute> routes,
+        bool isProgramScene)
     {
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         var sceneTiles = new List<ParticipantSurfaceTile>();
         foreach (var route in routes)
         {
-            if (ResolveRouteTile(route, tilesByParticipant) is { } routeTile)
+            if (ResolveRouteTile(route, tilesByParticipant, isProgramScene) is { } routeTile)
             {
                 sceneTiles.Add(routeTile);
             }
@@ -5818,7 +6570,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var resolved = ResolveRouteFromShowInput(route);
         var tilesByParticipant = MultiviewTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
-        if (ResolveRouteTile(resolved, tilesByParticipant) is { } tile)
+        if (ResolveRouteTile(resolved, tilesByParticipant, isProgramScene: false) is { } tile)
         {
             return tile.Surface with
             {
@@ -5845,7 +6597,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private ParticipantSurfaceTile? ResolveRouteTile(
         SourceRoute route,
-        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant)
+        IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant,
+        bool isProgramScene)
     {
         if (route.Mode == SourceRouteMode.CaptureDevice)
         {
@@ -5855,22 +6608,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (route.Mode == SourceRouteMode.Fixed &&
             ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId))
         {
-            return BuildMediaSceneTile(mediaAssetId);
+            return BuildMediaSceneTile(mediaAssetId, isProgramScene);
         }
 
         var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
         return participant is null ? null : BuildParticipantSceneTile(participant, tilesByParticipant);
     }
 
-    private ParticipantSurfaceTile? BuildMediaSceneTile(string mediaAssetId)
+    private ParticipantSurfaceTile? BuildMediaSceneTile(string mediaAssetId, bool isProgramScene)
     {
         if (FindMediaAsset(mediaAssetId) is not { } asset)
         {
             return null;
         }
 
-        var isSelectedAndPlaying = string.Equals(SelectedMediaAssetId, asset.Id, StringComparison.Ordinal) &&
-            SelectedMediaAssetPlaying;
+        var isSelectedAndPlaying = ShouldAutoPlayMediaRoute(asset.Id, isProgramScene);
         return new ParticipantSurfaceTile
         {
             Participant = new Participant
@@ -5983,13 +6735,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
+            string.IsNullOrWhiteSpace(SelectedMediaAssetId))
+        {
+            CommandStatus = "Select a media asset before adding Media to the scene";
+            return;
+        }
+
         var routes = GetMutableRoutes(PreviewSceneId);
         var index = routes.Count;
-        var route = BuildAddedCanvasRoute(PreviewSceneId, index, optionValue);
+        var route = SceneRoutingService.BuildAddedSourceRoute(PreviewSceneId, index, optionValue, SelectedMediaAssetId);
         SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
         routes.Add(route);
 
-        var label = AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
+        var label = string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
+            SelectedMediaAssetName is { Length: > 0 } mediaName
+                ? mediaName
+                : AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
         CommandStatus = $"{label} added to {PreviewScene.Name}";
 
         SyncPreviewCanvasLayers(routes);
@@ -5999,39 +6761,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SchedulePreviewRoutingRefresh();
     }
 
-    private static SourceRoute BuildAddedCanvasRoute(string sceneId, int index, string optionValue)
+    [RelayCommand]
+    private void AddSelectedMediaAssetToPreview()
     {
-        var route = new SourceRoute
+        if (string.IsNullOrWhiteSpace(SelectedMediaAssetId) ||
+            FindMediaAsset(SelectedMediaAssetId) is not { } asset)
         {
-            Id = $"{sceneId}-add-{Guid.NewGuid():N}"[..(sceneId.Length + 12)],
-            Mode = SourceRouteMode.None,
-            AudioRole = SourceAudioRole.Mix,
-            CanvasRect = new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 },
-            ZIndex = index
-        };
-
-        if (optionValue.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
-            int.TryParse(optionValue.AsSpan(6), out var slotNumber))
-        {
-            route.Mode = SourceRouteMode.Fixed;
-            route.ShowInputSlotNumber = slotNumber;
-        }
-        else
-        {
-            route.Mode = optionValue switch
-            {
-                "active-speaker" => SourceRouteMode.ActiveSpeaker,
-                "screen-share" => SourceRouteMode.ScreenShare,
-                _ => SourceRouteMode.None
-            };
+            CommandStatus = "Select a media asset before adding it to Preview";
+            return;
         }
 
-        return route;
+        AddCanvasSourceCommand.Execute("media");
+        MediaPlaybackStatus = $"{asset.Name} cued in Preview; Take the scene to Program to auto-play";
+        CommandStatus = MediaPlaybackStatus;
+        OnPropertyChanged(nameof(MediaPlaybackStatus));
     }
 
     public void ApplyCanvasPreset(string presetWire)
     {
         var routes = GetMutableRoutes(PreviewSceneId);
+        if (SceneCanvasLayoutService.TemplateSlotCount(presetWire) is { } slotCount)
+        {
+            ApplyInputSlotTemplate(routes, slotCount);
+        }
+
         SceneCanvasLayoutService.ApplyPreset(presetWire, routes);
         CommandStatus = $"{PreviewScene.Name} canvas preset applied ({presetWire})";
         SyncPreviewCanvasLayers(routes);
@@ -6039,6 +6792,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
+    }
+
+    private void ApplyInputSlotTemplate(List<SourceRoute> routes, int slotCount)
+    {
+        while (routes.Count > slotCount)
+        {
+            routes.RemoveAt(routes.Count - 1);
+        }
+
+        while (routes.Count < slotCount)
+        {
+            routes.Add(SceneRoutingService.BuildAddedSourceRoute(PreviewSceneId, routes.Count, $"input-{routes.Count + 1}"));
+        }
+
+        for (var index = 0; index < routes.Count; index++)
+        {
+            routes[index].Mode = SourceRouteMode.Fixed;
+            routes[index].ShowInputSlotNumber = index + 1;
+            routes[index].ParticipantId = null;
+            routes[index].CaptureDeviceId = null;
+            routes[index].SpotlightIndex = null;
+            routes[index].AudioRole = SourceAudioRole.Mix;
+        }
     }
 
     public void CommitPreviewCanvasLayer(SceneCanvasLayerViewModel layer) =>
