@@ -15,8 +15,26 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.Blackmagic, Label = "Blackmagic SDI/HDMI" },
         new() { Value = ShowInputKind.Aja, Label = "AJA SDI/HDMI" },
         new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
-        new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" }
+        new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" },
+        new() { Value = ShowInputKind.Media, Label = "Media asset" }
     ];
+
+    /// <summary>Stable identity prefix used to bind a media asset to a route/tile.</summary>
+    public const string MediaSourcePrefix = "media:";
+
+    public static string ToMediaSourceId(string assetId) => $"{MediaSourcePrefix}{assetId}";
+
+    public static bool TryGetMediaAssetId(string? sourceId, out string assetId)
+    {
+        if (sourceId is { Length: > 0 } && sourceId.StartsWith(MediaSourcePrefix, StringComparison.Ordinal))
+        {
+            assetId = sourceId[MediaSourcePrefix.Length..];
+            return assetId.Length > 0;
+        }
+
+        assetId = string.Empty;
+        return false;
+    }
 
     public static IReadOnlyList<ShowInputSlot> CreateDefaultSlots()
     {
@@ -32,10 +50,18 @@ public static class ShowInputRosterService
     public static IReadOnlyList<ShowInputSourceOption> BuildSourceOptions(
         ShowInputKind kind,
         IReadOnlyList<Participant> participants,
-        IReadOnlyList<CaptureDevice> captureDevices)
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyList<MediaAsset>? mediaAssets = null)
     {
         return kind switch
         {
+            ShowInputKind.Media => (mediaAssets ?? [])
+                .Select(asset => new ShowInputSourceOption
+                {
+                    Value = ToMediaSourceId(asset.Id),
+                    Label = string.IsNullOrWhiteSpace(asset.Kind) ? asset.Name : $"{asset.Name} - {asset.Kind}"
+                })
+                .ToList(),
             ShowInputKind.ZoomParticipant => participants
                 .Select(participant => new ShowInputSourceOption
                 {
@@ -79,6 +105,36 @@ public static class ShowInputRosterService
                 .ToList(),
             _ => []
         };
+    }
+
+    /// <summary>
+    /// Pure mapping from an assigned Input 1-10 slot onto a <see cref="SourceRoute"/>.
+    /// Zoom and Media resolve to a Fixed participant route (Media uses a "media:{assetId}"
+    /// identity); capture-class kinds resolve to a CaptureDevice route. Unassigned/unknown
+    /// kinds leave the route unchanged. Extracted from the view-model so route resolution can
+    /// be unit-tested without the WinUI runtime.
+    /// </summary>
+    public static void ApplySlotRoute(SourceRoute route, ShowInputSlot slot)
+    {
+        if (!slot.IsAssigned)
+        {
+            return;
+        }
+
+        if (slot.Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media)
+        {
+            route.Mode = SourceRouteMode.Fixed;
+            route.ParticipantId = slot.ParticipantId;
+            route.CaptureDeviceId = null;
+            return;
+        }
+
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest)
+        {
+            route.Mode = SourceRouteMode.CaptureDevice;
+            route.ParticipantId = null;
+            route.CaptureDeviceId = slot.CaptureDeviceId;
+        }
     }
 
     public static IReadOnlyList<ShowInputSourceOption> BuildCaptureSourceOptions(

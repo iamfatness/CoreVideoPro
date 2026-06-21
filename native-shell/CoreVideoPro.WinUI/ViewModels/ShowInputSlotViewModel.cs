@@ -12,6 +12,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private IReadOnlyList<Participant> _participants = [];
     private IReadOnlyList<CaptureDevice> _captureDevices = [];
     private IReadOnlyList<AudioCaptureDevice> _audioDevices = [];
+    private IReadOnlyList<MediaAsset> _mediaAssets = [];
     private bool _suppressChangedCallback;
 
     public ShowInputSlotViewModel(
@@ -121,10 +122,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public string? SelectedSourceId
     {
-        get => Kind == ShowInputKind.ZoomParticipant ? ParticipantId : CaptureDeviceId;
+        get => Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media ? ParticipantId : CaptureDeviceId;
         set
         {
-            if (Kind == ShowInputKind.ZoomParticipant)
+            if (Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media)
             {
                 ParticipantId = value;
             }
@@ -136,7 +137,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     }
 
     public string? SourceColorGradeId =>
-        Kind == ShowInputKind.ZoomParticipant
+        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media
             ? ParticipantId
             : string.IsNullOrWhiteSpace(CaptureDeviceId) ? null : $"capture:{CaptureDeviceId}";
 
@@ -149,17 +150,19 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public void RefreshSourceOptions(
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<AudioCaptureDevice>? audioDevices = null)
+        IReadOnlyList<AudioCaptureDevice>? audioDevices = null,
+        IReadOnlyList<MediaAsset>? mediaAssets = null)
     {
         _participants = participants;
         _captureDevices = captureDevices;
         _audioDevices = audioDevices ?? [];
+        _mediaAssets = mediaAssets ?? [];
         _suppressChangedCallback = true;
         try
         {
-            SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices);
+            SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices, _mediaAssets);
             AudioDeviceOptions = ShowInputRosterService.BuildAudioSourceOptions(_audioDevices);
-            if (Kind == ShowInputKind.ZoomParticipant &&
+            if (Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media &&
                 (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
             {
                 ParticipantId = SourceOptions.FirstOrDefault()?.Value;

@@ -7,7 +7,8 @@ public enum ShowInputKind
     Blackmagic,
     Aja,
     UvcWebcam,
-    SrtIngest
+    SrtIngest,
+    Media
 }
 
 public sealed class ShowInputKindOption
@@ -50,18 +51,19 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
         ShowInputKind.Aja => "AJA",
         ShowInputKind.UvcWebcam => "UVC webcam",
         ShowInputKind.SrtIngest => "SRT ingest",
+        ShowInputKind.Media => "Media",
         _ => "Unassigned"
     };
 
     public bool IsAssigned => Kind switch
     {
-        ShowInputKind.ZoomParticipant => !string.IsNullOrWhiteSpace(ParticipantId),
+        ShowInputKind.ZoomParticipant or ShowInputKind.Media => !string.IsNullOrWhiteSpace(ParticipantId),
         ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest => !string.IsNullOrWhiteSpace(CaptureDeviceId),
         _ => false
     };
 
     public bool IsSourcePickerEnabled =>
-        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest;
+        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest or ShowInputKind.Media;
 
     public bool IsAudioPickerEnabled =>
         Kind is ShowInputKind.UvcWebcam or ShowInputKind.Blackmagic or ShowInputKind.Aja;
@@ -75,7 +77,7 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
             AudioDeviceId = null;
             InShow = false;
         }
-        else if (value == ShowInputKind.ZoomParticipant)
+        else if (value is ShowInputKind.ZoomParticipant or ShowInputKind.Media)
         {
             CaptureDeviceId = null;
             AudioDeviceId = null;

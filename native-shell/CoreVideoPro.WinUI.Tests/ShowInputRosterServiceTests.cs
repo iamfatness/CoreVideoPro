@@ -240,6 +240,171 @@ public sealed class ShowInputRosterServiceTests
         Assert.False(ShowInputRosterService.SameMultiviewTileStructure(first, second));
     }
 
+    [Fact]
+    public void RosterPersistence_RoundTripsSlotAssignments()
+    {
+        var store = new InMemoryShowInputRosterStore();
+        var saved = ShowInputRosterService.CreateDefaultSlots().ToList();
+        saved[0].Kind = ShowInputKind.ZoomParticipant;
+        saved[0].ParticipantId = "participant-1";
+        saved[0].InShow = true;
+        saved[2].Kind = ShowInputKind.UvcWebcam;
+        saved[2].CaptureDeviceId = "cam-uvc";
+        saved[2].AudioDeviceId = "mic-01";
+        saved[2].InShow = true;
+
+        store.Save(ShowInputRosterSerializer.CaptureFrom(saved));
+
+        // Reload into a fresh default roster (simulates a restart).
+        var reloaded = ShowInputRosterService.CreateDefaultSlots();
+        ShowInputRosterSerializer.ApplyTo(reloaded, store.Load());
+
+        var first = reloaded[0];
+        Assert.Equal(ShowInputKind.ZoomParticipant, first.Kind);
+        Assert.Equal("participant-1", first.ParticipantId);
+        Assert.True(first.InShow);
+
+        var third = reloaded[2];
+        Assert.Equal(ShowInputKind.UvcWebcam, third.Kind);
+        Assert.Equal("cam-uvc", third.CaptureDeviceId);
+        Assert.Equal("mic-01", third.AudioDeviceId);
+        Assert.True(third.InShow);
+    }
+
+    [Fact]
+    public void RosterPersistence_RoundTripsThroughJsonFile()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "cvp-roster-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new FileShowInputRosterStore(folder);
+            var saved = ShowInputRosterService.CreateDefaultSlots().ToList();
+            saved[4].Kind = ShowInputKind.Media;
+            saved[4].ParticipantId = ShowInputRosterService.ToMediaSourceId("asset-7");
+            saved[4].InShow = true;
+
+            store.Save(ShowInputRosterSerializer.CaptureFrom(saved));
+
+            // A brand-new store instance over the same folder simulates a process restart.
+            var reloaded = ShowInputRosterService.CreateDefaultSlots();
+            ShowInputRosterSerializer.ApplyTo(reloaded, new FileShowInputRosterStore(folder).Load());
+
+            var media = reloaded[4];
+            Assert.Equal(ShowInputKind.Media, media.Kind);
+            Assert.Equal("media:asset-7", media.ParticipantId);
+            Assert.True(media.InShow);
+        }
+        finally
+        {
+            if (Directory.Exists(folder))
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void RosterPersistence_KeepsIntentWhenReferencedSourceMissing()
+    {
+        var store = new InMemoryShowInputRosterStore();
+        var saved = ShowInputRosterService.CreateDefaultSlots().ToList();
+        saved[0].Kind = ShowInputKind.UvcWebcam;
+        saved[0].CaptureDeviceId = "cam-gone";
+        saved[0].InShow = true;
+        store.Save(ShowInputRosterSerializer.CaptureFrom(saved));
+
+        var reloaded = ShowInputRosterService.CreateDefaultSlots();
+        ShowInputRosterSerializer.ApplyTo(reloaded, store.Load());
+
+        // Intent is preserved even though the device is absent from the live roster.
+        var slot = reloaded[0];
+        Assert.Equal(ShowInputKind.UvcWebcam, slot.Kind);
+        Assert.Equal("cam-gone", slot.CaptureDeviceId);
+        Assert.True(slot.IsAssigned);
+
+        // The referenced device is no longer present, so the multiview surfaces no tile for it
+        // rather than crashing — the assignment stays intact for when the device returns.
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(reloaded, [], [], []);
+        Assert.Empty(tiles);
+    }
+
+    [Fact]
+    public void RosterPersistence_IgnoresMalformedSnapshot()
+    {
+        Assert.Null(ShowInputRosterSerializer.Deserialize("{ not valid json"));
+        Assert.Null(ShowInputRosterSerializer.Deserialize(null));
+
+        var slots = ShowInputRosterService.CreateDefaultSlots();
+        // Applying a null snapshot must be a no-op, not throw.
+        ShowInputRosterSerializer.ApplyTo(slots, null);
+        Assert.All(slots, slot => Assert.Equal(ShowInputKind.Unassigned, slot.Kind));
+    }
+
+    [Fact]
+    public void BuildSourceOptions_ListsMediaAssetsForMediaKind()
+    {
+        var options = ShowInputRosterService.BuildSourceOptions(
+            ShowInputKind.Media,
+            [],
+            [],
+            [
+                Media("asset-1", "Intro Bumper", "video"),
+                Media("asset-2", "Lower Third Loop", "image")
+            ]);
+
+        Assert.Equal(["media:asset-1", "media:asset-2"], options.Select(option => option.Value));
+        Assert.Contains("Intro Bumper", options[0].Label, StringComparison.Ordinal);
+        Assert.Contains("video", options[0].Label, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApplySlotRoute_ResolvesMediaSlotToFixedMediaRoute()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 3,
+            Kind = ShowInputKind.Media,
+            ParticipantId = ShowInputRosterService.ToMediaSourceId("asset-9"),
+            InShow = true
+        };
+        var route = new SourceRoute { Id = "scene-1-3", ShowInputSlotNumber = 3 };
+
+        ShowInputRosterService.ApplySlotRoute(route, slot);
+
+        Assert.Equal(SourceRouteMode.Fixed, route.Mode);
+        Assert.Equal("media:asset-9", route.ParticipantId);
+        Assert.Null(route.CaptureDeviceId);
+        Assert.True(ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var assetId));
+        Assert.Equal("asset-9", assetId);
+    }
+
+    [Fact]
+    public void ApplySlotRoute_ResolvesCaptureSlotToCaptureRoute()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 1,
+            Kind = ShowInputKind.Blackmagic,
+            CaptureDeviceId = "decklink-1",
+            InShow = true
+        };
+        var route = new SourceRoute { Id = "scene-1-1", ShowInputSlotNumber = 1 };
+
+        ShowInputRosterService.ApplySlotRoute(route, slot);
+
+        Assert.Equal(SourceRouteMode.CaptureDevice, route.Mode);
+        Assert.Equal("decklink-1", route.CaptureDeviceId);
+        Assert.Null(route.ParticipantId);
+    }
+
+    private static MediaAsset Media(string id, string name, string kind) =>
+        new()
+        {
+            Id = id,
+            Name = name,
+            Kind = kind
+        };
+
     private static CaptureDevice Device(
         string id,
         string name,

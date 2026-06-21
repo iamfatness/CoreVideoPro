@@ -337,6 +337,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
+    private readonly IShowInputRosterStore _showInputRosterStore = CreateShowInputRosterStore();
+    private bool _showInputRosterLoaded;
     private bool _multiviewGridRefreshScheduled;
     private bool _canvasInteractionActive;
     private bool _applyingDualCaptureSelection;
@@ -625,6 +627,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RoomVideoParticipants = [];
         CurrentRoomLabel = "No meeting";
         _multiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        LoadShowInputRoster();
         InitializeShowInputEditors();
         RefreshMultiviewGridTiles();
         RefreshParticipantListItems();
@@ -4992,6 +4995,71 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         });
     }
 
+    // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
+    // round-trip is unit-testable without a running WinUI/ApplicationData host.
+    private static IShowInputRosterStore CreateShowInputRosterStore()
+    {
+        try
+        {
+            var folder = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
+            return new FileShowInputRosterStore(folder);
+        }
+        catch (Exception)
+        {
+            // No packaged ApplicationData (e.g. unpackaged/test host) — fall back to a
+            // local-folder JSON file when possible, otherwise in-memory.
+            try
+            {
+                var folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CoreVideoPro");
+                return new FileShowInputRosterStore(folder);
+            }
+            catch (Exception)
+            {
+                return new InMemoryShowInputRosterStore();
+            }
+        }
+    }
+
+    private void LoadShowInputRoster()
+    {
+        try
+        {
+            var snapshot = _showInputRosterStore.Load();
+            // Intent is restored even if the referenced participant/device is no longer present;
+            // RefreshShowInputEditors / BuildMultiviewTiles surface unresolved sources as
+            // unavailable rather than dropping the assignment.
+            ShowInputRosterSerializer.ApplyTo(ShowInputs, snapshot);
+        }
+        catch (Exception)
+        {
+            // Persistence is best-effort; never block startup on a bad/locked store.
+        }
+        finally
+        {
+            _showInputRosterLoaded = true;
+        }
+    }
+
+    private void SaveShowInputRoster()
+    {
+        // Guard against persisting before the saved roster has been loaded/applied.
+        if (!_showInputRosterLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _showInputRosterStore.Save(ShowInputRosterSerializer.CaptureFrom(ShowInputs));
+        }
+        catch (Exception)
+        {
+            // Best-effort; a failed save must not surface as a user-facing error.
+        }
+    }
+
     private void InitializeShowInputEditors()
     {
         ShowInputEditors.Clear();
@@ -5005,9 +5073,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshShowInputEditors()
     {
+        var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
         foreach (var editor in ShowInputEditors)
         {
-            editor.RefreshSourceOptions(RoomVideoParticipants, CaptureDevices, AudioCaptureDevices);
+            editor.RefreshSourceOptions(RoomVideoParticipants, CaptureDevices, AudioCaptureDevices, mediaAssets);
         }
 
         OnPropertyChanged(nameof(ShowInputSummary));
@@ -5049,6 +5118,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshRoutingMatricesIfVisible();
         SchedulePreviewRoutingRefresh();
         QueueSelectedCaptureDevicesOnline();
+        SaveShowInputRoster();
         CommandStatus = "Show input roster updated";
     }
 
@@ -5716,8 +5786,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return BuildCaptureSceneTile(route.CaptureDeviceId);
         }
 
+        if (route.Mode == SourceRouteMode.Fixed &&
+            ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId))
+        {
+            return BuildMediaSceneTile(mediaAssetId);
+        }
+
         var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
         return participant is null ? null : BuildParticipantSceneTile(participant, tilesByParticipant);
+    }
+
+    private ParticipantSurfaceTile? BuildMediaSceneTile(string mediaAssetId)
+    {
+        if (FindMediaAsset(mediaAssetId) is not { } asset)
+        {
+            return null;
+        }
+
+        var isSelectedAndPlaying = string.Equals(SelectedMediaAssetId, asset.Id, StringComparison.Ordinal) &&
+            SelectedMediaAssetPlaying;
+        return new ParticipantSurfaceTile
+        {
+            Participant = new Participant
+            {
+                Id = ShowInputRosterService.ToMediaSourceId(asset.Id),
+                Name = asset.Name,
+                Title = asset.Kind,
+                Role = ParticipantRole.Guest,
+                Health = isSelectedAndPlaying ? FeedHealth.Live : FeedHealth.VideoOff
+            },
+            Surface = VideoSurfaceState.MediaAssetPreview(
+                ShowInputRosterService.ToMediaSourceId(asset.Id),
+                asset.Name,
+                asset.FilePath,
+                asset.Kind,
+                isSelectedAndPlaying)
+        };
     }
 
     private SourceRoute ResolveRouteFromShowInput(SourceRoute route)
@@ -5730,22 +5834,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return resolved;
         }
 
-        if (slot.Kind == ShowInputKind.ZoomParticipant)
-        {
-            resolved.Mode = SourceRouteMode.Fixed;
-            resolved.ParticipantId = slot.ParticipantId;
-            resolved.CaptureDeviceId = null;
-            ApplyKnownColorGradeToRoute(resolved);
-            return resolved;
-        }
-
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest)
-        {
-            resolved.Mode = SourceRouteMode.CaptureDevice;
-            resolved.ParticipantId = null;
-            resolved.CaptureDeviceId = slot.CaptureDeviceId;
-        }
-
+        // Pure slot -> route mapping lives in the roster service so it stays unit-testable.
+        // Media slots resolve to a Fixed route carrying a "media:{assetId}" identity in
+        // ParticipantId, matching how ad-hoc media is added to the multiview
+        // (see RefreshMultiviewGridTiles / BuildMediaSceneTile).
+        ShowInputRosterService.ApplySlotRoute(resolved, slot);
         ApplyKnownColorGradeToRoute(resolved);
         return resolved;
     }
