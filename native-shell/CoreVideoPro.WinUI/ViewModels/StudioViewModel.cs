@@ -1962,6 +1962,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         ActiveSceneId = takenSceneId;
         PreviewSceneId = previousProgramSceneId;
+        PromoteProgramMediaRouteToPlayback();
         RefreshPreviewRoutingState();
         CommandStatus = $"{ProgramSceneSummary} taken with {TakeTransitionLabel.ToLowerInvariant()}";
         OutputStatus = "Program updated";
@@ -3288,6 +3289,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool IsMediaAssetPlaying(string assetId) =>
         SelectedMediaAssetPlaying &&
         string.Equals(SelectedMediaAssetId, assetId, StringComparison.Ordinal);
+
+    private void PromoteProgramMediaRouteToPlayback()
+    {
+        var programRoutes = GetResolvedProgramRoutes();
+        var mediaAssetId = MediaRoutePlaybackService.ResolveProgramAutoplayAssetId(
+            SelectedMediaAssetId,
+            programRoutes);
+        if (string.IsNullOrWhiteSpace(mediaAssetId) ||
+            FindMediaAsset(mediaAssetId) is not { } asset)
+        {
+            return;
+        }
+
+        SelectedMediaAssetId = asset.Id;
+        SelectedMediaAssetName = asset.Name;
+        SelectedMediaAssetPath = asset.FilePath;
+        SelectedMediaAssetKind = asset.Kind;
+        SelectedMediaAssetPlaying = true;
+        MediaPlaybackStatus = $"Playing {asset.Name} on Program";
+        MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
+
+        OnPropertyChanged(nameof(MediaBinGroups));
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(IsMediaAssetPlaying));
+        OnPropertyChanged(nameof(MediaPlaybackStatus));
+        RefreshMultiviewGridTiles();
+    }
 
     [RelayCommand]
     private void PlayMediaAsset(string assetId)

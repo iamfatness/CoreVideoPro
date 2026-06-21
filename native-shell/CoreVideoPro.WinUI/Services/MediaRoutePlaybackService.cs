@@ -39,4 +39,27 @@ public static class MediaRoutePlaybackService
             ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var routeMediaAssetId) &&
             string.Equals(routeMediaAssetId, mediaAssetId, StringComparison.Ordinal));
     }
+
+    public static string? ResolveProgramAutoplayAssetId(
+        string? selectedMediaAssetId,
+        IReadOnlyList<SourceRoute> programRoutes)
+    {
+        if (!string.IsNullOrWhiteSpace(selectedMediaAssetId) &&
+            IsMediaAssetRoutedOnProgram(selectedMediaAssetId, programRoutes))
+        {
+            return selectedMediaAssetId;
+        }
+
+        foreach (var route in programRoutes)
+        {
+            if (route.Mode == SourceRouteMode.Fixed &&
+                ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId) &&
+                !string.IsNullOrWhiteSpace(mediaAssetId))
+            {
+                return mediaAssetId;
+            }
+        }
+
+        return null;
+    }
 }

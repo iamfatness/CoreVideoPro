@@ -68,6 +68,52 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.False(shouldPlay);
     }
 
+    [Fact]
+    public void ResolveProgramAutoplayAssetId_PreservesSelectedAssetWhenItIsOnProgram()
+    {
+        var programRoutes = new[]
+        {
+            MediaRoute("intro"),
+            MediaRoute("outro")
+        };
+
+        var assetId = MediaRoutePlaybackService.ResolveProgramAutoplayAssetId("outro", programRoutes);
+
+        Assert.Equal("outro", assetId);
+    }
+
+    [Fact]
+    public void ResolveProgramAutoplayAssetId_UsesFirstProgramMediaRouteWhenSelectionIsElsewhere()
+    {
+        var programRoutes = new[]
+        {
+            MediaRoute("intro"),
+            MediaRoute("outro")
+        };
+
+        var assetId = MediaRoutePlaybackService.ResolveProgramAutoplayAssetId("bumper", programRoutes);
+
+        Assert.Equal("intro", assetId);
+    }
+
+    [Fact]
+    public void ResolveProgramAutoplayAssetId_ReturnsNullWhenProgramHasNoMediaRoute()
+    {
+        var programRoutes = new[]
+        {
+            new SourceRoute
+            {
+                Id = "route-guest",
+                Mode = SourceRouteMode.Fixed,
+                ParticipantId = "guest-1"
+            }
+        };
+
+        var assetId = MediaRoutePlaybackService.ResolveProgramAutoplayAssetId("intro", programRoutes);
+
+        Assert.Null(assetId);
+    }
+
     private static SourceRoute MediaRoute(string assetId) =>
         new()
         {
