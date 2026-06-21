@@ -159,6 +159,18 @@ TEST(CompositorFraming, FillPanUsesOriginalSourceEdgesAfterZoom) {
   EXPECT_TRUE(nearly(right.u1, 1.f));
 }
 
+TEST(CompositorFraming, FillDefaultsToCenteredRenderedSourceLayer) {
+  const LayerRect square{0.f, 0.f, 1.f, 1.f};
+  const auto framing = computeSourceFraming(1600, 900, square, "fill", 1.f, 0.f, 0.f);
+
+  EXPECT_TRUE(nearly(framing.imageW, 16.f / 9.f));
+  EXPECT_TRUE(nearly(framing.imageH, 1.f));
+  EXPECT_TRUE(nearly(framing.imageX, (1.f - 16.f / 9.f) * 0.5f));
+  EXPECT_TRUE(nearly(framing.imageY, 0.f));
+  EXPECT_TRUE(nearly(framing.u0, 0.21875f));
+  EXPECT_TRUE(nearly(framing.u1, 0.78125f));
+}
+
 // Offset clamps so the sampled region never leaves the source bounds.
 TEST(CompositorFraming, OffsetClampsAtBounds) {
   // Far-right pan beyond the available travel pins the window to the edge.

@@ -251,17 +251,67 @@ public sealed partial class TransportViewModel : ObservableObject
         FrameDropsLabel = TransportFormatting.FrameDropsLabel(droppedFrames, totalFrames);
         LiveClockLabel = TransportFormatting.FormatElapsed(elapsedSeconds);
 
-        var masterLevel = snapshot.AudioMixSession.MasterLevel > 0
-            ? snapshot.AudioMixSession.MasterLevel
-            : 0;
-        MasterLevelLeft = Math.Clamp(masterLevel, 0, 100);
-        MasterLevelRight = MasterLevelLeft;
+        var meterReadout = ResolveMasterMeterReadout(snapshot);
+        MasterLevelLeft = meterReadout.LeftLevel;
+        MasterLevelRight = meterReadout.RightLevel;
         MasterLufsLabel = snapshot.AudioMixSession.LoudnessLufs <= -59
             ? "LUFS —"
             : $"{snapshot.AudioMixSession.LoudnessLufs:0.0} LUFS";
-        MasterVolumeLabel = masterLimiterEnabled
-            ? snapshot.AudioMixSession.LimiterActive ? "Limiter reducing" : "Limiter enabled"
-            : "Limiter bypassed";
+        MasterVolumeLabel = meterReadout.PeakLabel ??
+            (masterLimiterEnabled
+                ? snapshot.AudioMixSession.LimiterActive ? "Limiter reducing" : "Limiter enabled"
+                : "Limiter bypassed");
+    }
+
+    public static (int LeftLevel, int RightLevel, string? PeakLabel) ResolveMasterMeterReadout(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var leftPeakDbfs = ResolveBusPeakDbfs(snapshot, "pgm-l") ??
+            ResolveBusPeakDbfs(snapshot, "master");
+        var rightPeakDbfs = ResolveBusPeakDbfs(snapshot, "pgm-r") ??
+            ResolveBusPeakDbfs(snapshot, "master");
+        var fallbackLevel = snapshot.AudioRoutingMatrix.ProgramTapFrames > 0
+            ? 0
+            : Math.Clamp(snapshot.AudioMixSession.MasterLevel, 0, 100);
+        var leftLevel = leftPeakDbfs is { } leftPeak
+            ? DbfsToMeterLevel(leftPeak)
+            : fallbackLevel;
+        var rightLevel = rightPeakDbfs is { } rightPeak
+            ? DbfsToMeterLevel(rightPeak)
+            : leftLevel;
+
+        return (leftLevel, rightLevel, FormatMeasuredPeakLabel(leftPeakDbfs, rightPeakDbfs));
+    }
+
+    private static double? ResolveBusPeakDbfs(NativeMediaCoreStateSnapshot snapshot, string busId) =>
+        snapshot.AudioRoutingMatrix.BusTaps
+            .Where(tap => string.Equals(tap.BusId, busId, StringComparison.OrdinalIgnoreCase) &&
+                tap.Frames > 0 &&
+                double.IsFinite(tap.PeakDbfs))
+            .Select(tap => (double?)tap.PeakDbfs)
+            .FirstOrDefault();
+
+    private static int DbfsToMeterLevel(double dbfs)
+    {
+        if (!double.IsFinite(dbfs) || dbfs <= -90)
+        {
+            return 0;
+        }
+
+        return Math.Clamp((int)Math.Round((dbfs + 60) / 60 * 100), 0, 100);
+    }
+
+    private static string? FormatMeasuredPeakLabel(double? leftPeakDbfs, double? rightPeakDbfs)
+    {
+        var values = new[] { leftPeakDbfs, rightPeakDbfs }
+            .OfType<double>()
+            .Where(double.IsFinite)
+            .ToArray();
+        if (values.Length == 0)
+        {
+            return null;
+        }
+
+        return $"Peak {values.Max():0.0} dBFS";
     }
 
     private static int EstimateEncoderLoad(

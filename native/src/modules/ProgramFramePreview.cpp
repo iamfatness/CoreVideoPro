@@ -581,6 +581,14 @@ void fillSyntheticProgramFramePreview(
       const float contentY = rect.y + contentFracY * rect.height;
       const float contentW = contentFracW * rect.width;
       const float contentH = contentFracH * rect.height;
+      const float imageFracX = aspectRect.width > 0.f ? framing.imageX / aspectRect.width : 0.f;
+      const float imageFracY = aspectRect.height > 0.f ? framing.imageY / aspectRect.height : 0.f;
+      const float imageFracW = aspectRect.width > 0.f ? framing.imageW / aspectRect.width : 1.f;
+      const float imageFracH = aspectRect.height > 0.f ? framing.imageH / aspectRect.height : 1.f;
+      const float imageX = rect.x + imageFracX * rect.width;
+      const float imageY = rect.y + imageFracY * rect.height;
+      const float imageW = imageFracW * rect.width;
+      const float imageH = imageFracH * rect.height;
 
       // Letterbox bars: when the content is smaller than the dest rect, paint
       // the full rect with a dark bar color first, then the content on top.
@@ -590,12 +598,12 @@ void fillSyntheticProgramFramePreview(
       }
 
       if (frameForLayer && frameForLayer->hasPixels()) {
-        // Real frame: sample the resolved source-UV window into the on-screen
-        // content rect so fit/fill/stretch + zoom/pan crop exactly the region
-        // the GPU samples. This is the CPU mirror of the D3D11 UV transform.
-        const CompositorLayerRect contentRect{contentX, contentY, contentW, contentH};
-        blitVideoFrameFramed(
-            preview, *frameForLayer, contentRect, framing.u0, framing.v0, framing.u1, framing.v1, layerOpacity);
+        // Real frame: draw the full resolved source layer, then clip it to the
+        // destination slot. This keeps pan/XY relative to the original source
+        // layer instead of an intermediate crop.
+        const CompositorLayerRect imageRect{imageX, imageY, imageW, imageH};
+        const CompositorLayerRect clipRect{rect.x, rect.y, rect.width, rect.height};
+        blitVideoFrameLayerClipped(preview, *frameForLayer, imageRect, clipRect, layerOpacity);
       } else {
         // The synthetic fill has no texture detail to pan, so draw the resolved
         // visible source rectangle directly. This still shows scale-out
@@ -798,6 +806,58 @@ bool blitVideoFrameFramed(
       const float ut = rectWidth > 1 ? static_cast<float>(px - left) / static_cast<float>(rectWidth - 1) : 0.f;
       const float sampleU = std::clamp(u0 + ut * spanU, 0.f, 1.f);
       const int sampleX = std::min(sourceWidth - 1, static_cast<int>(sampleU * static_cast<float>(sourceWidth)));
+      const auto* pixel = sourceRow + static_cast<size_t>(sampleX) * 4u;
+      const uint32_t bgra = (static_cast<uint32_t>(pixel[3]) << 24) |
+                            (static_cast<uint32_t>(pixel[2]) << 16) |
+                            (static_cast<uint32_t>(pixel[1]) << 8) |
+                            static_cast<uint32_t>(pixel[0]);
+      blendPixelBgra(preview.bgra, previewWidth, px, py, bgra, clampedOpacity);
+    }
+  }
+  return true;
+}
+
+bool blitVideoFrameLayerClipped(
+    ProgramFramePreviewPixels& preview,
+    const VideoFrame& frame,
+    const CompositorLayerRect& imageRect,
+    const CompositorLayerRect& clipRect,
+    float opacity) {
+  if (!frame.hasPixels() || preview.width <= 0 || preview.height <= 0 || preview.bgra.empty() || opacity <= 0.f) {
+    return false;
+  }
+
+  const int previewWidth = preview.width;
+  const int previewHeight = preview.height;
+  const float imageLeft = imageRect.x * static_cast<float>(previewWidth);
+  const float imageTop = imageRect.y * static_cast<float>(previewHeight);
+  const float imageWidth = imageRect.width * static_cast<float>(previewWidth);
+  const float imageHeight = imageRect.height * static_cast<float>(previewHeight);
+  if (imageWidth <= 0.001f || imageHeight <= 0.001f) {
+    return false;
+  }
+
+  const int left = std::max(0, static_cast<int>(std::floor(clipRect.x * static_cast<float>(previewWidth))));
+  const int top = std::max(0, static_cast<int>(std::floor(clipRect.y * static_cast<float>(previewHeight))));
+  const int right = std::min(previewWidth, static_cast<int>(std::ceil((clipRect.x + clipRect.width) * static_cast<float>(previewWidth))));
+  const int bottom = std::min(previewHeight, static_cast<int>(std::ceil((clipRect.y + clipRect.height) * static_cast<float>(previewHeight))));
+  if (right <= left || bottom <= top) {
+    return false;
+  }
+
+  const auto* source = frame.pixels->data();
+  const int sourceWidth = frame.pixelWidth;
+  const int sourceHeight = frame.pixelHeight;
+  const int sourceStride = frame.pixelStride;
+  const float clampedOpacity = std::clamp(opacity, 0.f, 1.f);
+
+  for (int py = top; py < bottom; ++py) {
+    const float vt = std::clamp((static_cast<float>(py) + 0.5f - imageTop) / imageHeight, 0.f, 1.f);
+    const int sampleY = std::min(sourceHeight - 1, static_cast<int>(vt * static_cast<float>(sourceHeight)));
+    const auto* sourceRow = source + static_cast<size_t>(sampleY) * static_cast<size_t>(sourceStride);
+    for (int px = left; px < right; ++px) {
+      const float ut = std::clamp((static_cast<float>(px) + 0.5f - imageLeft) / imageWidth, 0.f, 1.f);
+      const int sampleX = std::min(sourceWidth - 1, static_cast<int>(ut * static_cast<float>(sourceWidth)));
       const auto* pixel = sourceRow + static_cast<size_t>(sampleX) * 4u;
       const uint32_t bgra = (static_cast<uint32_t>(pixel[3]) << 24) |
                             (static_cast<uint32_t>(pixel[2]) << 16) |

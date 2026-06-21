@@ -68,6 +68,17 @@ bool blitVideoFrameFramed(
     float v1,
     float opacity);
 
+// Draws the full rendered source layer into `imageRect`, clipped to `clipRect`.
+// This mirrors the D3D11 viewport + scissor path used by SuperSource layers:
+// source position is resolved before clipping, so XY remains relative to the
+// original source layer rather than to an intermediate crop.
+bool blitVideoFrameLayerClipped(
+    ProgramFramePreviewPixels& preview,
+    const VideoFrame& frame,
+    const CompositorLayerRect& imageRect,
+    const CompositorLayerRect& clipRect,
+    float opacity);
+
 [[nodiscard]] rpc::Json programSharedTextureJson(const ProgramFrame& frame);
 
 [[nodiscard]] rpc::Json programSharedTextureEvent(const ProgramFrame& frame);

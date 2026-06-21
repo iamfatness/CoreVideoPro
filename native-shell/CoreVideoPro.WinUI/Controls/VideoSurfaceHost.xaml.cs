@@ -374,7 +374,15 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         PreviewImage.Width = layout.Width;
         PreviewImage.Height = layout.Height;
-        PreviewImage.RenderTransform = new TranslateTransform
+        var transform = new TranslateTransform
+        {
+            X = layout.TranslateX,
+            Y = layout.TranslateY
+        };
+        PreviewImage.RenderTransform = transform;
+        MediaPreview.Width = layout.Width;
+        MediaPreview.Height = layout.Height;
+        MediaPreview.RenderTransform = new TranslateTransform
         {
             X = layout.TranslateX,
             Y = layout.TranslateY

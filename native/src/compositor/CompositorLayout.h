@@ -26,6 +26,10 @@ struct SourceFraming {
   float v0 = 0.f;
   float u1 = 1.f;
   float v1 = 1.f;
+  float imageX = 0.f;
+  float imageY = 0.f;
+  float imageW = 1.f;
+  float imageH = 1.f;
   float contentX = 0.f;
   float contentY = 0.f;
   float contentW = 1.f;
@@ -145,6 +149,10 @@ inline SourceFraming computeSourceFraming(
   SourceFraming framing;
   const bool validAspect = sourceWidth > 0 && sourceHeight > 0 && dest.width > 0.f && dest.height > 0.f;
   if (!validAspect) {
+    framing.imageX = dest.x;
+    framing.imageY = dest.y;
+    framing.imageW = dest.width;
+    framing.imageH = dest.height;
     framing.contentX = dest.x;
     framing.contentY = dest.y;
     framing.contentW = dest.width;
@@ -187,6 +195,10 @@ inline SourceFraming computeSourceFraming(
       dest.x + (dest.width - renderW) * 0.5f + (renderW >= dest.width ? -offsetX : offsetX) * travelX * 0.5f;
   const float imageY =
       dest.y + (dest.height - renderH) * 0.5f + (renderH >= dest.height ? -offsetY : offsetY) * travelY * 0.5f;
+  framing.imageX = imageX;
+  framing.imageY = imageY;
+  framing.imageW = renderW;
+  framing.imageH = renderH;
 
   const float visibleX0 = std::max(dest.x, imageX);
   const float visibleY0 = std::max(dest.y, imageY);

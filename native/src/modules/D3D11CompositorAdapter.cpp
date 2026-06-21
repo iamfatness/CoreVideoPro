@@ -329,6 +329,11 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreateRasterizerState failed.";
       return;
     }
+    rasterDesc.ScissorEnable = TRUE;
+    if (FAILED(device_->CreateRasterizerState(&rasterDesc, scissorRasterizerState_.put()))) {
+      initError_ = "CreateRasterizerState (scissor) failed.";
+      return;
+    }
 
     pipelineReady_ = true;
   }
@@ -456,6 +461,27 @@ class D3D11Compositor final : public ICompositor {
     context_->RSSetViewports(1, &viewport);
   }
 
+  void setScissorFromRect(const compositor::LayerRect& rect) {
+    D3D11_RECT scissor{};
+    scissor.left = std::clamp(
+        static_cast<LONG>(std::floor(rect.x * static_cast<float>(targetWidth_))),
+        0L,
+        static_cast<LONG>(targetWidth_));
+    scissor.top = std::clamp(
+        static_cast<LONG>(std::floor(rect.y * static_cast<float>(targetHeight_))),
+        0L,
+        static_cast<LONG>(targetHeight_));
+    scissor.right = std::clamp(
+        static_cast<LONG>(std::ceil((rect.x + rect.width) * static_cast<float>(targetWidth_))),
+        0L,
+        static_cast<LONG>(targetWidth_));
+    scissor.bottom = std::clamp(
+        static_cast<LONG>(std::ceil((rect.y + rect.height) * static_cast<float>(targetHeight_))),
+        0L,
+        static_cast<LONG>(targetHeight_));
+    context_->RSSetScissorRects(1, &scissor);
+  }
+
   // Uploads the layer's color grade + an explicit color + UV transform into the
   // shared constant buffer. Returns false if the buffer could not be mapped.
   bool writeLayerConstants(
@@ -577,28 +603,27 @@ class D3D11Compositor final : public ICompositor {
         layer.plan.sourceOffsetX,
         layer.plan.sourceOffsetY);
 
-    // Map the framing (computed in aspectRect units) back into the layer rect.
-    const float contentFracX = aspectRect.width > 0.f ? framing.contentX / aspectRect.width : 0.f;
-    const float contentFracY = aspectRect.height > 0.f ? framing.contentY / aspectRect.height : 0.f;
-    const float contentFracW = aspectRect.width > 0.f ? framing.contentW / aspectRect.width : 1.f;
-    const float contentFracH = aspectRect.height > 0.f ? framing.contentH / aspectRect.height : 1.f;
-    const compositor::LayerRect contentRect{
-        rect.x + contentFracX * rect.width,
-        rect.y + contentFracY * rect.height,
-        contentFracW * rect.width,
-        contentFracH * rect.height};
-
     // Letterbox bars: paint the full layer rect dark first when the content is
     // inset, so fit/contain shows bars (matching the CPU preview).
     if (framing.hasLetterbox) {
       drawSolidQuad(layer, renderPlan, rect, 0xff05080cu, layerAlpha);
     }
 
-    // Main content pass: viewport = content rect; UV transform = sampled window.
-    setViewportFromRect(contentRect);
-    const float uvScaleX = framing.u1 - framing.u0;
-    const float uvScaleY = framing.v1 - framing.v0;
-    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, uvScaleX, uvScaleY, framing.u0, framing.v0)) {
+    const float imageFracX = aspectRect.width > 0.f ? framing.imageX / aspectRect.width : 0.f;
+    const float imageFracY = aspectRect.height > 0.f ? framing.imageY / aspectRect.height : 0.f;
+    const float imageFracW = aspectRect.width > 0.f ? framing.imageW / aspectRect.width : 1.f;
+    const float imageFracH = aspectRect.height > 0.f ? framing.imageH / aspectRect.height : 1.f;
+    const compositor::LayerRect imageRect{
+        rect.x + imageFracX * rect.width,
+        rect.y + imageFracY * rect.height,
+        imageFracW * rect.width,
+        imageFracH * rect.height};
+
+    // Main content pass: viewport = full rendered source layer; scissor = slot.
+    // This keeps source X/Y relative to the original layer, then clips the
+    // result to the source box, matching a layer-based SuperSource model.
+    setViewportFromRect(imageRect);
+    if (!writeLayerConstants(layer, renderPlan, layer.color, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
       return;
     }
 
@@ -612,7 +637,10 @@ class D3D11Compositor final : public ICompositor {
     } else {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
+    context_->RSSetState(scissorRasterizerState_.get());
+    setScissorFromRect(rect);
     context_->Draw(3, 0);
+    context_->RSSetState(rasterizerState_.get());
     if (textured) {
       ID3D11ShaderResourceView* nullViews[] = {nullptr};
       context_->PSSetShaderResources(0, 1, nullViews);
@@ -865,6 +893,7 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Buffer> constantBuffer_;
   ComPtrLite<ID3D11BlendState> blendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;
+  ComPtrLite<ID3D11RasterizerState> scissorRasterizerState_;
   ComPtrLite<ID3D11Texture2D> renderTarget_;
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
