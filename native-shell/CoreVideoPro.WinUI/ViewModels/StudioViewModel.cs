@@ -1404,12 +1404,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnLocalAudioSourceEnabledChanged(bool value)
     {
         BuildAudioRoutingMatrix();
+        RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
         _ = TrySyncMediaCoreAsync();
     }
 
     partial void OnSelectedLocalAudioCaptureDeviceIdChanged(string value)
     {
+        BuildAudioRoutingMatrix();
+        RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
         _ = TrySyncMediaCoreAsync();
     }
@@ -3530,6 +3533,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshShowInputEditors();
         OnPropertyChanged(nameof(AudioCaptureDevices));
         OnPropertyChanged(nameof(AudioCaptureSourceOptions));
+        BuildAudioRoutingMatrix();
+        RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
     }
 
@@ -4232,6 +4237,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private string ResolveLocalAudioSourceStatus()
     {
+        if (AudioCaptureDevices.All(device =>
+                !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
+        {
+            return "Local source enabled - choose an audio input or loopback device";
+        }
+
         var capture = _bridge.LastSnapshot?.CaptureAudioSources;
         var source = capture?.Sources.FirstOrDefault(source =>
             string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
