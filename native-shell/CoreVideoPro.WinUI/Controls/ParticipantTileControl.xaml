@@ -31,6 +31,9 @@
                                               Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
                                               IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
                                               PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
+                                              PreviewStretch="Fill"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Top"
                                               Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
 
             <Border x:Name="PlaceholderPanel" CornerRadius="8" Opacity="0.55">

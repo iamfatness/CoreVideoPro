@@ -305,6 +305,14 @@ public sealed partial class ParticipantTileControl : UserControl
             X = layout.TranslateX,
             Y = layout.TranslateY
         };
+
+        MediaPreview.Width = layout.Width;
+        MediaPreview.Height = layout.Height;
+        MediaPreview.RenderTransform = new TranslateTransform
+        {
+            X = layout.TranslateX,
+            Y = layout.TranslateY
+        };
     }
 
     private static SolidColorBrush BrushForBorderStyle(string style, string color) =>
