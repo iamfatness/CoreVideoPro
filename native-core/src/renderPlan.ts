@@ -58,6 +58,10 @@ export function buildRenderPlan(input: {
       order: index,
       routeId: route.routeId,
       fitMode: route.fitMode,
+      sourceScale: route.sourceScale,
+      sourceOffsetX: route.sourceOffsetX,
+      sourceOffsetY: route.sourceOffsetY,
+      ptz: route.ptz,
       borderStyle: route.borderStyle,
       borderColor: route.borderColor,
       borderThickness: route.borderThickness,
@@ -144,12 +148,37 @@ function resolvedRoute(
     participantId: source.participantId,
     kind,
     fitMode: route.fitMode,
+    ...normalizeRouteFraming(route),
     borderStyle: route.borderStyle,
     borderColor: route.borderColor,
     borderThickness: route.borderThickness,
     colorGrade: route.colorGrade,
     status: "resolved"
   };
+}
+
+function normalizeRouteFraming(route: SceneGraphState["routes"][number]) {
+  const sourceScale = normalizeNumber(route.ptz?.zoom ?? route.sourceScale, 1, 0.25, 4);
+  const sourceOffsetX = normalizeNumber(route.ptz?.pan ?? route.sourceOffsetX, 0, -1, 1);
+  const sourceOffsetY = normalizeNumber(route.ptz?.tilt ?? route.sourceOffsetY, 0, -1, 1);
+  return {
+    sourceScale,
+    sourceOffsetX,
+    sourceOffsetY,
+    ptz: {
+      zoom: sourceScale,
+      pan: sourceOffsetX,
+      tilt: sourceOffsetY
+    }
+  };
+}
+
+function normalizeNumber(value: number | undefined, fallback: number, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(value * 1000) / 1000));
 }
 
 function missingRoute(

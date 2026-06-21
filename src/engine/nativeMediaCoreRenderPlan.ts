@@ -54,7 +54,12 @@ export function buildNativeMediaCoreRenderPlan(input: {
       sourceId: route.sourceId,
       participantId: route.participantId,
       order: index,
-      routeId: route.routeId
+      routeId: route.routeId,
+      fitMode: route.fitMode,
+      sourceScale: route.sourceScale,
+      sourceOffsetX: route.sourceOffsetX,
+      sourceOffsetY: route.sourceOffsetY,
+      ptz: route.ptz
     }));
   const overlayLayers = input.overlays.map((overlay, index) => ({
     layerId: `overlay:${overlay.overlayId}`,
@@ -88,7 +93,12 @@ function withRenderPlanId(renderPlan: Omit<NativeMediaCoreRenderPlan, "renderPla
       sourceId: route.sourceId,
       participantId: route.participantId,
       kind: route.kind,
-      status: route.status
+      status: route.status,
+      fitMode: route.fitMode,
+      sourceScale: route.sourceScale,
+      sourceOffsetX: route.sourceOffsetX,
+      sourceOffsetY: route.sourceOffsetY,
+      ptz: route.ptz
     })),
     layers: renderPlan.layers.map((layer) => ({
       layerId: layer.layerId,
@@ -97,7 +107,12 @@ function withRenderPlanId(renderPlan: Omit<NativeMediaCoreRenderPlan, "renderPla
       participantId: layer.participantId,
       overlayId: layer.overlayId,
       position: layer.position,
-      order: layer.order
+      order: layer.order,
+      fitMode: layer.fitMode,
+      sourceScale: layer.sourceScale,
+      sourceOffsetX: layer.sourceOffsetX,
+      sourceOffsetY: layer.sourceOffsetY,
+      ptz: layer.ptz
     }))
   });
 
@@ -161,6 +176,8 @@ function resolved(route: SceneGraph["routes"][number], source: NativeMediaCoreZo
     sourceId: kind === "screen-share" ? `screen-share:${source.participantId}` : source.sourceId,
     participantId: source.participantId,
     kind,
+    fitMode: route.fitMode,
+    ...normalizeRouteFraming(route),
     status: "resolved"
   };
 }
@@ -173,4 +190,28 @@ function missing(route: SceneGraph["routes"][number], warning: string): NativeMe
     status: "missing",
     warning
   };
+}
+
+function normalizeRouteFraming(route: SceneGraph["routes"][number]) {
+  const sourceScale = normalizeNumber(route.ptz?.zoom ?? route.sourceScale, 1, 0.25, 4);
+  const sourceOffsetX = normalizeNumber(route.ptz?.pan ?? route.sourceOffsetX, 0, -1, 1);
+  const sourceOffsetY = normalizeNumber(route.ptz?.tilt ?? route.sourceOffsetY, 0, -1, 1);
+  return {
+    sourceScale,
+    sourceOffsetX,
+    sourceOffsetY,
+    ptz: {
+      zoom: sourceScale,
+      pan: sourceOffsetX,
+      tilt: sourceOffsetY
+    }
+  };
+}
+
+function normalizeNumber(value: number | undefined, fallback: number, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(value * 1000) / 1000));
 }

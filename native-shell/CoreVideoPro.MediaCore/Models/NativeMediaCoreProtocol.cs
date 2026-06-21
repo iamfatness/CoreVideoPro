@@ -189,6 +189,11 @@ public sealed class NativeMediaCoreResolvedRoute
     public string? ParticipantId { get; init; }
     public string? Kind { get; init; }
     public required string Status { get; init; }
+    public string? FitMode { get; init; }
+    public double? SourceScale { get; init; }
+    public double? SourceOffsetX { get; init; }
+    public double? SourceOffsetY { get; init; }
+    public NativeMediaCorePtz? Ptz { get; init; }
     public string? Warning { get; init; }
 }
 
@@ -201,7 +206,19 @@ public sealed class NativeMediaCoreRenderPlanLayer
     public string? OverlayId { get; init; }
     public int Order { get; init; }
     public string? RouteId { get; init; }
+    public string? FitMode { get; init; }
+    public double? SourceScale { get; init; }
+    public double? SourceOffsetX { get; init; }
+    public double? SourceOffsetY { get; init; }
+    public NativeMediaCorePtz? Ptz { get; init; }
     public string? Position { get; init; }
+}
+
+public sealed class NativeMediaCorePtz
+{
+    public double Zoom { get; init; } = 1;
+    public double Pan { get; init; }
+    public double Tilt { get; init; }
 }
 
 public sealed class NativeMediaCoreRenderPlan

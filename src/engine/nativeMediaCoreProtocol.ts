@@ -38,6 +38,11 @@ export type NativeMediaCoreCommand =
         mode: "fixed" | "active-speaker" | "spotlight" | "screen-share" | "none";
         participantId?: string;
         audioRole: "mix" | "isolated" | "audience";
+        fitMode?: "fill" | "fit" | "stretch";
+        sourceScale?: number;
+        sourceOffsetX?: number;
+        sourceOffsetY?: number;
+        ptz?: { zoom?: number; pan?: number; tilt?: number };
       }>;
     }
   | {
@@ -398,6 +403,11 @@ export type NativeMediaCoreResolvedRoute = {
   participantId?: string;
   kind?: "participant-video" | "screen-share";
   status: "resolved" | "missing" | "disabled";
+  fitMode?: "fill" | "fit" | "stretch";
+  sourceScale?: number;
+  sourceOffsetX?: number;
+  sourceOffsetY?: number;
+  ptz?: { zoom: number; pan: number; tilt: number };
   warning?: string;
 };
 
@@ -409,6 +419,11 @@ export type NativeMediaCoreRenderPlanLayer = {
   overlayId?: string;
   order: number;
   routeId?: string;
+  fitMode?: "fill" | "fit" | "stretch";
+  sourceScale?: number;
+  sourceOffsetX?: number;
+  sourceOffsetY?: number;
+  ptz?: { zoom: number; pan: number; tilt: number };
   position?: "top-right" | "bottom-right" | "center" | "lower-third";
 };
 

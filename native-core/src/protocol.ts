@@ -77,6 +77,10 @@ export type MediaCoreResolvedRoute = {
   kind?: MediaCoreFrameKind;
   status: "resolved" | "missing" | "disabled";
   fitMode?: "fill" | "fit" | "stretch";
+  sourceScale?: number;
+  sourceOffsetX?: number;
+  sourceOffsetY?: number;
+  ptz?: { zoom: number; pan: number; tilt: number };
   borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
   borderColor?: string;
   borderThickness?: number;
@@ -93,6 +97,10 @@ export type MediaCoreRenderPlanLayer = {
   order: number;
   routeId?: string;
   fitMode?: "fill" | "fit" | "stretch";
+  sourceScale?: number;
+  sourceOffsetX?: number;
+  sourceOffsetY?: number;
+  ptz?: { zoom: number; pan: number; tilt: number };
   borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
   borderColor?: string;
   borderThickness?: number;
@@ -401,6 +409,10 @@ export type MediaCoreCommand =
         participantId?: string;
         audioRole: MediaCoreAudioRole;
         fitMode?: "fill" | "fit" | "stretch";
+        sourceScale?: number;
+        sourceOffsetX?: number;
+        sourceOffsetY?: number;
+        ptz?: { zoom?: number; pan?: number; tilt?: number };
         borderStyle?: "none" | "solid" | "accent" | "program" | "warning";
         borderColor?: string;
         borderThickness?: number;

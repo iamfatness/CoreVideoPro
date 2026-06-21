@@ -127,6 +127,84 @@ describe("ProgramCompositor", () => {
     expect(first.renderPlanId).not.toBe(changedBorder.renderPlanId);
   });
 
+  it("carries center-cut PTZ framing into resolved render layers", () => {
+    const framedSceneGraph: Extract<MediaCoreCommand, { type: "load-scene-graph" }> = {
+      type: "load-scene-graph",
+      sceneId: "framed-interview",
+      routes: [
+        {
+          routeId: "active",
+          mode: "active-speaker",
+          audioRole: "mix",
+          fitMode: "fill",
+          sourceScale: 1.4,
+          sourceOffsetX: -0.2,
+          sourceOffsetY: 0.3
+        }
+      ]
+    };
+
+    const first = buildRenderPlan({
+      sceneGraph: framedSceneGraph,
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+    const changedPtz = buildRenderPlan({
+      sceneGraph: {
+        ...framedSceneGraph,
+        routes: [{ ...framedSceneGraph.routes[0], sourceOffsetX: 0.25 }]
+      },
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+
+    expect(first.routes[0]).toMatchObject({
+      fitMode: "fill",
+      sourceScale: 1.4,
+      sourceOffsetX: -0.2,
+      sourceOffsetY: 0.3,
+      ptz: { zoom: 1.4, pan: -0.2, tilt: 0.3 }
+    });
+    expect(first.layers[0]).toMatchObject({
+      fitMode: "fill",
+      sourceScale: 1.4,
+      sourceOffsetX: -0.2,
+      sourceOffsetY: 0.3,
+      ptz: { zoom: 1.4, pan: -0.2, tilt: 0.3 }
+    });
+    expect(first.renderPlanId).not.toBe(changedPtz.renderPlanId);
+  });
+
+  it("defaults unresolved source framing to centered fill crop", () => {
+    const first = buildRenderPlan({
+      sceneGraph,
+      sources,
+      activeSpeakerId: "p1",
+      overlays: [],
+      outputProfile,
+      colorGrade
+    });
+
+    expect(first.routes[0]).toMatchObject({
+      sourceScale: 1,
+      sourceOffsetX: 0,
+      sourceOffsetY: 0,
+      ptz: { zoom: 1, pan: 0, tilt: 0 }
+    });
+    expect(first.layers[0]).toMatchObject({
+      sourceScale: 1,
+      sourceOffsetX: 0,
+      sourceOffsetY: 0,
+      ptz: { zoom: 1, pan: 0, tilt: 0 }
+    });
+  });
+
   it("carries per-source color grade into resolved routes and render layers", () => {
     const gradedSceneGraph: Extract<MediaCoreCommand, { type: "load-scene-graph" }> = {
       type: "load-scene-graph",
