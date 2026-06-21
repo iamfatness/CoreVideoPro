@@ -656,11 +656,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AudioMonitorEngineStatus =>
         _bridge.LastSnapshot?.AudioMixSession is { } audio
-            ? audio.MasterLevel <= 0 && audio.MixedFrameCount <= 0
-                ? "No mixed audio frames from the media engine."
-                : audio.MonitorEnabled
-                    ? $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames - monitor {FormatMonitorStatus(audio)}"
-                    : $"{audio.MasterLevel}% master - {audio.MixedFrameCount} mixed frames - monitor muted"
+            ? FormatAudioMonitorEngineStatus(audio)
             : "Waiting for media engine audio telemetry.";
 
     public string AudioMeterSourceSummary =>
@@ -4306,7 +4302,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
     }
 
-    private static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>
+    public static string FormatAudioMonitorEngineStatus(NativeMediaCoreAudioMixSession audio)
+    {
+        if (audio.MixedFrameCount <= 0)
+        {
+            return "No mixed audio frames from the media engine.";
+        }
+
+        var monitorState = audio.MonitorEnabled
+            ? FormatMonitorStatus(audio)
+            : "muted";
+        return $"{audio.MixedFrameCount} mixed frames - monitor {monitorState}";
+    }
+
+    public static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>
         audio.MonitorStatus switch
         {
             "playing" => $"{audio.MonitorFramesPlayed} playback frames",

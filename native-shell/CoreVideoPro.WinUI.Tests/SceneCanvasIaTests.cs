@@ -116,7 +116,14 @@ public sealed class SceneCanvasIaTests
     public void ApplyInputSlotTemplate_CreatesExactInputSlotsForCanvasPreset(string preset, int expectedCount)
     {
         var routes = Enumerable.Range(0, 10)
-            .Select(index => SceneRoutingService.BuildAddedSourceRoute("scene-1", index, $"input-{index + 1}"))
+            .Select(index =>
+            {
+                var route = SceneRoutingService.BuildAddedSourceRoute("scene-1", index, $"input-{index + 1}");
+                route.SourceScale = 1.5;
+                route.SourceOffsetX = index % 2 == 0 ? -1 : 1;
+                route.SourceOffsetY = index % 2 == 0 ? 1 : -1;
+                return route;
+            })
             .ToList();
 
         SceneRoutingService.ApplyInputSlotTemplate(routes, "scene-1", expectedCount);
@@ -132,6 +139,9 @@ public sealed class SceneCanvasIaTests
             Assert.Null(routes[index].SpotlightIndex);
             Assert.Equal(SourceAudioRole.Mix, routes[index].AudioRole);
             Assert.Equal(index, routes[index].ZIndex);
+            Assert.Equal(SourceRouteVisualDefaults.SourceScale, routes[index].SourceScale);
+            Assert.Equal(SourceRouteVisualDefaults.SourceOffsetX, routes[index].SourceOffsetX);
+            Assert.Equal(SourceRouteVisualDefaults.SourceOffsetY, routes[index].SourceOffsetY);
             Assert.NotNull(routes[index].CanvasRect);
         }
     }
@@ -158,6 +168,21 @@ public sealed class SceneCanvasIaTests
         Assert.NotNull(route.CanvasRect);
         Assert.Equal(1, route.CanvasRect.Width);
         Assert.Equal(1, route.CanvasRect.Height);
+    }
+
+    [Theory]
+    [InlineData("input-01")]
+    [InlineData("active-speaker")]
+    [InlineData("screen-share")]
+    [InlineData("media")]
+    public void BuildAddedSourceRoute_DefaultsVideoFramingToCenteredSuperSourceLayer(string optionValue)
+    {
+        var route = SceneRoutingService.BuildAddedSourceRoute("scene-1", 2, optionValue, "asset-7");
+
+        Assert.Equal(SourceRouteVisualDefaults.FitMode, route.FitMode);
+        Assert.Equal(SourceRouteVisualDefaults.SourceScale, route.SourceScale);
+        Assert.Equal(0, route.SourceOffsetX);
+        Assert.Equal(0, route.SourceOffsetY);
     }
 
     [Fact]

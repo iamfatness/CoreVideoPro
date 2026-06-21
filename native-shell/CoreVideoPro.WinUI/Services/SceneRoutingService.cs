@@ -99,6 +99,10 @@ public static class SceneRoutingService
             Mode = SourceRouteMode.None,
             AudioRole = SourceAudioRole.Mix,
             CanvasRect = new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 },
+            FitMode = SourceRouteVisualDefaults.FitMode,
+            SourceScale = SourceRouteVisualDefaults.SourceScale,
+            SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX,
+            SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY,
             ZIndex = index
         };
 
@@ -149,6 +153,10 @@ public static class SceneRoutingService
             routes[index].ShowInputSlotNumber = index + 1;
             routes[index].SpotlightIndex = null;
             routes[index].AudioRole = SourceAudioRole.Mix;
+            routes[index].FitMode = SourceRouteVisualDefaults.FitMode;
+            routes[index].SourceScale = SourceRouteVisualDefaults.SourceScale;
+            routes[index].SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+            routes[index].SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
             routes[index].ZIndex = index;
         }
     }
