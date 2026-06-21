@@ -1968,21 +1968,27 @@ const std::vector<float>& MediaCore::audioBusTapPcm(const std::string& busId) co
 rpc::Json MediaCore::captureAudioSourcesState() const {
   rpc::Json::Array sources;
   rpc::Json::Array warnings;
+  std::set<std::string> warningSet;
   int pairedCount = 0;
   int streamingCount = 0;
   int64_t totalFramesReceived = 0;
   const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
   const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
   std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
+  auto addWarning = [&](const std::string& warning) {
+    if (!warning.empty() && warningSet.insert(warning).second) {
+      warnings.emplace_back(warning);
+    }
+  };
   if (modules_.audioCapture) {
     for (const auto& metric : modules_.audioCapture->metrics()) {
       metricsByCaptureId[metric.captureDeviceId] = metric;
       if (!metric.warning.empty()) {
-        warnings.emplace_back(metric.warning);
+        addWarning(metric.warning);
       }
     }
     for (const auto& warning : modules_.audioCapture->warnings()) {
-      warnings.emplace_back(warning);
+      addWarning(warning);
     }
   }
   for (const auto& source : captureAudioSources_) {
@@ -1991,15 +1997,23 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     }
 
     if (!source.audioDeviceId.empty() && source.audioSourceKind == "asio-input") {
-      warnings.emplace_back("ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.");
+      addWarning("ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.");
     }
     if (!source.audioDeviceId.empty() && source.audioSourceKind == "embedded-capture-audio") {
-      warnings.emplace_back("Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.");
+      addWarning("Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.");
     }
 
     const auto metric = metricsByCaptureId.find(source.captureDeviceId);
     const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
     const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
+    std::string sourceWarning = metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning;
+    if (!source.audioDeviceId.empty() && metric == metricsByCaptureId.end()) {
+      sourceWarning = "Audio source is paired but no native PCM adapter is streaming it.";
+      addWarning(source.captureDeviceId + ": " + sourceWarning);
+    } else if (streaming && framesReceived <= 0) {
+      sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
+      addWarning(source.captureDeviceId + ": " + sourceWarning);
+    }
     if (streaming) {
       ++streamingCount;
     }
@@ -2020,7 +2034,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"captureFramesReceived", static_cast<double>(framesReceived)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
-        {"warning", metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning},
+        {"warning", sourceWarning},
     });
   }
 
@@ -2032,7 +2046,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
           << audioMonitorFramesPlayed_ << " monitor playback frames.";
 
   return rpc::Json::Object{
-      {"status", captureAudioSourcesSynced_ ? "ready" : "idle"},
+      {"status", !captureAudioSourcesSynced_ ? "idle" : warningSet.empty() ? "ready" : "warning"},
       {"sourceCount", static_cast<int>(captureAudioSources_.size())},
       {"pairedCount", pairedCount},
       {"streamingCount", streamingCount},

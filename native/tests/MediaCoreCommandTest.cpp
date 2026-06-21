@@ -336,8 +336,18 @@ class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptu
     return {};
   }
 
+  std::vector<corevideo::modules::CaptureAudioSourceMetrics> metrics() const override {
+    return reportedMetrics;
+  }
+
+  std::vector<std::string> warnings() const override {
+    return reportedWarnings;
+  }
+
   int configureCount = 0;
   std::vector<corevideo::modules::CaptureAudioSourceConfig> lastSources;
+  std::vector<corevideo::modules::CaptureAudioSourceMetrics> reportedMetrics;
+  std::vector<std::string> reportedWarnings;
 };
 
 }  // namespace
@@ -1937,9 +1947,16 @@ TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
 
   const auto* captureAudio = state.get("captureAudioSources");
   ASSERT_NE(captureAudio, nullptr);
-  EXPECT_EQ(captureAudio->getString("status"), "ready");
+  EXPECT_EQ(captureAudio->getString("status"), "warning");
   EXPECT_EQ(captureAudio->get("sourceCount")->asNumber(), 2);
   EXPECT_NE(captureAudio->getString("summary").find("audio input"), std::string::npos);
+  ASSERT_TRUE(captureAudio->get("warnings")->isArray());
+  EXPECT_TRUE(std::any_of(
+      captureAudio->get("warnings")->asArray().begin(),
+      captureAudio->get("warnings")->asArray().end(),
+      [](const corevideo::rpc::Json& warning) {
+        return warning.asString().find("native ASIO PCM capture requires") != std::string::npos;
+      }));
 
   const auto& sources = captureAudio->get("sources")->asArray();
   ASSERT_TRUE(sources.size() == 2u);
@@ -1947,8 +1964,60 @@ TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
   EXPECT_EQ(sources[0].getString("nativeAudioDeviceId"), "decklink-native-1");
   EXPECT_EQ(sources[0].getString("audioDriverName"), "Blackmagic DeckLink");
   EXPECT_TRUE(sources[0].get("embedded")->asBool());
+  EXPECT_FALSE(sources[0].getString("warning").empty());
   EXPECT_EQ(sources[1].getString("audioSourceKind"), "asio-input");
   EXPECT_EQ(sources[1].getString("audioDriverName"), "ASIO");
+  EXPECT_FALSE(sources[1].getString("warning").empty());
+}
+
+TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenStreamStartsWithoutPcmFrames) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* audioCapture = new RecordingAudioCaptureSource();
+  audioCapture->reportedMetrics.push_back(corevideo::modules::CaptureAudioSourceMetrics{
+      "local-machine-audio",
+      "local-machine-audio",
+      "wasapi-loopback",
+      true,
+      0,
+      48000,
+      2,
+      {}});
+  modules.audioCapture.reset(audioCapture);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+  });
+
+  const auto* captureAudio = state.get("captureAudioSources");
+  ASSERT_NE(captureAudio, nullptr);
+  EXPECT_EQ(captureAudio->getString("status"), "warning");
+  EXPECT_EQ(captureAudio->get("streamingCount")->asNumber(), 1);
+  EXPECT_EQ(captureAudio->get("captureFramesReceived")->asNumber(), 0);
+  ASSERT_TRUE(captureAudio->get("sources")->asArray().size() == 1u);
+  EXPECT_NE(
+      captureAudio->get("sources")->asArray()[0].getString("warning").find("no PCM frames"),
+      std::string::npos);
+  ASSERT_TRUE(captureAudio->get("warnings")->isArray());
+  EXPECT_TRUE(std::any_of(
+      captureAudio->get("warnings")->asArray().begin(),
+      captureAudio->get("warnings")->asArray().end(),
+      [](const corevideo::rpc::Json& warning) {
+        return warning.asString().find("no PCM frames") != std::string::npos;
+      }));
 }
 
 TEST(MediaCoreCommand, CaptureAudioSourceSyncDoesNotRestartUnchangedAdapter) {
