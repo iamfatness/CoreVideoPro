@@ -1,9 +1,14 @@
 # CoreVideo Pro — Native Production Completion: Plan & Spec
 
-_Status snapshot: 2026-06-20. Owner: production / native media-core. This is the
+_Status snapshot: 2026-06-21. Owner: production / native media-core. This is the
 plan and per-feature spec for closing the gap between the **typed contract surface**
-(which is broad and well-tested) and the **real native media pipeline** (which is
-still synthetic/telemetry in the areas below)._
+(which is broad and well-tested) and the **real native media pipeline**._
+
+_Reconciled 2026-06-21 against the current source: items 5 (recording), 6 (audio),
+7 (RTMP audio), and 8 (scene framing) have landed real implementations and are no
+longer synthetic/telemetry — the §1 matrix below reflects this. The remaining
+synthetic/unfinished work is real device capture (F1: items 1–3 ingest), overlay/
+caption raster (item 9), SRT output, and the dev-rig/hardware validation pass._
 
 This document covers ten capability gaps where the UI, protocol, and state machine
 are wired but the native pixel/PCM/transport implementation is not yet production
@@ -79,10 +84,10 @@ pixels. Items 8 and 9 are F3.
 | 3 | SRT ingest | Real libsrt sockets + packet RX; `pixels` empty, no decoder, no audio | Transport-only | F1 + decoder stage |
 | 3 | SRT output | `createSrtOutputSender()` returns `nullptr` (both arms) | None | F2 + libsrt + encoder |
 | 4 | NDI sender | No native sender exists; UI/validation + synthetic mock only | Contract-only | F1 + F2 + NDI SDK |
-| 5 | Recording | Media Foundation writes **synthetic** BGRA at fixed 1080p30 H.264; no audio; ISO is a synthetic count | Synthetic | F1 + F2 + F3 |
-| 6 | Audio pipeline | `AudioDsp` computes gain/LUFS/limiter **telemetry**, no PCM; monitor is `Beep()`; ASIO/VST/embedded audio state-only | Telemetry | this **is** F2 |
-| 7 | RTMP | Real FFmpeg + BGRA program-frame pipe (Windows); audio is `anullsrc`; H.265/AV1 FLV compat unverified | Closest to real | F2 + codec/muxer fixes |
-| 8 | Scene source framing | Compositor carries `fitMode/sourceScale/sourceOffset/border`; D3D11 ignores them (rect+color-grade only) | Carried, not applied | this **is** F3 (framing) |
+| 5 | Recording | Muxes the **real** composed program frame + **real** program audio; honors the requested resolution/fps (`kDefault*` are fallbacks only, `MediaFoundationEncoderAdapter.cpp:539`) | Real (Windows MF) | dev-rig A/V-sync + 30-min soak proof |
+| 6 | Audio pipeline | **Real PCM** routing matrix with program/ISO taps, BS.1770 master meter, bus-insert compressor/limiter; WASAPI monitor dev-gated. ASIO/VST/embedded audio still state-only | Mostly real (= F2) | ASIO capture + VST3 host |
+| 7 | RTMP | Real FFmpeg + BGRA program-frame pipe (Windows); feeds the **real** F2 program-audio tap (`anullsrc` only as fallback, `RtmpOutputSenderAdapter.cpp:700`); H.264/AAC compat matrix resolved | Real (dev-gated) | live push proof + E-RTMP opt-in + POSIX pipe |
+| 8 | Scene source framing | D3D11 **applies** `fitMode`/`sourceScale`/`sourceOffset`/border (`D3D11CompositorAdapter.cpp:601`), matching the CPU stub | Real | Windows visual parity smoke |
 | 9 | Overlays / lower-thirds / captions | Tracked + placed as fixed colored rects; no text/image/animation/brand | Placed, not rendered | this **is** F3 (raster) |
 | 10 | Automation / AI | 100% TS heuristics (`autoProductionDirector.ts`, `buildMagicScene`); zero ML; no native involvement | Heuristic | optional model service |
 

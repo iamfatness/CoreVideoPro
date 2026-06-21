@@ -1,156 +1,121 @@
 # CoreVideo Pro
 
-CoreVideo Pro is a standalone native desktop production app for producing high-quality online conversations and building polished live and recorded shows directly from Zoom participants. This repository contains the native Studio shell, WinUI shell, C++ media core, typed product state, and engine contracts for Zoom capture, AI production, and output layers.
+CoreVideo Pro is a **native Windows desktop production studio** for building polished
+live shows, recordings, and streams directly from Zoom participants — Magic Scene
+auto-layout, lower-thirds, captions, smart framing, audio leveling, and
+multi-destination output, in a single operator console.
 
-This is not intended to ship as a browser-hosted SPA, and the Electron app has been removed. The active app paths are the native C++ Studio in `studio/` and the WinUI native shell in `native-shell/`, with media capture, compositing, recording, streaming, diagnostics, and packaging handled by native desktop processes behind typed IPC contracts.
+This is **not** a browser-hosted SPA, and **Electron has been removed**. The active
+product paths are the WinUI native shell in `native-shell/` and the native C++ Studio
+shell in `studio/`, with capture, compositing, recording, streaming, diagnostics, and
+packaging handled by native desktop processes behind typed IPC contracts. Do not add
+new Electron work.
 
-The product depends on a native media core for real-time Zoom ingest, GPU compositing, chroma key, overlays, audio mixing, recording, ISO capture, and streaming. Do not add new Electron work; use the native Studio/WinUI paths.
-
-**Roadmap:** the demo-driven, sprint-by-sprint path to the first live demo lives in [`docs/roadmap/index.html`](docs/roadmap/index.html) — open it in a browser.
-
-**Native production completion:** the plan and per-feature spec for turning the synthetic/telemetry native paths (UVC/AJA/DeckLink capture, SRT, NDI, recording, audio, RTMP, compositor framing, overlays, automation) into real implementations lives in [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
-
-## Current Slice
-
-- React + Vite app shell for the operator console.
-- Editable Zoom connection workflow for meeting URL/ID, producer display name, and webinar mode before joining.
-- Deterministic simulated Zoom session with join, leave, feed refresh, active speaker rotation, captions, and feed health.
-- Capture snapshot mapper that normalizes raw Zoom-like participant events into immutable app-level snapshots.
-- Breakout-aware participant metadata and filters for isolating main-room or breakout-room feeds and screen shares.
-- Producer role overrides for Zoom participants so Magic Scene and show routing can use stable Host, Presenter, Panelist, and Guest assignments.
-- Simulated media frame model for participant video and screen share, including frame IDs, resolution, FPS, frame age, health, and smart-crop rectangles.
-- Engine bundle injection so the UI can swap mock engines for native Zoom/media implementations without importing mock singletons.
-- Native Zoom bridge adapter shell with typed command/response protocol for a future SDK process or desktop IPC transport.
-- Shell-agnostic native host bridge bootstrap: the renderer uses a preload/native bridge when present and falls back to mock engines only for local development.
-- Native media-core capability contract for raw Zoom media, GPU scene graph rendering, direct participant transforms, overlays, chroma key, program/ISO recording, and RTMP/NDI/SRT/WebRTC output.
-- Native media-core command builder that serializes the Zoom source roster, active speaker, screen-share source, active scene graph, Zoom participant routes, participant transforms, color grade, enabled graphics, selected output profile, explicit recording targets/session lifecycle, and streaming destinations into shell-independent payloads for a future C++/Rust media engine.
-- Renderer-to-media-core sync engine that pushes production state into native media-core snapshots and surfaces synced source count, resolved routes, render-plan layers, scene, frame, transform, overlay, output health, recording health, and warning status in the app.
-- `native-core` workspace with the first backend media-core process boundary: a JSON-line service, spawnable client, runtime state machine, pluggable media-source adapter contract, deterministic test-pattern source, recording writer lifecycle model, and tests for applying scene graph, transform, overlay, recording, ISO, frame, and output commands.
-- Runtime-selectable media-source adapters through `set-media-source-adapter`, currently covering deterministic test-pattern and clean local-camera-shaped sources behind the same contract future Zoom SDK ingest will use.
-- Native source routing registry and render-plan snapshots that resolve fixed participant, active-speaker, spotlight, screen-share, and disabled routes into compositor-ready layers with operator warnings for missing feeds, muted isolated audio, duplicate video assignments, and unavailable screen share.
-- Native compositor contract with stable render-plan IDs, program-frame snapshots, compositor health, reconfigure reasons, degraded/dropped frame counts, and a clear split between source frames for ISO capture and composed program frames for output.
-- Native program-frame transport snapshot for the in-process preview/program path so the UI can inspect whether composed frames are being published before pixel transport lands.
-- F3 real compositor pixel pipeline: per-source framing (fit/letterbox, fill/cover-crop, stretch, source zoom/pan, and styled borders) and overlay/lower-third/caption raster (brand-styled text + image placement, animated key-phase building-in/on-air/building-out transform/alpha, and caption speaker bands) applied in both the D3D11 GPU compositor (vertex+pixel-shader UV transform, border pass, and overlay-raster stage; DirectWrite/WIC text+image raster is the remaining Windows smoke-pass seam) and the headless CPU-stub preview, so program and preview share identical framing/overlay math.
-- Native encoder target and lifecycle boundary that attaches recording, ISO, RTMP, NDI, SRT, and WebRTC outputs to the program-frame stream and surfaces per-target health, prepare/start/stop state, and output warnings before real sender implementations land.
-- Native output sender session model for RTMP, NDI, SRT, and WebRTC program senders, including active sender counts, sent frame counts, latency, bitrate, retry warnings, and stopped sender diagnostics.
-- Explicit runtime recovery commands for failed output senders and recording writers so diagnostics preserve failures until the operator or automation recovers the affected path.
-- Backend recording-session snapshots with session IDs, target folders, encoder intent, program/ISO file paths, elapsed time, estimated disk rate, stream frame counts, byte counters, stopped/failed writer states, and warning state surfaced in the app's Native core readout.
-- Native media-core diagnostic snapshots with source adapter health, scene/output state, program transport, compositor state, encoder targets, recording health, warnings, and command history for future support-bundle export.
-- Native audio-mix and caption-track commands (`sync-participant-audio-mix`, `push-caption-cue`, `set-caption-enabled`) threaded through the typed media-core boundary with per-participant gain/limiter state, master loudness, mixed-frame counts, live caption cues, and Native core readout in the operator UI.
-- Native audio routing gain matrix (`sync-audio-routing-matrix`) threaded through the typed media-core boundary so the WinUI Routing tab's source-to-bus crosspoints (PGM L/R, ISO 1/2, MON, STREAM) drive the audio mix, with per-bus source counts, routed-send totals, gain clamping to [-60, 10] dB, and unrouted-source warnings surfaced in the Native core readout.
-- Set & Forget auto-director stabilization with screen-share and scene-change holds, automatic brand-kit application to graphics and the native core (`set-brand-kit`), and one-click resume to automation after manual override.
-- Interactive Media tab playback (`set-media-playback`) threaded through the typed media-core boundary so each media-bin asset has a Play/pause control that selects the clip, toggles playback, and pushes the selection and playing state to the native core, with a now-playing readout, paused/playing status, and empty-asset warnings surfaced in the media-playback snapshot.
-- Native output profile snapshots for shared recording/RTMP/NDI/SRT/WebRTC resolution, FPS, and target bitrate decisions before real sender implementations land.
-- Native output bridge adapter shell for recording, streaming, output-profile selection, output health, and output-session state.
-- Simulated output session model that tracks recording, streaming, elapsed output time, recording file, stream target, and health.
-- Configurable local recording settings for folder, filename prefix, format, and quality, with preflight validation carried through the output engine and show presets.
-- Selected participant ISO recording feeds for program-plus-clean-guest capture, with ISO-aware output status, encoder load, and diagnostics runway estimates.
-- Output profile controls for 1080p/4K and 30/60fps with bitrate and encoder-health simulation.
-- Multi-destination output model for RTMP, NDI, and SRT targets with editable endpoint/key settings, armed/live state, latency, bitrate, and per-destination health.
-- Output preflight checks that block streaming when armed destinations are missing required endpoints, stream keys, or protocol-compatible URLs.
-- Diagnostics support bundle engine with redacted output secrets, human triage lines, output health, participant feed guidance, ISO runway estimates, and sanitized native media-core runtime summaries.
-- Smart audio mix engine for per-participant gain, mute state, noise suppression, limiter status, master level, and loudness summary.
-- Manual per-participant audio gain trim layered on top of smart leveling for fast producer correction.
-- Adaptive caption and overlay engine with speaker attribution, confidence, latency, lower-third placement, and collision warnings.
-- Graphics library model with toggleable brand bug, live banner, and call-to-action program overlays.
-- Per-participant video effects for manual crop override, manual zoom, and chroma key state.
-- Program-first scene workflow with optional Preview Monitor, Cut/Fade/Slide transitions, and explicit Take behavior.
-- Keyboard command layer for Take, Record, Stream, Magic Scene, feed refresh, and optional Preview Monitor without stealing focus from text fields.
-- Manual scene slot assignment so producers can choose which Zoom participants fill preview scene layouts before taking them live.
-- Route-aware scene slots with fixed participant, active speaker, spotlight, screen-share, and none modes plus per-slot audio roles.
-- Show preset engine for saving and reloading scenes, graphics, participant video effects, destinations, mode, and transitions.
-- Scene-template layout model for intro, interview, speaker-plus-slides, panel grid, and closing layouts.
-- Engine-backed Magic Scene interaction.
-- Set & Forget auto-director that recommends, queues, and automatically takes scene layouts from live Zoom state.
-- Scene list, program preview, lower-third, captions, participant roster, smart handling, audio/output health.
-- TypeScript contracts for:
-  - Zoom capture.
-  - AI Magic Scene generation.
-  - recording/streaming output.
-- Vitest coverage for Magic Scene, simulated Zoom session state, and core UI controls.
-- Mapper tests for raw participant normalization, video-off behavior, feed-health mapping, and immutable snapshot output.
-- Breakout tests for raw Zoom metadata normalization and participant/screen-share filtering.
-- Media-frame tests for low-resolution feeds, video-off handling, screen-share source identity, and active-speaker crop behavior.
-- Output-session tests for idle, recording, streaming, combined output, and active elapsed-time behavior.
-- Output-profile tests for 1080p/4K selection, profile-aware bitrate, and encoder health.
-- Multi-destination and recording preflight tests for arming targets, output readiness, live target health, aggregate bitrate, and network warning behavior.
-- ISO recording tests for selected participant feeds, output-session status, native bridge payloads, support-bundle runway, and UI controls.
-- Native host and media-core protocol tests proving the UI shell is not the real-time video engine.
-- Native media-core command tests proving production state can be handed to a native compositor without binding the renderer to browser capture APIs.
-- Native audio-mix and caption-track tests in `native-core` and the renderer sync/mapper layers proving participant leveling and live caption cues round-trip through the media-core snapshot contract.
-- Audio routing matrix tests in `native-core` (`mediaCore.test.ts`), the renderer command builder and sync engine (`nativeMediaCoreCommands.test.ts`, `mediaCoreSync.test.ts`), and the C++ media core (`ContractParityTest.cpp`, `MediaCoreCommandTest.cpp`) proving routed source-to-bus sends round-trip with gain clamping, per-bus source counts, and out-of-range/unrouted-source warnings.
-- Auto-director hold tests and brand-kit command tests proving unattended production stays stable and on-brand through the media-core snapshot contract.
-- Media playback tests in `native-core` (`mediaCore.test.ts`), the C++ media core (`ContractParityTest.cpp`, `MediaCoreCommandTest.cpp`), and the WinUI command builder (`MediaCoreCommandBuilderTests.cs`) proving `set-media-playback` selects a clip, reports playing/paused/idle status in the snapshot, and warns when no media asset id is supplied.
-- Diagnostics tests for support bundle redaction, low-quality feed guidance, duplicate assignments, missing screen share, and UI export flow.
-- Scene-layout tests proving template selection changes the rendered program preview.
-- Audio-mix tests for smart leveling, producer mute/gain overrides, and UI control behavior.
-- Caption-overlay tests for speaker attribution, adaptive placement, collision warnings, and scene-change updates.
-- Graphics library tests proving overlays can be toggled into the program preview.
-- Transition tests proving scenes queue to preview before being taken to program.
-- Scene-slot tests proving manually assigned Zoom participants render in program after Take.
-- Routing tests proving active-speaker slots and route metadata drive preview composition and diagnostics warnings.
-- Auto-production tests for screen-share holds, panel recommendations, manual queueing, and Set & Forget auto-take behavior.
-- Preset tests for serializing repeatable show setup, listing summaries, loading presets, and restoring UI state.
-- Video-effects tests for chroma key toggles, manual crop zoom, and preview badges.
-
-## Planned Native Runtime Shape
-
-The operator surface talks to native desktop engines through a narrow bridge:
+## Architecture
 
 ```text
-CoreVideo Pro Native Studio / WinUI Shell
-  -> Operator Surface
-  -> EngineBundle
-  -> ZoomCaptureEngine
-  -> NativeZoomTransport
-  -> CaptureSnapshotMapper / native output session mapper
-  -> AiProductionEngine
-  -> AudioMixEngine
-  -> CaptionOverlayEngine
-  -> PresetEngine
-  -> OutputEngine
-  -> NativeOutputEngineAdapter
-  -> NativeMediaCoreCommands
-  -> MediaCoreServiceClient
-  -> native-core service boundary
-  -> Zoom source registry / route resolver
-  -> compositor render plan
-  -> media source adapter (Zoom SDK / local camera / test pattern)
-  -> program compositor / program frame stream
-  -> in-process preview/program transport
-  -> encoder target + lifecycle boundary
-  -> output sender sessions (RTMP / NDI / SRT / WebRTC)
-  -> recording writer lifecycle / program + ISO stream counters
-  -> output profile model
-  -> output health and diagnostics snapshots
-  -> Native Media Core
-  -> Zoom SDK raw audio/video ingest
-  -> GPU compositor / scene graph / overlays / chroma key
-  -> audio mixer / encoder / recorder / stream outputs
+WinUI 3 shell (.NET 9)              native-shell/CoreVideoPro.WinUI
+  └─ embedded React + Vite UI       src/  (operator console, immutable production state)
+       └─ typed command/snapshot    src/engine/contracts.ts, engineBundle.ts
+            protocol (JSON-line)
+            └─ C++ media core        native/   (real-time pixels/PCM/transport)
+               (Node mirror for CI)  native-core/  (protocol + runtime parity, in-container)
+                  └─ Zoom ingest · D3D11 compositor · audio mixer/DSP ·
+                     Media Foundation recorder · RTMP/NDI/SRT/WebRTC senders ·
+                     diagnostics / support bundles
 ```
 
-The current `src/engine/contracts.ts` and `src/engine/engineBundle.ts` files are the boundary for that work. The mock engines should be replaced incrementally, not rewritten, as each native desktop capability lands.
+The renderer never owns the real-time media pipeline. It serializes production state
+([`src/domain/production.ts`](src/domain/production.ts)) into transport-neutral commands
+([`src/engine/nativeMediaCoreCommands.ts`](src/engine/nativeMediaCoreCommands.ts)) and
+reads back immutable `*Snapshot`s. The wire types exist three times and stay in lockstep
+via a parity gate: the C++ core ([`native/src/core/Protocol.h`](native/src/core/Protocol.h)),
+the Node mirror ([`native-core/src/protocol.ts`](native-core/src/protocol.ts)), and the
+renderer mirror ([`src/engine/nativeMediaCoreProtocol.ts`](src/engine/nativeMediaCoreProtocol.ts)).
+
+The default in-container build is **stub-first** (`-DCOREVIDEO_STUB=ON`,
+`-DCOREVIDEO_ENABLE_DEV_ADAPTERS=OFF`): every capability has a deterministic synthetic
+implementation so contracts and tests run with no hardware. Real Zoom SDK, GPU, encoder,
+and hardware-transport code lives behind `COREVIDEO_ENABLE_DEV_ADAPTERS` plus a per-feature
+`COREVIDEO_WITH_*` flag and is only built on a Windows dev rig with the vendor SDKs staged.
+
+## Capabilities & status
+
+Status legend: **Real** = implemented and exercised in the portable/CI build · **Dev-gated**
+= implemented behind a `COREVIDEO_WITH_*` flag, runs only on a Windows rig with SDKs ·
+**In progress** = wired through the contract but the native pixel/PCM path is unfinished.
+
+| Area | Capability | Status |
+|---|---|---|
+| **Capture** | Zoom roster, active speaker, captions, feed health, breakout filters, producer roles | Real (simulated session) |
+| | Real Zoom Meeting SDK ingest via the vendored `corevideo-zoom-engine` (raw I420 over shared memory) | Dev-gated (`COREVIDEO_WITH_ZOOM`) |
+| | Test-pattern / local-camera source delivering real pixels into the core | Real |
+| | Live UVC camera & DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress |
+| **Compositor** | Route resolver, render-plan layers, program/preview parity math | Real |
+| | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
+| | Overlay / lower-third / caption **text & image rasterization** (DirectWrite/WIC) | In progress |
+| | D3D11 GPU compositor | Dev-gated (`COREVIDEO_WITH_D3D11`) |
+| **Audio** | PCM routing matrix, program/ISO taps, BS.1770 master meter, bus-insert dynamics, limiter | Real |
+| | WASAPI monitor output · ASIO capture · VST3 insert host | Dev-gated / In progress |
+| **Recording** | Program + ISO mux with real program audio, profile-driven resolution/fps | Real path (MF encoder is Windows) |
+| **Streaming** | RTMP with real program-audio feed + H.264/AAC compatibility matrix | Dev-gated (`COREVIDEO_WITH_RTMP_OUTPUT`, FFmpeg) |
+| | NDI sender · SRT ingest decode | Dev-gated / In progress |
+| | SRT **output** sender | In progress (not yet implemented) |
+| **Production** | Magic Scene, Set & Forget auto-director, presets, brand kit, media playback | Real (heuristic, no ML) |
+| **Diagnostics** | Support bundle with redacted secrets, output/recording health, crash events | Real |
+
+> **Release readiness.** The contract surface is broad and well-tested, but the native
+> hardware paths above have not yet passed a Windows dev-rig validation pass (real Zoom
+> join, GPU/encoder, record-and-stream on a clean machine). See
+> [`docs/alpha-plan.md`](docs/alpha-plan.md) and
+> [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md)
+> for the exit bar and the remaining real-implementation work.
+
+## Repository layout
+
+| Path | Role |
+|---|---|
+| `src/` | React + Vite operator console, immutable production state, engine contracts |
+| `native-shell/` | **WinUI 3 (.NET 9)** desktop shell — primary product path and packaging |
+| `studio/` | Native C++ Win32 test shell for fast desktop validation |
+| `native/` | C++20 media core (compositor, audio, encoder, output adapters) + vendored Zoom engine |
+| `native-core/` | Node.js mirror of the media-core protocol/runtime for in-container tests |
+| `services/` | Backend services (caption broker, license) |
+| `scripts/` | PowerShell build / package / sign / validation scripts (Windows) |
+| `docs/` | Roadmap, alpha plan, native completion plan, and reference specs |
 
 ## Commands
 
 ```powershell
 npm install
-npm run dev
-npm run dev:native-core
-npm run test
-npm run test:native-core
+npm run dev                 # operator UI against mock engines (any platform)
+npm run dev:native-core     # Node media-core service (in-container parity)
 npm run typecheck
-npm run build
-npm run build:native-core
-npm run build:studio
-npm run run:studio
+npm run test                # vitest unit + integration
+npm run test:native-core    # Node media-core tests
+npm run build               # tsc + vite production bundle
+npm run build:studio        # C++ media core + native Studio shell (Windows)
+npm run run:studio          # launch the native Studio shell (Windows)
+npm run pack:native         # stage the WinUI shell + native core for distribution
 ```
+
+Full Windows gate (typecheck + all renderer/native/shell suites): `npm run test:gate`.
+Offline readiness report: `npm run alpha:preflight`.
 
 ## MVP North Star
 
-The first fully useful milestone is:
+The first fully useful milestone:
 
 1. Join Zoom.
 2. See clean participant feeds and metadata.
 3. Click Magic Scene.
-4. Get a polished show with lower-thirds, captions, smart framing, audio leveling, and RTMP/local recording controls.
+4. Get a polished show with lower-thirds, captions, smart framing, audio leveling, and
+   RTMP / local-recording controls.
+
+## Further reading
+
+- Sprint-by-sprint demo roadmap: [`docs/roadmap/index.html`](docs/roadmap/index.html) (open in a browser).
+- Alpha build plan & exit bar: [`docs/alpha-plan.md`](docs/alpha-plan.md).
+- Native production completion plan: [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
+- Product spec & positioning: [`COREVIDEO_PRO_PRODUCT_SPEC.md`](COREVIDEO_PRO_PRODUCT_SPEC.md).
+- WinUI shell setup: [`native-shell/README.md`](native-shell/README.md) · Studio shell: [`studio/README.md`](studio/README.md).
