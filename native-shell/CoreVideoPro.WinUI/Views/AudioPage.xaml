@@ -127,6 +127,44 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
+                        <Border Background="#0C1118"
+                                BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="12">
+                            <Grid ColumnSpacing="12" RowSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.3*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="5">
+                                    <TextBlock Text="Local audio source"
+                                               FontSize="12"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                                <ComboBox Grid.Column="1"
+                                          Header="Input / loopback"
+                                          ItemsSource="{x:Bind ViewModel.AudioCaptureDevices, Mode=OneWay}"
+                                          SelectedValue="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceId, Mode=TwoWay}"
+                                          SelectedValuePath="Id"
+                                          DisplayMemberPath="DisplayLabel"
+                                          HorizontalAlignment="Stretch" />
+                                <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
+                                    <ToggleSwitch Header="Source"
+                                                  IsOn="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}" />
+                                    <TextBlock Text="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceName, Mode=OneWay}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords"
+                                               MaxWidth="180" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
                         <Grid ColumnSpacing="10">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
