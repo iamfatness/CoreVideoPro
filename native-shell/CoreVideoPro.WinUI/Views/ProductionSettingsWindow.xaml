@@ -391,9 +391,11 @@
                                           SelectedValuePath="Id"
                                           DisplayMemberPath="DisplayLabel"
                                           HorizontalAlignment="Stretch" />
-                                <ToggleSwitch Grid.Column="1"
-                                              Header="Route to mix"
-                                              IsOn="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}" />
+                                <ToggleButton Grid.Column="1"
+                                              Content="Source"
+                                              IsChecked="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}"
+                                              MinWidth="96"
+                                              VerticalAlignment="Bottom" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
@@ -409,8 +411,10 @@
                                       SelectedValuePath="Id"
                                       DisplayMemberPath="Name"
                                       HorizontalAlignment="Stretch" />
-                            <ToggleSwitch Header="Monitor"
-                                          IsOn="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" />
+                            <ToggleButton Content="Monitor"
+                                          IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
+                                          MinWidth="96"
+                                          HorizontalAlignment="Left" />
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />

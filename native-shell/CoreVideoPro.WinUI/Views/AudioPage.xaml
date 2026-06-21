@@ -106,8 +106,10 @@
                                           DisplayMemberPath="Name"
                                           HorizontalAlignment="Stretch" />
                                 <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
-                                    <ToggleSwitch Header="Monitor"
-                                                  IsOn="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}" />
+                                    <ToggleButton Content="Monitor"
+                                                  IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
+                                                  MinWidth="96"
+                                                  HorizontalAlignment="Stretch" />
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
@@ -155,8 +157,10 @@
                                           DisplayMemberPath="DisplayLabel"
                                           HorizontalAlignment="Stretch" />
                                 <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
-                                    <ToggleSwitch Header="Source"
-                                                  IsOn="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}" />
+                                    <ToggleButton Content="Source"
+                                                  IsChecked="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}"
+                                                  MinWidth="96"
+                                                  HorizontalAlignment="Stretch" />
                                     <TextBlock Text="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceName, Mode=OneWay}"
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
