@@ -153,6 +153,16 @@ public sealed partial class ParticipantTileControl : UserControl
 
     public bool IsScreenSharing => Participant?.IsScreenSharing == true;
 
+    public string SurfaceKey => SurfaceState?.SurfaceKey ?? Participant?.Id ?? "tile";
+
+    public string? MediaAssetPath => SurfaceState?.MediaAssetPath;
+
+    public string? MediaAssetKind => SurfaceState?.MediaAssetKind;
+
+    public bool MediaAssetPlaying => SurfaceState?.MediaAssetPlaying == true;
+
+    public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
+
     private static void OnParticipantChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ParticipantTileControl tile)
@@ -174,6 +184,7 @@ public sealed partial class ParticipantTileControl : UserControl
     {
         if (sender is ParticipantTileControl tile)
         {
+            tile.Bindings.Update();
             tile.UpdatePreviewBitmap();
             tile.ApplySourceFraming();
         }
@@ -240,6 +251,16 @@ public sealed partial class ParticipantTileControl : UserControl
             PlaceholderPanel.Visibility = Visibility.Visible;
             InitialsBadge.Visibility = Visibility.Visible;
             InitialsText.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (HasMediaAssetPreview)
+        {
+            BgraPreviewHelper.SetPreview(PreviewImage, null, 0, 0);
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PlaceholderPanel.Visibility = Visibility.Collapsed;
+            InitialsBadge.Visibility = Visibility.Collapsed;
+            InitialsText.Visibility = Visibility.Collapsed;
             return;
         }
 

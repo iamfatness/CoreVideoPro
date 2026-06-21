@@ -6826,18 +6826,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var isSelectedAndPlaying = ShouldAutoPlayMediaRoute(asset.Id, isProgramScene);
+        var mediaSourceId = ShowInputRosterService.ToMediaSourceId(asset.Id);
+        var surfaceKey = isProgramScene ? $"program:{mediaSourceId}" : $"preview:{mediaSourceId}";
         return new ParticipantSurfaceTile
         {
             Participant = new Participant
             {
-                Id = ShowInputRosterService.ToMediaSourceId(asset.Id),
+                Id = mediaSourceId,
                 Name = asset.Name,
                 Title = asset.Kind,
                 Role = ParticipantRole.Guest,
                 Health = isSelectedAndPlaying ? FeedHealth.Live : FeedHealth.VideoOff
             },
             Surface = VideoSurfaceState.MediaAssetPreview(
-                ShowInputRosterService.ToMediaSourceId(asset.Id),
+                surfaceKey,
                 asset.Name,
                 asset.FilePath,
                 asset.Kind,

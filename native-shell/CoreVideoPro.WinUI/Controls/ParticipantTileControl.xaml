@@ -3,6 +3,7 @@
     x:Name="Root"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls"
     xmlns:conv="using:CoreVideoPro.WinUI.Converters"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -24,6 +25,13 @@
                    HorizontalAlignment="Left"
                    VerticalAlignment="Top"
                    Visibility="Collapsed" />
+
+            <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
+                                              FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
+                                              Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
+                                              IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
+                                              PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
+                                              Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
 
             <Border x:Name="PlaceholderPanel" CornerRadius="8" Opacity="0.55">
                 <Border.Background>
