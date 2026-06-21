@@ -5180,8 +5180,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
-            OutputStatus = validationError;
-            OutputSessionStatus = validationError;
+            Streaming = false;
+            RefreshOutputStatus();
+            OutputStatus = $"{validationError} Streaming stopped.";
+            OutputSessionStatus = OutputStatus;
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = $"Streaming stop sync failed after invalid settings: {ex.Message}";
+                    OutputSessionStatus = OutputStatus;
+                });
+            }
+
             return;
         }
 

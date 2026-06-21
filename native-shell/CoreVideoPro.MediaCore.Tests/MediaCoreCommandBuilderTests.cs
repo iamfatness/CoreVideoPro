@@ -350,6 +350,22 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void StopsEncoderSessionWhenStreamingHasNoDestinations()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            Streaming = true,
+            StreamDestinations = []
+        });
+
+        Assert.Contains(commands, command => command.Type == "stop-encoder-session");
+        Assert.DoesNotContain(commands, command => command.Type == "prepare-encoder-session");
+        Assert.DoesNotContain(commands, command => command.Type == "start-program-output");
+        Assert.DoesNotContain(commands, command => command.Type == "start-encoder-session");
+    }
+
+    [Fact]
     public void BuildsFullTakeSyncBatchWithSceneRoutesRosterAndOutputs()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

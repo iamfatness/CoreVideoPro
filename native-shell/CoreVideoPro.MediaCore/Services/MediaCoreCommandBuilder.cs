@@ -385,7 +385,12 @@ public static class MediaCoreCommandBuilder
 
         if (context.Streaming)
         {
-            destinations.AddRange(context.StreamDestinations);
+            destinations.AddRange(context.StreamDestinations.Where(destination => !string.IsNullOrWhiteSpace(destination)));
+        }
+
+        if (destinations.Count == 0)
+        {
+            return null;
         }
 
         return Command("start-program-output", new Dictionary<string, object?>
