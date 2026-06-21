@@ -58,6 +58,23 @@ public sealed class CaptureDeviceFormatSelectorTests
     }
 
     [Fact]
+    public void ShouldKeepReaderOnlineAfterFirstFrameTimeout_OnlyKeepsFinalCaptureCardFallback()
+    {
+        Assert.False(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterFirstFrameTimeout(
+            allowsLateFirstFrame: true,
+            candidateIndex: 0,
+            candidateCount: 3));
+        Assert.False(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterFirstFrameTimeout(
+            allowsLateFirstFrame: false,
+            candidateIndex: 2,
+            candidateCount: 3));
+        Assert.True(CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterFirstFrameTimeout(
+            allowsLateFirstFrame: true,
+            candidateIndex: 2,
+            candidateCount: 3));
+    }
+
+    [Fact]
     public void Score_PenalizesNonWideAspectModesThatCauseStretchedUvcTiles()
     {
         var wide = new CaptureDeviceFormatCandidate(1920, 1080, 30, "NV12");

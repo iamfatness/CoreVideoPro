@@ -61,6 +61,14 @@ public static class CaptureDeviceFormatSelector
         };
     }
 
+    public static bool ShouldKeepReaderOnlineAfterFirstFrameTimeout(
+        bool allowsLateFirstFrame,
+        int candidateIndex,
+        int candidateCount) =>
+        allowsLateFirstFrame &&
+        candidateCount > 0 &&
+        candidateIndex == candidateCount - 1;
+
     public static string NormalizeSubtype(string? subtype)
     {
         var normalized = subtype?.Trim().ToUpperInvariant() ?? string.Empty;
@@ -247,12 +255,20 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 $"capture: supported formats {_stableDeviceId} {string.Join("; ", formats.Take(8).Select(FormatLabel))}");
 
             var errors = new List<string>();
-            foreach (var format in BuildStartupCandidates(source, formats))
+            var candidates = BuildStartupCandidates(source, formats);
+            for (var i = 0; i < candidates.Count; i++)
             {
+                var format = candidates[i];
                 CaptureDeviceFormatTelemetry? telemetry = null;
                 try
                 {
-                    telemetry = await TryStartReaderAsync(source, format).ConfigureAwait(false);
+                    telemetry = await TryStartReaderAsync(
+                        source,
+                        format,
+                        CaptureDeviceFormatSelector.ShouldKeepReaderOnlineAfterFirstFrameTimeout(
+                            _allowLateFirstFrame,
+                            i,
+                            candidates.Count)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -434,7 +450,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private static int RowOffset(int startIndex, int stride, int height, int row, bool flipRows) =>
             startIndex + (flipRows ? height - 1 - row : row) * stride;
 
-        private async Task<CaptureDeviceFormatTelemetry?> TryStartReaderAsync(MediaFrameSource source, MediaFrameFormat format)
+        private async Task<CaptureDeviceFormatTelemetry?> TryStartReaderAsync(
+            MediaFrameSource source,
+            MediaFrameFormat format,
+            bool keepOnlineAfterFirstFrameTimeout)
         {
             await DisposeReaderAsync().ConfigureAwait(false);
             Interlocked.Exchange(ref _loggedFirstPublishedFrame, 0);
@@ -467,7 +486,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 return await _firstFramePublished.Task.ConfigureAwait(false);
             }
 
-            if (_allowLateFirstFrame)
+            if (keepOnlineAfterFirstFrameTimeout)
             {
                 LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; keeping reader online for late HDMI signal");
                 return FormatTelemetry;
