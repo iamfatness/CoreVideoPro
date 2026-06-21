@@ -131,6 +131,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _publishedSinceHealthLog;
         private double _measuredFps;
         private int _fpsSampleCount;
+        private TaskCompletionSource<CaptureDeviceFormatTelemetry>? _firstFramePublished;
 
         public CaptureSession(string stableDeviceId, string nativeDeviceId)
         {
@@ -162,19 +163,26 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 throw new InvalidOperationException("No color video frame source was exposed by this device.");
             }
 
-            await SelectPreferredFormatAsync(source).ConfigureAwait(false);
-            CaptureFormatTelemetry(source);
+            var formats = GetRankedFormats(source);
+            LaunchLog.Write(
+                $"capture: supported formats {_stableDeviceId} {string.Join("; ", formats.Take(8).Select(FormatLabel))}");
 
-            _reader = await _capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8);
-            _reader.FrameArrived += OnFrameArrived;
-            var status = await _reader.StartAsync();
-            if (status != MediaFrameReaderStartStatus.Success)
+            var errors = new List<string>();
+            foreach (var format in BuildStartupCandidates(source, formats))
             {
-                throw new InvalidOperationException($"Frame reader did not start: {status}");
+                var telemetry = await TryStartReaderAsync(source, format).ConfigureAwait(false);
+                if (telemetry is not null)
+                {
+                    return telemetry;
+                }
+
+                errors.Add(FormatLabel(format));
             }
 
-            LaunchLog.Write($"capture: started {_stableDeviceId} {_formatWidth}x{_formatHeight} {_formatFps}fps");
-            return FormatTelemetry;
+            throw new InvalidOperationException(
+                errors.Count == 0
+                    ? "Frame reader did not start for any exposed color format."
+                    : $"Frame reader produced no frames after trying: {string.Join(", ", errors)}");
         }
 
         private void OnFrameArrived(MediaFrameReader sender, MediaFrameArrivedEventArgs args)
@@ -218,6 +226,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     FrameId = Interlocked.Increment(ref _frameId),
                     TimestampMs = now
                 });
+                _firstFramePublished?.TrySetResult(FormatTelemetry);
                 Interlocked.Increment(ref _publishedSinceHealthLog);
                 MaybeLogFrameHealth(now);
             }
@@ -335,27 +344,82 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private static int RowOffset(int startIndex, int stride, int height, int row, bool flipRows) =>
             startIndex + (flipRows ? height - 1 - row : row) * stride;
 
-        private async Task SelectPreferredFormatAsync(MediaFrameSource source)
+        private async Task<CaptureDeviceFormatTelemetry?> TryStartReaderAsync(MediaFrameSource source, MediaFrameFormat format)
         {
-            var rankedFormats = source.SupportedFormats
+            await DisposeReaderAsync().ConfigureAwait(false);
+            Interlocked.Exchange(ref _loggedFirstPublishedFrame, 0);
+            _firstFramePublished = new TaskCompletionSource<CaptureDeviceFormatTelemetry>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            if (!ReferenceEquals(format, source.CurrentFormat))
+            {
+                await source.SetFormatAsync(format).AsTask().ConfigureAwait(false);
+                var video = format.VideoFormat;
+                LaunchLog.Write(
+                    $"capture: selected format {_stableDeviceId} {video?.Width ?? 0}x{video?.Height ?? 0} {FormatFps(format)}fps {format.Subtype}");
+            }
+
+            CaptureFormatTelemetry(source);
+            _reader = await _capture!.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8).AsTask().ConfigureAwait(false);
+            _reader.FrameArrived += OnFrameArrived;
+            var status = await _reader.StartAsync().AsTask().ConfigureAwait(false);
+            if (status != MediaFrameReaderStartStatus.Success)
+            {
+                LaunchLog.Write($"capture: reader start failed {_stableDeviceId} {FormatLabel(format)} status={status}");
+                await DisposeReaderAsync().ConfigureAwait(false);
+                return null;
+            }
+
+            LaunchLog.Write($"capture: started {_stableDeviceId} {_formatWidth}x{_formatHeight} {_formatFps}fps");
+            var completed = await Task.WhenAny(_firstFramePublished.Task, Task.Delay(1500)).ConfigureAwait(false);
+            if (completed == _firstFramePublished.Task)
+            {
+                return await _firstFramePublished.Task.ConfigureAwait(false);
+            }
+
+            LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; trying fallback");
+            await DisposeReaderAsync().ConfigureAwait(false);
+            return null;
+        }
+
+        private static IReadOnlyList<MediaFrameFormat> GetRankedFormats(MediaFrameSource source) =>
+            source.SupportedFormats
                 .Where(format => format.VideoFormat is not null)
                 .OrderByDescending(ScoreFormat)
                 .ToList();
-            LaunchLog.Write(
-                $"capture: supported formats {_stableDeviceId} {string.Join("; ", rankedFormats.Take(8).Select(FormatLabel))}");
 
-            var preferred = rankedFormats
-                .FirstOrDefault();
-            if (preferred is null || ReferenceEquals(preferred, source.CurrentFormat))
+        private static IReadOnlyList<MediaFrameFormat> BuildStartupCandidates(
+            MediaFrameSource source,
+            IReadOnlyList<MediaFrameFormat> rankedFormats)
+        {
+            var candidates = new List<MediaFrameFormat>();
+            if (source.CurrentFormat?.VideoFormat is not null)
             {
-                return;
+                candidates.Add(source.CurrentFormat);
             }
 
-            await source.SetFormatAsync(preferred);
-            var video = preferred.VideoFormat;
-            LaunchLog.Write(
-                $"capture: selected format {_stableDeviceId} {video?.Width ?? 0}x{video?.Height ?? 0} {FormatFps(preferred)}fps {preferred.Subtype}");
+            foreach (var format in rankedFormats)
+            {
+                if (candidates.Any(candidate => SameFormat(candidate, format)))
+                {
+                    continue;
+                }
+
+                candidates.Add(format);
+                if (candidates.Count >= 8)
+                {
+                    break;
+                }
+            }
+
+            return candidates;
         }
+
+        private static bool SameFormat(MediaFrameFormat left, MediaFrameFormat right) =>
+            string.Equals(left.Subtype, right.Subtype, StringComparison.OrdinalIgnoreCase) &&
+            (left.VideoFormat?.Width ?? 0) == (right.VideoFormat?.Width ?? 0) &&
+            (left.VideoFormat?.Height ?? 0) == (right.VideoFormat?.Height ?? 0) &&
+            Math.Abs(ResolveFormatFps(left) - ResolveFormatFps(right)) < 0.01;
 
         private static double ScoreFormat(MediaFrameFormat format)
         {
@@ -451,24 +515,31 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         public async ValueTask DisposeAsync()
         {
-            if (_reader is not null)
-            {
-                _reader.FrameArrived -= OnFrameArrived;
-                try
-                {
-                    await _reader.StopAsync();
-                }
-                catch
-                {
-                    // Best effort during shutdown or failed initialization.
-                }
-
-                _reader.Dispose();
-                _reader = null;
-            }
+            await DisposeReaderAsync().ConfigureAwait(false);
 
             _capture?.Dispose();
             _capture = null;
+        }
+
+        private async Task DisposeReaderAsync()
+        {
+            if (_reader is null)
+            {
+                return;
+            }
+
+            _reader.FrameArrived -= OnFrameArrived;
+            try
+            {
+                await _reader.StopAsync().AsTask().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best effort during shutdown or failed initialization.
+            }
+
+            _reader.Dispose();
+            _reader = null;
         }
     }
 }

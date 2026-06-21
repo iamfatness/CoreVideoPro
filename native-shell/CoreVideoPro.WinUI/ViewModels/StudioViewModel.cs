@@ -356,6 +356,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _applyingDualCaptureSelection;
     private bool _streamToggleInFlight;
     private readonly HashSet<string> _captureAutoConnectInFlight = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _captureConnectGate = new(1, 1);
 
     public SettingsViewModel Settings { get; }
 
@@ -3569,6 +3570,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            LaunchLog.Write($"capture: open failed {device.Id}: {ex.GetType().Name}: {ex.Message}");
             RunOnUiThread(() =>
             {
                 device.ConnectionState = CaptureConnectionState.Error;
@@ -3884,6 +3886,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(HasCaptureDevices));
         RebuildAudioCaptureDeviceCatalog();
+        QueueSelectedCaptureDevicesOnline();
     }
 
     private void RefreshVirtualSrtIngestDevices()
@@ -5829,7 +5832,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest) &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))
@@ -5848,12 +5851,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task ConnectSelectedCaptureDeviceAsync(string deviceId)
     {
+        var enteredGate = false;
         try
         {
+            await _captureConnectGate.WaitAsync().ConfigureAwait(false);
+            enteredGate = true;
             await ConnectCaptureDeviceAsync(deviceId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"capture: auto-connect failed {deviceId}: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
+            if (enteredGate)
+            {
+                _captureConnectGate.Release();
+            }
+
             RunOnUiThread(() => _captureAutoConnectInFlight.Remove(deviceId));
         }
     }
