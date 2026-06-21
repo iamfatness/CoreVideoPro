@@ -17,12 +17,12 @@ public sealed class CaptureDeviceDiscoveryService : IDisposable
                 .AsTask()
                 .ConfigureAwait(false);
 
-            return deviceInfos
+            var devices = deviceInfos
                 .Where(info => !string.IsNullOrWhiteSpace(info.Name))
                 .GroupBy(info => info.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(group => MapDiscoveredDevice(group.Key, group.First().Name))
-                .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                .Select(group => MapDiscoveredDevice(group.Key, group.First().Name));
+
+            return SortForOperatorSelection(devices);
         }
         catch
         {
@@ -76,6 +76,12 @@ public sealed class CaptureDeviceDiscoveryService : IDisposable
 
     private void OnWatcherChanged(DeviceWatcher sender, object args) =>
         _onDevicesChanged?.Invoke();
+
+    public static IReadOnlyList<CaptureDevice> SortForOperatorSelection(IEnumerable<CaptureDevice> devices) =>
+        devices
+            .OrderBy(device => CaptureDeviceDiscoveryMapper.OperatorSelectionPriority(device.Name, device.Vendor))
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     internal static CaptureDevice MapDiscoveredDevice(string deviceSymbolicLinkId, string friendlyName) =>
         new()

@@ -33,6 +33,43 @@ public static class CaptureDeviceDiscoveryMapper
             return "aja";
         }
 
+        if (normalized.Contains("elgato", StringComparison.Ordinal) ||
+            normalized.Contains("cam link", StringComparison.Ordinal) ||
+            normalized.Contains("game capture", StringComparison.Ordinal) ||
+            normalized.Contains("hd60", StringComparison.Ordinal) ||
+            normalized.Contains("usb capture", StringComparison.Ordinal) ||
+            normalized.Contains("hdmi capture", StringComparison.Ordinal) ||
+            normalized.Contains("uvc", StringComparison.Ordinal))
+        {
+            return "uvc";
+        }
+
         return "windows";
+    }
+
+    public static bool IsVirtualCameraName(string friendlyName)
+    {
+        var normalized = friendlyName.ToLowerInvariant();
+        return normalized.Contains("virtual camera", StringComparison.Ordinal) ||
+            normalized.Contains("virtualcam", StringComparison.Ordinal) ||
+            normalized.Contains("obs virtual", StringComparison.Ordinal) ||
+            normalized.Contains("ndi video", StringComparison.Ordinal);
+    }
+
+    public static int OperatorSelectionPriority(string friendlyName, string vendor)
+    {
+        if (IsVirtualCameraName(friendlyName))
+        {
+            return 20;
+        }
+
+        return vendor.ToLowerInvariant() switch
+        {
+            "blackmagic" => 0,
+            "aja" => 1,
+            "uvc" => 2,
+            "windows" => 8,
+            _ => 10
+        };
     }
 }
