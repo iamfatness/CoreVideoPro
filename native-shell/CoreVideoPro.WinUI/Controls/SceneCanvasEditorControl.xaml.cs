@@ -22,6 +22,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private string _dragMode = "move";
     private Point _dragStartPointer;
     private NormalizedCanvasRect? _dragStartRect;
+    private double _dragStartSourceOffsetX;
+    private double _dragStartSourceOffsetY;
 
     public event EventHandler<string>? PresetRequested;
     public event EventHandler<SceneCanvasLayerViewModel>? LayerChanged;
@@ -57,7 +59,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     {
         CanvasHintText.Text = layers.Count == 0
             ? "Add sources from the list below, then drag them anywhere on the frame."
-            : "Drag sources on the canvas. Resize from the corner grip.";
+            : "Drag boxes to place them. Drag the center target to pan the source inside its box.";
 
         var activeIndices = layers.Select(layer => layer.LayerIndex).ToHashSet();
         foreach (var staleIndex in _layerFrames.Keys.Where(index => !activeIndices.Contains(index)).ToList())
@@ -147,6 +149,29 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             Tag = "resize"
         };
         content.Children.Add(grip);
+
+        var panHandle = new Border
+        {
+            Width = 30,
+            Height = 30,
+            Background = new SolidColorBrush(Color.FromArgb(170, 10, 16, 22)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(230, 68, 193, 161)),
+            BorderThickness = new Thickness(1.5),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            CornerRadius = new CornerRadius(15),
+            Tag = "pan-source"
+        };
+        ToolTipService.SetToolTip(panHandle, "Pan source inside box");
+        panHandle.Child = new FontIcon
+        {
+            Glyph = "\uE740",
+            FontSize = 14,
+            Foreground = new SolidColorBrush(Color.FromArgb(255, 237, 244, 239)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        content.Children.Add(panHandle);
 
         frame.Child = content;
         frame.PointerPressed += OnLayerPointerPressed;
@@ -266,9 +291,13 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             Width = layer.Width,
             Height = layer.Height
         };
+        _dragStartSourceOffsetX = layer.SourceOffsetX;
+        _dragStartSourceOffsetY = layer.SourceOffsetY;
 
         var source = e.OriginalSource as FrameworkElement;
-        _dragMode = source?.Tag as string == "resize" ? "resize" : "move";
+        _dragMode = source?.Tag as string == "resize"
+            ? "resize"
+            : source?.Tag as string == "pan-source" ? "pan-source" : "move";
         frame.CapturePointer(e.Pointer);
         UpdateSelectionStyles();
         InteractionChanged?.Invoke(this, true);
@@ -291,6 +320,15 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             var width = Math.Clamp(_dragStartRect.Width + deltaX, MinLayerSize, 1 - _dragStartRect.X);
             var height = Math.Clamp(_dragStartRect.Height + deltaY, MinLayerSize, 1 - _dragStartRect.Y);
             _dragLayer.SetCanvasRect(_dragStartRect.X, _dragStartRect.Y, width, height, notify: false);
+        }
+        else if (_dragMode == "pan-source")
+        {
+            var boxWidth = Math.Max(_dragStartRect.Width, MinLayerSize);
+            var boxHeight = Math.Max(_dragStartRect.Height, MinLayerSize);
+            var sourceOffsetX = _dragStartSourceOffsetX - (deltaX / boxWidth) * 2;
+            var sourceOffsetY = _dragStartSourceOffsetY - (deltaY / boxHeight) * 2;
+            _dragLayer.SetSourceOffset(sourceOffsetX, sourceOffsetY, notify: false);
+            UpdateLayerVisuals(frame, _dragLayer);
         }
         else
         {
@@ -318,6 +356,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
         _dragLayer = null;
         _dragStartRect = null;
+        _dragStartSourceOffsetX = 0;
+        _dragStartSourceOffsetY = 0;
         InteractionChanged?.Invoke(this, false);
         e.Handled = true;
     }

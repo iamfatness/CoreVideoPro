@@ -233,6 +233,17 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
     }
 
+    public void SetSourceOffset(double sourceOffsetX, double sourceOffsetY, bool notify = true)
+    {
+        SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(sourceOffsetX);
+        SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(sourceOffsetY);
+        ApplyRoute();
+        if (notify)
+        {
+            _onChanged(this);
+        }
+    }
+
     public void SetSurface(VideoSurfaceState? surface)
     {
         Surface = surface ?? VideoSurfaceState.Waiting(

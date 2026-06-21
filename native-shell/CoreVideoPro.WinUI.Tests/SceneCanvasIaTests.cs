@@ -236,6 +236,36 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void Layer_SourceOffsetPanDoesNotMoveSceneBox()
+    {
+        var route = new SourceRoute
+        {
+            Id = "scene-1-1",
+            Mode = SourceRouteMode.Fixed,
+            ParticipantId = "p1",
+            CanvasRect = new NormalizedCanvasRect { X = 0.2, Y = 0.1, Width = 0.4, Height = 0.5 },
+            SourceOffsetX = 0,
+            SourceOffsetY = 0
+        };
+        var layer = new SceneCanvasLayerViewModel(
+            0,
+            route,
+            participants: [new Participant { Id = "p1", Name = "Host" }],
+            captureDevices: [],
+            showInputs: [],
+            _ => { });
+
+        layer.SetSourceOffset(2, -2);
+
+        Assert.Equal(0.2, route.CanvasRect.X, precision: 3);
+        Assert.Equal(0.1, route.CanvasRect.Y, precision: 3);
+        Assert.Equal(0.4, route.CanvasRect.Width, precision: 3);
+        Assert.Equal(0.5, route.CanvasRect.Height, precision: 3);
+        Assert.Equal(1, route.SourceOffsetX, precision: 3);
+        Assert.Equal(-1, route.SourceOffsetY, precision: 3);
+    }
+
+    [Fact]
     public void Layer_SourceChange_DoesNotIndependentlyDriveAudioRole()
     {
         // The per-layer AudioRole dropdown is gone: changing the source picker must keep the
