@@ -54,7 +54,8 @@
         </Grid>
 
         <Border Grid.Row="1" Background="#06090D" BorderBrush="{StaticResource StudioBorderBrush}"
-                BorderThickness="1" CornerRadius="8" Padding="8">
+                BorderThickness="1" CornerRadius="8" Padding="8"
+                MinHeight="315">
             <ScrollViewer x:Name="CanvasScrollViewer"
                           HorizontalScrollBarVisibility="Disabled"
                           HorizontalScrollMode="Disabled"

@@ -318,6 +318,18 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void SceneCanvasViewport_DoesNotCollapseToThumbnailWhenEditorHeightIsStarved()
+    {
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            availableWidth: 1000,
+            availableHeight: 170,
+            canvasAspectRatio: 16.0 / 9);
+
+        Assert.Equal(560, fitSize.Width, precision: 3);
+        Assert.Equal(315, fitSize.Height, precision: 3);
+    }
+
+    [Fact]
     public void SceneCanvasViewport_UsesAvailableWidthWhenHeightHasRoom()
     {
         var fitSize = SceneCanvasViewportService.ResolveFitSize(
