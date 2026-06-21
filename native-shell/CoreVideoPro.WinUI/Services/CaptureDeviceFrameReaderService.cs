@@ -84,12 +84,20 @@ public static class CaptureDeviceFormatSelector
     {
         if (allowsLateFirstFrame)
         {
-            return false;
+            return IsSyntheticBgraSubtype(currentSubtype) &&
+                SubtypeScore(bestRankedSubtype) > SubtypeScore(currentSubtype);
         }
 
         return IsSyntheticBgraSubtype(currentSubtype) &&
             SubtypeScore(bestRankedSubtype) > SubtypeScore(currentSubtype);
     }
+
+    public static bool ShouldTryCurrentReaderBeforeRanked(
+        bool allowsLateFirstFrame,
+        string? currentSubtype = null,
+        string? bestRankedSubtype = null) =>
+        allowsLateFirstFrame &&
+        !ShouldPreferRankedFormatsBeforeCurrent(allowsLateFirstFrame, currentSubtype, bestRankedSubtype);
 
     public static string NormalizeSubtype(string? subtype)
     {
@@ -295,7 +303,15 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             LaunchLog.Write(
                 $"capture: supported formats {_stableDeviceId} {string.Join("; ", formats.Take(8).Select(FormatLabel))}");
 
-            if (_allowLateFirstFrame)
+            var preferRankedFormatsBeforeCurrent = CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+                _allowLateFirstFrame,
+                source.CurrentFormat?.Subtype,
+                formats.FirstOrDefault()?.Subtype);
+
+            if (CaptureDeviceFormatSelector.ShouldTryCurrentReaderBeforeRanked(
+                _allowLateFirstFrame,
+                source.CurrentFormat?.Subtype,
+                formats.FirstOrDefault()?.Subtype))
             {
                 var currentTelemetry = await TryStartCurrentReaderAsync(source).ConfigureAwait(false);
                 if (currentTelemetry is not null)
@@ -308,10 +324,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             var candidates = BuildStartupCandidates(
                 source,
                 formats,
-                CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
-                    _allowLateFirstFrame,
-                    source.CurrentFormat?.Subtype,
-                    formats.FirstOrDefault()?.Subtype));
+                preferRankedFormatsBeforeCurrent);
             for (var i = 0; i < candidates.Count; i++)
             {
                 var format = candidates[i];

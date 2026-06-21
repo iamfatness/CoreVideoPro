@@ -107,10 +107,6 @@ public sealed class CaptureDeviceFormatSelectorTests
             currentSubtype: "NV12",
             bestRankedSubtype: "YUY2"));
         Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
-            allowsLateFirstFrame: true,
-            currentSubtype: "ARGB32",
-            bestRankedSubtype: "YUY2"));
-        Assert.False(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
             allowsLateFirstFrame: false,
             currentSubtype: "NV12",
             bestRankedSubtype: "YUY2"));
@@ -121,6 +117,33 @@ public sealed class CaptureDeviceFormatSelectorTests
     {
         Assert.True(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
             allowsLateFirstFrame: false,
+            currentSubtype: "ARGB32",
+            bestRankedSubtype: "YUY2"));
+    }
+
+    [Fact]
+    public void ShouldPreferRankedFormatsBeforeCurrent_WhenCaptureCardDefaultIsSyntheticBgra()
+    {
+        Assert.True(CaptureDeviceFormatSelector.ShouldPreferRankedFormatsBeforeCurrent(
+            allowsLateFirstFrame: true,
+            currentSubtype: "ARGB32",
+            bestRankedSubtype: "YUY2"));
+    }
+
+    [Fact]
+    public void ShouldTryCurrentReaderBeforeRanked_KeepsNativeCaptureCardDefault()
+    {
+        Assert.True(CaptureDeviceFormatSelector.ShouldTryCurrentReaderBeforeRanked(
+            allowsLateFirstFrame: true,
+            currentSubtype: "NV12",
+            bestRankedSubtype: "YUY2"));
+    }
+
+    [Fact]
+    public void ShouldTryCurrentReaderBeforeRanked_SkipsSyntheticCaptureCardDefault()
+    {
+        Assert.False(CaptureDeviceFormatSelector.ShouldTryCurrentReaderBeforeRanked(
+            allowsLateFirstFrame: true,
             currentSubtype: "ARGB32",
             bestRankedSubtype: "YUY2"));
     }
