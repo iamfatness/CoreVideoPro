@@ -17,6 +17,15 @@ public sealed record CaptureDeviceFormatCandidate(
 
 public static class CaptureDeviceFormatSelector
 {
+    public static bool AllowsLateFirstFrame(string? deviceName)
+    {
+        var normalized = deviceName?.Trim().ToUpperInvariant() ?? string.Empty;
+        return normalized.Contains("ELGATO", StringComparison.Ordinal) ||
+            normalized.Contains("CAM LINK", StringComparison.Ordinal) ||
+            normalized.Contains("CAPTURE", StringComparison.Ordinal) ||
+            normalized.Contains("UVC", StringComparison.Ordinal);
+    }
+
     public static double Score(CaptureDeviceFormatCandidate format)
     {
         if (format.Width <= 0 || format.Height <= 0)
@@ -86,7 +95,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 return pending;
             }
 
-            var session = new CaptureSession(device.Id, device.NativeDeviceId);
+            var session = new CaptureSession(
+                device.Id,
+                device.NativeDeviceId,
+                CaptureDeviceFormatSelector.AllowsLateFirstFrame(device.Name));
             var startTask = StartSessionAsync(device.Id, session);
             _startingSessions[device.Id] = startTask;
             _ = startTask.ContinueWith(
@@ -180,6 +192,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
     {
         private readonly string _stableDeviceId;
         private readonly string _nativeDeviceId;
+        private readonly bool _allowLateFirstFrame;
         private MediaCapture? _capture;
         private MediaFrameReader? _reader;
         private int _frameId;
@@ -198,10 +211,11 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _fpsSampleCount;
         private TaskCompletionSource<CaptureDeviceFormatTelemetry>? _firstFramePublished;
 
-        public CaptureSession(string stableDeviceId, string nativeDeviceId)
+        public CaptureSession(string stableDeviceId, string nativeDeviceId, bool allowLateFirstFrame)
         {
             _stableDeviceId = stableDeviceId;
             _nativeDeviceId = nativeDeviceId;
+            _allowLateFirstFrame = allowLateFirstFrame;
         }
 
         public CaptureDeviceFormatTelemetry FormatTelemetry => new(_formatWidth, _formatHeight, _formatFps);
@@ -451,6 +465,12 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             if (completed == _firstFramePublished.Task)
             {
                 return await _firstFramePublished.Task.ConfigureAwait(false);
+            }
+
+            if (_allowLateFirstFrame)
+            {
+                LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; keeping reader online for late HDMI signal");
+                return FormatTelemetry;
             }
 
             LaunchLog.Write($"capture: no first frame {_stableDeviceId} {FormatLabel(format)}; trying fallback");

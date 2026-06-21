@@ -41,6 +41,22 @@ public sealed class CaptureDeviceFormatSelectorTests
         Assert.Equal("I420", CaptureDeviceFormatSelector.NormalizeSubtype("{30323449-0000-0010-8000-00AA00389B71}"));
     }
 
+    [Theory]
+    [InlineData("Elgato USB-C Capture")]
+    [InlineData("Cam Link 4K")]
+    [InlineData("USB Video Capture")]
+    [InlineData("UVC HDMI")]
+    public void AllowsLateFirstFrame_KeepsCaptureCardsOnlineWhileHdmiSignalArrives(string deviceName)
+    {
+        Assert.True(CaptureDeviceFormatSelector.AllowsLateFirstFrame(deviceName));
+    }
+
+    [Fact]
+    public void AllowsLateFirstFrame_DoesNotMaskNormalWebcamFormatFallback()
+    {
+        Assert.False(CaptureDeviceFormatSelector.AllowsLateFirstFrame("Integrated Webcam"));
+    }
+
     [Fact]
     public void Score_PenalizesNonWideAspectModesThatCauseStretchedUvcTiles()
     {
