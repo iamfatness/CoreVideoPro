@@ -240,6 +240,46 @@ class RecordingMonitorOutput final : public corevideo::modules::IAudioMonitorOut
   bool active_ = false;
 };
 
+class RecoveringMonitorOutput final : public corevideo::modules::IAudioMonitorOutput {
+ public:
+  bool start(const std::string& deviceId, int, int) override {
+    lastDeviceId = deviceId;
+    active_ = true;
+    return true;
+  }
+
+  void stop() override { active_ = false; }
+
+  bool render(const float* interleaved, int frameCount, int channels, double volume) override {
+    ++renderCalls;
+    if (failNextRender) {
+      failNextRender = false;
+      return false;
+    }
+    if (!active_ || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
+      return false;
+    }
+    framesRendered += frameCount;
+    lastVolume = volume;
+    return true;
+  }
+
+  bool active() const override { return active_; }
+  bool hardwareOutput() const override { return true; }
+  std::string deviceName() const override { return "Recovering Monitor"; }
+  std::vector<std::string> warnings() const override { return warnings_; }
+
+  bool failNextRender = true;
+  int renderCalls = 0;
+  int64_t framesRendered = 0;
+  double lastVolume = 0.0;
+  std::string lastDeviceId;
+  std::vector<std::string> warnings_;
+
+ private:
+  bool active_ = false;
+};
+
 class RecordingAudioCaptureSource final : public corevideo::modules::IAudioCaptureSource {
  public:
   void configure(const std::vector<corevideo::modules::CaptureAudioSourceConfig>& sources) override {
@@ -1388,6 +1428,46 @@ TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume
   EXPECT_TRUE(monitor->framesRendered > 0);
   EXPECT_EQ(monitor->lastChannels, 2);
   EXPECT_TRUE(std::fabs(monitor->lastVolume - 0.5) < 1e-6);
+}
+
+TEST(MediaCoreAudioMonitor, TransientRenderFailureReportsDroppingAndClearsAfterRecovery) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  auto* monitor = new RecoveringMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto dropping = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "render-stereo"},
+          {"deviceName", "Studio Monitors"},
+          {"volume", 0.5},
+      },
+  });
+
+  const auto* droppingAudio = dropping.get("audioMixSession");
+  ASSERT_NE(droppingAudio, nullptr);
+  EXPECT_EQ(droppingAudio->getString("monitorStatus"), "dropping");
+  EXPECT_TRUE(jsonArrayContains(
+      *droppingAudio->get("warnings"),
+      "Native audio monitor accepted no frames this tick; endpoint buffer may be full."));
+
+  const auto recovered = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "sync-participant-audio-mix"},
+      {"channels", corevideo::rpc::Json::Array{}},
+  });
+
+  const auto* recoveredAudio = recovered.get("audioMixSession");
+  ASSERT_NE(recoveredAudio, nullptr);
+  EXPECT_EQ(recoveredAudio->getString("monitorStatus"), "playing");
+  EXPECT_TRUE(recoveredAudio->get("monitorFramesPlayed")->asNumber() > 0);
+  EXPECT_FALSE(jsonArrayContains(
+      *recoveredAudio->get("warnings"),
+      "Native audio monitor accepted no frames this tick; endpoint buffer may be full."));
+  EXPECT_GE(monitor->renderCalls, 2);
+  EXPECT_TRUE(monitor->framesRendered > 0);
 }
 
 TEST(MediaCoreAudioMonitor, DisablingMonitorStopsTheOutputDevice) {

@@ -2715,14 +2715,16 @@ void MediaCore::renderSyntheticTick() {
       if (frameCount <= 0) {
         // Device is open but neither the routed MON bus nor fallback mix carried real PCM this tick.
         audioMonitorStatus_ = "armed";
+        audioMonitorWarning_.clear();
       } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
         audioMonitorStatus_ = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
+        audioMonitorWarning_.clear();
         audioMonitorFramesPlayed_ += frameCount;
       } else {
-        audioMonitorStatus_ = "unavailable";
+        audioMonitorStatus_ = "dropping";
         const auto outputWarnings = modules_.monitorOutput->warnings();
         audioMonitorWarning_ = outputWarnings.empty()
-                                   ? "Native audio monitor could not render to the selected device."
+                                   ? "Native audio monitor accepted no frames this tick; endpoint buffer may be full."
                                    : outputWarnings.back();
       }
     }

@@ -4141,6 +4141,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "playing" => $"{audio.MonitorFramesPlayed} playback frames",
             "stub-monitor" => "stub only - no hardware output",
             "armed" => "armed, waiting for audio",
+            "dropping" => "dropping monitor samples",
             "missing-device" => "needs output device",
             "muted" => "muted",
             "unavailable" => "unavailable",
