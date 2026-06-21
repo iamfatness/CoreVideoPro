@@ -166,6 +166,12 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private bool _sourceFramingRefreshScheduled;
 
+    public void RefreshSourceFraming()
+    {
+        ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+    }
+
     private static void OnParticipantChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ParticipantTileControl tile)
@@ -215,14 +221,12 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        ApplySourceFraming();
-        ScheduleSourceFramingRefresh();
+        RefreshSourceFraming();
     }
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        ApplySourceFraming();
-        ScheduleSourceFramingRefresh();
+        RefreshSourceFraming();
     }
 
     private void ApplyActiveSpeakerStyle()

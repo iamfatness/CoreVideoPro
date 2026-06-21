@@ -198,6 +198,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         PreviewImage.Visibility = Visibility.Collapsed;
     }
 
+    public void RefreshSourceFraming()
+    {
+        ApplySourceFraming();
+        ScheduleSourceFramingRefresh();
+    }
+
     public void SetDirect3DDevice(nint devicePointer)
     {
         _direct3DDevicePointer = devicePointer;
@@ -264,8 +270,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        ApplySourceFraming();
-        ScheduleSourceFramingRefresh();
+        RefreshSourceFraming();
 
         if (!IsProgramSurface)
         {
@@ -289,8 +294,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        ApplySourceFraming();
-        ScheduleSourceFramingRefresh();
+        RefreshSourceFraming();
     }
 
     private void OnPresentationPathChanged() =>

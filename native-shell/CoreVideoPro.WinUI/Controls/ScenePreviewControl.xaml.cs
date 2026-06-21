@@ -275,6 +275,7 @@ public sealed partial class ScenePreviewControl : UserControl
             Canvas.SetLeft(layer, rect.X * designWidth);
             Canvas.SetTop(layer, rect.Y * designHeight);
             canvas.Children.Add(layer);
+            layer.RefreshSourceFraming();
             renderedRouteKeys.Add(GetCanvasRouteKey(route));
         }
 
@@ -332,6 +333,7 @@ public sealed partial class ScenePreviewControl : UserControl
             layer.Height = rect.Height * designHeight;
             Canvas.SetLeft(layer, rect.X * designWidth);
             Canvas.SetTop(layer, rect.Y * designHeight);
+            layer.RefreshSourceFraming();
         }
 
         return true;

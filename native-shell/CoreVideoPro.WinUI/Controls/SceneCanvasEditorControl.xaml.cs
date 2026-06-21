@@ -212,6 +212,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             if (child is VideoSurfaceHost host && !ReferenceEquals(host.SurfaceState, surface))
             {
                 host.SurfaceState = surface;
+                host.RefreshSourceFraming();
                 return;
             }
         }
@@ -235,6 +236,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
                 host.SourceScale = layer.SourceScale;
                 host.SourceOffsetX = layer.SourceOffsetX;
                 host.SourceOffsetY = layer.SourceOffsetY;
+                host.RefreshSourceFraming();
                 return;
             }
         }
@@ -246,6 +248,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         Canvas.SetTop(frame, layer.Y * DesignHeight);
         frame.Width = layer.Width * DesignWidth;
         frame.Height = layer.Height * DesignHeight;
+        RefreshLayerVideoHost(frame);
+    }
+
+    private static void RefreshLayerVideoHost(Border frame)
+    {
+        if (frame.Child is not Grid content)
+        {
+            return;
+        }
+
+        foreach (var child in content.Children)
+        {
+            if (child is VideoSurfaceHost host)
+            {
+                host.RefreshSourceFraming();
+                return;
+            }
+        }
     }
 
     private void ApplySelectionStyle(Border frame, bool isSelected)
