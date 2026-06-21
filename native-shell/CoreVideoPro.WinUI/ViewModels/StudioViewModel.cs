@@ -533,6 +533,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string StudioLowerThirdButtonLabel =>
         ProgramLowerThirdKey.IsVisible ? "Lower third out" : "Lower third in";
 
+    public string StudioLowerThirdCompactLabel =>
+        ProgramLowerThirdKey.IsVisible ? "LT out" : "LT in";
+
+    public string StudioLowerThirdCompactStatus =>
+        ProgramLowerThirdKey.IsVisible
+            ? ProgramLowerThirdKey.PhaseLabel
+            : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not null
+                ? "ready"
+                : "no source";
+
     public string StudioLowerThirdSourceLabel =>
         ProgramLowerThirdKey.IsVisible
             ? $"{ProgramLowerThirdKey.SourceName} - {ProgramLowerThirdKey.PhaseLabel}"
@@ -1362,6 +1372,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         RefreshProgramLowerThirdKeyPosition();
         OnPropertyChanged(nameof(StudioLowerThirdButtonLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdCompactLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
         OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
     }
 
@@ -1568,6 +1580,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(LowerThirdKeyStatus));
         OnPropertyChanged(nameof(LowerThirdKeySummary));
         OnPropertyChanged(nameof(StudioLowerThirdButtonLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdCompactLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
         OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
     }
 
@@ -2838,6 +2852,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         else
         {
+            if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
+            {
+                CommandStatus = "Lower third needs a program source";
+                OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
+                OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+                return;
+            }
+
             ProgramLowerThirdEnabled = true;
             CommandStatus = "Lower third keyed in";
         }
@@ -2849,6 +2871,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RebuildProgramLowerThird()
     {
+        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
+        {
+            CommandStatus = "Lower third needs a program source";
+            OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
+            OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+            return;
+        }
+
         ProgramLowerThirdEnabled = true;
         RefreshProgramLowerThirdKeyPosition();
         CommandStatus = "Lower third rebuilt";
@@ -6530,6 +6560,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ProgramSceneRoutes));
             OnPropertyChanged(nameof(ProgramSceneTiles));
             OnPropertyChanged(nameof(ProgramSceneBackgroundAsset));
+            OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
+            OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
             UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(workingRoutes));
         }
     }

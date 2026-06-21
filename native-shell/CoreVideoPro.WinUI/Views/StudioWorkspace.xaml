@@ -442,6 +442,21 @@
                             <TextBlock Text="16:9 monitors" FontSize="11"
                                        Foreground="{StaticResource StudioTextSecondaryBrush}" />
                         </Border>
+                        <Button Style="{StaticResource GhostButton}"
+                                MinWidth="74"
+                                Padding="8,4"
+                                Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8D2;" FontSize="12" />
+                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                           FontSize="11"
+                                           FontWeight="Bold" />
+                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
 
@@ -783,13 +798,13 @@
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <FontIcon Glyph="&#xE8D2;" FontSize="18" />
                             <StackPanel Spacing="1">
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdButtonLabel, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                            FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
                                            FontSize="10" FontWeight="Bold"
                                            Foreground="{StaticResource StudioMutedBrush}"
                                            TextTrimming="CharacterEllipsis"
-                                           MaxWidth="150" />
+                                           MaxWidth="72" />
                             </StackPanel>
                         </StackPanel>
                     </Button>
