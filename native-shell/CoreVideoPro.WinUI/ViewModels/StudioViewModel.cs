@@ -2345,7 +2345,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.ManualGainDb = normalizedGain;
-        RefreshMixerBindings(participantId, selectParticipant: false);
+        RefreshMixerValueBindings(participantId);
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2365,7 +2365,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.Pan = normalizedPan;
-        RefreshMixerBindings(participantId, selectParticipant: false);
+        RefreshMixerValueBindings(participantId);
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -2571,6 +2571,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedMuteButtonLabel));
         OnPropertyChanged(nameof(SelectedOutputLevel));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
+        OnPropertyChanged(nameof(VstBridgeStatusLabel));
+    }
+
+    private void RefreshMixerValueBindings(string participantId)
+    {
+        RefreshAudioParticipantRow(participantId);
+        RefreshAudioReadoutBindings();
+        OnPropertyChanged(nameof(SelectedAudioMix));
+        OnPropertyChanged(nameof(SelectedGainLabel));
+        OnPropertyChanged(nameof(SelectedManualGainLabel));
+        OnPropertyChanged(nameof(SelectedOutputLevel));
         OnPropertyChanged(nameof(VstBridgeStatusLabel));
     }
 
@@ -5476,6 +5487,62 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
         RefreshAudioProcessingTargets();
+    }
+
+    private void RefreshAudioParticipantRow(string participantId)
+    {
+        var mix = _audioMixChannels.FirstOrDefault(channel =>
+            string.Equals(channel.ParticipantId, participantId, StringComparison.Ordinal));
+        var target = AudioParticipantRows.FirstOrDefault(row =>
+            string.Equals(row.Id, participantId, StringComparison.Ordinal));
+        if (mix is null || target is null)
+        {
+            return;
+        }
+
+        var participant = RoomVideoParticipants.FirstOrDefault(item =>
+            string.Equals(item.Id, mix.ParticipantId, StringComparison.Ordinal)) ?? new Participant
+            {
+                Id = mix.ParticipantId,
+                Name = ResolveAudioSourceDisplayName(mix.ParticipantId),
+                Role = ParticipantRole.Guest,
+                BreakoutRoomName = "Native PCM",
+                Health = mix.OutputLevel > 0 ? FeedHealth.Live : FeedHealth.Recovering,
+                AudioLevel = mix.OutputLevel,
+                IsMuted = mix.Muted
+            };
+        var gain = NormalizeMixerGain(mix.ManualGainDb);
+        var pan = NormalizeMixerPan(mix.Pan);
+        var lufs = NormalizeMeterDb(mix.Lufs);
+        var truePeak = NormalizeMeterDb(mix.TruePeakDb);
+
+        UpdateAudioParticipantRow(target, new AudioParticipantRow
+        {
+            Id = participant.Id,
+            Name = participant.Name,
+            Subtitle = $"{participant.RoleLabel} Â· {participant.BreakoutRoomName} Â· {participant.HealthLabel}",
+            OutputLevel = Math.Clamp(mix.OutputLevel, 0, 100),
+            ManualGainDb = gain,
+            Pan = pan,
+            Lufs = lufs,
+            TruePeakDb = truePeak,
+            Muted = mix.Muted,
+            GainLabel = $"{(gain > 0 ? "+" : "")}{gain:0.0} dB",
+            PanLabel = Math.Abs(pan) < 0.01
+                ? "C"
+                : pan < 0
+                    ? $"L {Math.Abs(pan):0.00}"
+                    : $"R {pan:0.00}",
+            LufsLabel = $"{lufs:0.0} dBFS",
+            TruePeakLabel = $"{truePeak:0.0} dBTP",
+            BusLabel = ResolvePrimaryAudioBusLabel(mix.ParticipantId),
+            InsertLabel = mix.PluginInserts.Count == 0
+                ? "No inserts"
+                : string.Join(" + ", mix.PluginInserts),
+            MuteButtonLabel = mix.Muted ? "Unmute" : "Mute",
+            MuteStateLabel = mix.Muted ? "Muted" : "Live",
+            IsSelected = mix.ParticipantId == SelectedParticipantId
+        });
     }
 
     private static void UpdateAudioParticipantRow(AudioParticipantRow target, AudioParticipantRow source)
