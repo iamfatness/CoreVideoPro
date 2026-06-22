@@ -332,6 +332,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         if (IsGpuPathActive)
         {
+            // The GPU swap chain is presenting real frames (e.g. a capture input).
+            // Hide the BGRA preview and the "waiting / choose a source" placeholder so
+            // they don't paint on top of the live video.
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PlaceholderPanel.Visibility = Visibility.Collapsed;
             ScheduleSourceFramingRefresh();
             return;
         }
