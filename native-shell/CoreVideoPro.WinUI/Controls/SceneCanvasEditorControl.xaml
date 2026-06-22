@@ -63,7 +63,7 @@
                           VerticalScrollMode="Enabled">
             <Viewbox x:Name="CanvasViewbox"
                      Stretch="Uniform"
-                     HorizontalAlignment="Left"
+                     HorizontalAlignment="Center"
                      VerticalAlignment="Top">
                 <Grid x:Name="DesignSurface" Width="1600" Height="900" Background="#0A1016">
                     <Border BorderBrush="#22303A" BorderThickness="1" />
