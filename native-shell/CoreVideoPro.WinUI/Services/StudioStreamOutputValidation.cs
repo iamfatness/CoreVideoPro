@@ -46,7 +46,8 @@ public static class StudioStreamOutputValidation
         string? srtLatencyMs,
         string? srtStreamId,
         string? srtKeyLength,
-        string? srtPassphrase)
+        string? srtPassphrase,
+        string? ffmpegBinDirectory = null)
     {
         if (!rtmpEnabled && !ndiEnabled && !srtEnabled)
         {
@@ -56,6 +57,11 @@ public static class StudioStreamOutputValidation
         if (rtmpEnabled && ValidateRtmp(rtmpProtocol, rtmpServerUrl, rtmpStreamKey) is { Length: > 0 } rtmpError)
         {
             return rtmpError;
+        }
+
+        if (rtmpEnabled && ValidateFfmpegRuntime(ffmpegBinDirectory) is { Length: > 0 } ffmpegError)
+        {
+            return ffmpegError;
         }
 
         if (ndiEnabled && string.IsNullOrWhiteSpace(ndiProgramName))
@@ -125,6 +131,26 @@ public static class StudioStreamOutputValidation
 
     public static bool CanSerializeRtmpSettings(string? protocol, string? serverUrl, string? streamKey) =>
         ValidateRtmp(protocol, serverUrl, streamKey) is null;
+
+    public static string? ValidateFfmpegRuntime(string? ffmpegBinDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(ffmpegBinDirectory))
+        {
+            var normalized = ffmpegBinDirectory.Trim();
+            if (!Directory.Exists(normalized))
+            {
+                return "FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe before streaming.";
+            }
+
+            return File.Exists(Path.Combine(normalized, "ffmpeg.exe"))
+                ? null
+                : "FFmpeg folder must contain ffmpeg.exe before streaming.";
+        }
+
+        return PathHasExecutable("ffmpeg.exe")
+            ? null
+            : "Configure FFmpeg before streaming RTMP/RTMPS. Choose the bin folder that contains ffmpeg.exe.";
+    }
 
     public static string NormalizeSrtMode(string? mode)
     {
@@ -217,4 +243,17 @@ public static class StudioStreamOutputValidation
 
     private static string NormalizeText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static bool PathHasExecutable(string executableName)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        return path.Split(Path.PathSeparator)
+            .Where(entry => !string.IsNullOrWhiteSpace(entry))
+            .Any(entry => File.Exists(Path.Combine(entry.Trim(), executableName)));
+    }
 }

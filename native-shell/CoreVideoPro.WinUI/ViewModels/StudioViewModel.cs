@@ -5112,7 +5112,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtLatencyMs,
             StreamSrtStreamId,
             StreamSrtKeyLength,
-            StreamSrtPassphrase);
+            StreamSrtPassphrase,
+            FfmpegBinDirectory);
 
     private bool IsRtmpConfigured()
         => ValidateRtmpSettings() is null;

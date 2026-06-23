@@ -124,6 +124,34 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ErrorMessageIncludesDetailsWarningsAndEvents()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("""
+            {
+              "id": "core-10",
+              "ok": false,
+              "type": "media-core-sync",
+              "error": {
+                "message": "start-program-output failed.",
+                "detail": "ffmpeg.exe was not found in C:\\ffmpeg\\bin.",
+                "code": "rtmp-output-unavailable",
+                "warnings": ["RTMP sender was not started."]
+              },
+              "snapshot": {
+                "warnings": ["Stream destination rtmp is offline."],
+                "events": ["start-program-output rejected by media-core."]
+              }
+            }
+            """);
+
+        var message = CoreProtocolParser.TryParseErrorMessage(document);
+
+        Assert.Equal(
+            "start-program-output failed. ffmpeg.exe was not found in C:\\ffmpeg\\bin. rtmp-output-unavailable RTMP sender was not started. Stream destination rtmp is offline. start-program-output rejected by media-core.",
+            message);
+    }
+
+    [Fact]
     public void DoesNotParseResponseLineAsEvent()
     {
         var responseLine = """{"id":"1","ok":true,"type":"ping"}""";

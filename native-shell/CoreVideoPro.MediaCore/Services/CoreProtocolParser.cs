@@ -400,13 +400,67 @@ public static class CoreProtocolParser
             return null;
         }
 
+        var messages = new List<string>();
         if (response.RootElement.TryGetProperty("error", out var errorElement) &&
-            errorElement.TryGetProperty("message", out var messageElement))
+            errorElement.ValueKind == JsonValueKind.Object)
         {
-            return messageElement.GetString();
+            AddStringProperty(errorElement, "message", messages);
+            AddStringProperty(errorElement, "detail", messages);
+            AddStringProperty(errorElement, "details", messages);
+            AddStringProperty(errorElement, "code", messages);
+            AddStringArray(errorElement, "warnings", messages);
+            AddStringArray(errorElement, "events", messages);
+        }
+
+        AddStringArray(response.RootElement, "warnings", messages);
+        AddStringArray(response.RootElement, "events", messages);
+
+        if (response.RootElement.TryGetProperty("snapshot", out var snapshotElement) &&
+            snapshotElement.ValueKind == JsonValueKind.Object)
+        {
+            AddStringArray(snapshotElement, "warnings", messages);
+            AddStringArray(snapshotElement, "events", messages);
+        }
+
+        var message = string.Join(" ", messages
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Select(text => text.Trim())
+            .Distinct(StringComparer.Ordinal));
+
+        if (message.Length > 0)
+        {
+            return message;
         }
 
         return "Media core request failed.";
+    }
+
+    private static void AddStringProperty(JsonElement element, string propertyName, List<string> messages)
+    {
+        if (element.TryGetProperty(propertyName, out var property) &&
+            property.ValueKind == JsonValueKind.String &&
+            property.GetString() is { Length: > 0 } value)
+        {
+            messages.Add(value);
+        }
+    }
+
+    private static void AddStringArray(JsonElement element, string propertyName, List<string> messages)
+    {
+        if (!element.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var item in property.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String &&
+                item.GetString() is { Length: > 0 } value)
+            {
+                messages.Add(value);
+            }
+        }
     }
 
     public static string DescribeUnexpectedCaptureResponse(JsonDocument response, string responseType)

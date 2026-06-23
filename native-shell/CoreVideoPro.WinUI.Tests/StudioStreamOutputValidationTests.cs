@@ -52,6 +52,7 @@ public sealed class StudioStreamOutputValidationTests
     [Fact]
     public void Destinations_AcceptsConfiguredRtmpNdiAndSrt()
     {
+        var ffmpegBin = CreateFfmpegBinDirectory();
         var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
             rtmpEnabled: true,
             ndiEnabled: true,
@@ -66,7 +67,8 @@ public sealed class StudioStreamOutputValidationTests
             srtLatencyMs: "120",
             srtStreamId: "publish/live/main",
             srtKeyLength: "16",
-            srtPassphrase: "secret-passphrase");
+            srtPassphrase: "secret-passphrase",
+            ffmpegBinDirectory: ffmpegBin);
 
         Assert.Null(error);
     }
@@ -148,6 +150,52 @@ public sealed class StudioStreamOutputValidationTests
             "stream-key"));
     }
 
+    [Fact]
+    public void Destinations_RejectsRtmpWhenFfmpegFolderIsMissing()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: true,
+            ndiEnabled: false,
+            srtEnabled: false,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "live.example.com/app",
+            rtmpStreamKey: "stream-key",
+            ndiProgramName: "",
+            srtMode: "caller",
+            srtHost: "",
+            srtPort: "",
+            srtLatencyMs: "",
+            srtStreamId: "",
+            srtKeyLength: "0",
+            srtPassphrase: "",
+            ffmpegBinDirectory: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+
+        Assert.Equal("FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe before streaming.", error);
+    }
+
+    [Fact]
+    public void Destinations_AcceptsRtmpWhenFfmpegExecutableIsConfigured()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: true,
+            ndiEnabled: false,
+            srtEnabled: false,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "live.example.com/app",
+            rtmpStreamKey: "stream-key",
+            ndiProgramName: "",
+            srtMode: "caller",
+            srtHost: "",
+            srtPort: "",
+            srtLatencyMs: "",
+            srtStreamId: "",
+            srtKeyLength: "0",
+            srtPassphrase: "",
+            ffmpegBinDirectory: CreateFfmpegBinDirectory());
+
+        Assert.Null(error);
+    }
+
     [Theory]
     [InlineData("caller")]
     [InlineData("listener")]
@@ -223,5 +271,13 @@ public sealed class StudioStreamOutputValidationTests
     {
         Assert.False(StudioStreamOutputValidation.CanSerializeNdiSettings(""));
         Assert.True(StudioStreamOutputValidation.CanSerializeNdiSettings("CoreVideo Pro Program"));
+    }
+
+    private static string CreateFfmpegBinDirectory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "corevideo-ffmpeg-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "ffmpeg.exe"), string.Empty);
+        return directory;
     }
 }
