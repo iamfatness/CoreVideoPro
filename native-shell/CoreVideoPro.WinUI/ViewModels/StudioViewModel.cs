@@ -4774,7 +4774,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     ProgramLowerThirdKey.Org,
                     ProgramLowerThirdKey.Position,
                     ProgramLowerThirdKey.Phase,
-                    ProgramLowerThirdKey.Enabled)
+                    ProgramLowerThirdKey.Enabled,
+                    ProgramLowerThirdKey.BuildInMs,
+                    ProgramLowerThirdKey.BuildOutMs)
                 : null,
             ColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
@@ -7008,8 +7010,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Org = source.Org,
             Position = Overlays.LowerThirdPosition,
             Phase = phase,
+            BuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
+            BuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             Enabled = true
         };
+
+    public static int NormalizeLowerThirdTimingMs(double value) =>
+        (int)Math.Round(
+            double.IsFinite(value) ? Math.Clamp(value, 50, 2000) : 250,
+            MidpointRounding.AwayFromZero);
 
     private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
     {

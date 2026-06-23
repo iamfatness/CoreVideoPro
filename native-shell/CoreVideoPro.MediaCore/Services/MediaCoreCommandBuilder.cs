@@ -310,6 +310,8 @@ public static class MediaCoreCommandBuilder
                 ["org"] = lowerThirdKey.Org,
                 ["keyPosition"] = lowerThirdKey.Position,
                 ["keyPhase"] = lowerThirdKey.Phase,
+                ["buildInMs"] = Math.Clamp(lowerThirdKey.BuildInMs, 50, 2000),
+                ["buildOutMs"] = Math.Clamp(lowerThirdKey.BuildOutMs, 50, 2000),
                 ["keyer"] = "downstream"
             });
         }
@@ -322,6 +324,8 @@ public static class MediaCoreCommandBuilder
                 ["position"] = "lower-third",
                 ["enabled"] = false,
                 ["keyPhase"] = "hidden",
+                ["buildInMs"] = 250,
+                ["buildOutMs"] = 200,
                 ["keyer"] = "downstream"
             });
         }

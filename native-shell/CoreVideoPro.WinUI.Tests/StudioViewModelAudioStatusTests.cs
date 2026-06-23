@@ -193,6 +193,16 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.True(configured);
     }
 
+    [Theory]
+    [InlineData(10, 50)]
+    [InlineData(350.4, 350)]
+    [InlineData(350.5, 351)]
+    [InlineData(9999, 2000)]
+    public void NormalizeLowerThirdTimingMs_ClampsOperatorTiming(double value, int expected)
+    {
+        Assert.Equal(expected, StudioViewModel.NormalizeLowerThirdTimingMs(value));
+    }
+
     private static AudioCaptureDevice AudioDevice(string id) =>
         new()
         {

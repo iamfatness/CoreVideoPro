@@ -57,7 +57,9 @@ public sealed record MediaCoreLowerThirdKeyWire(
     string Org,
     string Position,
     string Phase,
-    bool Enabled);
+    bool Enabled,
+    int BuildInMs = 250,
+    int BuildOutMs = 200);
 
 public sealed record MediaCoreAudioMixChannelWire(
     string ParticipantId,

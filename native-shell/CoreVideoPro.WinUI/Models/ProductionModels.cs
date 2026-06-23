@@ -446,6 +446,8 @@ public sealed record LowerThirdKeyState
     public string Org { get; init; } = string.Empty;
     public string Position { get; init; } = "lower-left";
     public string Phase { get; init; } = "hidden";
+    public int BuildInMs { get; init; } = 250;
+    public int BuildOutMs { get; init; } = 200;
     public bool Enabled { get; init; }
 
     public bool IsVisible => Enabled && !string.IsNullOrWhiteSpace(SourceName) && Phase != "hidden";

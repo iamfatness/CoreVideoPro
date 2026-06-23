@@ -477,7 +477,9 @@ public sealed class MediaCoreCommandBuilderTests
                 "Main room",
                 "lower-left",
                 "building-in",
-                Enabled: true)
+                Enabled: true,
+                BuildInMs: 350,
+                BuildOutMs: 275)
         });
 
         var lowerThird = commands.Single(command =>
@@ -493,7 +495,37 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Main room", GetString(lowerThird, "org"));
         Assert.Equal("lower-left", GetString(lowerThird, "keyPosition"));
         Assert.Equal("building-in", GetString(lowerThird, "keyPhase"));
+        Assert.Equal(350, lowerThird.ExtensionData!["buildInMs"].GetInt32());
+        Assert.Equal(275, lowerThird.ExtensionData!["buildOutMs"].GetInt32());
         Assert.Equal("downstream", GetString(lowerThird, "keyer"));
+    }
+
+    [Fact]
+    public void ClampsLowerThirdTimingForOverlayPayload()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "fixed", "isolated", "p2")],
+            Participants = Participants,
+            LowerThirdKey = new MediaCoreLowerThirdKeyWire(
+                "p2",
+                "David Chen",
+                "Chief Product Officer",
+                "Main room",
+                "lower-left",
+                "building-in",
+                Enabled: true,
+                BuildInMs: 10,
+                BuildOutMs: 9999)
+        });
+
+        var lowerThird = commands.Single(command =>
+            command.Type == "set-overlay-asset" &&
+            GetString(command, "overlayId") == "key:lower-third");
+
+        Assert.Equal(50, lowerThird.ExtensionData!["buildInMs"].GetInt32());
+        Assert.Equal(2000, lowerThird.ExtensionData!["buildOutMs"].GetInt32());
     }
 
     [Fact]
