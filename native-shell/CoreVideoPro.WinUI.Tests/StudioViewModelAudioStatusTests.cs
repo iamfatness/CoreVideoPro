@@ -150,4 +150,54 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.True(waiting.Muted);
         Assert.Equal(["Compressor"], waiting.PluginInserts);
     }
+
+    [Fact]
+    public void IsLocalAudioSourceConfigured_RejectsEnabledSourceWithoutSelectedDevice()
+    {
+        var configured = StudioViewModel.IsLocalAudioSourceConfigured(
+            localAudioSourceEnabled: true,
+            selectedLocalAudioCaptureDeviceId: "",
+            audioCaptureDevices:
+            [
+                AudioDevice("loopback-1")
+            ]);
+
+        Assert.False(configured);
+    }
+
+    [Fact]
+    public void IsLocalAudioSourceConfigured_RejectsStaleSelectedDevice()
+    {
+        var configured = StudioViewModel.IsLocalAudioSourceConfigured(
+            localAudioSourceEnabled: true,
+            selectedLocalAudioCaptureDeviceId: "missing",
+            audioCaptureDevices:
+            [
+                AudioDevice("loopback-1")
+            ]);
+
+        Assert.False(configured);
+    }
+
+    [Fact]
+    public void IsLocalAudioSourceConfigured_AcceptsEnabledDiscoveredDevice()
+    {
+        var configured = StudioViewModel.IsLocalAudioSourceConfigured(
+            localAudioSourceEnabled: true,
+            selectedLocalAudioCaptureDeviceId: "loopback-1",
+            audioCaptureDevices:
+            [
+                AudioDevice("loopback-1")
+            ]);
+
+        Assert.True(configured);
+    }
+
+    private static AudioCaptureDevice AudioDevice(string id) =>
+        new()
+        {
+            Id = id,
+            NativeDeviceId = $"native-{id}",
+            Name = "Loopback"
+        };
 }

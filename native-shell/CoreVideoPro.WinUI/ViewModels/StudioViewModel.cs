@@ -2185,7 +2185,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void BuildAudioRoutingMatrix()
     {
         var sources = BuildAssignedAudioSources();
-        if (LocalAudioSourceEnabled)
+        if (IsLocalAudioSourceConfigured(LocalAudioSourceEnabled, SelectedLocalAudioCaptureDeviceId, AudioCaptureDevices))
         {
             AddUniqueRoutingSource(sources, new RoutingSource("local-machine-audio", "Local machine audio"));
         }
@@ -4903,8 +4903,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     !string.IsNullOrWhiteSpace(device.AssignedAudioDeviceName))
                 .Select(device => $"capture:{device.Id}"));
 
-            if (LocalAudioSourceEnabled &&
-                !string.IsNullOrWhiteSpace(SelectedLocalAudioCaptureDeviceId))
+            if (IsLocalAudioSourceConfigured(LocalAudioSourceEnabled, SelectedLocalAudioCaptureDeviceId, AudioCaptureDevices))
             {
                 sourceIds.Add("local-machine-audio");
             }
@@ -4955,6 +4954,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         !string.IsNullOrWhiteSpace(source.AudioDeviceId) ||
         !string.IsNullOrWhiteSpace(source.NativeAudioDeviceId) ||
         string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal);
+
+    public static bool IsLocalAudioSourceConfigured(
+        bool localAudioSourceEnabled,
+        string? selectedLocalAudioCaptureDeviceId,
+        IEnumerable<AudioCaptureDevice> audioCaptureDevices) =>
+        localAudioSourceEnabled &&
+        !string.IsNullOrWhiteSpace(selectedLocalAudioCaptureDeviceId) &&
+        audioCaptureDevices.Any(device =>
+            string.Equals(device.Id, selectedLocalAudioCaptureDeviceId, StringComparison.Ordinal));
 
     private static string ResolveCaptureAudioChannelId(MediaCoreCaptureAudioSourceWire source) =>
         string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)
