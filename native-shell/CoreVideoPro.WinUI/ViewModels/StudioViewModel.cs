@@ -5773,6 +5773,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"{normalized:0.0} Mbps ({normalized * 1000:0} kbps)";
     }
 
+    public static string FormatTransportStreamConfigLabel(double targetBitrateMbps) =>
+        $"{NormalizeStreamTargetBitrateMbps(targetBitrateMbps):0.#} Mbps";
+
+    public static string FormatTransportRecordingConfigLabel(string? format, double targetBitrateMbps) =>
+        $"{NormalizeRecordingFormat(format).ToUpperInvariant()} {NormalizeOutputTargetBitrateMbps(targetBitrateMbps):0.#} Mbps";
+
     private static string NormalizeVideoCodec(string? codec)
     {
         var normalized = codec?.Trim().ToLowerInvariant().Replace("hevc", "h265");
@@ -6068,6 +6074,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LiveProductionSync.IsStreamingLive(snapshot),
             programResolutionLabel,
             MasterLimiterEnabled);
+        ApplyConfiguredOutputReadouts(snapshot);
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         MaybeLogAudioTelemetry(snapshot);
@@ -7507,13 +7514,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LiveProductionSync.IsStreamingLive(snapshot),
                 ResolveProgramResolutionLabel(snapshot),
                 MasterLimiterEnabled);
+            ApplyConfiguredOutputReadouts(snapshot);
             NotifyShowReadinessChanged();
             return;
         }
 
         Transport.ApplyIdleState(Recording, Streaming, ProgramResolutionLabel);
+        ApplyConfiguredOutputReadouts();
         NotifyShowReadinessChanged();
     }
+
+    private void ApplyConfiguredOutputReadouts(NativeMediaCoreStateSnapshot? snapshot = null)
+    {
+        if (!Streaming &&
+            (snapshot is null ||
+             (!LiveProductionSync.IsStreamingLive(snapshot) &&
+              LiveProductionSync.ResolveStreamHealthStatus(snapshot, streaming: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
+        {
+            Transport.StreamStatValue = FormatTransportStreamConfigLabel();
+        }
+
+        if (!Recording &&
+            (snapshot is null ||
+             (snapshot.Recording?.Active != true &&
+              LiveProductionSync.ResolveRecordHealthStatus(snapshot, recording: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
+        {
+            Transport.RecordStatValue = FormatTransportRecordingConfigLabel();
+        }
+    }
+
+    private string FormatTransportStreamConfigLabel() =>
+        FormatTransportStreamConfigLabel(StreamTargetBitrateMbps);
+
+    private string FormatTransportRecordingConfigLabel() =>
+        FormatTransportRecordingConfigLabel(RecordingFormat, RecordingTargetBitrateMbps);
 
     private void NotifyShowReadinessChanged()
     {

@@ -701,6 +701,27 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.FormatStreamBitrateSummary(value));
     }
 
+    [Theory]
+    [InlineData(6, "6 Mbps")]
+    [InlineData(4.15, "4.2 Mbps")]
+    [InlineData(double.NaN, "8.2 Mbps")]
+    public void FormatTransportStreamConfigLabel_ShowsIdleFooterBitrate(double value, string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatTransportStreamConfigLabel(value));
+    }
+
+    [Theory]
+    [InlineData("mp4", 18, "MP4 18 Mbps")]
+    [InlineData("mov", 4.15, "MOV 4.2 Mbps")]
+    [InlineData("bad", double.NaN, "MP4 8.2 Mbps")]
+    public void FormatTransportRecordingConfigLabel_ShowsIdleFooterFormatAndBitrate(
+        string format,
+        double value,
+        string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatTransportRecordingConfigLabel(format, value));
+    }
+
     private static AudioCaptureDevice AudioDevice(
         string id,
         string sourceKind = "wasapi-loopback",
