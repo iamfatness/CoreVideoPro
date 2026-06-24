@@ -4596,7 +4596,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming."
                 : "Media core rejected the stream request.";
 
-        return $"Streaming {action} failed: {prefix} {detail}";
+        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
+        return $"Streaming {normalizedAction} failed: {prefix} {detail}";
     }
 
     public static string FormatOutputStatusBrief(string? status)
@@ -4618,6 +4619,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         if (normalized.StartsWith("Streaming settings sync failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Stream settings failed";
+        }
+
+        if (normalized.StartsWith("Streaming settings failed:", StringComparison.OrdinalIgnoreCase))
         {
             return "Stream settings failed";
         }
@@ -4651,10 +4657,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "No native error detail was returned."
             : message.Trim();
 
-        const string mediaCorePrefix = "media-core sync failed:";
-        while (detail.StartsWith(mediaCorePrefix, StringComparison.OrdinalIgnoreCase))
+        string[] noisyPrefixes =
+        [
+            "media-core sync failed:",
+            "native-media-core-sync failed:",
+            "start-program-output failed:",
+            "start-program-output failed.",
+            "stop-program-output failed:",
+            "stop-program-output failed.",
+            "output sender failed during sync:"
+        ];
+
+        var changed = true;
+        while (changed)
         {
-            detail = detail[mediaCorePrefix.Length..].Trim();
+            changed = false;
+            foreach (var prefix in noisyPrefixes)
+            {
+                if (!detail.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                detail = detail[prefix.Length..].Trim();
+                changed = true;
+            }
+        }
+
+        if (detail.Equals("missing:ffmpeg executable", StringComparison.OrdinalIgnoreCase))
+        {
+            return "FFmpeg executable was not found in the configured bin folder, app folder, or PATH.";
         }
 
         return detail;
@@ -5811,9 +5843,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            var failureStatus = FormatStreamingFailureStatus("settings", ex);
             RunOnUiThread(() =>
             {
-                OutputStatus = $"Streaming settings sync failed: {ex.Message}";
+                OutputStatus = failureStatus;
                 OutputSessionStatus = OutputStatus;
             });
         }

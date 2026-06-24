@@ -44,6 +44,33 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_RemovesNestedNativeSyncPrefixes()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: native-media-core-sync failed: start-program-output failed. missing:ffmpeg executable"));
+
+        Assert.StartsWith(
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming.",
+            status);
+        Assert.Contains("FFmpeg executable was not found", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("media-core", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("start-program-output", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("missing:ffmpeg", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatOutputStatusBrief_CollapsesStreamingSettingsFailure()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "settings",
+            new InvalidOperationException("media-core sync failed: output sender failed during sync: RTMP sender exited. Connection refused"));
+
+        Assert.Equal("Stream settings failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+    }
+
+    [Fact]
     public void FormatOutputStatusBrief_CollapsesLongStreamingFailureButKeepsDetailsAvailable()
     {
         var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
