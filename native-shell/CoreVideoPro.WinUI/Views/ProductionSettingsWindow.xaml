@@ -256,8 +256,17 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Row="1"
+                                           Header="Bitrate Mbps"
+                                           Value="{x:Bind ViewModel.StreamTargetBitrateMbps, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="80"
+                                           SmallChange="0.5"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
                                 <ComboBox Grid.Row="1"
-                                          Grid.ColumnSpan="3"
+                                          Grid.Column="1"
+                                          Grid.ColumnSpan="2"
                                           Header="Hardware encoder"
                                           ItemsSource="{x:Bind ViewModel.StreamEncoderModeOptions}"
                                           SelectedValue="{x:Bind ViewModel.StreamEncoderMode, Mode=TwoWay}"

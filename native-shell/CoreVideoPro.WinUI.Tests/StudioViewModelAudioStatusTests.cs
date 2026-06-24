@@ -281,6 +281,16 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(250, StudioViewModel.NormalizeLowerThirdTimingMs(double.NegativeInfinity));
     }
 
+    [Theory]
+    [InlineData(0, 0.5)]
+    [InlineData(4.14, 4.1)]
+    [InlineData(4.15, 4.2)]
+    [InlineData(120, 80)]
+    public void NormalizeStreamTargetBitrateMbps_ClampsOperatorBitrate(double value, double expected)
+    {
+        Assert.Equal(expected, StudioViewModel.NormalizeStreamTargetBitrateMbps(value));
+    }
+
     private static AudioCaptureDevice AudioDevice(string id) =>
         new()
         {

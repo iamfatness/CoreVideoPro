@@ -167,6 +167,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _streamVideoCodec = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.Codec;
 
     [ObservableProperty]
+    private double _streamTargetBitrateMbps = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.TargetBitrateMbps;
+
+    [ObservableProperty]
     private string _streamEncoderMode = "auto";
 
     [ObservableProperty]
@@ -915,7 +918,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
 
     public string StreamRenderProfileSummary =>
-        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)} - {FormatStreamEncoderMode(StreamEncoderMode)}";
+        $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)} - {NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0} Mbps - {FormatStreamEncoderMode(StreamEncoderMode)}";
 
     public string RecordingRenderProfileSummary =>
         $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)}";
@@ -1522,6 +1525,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamVideoCodecChanged(string value) => OnOutputProfileChanged();
 
+    partial void OnStreamTargetBitrateMbpsChanged(double value)
+    {
+        var normalized = NormalizeStreamTargetBitrateMbps(value);
+        if (!value.Equals(normalized))
+        {
+            StreamTargetBitrateMbps = normalized;
+            return;
+        }
+
+        OnOutputProfileChanged();
+    }
+
     partial void OnStreamEncoderModeChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
@@ -2122,13 +2137,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             catch (Exception ex)
             {
                 var action = starting ? "start" : "stop";
+                var failureStatus = FormatStreamingFailureStatus(action, ex);
                 RunOnUiThread(() =>
                 {
                     Streaming = previousStreaming;
                     RefreshOutputStatus();
-                    OutputStatus = FormatStreamingFailureStatus(action, ex);
+                    OutputStatus = failureStatus;
                     OutputSessionStatus = OutputStatus;
                 });
+
+                if (starting && !previousStreaming)
+                {
+                    _ = SyncFailedStreamStartRollbackAsync(failureStatus);
+                }
             }
         }
         finally
@@ -2139,6 +2160,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ToggleStreamingCommand.NotifyCanExecuteChanged();
             });
         }
+    }
+
+    private async Task SyncFailedStreamStartRollbackAsync(string failureStatus)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            await Task.Delay(150).ConfigureAwait(false);
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                // Wait for the active sync to clear, then retry the explicit stop.
+            }
+            catch (Exception ex)
+            {
+                var rollbackFailure = NormalizeStreamingFailureDetail(ex.Message);
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = $"{failureStatus} Stream cleanup also failed: {rollbackFailure}";
+                    OutputSessionStatus = OutputStatus;
+                });
+                return;
+            }
+        }
+
+        RunOnUiThread(() =>
+        {
+            OutputStatus = $"{failureStatus} Stream cleanup is still waiting for media core.";
+            OutputSessionStatus = OutputStatus;
+        });
     }
 
     // Re-applies the production sync after a stream toggle was skipped for
@@ -4852,7 +4906,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
             CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264"),
-            StreamOutputProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps, StreamVideoCodec),
+            StreamOutputProfile = BuildRequestedOutputProfile(
+                "stream",
+                StreamRenderResolution,
+                StreamRenderFps,
+                StreamVideoCodec,
+                NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps)),
             RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps, RecordingVideoCodec),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
@@ -5124,7 +5183,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private IReadOnlyList<MediaCoreStreamDestinationWire> BuildStreamDestinationSettings()
     {
         var destinations = new List<MediaCoreStreamDestinationWire>(3);
-        var streamProfile = BuildRequestedOutputProfile("stream", StreamRenderResolution, StreamRenderFps, StreamVideoCodec);
+        var streamProfile = BuildRequestedOutputProfile(
+            "stream",
+            StreamRenderResolution,
+            StreamRenderFps,
+            StreamVideoCodec,
+            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps));
         if (StreamRtmpEnabled &&
             StudioStreamOutputValidation.CanSerializeRtmpSettings(
                 StreamRtmpProtocol,
@@ -5319,7 +5383,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         string scope,
         string? resolution,
         string? fpsText,
-        string? codec)
+        string? codec,
+        double? targetBitrateMbps = null)
     {
         var normalizedResolution = NormalizeResolutionText(resolution);
         var parts = normalizedResolution.Split('x', StringSplitOptions.RemoveEmptyEntries);
@@ -5335,9 +5400,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Width: width,
             Height: height,
             Fps: fps,
-            TargetBitrateMbps: EstimateTargetBitrateMbps(width, height, fps),
+            TargetBitrateMbps: targetBitrateMbps ?? EstimateTargetBitrateMbps(width, height, fps),
             Codec: NormalizeVideoCodec(codec));
     }
+
+    public static double NormalizeStreamTargetBitrateMbps(double value) =>
+        Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.5, 80.0) : 8.2, 1, MidpointRounding.AwayFromZero);
 
     private static string NormalizeVideoCodec(string? codec)
     {
