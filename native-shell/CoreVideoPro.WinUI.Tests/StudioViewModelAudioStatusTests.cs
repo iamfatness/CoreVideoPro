@@ -181,6 +181,106 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatAudioProofSummary_ShowsNoPcmPath()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "idle",
+            Summary = "No PCM",
+            MonitorStatus = "muted"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "waiting",
+            Summary = "Waiting",
+            SourceCount = 1,
+            StreamingCount = 1,
+            Sources =
+            [
+                new NativeMediaCoreCaptureAudioSource
+                {
+                    CaptureDeviceId = "local-machine-audio",
+                    AudioDeviceName = "Desk Mix",
+                    AudioSourceKind = "loopback",
+                    Paired = true,
+                    CaptureStreaming = true
+                }
+            ]
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM none | mix none | PGM none | MON none | playback off - Desk Mix (loopback, streaming, no frames)", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsMonitorPlaybackGap()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "armed"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 960,
+            Sources =
+            [
+                new NativeMediaCoreCaptureAudioSource
+                {
+                    CaptureDeviceId = "local-machine-audio",
+                    AudioDeviceName = "Desk Mix",
+                    AudioSourceKind = "wasapi-loopback",
+                    Paired = true,
+                    CaptureStreaming = true,
+                    CaptureFramesReceived = 960
+                }
+            ]
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | playback none (armed, waiting for audio) - Desk Mix (wasapi-loopback, 960 frames)", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsMonitorPlaybackWorking()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 480
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480", status);
+    }
+
+    [Fact]
     public void BuildWaitingForPcmAudioMixChannel_ClearsStaleMeterSignalButPreservesOperatorControls()
     {
         var prior = new ParticipantAudioMix

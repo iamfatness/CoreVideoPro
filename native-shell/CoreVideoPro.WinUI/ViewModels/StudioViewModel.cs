@@ -666,6 +666,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatAudioMonitorEngineStatus(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
             : "Waiting for media engine audio telemetry.";
 
+    public string AudioProofSummary =>
+        _bridge.LastSnapshot is { } snapshot
+            ? FormatAudioProofSummary(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
+            : "Audio proof waiting for media core.";
+
     public string AudioMeterSourceSummary =>
         _bridge.LastSnapshot?.AudioMixSession is { } audio
             ? BuildAudioMeterSourceSummary(audio)
@@ -4376,6 +4381,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorVolumeLabel));
         OnPropertyChanged(nameof(AudioMonitorStatus));
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
+        OnPropertyChanged(nameof(AudioProofSummary));
         OnPropertyChanged(nameof(AudioMeterSourceSummary));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
         OnPropertyChanged(nameof(AudioBusTapSummary));
@@ -4722,6 +4728,55 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "unavailable" => "unavailable",
             _ => audio.MonitorStatus ?? "unknown"
         };
+
+    public static string FormatAudioProofSummary(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources capture)
+    {
+        var sourceState = capture.SourceCount <= 0
+            ? "sources none"
+            : $"sources {capture.StreamingCount}/{capture.SourceCount}";
+        var pcmState = capture.CaptureFramesReceived > 0
+            ? $"PCM {capture.CaptureFramesReceived}"
+            : "PCM none";
+        var mixState = audio.MixedFrameCount > 0
+            ? $"mix {audio.MixedFrameCount}"
+            : "mix none";
+        var pgmState = capture.RoutedMasterFrames > 0
+            ? $"PGM {capture.RoutedMasterFrames}"
+            : "PGM none";
+        var monState = capture.RoutedMonitorFrames > 0
+            ? $"MON {capture.RoutedMonitorFrames}"
+            : "MON none";
+        var playbackState = audio.MonitorEnabled
+            ? audio.MonitorFramesPlayed > 0
+                ? $"playback {audio.MonitorFramesPlayed}"
+                : $"playback none ({FormatMonitorStatus(audio)})"
+            : "playback off";
+        var sourceDetail = capture.Sources.FirstOrDefault(source => source.CaptureStreaming || source.CaptureFramesReceived > 0) ??
+            capture.Sources.FirstOrDefault();
+        var sourceLabel = sourceDetail is null
+            ? string.Empty
+            : $" - {FormatAudioProofSourceLabel(sourceDetail)}";
+
+        return $"{sourceState} | {pcmState} | {mixState} | {pgmState} | {monState} | {playbackState}{sourceLabel}";
+    }
+
+    private static string FormatAudioProofSourceLabel(NativeMediaCoreCaptureAudioSource source)
+    {
+        var label = !string.IsNullOrWhiteSpace(source.AudioDeviceName)
+            ? source.AudioDeviceName
+            : !string.IsNullOrWhiteSpace(source.AudioDeviceId)
+                ? source.AudioDeviceId
+                : source.CaptureDeviceId;
+        var kind = string.IsNullOrWhiteSpace(source.AudioSourceKind)
+            ? "audio"
+            : source.AudioSourceKind;
+        var state = source.CaptureStreaming
+            ? source.CaptureFramesReceived > 0 ? $"{source.CaptureFramesReceived} frames" : "streaming, no frames"
+            : source.Paired ? "paired idle" : "not paired";
+        return $"{label} ({kind}, {state})";
+    }
 
     private static string BuildAudioMeterSourceSummary(NativeMediaCoreAudioMixSession audio)
     {

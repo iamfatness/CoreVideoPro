@@ -1054,18 +1054,34 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <Border MinWidth="112"
+                        <Border MinWidth="260"
                                 Padding="10,7"
                                 Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6">
-                            <ToggleButton Content="Monitor"
-                                          IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
-                                          MinWidth="88"
-                                          MinHeight="34"
-                                          HorizontalAlignment="Stretch"
-                                          ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <ToggleButton Content="Monitor"
+                                              IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
+                                              MinWidth="88"
+                                              MinHeight="34"
+                                              VerticalAlignment="Center"
+                                              ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="AUDIO PROOF"
+                                               Style="{StaticResource OutputStatLabel}" />
+                                    <TextBlock Text="{x:Bind ViewModel.AudioProofSummary, Mode=OneWay}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               MaxWidth="150"
+                                               TextTrimming="CharacterEllipsis"
+                                               ToolTipService.ToolTip="{x:Bind ViewModel.AudioProofSummary, Mode=OneWay}" />
+                                </StackPanel>
+                            </Grid>
                         </Border>
 
                         <Border MinWidth="292"
