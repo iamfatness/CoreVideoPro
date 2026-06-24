@@ -472,7 +472,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<RouteSelectOption> SuperSourceBackgroundOptions =>
         new[]
             {
-                new RouteSelectOption { Value = "__none", Label = "No background" }
+                new RouteSelectOption { Value = SceneBackgroundSelectionService.NoBackgroundValue, Label = "No background" }
             }
             .Concat(MediaBinGroups
                 .SelectMany(group => group.Assets)
@@ -486,7 +486,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
 
     [ObservableProperty]
-    private string _previewSceneBackgroundAssetId = "__none";
+    private string _previewSceneBackgroundAssetId = SceneBackgroundSelectionService.NoBackgroundValue;
 
     public MediaAsset? PreviewSceneBackgroundAsset => ResolveSceneBackgroundAsset(PreviewSceneId);
 
@@ -1443,18 +1443,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(value) ||
-            string.Equals(value, "__none", StringComparison.Ordinal) ||
-            FindMediaAsset(value) is null)
-        {
-            _sceneBackgroundAssetIds.Remove(PreviewSceneId);
-            CommandStatus = $"SuperSource background cleared for {PreviewScene.Name}";
-        }
-        else
-        {
-            _sceneBackgroundAssetIds[PreviewSceneId] = value;
-            CommandStatus = $"{FindMediaAsset(value)?.Name ?? value} set as SuperSource background for {PreviewScene.Name}";
-        }
+        var selection = SceneBackgroundSelectionService.ApplySelection(
+            PreviewSceneId,
+            value,
+            _sceneBackgroundAssetIds,
+            FindMediaAsset,
+            IsVisualMediaAsset);
+        CommandStatus = selection.HasBackground
+            ? $"{selection.AssetName ?? selection.SelectedAssetId} set as SuperSource background for {PreviewScene.Name}"
+            : $"SuperSource background cleared for {PreviewScene.Name}";
 
         NotifySceneBackgroundChanged();
         SchedulePreviewRoutingRefresh();
@@ -1642,6 +1639,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         SceneBuilderName = PreviewScene.Name;
         RefreshSceneItems();
+        RefreshSceneBackgroundSelection();
         OnPropertyChanged(nameof(PreviewScene));
         OnPropertyChanged(nameof(PreviewSceneSummary));
         OnPropertyChanged(nameof(SceneRailDisplaySummary));
@@ -6811,13 +6809,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void PruneMissingSceneBackgrounds()
     {
-        foreach (var pair in _sceneBackgroundAssetIds.ToList())
-        {
-            if (FindMediaAsset(pair.Value) is null)
-            {
-                _sceneBackgroundAssetIds.Remove(pair.Key);
-            }
-        }
+        SceneBackgroundSelectionService.PruneMissingBackgrounds(
+            _sceneBackgroundAssetIds,
+            FindMediaAsset,
+            IsVisualMediaAsset);
     }
 
     private void RefreshSceneBackgroundSelection()
@@ -6825,9 +6820,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _refreshingSceneBackgroundSelection = true;
         try
         {
-            PreviewSceneBackgroundAssetId = _sceneBackgroundAssetIds.TryGetValue(PreviewSceneId, out var assetId)
-                ? assetId
-                : "__none";
+            PreviewSceneBackgroundAssetId = SceneBackgroundSelectionService.ResolveSelectedAssetId(
+                PreviewSceneId,
+                _sceneBackgroundAssetIds,
+                FindMediaAsset,
+                IsVisualMediaAsset);
         }
         finally
         {
