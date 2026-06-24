@@ -342,6 +342,32 @@ public sealed class SceneCanvasIaTests
     }
 
     [Fact]
+    public void SceneCanvasViewport_RespectsEditorHeightCapWhenLayoutIsUnbounded()
+    {
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            availableWidth: 1600,
+            availableHeight: 0,
+            canvasAspectRatio: 16.0 / 9,
+            maxHeight: 520);
+
+        Assert.Equal(924.444, fitSize.Width, precision: 3);
+        Assert.Equal(520, fitSize.Height, precision: 3);
+    }
+
+    [Fact]
+    public void SceneCanvasViewport_RespectsEditorHeightCapWhenWidthCouldOversizeCanvas()
+    {
+        var fitSize = SceneCanvasViewportService.ResolveFitSize(
+            availableWidth: 1800,
+            availableHeight: 900,
+            canvasAspectRatio: 16.0 / 9,
+            maxHeight: 520);
+
+        Assert.Equal(924.444, fitSize.Width, precision: 3);
+        Assert.Equal(520, fitSize.Height, precision: 3);
+    }
+
+    [Fact]
     public void SourceFraming_FillCentersWideSourceInTallSuperSourceTile()
     {
         var centered = SourceFramingLayoutService.Resolve(
