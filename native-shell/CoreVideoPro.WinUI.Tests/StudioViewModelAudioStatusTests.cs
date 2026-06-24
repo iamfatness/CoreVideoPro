@@ -8,6 +8,15 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class StudioViewModelAudioStatusTests
 {
     [Fact]
+    public void FormatAudioMixerFailureStatus_PreservesLoadFailureDetail()
+    {
+        var status = StudioViewModel.FormatAudioMixerFailureStatus(
+            new InvalidOperationException("Failed to load audio mixer XAML."));
+
+        Assert.Equal("Audio mixer failed to open: Failed to load audio mixer XAML.", status);
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_LeadsWithFfmpegActionAndRemovesMediaCorePrefix()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(

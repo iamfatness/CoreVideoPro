@@ -2351,15 +2351,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void OpenAudioMixer()
     {
-        if (_audioMixerWindow is not null)
+        try
         {
-            _audioMixerWindow.Activate();
-            return;
-        }
+            if (_audioMixerWindow is not null)
+            {
+                _audioMixerWindow.Activate();
+                return;
+            }
 
-        _audioMixerWindow = new AudioMixerWindow(this);
-        _audioMixerWindow.WindowClosed += OnAudioMixerWindowClosed;
-        _audioMixerWindow.Activate();
+            _audioMixerWindow = new AudioMixerWindow(this);
+            _audioMixerWindow.WindowClosed += OnAudioMixerWindowClosed;
+            _audioMixerWindow.Activate();
+            CommandStatus = "Audio mixer opened.";
+        }
+        catch (Exception ex)
+        {
+            if (_audioMixerWindow is not null)
+            {
+                _audioMixerWindow.WindowClosed -= OnAudioMixerWindowClosed;
+                _audioMixerWindow = null;
+            }
+
+            CommandStatus = FormatAudioMixerFailureStatus(ex);
+        }
     }
 
     private void OnAudioMixerWindowClosed(object? sender, EventArgs e)
@@ -2369,6 +2383,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _audioMixerWindow.WindowClosed -= OnAudioMixerWindowClosed;
             _audioMixerWindow = null;
         }
+    }
+
+    public static string FormatAudioMixerFailureStatus(Exception exception)
+    {
+        var detail = string.IsNullOrWhiteSpace(exception.Message)
+            ? exception.GetType().Name
+            : exception.Message.Trim();
+        return $"Audio mixer failed to open: {detail}";
     }
 
     [RelayCommand]
