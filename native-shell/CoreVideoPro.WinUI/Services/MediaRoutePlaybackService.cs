@@ -19,8 +19,6 @@ public static class MediaRoutePlaybackService
         }
 
         return isProgramScene &&
-            selectedMediaAssetPlaying &&
-            string.Equals(mediaAssetId, selectedMediaAssetId, StringComparison.Ordinal) &&
             IsMediaAssetRoutedOnProgram(mediaAssetId, programRoutes);
     }
 
@@ -70,8 +68,7 @@ public static class MediaRoutePlaybackService
         var programAssetId = ResolveProgramAutoplayAssetId(selectedMediaAssetId, programRoutes);
         if (!string.IsNullOrWhiteSpace(programAssetId))
         {
-            var preserveOperatorState = string.Equals(programAssetId, selectedMediaAssetId, StringComparison.Ordinal);
-            return new PlaybackSelection(programAssetId, preserveOperatorState ? selectedMediaAssetPlaying : true);
+            return new PlaybackSelection(programAssetId, Playing: true);
         }
 
         return new PlaybackSelection(selectedMediaAssetId, Playing: false);

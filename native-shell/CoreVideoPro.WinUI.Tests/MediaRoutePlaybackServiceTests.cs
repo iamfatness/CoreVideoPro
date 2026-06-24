@@ -74,7 +74,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_RespectsOperatorPausedProgramMedia()
+    public void ShouldPlaySceneMediaRoute_AutoplaysCuedMediaWhenItReachesProgram()
     {
         var programRoutes = new[]
         {
@@ -88,7 +88,7 @@ public sealed class MediaRoutePlaybackServiceTests
             selectedMediaAssetPlaying: false,
             programRoutes);
 
-        Assert.False(shouldPlay);
+        Assert.True(shouldPlay);
     }
 
     [Fact]
@@ -150,7 +150,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolvePlaybackSelection_PreservesPausedStateForSelectedProgramMedia()
+    public void ResolvePlaybackSelection_AutoplaysSelectedProgramMediaRoute()
     {
         var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             selectedMediaAssetId: "intro",
@@ -158,7 +158,7 @@ public sealed class MediaRoutePlaybackServiceTests
             programRoutes: [MediaRoute("intro")]);
 
         Assert.Equal("intro", selection.MediaAssetId);
-        Assert.False(selection.Playing);
+        Assert.True(selection.Playing);
     }
 
     [Fact]
