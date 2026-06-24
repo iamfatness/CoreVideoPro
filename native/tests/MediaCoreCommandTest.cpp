@@ -999,7 +999,7 @@ TEST(MediaCoreCommand, BrandKitSnapshotIncludesFullWinUiContract) {
   EXPECT_EQ(brandKit->getString("defaultOverlayBehavior"), "auto");
 }
 
-TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
+TEST(MediaCoreCommand, AudioMixSessionDoesNotFakeMetersWithoutPcm) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "sync-participant-audio-mix"},
@@ -1031,24 +1031,36 @@ TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   const auto* mix = state.get("audioMixSession");
   ASSERT_NE(mix, nullptr);
   EXPECT_EQ(mix->getString("status"), "warning");
-  EXPECT_TRUE(mix->get("limiterActive")->asBool());
-  EXPECT_EQ(mix->get("loudnessLufs")->asNumber(), -14);
-  EXPECT_NE(mix->getString("summary").find("boosted"), std::string::npos);
+  EXPECT_EQ(mix->get("masterLevel")->asNumber(), 0);
+  EXPECT_EQ(mix->get("mixedFrameCount")->asNumber(), 0);
+  EXPECT_FALSE(mix->get("limiterActive")->asBool());
+  EXPECT_EQ(mix->get("loudnessLufs")->asNumber(), -60);
+  EXPECT_NE(mix->getString("summary").find("waiting for PCM"), std::string::npos);
+  EXPECT_EQ(mix->getString("summary").find("boosted"), std::string::npos);
   EXPECT_NE(mix->getString("summary").find("manual"), std::string::npos);
-  ASSERT_TRUE(mix->get("warnings")->asArray().size() == 1u);
+  const auto& warnings = mix->get("warnings")->asArray();
+  ASSERT_TRUE(warnings.size() >= 2u);
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const corevideo::rpc::Json& warning) {
+    return warning.isString() && warning.asString().find("No native PCM has been mixed for quiet-guest") != std::string::npos;
+  }));
 
   const auto& participants = mix->get("participants")->asArray();
   ASSERT_TRUE(participants.size() == 3u);
   EXPECT_EQ(participants[0].getString("participantId"), "quiet-guest");
   EXPECT_EQ(participants[0].get("inputLevel")->asNumber(), 0);
   EXPECT_EQ(participants[0].get("gainDb")->asNumber(), 6);
-  EXPECT_TRUE(participants[0].get("noiseSuppression")->asBool());
+  EXPECT_FALSE(participants[0].get("noiseSuppression")->asBool());
+  EXPECT_EQ(participants[0].get("outputLevel")->asNumber(), 0);
+  EXPECT_EQ(participants[0].get("rmsDbfs")->asNumber(), -120);
+  EXPECT_EQ(participants[0].getString("status"), "waiting-for-pcm");
 
   EXPECT_EQ(participants[1].getString("participantId"), "hot-host");
-  EXPECT_EQ(participants[1].get("inputLevel")->asNumber(), 100);
+  EXPECT_EQ(participants[1].get("inputLevel")->asNumber(), 0);
   EXPECT_EQ(participants[1].get("gainDb")->asNumber(), 12);
   EXPECT_EQ(participants[1].get("manualGainDb")->asNumber(), 24);
-  EXPECT_TRUE(participants[1].get("limiterActive")->asBool());
+  EXPECT_EQ(participants[1].get("outputLevel")->asNumber(), 0);
+  EXPECT_FALSE(participants[1].get("limiterActive")->asBool());
+  EXPECT_EQ(participants[1].getString("status"), "waiting-for-pcm");
 
   EXPECT_EQ(participants[2].getString("status"), "muted");
   EXPECT_EQ(participants[2].get("gainDb")->asNumber(), -60);
@@ -1056,7 +1068,7 @@ TEST(MediaCoreCommand, AudioMixSessionClampsLevelsAndReportsDspState) {
   EXPECT_EQ(participants[2].get("outputLevel")->asNumber(), 0);
 }
 
-TEST(MediaCoreCommand, AudioLimiterCanBeBypassedWithoutDroppingAudioLevels) {
+TEST(MediaCoreCommand, AudioLimiterBypassStillRequiresPcmForMeters) {
   corevideo::core::MediaCore mediaCore;
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "sync-participant-audio-mix"},
@@ -1079,7 +1091,8 @@ TEST(MediaCoreCommand, AudioLimiterCanBeBypassedWithoutDroppingAudioLevels) {
   EXPECT_FALSE(mix->get("limiterActive")->asBool());
   const auto& participants = mix->get("participants")->asArray();
   ASSERT_TRUE(participants.size() == 1u);
-  EXPECT_EQ(participants[0].get("outputLevel")->asNumber(), 100);
+  EXPECT_EQ(participants[0].get("outputLevel")->asNumber(), 0);
+  EXPECT_EQ(participants[0].getString("status"), "waiting-for-pcm");
   EXPECT_FALSE(participants[0].get("limiterActive")->asBool());
 }
 

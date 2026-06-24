@@ -1680,6 +1680,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
   int boostingCount = 0;
   int duckingCount = 0;
   int mutedCount = 0;
+  int waitingPcmCount = 0;
   int manualCount = 0;
   int soloCount = 0;
   int insertCount = 0;
@@ -1688,21 +1689,23 @@ rpc::Json MediaCore::audioMixSessionState() const {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
     const modules::AudioParticipantMixMetrics* measured =
         nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
-    const int measuredInputLevel = measured ? measured->inputLevel : channel.inputLevel;
+    const bool hasPcm = measured != nullptr;
+    const int measuredInputLevel = hasPcm ? measured->inputLevel : 0;
     const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
     const int gainDb = channel.muted ? -60 : static_cast<int>(clampDouble(smartGainDb + (channel.hasManualGain ? channel.manualGainDb : 0), -12, 12));
-    const bool noiseSuppression = channel.noiseSuppression || measuredInputLevel < 35 ||
-                                  (measured && measured->noiseSuppressionActive);
-    const int outputLevel = channel.muted ? 0 : clampInt(measuredInputLevel + gainDb * 4, 0, 100);
-    const bool channelLimiterWouldReduce = outputLevel >= 88;
-    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce || (measured && measured->limiterActive);
-    if (!channel.muted) {
+    const bool noiseSuppression = hasPcm && (channel.noiseSuppression || measuredInputLevel < 35 ||
+                                  (measured && measured->noiseSuppressionActive));
+    const int outputLevel = channel.muted || !hasPcm ? 0 : clampInt(measuredInputLevel + gainDb * 4, 0, 100);
+    const bool channelLimiterWouldReduce = hasPcm && outputLevel >= 88;
+    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce || (hasPcm && measured->limiterActive);
+    if (hasPcm && !channel.muted) {
       masterTotal += outputLevel;
       ++audibleCount;
     }
-    if (gainDb > 0 && !channel.muted) ++boostingCount;
-    if (gainDb < 0 && !channel.muted) ++duckingCount;
+    if (hasPcm && gainDb > 0 && !channel.muted) ++boostingCount;
+    if (hasPcm && gainDb < 0 && !channel.muted) ++duckingCount;
     if (channel.muted) ++mutedCount;
+    if (!hasPcm && !channel.muted) ++waitingPcmCount;
     if (channel.solo) ++soloCount;
     if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
     if (!channel.pluginInserts.empty()) {
@@ -1713,6 +1716,9 @@ rpc::Json MediaCore::audioMixSessionState() const {
     }
     if (noiseSuppression && measuredInputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
       warnings.emplace_back("Noise suppression active on low-level sources.");
+    }
+    if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
+      warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
     }
 
     rpc::Json::Array pluginInserts;
@@ -1730,15 +1736,15 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"inputLevel", measuredInputLevel},
         {"outputLevel", outputLevel},
         {"gainDb", gainDb},
-        {"rmsDbfs", measured ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(outputLevel)},
-        {"peakDbfs", measured ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(outputLevel)},
+        {"rmsDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(0)},
+        {"peakDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(0)},
         {"pan", channel.pan},
         {"solo", channel.solo},
         {"noiseSuppression", noiseSuppression},
-        {"limiterActive", audioLimiterEnabled_ && (channelLimiterWouldReduce || (measured && measured->limiterActive))},
+        {"limiterActive", audioLimiterEnabled_ && (channelLimiterWouldReduce || (hasPcm && measured->limiterActive))},
         {"muted", channel.muted},
         {"pluginInserts", pluginInserts},
-        {"status", channel.muted ? "muted" : measured && !measured->status.empty() ? measured->status : audioStatusFor(false, gainDb)},
+        {"status", channel.muted ? "muted" : hasPcm && !measured->status.empty() ? measured->status : hasPcm ? audioStatusFor(false, gainDb) : "waiting-for-pcm"},
     };
     if (channel.hasManualGain) {
       participant.emplace("manualGainDb", channel.manualGainDb);
@@ -1752,6 +1758,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
   std::ostringstream summary;
   if (boostingCount > 0) summary << boostingCount << " boosted";
   if (duckingCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << duckingCount << " ducked";
+  if (waitingPcmCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << waitingPcmCount << " waiting for PCM";
   if (mutedCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << mutedCount << " muted";
   if (manualCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << manualCount << " manual";
   if (soloCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << soloCount << " solo";
@@ -1771,7 +1778,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
   return rpc::Json::Object{
       {"status", warnings.empty() ? "live" : "warning"},
       {"masterLevel", masterLevel},
-      {"loudnessLufs", limiterActive ? -14 : -16},
+      {"loudnessLufs", audibleCount > 0 ? (limiterActive ? -14 : -16) : -60},
       {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
