@@ -4623,7 +4623,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var detail = NormalizeStreamingFailureDetail(exception.Message);
         var lowered = detail.ToLowerInvariant();
-        var prefix = lowered.Contains("program frame", StringComparison.Ordinal) ||
+        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
+                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
+            ? "Media core is busy applying changes. Wait a moment and try Stream again."
+            : lowered.Contains("program frame", StringComparison.Ordinal) ||
                      lowered.Contains("program pixels", StringComparison.Ordinal)
             ? "Program video is not ready. Put a valid source on Program before streaming."
             : lowered.Contains("rtmp", StringComparison.Ordinal) ||
@@ -4666,6 +4669,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
             {
                 return "Media core rejected stream";
+            }
+
+            if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Media core busy";
             }
 
             return "Streaming start failed";
@@ -4731,6 +4739,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var detail = string.IsNullOrWhiteSpace(message)
             ? "No native error detail was returned."
             : message.Trim();
+
+        if (detail.Contains("media-core sync in flight", StringComparison.OrdinalIgnoreCase) ||
+            detail.Contains("sync in flight", StringComparison.OrdinalIgnoreCase) &&
+            detail.Contains("backpressure", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Media core is still applying another output change. Wait a moment and try again.";
+        }
 
         string[] noisyPrefixes =
         [

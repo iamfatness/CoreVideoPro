@@ -98,6 +98,20 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_MapsWrappedInFlightSyncToBusyStatus()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
+
+        Assert.StartsWith(
+            "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again.",
+            status);
+        Assert.DoesNotContain("media-core sync in flight", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backpressure", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatOutputStatusBrief_CollapsesStreamingSettingsFailure()
     {
         var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
@@ -129,6 +143,17 @@ public sealed class StudioViewModelAudioStatusTests
             new InvalidOperationException("media-core sync failed: output sender failed: RTMP sender is waiting for a program frame."));
 
         Assert.Equal("Program video not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+    }
+
+    [Fact]
+    public void FormatOutputStatusBrief_SurfacesBusyMediaCoreStreamingFailure()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
+
+        Assert.Equal("Media core busy", StudioViewModel.FormatOutputStatusBrief(fullStatus));
         Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
     }
 
