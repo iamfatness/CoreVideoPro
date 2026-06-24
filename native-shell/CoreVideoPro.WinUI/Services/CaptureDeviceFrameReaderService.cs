@@ -117,12 +117,16 @@ public static class CaptureDeviceFormatSelector
         };
     }
 
-    public static IReadOnlyList<string> ReaderOutputSubtypesForFormat(string? formatSubtype)
+    public static IReadOnlyList<string> ReaderOutputSubtypesForFormat(
+        string? formatSubtype,
+        bool preferBgraOutputFirst = false)
     {
         var normalized = NormalizeSubtype(formatSubtype);
         if (normalized is "YUY2" or "NV12" or "I420" or "P010" or "MJPG" or "MJPEG")
         {
-            return [normalized, MediaEncodingSubtypes.Bgra8];
+            return preferBgraOutputFirst
+                ? [MediaEncodingSubtypes.Bgra8, normalized]
+                : [normalized, MediaEncodingSubtypes.Bgra8];
         }
 
         return BgraReaderOutputSubtypes;
@@ -381,7 +385,9 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 : FormatLabel(source.CurrentFormat);
             LaunchLog.Write($"capture: trying current/default stream {_stableDeviceId} {currentLabel}");
 
-            foreach (var outputSubtype in CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(source.CurrentFormat?.Subtype))
+            foreach (var outputSubtype in CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(
+                source.CurrentFormat?.Subtype,
+                preferBgraOutputFirst: _allowLateFirstFrame))
             {
                 try
                 {
@@ -593,7 +599,9 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
 
             CaptureFormatTelemetry(source);
-            var outputSubtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(format.Subtype);
+            var outputSubtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(
+                format.Subtype,
+                preferBgraOutputFirst: _allowLateFirstFrame);
             for (var i = 0; i < outputSubtypes.Count; i++)
             {
                 var outputSubtype = outputSubtypes[i];

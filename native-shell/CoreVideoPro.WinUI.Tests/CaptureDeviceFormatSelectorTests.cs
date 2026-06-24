@@ -48,12 +48,28 @@ public sealed class CaptureDeviceFormatSelectorTests
     [InlineData("I420")]
     [InlineData("P010")]
     [InlineData("MJPG")]
-    public void ReaderOutputSubtypesForFormat_TriesNativeUvcSubtypeBeforeBgraConversion(string subtype)
+    public void ReaderOutputSubtypesForFormat_TriesNativeSubtypeBeforeBgraConversionByDefault(string subtype)
     {
         var subtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(subtype);
 
         Assert.Equal(subtype, subtypes[0]);
         Assert.Equal(MediaEncodingSubtypes.Bgra8, subtypes[1]);
+    }
+
+    [Theory]
+    [InlineData("YUY2")]
+    [InlineData("NV12")]
+    [InlineData("I420")]
+    [InlineData("P010")]
+    [InlineData("MJPG")]
+    public void ReaderOutputSubtypesForFormat_PrefersBgraForCaptureCardStability(string subtype)
+    {
+        var subtypes = CaptureDeviceFormatSelector.ReaderOutputSubtypesForFormat(
+            subtype,
+            preferBgraOutputFirst: true);
+
+        Assert.Equal(MediaEncodingSubtypes.Bgra8, subtypes[0]);
+        Assert.Equal(subtype, subtypes[1]);
     }
 
     [Fact]
