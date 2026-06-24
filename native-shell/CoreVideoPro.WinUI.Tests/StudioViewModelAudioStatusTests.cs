@@ -384,6 +384,19 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void ResolveLocalAudioSourceDeviceId_ReplacesPersistedQuietLoopbackWithDefaultLoopback()
+    {
+        var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
+            selectedDeviceId: "chat",
+            [
+                AudioDevice("chat", "wasapi-loopback", "Chat"),
+                AudioDevice("system", "wasapi-loopback", "System", isDefault: true)
+            ]);
+
+        Assert.Equal("system", selected);
+    }
+
+    [Fact]
     public void ResolveAudioMonitorDeviceId_SelectsFirstAvailableRenderDevice()
     {
         var selected = StudioViewModel.ResolveAudioMonitorDeviceId(
@@ -467,12 +480,17 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.FormatStreamBitrateSummary(value));
     }
 
-    private static AudioCaptureDevice AudioDevice(string id, string sourceKind = "wasapi-loopback", string name = "Loopback") =>
+    private static AudioCaptureDevice AudioDevice(
+        string id,
+        string sourceKind = "wasapi-loopback",
+        string name = "Loopback",
+        bool isDefault = false) =>
         new()
         {
             Id = id,
             NativeDeviceId = $"native-{id}",
             Name = name,
-            SourceKind = sourceKind
+            SourceKind = sourceKind,
+            IsDefault = isDefault
         };
 }

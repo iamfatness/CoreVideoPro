@@ -24,6 +24,20 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
     }
 
     [Fact]
+    public void SortForOperatorSelection_PutsDefaultLoopbackBeforeAlphabeticalLoopbacks()
+    {
+        var sorted = AudioCaptureDeviceDiscoveryService.SortForOperatorSelection(
+            [
+                Device("chat", "wasapi-loopback", "Chat"),
+                Device("system", "wasapi-loopback", "System", isDefault: true),
+                Device("mic", "wasapi-input", "USB microphone")
+            ]);
+
+        Assert.Equal("system", sorted[0].Id);
+        Assert.Equal("chat", sorted[1].Id);
+    }
+
+    [Fact]
     public void ResolveDefaultLocalMachineAudioDeviceId_PrefersLoopbackOverMicrophone()
     {
         var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
@@ -33,6 +47,19 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
             ]);
 
         Assert.Equal("loopback", selected);
+    }
+
+    [Fact]
+    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersDefaultRenderLoopbackOverAlphabeticalLoopback()
+    {
+        var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
+            [
+                Device("chat", "wasapi-loopback", "Chat"),
+                Device("music", "wasapi-loopback", "Music", isDefault: true),
+                Device("system", "wasapi-loopback", "System")
+            ]);
+
+        Assert.Equal("music", selected);
     }
 
     [Fact]
@@ -71,13 +98,14 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
         Assert.Equal(expected, AudioCaptureDeviceDiscoveryService.SourceKindPriority(sourceKind));
     }
 
-    private static AudioCaptureDevice Device(string id, string sourceKind, string name) =>
+    private static AudioCaptureDevice Device(string id, string sourceKind, string name, bool isDefault = false) =>
         new()
         {
             Id = id,
             NativeDeviceId = $"native:{id}",
             Name = name,
             SourceKind = sourceKind,
-            DriverName = sourceKind
+            DriverName = sourceKind,
+            IsDefault = isDefault
         };
 }

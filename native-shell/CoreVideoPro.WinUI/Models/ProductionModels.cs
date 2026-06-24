@@ -134,6 +134,7 @@ public sealed class AudioCaptureDevice
     public string DriverName { get; init; } = "WASAPI";
     public string? LinkedCaptureDeviceId { get; init; }
     public bool IsAvailable { get; init; } = true;
+    public bool IsDefault { get; init; }
 
     public bool IsEmbeddedCaptureAudio => SourceKind.Equals("embedded-capture-audio", StringComparison.OrdinalIgnoreCase);
 
@@ -148,9 +149,16 @@ public sealed class AudioCaptureDevice
         _ => SourceKind
     };
 
-    public string DisplayLabel => string.IsNullOrWhiteSpace(DriverName)
-        ? $"{Name} - {KindLabel}"
-        : $"{Name} - {KindLabel} - {DriverName}";
+    public string DisplayLabel
+    {
+        get
+        {
+            var label = string.IsNullOrWhiteSpace(DriverName)
+                ? $"{Name} - {KindLabel}"
+                : $"{Name} - {KindLabel} - {DriverName}";
+            return IsDefault ? $"{label} - Default" : label;
+        }
+    }
 }
 
 public sealed class AudioRenderDevice

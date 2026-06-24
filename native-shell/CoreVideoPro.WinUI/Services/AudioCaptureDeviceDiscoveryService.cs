@@ -2,6 +2,7 @@ using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using Microsoft.Win32;
 using Windows.Devices.Enumeration;
+using Windows.Media.Devices;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -49,6 +50,7 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
     public static IReadOnlyList<AudioCaptureDevice> SortForOperatorSelection(IEnumerable<AudioCaptureDevice> devices) =>
         devices
             .OrderBy(device => SourceKindPriority(device.SourceKind))
+            .ThenBy(device => device.IsDefault ? 0 : 1)
             .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -56,7 +58,8 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
     public static string ResolveDefaultLocalMachineAudioDeviceId(IEnumerable<AudioCaptureDevice> devices) =>
         devices
             .Where(IsLoopbackSource)
-            .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(device => device.IsDefault ? 0 : 1)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .Select(device => device.Id)
             .FirstOrDefault() ??
         devices
@@ -148,6 +151,7 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
     {
         try
         {
+            var defaultRenderId = NormalizeDeviceId(MediaDevice.GetDefaultAudioRenderId(AudioDeviceRole.Default));
             var renderDevices = await DeviceInformation.FindAllAsync(DeviceClass.AudioRender)
                 .AsTask()
                 .ConfigureAwait(false);
@@ -161,7 +165,9 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
                     NativeDeviceId = group.Key,
                     Name = group.First().Name,
                     SourceKind = "wasapi-loopback",
-                    DriverName = "WASAPI loopback"
+                    DriverName = "WASAPI loopback",
+                    IsDefault = !string.IsNullOrWhiteSpace(defaultRenderId) &&
+                        NormalizeDeviceId(group.Key) == defaultRenderId
                 })
                 .ToList();
         }
@@ -170,6 +176,9 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
             return [];
         }
     }
+
+    private static string NormalizeDeviceId(string? value) =>
+        (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static IEnumerable<AudioCaptureDevice> DiscoverAsioDevices()
     {
