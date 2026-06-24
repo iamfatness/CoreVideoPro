@@ -318,6 +318,8 @@ public sealed partial class ParticipantTileControl : UserControl
         {
             Rect = new Rect(0, 0, viewportWidth, viewportHeight)
         };
+        SourceLayerCanvas.Width = viewportWidth;
+        SourceLayerCanvas.Height = viewportHeight;
 
         var layout = SourceFramingLayoutService.Resolve(
             viewportWidth,

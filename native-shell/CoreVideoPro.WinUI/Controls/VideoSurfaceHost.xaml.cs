@@ -386,6 +386,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         {
             Rect = new Rect(0, 0, viewportWidth, viewportHeight)
         };
+        SourceLayerCanvas.Width = viewportWidth;
+        SourceLayerCanvas.Height = viewportHeight;
 
         var layout = SourceFramingLayoutService.Resolve(
             viewportWidth,
