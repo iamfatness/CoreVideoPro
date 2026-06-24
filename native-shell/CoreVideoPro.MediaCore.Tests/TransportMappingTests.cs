@@ -150,6 +150,28 @@ public sealed class TransportMappingTests
     }
 
     [Fact]
+    public void SummarizeOutputsRemovesNativeWrappersFromOutputHealth()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "failed",
+                    Message = "media-core sync failed: start-program-output failed: RTMP sender failed: FFmpeg exited with code 1 after ingest rejected credentials.",
+                    DroppedFrames = 0
+                }
+            ]
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: FFmpeg exited with code 1 after ingest rejected credentials.", status);
+    }
+
+    [Fact]
     public void SummarizeOutputsReportsStreamingFailureBeforeRecordingStatus()
     {
         var snapshot = BuildSnapshot(recordingActive: true) with
@@ -229,6 +251,37 @@ public sealed class TransportMappingTests
         var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
 
         Assert.Equal("RTMP output failed: FFmpeg stdin write failed; the RTMP process stopped or rejected frames.", status);
+    }
+
+    [Fact]
+    public void SummarizeOutputsRemovesNativeWrappersFromSenderWarning()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "failed",
+                ActiveSenderCount = 0,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "failed",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 6,
+                        Warning = "media-core request failed: output sender failed during sync: RTMP sender failed: FFmpeg stdin write failed."
+                    }
+                ]
+            }
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: FFmpeg stdin write failed.", status);
     }
 
     private static NativeMediaCoreStateSnapshot BuildSnapshot(

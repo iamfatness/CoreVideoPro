@@ -85,6 +85,21 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_RemovesRtmpSenderFailedWrapper()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: RTMP sender failed: FFmpeg exited with code 1 after ingest rejected credentials."));
+
+        Assert.StartsWith(
+            "Streaming start failed: RTMP output failed. Check the server URL, stream key, and network.",
+            status);
+        Assert.Contains("FFmpeg exited with code 1 after ingest rejected credentials.", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("media-core", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("RTMP sender failed", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_MapsProgramFrameReadiness()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(
@@ -167,6 +182,8 @@ public sealed class StudioViewModelAudioStatusTests
     [Theory]
     [InlineData("RTMP output failed: FFmpeg exited with code 1.", "RTMP output failed")]
     [InlineData("RTMP output warning: RTMP sender is retrying after connection refused.", "Stream warning")]
+    [InlineData("Output warning: RTMP sender needs a configured RTMP/RTMPS server URL and stream key.", "RTMP output warning")]
+    [InlineData("Output failed: FFmpeg stdin write failed; the RTMP process stopped or rejected frames.", "RTMP output failed")]
     public void FormatOutputStatusBrief_CollapsesStreamOutputHealthStatus(string status, string expected)
     {
         Assert.Equal(expected, StudioViewModel.FormatOutputStatusBrief(status));

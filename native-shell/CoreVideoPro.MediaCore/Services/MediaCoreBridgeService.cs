@@ -253,7 +253,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
                 !string.IsNullOrWhiteSpace(item.Message));
         if (failedOutput is not null)
         {
-            return $"{failedOutput.Destination.ToUpperInvariant()} output {failedOutput.Status}: {failedOutput.Message}";
+            return $"{failedOutput.Destination.ToUpperInvariant()} output {failedOutput.Status}: {NormalizeOutputFailureMessage(failedOutput.Message)}";
         }
 
         var liveOutputs = snapshot.OutputHealth
@@ -273,7 +273,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
         if (!string.IsNullOrWhiteSpace(senderWarning))
         {
-            return $"Output warning: {senderWarning}";
+            return $"Output warning: {NormalizeOutputFailureMessage(senderWarning)}";
         }
 
         var failedSender = snapshot.OutputSenderSession.Senders
@@ -285,7 +285,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             var destination = string.IsNullOrWhiteSpace(failedSender.Destination)
                 ? "output"
                 : failedSender.Destination.ToUpperInvariant();
-            return $"{destination} output {failedSender.Status}: {failedSender.Warning}";
+            return $"{destination} output {failedSender.Status}: {NormalizeOutputFailureMessage(failedSender.Warning)}";
         }
 
         if (snapshot.Recording?.Active == true)
@@ -294,6 +294,48 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
 
         return "Outputs idle";
+    }
+
+    private static string NormalizeOutputFailureMessage(string? message)
+    {
+        var detail = string.IsNullOrWhiteSpace(message)
+            ? "No native output detail was returned."
+            : message.Trim();
+
+        string[] noisyPrefixes =
+        [
+            "media-core sync failed:",
+            "native-media-core-sync failed:",
+            "media-core request failed:",
+            "start-program-output failed:",
+            "start-program-output failed.",
+            "program-output failed:",
+            "program-output failed.",
+            "output sender failed during sync:",
+            "output sender failed:",
+            "rtmp output sender failed:",
+            "rtmp sender failed:"
+        ];
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var prefix in noisyPrefixes)
+            {
+                if (!detail.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                detail = detail[prefix.Length..].Trim();
+                changed = true;
+            }
+        }
+
+        return detail.Equals("missing:ffmpeg executable", StringComparison.OrdinalIgnoreCase)
+            ? "FFmpeg executable was not found in the configured bin folder, app folder, or PATH."
+            : detail;
     }
 
     private void StartPolling()

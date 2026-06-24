@@ -4621,19 +4621,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static string FormatStreamingFailureStatus(string action, Exception exception)
     {
+        var rawLowered = exception.Message?.ToLowerInvariant() ?? string.Empty;
         var detail = NormalizeStreamingFailureDetail(exception.Message);
         var lowered = detail.ToLowerInvariant();
+        var rtmpContext =
+            rawLowered.Contains("rtmp", StringComparison.Ordinal) ||
+            rawLowered.Contains("rtmps", StringComparison.Ordinal) ||
+            lowered.Contains("rtmp", StringComparison.Ordinal) ||
+            lowered.Contains("rtmps", StringComparison.Ordinal);
+        var ffmpegRuntimeMissing =
+            lowered.Contains("ffmpeg executable", StringComparison.Ordinal) ||
+            lowered.Contains("ffmpeg.exe was not found", StringComparison.Ordinal) ||
+            lowered.Contains("ffmpeg folder not found", StringComparison.Ordinal) ||
+            lowered.Contains("does not contain ffmpeg.exe", StringComparison.Ordinal) ||
+            lowered.Contains("choose the bin folder", StringComparison.Ordinal);
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
             : lowered.Contains("program frame", StringComparison.Ordinal) ||
                      lowered.Contains("program pixels", StringComparison.Ordinal)
             ? "Program video is not ready. Put a valid source on Program before streaming."
-            : lowered.Contains("rtmp", StringComparison.Ordinal) ||
-              lowered.Contains("rtmps", StringComparison.Ordinal) ||
+            : rtmpContext ||
               lowered.Contains("connection refused", StringComparison.Ordinal)
                 ? "RTMP output failed. Check the server URL, stream key, and network."
-                : lowered.Contains("ffmpeg", StringComparison.Ordinal)
+                : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
                     ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
                     : "Media core rejected the stream request.";
 
@@ -4703,6 +4714,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return separatorIndex > 0 ? normalized[..separatorIndex] : "Streaming failed";
         }
 
+        if (normalized.StartsWith("Output warning:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("Output failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (normalized.Contains("rtmp", StringComparison.OrdinalIgnoreCase) ||
+                normalized.Contains("rtmps", StringComparison.OrdinalIgnoreCase) ||
+                normalized.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                    ? "RTMP output failed"
+                    : "RTMP output warning";
+            }
+
+            return normalized.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                ? "Output failed"
+                : "Output warning";
+        }
+
         if (normalized.StartsWith("RTMP output warning:", StringComparison.OrdinalIgnoreCase) ||
             normalized.StartsWith("RTMPS output warning:", StringComparison.OrdinalIgnoreCase) ||
             normalized.StartsWith("SRT output warning:", StringComparison.OrdinalIgnoreCase) ||
@@ -4760,7 +4788,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "stop-program-output failed.",
             "output sender failed during sync:",
             "output sender failed:",
-            "rtmp output sender failed:"
+            "rtmp output sender failed:",
+            "rtmp sender failed:"
         ];
 
         var changed = true;
