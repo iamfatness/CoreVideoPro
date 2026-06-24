@@ -173,6 +173,22 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_SurfacesNativeMediaCoreFailures()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core request failed: native media core process exited while applying start-program-output."));
+
+        Assert.StartsWith(
+            "Streaming start failed: Media core failed while starting stream. Open Details for the native error.",
+            fullStatus);
+        Assert.Equal("Media core failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Contains("native media core process exited", fullStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("media-core request failed", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatOutputStatusBrief_DoesNotShowDetailsForShortIdleStatus()
     {
         Assert.Equal("Outputs idle", StudioViewModel.FormatOutputStatusBrief("Outputs idle"));

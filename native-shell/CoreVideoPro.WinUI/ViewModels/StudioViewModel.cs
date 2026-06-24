@@ -4648,6 +4648,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             lowered.Contains("ffmpeg folder not found", StringComparison.Ordinal) ||
             lowered.Contains("does not contain ffmpeg.exe", StringComparison.Ordinal) ||
             lowered.Contains("choose the bin folder", StringComparison.Ordinal);
+        var mediaCoreFailure =
+            lowered.Contains("media core", StringComparison.Ordinal) ||
+            lowered.Contains("media-core", StringComparison.Ordinal) ||
+            lowered.Contains("native media core", StringComparison.Ordinal) ||
+            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
+            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
+            lowered.Contains("json rpc", StringComparison.Ordinal) ||
+            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
+            lowered.Contains("process exited", StringComparison.Ordinal) ||
+            lowered.Contains("process is not running", StringComparison.Ordinal);
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
@@ -4659,6 +4669,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "RTMP output failed. Check the server URL, stream key, and network."
                 : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
                     ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
+                    : mediaCoreFailure
+                        ? "Media core failed while starting stream. Open Details for the native error."
                     : "Media core rejected the stream request.";
 
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
@@ -4693,6 +4705,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
             {
                 return "Media core rejected stream";
+            }
+
+            if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Media core failed";
             }
 
             if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
@@ -4792,7 +4809,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         [
             "media-core sync failed:",
             "native-media-core-sync failed:",
+            "native media core sync failed:",
             "media-core request failed:",
+            "native media core request failed:",
             "start-program-output failed:",
             "start-program-output failed.",
             "program-output failed:",
