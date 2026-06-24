@@ -43,11 +43,11 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private void ResizeCanvasViewport()
     {
-        var viewportWidth = CanvasScrollViewer.ActualWidth > 0
-            ? CanvasScrollViewer.ActualWidth
+        var viewportWidth = CanvasViewport.ActualWidth > 0
+            ? CanvasViewport.ActualWidth
             : ActualWidth;
-        var viewportHeight = CanvasScrollViewer.ActualHeight > 0
-            ? CanvasScrollViewer.ActualHeight
+        var viewportHeight = CanvasViewport.ActualHeight > 0
+            ? CanvasViewport.ActualHeight
             : ActualHeight;
 
         var fitSize = SceneCanvasViewportService.ResolveFitSize(
