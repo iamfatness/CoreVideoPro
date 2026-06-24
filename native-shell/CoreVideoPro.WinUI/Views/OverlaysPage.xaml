@@ -71,6 +71,31 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <NumberBox Header="Build in ms"
+                                   Value="{x:Bind ViewModel.LowerThirdBuildInMs, Mode=TwoWay}"
+                                   Minimum="50"
+                                   Maximum="2000"
+                                   SmallChange="50"
+                                   LargeChange="100"
+                                   SpinButtonPlacementMode="Inline" />
+                        <NumberBox Grid.Column="1"
+                                   Header="Build out ms"
+                                   Value="{x:Bind ViewModel.LowerThirdBuildOutMs, Mode=TwoWay}"
+                                   Minimum="50"
+                                   Maximum="2000"
+                                   SmallChange="50"
+                                   LargeChange="100"
+                                   SpinButtonPlacementMode="Inline" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
+                               FontSize="11"
+                               Foreground="{StaticResource StudioMutedBrush}" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Button Grid.Column="0"
