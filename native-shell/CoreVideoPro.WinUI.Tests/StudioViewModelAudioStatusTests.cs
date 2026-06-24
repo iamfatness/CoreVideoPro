@@ -273,6 +273,14 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.NormalizeLowerThirdTimingMs(value));
     }
 
+    [Fact]
+    public void NormalizeLowerThirdTimingMs_DefaultsNonFiniteOperatorTiming()
+    {
+        Assert.Equal(250, StudioViewModel.NormalizeLowerThirdTimingMs(double.NaN));
+        Assert.Equal(250, StudioViewModel.NormalizeLowerThirdTimingMs(double.PositiveInfinity));
+        Assert.Equal(250, StudioViewModel.NormalizeLowerThirdTimingMs(double.NegativeInfinity));
+    }
+
     private static AudioCaptureDevice AudioDevice(string id) =>
         new()
         {

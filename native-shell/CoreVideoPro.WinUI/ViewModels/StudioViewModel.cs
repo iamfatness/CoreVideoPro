@@ -1364,14 +1364,43 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnLowerThirdBuildInMsChanged(double value)
     {
-        LowerThirdBuildInMs = Math.Clamp(value, 50, 2000);
-        OnPropertyChanged(nameof(LowerThirdTimingSummary));
+        var normalized = NormalizeLowerThirdTimingMs(value);
+        if (!value.Equals(normalized))
+        {
+            LowerThirdBuildInMs = normalized;
+            return;
+        }
+
+        ApplyProgramLowerThirdTimingChange();
     }
 
     partial void OnLowerThirdBuildOutMsChanged(double value)
     {
-        LowerThirdBuildOutMs = Math.Clamp(value, 50, 2000);
+        var normalized = NormalizeLowerThirdTimingMs(value);
+        if (!value.Equals(normalized))
+        {
+            LowerThirdBuildOutMs = normalized;
+            return;
+        }
+
+        ApplyProgramLowerThirdTimingChange();
+    }
+
+    private void ApplyProgramLowerThirdTimingChange()
+    {
         OnPropertyChanged(nameof(LowerThirdTimingSummary));
+
+        if (!ProgramLowerThirdKey.IsVisible)
+        {
+            return;
+        }
+
+        ProgramLowerThirdKey = ProgramLowerThirdKey with
+        {
+            BuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
+            BuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs)
+        };
+        _ = TrySyncMediaCoreAsync();
     }
 
     partial void OnProgramLowerThirdEnabledChanged(bool value)
