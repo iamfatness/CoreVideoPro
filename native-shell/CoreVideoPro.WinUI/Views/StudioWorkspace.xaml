@@ -880,7 +880,7 @@
                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,8,0">
                         <TextBlock Text="{x:Bind ViewModel.OutputStatusBrief, Mode=OneWay}" VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
-                                   MaxWidth="130" TextTrimming="CharacterEllipsis"
+                                   MaxWidth="190" TextTrimming="CharacterEllipsis"
                                    ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" />
                         <Button Content="Details"
                                 Padding="8,4"

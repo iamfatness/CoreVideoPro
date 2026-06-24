@@ -4649,7 +4649,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var normalized = status.Trim();
         if (normalized.StartsWith("Streaming start failed:", StringComparison.OrdinalIgnoreCase))
         {
-            return "Streaming failed";
+            if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Program video not ready";
+            }
+
+            if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "RTMP output failed";
+            }
+
+            if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
+            {
+                return "FFmpeg not ready";
+            }
+
+            if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Media core rejected stream";
+            }
+
+            return "Streaming start failed";
         }
 
         if (normalized.StartsWith("Streaming stop failed:", StringComparison.OrdinalIgnoreCase))
@@ -4672,7 +4692,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             normalized.StartsWith("SRT output failed:", StringComparison.OrdinalIgnoreCase) ||
             normalized.StartsWith("NDI output failed:", StringComparison.OrdinalIgnoreCase))
         {
-            return "Streaming failed";
+            var separatorIndex = normalized.IndexOf(':', StringComparison.Ordinal);
+            return separatorIndex > 0 ? normalized[..separatorIndex] : "Streaming failed";
         }
 
         if (normalized.StartsWith("RTMP output warning:", StringComparison.OrdinalIgnoreCase) ||

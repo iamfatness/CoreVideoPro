@@ -109,16 +109,27 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void FormatOutputStatusBrief_CollapsesLongStreamingFailureButKeepsDetailsAvailable()
+    public void FormatOutputStatusBrief_SurfacesActionableStreamingFailureAndKeepsDetailsAvailable()
     {
         var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
             "start",
             new InvalidOperationException("media-core sync failed: start-program-output failed. RTMP sender exited. Connection refused ffmpeg exited with code 1"));
 
-        Assert.Equal("Streaming failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("RTMP output failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
         Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
         Assert.Contains("Connection refused", fullStatus, StringComparison.Ordinal);
         Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatOutputStatusBrief_SurfacesProgramReadinessFailure()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: output sender failed: RTMP sender is waiting for a program frame."));
+
+        Assert.Equal("Program video not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
     }
 
     [Fact]
@@ -129,7 +140,7 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
-    [InlineData("RTMP output failed: FFmpeg exited with code 1.", "Streaming failed")]
+    [InlineData("RTMP output failed: FFmpeg exited with code 1.", "RTMP output failed")]
     [InlineData("RTMP output warning: RTMP sender is retrying after connection refused.", "Stream warning")]
     public void FormatOutputStatusBrief_CollapsesStreamOutputHealthStatus(string status, string expected)
     {
@@ -474,6 +485,7 @@ public sealed class StudioViewModelAudioStatusTests
         var capture = new NativeMediaCoreCaptureAudioSources
         {
             Status = "ready",
+            Summary = "Capture audio ready",
             SourceCount = 1,
             StreamingCount = 1,
             CaptureFramesReceived = 960,
@@ -500,6 +512,7 @@ public sealed class StudioViewModelAudioStatusTests
         var capture = new NativeMediaCoreCaptureAudioSources
         {
             Status = "ready",
+            Summary = "Capture audio ready",
             SourceCount = 1,
             StreamingCount = 1,
             CaptureFramesReceived = 960,
