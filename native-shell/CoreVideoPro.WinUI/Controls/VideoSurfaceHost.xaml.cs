@@ -397,26 +397,19 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         PreviewImage.Width = layout.Width;
         PreviewImage.Height = layout.Height;
-        var transform = new TranslateTransform
-        {
-            X = layout.TranslateX,
-            Y = layout.TranslateY
-        };
-        PreviewImage.RenderTransform = transform;
+        PreviewImage.RenderTransform = null;
+        Canvas.SetLeft(PreviewImage, layout.TranslateX);
+        Canvas.SetTop(PreviewImage, layout.TranslateY);
         SwapChainHost.Width = layout.Width;
         SwapChainHost.Height = layout.Height;
-        SwapChainHost.RenderTransform = new TranslateTransform
-        {
-            X = layout.TranslateX,
-            Y = layout.TranslateY
-        };
+        SwapChainHost.RenderTransform = null;
+        Canvas.SetLeft(SwapChainHost, layout.TranslateX);
+        Canvas.SetTop(SwapChainHost, layout.TranslateY);
         MediaPreview.Width = layout.Width;
         MediaPreview.Height = layout.Height;
-        MediaPreview.RenderTransform = new TranslateTransform
-        {
-            X = layout.TranslateX,
-            Y = layout.TranslateY
-        };
+        MediaPreview.RenderTransform = null;
+        Canvas.SetLeft(MediaPreview, layout.TranslateX);
+        Canvas.SetTop(MediaPreview, layout.TranslateY);
     }
 
     private void ScheduleSourceFramingRefresh()

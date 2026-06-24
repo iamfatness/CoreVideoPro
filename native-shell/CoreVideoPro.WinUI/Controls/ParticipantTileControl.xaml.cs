@@ -329,19 +329,15 @@ public sealed partial class ParticipantTileControl : UserControl
 
         PreviewImage.Width = layout.Width;
         PreviewImage.Height = layout.Height;
-        PreviewImage.RenderTransform = new TranslateTransform
-        {
-            X = layout.TranslateX,
-            Y = layout.TranslateY
-        };
+        PreviewImage.RenderTransform = null;
+        Canvas.SetLeft(PreviewImage, layout.TranslateX);
+        Canvas.SetTop(PreviewImage, layout.TranslateY);
 
         MediaPreview.Width = layout.Width;
         MediaPreview.Height = layout.Height;
-        MediaPreview.RenderTransform = new TranslateTransform
-        {
-            X = layout.TranslateX,
-            Y = layout.TranslateY
-        };
+        MediaPreview.RenderTransform = null;
+        Canvas.SetLeft(MediaPreview, layout.TranslateX);
+        Canvas.SetTop(MediaPreview, layout.TranslateY);
     }
 
     private void ScheduleSourceFramingRefresh()

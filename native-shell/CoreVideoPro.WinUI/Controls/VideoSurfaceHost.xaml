@@ -16,27 +16,24 @@
     <Grid>
         <Border Background="#0C1118" CornerRadius="6">
             <Grid x:Name="SurfaceViewport">
-                <!-- Future SwapChainPanel mount point; hidden until IDirect3DDevice interop is wired. -->
-                <SwapChainPanel x:Name="SwapChainHost"
-                                Visibility="Collapsed"
-                                HorizontalAlignment="Stretch"
-                                VerticalAlignment="Stretch" />
+                <Canvas x:Name="SourceLayerCanvas"
+                        IsHitTestVisible="False">
+                    <!-- Future SwapChainPanel mount point; hidden until IDirect3DDevice interop is wired. -->
+                    <SwapChainPanel x:Name="SwapChainHost"
+                                    Visibility="Collapsed" />
 
-                <Image x:Name="PreviewImage"
-                       Stretch="Fill"
-                       HorizontalAlignment="Left"
-                       VerticalAlignment="Top"
-                       Visibility="Collapsed" />
+                    <Image x:Name="PreviewImage"
+                           Stretch="Fill"
+                           Visibility="Collapsed" />
 
-                <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
-                                                  FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
-                                                  Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
-                                                  IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
-                                                  PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
-                                                  PreviewStretch="Fill"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Top"
-                                                  Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                    <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
+                                                      FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
+                                                      Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
+                                                      IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
+                                                      PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
+                                                      PreviewStretch="Fill"
+                                                      Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                </Canvas>
 
                 <StackPanel x:Name="PlaceholderPanel"
                             HorizontalAlignment="Center"

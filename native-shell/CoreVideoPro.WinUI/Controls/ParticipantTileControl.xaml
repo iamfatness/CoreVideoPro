@@ -20,21 +20,20 @@
             Background="#141B18"
             MinHeight="0">
         <Grid x:Name="TileViewport">
-            <Image x:Name="PreviewImage"
-                   Stretch="Fill"
-                   HorizontalAlignment="Left"
-                   VerticalAlignment="Top"
-                   Visibility="Collapsed" />
+            <Canvas x:Name="SourceLayerCanvas"
+                    IsHitTestVisible="False">
+                <Image x:Name="PreviewImage"
+                       Stretch="Fill"
+                       Visibility="Collapsed" />
 
-            <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
-                                              FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
-                                              Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
-                                              IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
-                                              PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
-                                              PreviewStretch="Fill"
-                                              HorizontalAlignment="Left"
-                                              VerticalAlignment="Top"
-                                              Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                <cvcontrols:MediaAssetPreviewHost x:Name="MediaPreview"
+                                                  FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
+                                                  Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
+                                                  IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
+                                                  PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
+                                                  PreviewStretch="Fill"
+                                                  Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+            </Canvas>
 
             <Border x:Name="PlaceholderPanel" CornerRadius="8" Opacity="0.55">
                 <Border.Background>
