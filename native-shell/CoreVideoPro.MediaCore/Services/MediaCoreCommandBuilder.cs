@@ -101,6 +101,7 @@ public static class MediaCoreCommandBuilder
                     ["mediaAssetName"] = route.MediaAssetName,
                     ["mediaAssetKind"] = route.MediaAssetKind,
                     ["mediaAssetPath"] = route.MediaAssetPath,
+                    ["mediaPlaybackKey"] = route.MediaPlaybackKey,
                     ["mediaAssetPlaying"] = route.MediaAssetPlaying,
                     ["colorGrade"] = route.ColorGrade is null
                         ? null
@@ -370,6 +371,7 @@ public static class MediaCoreCommandBuilder
             ["mediaAssetName"] = context.SelectedMediaAssetName?.Trim() ?? string.Empty,
             ["mediaAssetKind"] = context.SelectedMediaAssetKind?.Trim() ?? string.Empty,
             ["mediaAssetPath"] = context.SelectedMediaAssetPath?.Trim() ?? string.Empty,
+            ["mediaPlaybackKey"] = context.SelectedMediaPlaybackKey?.Trim() ?? string.Empty,
             ["playing"] = context.SelectedMediaAssetPlaying
         });
     }

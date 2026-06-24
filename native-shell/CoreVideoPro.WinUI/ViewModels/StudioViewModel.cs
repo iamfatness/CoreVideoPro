@@ -5164,6 +5164,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetPlaying,
             resolvedProgramRoutes);
         var selectedMediaAsset = playbackSelection.MediaAssetId is null ? null : FindMediaAsset(playbackSelection.MediaAssetId);
+        var selectedMediaPlaybackKey = selectedMediaAsset is null
+            ? null
+            : MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
+                selectedMediaAsset.Id,
+                isProgramScene: playbackSelection.Playing &&
+                    MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(selectedMediaAsset.Id, resolvedProgramRoutes),
+                _programMediaPlaybackTakeVersion);
 
         return new MediaCoreProductionSyncContext
         {
@@ -5243,6 +5250,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedMediaAssetName = selectedMediaAsset?.Name,
             SelectedMediaAssetKind = selectedMediaAsset?.Kind,
             SelectedMediaAssetPath = selectedMediaAsset?.FilePath,
+            SelectedMediaPlaybackKey = selectedMediaPlaybackKey,
             SelectedMediaAssetPlaying = selectedMediaAsset is not null && playbackSelection.Playing
         };
     }
@@ -5252,6 +5260,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<SourceRoute> programRoutes)
     {
         var mediaAsset = TryResolveRouteMediaAsset(route);
+        var mediaPlaybackKey = mediaAsset is null
+            ? null
+            : MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
+                mediaAsset.Id,
+                isProgramScene: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true, programRoutes),
+                _programMediaPlaybackTakeVersion);
         return new MediaCoreSceneRouteWire(
             route.Id,
             SceneRoutingService.ModeToWire(route.Mode),
@@ -5275,6 +5289,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetName: mediaAsset?.Name,
             MediaAssetKind: mediaAsset?.Kind,
             MediaAssetPath: mediaAsset?.FilePath,
+            MediaPlaybackKey: mediaPlaybackKey,
             MediaAssetPlaying: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true, programRoutes));
     }
 

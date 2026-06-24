@@ -23,6 +23,7 @@ public sealed record MediaCoreSceneRouteWire(
     string? MediaAssetName = null,
     string? MediaAssetKind = null,
     string? MediaAssetPath = null,
+    string? MediaPlaybackKey = null,
     bool MediaAssetPlaying = false);
 
 public sealed record MediaCoreSceneBackgroundWire(
@@ -198,6 +199,7 @@ public sealed record MediaCoreProductionSyncContext
     public string? SelectedMediaAssetName { get; init; }
     public string? SelectedMediaAssetKind { get; init; }
     public string? SelectedMediaAssetPath { get; init; }
+    public string? SelectedMediaPlaybackKey { get; init; }
     public bool SelectedMediaAssetPlaying { get; init; }
 
     public static MediaCoreOutputProfileWire DefaultCanvasOutputProfile { get; } = new(
