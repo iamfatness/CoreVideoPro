@@ -253,6 +253,38 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatCaptureAudioSourceStatus_ShortensPacketlessLoopbackWarning()
+    {
+        var status = StudioViewModel.FormatCaptureAudioSourceStatus(new NativeMediaCoreCaptureAudioSource
+        {
+            CaptureDeviceId = "local-machine-audio",
+            SourceId = "local-machine-audio",
+            AudioDeviceName = "Game (TC-HELICON GoXLR)",
+            AudioSourceKind = "wasapi-loopback",
+            Paired = true,
+            CaptureStreaming = true,
+            CaptureSampleRate = 48000,
+            CaptureChannels = 2,
+            Warning = "WASAPI capture is open on 'Game (TC-HELICON GoXLR)' ({0.0.0.00000000}.{e05ed7eb-60cc-4d05-82f9-341ed8b4e6b4}) but the endpoint has not produced loopback packets."
+        });
+
+        Assert.Equal(
+            "Game (TC-HELICON GoXLR) (wasapi-loopback) -> local-machine-audio: loopback idle - play audio through this output or choose an input, 0 frames 48000 Hz/2 ch, issue: no loopback packets from selected output; play audio through that output or choose another source",
+            status);
+    }
+
+    [Fact]
+    public void FormatCaptureAudioSourceWarningForOperator_TruncatesUnexpectedWarnings()
+    {
+        var warning = new string('x', 180);
+
+        var formatted = StudioViewModel.FormatCaptureAudioSourceWarningForOperator(warning);
+
+        Assert.Equal(140, formatted.Length);
+        Assert.EndsWith("...", formatted);
+    }
+
+    [Fact]
     public void FormatAudioProofSummary_ShowsMonitorPlaybackWorking()
     {
         var audio = new NativeMediaCoreAudioMixSession

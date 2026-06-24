@@ -4858,7 +4858,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : $"Local source {FormatCaptureAudioSourceStatus(source)}";
     }
 
-    private static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
+    public static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
     {
         var label = !string.IsNullOrWhiteSpace(source.AudioDeviceName)
             ? source.AudioDeviceName
@@ -4880,10 +4880,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var kind = !string.IsNullOrWhiteSpace(source.AudioSourceKind)
             ? $" ({source.AudioSourceKind})"
             : string.Empty;
-        var warning = !string.IsNullOrWhiteSpace(source.Warning)
-            ? $", warning: {source.Warning}"
+        var warning = FormatCaptureAudioSourceWarningForOperator(source.Warning);
+        var warningText = !string.IsNullOrWhiteSpace(warning)
+            ? $", issue: {warning}"
             : string.Empty;
-        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{format}{warning}";
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{format}{warningText}";
+    }
+
+    public static string FormatCaptureAudioSourceWarningForOperator(string? warning)
+    {
+        if (string.IsNullOrWhiteSpace(warning))
+        {
+            return string.Empty;
+        }
+
+        if (warning.Contains("endpoint has not produced loopback packets", StringComparison.OrdinalIgnoreCase))
+        {
+            return "no loopback packets from selected output; play audio through that output or choose another source";
+        }
+
+        if (warning.Contains("could not query", StringComparison.OrdinalIgnoreCase) ||
+            warning.Contains("could not read", StringComparison.OrdinalIgnoreCase))
+        {
+            return "WASAPI read failed; reselect the device or restart the audio engine";
+        }
+
+        return warning.Length <= 140 ? warning : $"{warning[..137]}...";
     }
 
     private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
