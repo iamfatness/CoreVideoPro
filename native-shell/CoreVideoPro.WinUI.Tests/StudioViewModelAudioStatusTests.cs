@@ -43,6 +43,26 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Contains("Connection refused", status, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FormatOutputStatusBrief_CollapsesLongStreamingFailureButKeepsDetailsAvailable()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: start-program-output failed. RTMP sender exited. Connection refused ffmpeg exited with code 1"));
+
+        Assert.Equal("Streaming failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Contains("Connection refused", fullStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatOutputStatusBrief_DoesNotShowDetailsForShortIdleStatus()
+    {
+        Assert.Equal("Outputs idle", StudioViewModel.FormatOutputStatusBrief("Outputs idle"));
+        Assert.False(StudioViewModel.ShouldShowOutputStatusDetails("Outputs idle"));
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]

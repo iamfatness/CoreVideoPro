@@ -993,6 +993,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string RecordingOptionsSummary =>
         $"{NormalizeRecordingFormat(RecordingFormat).ToUpperInvariant()} - {FormatRecordingQuality(RecordingQuality)} - {RecordingRenderProfileSummary} - {RecordingFilenamePrefix}";
 
+    public string OutputStatusBrief => FormatOutputStatusBrief(OutputStatus);
+
+    public Visibility OutputStatusDetailsVisibility =>
+        ShouldShowOutputStatusDetails(OutputStatus) ? Visibility.Visible : Visibility.Collapsed;
+
     public Brush RecordButtonBackground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 74, 32, 32));
@@ -1531,6 +1536,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnStreamSrtKeyLengthChanged(string value) => OnStreamOutputOptionChanged();
 
     partial void OnStreamSrtPassphraseChanged(string value) => OnStreamOutputOptionChanged();
+
+    partial void OnOutputStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(OutputStatusBrief));
+        OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
+    }
 
     partial void OnCanvasResolutionChanged(string value) => OnOutputProfileChanged();
 
@@ -4562,6 +4573,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : "Media core rejected the stream request.";
 
         return $"Streaming {action} failed: {prefix} {detail}";
+    }
+
+    public static string FormatOutputStatusBrief(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return "Outputs idle";
+        }
+
+        var normalized = status.Trim();
+        if (normalized.StartsWith("Streaming start failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Streaming failed";
+        }
+
+        if (normalized.StartsWith("Streaming stop failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Stream stop failed";
+        }
+
+        if (normalized.StartsWith("Streaming settings sync failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Stream settings failed";
+        }
+
+        if (normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("error", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Output failed";
+        }
+
+        return normalized.Length <= 28 ? normalized : $"{normalized[..25]}...";
+    }
+
+    public static bool ShouldShowOutputStatusDetails(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return false;
+        }
+
+        var normalized = status.Trim();
+        return normalized.Length > 28 ||
+            normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("rejected", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeStreamingFailureDetail(string? message)
