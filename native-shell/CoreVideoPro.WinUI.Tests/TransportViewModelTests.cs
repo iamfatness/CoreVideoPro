@@ -65,4 +65,33 @@ public sealed class TransportViewModelTests
         Assert.Equal(0, readout.LeftLevel);
         Assert.Equal(0, readout.RightLevel);
     }
+
+    [Fact]
+    public void ApplySnapshot_DoesNotShowSyntheticMasterWhenNoProgramPcmExists()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            AudioMixSession = new NativeMediaCoreAudioMixSession
+            {
+                Status = "live",
+                Summary = "Metadata-only mix",
+                MasterLevel = 68,
+                LoudnessLufs = -60,
+                MixedFrameCount = 0
+            },
+            AudioRoutingMatrix = new NativeMediaCoreAudioRoutingMatrix
+            {
+                Status = "live",
+                Summary = "Routed",
+                ProgramTapFrames = 0,
+                BusTaps = []
+            }
+        };
+
+        var readout = TransportViewModel.ResolveMasterMeterReadout(snapshot);
+
+        Assert.Equal(0, readout.LeftLevel);
+        Assert.Equal(0, readout.RightLevel);
+        Assert.Null(readout.PeakLabel);
+    }
 }

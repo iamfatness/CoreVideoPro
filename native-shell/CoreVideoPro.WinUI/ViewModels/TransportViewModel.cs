@@ -269,9 +269,7 @@ public sealed partial class TransportViewModel : ObservableObject
             ResolveBusPeakDbfs(snapshot, "master");
         var rightPeakDbfs = ResolveBusPeakDbfs(snapshot, "pgm-r") ??
             ResolveBusPeakDbfs(snapshot, "master");
-        var fallbackLevel = snapshot.AudioRoutingMatrix.ProgramTapFrames > 0
-            ? 0
-            : Math.Clamp(snapshot.AudioMixSession.MasterLevel, 0, 100);
+        var fallbackLevel = 0;
         var leftLevel = leftPeakDbfs is { } leftPeak
             ? DbfsToMeterLevel(leftPeak)
             : fallbackLevel;
