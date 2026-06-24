@@ -194,6 +194,30 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatAudioMonitorEngineStatus_ShowsZeroVolumeMonitorState()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "volume-zero",
+            MonitorFramesPlayed = 0
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            RoutedMonitorFrames = 960
+        };
+
+        var status = StudioViewModel.FormatAudioMonitorEngineStatus(audio, capture);
+
+        Assert.Equal("960 mixed frames - monitor volume at 0% - MON bus 960 frames, no hardware playback frames", status);
+    }
+
+    [Fact]
     public void FormatStudioMonitorSummary_SeparatesMissingMonBusFromOutputDevice()
     {
         var audio = new NativeMediaCoreAudioMixSession

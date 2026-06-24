@@ -23,6 +23,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private const string MultiviewSoloSceneBId = "multiview-solo-b";
     private const string ManualOneUpLayout = "full";
     private const int MaxSrtIngestSources = 8;
+    private const double DefaultAudioMonitorVolume = 0.75;
 
     private readonly MediaCoreBridgeService _bridge = new();
     private readonly MediaBinService _mediaBinService = new();
@@ -1403,7 +1404,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnAudioMonitoringEnabledChanged(bool value) => OnAudioMonitorSettingsChanged();
+    partial void OnAudioMonitoringEnabledChanged(bool value)
+    {
+        if (value && AudioMonitorVolume <= 0)
+        {
+            AudioMonitorVolume = DefaultAudioMonitorVolume;
+            return;
+        }
+
+        OnAudioMonitorSettingsChanged();
+    }
 
     partial void OnSelectedAudioMonitorDeviceIdChanged(string value) => OnAudioMonitorSettingsChanged();
 
@@ -4792,6 +4802,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "playing" => $"{audio.MonitorFramesPlayed} playback frames",
             "stub-monitor" => "stub only - no hardware output",
             "armed" => "armed, waiting for audio",
+            "volume-zero" => "volume at 0%",
             "dropping" => "dropping monitor samples",
             "missing-device" => "needs output device",
             "muted" => "muted",
@@ -5727,7 +5738,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         NormalizeOutputTargetBitrateMbps(value);
 
     public static double NormalizeAudioMonitorVolume(double value) =>
-        Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : 0.75, 2, MidpointRounding.AwayFromZero);
+        Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : DefaultAudioMonitorVolume, 2, MidpointRounding.AwayFromZero);
 
     public static string FormatStreamBitrateSummary(double value)
     {

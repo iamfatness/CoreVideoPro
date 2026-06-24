@@ -2743,7 +2743,7 @@ void MediaCore::renderSyntheticTick() {
   if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
     if (audioMonitorVolume_ <= 0.0) {
       // Enabled and armed, but the operator pulled the monitor fader to zero.
-      audioMonitorStatus_ = "armed";
+      audioMonitorStatus_ = "volume-zero";
     } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
       audioMonitorStatus_ = "unavailable";
       if (audioMonitorWarning_.empty()) {

@@ -562,6 +562,26 @@ TEST(MediaCoreCommand, DefaultFallbackDoesNotFabricateAudioSignal) {
   EXPECT_TRUE(mix->get("participants")->asArray().empty());
 }
 
+TEST(MediaCoreCommand, AudioMonitorReportsZeroVolumeExplicitly) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", "stub-render"},
+          {"deviceName", "Stub Render"},
+          {"volume", 0.0},
+      },
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_TRUE(mix->get("monitorEnabled")->asBool());
+  EXPECT_EQ(mix->getString("monitorStatus"), "volume-zero");
+  EXPECT_EQ(mix->get("monitorFramesPlayed")->asNumber(), 0);
+}
+
 TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
   corevideo::core::MediaCore mediaCore;
   const auto first = mediaCore.applyCommands(corevideo::rpc::Json::Array{
