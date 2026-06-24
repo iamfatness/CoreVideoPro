@@ -183,6 +183,16 @@ int clampIntValue(int value, int minValue, int maxValue) {
   return std::max(minValue, std::min(maxValue, value));
 }
 
+std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback) {
+  if (codec == "h264" || codec == "h265" || codec == "av1") {
+    return codec;
+  }
+  if (codec == "hevc") {
+    return "h265";
+  }
+  return fallback.empty() ? "h264" : fallback;
+}
+
 rpc::Json outputProfileJson(
     const std::string& profileId,
     const std::string& resolution,
@@ -198,6 +208,20 @@ rpc::Json outputProfileJson(
       {"fps", fps},
       {"targetBitrateMbps", targetBitrateMbps},
   };
+}
+
+void applyRecordingProfile(
+    const rpc::Json& profile,
+    int& width,
+    int& height,
+    int& fps,
+    double& targetBitrateMbps,
+    std::string& codec) {
+  width = clampIntValue(static_cast<int>(profile.getNumber("width", width)), 320, 3840);
+  height = clampIntValue(static_cast<int>(profile.getNumber("height", height)), 180, 2160);
+  fps = clampIntValue(static_cast<int>(profile.getNumber("fps", fps)), 1, 120);
+  targetBitrateMbps = std::max(0.5, std::min(80.0, profile.getNumber("targetBitrateMbps", targetBitrateMbps)));
+  codec = normalizeVideoCodec(profile.getString("codec", codec), codec);
 }
 
 const rpc::Json* findParticipant(const rpc::Json::Array& participants, const std::string& participantId) {
@@ -898,18 +922,6 @@ void MediaCore::setOutputProfile(const rpc::Json& command) {
   }
 }
 
-namespace {
-std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback) {
-  if (codec == "h264" || codec == "h265" || codec == "av1") {
-    return codec;
-  }
-  if (codec == "hevc") {
-    return "h265";
-  }
-  return fallback.empty() ? "h264" : fallback;
-}
-}
-
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
@@ -1050,11 +1062,13 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
     streamVideoCodec_ = normalizeVideoCodec(streamProfile->getString("codec", streamVideoCodec_), streamVideoCodec_);
   }
   if (const rpc::Json* recordingProfile = command.get("recordingOutputProfile"); recordingProfile && recordingProfile->isObject()) {
-    recordingOutputWidth_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("width", recordingOutputWidth_)), 320, 3840);
-    recordingOutputHeight_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("height", recordingOutputHeight_)), 180, 2160);
-    recordingOutputFps_ = clampIntValue(static_cast<int>(recordingProfile->getNumber("fps", recordingOutputFps_)), 1, 120);
-    recordingTargetBitrateMbps_ = std::max(0.5, std::min(80.0, recordingProfile->getNumber("targetBitrateMbps", recordingTargetBitrateMbps_)));
-    recordingVideoCodec_ = normalizeVideoCodec(recordingProfile->getString("codec", recordingVideoCodec_), recordingVideoCodec_);
+    applyRecordingProfile(
+        *recordingProfile,
+        recordingOutputWidth_,
+        recordingOutputHeight_,
+        recordingOutputFps_,
+        recordingTargetBitrateMbps_,
+        recordingVideoCodec_);
   }
   outputDestinationSettings_ = readOutputDestinationSettings(command);
   for (auto& destination : outputDestinationSettings_) {
@@ -1104,6 +1118,16 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   recordingFilenamePrefix_ = command.getString("filenamePrefix", recordingFilenamePrefix_);
   recordingFormat_ = command.getString("format", recordingFormat_);
   recordingQuality_ = command.getString("quality", recordingQuality_);
+  recordingTargetBitrateMbps_ = std::max(0.5, std::min(80.0, command.getNumber("targetBitrateMbps", recordingTargetBitrateMbps_)));
+  if (const rpc::Json* renderProfile = command.get("renderProfile"); renderProfile && renderProfile->isObject()) {
+    applyRecordingProfile(
+        *renderProfile,
+        recordingOutputWidth_,
+        recordingOutputHeight_,
+        recordingOutputFps_,
+        recordingTargetBitrateMbps_,
+        recordingVideoCodec_);
+  }
   if (command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
   }

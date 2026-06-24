@@ -456,6 +456,7 @@ public static class MediaCoreCommandBuilder
             ["filenamePrefix"] = targets.FilenamePrefix,
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
+            ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });
@@ -467,6 +468,7 @@ public static class MediaCoreCommandBuilder
             ["filenamePrefix"] = targets.FilenamePrefix,
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
+            ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });

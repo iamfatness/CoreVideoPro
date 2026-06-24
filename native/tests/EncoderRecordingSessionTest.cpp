@@ -143,3 +143,46 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingTargetsIntoEncoderSess
   EXPECT_EQ(recording->get("proof")->getString("videoCodec"), "h264");
   EXPECT_EQ(recording->get("proof")->getString("audioCodec"), "aac");
 }
+
+TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecordingTargets) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-recording-targets"},
+          {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+          {"filenamePrefix", "profile-cut"},
+          {"format", "mkv"},
+          {"quality", "archive"},
+          {"targetBitrateMbps", 24.0},
+          {"renderProfile",
+           corevideo::rpc::Json::Object{
+               {"profileId", "recording-720p30-h265"},
+               {"resolution", "1280x720"},
+               {"width", 1280},
+               {"height", 720},
+               {"fps", 30},
+               {"targetBitrateMbps", 24.0},
+               {"codec", "h265"},
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-recording-session"},
+          {"sessionId", "session-profile"},
+          {"startedAtMs", 100},
+      },
+  });
+
+  const auto* encoderSession = state.get("encoderSession");
+  ASSERT_NE(encoderSession, nullptr);
+  EXPECT_EQ(encoderSession->get("targetBitrateMbps")->asNumber(), 24.0);
+  EXPECT_EQ(encoderSession->getString("recordingFormat"), "mkv");
+
+  const auto* recording = state.get("recording");
+  ASSERT_NE(recording, nullptr);
+  const auto* proof = recording->get("proof");
+  ASSERT_NE(proof, nullptr);
+  EXPECT_EQ(proof->getString("containerFormat"), "mkv");
+  EXPECT_EQ(proof->get("width")->asNumber(), 1280);
+  EXPECT_EQ(proof->get("height")->asNumber(), 720);
+  EXPECT_EQ(proof->get("frameRate")->asNumber(), 30);
+}

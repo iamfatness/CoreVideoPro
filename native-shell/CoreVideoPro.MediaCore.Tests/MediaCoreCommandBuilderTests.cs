@@ -343,6 +343,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("corevideo-recording", GetString(targets, "filenamePrefix"));
         Assert.Equal("mkv", GetString(targets, "format"));
         Assert.Equal("archive", GetString(targets, "quality"));
+        Assert.Equal(28, targets.ExtensionData!["targetBitrateMbps"].GetDouble());
         Assert.Equal("recording-4k60", GetObject(targets, "renderProfile").GetProperty("profileId").GetString());
         Assert.Equal("av1", GetObject(targets, "renderProfile").GetProperty("codec").GetString());
         Assert.Equal(28, GetObject(targets, "renderProfile").GetProperty("targetBitrateMbps").GetDouble());
@@ -351,6 +352,7 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
         Assert.Equal("mkv", GetString(recording, "format"));
         Assert.Equal("archive", GetString(recording, "quality"));
+        Assert.Equal(28, recording.ExtensionData!["targetBitrateMbps"].GetDouble());
         Assert.Equal("3840x2160", GetObject(recording, "renderProfile").GetProperty("resolution").GetString());
         Assert.Equal("av1", GetObject(recording, "renderProfile").GetProperty("codec").GetString());
         Assert.Equal(28, GetObject(recording, "renderProfile").GetProperty("targetBitrateMbps").GetDouble());
