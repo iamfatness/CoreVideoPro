@@ -116,11 +116,13 @@ export class AudioMixSessionModel {
   private channels: AudioMixChannelInput[] = [];
   private mixedFrameCount = 0;
   private hasSyncedRawAudio = false;
+  private rawPcmAvailable = true;
   private limiterEnabled = true;
   private syncWarnings: string[] = [];
 
-  sync(channels: AudioMixChannelInput[], limiterEnabled = true) {
+  sync(channels: AudioMixChannelInput[], limiterEnabled = true, rawPcmAvailable = true) {
     this.hasSyncedRawAudio = true;
+    this.rawPcmAvailable = rawPcmAvailable;
     this.limiterEnabled = limiterEnabled;
     const { channels: normalizedChannels, warnings } = normalizeChannels(channels);
     this.channels = normalizedChannels;
@@ -149,6 +151,31 @@ export class AudioMixSessionModel {
 
     const measured = this.channels.map(measureParticipantChannel);
     const participants = measured.map((entry) => entry.channel);
+    if (!this.rawPcmAvailable) {
+      return {
+        status: "warning",
+        masterLevel: 0,
+        loudnessLufs: -60,
+        limiterEnabled: this.limiterEnabled,
+        limiterActive: false,
+        mixedFrameCount: 0,
+        participants: participants.map((participant) => ({
+          ...participant,
+          outputLevel: 0,
+          gainDb: 0,
+          rmsDbfs: -120,
+          peakDbfs: -120,
+          limiterActive: false,
+          status: "waiting-for-pcm" as const
+        })),
+        summary: "Audio controls synced; waiting for native PCM frames.",
+        warnings: [
+          "Audio controls are configured, but native PCM frames have not reached the mix engine.",
+          ...this.syncWarnings
+        ]
+      };
+    }
+
     const audible = measured.filter((entry) => !entry.channel.muted);
 
     // Sum the post-gain participant signals into a deterministic stereo program

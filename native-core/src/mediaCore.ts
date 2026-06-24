@@ -397,7 +397,7 @@ export class MediaCoreRuntime {
       }
 
       if (command.type === "sync-participant-audio-mix") {
-        const audioMix = this.audioMixSession.sync(command.channels, command.limiterEnabled !== false);
+        const audioMix = this.audioMixSession.sync(command.channels, command.limiterEnabled !== false, false);
         if (audioMix.warnings.length > 0) {
           this.warn(warnings, "program", "Audio mix warning", audioMix.warnings[0], command.type);
         }
@@ -685,7 +685,7 @@ export class MediaCoreRuntime {
     this.programFrame = this.compositor.compose(renderPlan, this.elapsedMs);
     this.programTransport = this.buildProgramTransport(this.programFrame);
     this.recordingSink.writeFrames(this.frames, this.elapsedMs, this.programFrame);
-    this.audioMixSession.mix(this.frames.length > 0 ? 1 : 0);
+    this.audioMixSession.mix(0);
   }
 
   private renderPlan() {

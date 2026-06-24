@@ -679,7 +679,7 @@ export type MediaCoreParticipantAudioChannel = {
   noiseSuppression: boolean;
   limiterActive: boolean;
   muted: boolean;
-  status: "balanced" | "boosting" | "ducking" | "muted";
+  status: "balanced" | "boosting" | "ducking" | "muted" | "waiting-for-pcm";
 };
 
 export type MediaCoreAudioMixSession = {

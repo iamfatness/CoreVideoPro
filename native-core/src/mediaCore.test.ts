@@ -1276,12 +1276,15 @@ describe("MediaCoreRuntime", () => {
       ok: true,
       state: {
         audioMixSession: {
-          status: "live",
+          status: "warning",
+          masterLevel: 0,
+          mixedFrameCount: 0,
           participants: expect.arrayContaining([
-            expect.objectContaining({ participantId: "p1", status: "balanced" }),
-            expect.objectContaining({ participantId: "p2", status: "ducking" })
+            expect.objectContaining({ participantId: "p1", status: "waiting-for-pcm", outputLevel: 0 }),
+            expect.objectContaining({ participantId: "p2", status: "waiting-for-pcm", outputLevel: 0 })
           ]),
-          summary: expect.stringContaining("ducked")
+          summary: "Audio controls synced; waiting for native PCM frames.",
+          warnings: ["Audio controls are configured, but native PCM frames have not reached the mix engine."]
         },
         captionTrack: {
           enabled: true,

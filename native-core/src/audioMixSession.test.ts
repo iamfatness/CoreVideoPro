@@ -46,6 +46,33 @@ describe("AudioMixSessionModel", () => {
     expect(afterEmptyMix).toEqual(snapshot);
   });
 
+  it("keeps control-only channels from driving live meters before native PCM arrives", () => {
+    const model = new AudioMixSessionModel();
+    const snapshot = model.sync([{ participantId: "local-machine-audio", inputLevel: 82, muted: false, noiseSuppression: false }], true, false);
+    const afterVideoOnlyTick = model.mix(0);
+
+    expect(snapshot).toMatchObject({
+      status: "warning",
+      masterLevel: 0,
+      loudnessLufs: -60,
+      limiterActive: false,
+      mixedFrameCount: 0,
+      summary: "Audio controls synced; waiting for native PCM frames.",
+      participants: [
+        expect.objectContaining({
+          participantId: "local-machine-audio",
+          inputLevel: 82,
+          outputLevel: 0,
+          rmsDbfs: -120,
+          peakDbfs: -120,
+          status: "waiting-for-pcm"
+        })
+      ],
+      warnings: ["Audio controls are configured, but native PCM frames have not reached the mix engine."]
+    });
+    expect(afterVideoOnlyTick).toEqual(snapshot);
+  });
+
   it("deduplicates participant channels and bounds levels for deterministic DSP readiness", () => {
     const model = new AudioMixSessionModel();
     const snapshot = model.sync([
