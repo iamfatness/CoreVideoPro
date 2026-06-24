@@ -5607,11 +5607,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IReadOnlyList<SourceRoute> programRoutes)
     {
         var mediaAsset = TryResolveRouteMediaAsset(route);
-        var mediaPlaybackKey = mediaAsset is null
+        var mediaPlayback = mediaAsset is null
             ? null
-            : MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
+            : MediaRoutePlaybackService.ResolveSceneRoutePlayback(
                 mediaAsset.Id,
-                isProgramScene: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true, programRoutes),
+                isProgramScene: true,
+                SelectedMediaAssetId,
+                SelectedMediaAssetPlaying,
+                programRoutes,
                 _programMediaPlaybackTakeVersion);
         return new MediaCoreSceneRouteWire(
             route.Id,
@@ -5636,8 +5639,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MediaAssetName: mediaAsset?.Name,
             MediaAssetKind: mediaAsset?.Kind,
             MediaAssetPath: mediaAsset?.FilePath,
-            MediaPlaybackKey: mediaPlaybackKey,
-            MediaAssetPlaying: mediaAsset is not null && ShouldAutoPlayMediaRoute(mediaAsset.Id, isProgramScene: true, programRoutes));
+            MediaPlaybackKey: mediaPlayback?.MediaPlaybackKey,
+            MediaAssetPlaying: mediaPlayback?.Playing == true);
     }
 
     private MediaCoreCaptureAudioSourceWire BuildCaptureAudioSourceWire(CaptureDevice captureDevice)
@@ -8391,13 +8394,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        var isSelectedAndPlaying = ShouldAutoPlayMediaRoute(asset.Id, isProgramScene);
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            asset.Id,
+            isProgramScene,
+            SelectedMediaAssetId,
+            SelectedMediaAssetPlaying,
+            GetResolvedProgramRoutes(),
+            _programMediaPlaybackTakeVersion);
         var mediaSourceId = ShowInputRosterService.ToMediaSourceId(asset.Id);
         var surfaceKey = isProgramScene ? $"program:{mediaSourceId}" : $"preview:{mediaSourceId}";
-        var playbackKey = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
-            asset.Id,
-            isSelectedAndPlaying,
-            _programMediaPlaybackTakeVersion);
         return new ParticipantSurfaceTile
         {
             Participant = new Participant
@@ -8406,15 +8411,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Name = asset.Name,
                 Title = asset.Kind,
                 Role = ParticipantRole.Guest,
-                Health = isSelectedAndPlaying ? FeedHealth.Live : FeedHealth.VideoOff
+                Health = playback.Playing ? FeedHealth.Live : FeedHealth.VideoOff
             },
             Surface = VideoSurfaceState.MediaAssetPreview(
                 surfaceKey,
                 asset.Name,
                 asset.FilePath,
                 asset.Kind,
-                isSelectedAndPlaying,
-                playbackKey,
+                playback.Playing,
+                playback.MediaPlaybackKey,
                 asset.NaturalWidth,
                 asset.NaturalHeight)
         };

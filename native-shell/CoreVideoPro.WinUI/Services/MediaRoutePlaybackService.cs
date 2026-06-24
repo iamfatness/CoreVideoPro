@@ -5,6 +5,7 @@ namespace CoreVideoPro.WinUI.Services;
 public static class MediaRoutePlaybackService
 {
     public sealed record PlaybackSelection(string? MediaAssetId, bool Playing);
+    public sealed record SceneRoutePlayback(string MediaPlaybackKey, bool Playing);
 
     public static bool ShouldPlaySceneMediaRoute(
         string mediaAssetId,
@@ -84,5 +85,26 @@ public static class MediaRoutePlaybackService
         return isProgramScene
             ? $"program-take:{Math.Max(0, programTakeVersion)}:media:{normalizedAssetId}"
             : $"preview:media:{normalizedAssetId}";
+    }
+
+    public static SceneRoutePlayback ResolveSceneRoutePlayback(
+        string mediaAssetId,
+        bool isProgramScene,
+        string? selectedMediaAssetId,
+        bool selectedMediaAssetPlaying,
+        IReadOnlyList<SourceRoute> programRoutes,
+        int programTakeVersion)
+    {
+        var playing = ShouldPlaySceneMediaRoute(
+            mediaAssetId,
+            isProgramScene,
+            selectedMediaAssetId,
+            selectedMediaAssetPlaying,
+            programRoutes);
+        var key = BuildSceneMediaPlaybackKey(
+            mediaAssetId,
+            isProgramScene: playing,
+            programTakeVersion);
+        return new SceneRoutePlayback(key, playing);
     }
 }

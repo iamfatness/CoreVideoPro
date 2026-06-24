@@ -251,6 +251,36 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Equal("program-take:7:media:intro", key);
     }
 
+    [Fact]
+    public void ResolveSceneRoutePlayback_KeepsPreviewMediaPausedWithStablePreviewKey()
+    {
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "intro",
+            isProgramScene: false,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
+            programRoutes: [MediaRoute("intro")],
+            programTakeVersion: 4);
+
+        Assert.False(playback.Playing);
+        Assert.Equal("preview:media:intro", playback.MediaPlaybackKey);
+    }
+
+    [Fact]
+    public void ResolveSceneRoutePlayback_AutoplaysProgramMediaWithTakeVersionKey()
+    {
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "intro",
+            isProgramScene: true,
+            selectedMediaAssetId: "bumper",
+            selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")],
+            programTakeVersion: 4);
+
+        Assert.True(playback.Playing);
+        Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
+    }
+
     private static SourceRoute MediaRoute(string assetId) =>
         new()
         {
