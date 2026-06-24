@@ -167,7 +167,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           source.framesReceived,
           source.sampleRate,
           source.channels,
-          {}});
+          source.warning});
     }
     return metrics;
   }
@@ -186,6 +186,10 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     int bytesPerSample = 4;
     bool isFloat = true;
     int64_t framesReceived = 0;
+    int64_t emptyPacketPolls = 0;
+    std::string endpointId;
+    std::string endpointName;
+    std::string warning;
   };
 
   bool ensureCom() {
@@ -214,6 +218,12 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     if (device == nullptr) {
       warn("WASAPI capture source " + state.participantId + " has no matching endpoint.");
       return;
+    }
+    state.endpointName = friendlyName(device);
+    LPWSTR rawId = nullptr;
+    if (SUCCEEDED(device->GetId(&rawId)) && rawId != nullptr) {
+      state.endpointId = wideToUtf8Capture(rawId);
+      ::CoTaskMemFree(rawId);
     }
 
     HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&state.client));
@@ -351,7 +361,13 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
 
     UINT32 packetFrames = 0;
     if (FAILED(source.captureClient->GetNextPacketSize(&packetFrames))) {
+      source.warning = "WASAPI capture could not query packet size for " + diagnosticEndpointLabel(source) + ".";
       return;
+    }
+    if (packetFrames == 0 && source.framesReceived == 0) {
+      ++source.emptyPacketPolls;
+      source.warning = "WASAPI capture is open on " + diagnosticEndpointLabel(source) +
+                       " but the endpoint has not produced loopback packets.";
     }
 
     while (packetFrames > 0) {
@@ -359,6 +375,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       UINT32 frameCount = 0;
       DWORD flags = 0;
       if (FAILED(source.captureClient->GetBuffer(&data, &frameCount, &flags, nullptr, nullptr))) {
+        source.warning = "WASAPI capture could not read a packet from " + diagnosticEndpointLabel(source) + ".";
         return;
       }
 
@@ -376,14 +393,31 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           convertPacket(source, data, frameCount, frame.pcm);
         }
         source.framesReceived += frameCount;
+        source.warning.clear();
         frames.push_back(std::move(frame));
       }
 
       source.captureClient->ReleaseBuffer(frameCount);
       if (FAILED(source.captureClient->GetNextPacketSize(&packetFrames))) {
+        source.warning = "WASAPI capture could not query the next packet for " + diagnosticEndpointLabel(source) + ".";
         return;
       }
     }
+  }
+
+  std::string diagnosticEndpointLabel(const SourceState& source) const {
+    const std::string name = source.endpointName.empty() ? source.config.audioDeviceName : source.endpointName;
+    const std::string id = source.endpointId.empty() ? source.config.nativeAudioDeviceId : source.endpointId;
+    if (!name.empty() && !id.empty()) {
+      return "'" + name + "' (" + id + ")";
+    }
+    if (!name.empty()) {
+      return "'" + name + "'";
+    }
+    if (!id.empty()) {
+      return id;
+    }
+    return source.participantId;
   }
 
   void convertPacket(const SourceState& source, const BYTE* data, UINT32 frameCount, std::vector<float>& out) const {
