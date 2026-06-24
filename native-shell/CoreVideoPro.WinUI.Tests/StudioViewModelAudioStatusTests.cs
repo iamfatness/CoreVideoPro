@@ -8,6 +8,33 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class StudioViewModelAudioStatusTests
 {
     [Fact]
+    public void FormatStreamingFailureStatus_LeadsWithFfmpegActionAndRemovesMediaCorePrefix()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: start-program-output failed. ffmpeg.exe was not found in C:\\ffmpeg\\bin."));
+
+        Assert.StartsWith(
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming.",
+            status);
+        Assert.DoesNotContain("media-core sync failed", status, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ffmpeg.exe was not found", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_LeadsWithRtmpActionForConnectionFailures()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: RTMP sender exited. Connection refused ffmpeg exited with code 1"));
+
+        Assert.StartsWith(
+            "Streaming start failed: RTMP output failed. Check the server URL, stream key, and network.",
+            status);
+        Assert.Contains("Connection refused", status, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatAudioMonitorEngineStatus_UsesFramesAndMonitorStateWithoutMasterPercent()
     {
         var audio = new NativeMediaCoreAudioMixSession

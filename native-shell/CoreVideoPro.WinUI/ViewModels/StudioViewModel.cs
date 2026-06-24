@@ -2097,7 +2097,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 {
                     Streaming = previousStreaming;
                     RefreshOutputStatus();
-                    OutputStatus = $"Streaming {action} failed: {ex.Message}";
+                    OutputStatus = FormatStreamingFailureStatus(action, ex);
                     OutputSessionStatus = OutputStatus;
                 });
             }
@@ -2140,7 +2140,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 RunOnUiThread(() =>
                 {
-                    OutputStatus = $"Streaming sync failed: {ex.Message}";
+                    OutputStatus = FormatStreamingFailureStatus(starting ? "start" : "stop", ex);
                     OutputSessionStatus = OutputStatus;
                 });
                 return;
@@ -4358,6 +4358,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
+    }
+
+    public static string FormatStreamingFailureStatus(string action, Exception exception)
+    {
+        var detail = NormalizeStreamingFailureDetail(exception.Message);
+        var lowered = detail.ToLowerInvariant();
+        var prefix = lowered.Contains("rtmp", StringComparison.Ordinal) ||
+                     lowered.Contains("rtmps", StringComparison.Ordinal) ||
+                     lowered.Contains("connection refused", StringComparison.Ordinal)
+            ? "RTMP output failed. Check the server URL, stream key, and network."
+            : lowered.Contains("ffmpeg", StringComparison.Ordinal)
+                ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming."
+                : "Media core rejected the stream request.";
+
+        return $"Streaming {action} failed: {prefix} {detail}";
+    }
+
+    private static string NormalizeStreamingFailureDetail(string? message)
+    {
+        var detail = string.IsNullOrWhiteSpace(message)
+            ? "No native error detail was returned."
+            : message.Trim();
+
+        const string mediaCorePrefix = "media-core sync failed:";
+        while (detail.StartsWith(mediaCorePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            detail = detail[mediaCorePrefix.Length..].Trim();
+        }
+
+        return detail;
     }
 
     public static string FormatAudioMonitorEngineStatus(NativeMediaCoreAudioMixSession audio)
