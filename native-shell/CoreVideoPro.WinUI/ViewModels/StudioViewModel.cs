@@ -4667,6 +4667,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return "Stream settings failed";
         }
 
+        if (normalized.StartsWith("RTMP output failed:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("RTMPS output failed:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("SRT output failed:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("NDI output failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Streaming failed";
+        }
+
+        if (normalized.StartsWith("RTMP output warning:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("RTMPS output warning:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("SRT output warning:", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("NDI output warning:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Stream warning";
+        }
+
         if (normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("error", StringComparison.OrdinalIgnoreCase))
         {

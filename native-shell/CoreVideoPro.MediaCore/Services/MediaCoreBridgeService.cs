@@ -251,8 +251,17 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             return $"Recording {snapshot.Recording.ProgramPath}";
         }
 
+        var failedOutput = snapshot.OutputHealth
+            .FirstOrDefault(item =>
+                item.Status is "failed" or "warning" &&
+                !string.IsNullOrWhiteSpace(item.Message));
+        if (failedOutput is not null)
+        {
+            return $"{failedOutput.Destination.ToUpperInvariant()} output {failedOutput.Status}: {failedOutput.Message}";
+        }
+
         var liveOutputs = snapshot.OutputHealth
-            .Where(item => item.Status is "live" or "warning")
+            .Where(item => item.Status is "live")
             .Select(item => item.Destination.ToUpperInvariant())
             .Distinct()
             .ToList();

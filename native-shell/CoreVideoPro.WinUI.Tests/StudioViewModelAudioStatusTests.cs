@@ -129,6 +129,15 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData("RTMP output failed: FFmpeg exited with code 1.", "Streaming failed")]
+    [InlineData("RTMP output warning: RTMP sender is retrying after connection refused.", "Stream warning")]
+    public void FormatOutputStatusBrief_CollapsesStreamOutputHealthStatus(string status, string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+    }
+
+    [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
     public void ResolveStreamingStateAfterFailedRetry_RollsBackRequestedState(bool requestedStarting, bool expectedStreaming)

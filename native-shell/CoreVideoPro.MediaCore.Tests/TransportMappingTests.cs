@@ -128,6 +128,50 @@ public sealed class TransportMappingTests
     }
 
     [Fact]
+    public void SummarizeOutputsReportsFailedOutputHealthBeforeIdle()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "failed",
+                    Message = "FFmpeg exited with code 1 after ingest rejected credentials.",
+                    DroppedFrames = 0
+                }
+            ]
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: FFmpeg exited with code 1 after ingest rejected credentials.", status);
+    }
+
+    [Fact]
+    public void SummarizeOutputsDoesNotReportWarningOutputAsLive()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "warning",
+                    Message = "RTMP sender is retrying after connection refused.",
+                    DroppedFrames = 0
+                }
+            ]
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output warning: RTMP sender is retrying after connection refused.", status);
+    }
+
+    [Fact]
     public void SummarizeOutputsReportsFailedSenderWarningWhenSessionWarningsAreEmpty()
     {
         var snapshot = BuildSnapshot() with
