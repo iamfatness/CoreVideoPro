@@ -603,7 +603,7 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void ResolveLocalAudioSourceDeviceId_PrefersLoopbackWhenSelectionIsEmpty()
+    public void ResolveLocalAudioSourceDeviceId_PrefersInputWhenSelectionIsEmpty()
     {
         var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
             selectedDeviceId: "",
@@ -612,11 +612,11 @@ public sealed class StudioViewModelAudioStatusTests
                 AudioDevice("loopback-1", "wasapi-loopback", "Speakers")
             ]);
 
-        Assert.Equal("loopback-1", selected);
+        Assert.Equal("mic-1", selected);
     }
 
     [Fact]
-    public void ResolveLocalAudioSourceDeviceId_ReplacesMicSelectionWithLoopback()
+    public void ResolveLocalAudioSourceDeviceId_PreservesExplicitMicSelection()
     {
         var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
             selectedDeviceId: "mic-1",
@@ -625,7 +625,7 @@ public sealed class StudioViewModelAudioStatusTests
                 AudioDevice("loopback-1", "wasapi-loopback", "Speakers")
             ]);
 
-        Assert.Equal("loopback-1", selected);
+        Assert.Equal("mic-1", selected);
     }
 
     [Fact]

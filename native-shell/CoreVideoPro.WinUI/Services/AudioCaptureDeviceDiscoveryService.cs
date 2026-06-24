@@ -57,6 +57,12 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
 
     public static string ResolveDefaultLocalMachineAudioDeviceId(IEnumerable<AudioCaptureDevice> devices) =>
         devices
+            .Where(IsWasapiInputSource)
+            .OrderBy(device => device.IsDefault ? 0 : 1)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(device => device.Id)
+            .FirstOrDefault() ??
+        devices
             .Where(IsLoopbackSource)
             .OrderBy(device => device.IsDefault ? 0 : 1)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
@@ -73,11 +79,14 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
     public static bool IsLoopbackSource(AudioCaptureDevice device) =>
         device.SourceKind?.Trim().ToLowerInvariant() is "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback";
 
+    public static bool IsWasapiInputSource(AudioCaptureDevice device) =>
+        device.SourceKind?.Trim().ToLowerInvariant() is "wasapi-input" or "wasapi-capture";
+
     public static int SourceKindPriority(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() switch
         {
-            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => 0,
-            "wasapi-input" or "wasapi-capture" => 1,
+            "wasapi-input" or "wasapi-capture" => 0,
+            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => 1,
             "embedded-capture-audio" => 2,
             "asio-input" => 3,
             _ => 4

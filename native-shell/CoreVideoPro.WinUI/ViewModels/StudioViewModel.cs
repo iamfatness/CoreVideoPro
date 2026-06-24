@@ -4514,11 +4514,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var deviceList = devices.ToList();
         if (!string.IsNullOrWhiteSpace(selectedDeviceId) &&
-            deviceList.FirstOrDefault(device =>
-                string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal)) is { } selected &&
-            AudioCaptureDeviceDiscoveryService.IsLoopbackSource(selected))
+            deviceList.Any(device =>
+                string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal)))
         {
-            return selected.Id;
+            return selectedDeviceId!;
         }
 
         return AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(deviceList);

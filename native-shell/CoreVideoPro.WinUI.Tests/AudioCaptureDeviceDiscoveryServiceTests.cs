@@ -7,7 +7,7 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class AudioCaptureDeviceDiscoveryServiceTests
 {
     [Fact]
-    public void SortForOperatorSelection_PrefersLoopbackBeforePhysicalInputForLocalMachineAudio()
+    public void SortForOperatorSelection_PrefersPhysicalInputBeforeLoopbackForLocalMachineAudio()
     {
         var sorted = AudioCaptureDeviceDiscoveryService.SortForOperatorSelection(
             [
@@ -17,14 +17,14 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("loopback", "wasapi-loopback", "Studio monitor output")
             ]);
 
-        Assert.Equal("loopback", sorted[0].Id);
-        Assert.Equal("mic", sorted[1].Id);
+        Assert.Equal("mic", sorted[0].Id);
+        Assert.Equal("loopback", sorted[1].Id);
         Assert.Equal("embedded", sorted[2].Id);
         Assert.Equal("asio", sorted[3].Id);
     }
 
     [Fact]
-    public void SortForOperatorSelection_PutsDefaultLoopbackBeforeAlphabeticalLoopbacks()
+    public void SortForOperatorSelection_PutsInputBeforeDefaultLoopback()
     {
         var sorted = AudioCaptureDeviceDiscoveryService.SortForOperatorSelection(
             [
@@ -33,12 +33,13 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("mic", "wasapi-input", "USB microphone")
             ]);
 
-        Assert.Equal("system", sorted[0].Id);
-        Assert.Equal("chat", sorted[1].Id);
+        Assert.Equal("mic", sorted[0].Id);
+        Assert.Equal("system", sorted[1].Id);
+        Assert.Equal("chat", sorted[2].Id);
     }
 
     [Fact]
-    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersLoopbackOverMicrophone()
+    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersMicrophoneOverLoopback()
     {
         var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
             [
@@ -46,7 +47,7 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("loopback", "wasapi-loopback", "Studio monitor output")
             ]);
 
-        Assert.Equal("loopback", selected);
+        Assert.Equal("mic", selected);
     }
 
     [Fact]
@@ -86,10 +87,10 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
     }
 
     [Theory]
-    [InlineData("wasapi-loopback", 0)]
-    [InlineData("loopback", 0)]
-    [InlineData("wasapi-input", 1)]
-    [InlineData("wasapi-capture", 1)]
+    [InlineData("wasapi-input", 0)]
+    [InlineData("wasapi-capture", 0)]
+    [InlineData("wasapi-loopback", 1)]
+    [InlineData("loopback", 1)]
     [InlineData("embedded-capture-audio", 2)]
     [InlineData("asio-input", 3)]
     [InlineData("unknown", 4)]
