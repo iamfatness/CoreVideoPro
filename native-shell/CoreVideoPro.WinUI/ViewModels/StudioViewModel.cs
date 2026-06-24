@@ -711,20 +711,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
-            if (string.IsNullOrWhiteSpace(FfmpegBinDirectory))
+            var executable = StudioStreamOutputValidation.ResolveFfmpegExecutable(FfmpegBinDirectory);
+            if (!string.IsNullOrWhiteSpace(executable))
             {
-                return "FFmpeg not configured. RTMP/RTMPS needs a bin folder containing ffmpeg.exe.";
+                return $"FFmpeg runtime found: {executable}";
             }
 
             if (!Directory.Exists(FfmpegBinDirectory))
             {
-                return "FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe.";
+                return string.IsNullOrWhiteSpace(FfmpegBinDirectory)
+                    ? "FFmpeg not configured. RTMP/RTMPS needs ffmpeg.exe in the app folder, PATH, or a selected bin folder."
+                    : "FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe.";
             }
 
-            var hasExecutable = File.Exists(Path.Combine(FfmpegBinDirectory, "ffmpeg.exe"));
-            return hasExecutable
-                ? "FFmpeg runtime found. RTMP/RTMPS can use this folder and package scripts can stage it."
-                : "Folder must contain ffmpeg.exe. Choose the FFmpeg bin folder, not the install root.";
+            return "Folder must contain ffmpeg.exe. Choose the FFmpeg bin folder, not the install root.";
         }
     }
 

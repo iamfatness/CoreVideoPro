@@ -153,24 +153,24 @@ public sealed class StudioStreamOutputValidationTests
     [Fact]
     public void Destinations_RejectsRtmpWhenFfmpegFolderIsMissing()
     {
-        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
-            rtmpEnabled: true,
-            ndiEnabled: false,
-            srtEnabled: false,
-            rtmpProtocol: "rtmps",
-            rtmpServerUrl: "live.example.com/app",
-            rtmpStreamKey: "stream-key",
-            ndiProgramName: "",
-            srtMode: "caller",
-            srtHost: "",
-            srtPort: "",
-            srtLatencyMs: "",
-            srtStreamId: "",
-            srtKeyLength: "0",
-            srtPassphrase: "",
-            ffmpegBinDirectory: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var error = WithIsolatedFfmpegProbe(() => StudioStreamOutputValidation.ValidateSelectedDestinations(
+                rtmpEnabled: true,
+                ndiEnabled: false,
+                srtEnabled: false,
+                rtmpProtocol: "rtmps",
+                rtmpServerUrl: "live.example.com/app",
+                rtmpStreamKey: "stream-key",
+                ndiProgramName: "",
+                srtMode: "caller",
+                srtHost: "",
+                srtPort: "",
+                srtLatencyMs: "",
+                srtStreamId: "",
+                srtKeyLength: "0",
+                srtPassphrase: "",
+                ffmpegBinDirectory: Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
 
-        Assert.Equal("FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe before streaming.", error);
+        Assert.Equal("FFmpeg folder not found or does not contain ffmpeg.exe. Choose the bin folder that contains ffmpeg.exe before streaming.", error);
     }
 
     [Fact]
@@ -194,6 +194,32 @@ public sealed class StudioStreamOutputValidationTests
             ffmpegBinDirectory: CreateFfmpegBinDirectory());
 
         Assert.Null(error);
+    }
+
+    [Fact]
+    public void FfmpegRuntime_AcceptsExecutableStagedBesideApp()
+    {
+        var appDirectory = CreateFfmpegBinDirectory();
+
+        var error = WithIsolatedFfmpegProbe(() => StudioStreamOutputValidation.ValidateFfmpegRuntime(
+            ffmpegBinDirectory: "",
+            appDirectory: appDirectory));
+
+        Assert.Null(error);
+        Assert.Equal(
+            Path.Combine(appDirectory, "ffmpeg.exe"),
+            WithIsolatedFfmpegProbe(() => StudioStreamOutputValidation.ResolveFfmpegExecutable("", appDirectory)));
+    }
+
+    [Fact]
+    public void FfmpegRuntime_ConfiguredFolderTakesPrecedenceOverAppDirectory()
+    {
+        var configured = CreateFfmpegBinDirectory();
+        var appDirectory = CreateFfmpegBinDirectory();
+
+        Assert.Equal(
+            Path.Combine(configured, "ffmpeg.exe"),
+            StudioStreamOutputValidation.ResolveFfmpegExecutable(configured, appDirectory));
     }
 
     [Theory]
@@ -279,5 +305,25 @@ public sealed class StudioStreamOutputValidationTests
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "ffmpeg.exe"), string.Empty);
         return directory;
+    }
+
+    private static T WithIsolatedFfmpegProbe<T>(Func<T> action)
+    {
+        var coreVideoFfmpegBin = Environment.GetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR");
+        var legacyFfmpegBin = Environment.GetEnvironmentVariable("FFMPEG_BIN_DIR");
+        var path = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR", null, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("FFMPEG_BIN_DIR", null, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("PATH", string.Empty, EnvironmentVariableTarget.Process);
+            return action();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR", coreVideoFfmpegBin, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("FFMPEG_BIN_DIR", legacyFfmpegBin, EnvironmentVariableTarget.Process);
+            Environment.SetEnvironmentVariable("PATH", path, EnvironmentVariableTarget.Process);
+        }
     }
 }

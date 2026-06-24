@@ -132,24 +132,26 @@ public static class StudioStreamOutputValidation
     public static bool CanSerializeRtmpSettings(string? protocol, string? serverUrl, string? streamKey) =>
         ValidateRtmp(protocol, serverUrl, streamKey) is null;
 
-    public static string? ValidateFfmpegRuntime(string? ffmpegBinDirectory)
+    public static string? ValidateFfmpegRuntime(string? ffmpegBinDirectory, string? appDirectory = null)
     {
-        if (!string.IsNullOrWhiteSpace(ffmpegBinDirectory))
-        {
-            var normalized = ffmpegBinDirectory.Trim();
-            if (!Directory.Exists(normalized))
-            {
-                return "FFmpeg folder not found. Choose the bin folder that contains ffmpeg.exe before streaming.";
-            }
+        return ResolveFfmpegExecutable(ffmpegBinDirectory, appDirectory) is not null
+            ? null
+            : string.IsNullOrWhiteSpace(ffmpegBinDirectory)
+                ? "Configure FFmpeg before streaming RTMP/RTMPS. Choose the bin folder that contains ffmpeg.exe."
+                : "FFmpeg folder not found or does not contain ffmpeg.exe. Choose the bin folder that contains ffmpeg.exe before streaming.";
+    }
 
-            return File.Exists(Path.Combine(normalized, "ffmpeg.exe"))
-                ? null
-                : "FFmpeg folder must contain ffmpeg.exe before streaming.";
+    public static string? ResolveFfmpegExecutable(string? ffmpegBinDirectory, string? appDirectory = null)
+    {
+        foreach (var candidate in FfmpegExecutableCandidates(ffmpegBinDirectory, appDirectory))
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
 
-        return PathHasExecutable("ffmpeg.exe")
-            ? null
-            : "Configure FFmpeg before streaming RTMP/RTMPS. Choose the bin folder that contains ffmpeg.exe.";
+        return null;
     }
 
     public static string NormalizeSrtMode(string? mode)
@@ -244,16 +246,52 @@ public static class StudioStreamOutputValidation
     private static string NormalizeText(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
-    private static bool PathHasExecutable(string executableName)
+    private static IEnumerable<string> FfmpegExecutableCandidates(string? ffmpegBinDirectory, string? appDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(ffmpegBinDirectory))
+        {
+            yield return Path.Combine(ffmpegBinDirectory.Trim(), "ffmpeg.exe");
+        }
+
+        var envBin = Environment.GetEnvironmentVariable("COREVIDEO_FFMPEG_BIN_DIR");
+        if (!string.IsNullOrWhiteSpace(envBin))
+        {
+            yield return Path.Combine(envBin.Trim(), "ffmpeg.exe");
+        }
+
+        var legacyEnvBin = Environment.GetEnvironmentVariable("FFMPEG_BIN_DIR");
+        if (!string.IsNullOrWhiteSpace(legacyEnvBin))
+        {
+            yield return Path.Combine(legacyEnvBin.Trim(), "ffmpeg.exe");
+        }
+
+        var appRoot = string.IsNullOrWhiteSpace(appDirectory)
+            ? AppContext.BaseDirectory
+            : appDirectory.Trim();
+        if (!string.IsNullOrWhiteSpace(appRoot))
+        {
+            yield return Path.Combine(appRoot, "ffmpeg.exe");
+        }
+
+        foreach (var executable in PathExecutableCandidates("ffmpeg.exe"))
+        {
+            yield return executable;
+        }
+    }
+
+    private static IEnumerable<string> PathExecutableCandidates(string executableName)
     {
         var path = Environment.GetEnvironmentVariable("PATH");
         if (string.IsNullOrWhiteSpace(path))
         {
-            return false;
+            yield break;
         }
 
-        return path.Split(Path.PathSeparator)
+        foreach (var entry in path.Split(Path.PathSeparator)
             .Where(entry => !string.IsNullOrWhiteSpace(entry))
-            .Any(entry => File.Exists(Path.Combine(entry.Trim(), executableName)));
+            .Select(entry => Path.Combine(entry.Trim(), executableName)))
+        {
+            yield return entry;
+        }
     }
 }
