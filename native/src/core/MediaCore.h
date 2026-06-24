@@ -296,6 +296,9 @@ class MediaCore {
   std::vector<std::string> brandWarnings_;
   std::string mediaPlaybackAssetId_;
   std::string mediaPlaybackAssetName_;
+  std::string mediaPlaybackAssetKind_;
+  std::string mediaPlaybackAssetPath_;
+  std::string mediaPlaybackKey_;
   bool mediaPlaybackPlaying_ = false;
   std::vector<std::string> mediaPlaybackWarnings_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;

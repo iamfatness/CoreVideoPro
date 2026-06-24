@@ -135,6 +135,17 @@
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
+
+                    <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Media playback" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.NativeMediaPlaybackStatus, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.MediaPlaybackStatus, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
 
                 <Grid ColumnSpacing="12">

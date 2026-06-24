@@ -3420,6 +3420,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string MediaPlaybackButtonLabel => SelectedMediaAssetPlaying ? "Pause" : "Play";
 
+    public string NativeMediaPlaybackStatus =>
+        _bridge.LastSnapshot?.MediaPlayback is { } playback
+            ? FormatNativeMediaPlaybackStatus(playback)
+            : "Native media playback waiting for media core.";
+
     public bool CanAddSelectedMediaAssetToPreview => HasSelectedMediaAsset;
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
@@ -5211,6 +5216,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"Native: {phase} for {source}{title}; build {lowerThird.BuildInMs} ms / out {lowerThird.BuildOutMs} ms.";
     }
 
+    public static string FormatNativeMediaPlaybackStatus(NativeMediaCoreMediaPlaybackState playback)
+    {
+        if (string.Equals(playback.Status, "idle", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(playback.MediaAssetId))
+        {
+            return "Native: no media asset routed to Program.";
+        }
+
+        var name = !string.IsNullOrWhiteSpace(playback.MediaAssetName)
+            ? playback.MediaAssetName
+            : playback.MediaAssetId;
+        var state = playback.Playing ? "playing" : "paused";
+        var key = string.IsNullOrWhiteSpace(playback.MediaPlaybackKey)
+            ? "no playback key"
+            : playback.MediaPlaybackKey;
+        return $"Native: {name} {state}; key {key}.";
+    }
+
     private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() is
             "loopback" or
@@ -6283,6 +6306,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
+        OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
         Settings.RefreshDiagnosticsReadout();
 

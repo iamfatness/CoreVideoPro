@@ -974,6 +974,9 @@ TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
       {"type", "set-media-playback"},
       {"mediaAssetId", "clip-intro"},
       {"mediaAssetName", "Intro Sting"},
+      {"mediaAssetKind", "stinger"},
+      {"mediaAssetPath", "C:/media/intro.mp4"},
+      {"mediaPlaybackKey", "program-take:3:media:clip-intro"},
       {"playing", true},
   });
   const auto* playback = playing.get("mediaPlayback");
@@ -981,8 +984,11 @@ TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
   EXPECT_EQ(playback->getString("status"), "playing");
   EXPECT_EQ(playback->getString("mediaAssetId"), "clip-intro");
   EXPECT_EQ(playback->getString("mediaAssetName"), "Intro Sting");
+  EXPECT_EQ(playback->getString("mediaAssetKind"), "stinger");
+  EXPECT_EQ(playback->getString("mediaAssetPath"), "C:/media/intro.mp4");
+  EXPECT_EQ(playback->getString("mediaPlaybackKey"), "program-take:3:media:clip-intro");
   EXPECT_TRUE(playback->get("playing")->asBool());
-  EXPECT_EQ(playback->getString("summary"), "Playing Intro Sting.");
+  EXPECT_EQ(playback->getString("summary"), "Playing Intro Sting with key program-take:3:media:clip-intro.");
 
   const auto paused = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-media-playback"},

@@ -1492,19 +1492,33 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
   if (mediaAssetId.empty()) {
     mediaPlaybackAssetId_.clear();
     mediaPlaybackAssetName_.clear();
+    mediaPlaybackAssetKind_.clear();
+    mediaPlaybackAssetPath_.clear();
+    mediaPlaybackKey_.clear();
     mediaPlaybackPlaying_ = false;
     mediaPlaybackWarnings_.push_back("Media playback command had no media asset id.");
     return;
   }
 
   const std::string mediaAssetName = command.getString("mediaAssetName");
+  const std::string mediaAssetPath = command.getString("mediaAssetPath");
+  const std::string mediaPlaybackKey = command.getString("mediaPlaybackKey");
   if (mediaAssetName.empty()) {
     mediaPlaybackWarnings_.push_back(mediaAssetId + " media asset has no name and may not be present in the media bin.");
+  }
+  if (mediaAssetPath.empty()) {
+    mediaPlaybackWarnings_.push_back(mediaAssetId + " media asset has no file path; Program playback cannot decode it.");
   }
 
   mediaPlaybackAssetId_ = mediaAssetId;
   mediaPlaybackAssetName_ = mediaAssetName.empty() ? mediaAssetId : mediaAssetName;
+  mediaPlaybackAssetKind_ = command.getString("mediaAssetKind");
+  mediaPlaybackAssetPath_ = mediaAssetPath;
+  mediaPlaybackKey_ = mediaPlaybackKey;
   mediaPlaybackPlaying_ = command.get("playing") && command.get("playing")->asBool();
+  if (mediaPlaybackPlaying_ && mediaPlaybackKey_.empty()) {
+    mediaPlaybackWarnings_.push_back(mediaAssetId + " is playing without a playback key; replay behavior may be unstable.");
+  }
 }
 
 void MediaCore::configureSrtIngestSources(const rpc::Json& command) {
@@ -2280,8 +2294,13 @@ rpc::Json MediaCore::mediaPlaybackState() const {
       {"status", mediaPlaybackPlaying_ ? "playing" : "paused"},
       {"mediaAssetId", mediaPlaybackAssetId_},
       {"mediaAssetName", name},
+      {"mediaAssetKind", mediaPlaybackAssetKind_},
+      {"mediaAssetPath", mediaPlaybackAssetPath_},
+      {"mediaPlaybackKey", mediaPlaybackKey_},
       {"playing", mediaPlaybackPlaying_},
-      {"summary", mediaPlaybackPlaying_ ? "Playing " + name + "." : name + " paused."},
+      {"summary", mediaPlaybackPlaying_
+                      ? "Playing " + name + (mediaPlaybackKey_.empty() ? "." : " with key " + mediaPlaybackKey_ + ".")
+                      : name + " paused."},
       {"warnings", warnings},
   };
 }

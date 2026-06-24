@@ -458,6 +458,19 @@ public sealed class NativeMediaCoreOverlayState
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
+public sealed class NativeMediaCoreMediaPlaybackState
+{
+    public required string Status { get; init; }
+    public string? MediaAssetId { get; init; }
+    public string? MediaAssetName { get; init; }
+    public string? MediaAssetKind { get; init; }
+    public string? MediaAssetPath { get; init; }
+    public string? MediaPlaybackKey { get; init; }
+    public bool Playing { get; init; }
+    public required string Summary { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
 public sealed class NativeMediaCoreOperatorAction
 {
     public required string ActionId { get; init; }
@@ -538,6 +551,11 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
     {
         Status = "idle",
         Summary = "No overlays."
+    };
+    public NativeMediaCoreMediaPlaybackState MediaPlayback { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "No media asset selected."
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
@@ -620,6 +638,11 @@ public sealed record NativeMediaCoreStateSnapshot
     {
         Status = "idle",
         Summary = "No overlays."
+    };
+    public NativeMediaCoreMediaPlaybackState MediaPlayback { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "No media asset selected."
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];

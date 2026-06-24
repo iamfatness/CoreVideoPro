@@ -975,6 +975,24 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("Native: On for David Chen - Chief Product Officer; build 350 ms / out 275 ms.", status);
     }
 
+    [Fact]
+    public void FormatNativeMediaPlaybackStatus_ShowsProgramPlaybackKey()
+    {
+        var status = StudioViewModel.FormatNativeMediaPlaybackStatus(new NativeMediaCoreMediaPlaybackState
+        {
+            Status = "playing",
+            MediaAssetId = "clip-intro",
+            MediaAssetName = "Intro Sting",
+            MediaAssetKind = "stinger",
+            MediaAssetPath = @"C:\media\intro.mp4",
+            MediaPlaybackKey = "program-take:3:media:clip-intro",
+            Playing = true,
+            Summary = "Playing Intro Sting with key program-take:3:media:clip-intro."
+        });
+
+        Assert.Equal("Native: Intro Sting playing; key program-take:3:media:clip-intro.", status);
+    }
+
     [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]

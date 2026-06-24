@@ -189,6 +189,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
+    public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
     public NativeMediaCoreProgramSharedTexture? ProgramSharedTexture { get; init; }
     public string? MeetingState { get; init; }
