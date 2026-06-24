@@ -266,7 +266,8 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
 
         if (liveOutputs.Count > 0)
         {
-            return $"Live: {string.Join(", ", liveOutputs)}";
+            var live = $"Live: {string.Join(", ", liveOutputs)}";
+            return snapshot.Recording?.Active == true ? $"Recording + {live}" : live;
         }
 
         var senderWarning = snapshot.OutputSenderSession.Warnings
