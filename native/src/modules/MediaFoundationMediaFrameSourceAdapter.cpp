@@ -191,6 +191,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
  private:
   struct AssetState {
     std::string path;
+    std::string playbackKey;
     bool imageLoaded = false;
     bool ended = false;
     bool wasPlaying = false;
@@ -206,6 +207,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       state = {};
       state.path = path;
     }
+    const std::string playbackKey = layer.mediaPlaybackKey.empty()
+                                        ? layer.mediaAssetId + ":" + (layer.mediaAssetPlaying ? "playing" : "paused")
+                                        : layer.mediaPlaybackKey;
     if (isStillImagePath(path)) {
       if (!state.imageLoaded) {
         state.lastFrame.participantId = "media:" + layer.mediaAssetId;
@@ -221,6 +225,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     }
     if (!layer.mediaAssetPlaying) {
       state.wasPlaying = false;
+      state.playbackKey = playbackKey;
       if (state.lastFrame.hasPixels()) {
         frame = state.lastFrame;
         frame.timestampMs = timestampMs;
@@ -228,12 +233,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       }
       return false;
     }
-    if (!state.wasPlaying) {
+    if (!state.wasPlaying || state.playbackKey != playbackKey) {
       state.reader = {};
       state.ended = false;
       state.frameId = 0;
     }
     state.wasPlaying = true;
+    state.playbackKey = playbackKey;
     if (!state.reader && !openVideoReader(path, state)) {
       warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program playback.");
       return false;

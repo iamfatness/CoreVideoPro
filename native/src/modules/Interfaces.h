@@ -180,6 +180,7 @@ struct CompositorRenderPlanLayer {
   std::string mediaAssetName;
   std::string mediaAssetKind;
   std::string mediaAssetPath;
+  std::string mediaPlaybackKey;
   bool mediaAssetPlaying = false;
   bool hasColorGrade = false;
   CompositorColorGrade colorGrade;

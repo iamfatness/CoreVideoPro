@@ -109,6 +109,7 @@ class MediaCore {
     std::string mediaAssetName;
     std::string mediaAssetKind;
     std::string mediaAssetPath;
+    std::string mediaPlaybackKey;
     bool mediaAssetPlaying = false;
     float rectX = 0.f;
     float rectY = 0.f;

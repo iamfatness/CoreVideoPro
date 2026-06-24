@@ -426,6 +426,7 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
     mixHash(hash, layer.mediaAssetName);
     mixHash(hash, layer.mediaAssetKind);
     mixHash(hash, layer.mediaAssetPath);
+    mixHash(hash, layer.mediaPlaybackKey);
     mixHash(hash, layer.mediaAssetPlaying ? 1 : 0);
     mixHash(hash, layer.order);
     mixHash(hash, layer.rect.x);

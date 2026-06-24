@@ -127,11 +127,13 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
       int64_t timestampMs) override {
     ++pollCount;
+    seenPlaybackKeys.clear();
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
         continue;
       }
+      seenPlaybackKeys.push_back(layer.mediaPlaybackKey);
       corevideo::modules::VideoFrame frame;
       frame.participantId = "media:" + layer.mediaAssetId;
       frame.width = kWidth;
@@ -162,6 +164,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
   uint8_t green = 0xb4;
   uint8_t red = 0xf1;
   int64_t pollCount = 0;
+  std::vector<std::string> seenPlaybackKeys;
 };
 
 class CapturingOutputSender final : public corevideo::modules::IOutputSender {
@@ -2828,6 +2831,7 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
                              {"mediaAssetName", "Intro"},
                              {"mediaAssetKind", "video"},
                              {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                             {"mediaPlaybackKey", "program-take:4:media:clip-intro"},
                              {"mediaAssetPlaying", true},
                              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
                          },
@@ -2836,6 +2840,8 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
   });
 
   EXPECT_GE(mediaFramesPtr->pollCount, 1);
+  ASSERT_FALSE(mediaFramesPtr->seenPlaybackKeys.empty());
+  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys.front(), "program-take:4:media:clip-intro");
   const auto previews = mediaCore.drainProgramFramePreviewEvents();
   ASSERT_FALSE(previews.empty());
   const auto* preview = previews.back().get("preview");

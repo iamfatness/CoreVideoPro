@@ -956,6 +956,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
       state.mediaAssetPath = route.getString("mediaAssetPath");
+      state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
       state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
@@ -2511,6 +2512,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
         layer.mediaAssetPath = route.mediaAssetPath;
+        layer.mediaPlaybackKey = route.mediaPlaybackKey;
         layer.mediaAssetPlaying = route.mediaAssetPlaying;
       } else if (route.mode == "capture-input" && !route.captureDeviceId.empty()) {
         layer.participantId = "capture:" + route.captureDeviceId;
