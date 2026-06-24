@@ -358,7 +358,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM none | mix none | PGM none | MON none | playback off - Desk Mix (loopback, streaming, no frames)", status);
+        Assert.Equal("sources 1/1 | PCM none | mix none | PGM none | MON none | playback off | check source PCM - Desk Mix (loopback, streaming, no frames)", status);
     }
 
     [Fact]
@@ -397,7 +397,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | playback none (armed, waiting for audio) - Desk Mix (wasapi-loopback, 960 frames)", status);
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | playback none (armed, waiting for audio) | check monitor output - Desk Mix (wasapi-loopback, 960 frames)", status);
     }
 
     [Fact]
@@ -458,6 +458,58 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
         Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsProgramRoutingGap()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "PCM received",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "armed"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 0,
+            RoutedMonitorFrames = 0
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM none | MON none | playback none (armed, waiting for audio) | route source to PGM", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsMonitorRoutingGap()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "armed"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 0
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback none (armed, waiting for audio) | route source to MON", status);
     }
 
     [Fact]

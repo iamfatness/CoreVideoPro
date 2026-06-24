@@ -4882,8 +4882,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sourceLabel = sourceDetail is null
             ? string.Empty
             : $" - {FormatAudioProofSourceLabel(sourceDetail)}";
+        var faultLabel = FormatAudioProofFaultLabel(audio, capture);
 
-        return $"{sourceState} | {pcmState} | {mixState} | {pgmState} | {monState} | {playbackState}{sourceLabel}";
+        return $"{sourceState} | {pcmState} | {mixState} | {pgmState} | {monState} | {playbackState}{faultLabel}{sourceLabel}";
+    }
+
+    private static string FormatAudioProofFaultLabel(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources capture)
+    {
+        if (capture.SourceCount > 0 && capture.CaptureFramesReceived <= 0)
+        {
+            return " | check source PCM";
+        }
+
+        if (capture.CaptureFramesReceived > 0 && capture.RoutedMasterFrames <= 0)
+        {
+            return " | route source to PGM";
+        }
+
+        if (capture.RoutedMasterFrames > 0 && capture.RoutedMonitorFrames <= 0)
+        {
+            return " | route source to MON";
+        }
+
+        if (audio.MonitorEnabled && capture.RoutedMonitorFrames > 0 && audio.MonitorFramesPlayed <= 0)
+        {
+            return " | check monitor output";
+        }
+
+        return string.Empty;
     }
 
     private static string FormatAudioProofSourceLabel(NativeMediaCoreCaptureAudioSource source)
