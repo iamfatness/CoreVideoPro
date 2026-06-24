@@ -17,6 +17,8 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
             programRoutes);
 
         Assert.False(shouldPlay);
@@ -33,6 +35,8 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: true,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
             programRoutes);
 
         Assert.True(shouldPlay);
@@ -49,6 +53,8 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
             programRoutes);
 
         Assert.False(shouldPlay);
@@ -60,7 +66,27 @@ public sealed class MediaRoutePlaybackServiceTests
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
             isProgramScene: false,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
             programRoutes: []);
+
+        Assert.False(shouldPlay);
+    }
+
+    [Fact]
+    public void ShouldPlaySceneMediaRoute_RespectsOperatorPausedProgramMedia()
+    {
+        var programRoutes = new[]
+        {
+            MediaRoute("intro")
+        };
+
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
+            "intro",
+            isProgramScene: true,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: false,
+            programRoutes);
 
         Assert.False(shouldPlay);
     }
@@ -121,6 +147,18 @@ public sealed class MediaRoutePlaybackServiceTests
 
         Assert.Equal("intro", selection.MediaAssetId);
         Assert.True(selection.Playing);
+    }
+
+    [Fact]
+    public void ResolvePlaybackSelection_PreservesPausedStateForSelectedProgramMedia()
+    {
+        var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")]);
+
+        Assert.Equal("intro", selection.MediaAssetId);
+        Assert.False(selection.Playing);
     }
 
     [Fact]
