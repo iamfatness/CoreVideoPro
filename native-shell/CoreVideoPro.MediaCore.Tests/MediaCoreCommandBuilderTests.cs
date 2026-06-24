@@ -244,6 +244,11 @@ public sealed class MediaCoreCommandBuilderTests
             CanvasOutputProfile = new MediaCoreOutputProfileWire("canvas-4k60", "3840x2160", 3840, 2160, 60, 28),
             StreamOutputProfile = new MediaCoreOutputProfileWire("stream-1080p30", "1920x1080", 1920, 1080, 30, 4.1, "h265"),
             RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-4k60", "3840x2160", 3840, 2160, 60, 28, "av1"),
+            RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with
+            {
+                Format = "mkv",
+                Quality = "archive"
+            },
             StreamDestinations = ["rtmp", "ndi", "srt"],
             StreamDestinationSettings =
             [
@@ -336,12 +341,16 @@ public sealed class MediaCoreCommandBuilderTests
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
         Assert.Equal("corevideo-recording", GetString(targets, "filenamePrefix"));
+        Assert.Equal("mkv", GetString(targets, "format"));
+        Assert.Equal("archive", GetString(targets, "quality"));
         Assert.Equal("recording-4k60", GetObject(targets, "renderProfile").GetProperty("profileId").GetString());
         Assert.Equal("av1", GetObject(targets, "renderProfile").GetProperty("codec").GetString());
         Assert.Equal(28, GetObject(targets, "renderProfile").GetProperty("targetBitrateMbps").GetDouble());
 
         var recording = commands.Single(command => command.Type == "start-recording-session");
         Assert.Equal("corevideo-recording-program", GetString(recording, "sessionId"));
+        Assert.Equal("mkv", GetString(recording, "format"));
+        Assert.Equal("archive", GetString(recording, "quality"));
         Assert.Equal("3840x2160", GetObject(recording, "renderProfile").GetProperty("resolution").GetString());
         Assert.Equal("av1", GetObject(recording, "renderProfile").GetProperty("codec").GetString());
         Assert.Equal(28, GetObject(recording, "renderProfile").GetProperty("targetBitrateMbps").GetDouble());
