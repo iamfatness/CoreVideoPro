@@ -5097,9 +5097,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : !string.IsNullOrWhiteSpace(source.EndpointName)
                     ? source.EndpointName
                     : source.CaptureDeviceId;
+        var sourceKind = source is null
+            ? "mix"
+            : FormatAudioSourceKindForMeter(source.AudioSourceKind);
         var peak = double.IsFinite(participant.PeakDbfs) ? participant.PeakDbfs : -60;
-        return $"{name} {participant.OutputLevel}% peak {peak:0.0} dBFS";
+        return $"{name} [{sourceKind}] {participant.OutputLevel}% peak {peak:0.0} dBFS";
     }
+
+    private static string FormatAudioSourceKindForMeter(string? sourceKind) =>
+        sourceKind?.Trim().ToLowerInvariant() switch
+        {
+            "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback" => "loopback",
+            "wasapi-input" or "wasapi-capture" => "input",
+            "embedded-capture-audio" => "embedded",
+            "asio-input" => "ASIO",
+            "local-machine-audio" => "local",
+            null or "" => "source",
+            _ => sourceKind.Trim()
+        };
 
     private static string ResolveCaptureTelemetrySourceId(NativeMediaCoreCaptureAudioSource source) =>
         string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)

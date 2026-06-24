@@ -656,7 +656,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.BuildAudioMeterSourceSummary(audio, capture);
 
-        Assert.Equal("Meters: Desk Mix 64% peak -7.4 dBFS; monitor listens to MON bus.", status);
+        Assert.Equal("Meters: Desk Mix [loopback] 64% peak -7.4 dBFS; monitor listens to MON bus.", status);
     }
 
     [Fact]

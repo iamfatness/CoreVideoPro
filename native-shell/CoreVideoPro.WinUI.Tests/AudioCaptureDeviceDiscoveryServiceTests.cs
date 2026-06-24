@@ -39,7 +39,7 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
     }
 
     [Fact]
-    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersMicrophoneOverLoopback()
+    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersLoopbackForLocalMachineAudio()
     {
         var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
             [
@@ -47,7 +47,7 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("loopback", "wasapi-loopback", "Studio monitor output")
             ]);
 
-        Assert.Equal("mic", selected);
+        Assert.Equal("loopback", selected);
     }
 
     [Fact]
