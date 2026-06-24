@@ -4468,20 +4468,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IEnumerable<AudioCaptureDevice> devices)
     {
         var deviceList = devices.ToList();
-        var defaultLoopback = deviceList.FirstOrDefault(device =>
-            AudioCaptureDeviceDiscoveryService.IsLoopbackSource(device) &&
-            device.IsDefault);
-
         if (!string.IsNullOrWhiteSpace(selectedDeviceId) &&
             deviceList.FirstOrDefault(device =>
                 string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal)) is { } selected &&
             AudioCaptureDeviceDiscoveryService.IsLoopbackSource(selected))
         {
-            if (!selected.IsDefault && defaultLoopback is not null)
-            {
-                return defaultLoopback.Id;
-            }
-
             return selected.Id;
         }
 

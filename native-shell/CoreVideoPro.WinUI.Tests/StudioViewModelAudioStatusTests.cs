@@ -443,7 +443,7 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void ResolveLocalAudioSourceDeviceId_ReplacesPersistedQuietLoopbackWithDefaultLoopback()
+    public void ResolveLocalAudioSourceDeviceId_PreservesExplicitNonDefaultLoopback()
     {
         var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
             selectedDeviceId: "chat",
@@ -452,7 +452,7 @@ public sealed class StudioViewModelAudioStatusTests
                 AudioDevice("system", "wasapi-loopback", "System", isDefault: true)
             ]);
 
-        Assert.Equal("system", selected);
+        Assert.Equal("chat", selected);
     }
 
     [Fact]
