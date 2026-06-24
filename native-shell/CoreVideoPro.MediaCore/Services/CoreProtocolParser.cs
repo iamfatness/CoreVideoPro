@@ -430,6 +430,7 @@ public static class CoreProtocolParser
         {
             AddStringArray(snapshotElement, "warnings", messages);
             AddStringArray(snapshotElement, "events", messages);
+            AddOutputSenderSessionMessages(snapshotElement, messages);
         }
 
         var message = string.Join(" ", messages
@@ -471,6 +472,63 @@ public static class CoreProtocolParser
                 messages.Add(value);
             }
         }
+    }
+
+    private static void AddOutputSenderSessionMessages(JsonElement snapshotElement, List<string> messages)
+    {
+        if (!snapshotElement.TryGetProperty("outputSenderSession", out var sessionElement) ||
+            sessionElement.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        AddStringArray(sessionElement, "warnings", messages);
+        if (!sessionElement.TryGetProperty("senders", out var sendersElement) ||
+            sendersElement.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var senderElement in sendersElement.EnumerateArray())
+        {
+            if (senderElement.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var destination = senderElement.TryGetProperty("destination", out var destinationElement) &&
+                              destinationElement.ValueKind == JsonValueKind.String
+                ? destinationElement.GetString()
+                : null;
+            var status = senderElement.TryGetProperty("status", out var statusElement) &&
+                         statusElement.ValueKind == JsonValueKind.String
+                ? statusElement.GetString()
+                : null;
+            var label = string.IsNullOrWhiteSpace(destination)
+                ? "Output sender"
+                : $"{destination!.Trim().ToUpperInvariant()} sender";
+
+            AddSenderDetail(senderElement, "lastError", label, status, messages);
+            AddSenderDetail(senderElement, "warning", label, status, messages);
+        }
+    }
+
+    private static void AddSenderDetail(
+        JsonElement senderElement,
+        string propertyName,
+        string label,
+        string? status,
+        List<string> messages)
+    {
+        if (!senderElement.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.String ||
+            property.GetString() is not { Length: > 0 } detail)
+        {
+            return;
+        }
+
+        var statusText = string.IsNullOrWhiteSpace(status) ? string.Empty : $" {status!.Trim()}";
+        messages.Add($"{label}{statusText}: {detail.Trim()}");
     }
 
     public static string DescribeUnexpectedCaptureResponse(JsonDocument response, string responseType)

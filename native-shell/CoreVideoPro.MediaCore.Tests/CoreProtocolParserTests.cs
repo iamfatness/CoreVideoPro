@@ -194,6 +194,41 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ErrorMessageIncludesNestedOutputSenderSessionDetails()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("""
+            {
+              "id": "core-13",
+              "ok": false,
+              "type": "media-core-sync",
+              "error": {
+                "message": "start-program-output failed."
+              },
+              "snapshot": {
+                "outputSenderSession": {
+                  "status": "warning",
+                  "warnings": ["Stream destination rtmp is offline."],
+                  "senders": [
+                    {
+                      "destination": "rtmp",
+                      "status": "warning",
+                      "warning": "RTMP ingest rejected credentials.",
+                      "lastError": "RTMP ingest rejected credentials."
+                    }
+                  ]
+                }
+              }
+            }
+            """);
+
+        var message = CoreProtocolParser.TryParseErrorMessage(document);
+
+        Assert.Equal(
+            "start-program-output failed. Stream destination rtmp is offline. RTMP sender warning: RTMP ingest rejected credentials.",
+            message);
+    }
+
+    [Fact]
     public void DoesNotParseResponseLineAsEvent()
     {
         var responseLine = """{"id":"1","ok":true,"type":"ping"}""";
