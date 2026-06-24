@@ -1497,6 +1497,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BuildAudioRoutingMatrix();
         RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -1505,6 +1506,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BuildAudioRoutingMatrix();
         RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -4473,6 +4475,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioMonitorBindings();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -5710,6 +5713,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public static double NormalizeStreamTargetBitrateMbps(double value) =>
         NormalizeOutputTargetBitrateMbps(value);
 
+    public static double NormalizeAudioMonitorVolume(double value) =>
+        Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : 0.75, 2, MidpointRounding.AwayFromZero);
+
     public static string FormatStreamBitrateSummary(double value)
     {
         var normalized = NormalizeStreamTargetBitrateMbps(value);
@@ -6868,6 +6874,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtPassphrase = StreamSrtPassphrase,
             CanvasResolution = CanvasResolution,
             CanvasFps = CanvasFps,
+            LocalAudioSourceEnabled = LocalAudioSourceEnabled,
+            SelectedLocalAudioCaptureDeviceId = SelectedLocalAudioCaptureDeviceId,
+            AudioMonitoringEnabled = AudioMonitoringEnabled,
+            SelectedAudioMonitorDeviceId = SelectedAudioMonitorDeviceId,
+            AudioMonitorVolume = NormalizeAudioMonitorVolume(AudioMonitorVolume),
             StreamRenderResolution = StreamRenderResolution,
             StreamRenderFps = StreamRenderFps,
             StreamVideoCodec = StreamVideoCodec,
@@ -6912,6 +6923,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
         CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
         CanvasFps = preferences.CanvasFps ?? CanvasFps;
+        _localAudioSourceEnabled = preferences.LocalAudioSourceEnabled;
+        _selectedLocalAudioCaptureDeviceId = preferences.SelectedLocalAudioCaptureDeviceId ?? SelectedLocalAudioCaptureDeviceId;
+        _audioMonitoringEnabled = preferences.AudioMonitoringEnabled;
+        _selectedAudioMonitorDeviceId = preferences.SelectedAudioMonitorDeviceId ?? SelectedAudioMonitorDeviceId;
+        _audioMonitorVolume = NormalizeAudioMonitorVolume(preferences.AudioMonitorVolume);
         StreamRenderResolution = preferences.StreamRenderResolution ?? StreamRenderResolution;
         StreamRenderFps = preferences.StreamRenderFps ?? StreamRenderFps;
         StreamVideoCodec = preferences.StreamVideoCodec ?? StreamVideoCodec;
@@ -6975,6 +6991,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();
     }
 

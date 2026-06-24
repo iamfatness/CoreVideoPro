@@ -468,6 +468,16 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("render-1", selected);
     }
 
+    [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(0.625, 0.63)]
+    [InlineData(2, 1)]
+    [InlineData(double.NaN, 0.75)]
+    public void NormalizeAudioMonitorVolume_ClampsSavedOperatorVolume(double value, double expected)
+    {
+        Assert.Equal(expected, StudioViewModel.NormalizeAudioMonitorVolume(value));
+    }
+
     [Fact]
     public void IsConfiguredCaptureAudioSource_RejectsPlaceholderSources()
     {

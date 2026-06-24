@@ -24,6 +24,11 @@ public sealed class ProductionOutputPreferencesStoreTests
             StreamVideoCodec = "h264",
             StreamTargetBitrateMbps = 9.5,
             StreamEncoderMode = "nvenc",
+            LocalAudioSourceEnabled = true,
+            SelectedLocalAudioCaptureDeviceId = "loopback-chat",
+            AudioMonitoringEnabled = true,
+            SelectedAudioMonitorDeviceId = "headphones-main",
+            AudioMonitorVolume = 0.62,
             RecordingRenderResolution = "3840x2160",
             RecordingRenderFps = "30",
             RecordingVideoCodec = "h265",
@@ -52,6 +57,11 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.True(roundTripped.StreamNdiEnabled);
         Assert.Equal(9.5, roundTripped.StreamTargetBitrateMbps);
         Assert.Equal("nvenc", roundTripped.StreamEncoderMode);
+        Assert.True(roundTripped.LocalAudioSourceEnabled);
+        Assert.Equal("loopback-chat", roundTripped.SelectedLocalAudioCaptureDeviceId);
+        Assert.True(roundTripped.AudioMonitoringEnabled);
+        Assert.Equal("headphones-main", roundTripped.SelectedAudioMonitorDeviceId);
+        Assert.Equal(0.62, roundTripped.AudioMonitorVolume);
         Assert.Equal("3840x2160", roundTripped.RecordingRenderResolution);
         Assert.Equal(32, roundTripped.RecordingTargetBitrateMbps);
         Assert.Equal("mkv", roundTripped.RecordingFormat);
@@ -75,6 +85,11 @@ public sealed class ProductionOutputPreferencesStoreTests
         {
             StreamRtmpEnabled = false,
             StreamTargetBitrateMbps = 6,
+            LocalAudioSourceEnabled = false,
+            SelectedLocalAudioCaptureDeviceId = "loopback-game",
+            AudioMonitoringEnabled = true,
+            SelectedAudioMonitorDeviceId = "monitor-out",
+            AudioMonitorVolume = 0.4,
             RecordingTargetBitrateMbps = 18,
             RecordingFormat = "mov",
             RecordingQuality = "standard",
@@ -92,6 +107,11 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(loaded);
         Assert.False(loaded.StreamRtmpEnabled);
         Assert.Equal(6, loaded.StreamTargetBitrateMbps);
+        Assert.False(loaded.LocalAudioSourceEnabled);
+        Assert.Equal("loopback-game", loaded.SelectedLocalAudioCaptureDeviceId);
+        Assert.True(loaded.AudioMonitoringEnabled);
+        Assert.Equal("monitor-out", loaded.SelectedAudioMonitorDeviceId);
+        Assert.Equal(0.4, loaded.AudioMonitorVolume);
         Assert.Equal(18, loaded.RecordingTargetBitrateMbps);
         Assert.Equal("mov", loaded.RecordingFormat);
         Assert.Equal("standard", loaded.RecordingQuality);

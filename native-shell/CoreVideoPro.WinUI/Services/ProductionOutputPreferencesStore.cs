@@ -23,6 +23,11 @@ public sealed class ProductionOutputPreferences
     public string? StreamSrtPassphrase { get; set; }
     public string? CanvasResolution { get; set; }
     public string? CanvasFps { get; set; }
+    public bool LocalAudioSourceEnabled { get; set; } = true;
+    public string? SelectedLocalAudioCaptureDeviceId { get; set; }
+    public bool AudioMonitoringEnabled { get; set; }
+    public string? SelectedAudioMonitorDeviceId { get; set; }
+    public double AudioMonitorVolume { get; set; } = 0.75;
     public string? StreamRenderResolution { get; set; }
     public string? StreamRenderFps { get; set; }
     public string? StreamVideoCodec { get; set; }
