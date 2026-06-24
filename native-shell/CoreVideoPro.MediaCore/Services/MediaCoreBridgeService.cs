@@ -257,9 +257,31 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
             .Distinct()
             .ToList();
 
-        return liveOutputs.Count > 0
-            ? $"Live: {string.Join(", ", liveOutputs)}"
-            : "Outputs idle";
+        if (liveOutputs.Count > 0)
+        {
+            return $"Live: {string.Join(", ", liveOutputs)}";
+        }
+
+        var senderWarning = snapshot.OutputSenderSession.Warnings
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+        if (!string.IsNullOrWhiteSpace(senderWarning))
+        {
+            return $"Output warning: {senderWarning}";
+        }
+
+        var failedSender = snapshot.OutputSenderSession.Senders
+            .FirstOrDefault(static sender =>
+                sender.Status is "failed" or "warning" &&
+                !string.IsNullOrWhiteSpace(sender.Warning));
+        if (failedSender is not null)
+        {
+            var destination = string.IsNullOrWhiteSpace(failedSender.Destination)
+                ? "output"
+                : failedSender.Destination.ToUpperInvariant();
+            return $"{destination} output {failedSender.Status}: {failedSender.Warning}";
+        }
+
+        return "Outputs idle";
     }
 
     private void StartPolling()

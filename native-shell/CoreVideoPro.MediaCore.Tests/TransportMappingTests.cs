@@ -109,6 +109,55 @@ public sealed class TransportMappingTests
         Assert.Equal("Recording Recordings/program-program-0.mp4", status);
     }
 
+    [Fact]
+    public void SummarizeOutputsReportsSenderWarningWhenNoOutputIsLive()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 0,
+                Warnings = ["RTMP sender needs a configured RTMP/RTMPS server URL and stream key."]
+            }
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("Output warning: RTMP sender needs a configured RTMP/RTMPS server URL and stream key.", status);
+    }
+
+    [Fact]
+    public void SummarizeOutputsReportsFailedSenderWarningWhenSessionWarningsAreEmpty()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "failed",
+                ActiveSenderCount = 0,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "failed",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 6,
+                        Warning = "FFmpeg stdin write failed; the RTMP process stopped or rejected frames."
+                    }
+                ]
+            }
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: FFmpeg stdin write failed; the RTMP process stopped or rejected frames.", status);
+    }
+
     private static NativeMediaCoreStateSnapshot BuildSnapshot(
         bool recordingActive = false,
         bool streamingLive = false,
