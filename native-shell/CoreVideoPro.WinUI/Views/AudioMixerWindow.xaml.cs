@@ -62,8 +62,11 @@ public sealed partial class AudioMixerWindow : Window
     {
         if (TryResolveParticipantId(sender, out var participantId))
         {
-            ViewModel.SelectParticipantCommand.Execute(participantId);
-            ViewModel.SelectAudioProcessingTarget($"channel:{participantId}");
+            ExecuteMixerAction(() =>
+            {
+                ViewModel.SelectParticipantCommand.Execute(participantId);
+                ViewModel.SelectAudioProcessingTarget($"channel:{participantId}");
+            });
         }
     }
 
@@ -71,7 +74,7 @@ public sealed partial class AudioMixerWindow : Window
     {
         if (TryResolveParticipantId(sender, out var participantId))
         {
-            ViewModel.ToggleMixerMute(participantId);
+            ExecuteMixerAction(() => ViewModel.ToggleMixerMute(participantId));
         }
     }
 
@@ -92,7 +95,7 @@ public sealed partial class AudioMixerWindow : Window
         {
             if (_ready)
             {
-                ViewModel.SetMixerManualGain(participantId, requestedGain);
+                ExecuteMixerAction(() => ViewModel.SetMixerManualGain(participantId, requestedGain));
             }
         });
     }
@@ -114,9 +117,21 @@ public sealed partial class AudioMixerWindow : Window
         {
             if (_ready)
             {
-                ViewModel.SetMixerPan(participantId, requestedPan);
+                ExecuteMixerAction(() => ViewModel.SetMixerPan(participantId, requestedPan));
             }
         });
+    }
+
+    private void ExecuteMixerAction(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            ViewModel.ReportAudioMixerFailure(ex);
+        }
     }
 
     private bool IsProgrammaticMixerValue(

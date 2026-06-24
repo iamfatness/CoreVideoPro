@@ -17,6 +17,15 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatAudioMixerActionFailureStatus_PreservesRuntimeFailureDetail()
+    {
+        var status = StudioViewModel.FormatAudioMixerActionFailureStatus(
+            new InvalidOperationException("Mixer channel disappeared while updating gain."));
+
+        Assert.Equal("Audio mixer action failed: Mixer channel disappeared while updating gain.", status);
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_LeadsWithFfmpegActionAndRemovesMediaCorePrefix()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(

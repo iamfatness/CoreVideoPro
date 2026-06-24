@@ -2548,6 +2548,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"Audio mixer failed to open: {detail}";
     }
 
+    public static string FormatAudioMixerActionFailureStatus(Exception exception)
+    {
+        var detail = string.IsNullOrWhiteSpace(exception.Message)
+            ? exception.GetType().Name
+            : exception.Message.Trim();
+        return $"Audio mixer action failed: {detail}";
+    }
+
+    public void ReportAudioMixerFailure(Exception exception)
+    {
+        CommandStatus = FormatAudioMixerActionFailureStatus(exception);
+    }
+
     [RelayCommand]
     private void OpenProductionSettings()
     {
