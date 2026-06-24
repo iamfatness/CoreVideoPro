@@ -46,6 +46,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
     private string? _lastAudioTelemetrySignature;
     private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
+    private readonly IProductionOutputPreferencesStore _outputPreferencesStore = CreateProductionOutputPreferencesStore();
+    private bool _outputPreferencesLoaded;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -803,6 +805,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         });
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
+        LoadProductionOutputPreferences();
         Overlays = new OverlaysViewModel(this);
         _automationTimer = _dispatcher.CreateTimer();
         _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
@@ -1510,6 +1513,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         ApplyFfmpegRuntimeEnvironment(value);
         OnPropertyChanged(nameof(FfmpegRuntimeStatus));
+        SaveProductionOutputPreferences();
     }
 
     partial void OnStreamRtmpEnabledChanged(bool value) => OnStreamOutputOptionChanged();
@@ -5786,6 +5790,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(RecordingOptionsSummary));
         RefreshTransportState();
+        SaveProductionOutputPreferences();
 
         if (_bridge.Running)
         {
@@ -5800,6 +5805,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamRtmpSummary));
         OnPropertyChanged(nameof(StreamNdiSummary));
         OnPropertyChanged(nameof(StreamSrtSummary));
+        SaveProductionOutputPreferences();
 
         if (!Streaming || !_bridge.Running)
         {
@@ -5846,6 +5852,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async void OnRecordingOutputOptionChanged()
     {
         OnPropertyChanged(nameof(RecordingOptionsSummary));
+        SaveProductionOutputPreferences();
 
         if (!Recording || !_bridge.Running)
         {
@@ -6753,6 +6760,142 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _multiviewGridRefreshScheduled = false;
             RefreshMultiviewGridTiles();
         });
+    }
+
+    private static IProductionOutputPreferencesStore CreateProductionOutputPreferencesStore()
+    {
+        try
+        {
+            var folder = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
+            return new FileProductionOutputPreferencesStore(folder);
+        }
+        catch (Exception)
+        {
+            try
+            {
+                var folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CoreVideoPro");
+                return new FileProductionOutputPreferencesStore(folder);
+            }
+            catch (Exception)
+            {
+                return new InMemoryProductionOutputPreferencesStore();
+            }
+        }
+    }
+
+    private void LoadProductionOutputPreferences()
+    {
+        try
+        {
+            var preferences = _outputPreferencesStore.Load();
+            if (preferences is not null)
+            {
+                ApplyProductionOutputPreferences(preferences);
+            }
+        }
+        catch (Exception)
+        {
+            // Output settings are best-effort; defaults must still allow startup.
+        }
+        finally
+        {
+            _outputPreferencesLoaded = true;
+        }
+    }
+
+    private void SaveProductionOutputPreferences()
+    {
+        if (!_outputPreferencesLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _outputPreferencesStore.Save(CaptureProductionOutputPreferences());
+        }
+        catch (Exception)
+        {
+            // Saving preferences must never interrupt a live production operation.
+        }
+    }
+
+    private ProductionOutputPreferences CaptureProductionOutputPreferences() =>
+        new()
+        {
+            Version = 1,
+            FfmpegBinDirectory = FfmpegBinDirectory,
+            StreamRtmpEnabled = StreamRtmpEnabled,
+            StreamNdiEnabled = StreamNdiEnabled,
+            StreamSrtEnabled = StreamSrtEnabled,
+            StreamRtmpProtocol = StreamRtmpProtocol,
+            StreamRtmpServerUrl = StreamRtmpServerUrl,
+            StreamRtmpStreamKey = StreamRtmpStreamKey,
+            StreamNdiProgramName = StreamNdiProgramName,
+            StreamNdiGroupName = StreamNdiGroupName,
+            StreamSrtMode = StreamSrtMode,
+            StreamSrtHost = StreamSrtHost,
+            StreamSrtPort = StreamSrtPort,
+            StreamSrtLatencyMs = StreamSrtLatencyMs,
+            StreamSrtStreamId = StreamSrtStreamId,
+            StreamSrtKeyLength = StreamSrtKeyLength,
+            StreamSrtPassphrase = StreamSrtPassphrase,
+            CanvasResolution = CanvasResolution,
+            CanvasFps = CanvasFps,
+            StreamRenderResolution = StreamRenderResolution,
+            StreamRenderFps = StreamRenderFps,
+            StreamVideoCodec = StreamVideoCodec,
+            StreamTargetBitrateMbps = NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+            StreamEncoderMode = StreamEncoderMode,
+            RecordingRenderResolution = RecordingRenderResolution,
+            RecordingRenderFps = RecordingRenderFps,
+            RecordingVideoCodec = RecordingVideoCodec,
+            RecordingTargetBitrateMbps = NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
+            RecordingTargetFolder = RecordingTargetFolder,
+            RecordingFilenamePrefix = RecordingFilenamePrefix,
+            RecordingFormat = RecordingFormat,
+            RecordingQuality = RecordingQuality
+        };
+
+    private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
+    {
+        FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
+        StreamRtmpEnabled = preferences.StreamRtmpEnabled;
+        StreamNdiEnabled = preferences.StreamNdiEnabled;
+        StreamSrtEnabled = preferences.StreamSrtEnabled;
+        StreamRtmpProtocol = preferences.StreamRtmpProtocol ?? StreamRtmpProtocol;
+        StreamRtmpServerUrl = preferences.StreamRtmpServerUrl ?? StreamRtmpServerUrl;
+        StreamRtmpStreamKey = preferences.StreamRtmpStreamKey ?? StreamRtmpStreamKey;
+        StreamNdiProgramName = preferences.StreamNdiProgramName ?? StreamNdiProgramName;
+        StreamNdiGroupName = preferences.StreamNdiGroupName ?? StreamNdiGroupName;
+        StreamSrtMode = preferences.StreamSrtMode ?? StreamSrtMode;
+        StreamSrtHost = preferences.StreamSrtHost ?? StreamSrtHost;
+        StreamSrtPort = preferences.StreamSrtPort ?? StreamSrtPort;
+        StreamSrtLatencyMs = preferences.StreamSrtLatencyMs ?? StreamSrtLatencyMs;
+        StreamSrtStreamId = preferences.StreamSrtStreamId ?? StreamSrtStreamId;
+        StreamSrtKeyLength = preferences.StreamSrtKeyLength ?? StreamSrtKeyLength;
+        StreamSrtPassphrase = preferences.StreamSrtPassphrase ?? StreamSrtPassphrase;
+        CanvasResolution = preferences.CanvasResolution ?? CanvasResolution;
+        CanvasFps = preferences.CanvasFps ?? CanvasFps;
+        StreamRenderResolution = preferences.StreamRenderResolution ?? StreamRenderResolution;
+        StreamRenderFps = preferences.StreamRenderFps ?? StreamRenderFps;
+        StreamVideoCodec = preferences.StreamVideoCodec ?? StreamVideoCodec;
+        StreamTargetBitrateMbps = preferences.StreamTargetBitrateMbps > 0
+            ? NormalizeStreamTargetBitrateMbps(preferences.StreamTargetBitrateMbps)
+            : StreamTargetBitrateMbps;
+        StreamEncoderMode = preferences.StreamEncoderMode ?? StreamEncoderMode;
+        RecordingRenderResolution = preferences.RecordingRenderResolution ?? RecordingRenderResolution;
+        RecordingRenderFps = preferences.RecordingRenderFps ?? RecordingRenderFps;
+        RecordingVideoCodec = preferences.RecordingVideoCodec ?? RecordingVideoCodec;
+        RecordingTargetBitrateMbps = preferences.RecordingTargetBitrateMbps > 0
+            ? NormalizeOutputTargetBitrateMbps(preferences.RecordingTargetBitrateMbps)
+            : RecordingTargetBitrateMbps;
+        RecordingTargetFolder = preferences.RecordingTargetFolder ?? RecordingTargetFolder;
+        RecordingFilenamePrefix = preferences.RecordingFilenamePrefix ?? RecordingFilenamePrefix;
+        RecordingFormat = preferences.RecordingFormat ?? RecordingFormat;
+        RecordingQuality = preferences.RecordingQuality ?? RecordingQuality;
     }
 
     // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
