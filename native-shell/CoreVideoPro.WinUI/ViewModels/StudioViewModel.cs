@@ -5703,8 +5703,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         bool localAudioConfigured,
         bool localRoutingRowExists)
     {
+        _ = localRoutingRowExists;
         if (!localAudioConfigured ||
-            localRoutingRowExists ||
             sends.Any(send => string.Equals(send.SourceId, "local-machine-audio", StringComparison.Ordinal)))
         {
             return sends;

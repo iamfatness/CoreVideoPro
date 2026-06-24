@@ -942,14 +942,19 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void EnsureDefaultLocalAudioRoutingSends_PreservesOperatorClearedRoutesAfterMatrixRowExists()
+    public void EnsureDefaultLocalAudioRoutingSends_RestoresSilentLocalRowAfterMatrixRowExists()
     {
         var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
             [],
             localAudioConfigured: true,
             localRoutingRowExists: true);
 
-        Assert.Empty(sends);
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "mon", 0), (send.SourceId, send.BusId, send.GainDb)));
     }
 
     [Fact]
