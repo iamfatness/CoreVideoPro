@@ -5462,6 +5462,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 localAudio.IsEmbeddedCaptureAudio));
         }
 
+        audioRoutingSends = EnsureDefaultLocalAudioRoutingSends(
+            audioRoutingSends,
+            captureAudioSources.Any(source => string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)),
+            AudioRoutingMatrix.Rows.Any(row =>
+                string.Equals(ResolveAudioRoutingMatrixSourceId(row.SourceId), "local-machine-audio", StringComparison.Ordinal)))
+            .ToList();
+
         RefreshAudioMixChannels();
         var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
 
@@ -5687,6 +5694,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return sourceIds
             .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
             .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultLocalAudioRoutingSends(
+        IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
+        bool localAudioConfigured,
+        bool localRoutingRowExists)
+    {
+        if (!localAudioConfigured ||
+            localRoutingRowExists ||
+            sends.Any(send => string.Equals(send.SourceId, "local-machine-audio", StringComparison.Ordinal)))
+        {
+            return sends;
+        }
+
+        return sends
+            .Concat(new[]
+            {
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "master", 0),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-l", 0),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-r", 0),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", 0)
+            })
             .ToList();
     }
 

@@ -912,6 +912,46 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Contains("no PCM frames", status, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnsureDefaultLocalAudioRoutingSends_AddsProgramAndMonitorBeforeMatrixRowExists()
+    {
+        var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
+            [],
+            localAudioConfigured: true,
+            localRoutingRowExists: false);
+
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "mon", 0), (send.SourceId, send.BusId, send.GainDb)));
+    }
+
+    [Fact]
+    public void EnsureDefaultLocalAudioRoutingSends_PreservesOperatorClearedRoutesAfterMatrixRowExists()
+    {
+        var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
+            [],
+            localAudioConfigured: true,
+            localRoutingRowExists: true);
+
+        Assert.Empty(sends);
+    }
+
+    [Fact]
+    public void EnsureDefaultLocalAudioRoutingSends_DoesNotDuplicateExplicitLocalRoutes()
+    {
+        var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
+            [new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", -6)],
+            localAudioConfigured: true,
+            localRoutingRowExists: false);
+
+        Assert.Single(sends);
+        Assert.Equal("mon", sends[0].BusId);
+        Assert.Equal(-6, sends[0].GainDb);
+    }
+
     [Theory]
     [InlineData(-1, 0)]
     [InlineData(0.625, 0.63)]
