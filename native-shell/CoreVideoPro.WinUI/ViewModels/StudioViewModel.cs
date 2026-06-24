@@ -4618,13 +4618,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var detail = NormalizeStreamingFailureDetail(exception.Message);
         var lowered = detail.ToLowerInvariant();
-        var prefix = lowered.Contains("rtmp", StringComparison.Ordinal) ||
-                     lowered.Contains("rtmps", StringComparison.Ordinal) ||
-                     lowered.Contains("connection refused", StringComparison.Ordinal)
-            ? "RTMP output failed. Check the server URL, stream key, and network."
-            : lowered.Contains("ffmpeg", StringComparison.Ordinal)
-                ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming."
-                : "Media core rejected the stream request.";
+        var prefix = lowered.Contains("program frame", StringComparison.Ordinal) ||
+                     lowered.Contains("program pixels", StringComparison.Ordinal)
+            ? "Program video is not ready. Put a valid source on Program before streaming."
+            : lowered.Contains("rtmp", StringComparison.Ordinal) ||
+              lowered.Contains("rtmps", StringComparison.Ordinal) ||
+              lowered.Contains("connection refused", StringComparison.Ordinal)
+                ? "RTMP output failed. Check the server URL, stream key, and network."
+                : lowered.Contains("ffmpeg", StringComparison.Ordinal)
+                    ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
+                    : "Media core rejected the stream request.";
 
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
         return $"Streaming {normalizedAction} failed: {prefix} {detail}";
@@ -4691,11 +4694,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         [
             "media-core sync failed:",
             "native-media-core-sync failed:",
+            "media-core request failed:",
             "start-program-output failed:",
             "start-program-output failed.",
+            "program-output failed:",
+            "program-output failed.",
             "stop-program-output failed:",
             "stop-program-output failed.",
-            "output sender failed during sync:"
+            "output sender failed during sync:",
+            "output sender failed:",
+            "rtmp output sender failed:"
         ];
 
         var changed = true;

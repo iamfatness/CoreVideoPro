@@ -33,7 +33,7 @@ public sealed class StudioViewModelAudioStatusTests
             new InvalidOperationException("media-core sync failed: start-program-output failed. ffmpeg.exe was not found in C:\\ffmpeg\\bin."));
 
         Assert.StartsWith(
-            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming.",
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
             status);
         Assert.DoesNotContain("media-core sync failed", status, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ffmpeg.exe was not found", status, StringComparison.OrdinalIgnoreCase);
@@ -60,12 +60,41 @@ public sealed class StudioViewModelAudioStatusTests
             new InvalidOperationException("media-core sync failed: native-media-core-sync failed: start-program-output failed. missing:ffmpeg executable"));
 
         Assert.StartsWith(
-            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > Streaming.",
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
             status);
         Assert.Contains("FFmpeg executable was not found", status, StringComparison.Ordinal);
         Assert.DoesNotContain("media-core", status, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("start-program-output", status, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("missing:ffmpeg", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_RemovesRtmpSenderWrappers()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core request failed: program-output failed: output sender failed during sync: RTMP sender URL must include a host and application path."));
+
+        Assert.StartsWith(
+            "Streaming start failed: RTMP output failed. Check the server URL, stream key, and network.",
+            status);
+        Assert.Contains("RTMP sender URL must include a host and application path.", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("media-core request failed", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("program-output failed", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("output sender failed", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_MapsProgramFrameReadiness()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: output sender failed: RTMP sender is waiting for a program frame."));
+
+        Assert.StartsWith(
+            "Streaming start failed: Program video is not ready. Put a valid source on Program before streaming.",
+            status);
+        Assert.Contains("RTMP sender is waiting for a program frame.", status, StringComparison.Ordinal);
     }
 
     [Fact]
