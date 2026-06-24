@@ -476,7 +476,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         var participantSurface = VideoSurfaceState
             .Waiting(VideoSurfaceKind.Participant, trackerKey, frame.ParticipantId)
             .WithFrame(metadata, "Participant feed live", $"Frame {frame.FrameId} · {metadata.ResolutionLabel} · {metadata.FpsLabel}")
-            .WithPreviewPixels(frame.Bgra, frame.Width, frame.Height);
+            .WithPreviewPixels(
+                frame.Bgra,
+                frame.Width,
+                frame.Height,
+                frame.Width,
+                frame.Height);
         _participantSurfaces[trackerKey] = participantSurface;
 
         if (frame.ParticipantId == _previewParticipantId)

@@ -1,5 +1,6 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.MediaCore.Models;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -47,5 +48,28 @@ public sealed class VideoSurfaceCoordinatorTests
         var surface = Assert.Single(coordinator.CaptureDeviceSurfaces).Value;
         Assert.Equal(1280, surface.FramingSourceWidth);
         Assert.Equal(720, surface.FramingSourceHeight);
+    }
+
+    [Fact]
+    public void ZoomParticipantFrame_PreservesRawFrameDimensionsForSceneFraming()
+    {
+        var coordinator = new VideoSurfaceCoordinator();
+        coordinator.SetZoomCaptureSubscribed(true);
+
+        coordinator.OnZoomVideoFrame(new ZoomVideoFrame
+        {
+            ParticipantId = "p1",
+            Bgra = new byte[960 * 540 * 4],
+            Width = 960,
+            Height = 540,
+            FrameId = 1
+        });
+
+        var tile = Assert.Single(coordinator.BuildMultiviewTiles(
+            [new Participant { Id = "p1", Name = "Guest" }]));
+        Assert.Equal(960, tile.Surface.PreviewWidth);
+        Assert.Equal(540, tile.Surface.PreviewHeight);
+        Assert.Equal(960, tile.Surface.FramingSourceWidth);
+        Assert.Equal(540, tile.Surface.FramingSourceHeight);
     }
 }
