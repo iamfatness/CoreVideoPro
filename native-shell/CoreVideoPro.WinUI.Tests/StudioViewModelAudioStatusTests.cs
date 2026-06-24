@@ -530,6 +530,22 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("render-1", selected);
     }
 
+    [Fact]
+    public void ResolveLocalAudioRoutingSourceLabel_UsesSelectedDeviceName()
+    {
+        var label = StudioViewModel.ResolveLocalAudioRoutingSourceLabel("Speakers (Realtek WASAPI loopback)");
+
+        Assert.Equal("Local machine audio - Speakers (Realtek WASAPI loopback)", label);
+    }
+
+    [Fact]
+    public void ResolveLocalAudioRoutingSourceLabel_ShowsMissingSelection()
+    {
+        var label = StudioViewModel.ResolveLocalAudioRoutingSourceLabel("");
+
+        Assert.Equal("Local machine audio - No local audio input selected", label);
+    }
+
     [Theory]
     [InlineData(-1, 0)]
     [InlineData(0.625, 0.63)]

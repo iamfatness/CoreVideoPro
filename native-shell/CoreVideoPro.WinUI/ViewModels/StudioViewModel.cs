@@ -2367,7 +2367,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sources = BuildAssignedAudioSources();
         if (IsLocalAudioSourceConfigured(LocalAudioSourceEnabled, SelectedLocalAudioCaptureDeviceId, AudioCaptureDevices))
         {
-            AddUniqueRoutingSource(sources, new RoutingSource("local-machine-audio", "Local machine audio"));
+            AddUniqueRoutingSource(sources, new RoutingSource(
+                "local-machine-audio",
+                ResolveLocalAudioRoutingSourceLabel(SelectedLocalAudioCaptureDeviceName)));
         }
         AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom program mix"));
         AddUniqueRoutingSource(sources, new RoutingSource("media", "Media playback"));
@@ -6767,8 +6769,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : captureDeviceId;
     }
 
+    public static string ResolveLocalAudioRoutingSourceLabel(string? selectedLocalAudioCaptureDeviceName)
+    {
+        var deviceName = string.IsNullOrWhiteSpace(selectedLocalAudioCaptureDeviceName)
+            ? "No local audio input selected"
+            : selectedLocalAudioCaptureDeviceName.Trim();
+        return $"Local machine audio - {deviceName}";
+    }
+
     private string ResolveAudioSourceDisplayName(string sourceId)
     {
+        if (string.Equals(sourceId, "local-machine-audio", StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolveLocalAudioRoutingSourceLabel(SelectedLocalAudioCaptureDeviceName);
+        }
+
         if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
         {
             var captureId = sourceId["capture:".Length..];
