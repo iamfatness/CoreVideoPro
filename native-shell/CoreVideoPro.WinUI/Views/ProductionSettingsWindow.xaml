@@ -202,6 +202,14 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Row="1" Grid.Column="3"
+                                           Header="Recording bitrate Mbps"
+                                           Value="{x:Bind ViewModel.RecordingTargetBitrateMbps, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="80"
+                                           SmallChange="0.5"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
                             </Grid>
                         </StackPanel>
                     </Border>
@@ -526,23 +534,62 @@
                                Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
-                            <ComboBox Header="Recording video codec"
-                                      ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
-                                      SelectedValue="{x:Bind ViewModel.RecordingVideoCodec, Mode=TwoWay}"
-                                      SelectedValuePath="Value"
-                                      DisplayMemberPath="Label"
-                                      HorizontalAlignment="Stretch" />
-                            <Grid ColumnSpacing="12">
+                            <Grid ColumnSpacing="12" RowSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="180" />
+                                    <ColumnDefinition Width="160" />
                                 </Grid.ColumnDefinitions>
-                                <TextBox Header="Format"
-                                         Text="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                                <TextBox Grid.Column="1"
-                                         Header="Quality"
-                                         Text="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <ComboBox Header="Render size"
+                                          ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingRenderResolution, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Column="1"
+                                          Header="FPS"
+                                          ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Column="2"
+                                          Header="Codec"
+                                          ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingVideoCodec, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Column="3"
+                                           Header="Bitrate Mbps"
+                                           Value="{x:Bind ViewModel.RecordingTargetBitrateMbps, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="80"
+                                           SmallChange="0.5"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
+                                <ComboBox Grid.Row="1"
+                                          Header="Format"
+                                          ItemsSource="{x:Bind ViewModel.RecordingFormatOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                          Header="Quality"
+                                          ItemsSource="{x:Bind ViewModel.RecordingQualityOptions}"
+                                          SelectedValue="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
                             </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                             <TextBox Header="Filename prefix"
                                      Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             <TextBox Header="Target folder"

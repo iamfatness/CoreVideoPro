@@ -182,6 +182,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _recordingVideoCodec = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Codec;
 
     [ObservableProperty]
+    private double _recordingTargetBitrateMbps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.TargetBitrateMbps;
+
+    [ObservableProperty]
     private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
 
     [ObservableProperty]
@@ -915,6 +918,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new() { Value = "cpu", Label = "CPU / software" }
     ];
 
+    public IReadOnlyList<RouteSelectOption> RecordingFormatOptions { get; } =
+    [
+        new() { Value = "mp4", Label = "MP4" },
+        new() { Value = "mov", Label = "QuickTime MOV" },
+        new() { Value = "mkv", Label = "Matroska MKV" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> RecordingQualityOptions { get; } =
+    [
+        new() { Value = "high", Label = "High" },
+        new() { Value = "standard", Label = "Standard" },
+        new() { Value = "archive", Label = "Archive" }
+    ];
+
     public string CanvasProfileSummary =>
         $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
 
@@ -925,7 +942,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FormatStreamBitrateSummary(StreamTargetBitrateMbps);
 
     public string RecordingRenderProfileSummary =>
-        $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)}";
+        $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)} - {NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0} Mbps";
 
     public string StreamDestinationSummary
     {
@@ -971,7 +988,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "SRT disabled";
 
     public string RecordingOptionsSummary =>
-        $"{RecordingFormat.ToUpperInvariant()} · {RecordingQuality} · {RecordingFilenamePrefix}";
+        $"{NormalizeRecordingFormat(RecordingFormat).ToUpperInvariant()} - {FormatRecordingQuality(RecordingQuality)} - {RecordingRenderProfileSummary} - {RecordingFilenamePrefix}";
 
     public Brush RecordButtonBackground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
@@ -1544,6 +1561,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnRecordingRenderFpsChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingVideoCodecChanged(string value) => OnOutputProfileChanged();
+
+    partial void OnRecordingTargetBitrateMbpsChanged(double value)
+    {
+        var normalized = NormalizeOutputTargetBitrateMbps(value);
+        if (!value.Equals(normalized))
+        {
+            RecordingTargetBitrateMbps = normalized;
+            return;
+        }
+
+        OnOutputProfileChanged();
+    }
 
     partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
 
@@ -4966,7 +4995,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 StreamRenderFps,
                 StreamVideoCodec,
                 NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps)),
-            RecordingOutputProfile = BuildRequestedOutputProfile("recording", RecordingRenderResolution, RecordingRenderFps, RecordingVideoCodec),
+            RecordingOutputProfile = BuildRequestedOutputProfile(
+                "recording",
+                RecordingRenderResolution,
+                RecordingRenderFps,
+                RecordingVideoCodec,
+                NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps)),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
@@ -5372,8 +5406,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new(
             TargetFolder: NormalizeOutputText(RecordingTargetFolder, MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder),
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
-            Format: NormalizeOutputText(RecordingFormat, MediaCoreProductionSyncContext.DefaultRecordingTargets.Format).ToLowerInvariant(),
-            Quality: NormalizeOutputText(RecordingQuality, MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality).ToLowerInvariant(),
+            Format: NormalizeRecordingFormat(RecordingFormat),
+            Quality: NormalizeRecordingQuality(RecordingQuality),
             IsoParticipantIds: isoParticipantIds.Take(8).ToList());
 
     private IReadOnlyList<string> BuildIsoParticipantTargets()
@@ -5466,8 +5500,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Codec: NormalizeVideoCodec(codec));
     }
 
-    public static double NormalizeStreamTargetBitrateMbps(double value) =>
+    public static double NormalizeOutputTargetBitrateMbps(double value) =>
         Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.5, 80.0) : 8.2, 1, MidpointRounding.AwayFromZero);
+
+    public static double NormalizeStreamTargetBitrateMbps(double value) =>
+        NormalizeOutputTargetBitrateMbps(value);
 
     public static string FormatStreamBitrateSummary(double value)
     {
@@ -5501,6 +5538,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         "amf" => "AMF",
         "cpu" => "CPU",
         _ => "Auto encoder"
+    };
+
+    private static string NormalizeRecordingFormat(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "mp4" or "mov" or "mkv" ? normalized : MediaCoreProductionSyncContext.DefaultRecordingTargets.Format;
+    }
+
+    private static string NormalizeRecordingQuality(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "high" or "standard" or "archive" ? normalized : MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality;
+    }
+
+    private static string FormatRecordingQuality(string? value) => NormalizeRecordingQuality(value) switch
+    {
+        "standard" => "Standard",
+        "archive" => "Archive",
+        _ => "High"
     };
 
     private static string NormalizeResolutionText(string? value)
