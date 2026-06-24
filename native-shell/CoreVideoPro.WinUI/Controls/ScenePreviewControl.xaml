@@ -22,6 +22,7 @@
                 <Grid>
                     <controls:MediaAssetPreviewHost x:Name="SuperSourceBackgroundHost"
                                                     PreviewStretch="UniformToFill"
+                                                    IsLooping="True"
                                                     Visibility="Collapsed"
                                                     IsHitTestVisible="False" />
                     <Border x:Name="SuperSourceBackgroundLabel"

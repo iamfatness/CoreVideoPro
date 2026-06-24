@@ -37,6 +37,13 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             typeof(MediaAssetPreviewHost),
             new PropertyMetadata(null, OnPreviewPropertyChanged));
 
+    public static readonly DependencyProperty IsLoopingProperty =
+        DependencyProperty.Register(
+            nameof(IsLooping),
+            typeof(bool),
+            typeof(MediaAssetPreviewHost),
+            new PropertyMetadata(false, OnPreviewPropertyChanged));
+
     public static readonly DependencyProperty PreviewStretchProperty =
         DependencyProperty.Register(
             nameof(PreviewStretch),
@@ -83,6 +90,12 @@ public sealed partial class MediaAssetPreviewHost : UserControl
     {
         get => (string?)GetValue(PlaybackKeyProperty);
         set => SetValue(PlaybackKeyProperty, value);
+    }
+
+    public bool IsLooping
+    {
+        get => (bool)GetValue(IsLoopingProperty);
+        set => SetValue(IsLoopingProperty, value);
     }
 
     public Stretch PreviewStretch
@@ -143,7 +156,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
             _loadedImagePath = null;
             ImagePreview.Source = null;
             _player ??= new MediaPlayer();
-            _player.IsLoopingEnabled = false;
+            _player.IsLoopingEnabled = IsLooping;
             _player.MediaEnded -= OnMediaEnded;
             _player.MediaEnded += OnMediaEnded;
             VideoPreview.SetMediaPlayer(_player);
@@ -156,7 +169,7 @@ public sealed partial class MediaAssetPreviewHost : UserControl
                 _loadedFilePath = FilePath;
                 _loadedMediaType = mediaType;
                 _loadedPlaybackKey = playbackKey;
-                _playbackCompleted = IsPlaybackKeyCompleted(playbackKey);
+                _playbackCompleted = IsLooping ? false : IsPlaybackKeyCompleted(playbackKey);
                 if (!IsPlaying)
                 {
                     _player.PlaybackSession.Position = TimeSpan.Zero;
@@ -191,6 +204,11 @@ public sealed partial class MediaAssetPreviewHost : UserControl
 
     private void OnMediaEnded(MediaPlayer sender, object args)
     {
+        if (IsLooping)
+        {
+            return;
+        }
+
         _playbackCompleted = true;
         if (_loadedPlaybackKey is { Length: > 0 } playbackKey)
         {
