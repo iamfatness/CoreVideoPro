@@ -5140,12 +5140,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var capture = _bridge.LastSnapshot?.CaptureAudioSources;
+        return FormatLocalAudioSourceStatus(
+            SelectedLocalAudioCaptureDeviceId,
+            SelectedLocalAudioCaptureDeviceName,
+            capture);
+    }
+
+    public static string FormatLocalAudioSourceStatus(
+        string? selectedDeviceId,
+        string selectedDeviceName,
+        NativeMediaCoreCaptureAudioSources? capture)
+    {
         var source = capture?.Sources.FirstOrDefault(source =>
             string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
-            string.Equals(source.AudioDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal) ||
-            string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
+            string.Equals(source.AudioDeviceId, selectedDeviceId, StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceName, selectedDeviceName, StringComparison.Ordinal));
         return source is null
-            ? $"Local source routed - {SelectedLocalAudioCaptureDeviceName}"
+            ? $"Local source waiting for native PCM evidence - {selectedDeviceName}"
             : $"Local source {FormatCaptureAudioSourceStatus(source)}";
     }
 

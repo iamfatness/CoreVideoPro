@@ -861,6 +861,57 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("Local machine audio - No local audio input selected", label);
     }
 
+    [Fact]
+    public void FormatLocalAudioSourceStatus_WaitsForNativeEvidenceWhenSourceIsMissing()
+    {
+        var status = StudioViewModel.FormatLocalAudioSourceStatus(
+            "loopback-game",
+            "Game audio loopback",
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "ready",
+                Summary = "No local machine audio source yet."
+            });
+
+        Assert.Equal("Local source waiting for native PCM evidence - Game audio loopback", status);
+    }
+
+    [Fact]
+    public void FormatLocalAudioSourceStatus_ShowsOpenStreamWithoutPcmFrames()
+    {
+        var status = StudioViewModel.FormatLocalAudioSourceStatus(
+            "loopback-game",
+            "Game audio loopback",
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                Summary = "1 source streaming, 0 PCM frames.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "loopback-game",
+                        AudioDeviceName = "Game audio loopback",
+                        AudioSourceKind = "wasapi-loopback",
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 0,
+                        EmptyPacketPolls = 7,
+                        CaptureSampleRate = 48000,
+                        CaptureChannels = 2,
+                        EndpointName = "Game output",
+                        Warning = "Audio capture stream is open but no PCM frames have arrived."
+                    }
+                ],
+                Warnings = ["local-machine-audio: Audio capture stream is open but no PCM frames have arrived."]
+            });
+
+        Assert.Contains("Local source Game audio loopback", status, StringComparison.Ordinal);
+        Assert.Contains("loopback idle", status, StringComparison.Ordinal);
+        Assert.Contains("7 silent polls", status, StringComparison.Ordinal);
+        Assert.Contains("no PCM frames", status, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(-1, 0)]
     [InlineData(0.625, 0.63)]
