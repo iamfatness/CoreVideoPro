@@ -230,6 +230,45 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void ResolveLocalAudioSourceDeviceId_PrefersLoopbackWhenSelectionIsEmpty()
+    {
+        var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
+            selectedDeviceId: "",
+            [
+                AudioDevice("mic-1", "wasapi-input", "Studio Mic"),
+                AudioDevice("loopback-1", "wasapi-loopback", "Speakers")
+            ]);
+
+        Assert.Equal("loopback-1", selected);
+    }
+
+    [Fact]
+    public void ResolveLocalAudioSourceDeviceId_ReplacesMicSelectionWithLoopback()
+    {
+        var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
+            selectedDeviceId: "mic-1",
+            [
+                AudioDevice("mic-1", "wasapi-input", "Studio Mic"),
+                AudioDevice("loopback-1", "wasapi-loopback", "Speakers")
+            ]);
+
+        Assert.Equal("loopback-1", selected);
+    }
+
+    [Fact]
+    public void ResolveAudioMonitorDeviceId_SelectsFirstAvailableRenderDevice()
+    {
+        var selected = StudioViewModel.ResolveAudioMonitorDeviceId(
+            selectedDeviceId: "missing",
+            [
+                new AudioRenderDevice { Id = "render-2", NativeDeviceId = "native-render-2", Name = "Headphones B" },
+                new AudioRenderDevice { Id = "render-1", NativeDeviceId = "native-render-1", Name = "Headphones A" }
+            ]);
+
+        Assert.Equal("render-1", selected);
+    }
+
+    [Fact]
     public void IsConfiguredCaptureAudioSource_RejectsPlaceholderSources()
     {
         var source = new MediaCoreCaptureAudioSourceWire(
@@ -291,11 +330,12 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.NormalizeStreamTargetBitrateMbps(value));
     }
 
-    private static AudioCaptureDevice AudioDevice(string id) =>
+    private static AudioCaptureDevice AudioDevice(string id, string sourceKind = "wasapi-loopback", string name = "Loopback") =>
         new()
         {
             Id = id,
             NativeDeviceId = $"native-{id}",
-            Name = "Loopback"
+            Name = name,
+            SourceKind = sourceKind
         };
 }

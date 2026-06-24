@@ -1441,16 +1441,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnLocalAudioSourceEnabledChanged(bool value)
     {
-        if (value &&
-            AudioCaptureDevices.FirstOrDefault(device =>
-                string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)) is { } selected &&
-            !AudioCaptureDeviceDiscoveryService.IsLoopbackSource(selected))
+        if (value)
         {
-            var defaultLocalDeviceId = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(AudioCaptureDevices);
-            if (!string.IsNullOrWhiteSpace(defaultLocalDeviceId) &&
-                !string.Equals(defaultLocalDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))
+            var resolvedLocalDeviceId = ResolveLocalAudioSourceDeviceId(SelectedLocalAudioCaptureDeviceId, AudioCaptureDevices);
+            if (!string.Equals(resolvedLocalDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))
             {
-                SelectedLocalAudioCaptureDeviceId = defaultLocalDeviceId;
+                SelectedLocalAudioCaptureDeviceId = resolvedLocalDeviceId;
                 return;
             }
         }
@@ -3691,7 +3687,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(selectedAudioId) ||
             AudioCaptureDevices.All(device => !string.Equals(device.Id, selectedAudioId, StringComparison.Ordinal)))
         {
-            SelectedLocalAudioCaptureDeviceId = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(AudioCaptureDevices);
+            SelectedLocalAudioCaptureDeviceId = ResolveLocalAudioSourceDeviceId(selectedAudioId, AudioCaptureDevices);
         }
         else if (!string.Equals(SelectedLocalAudioCaptureDeviceId, selectedAudioId, StringComparison.Ordinal))
         {
@@ -4382,8 +4378,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnAudioMonitorSettingsChanged()
     {
+        if (AudioMonitoringEnabled)
+        {
+            var resolvedMonitorDeviceId = ResolveAudioMonitorDeviceId(SelectedAudioMonitorDeviceId, AudioRenderDevices);
+            if (!string.Equals(resolvedMonitorDeviceId, SelectedAudioMonitorDeviceId, StringComparison.Ordinal))
+            {
+                SelectedAudioMonitorDeviceId = resolvedMonitorDeviceId;
+                return;
+            }
+        }
+
         RefreshAudioMonitorBindings();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    public static string ResolveLocalAudioSourceDeviceId(
+        string? selectedDeviceId,
+        IEnumerable<AudioCaptureDevice> devices)
+    {
+        var deviceList = devices.ToList();
+        if (!string.IsNullOrWhiteSpace(selectedDeviceId) &&
+            deviceList.FirstOrDefault(device =>
+                string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal)) is { } selected &&
+            AudioCaptureDeviceDiscoveryService.IsLoopbackSource(selected))
+        {
+            return selected.Id;
+        }
+
+        return AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(deviceList);
+    }
+
+    public static string ResolveAudioMonitorDeviceId(
+        string? selectedDeviceId,
+        IEnumerable<AudioRenderDevice> devices)
+    {
+        var deviceList = devices.ToList();
+        if (!string.IsNullOrWhiteSpace(selectedDeviceId) &&
+            deviceList.Any(device => string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal)))
+        {
+            return selectedDeviceId!;
+        }
+
+        return deviceList
+            .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(device => device.Id)
+            .FirstOrDefault() ?? string.Empty;
     }
 
     private static string BuildAudioWarningTelemetry(
