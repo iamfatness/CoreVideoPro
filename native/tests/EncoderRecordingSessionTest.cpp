@@ -174,8 +174,12 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
 
   const auto* encoderSession = state.get("encoderSession");
   ASSERT_NE(encoderSession, nullptr);
-  EXPECT_EQ(encoderSession->get("targetBitrateMbps")->asNumber(), 24.0);
+  const auto* encoderTargetBitrate = encoderSession->get("targetBitrateMbps");
+  ASSERT_NE(encoderTargetBitrate, nullptr);
+  EXPECT_EQ(encoderTargetBitrate->asNumber(), 24.0);
   EXPECT_EQ(encoderSession->getString("recordingFormat"), "mkv");
+  EXPECT_EQ(encoderSession->getString("recordingVideoCodec"), "h265");
+  EXPECT_EQ(encoderSession->getString("recordingAudioCodec"), "aac");
 
   const auto* recording = state.get("recording");
   ASSERT_NE(recording, nullptr);
@@ -185,4 +189,7 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
   EXPECT_EQ(proof->get("width")->asNumber(), 1280);
   EXPECT_EQ(proof->get("height")->asNumber(), 720);
   EXPECT_EQ(proof->get("frameRate")->asNumber(), 30);
+  const auto* proofTargetBitrate = proof->get("targetBitrateMbps");
+  ASSERT_NE(proofTargetBitrate, nullptr);
+  EXPECT_EQ(proofTargetBitrate->asNumber(), 24.0);
 }

@@ -99,8 +99,8 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     ++session_.recordingVideoFrameCount;
     session_.recordingLastFrameNumber = frame.frameNumber;
     session_.recordingDurationMs = (session_.recordingVideoFrameCount * 1000) / std::max(1, request_.fps);
-    session_.recordingWidth = frame.width > 0 ? frame.width : request_.width;
-    session_.recordingHeight = frame.height > 0 ? frame.height : request_.height;
+    session_.recordingWidth = request_.width > 0 ? request_.width : frame.width;
+    session_.recordingHeight = request_.height > 0 ? request_.height : frame.height;
     session_.recordingBytesWritten = session_.recordingVideoFrameCount * bytesPerProgramFrame(request_);
     session_.recordingMetadataValid = session_.recordingWidth > 0 && session_.recordingHeight > 0 && session_.recordingFps > 0 &&
                                       !session_.recordingContainerFormat.empty() && !session_.recordingVideoCodec.empty() &&
