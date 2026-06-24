@@ -4842,6 +4842,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return $"{status} - MON bus has {capture.RoutedMonitorFrames} frames ready";
         }
 
+        if (audio.MonitorEnabled &&
+            audio.MonitorFramesPlayed > 0 &&
+            capture.RoutedMonitorFrames <= 0 &&
+            (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
+        {
+            return $"{status} - playback via mixer monitor bus; no routed MON bus";
+        }
+
         if (audio.MonitorEnabled && capture.RoutedMonitorFrames <= 0)
         {
             return $"{status} - {FormatMonitorBusEvidence(capture)}";
@@ -4883,6 +4891,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (audio.MonitorFramesPlayed <= 0 && capture.RoutedMonitorFrames > 0)
         {
             return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}, no hardware playback frames";
+        }
+
+        if (audio.MonitorFramesPlayed > 0 &&
+            capture.RoutedMonitorFrames <= 0 &&
+            (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
+        {
+            return $"Monitor {FormatMonitorStatus(audio)} - {device} - playback via mixer monitor bus; no routed MON bus";
         }
 
         return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}";
@@ -4965,7 +4980,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return " | route source to PGM";
         }
 
-        if (capture.RoutedMasterFrames > 0 && capture.RoutedMonitorFrames <= 0)
+        if (capture.RoutedMasterFrames > 0 &&
+            capture.RoutedMonitorFrames <= 0 &&
+            (!audio.MonitorEnabled || audio.MonitorFramesPlayed <= 0))
         {
             return " | route source to MON";
         }

@@ -357,6 +357,32 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStudioMonitorSummary_ReportsFallbackPlaybackWhenMonBusIsUnrouted()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 0
+        };
+
+        var status = StudioViewModel.FormatStudioMonitorSummary(audio, capture, true, "Studio Headphones");
+
+        Assert.Equal("Monitor 480 playback frames - Studio Headphones - playback via mixer monitor bus; no routed MON bus", status);
+    }
+
+    [Fact]
     public void FormatAudioMonitorEngineStatus_ShowsWhenPcmExistsButMonBusIsUnrouted()
     {
         var audio = new NativeMediaCoreAudioMixSession
@@ -379,6 +405,32 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatAudioMonitorEngineStatus(audio, capture);
 
         Assert.Equal("960 mixed frames - monitor armed, waiting for audio - no PCM on MON bus; source PCM 960, PGM 960", status);
+    }
+
+    [Fact]
+    public void FormatAudioMonitorEngineStatus_ReportsFallbackPlaybackWhenMonBusIsUnrouted()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 0
+        };
+
+        var status = StudioViewModel.FormatAudioMonitorEngineStatus(audio, capture);
+
+        Assert.Equal("960 mixed frames - monitor 480 playback frames - playback via mixer monitor bus; no routed MON bus", status);
     }
 
     [Fact]
@@ -565,6 +617,34 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
         Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback none (armed, waiting for audio) | route source to MON", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_DoesNotReportMonitorRoutingGapWhenFallbackPlaybackWorks()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio ready",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 0
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback 480", status);
     }
 
     [Fact]
