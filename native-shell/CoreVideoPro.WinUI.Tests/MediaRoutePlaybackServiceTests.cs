@@ -74,7 +74,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_AutoplaysCuedMediaWhenItReachesProgram()
+    public void ShouldPlaySceneMediaRoute_RespectsPausedSelectedProgramMedia()
     {
         var programRoutes = new[]
         {
@@ -85,6 +85,24 @@ public sealed class MediaRoutePlaybackServiceTests
             "intro",
             isProgramScene: true,
             selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: false,
+            programRoutes);
+
+        Assert.False(shouldPlay);
+    }
+
+    [Fact]
+    public void ShouldPlaySceneMediaRoute_AutoplaysProgramMediaThatIsNotCurrentSelection()
+    {
+        var programRoutes = new[]
+        {
+            MediaRoute("intro")
+        };
+
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
+            "intro",
+            isProgramScene: true,
+            selectedMediaAssetId: "bumper",
             selectedMediaAssetPlaying: false,
             programRoutes);
 
@@ -150,11 +168,23 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolvePlaybackSelection_AutoplaysSelectedProgramMediaRoute()
+    public void ResolvePlaybackSelection_RespectsPausedSelectedProgramMediaRoute()
     {
         var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             selectedMediaAssetId: "intro",
             selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")]);
+
+        Assert.Equal("intro", selection.MediaAssetId);
+        Assert.False(selection.Playing);
+    }
+
+    [Fact]
+    public void ResolvePlaybackSelection_KeepsSelectedProgramMediaPlayingWhenActive()
+    {
+        var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: true,
             programRoutes: [MediaRoute("intro")]);
 
         Assert.Equal("intro", selection.MediaAssetId);

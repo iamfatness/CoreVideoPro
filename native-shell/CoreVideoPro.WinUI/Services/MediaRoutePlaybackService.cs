@@ -18,8 +18,13 @@ public static class MediaRoutePlaybackService
             return false;
         }
 
-        return isProgramScene &&
-            IsMediaAssetRoutedOnProgram(mediaAssetId, programRoutes);
+        if (!isProgramScene || !IsMediaAssetRoutedOnProgram(mediaAssetId, programRoutes))
+        {
+            return false;
+        }
+
+        return !string.Equals(selectedMediaAssetId, mediaAssetId, StringComparison.Ordinal) ||
+            selectedMediaAssetPlaying;
     }
 
     public static bool IsMediaAssetRoutedOnProgram(
@@ -68,7 +73,9 @@ public static class MediaRoutePlaybackService
         var programAssetId = ResolveProgramAutoplayAssetId(selectedMediaAssetId, programRoutes);
         if (!string.IsNullOrWhiteSpace(programAssetId))
         {
-            return new PlaybackSelection(programAssetId, Playing: true);
+            var playing = !string.Equals(selectedMediaAssetId, programAssetId, StringComparison.Ordinal) ||
+                selectedMediaAssetPlaying;
+            return new PlaybackSelection(programAssetId, playing);
         }
 
         return new PlaybackSelection(selectedMediaAssetId, Playing: false);
