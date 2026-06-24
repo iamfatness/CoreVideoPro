@@ -405,6 +405,34 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void BuildMultiviewTiles_UsesAssignedMediaAssetForMediaSlot()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.Media;
+        slots[0].ParticipantId = ShowInputRosterService.ToMediaSourceId("asset-1");
+        slots[0].InShow = true;
+
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
+            slots,
+            [],
+            [],
+            [],
+            mediaAssets:
+            [
+                Media("asset-1", "Intro Bumper", "video", isPlaying: true)
+            ]);
+
+        var tile = Assert.Single(tiles);
+        Assert.Equal(1, tile.SourceIndex);
+        Assert.Equal("media:asset-1", tile.Participant.Id);
+        Assert.Equal("Intro Bumper", tile.Participant.Name);
+        Assert.Equal(FeedHealth.Live, tile.Participant.Health);
+        Assert.Equal("media:asset-1", tile.Surface.SurfaceKey);
+        Assert.Equal("video", tile.Surface.MediaAssetKind);
+        Assert.True(tile.Surface.MediaAssetPlaying);
+    }
+
+    [Fact]
     public void ApplySlotRoute_ResolvesMediaSlotToFixedMediaRoute()
     {
         var slot = new ShowInputSlot
@@ -444,12 +472,14 @@ public sealed class ShowInputRosterServiceTests
         Assert.Null(route.ParticipantId);
     }
 
-    private static MediaAsset Media(string id, string name, string kind) =>
+    private static MediaAsset Media(string id, string name, string kind, bool isPlaying = false) =>
         new()
         {
             Id = id,
             Name = name,
-            Kind = kind
+            Kind = kind,
+            FilePath = $"C:\\media\\{id}.mp4",
+            IsPlaying = isPlaying
         };
 
     private static CaptureDevice Device(

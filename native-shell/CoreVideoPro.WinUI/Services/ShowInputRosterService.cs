@@ -164,11 +164,14 @@ public static class ShowInputRosterService
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
         IReadOnlyList<ParticipantSurfaceTile> participantTiles,
-        IReadOnlyDictionary<string, VideoSurfaceState>? captureSurfaces = null)
+        IReadOnlyDictionary<string, VideoSurfaceState>? captureSurfaces = null,
+        IReadOnlyList<MediaAsset>? mediaAssets = null)
     {
         var tilesByParticipant = participantTiles.ToDictionary(tile => tile.Participant.Id, tile => tile);
         var devicesById = captureDevices.ToDictionary(device => device.Id, device => device);
         var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
+        var mediaAssetsById = (mediaAssets ?? [])
+            .ToDictionary(asset => asset.Id, asset => asset, StringComparer.Ordinal);
         captureSurfaces ??= new Dictionary<string, VideoSurfaceState>(StringComparer.Ordinal);
 
         var assignedDeviceIds = new HashSet<string>(
@@ -180,9 +183,9 @@ public static class ShowInputRosterService
             StringComparer.Ordinal);
 
         var routedTiles = slots
-            .Where(slot => slot.InShow && slot.IsAssigned && HasResolvedSource(slot, participantsById, devicesById))
+            .Where(slot => slot.InShow && slot.IsAssigned && HasResolvedSource(slot, participantsById, devicesById, mediaAssetsById))
             .Take(MaxMultiviewBoxes)
-            .Select(slot => ToSurfaceTile(slot, participantsById, devicesById, tilesByParticipant, captureSurfaces))
+            .Select(slot => ToSurfaceTile(slot, participantsById, devicesById, tilesByParticipant, captureSurfaces, mediaAssetsById))
             .ToList();
 
         if (routedTiles.Count >= MaxMultiviewBoxes)
@@ -243,13 +246,16 @@ public static class ShowInputRosterService
     private static bool HasResolvedSource(
         ShowInputSlot slot,
         IReadOnlyDictionary<string, Participant> participantsById,
-        IReadOnlyDictionary<string, CaptureDevice> devicesById) =>
+        IReadOnlyDictionary<string, CaptureDevice> devicesById,
+        IReadOnlyDictionary<string, MediaAsset> mediaAssetsById) =>
         slot.Kind switch
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
             ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
+            ShowInputKind.Media =>
+                TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) && mediaAssetsById.ContainsKey(mediaAssetId),
             _ => false
         };
 
@@ -258,7 +264,8 @@ public static class ShowInputRosterService
         IReadOnlyDictionary<string, Participant> participantsById,
         IReadOnlyDictionary<string, CaptureDevice> devicesById,
         IReadOnlyDictionary<string, ParticipantSurfaceTile> tilesByParticipant,
-        IReadOnlyDictionary<string, VideoSurfaceState> captureSurfaces)
+        IReadOnlyDictionary<string, VideoSurfaceState> captureSurfaces,
+        IReadOnlyDictionary<string, MediaAsset> mediaAssetsById)
     {
         if (slot.Kind == ShowInputKind.ZoomParticipant &&
             slot.ParticipantId is not null &&
@@ -319,6 +326,31 @@ public static class ShowInputRosterService
                     Health = hasLiveSurface ? FeedHealth.Live : device.IsConnected ? FeedHealth.Live : FeedHealth.VideoOff
                 },
                 Surface = surface,
+                SourceIndex = slot.SlotNumber
+            };
+        }
+
+        if (slot.Kind == ShowInputKind.Media &&
+            TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) &&
+            mediaAssetsById.TryGetValue(mediaAssetId, out var asset))
+        {
+            var mediaSourceId = ToMediaSourceId(asset.Id);
+            return new ParticipantSurfaceTile
+            {
+                Participant = new Participant
+                {
+                    Id = mediaSourceId,
+                    Name = asset.Name,
+                    Title = asset.Kind,
+                    Role = ParticipantRole.Guest,
+                    Health = asset.IsPlaying ? FeedHealth.Live : FeedHealth.VideoOff
+                },
+                Surface = VideoSurfaceState.MediaAssetPreview(
+                    mediaSourceId,
+                    asset.Name,
+                    asset.FilePath,
+                    asset.Kind,
+                    asset.IsPlaying),
                 SourceIndex = slot.SlotNumber
             };
         }

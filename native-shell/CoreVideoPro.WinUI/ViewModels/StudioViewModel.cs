@@ -6664,7 +6664,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RoomVideoParticipants,
             CaptureDevices,
             MultiviewTiles,
-            _surfaces.CaptureDeviceSurfaces).ToList();
+            _surfaces.CaptureDeviceSurfaces,
+            VisualMediaAssets).ToList();
 
         if (SelectedMediaAssetId is not null && FindMediaAsset(SelectedMediaAssetId) is { } asset)
         {
