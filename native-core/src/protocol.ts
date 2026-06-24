@@ -42,6 +42,30 @@ export type MediaCoreOutputProfile = {
   height: number;
   fps: number;
   targetBitrateMbps: number;
+  codec?: string;
+};
+
+export type MediaCoreStreamDestinationSettings = {
+  id: Exclude<MediaCoreDestination, "recording">;
+  label: string;
+  protocol?: string | null;
+  url?: string | null;
+  streamKey?: string | null;
+  mode?: string | null;
+  host?: string | null;
+  port?: number | null;
+  latencyMs?: number | null;
+  latencyUs?: number | null;
+  passphrase?: string | null;
+  keyLength?: number | null;
+  streamId?: string | null;
+  ndiName?: string | null;
+  ndiGroup?: string | null;
+  ffmpegBinDirectory?: string | null;
+  fps?: number | null;
+  targetBitrateMbps?: number | null;
+  videoCodec?: string | null;
+  encoderMode?: string | null;
 };
 
 export type MediaCoreColorGrade = {
@@ -467,6 +491,9 @@ export type MediaCoreCommand =
   | {
       type: "start-program-output";
       destinations: MediaCoreDestination[];
+      streamOutputProfile?: MediaCoreOutputProfile;
+      recordingOutputProfile?: MediaCoreOutputProfile;
+      destinationSettings?: MediaCoreStreamDestinationSettings[];
       isoParticipantIds: string[];
     }
   | {

@@ -5254,7 +5254,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Id: "ndi",
                 Label: "NDI",
                 NdiName: NormalizeOutputText(StreamNdiProgramName, "CoreVideo Pro Program"),
-                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public")));
+                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
+                Fps: streamProfile.Fps,
+                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+                VideoCodec: streamProfile.Codec,
+                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
         }
 
         if (StreamSrtEnabled &&
@@ -5279,7 +5283,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LatencyUs: latencyMs is null ? null : latencyMs * 1000,
                 Passphrase: NormalizeOutputText(StreamSrtPassphrase, string.Empty),
                 KeyLength: keyLength,
-                StreamId: NormalizeOptionalOutputText(StreamSrtStreamId)));
+                StreamId: NormalizeOptionalOutputText(StreamSrtStreamId),
+                Fps: streamProfile.Fps,
+                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+                VideoCodec: streamProfile.Codec,
+                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
         }
 
         return destinations;

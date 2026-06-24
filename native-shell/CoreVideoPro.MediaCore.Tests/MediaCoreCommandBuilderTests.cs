@@ -256,7 +256,15 @@ public sealed class MediaCoreCommandBuilderTests
                     TargetBitrateMbps: 4.1,
                     VideoCodec: "h265",
                     EncoderMode: "nvenc"),
-                new("ndi", "NDI", NdiName: "CoreVideo Pro Program", NdiGroup: "public"),
+                new(
+                    "ndi",
+                    "NDI",
+                    NdiName: "CoreVideo Pro Program",
+                    NdiGroup: "public",
+                    Fps: 30,
+                    TargetBitrateMbps: 4.1,
+                    VideoCodec: "h265",
+                    EncoderMode: "nvenc"),
                 new(
                     "srt",
                     "SRT",
@@ -267,7 +275,11 @@ public sealed class MediaCoreCommandBuilderTests
                     LatencyUs: 120000,
                     Passphrase: "secret-passphrase",
                     KeyLength: 32,
-                    StreamId: "publish/live/main")
+                    StreamId: "publish/live/main",
+                    Fps: 30,
+                    TargetBitrateMbps: 4.1,
+                    VideoCodec: "h265",
+                    EncoderMode: "nvenc")
             ]
         });
 
@@ -301,6 +313,10 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("nvenc", destinationSettings[0].GetProperty("encoderMode").GetString());
         Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
         Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
+        Assert.Equal(4.1, destinationSettings[1].GetProperty("targetBitrateMbps").GetDouble());
+        Assert.Equal(30, destinationSettings[1].GetProperty("fps").GetInt32());
+        Assert.Equal("h265", destinationSettings[1].GetProperty("videoCodec").GetString());
+        Assert.Equal("nvenc", destinationSettings[1].GetProperty("encoderMode").GetString());
         Assert.Equal("caller", destinationSettings[2].GetProperty("mode").GetString());
         Assert.Equal("receiver.example.com", destinationSettings[2].GetProperty("host").GetString());
         Assert.Equal(9000, destinationSettings[2].GetProperty("port").GetInt32());
@@ -309,6 +325,10 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("secret-passphrase", destinationSettings[2].GetProperty("passphrase").GetString());
         Assert.Equal(32, destinationSettings[2].GetProperty("keyLength").GetInt32());
         Assert.Equal("publish/live/main", destinationSettings[2].GetProperty("streamId").GetString());
+        Assert.Equal(4.1, destinationSettings[2].GetProperty("targetBitrateMbps").GetDouble());
+        Assert.Equal(30, destinationSettings[2].GetProperty("fps").GetInt32());
+        Assert.Equal("h265", destinationSettings[2].GetProperty("videoCodec").GetString());
+        Assert.Equal("nvenc", destinationSettings[2].GetProperty("encoderMode").GetString());
 
         var targets = commands.Single(command => command.Type == "set-recording-targets");
         Assert.Equal("Recordings/CoreVideo Pro", GetString(targets, "targetFolder"));
