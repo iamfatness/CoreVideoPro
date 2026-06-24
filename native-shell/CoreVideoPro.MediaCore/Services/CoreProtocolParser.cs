@@ -402,14 +402,24 @@ public static class CoreProtocolParser
 
         var messages = new List<string>();
         if (response.RootElement.TryGetProperty("error", out var errorElement) &&
+            errorElement.ValueKind == JsonValueKind.String &&
+            errorElement.GetString() is { Length: > 0 } errorText)
+        {
+            messages.Add(errorText);
+        }
+        else if (response.RootElement.TryGetProperty("error", out errorElement) &&
             errorElement.ValueKind == JsonValueKind.Object)
         {
             AddStringProperty(errorElement, "message", messages);
             AddStringProperty(errorElement, "detail", messages);
             AddStringProperty(errorElement, "details", messages);
             AddStringProperty(errorElement, "code", messages);
+            AddStringProperty(errorElement, "reason", messages);
+            AddStringProperty(errorElement, "hint", messages);
+            AddStringProperty(errorElement, "stderr", messages);
             AddStringArray(errorElement, "warnings", messages);
             AddStringArray(errorElement, "events", messages);
+            AddStringArray(errorElement, "errors", messages);
         }
 
         AddStringArray(response.RootElement, "warnings", messages);

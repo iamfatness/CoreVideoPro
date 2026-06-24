@@ -152,6 +152,48 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ErrorMessageIncludesStringErrorPayload()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("""
+            {
+              "id": "core-11",
+              "ok": false,
+              "type": "media-core-sync",
+              "error": "start-program-output failed: RTMP connection refused"
+            }
+            """);
+
+        var message = CoreProtocolParser.TryParseErrorMessage(document);
+
+        Assert.Equal("start-program-output failed: RTMP connection refused", message);
+    }
+
+    [Fact]
+    public void ErrorMessageIncludesNativeHintsStderrAndErrors()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("""
+            {
+              "id": "core-12",
+              "ok": false,
+              "type": "media-core-sync",
+              "error": {
+                "message": "start-program-output failed.",
+                "reason": "RTMP sender exited.",
+                "hint": "Check stream key and endpoint.",
+                "stderr": "Connection refused",
+                "errors": ["ffmpeg exited with code 1"]
+              }
+            }
+            """);
+
+        var message = CoreProtocolParser.TryParseErrorMessage(document);
+
+        Assert.Equal(
+            "start-program-output failed. RTMP sender exited. Check stream key and endpoint. Connection refused ffmpeg exited with code 1",
+            message);
+    }
+
+    [Fact]
     public void DoesNotParseResponseLineAsEvent()
     {
         var responseLine = """{"id":"1","ok":true,"type":"ping"}""";
