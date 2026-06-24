@@ -4710,6 +4710,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
             {
+                if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
+                    normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "Native core exited";
+                }
+
+                if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "Native core pipe failed";
+                }
+
                 return "Media core failed";
             }
 
