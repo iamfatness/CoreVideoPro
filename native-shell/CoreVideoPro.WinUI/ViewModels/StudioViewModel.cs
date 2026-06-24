@@ -4712,6 +4712,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var captureAudioSources = CaptureDevices
             .Where(device => !string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase))
             .Select(BuildCaptureAudioSourceWire)
+            .Where(IsConfiguredCaptureAudioSource)
             .ToList();
         if (LocalAudioSourceEnabled &&
             AudioCaptureDevices.FirstOrDefault(device =>
@@ -4894,7 +4895,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (captureAudioSources is not null)
         {
             sourceIds.AddRange(captureAudioSources
-                .Where(HasConfiguredCaptureAudio)
+                .Where(IsConfiguredCaptureAudioSource)
                 .Select(ResolveCaptureAudioChannelId));
         }
         else
@@ -4951,7 +4952,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mix?.PluginInserts ?? []);
     }
 
-    private static bool HasConfiguredCaptureAudio(MediaCoreCaptureAudioSourceWire source) =>
+    public static bool IsConfiguredCaptureAudioSource(MediaCoreCaptureAudioSourceWire source) =>
         source.Embedded ||
         !string.IsNullOrWhiteSpace(source.AudioDeviceId) ||
         !string.IsNullOrWhiteSpace(source.NativeAudioDeviceId) ||

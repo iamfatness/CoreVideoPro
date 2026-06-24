@@ -193,6 +193,40 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.True(configured);
     }
 
+    [Fact]
+    public void IsConfiguredCaptureAudioSource_RejectsPlaceholderSources()
+    {
+        var source = new MediaCoreCaptureAudioSourceWire(
+            "uvc-01",
+            AudioDeviceId: null,
+            AudioDeviceName: null,
+            AudioSyncOffsetMs: 0);
+
+        Assert.False(StudioViewModel.IsConfiguredCaptureAudioSource(source));
+    }
+
+    [Theory]
+    [InlineData("uvc-01", "mic-1", null, false)]
+    [InlineData("uvc-01", null, @"\\?\SWD#MMDEVAPI#mic-1", false)]
+    [InlineData("uvc-01", null, null, true)]
+    [InlineData("local-machine-audio", null, null, false)]
+    public void IsConfiguredCaptureAudioSource_AcceptsSourcesThatCanProducePcm(
+        string captureDeviceId,
+        string? audioDeviceId,
+        string? nativeAudioDeviceId,
+        bool embedded)
+    {
+        var source = new MediaCoreCaptureAudioSourceWire(
+            captureDeviceId,
+            audioDeviceId,
+            AudioDeviceName: null,
+            AudioSyncOffsetMs: 0,
+            NativeAudioDeviceId: nativeAudioDeviceId,
+            Embedded: embedded);
+
+        Assert.True(StudioViewModel.IsConfiguredCaptureAudioSource(source));
+    }
+
     [Theory]
     [InlineData(10, 50)]
     [InlineData(350.4, 350)]
