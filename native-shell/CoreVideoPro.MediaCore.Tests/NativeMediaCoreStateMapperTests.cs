@@ -162,6 +162,38 @@ public sealed class NativeMediaCoreStateMapperTests
     }
 
     [Fact]
+    public void MapsOutputSenderLastErrorIntoOutputHealthWhenWarningIsMissing()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            Outputs = ["rtmp"],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "failed",
+                ActiveSenderCount = 0,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "failed",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 6,
+                        LastError = "Failed to start FFmpeg process. Win32 error 2."
+                    }
+                ]
+            }
+        });
+
+        var rtmp = Assert.Single(snapshot.OutputHealth, item => item.Destination == "rtmp");
+        Assert.Equal("failed", rtmp.Status);
+        Assert.Equal("Failed to start FFmpeg process. Win32 error 2.", rtmp.Message);
+    }
+
+    [Fact]
     public void MergesNativeAudioMixAndCaptionTrackStateFromWirePayload()
     {
         var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState

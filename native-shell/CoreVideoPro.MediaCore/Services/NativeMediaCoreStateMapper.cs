@@ -301,7 +301,7 @@ public static class NativeMediaCoreStateMapper
                     "live" or "starting" => "live",
                     _ => "idle"
                 },
-                Message = sender?.Warning ?? $"{destination.ToUpperInvariant()} sender {sender?.Status ?? "idle"}.",
+                Message = sender?.Warning ?? sender?.LastError ?? $"{destination.ToUpperInvariant()} sender {sender?.Status ?? "idle"}.",
                 DroppedFrames = 0
             });
         }

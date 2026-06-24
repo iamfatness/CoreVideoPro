@@ -280,13 +280,14 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         var failedSender = snapshot.OutputSenderSession.Senders
             .FirstOrDefault(static sender =>
                 sender.Status is "failed" or "warning" &&
-                !string.IsNullOrWhiteSpace(sender.Warning));
+                (!string.IsNullOrWhiteSpace(sender.Warning) ||
+                 !string.IsNullOrWhiteSpace(sender.LastError)));
         if (failedSender is not null)
         {
             var destination = string.IsNullOrWhiteSpace(failedSender.Destination)
                 ? "output"
                 : failedSender.Destination.ToUpperInvariant();
-            return $"{destination} output {failedSender.Status}: {NormalizeOutputFailureMessage(failedSender.Warning)}";
+            return $"{destination} output {failedSender.Status}: {NormalizeOutputFailureMessage(failedSender.Warning ?? failedSender.LastError)}";
         }
 
         if (snapshot.Recording?.Active == true)

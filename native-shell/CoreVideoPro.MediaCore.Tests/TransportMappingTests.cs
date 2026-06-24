@@ -254,6 +254,37 @@ public sealed class TransportMappingTests
     }
 
     [Fact]
+    public void SummarizeOutputsReportsFailedSenderLastErrorWhenWarningIsMissing()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "failed",
+                ActiveSenderCount = 0,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "failed",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 6,
+                        LastError = "Failed to start FFmpeg process. Win32 error 2."
+                    }
+                ]
+            }
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: Failed to start FFmpeg process. Win32 error 2.", status);
+    }
+
+    [Fact]
     public void SummarizeOutputsRemovesNativeWrappersFromSenderWarning()
     {
         var snapshot = BuildSnapshot() with

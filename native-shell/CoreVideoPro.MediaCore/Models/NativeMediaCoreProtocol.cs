@@ -291,6 +291,7 @@ public sealed class NativeMediaCoreOutputSender
     public double LatencyMs { get; init; }
     public double BitrateMbps { get; init; }
     public string? Warning { get; init; }
+    public string? LastError { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession
