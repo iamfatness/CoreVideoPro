@@ -150,6 +150,35 @@ public sealed class TransportMappingTests
     }
 
     [Fact]
+    public void SummarizeOutputsReportsStreamingFailureBeforeRecordingStatus()
+    {
+        var snapshot = BuildSnapshot(recordingActive: true) with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "recording",
+                    Status = "live",
+                    Message = "Recording program.",
+                    DroppedFrames = 0
+                },
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "failed",
+                    Message = "FFmpeg exited with code 1 after ingest rejected credentials.",
+                    DroppedFrames = 0
+                }
+            ]
+        };
+
+        var status = MediaCoreBridgeService.SummarizeOutputs(snapshot);
+
+        Assert.Equal("RTMP output failed: FFmpeg exited with code 1 after ingest rejected credentials.", status);
+    }
+
+    [Fact]
     public void SummarizeOutputsDoesNotReportWarningOutputAsLive()
     {
         var snapshot = BuildSnapshot() with

@@ -246,14 +246,10 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
 
     public static string SummarizeOutputs(NativeMediaCoreStateSnapshot snapshot)
     {
-        if (snapshot.Recording?.Active == true)
-        {
-            return $"Recording {snapshot.Recording.ProgramPath}";
-        }
-
         var failedOutput = snapshot.OutputHealth
             .FirstOrDefault(item =>
                 item.Status is "failed" or "warning" &&
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
                 !string.IsNullOrWhiteSpace(item.Message));
         if (failedOutput is not null)
         {
@@ -261,7 +257,9 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         }
 
         var liveOutputs = snapshot.OutputHealth
-            .Where(item => item.Status is "live")
+            .Where(item =>
+                item.Status is "live" &&
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
             .Select(item => item.Destination.ToUpperInvariant())
             .Distinct()
             .ToList();
@@ -288,6 +286,11 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
                 ? "output"
                 : failedSender.Destination.ToUpperInvariant();
             return $"{destination} output {failedSender.Status}: {failedSender.Warning}";
+        }
+
+        if (snapshot.Recording?.Active == true)
+        {
+            return $"Recording {snapshot.Recording.ProgramPath}";
         }
 
         return "Outputs idle";
