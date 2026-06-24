@@ -342,8 +342,12 @@ struct CaptureAudioSourceMetrics {
   std::string audioSourceKind;
   bool streaming = false;
   int64_t framesReceived = 0;
+  int64_t emptyPacketPolls = 0;
   int sampleRate = 0;
   int channels = 0;
+  std::string endpointId;
+  std::string endpointName;
+  std::string lastError;
   std::string warning;
 };
 

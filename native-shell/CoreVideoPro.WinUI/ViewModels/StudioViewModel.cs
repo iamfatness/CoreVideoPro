@@ -4577,7 +4577,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     $"paired={source.Paired}:" +
                     $"streaming={source.CaptureStreaming}:" +
                     $"frames={source.CaptureFramesReceived}:" +
+                    $"emptyPolls={source.EmptyPacketPolls}:" +
                     $"fmt={source.CaptureSampleRate}x{source.CaptureChannels}:" +
+                    $"endpoint={TelemetryValue(source.EndpointName ?? source.EndpointId ?? "unknown")}:" +
+                    $"lastError={TelemetryValue(source.LastError ?? "none")}:" +
                     $"warning={TelemetryValue(source.Warning ?? "none")}"));
     }
 
@@ -5097,6 +5100,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var format = source.CaptureSampleRate > 0 && source.CaptureChannels > 0
             ? $" {source.CaptureSampleRate} Hz/{source.CaptureChannels} ch"
             : string.Empty;
+        var endpoint = !string.IsNullOrWhiteSpace(source.EndpointName)
+            ? $" via {source.EndpointName}"
+            : string.Empty;
+        var emptyPolls = source.EmptyPacketPolls > 0 && source.CaptureFramesReceived <= 0
+            ? $", {source.EmptyPacketPolls} silent polls"
+            : string.Empty;
+        var lastError = !string.IsNullOrWhiteSpace(source.LastError)
+            ? $", {source.LastError}"
+            : string.Empty;
         var sourceId = !string.IsNullOrWhiteSpace(source.SourceId)
             ? $" -> {source.SourceId}"
             : string.Empty;
@@ -5107,7 +5119,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var warningText = !string.IsNullOrWhiteSpace(warning)
             ? $", issue: {warning}"
             : string.Empty;
-        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{format}{warningText}";
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{emptyPolls}{format}{endpoint}{lastError}{warningText}";
     }
 
     public static string FormatCaptureAudioSourceWarningForOperator(string? warning)

@@ -2051,7 +2051,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     const auto metric = metricsByCaptureId.find(source.captureDeviceId);
     const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
     const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
+    const int64_t emptyPacketPolls = metric == metricsByCaptureId.end() ? 0 : metric->second.emptyPacketPolls;
     std::string sourceWarning = metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning;
+    const std::string lastError = metric == metricsByCaptureId.end() ? std::string{} : metric->second.lastError;
     if (!source.audioDeviceId.empty() && metric == metricsByCaptureId.end()) {
       sourceWarning = "Audio source is paired but no native PCM adapter is streaming it.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);
@@ -2082,8 +2084,12 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"paired", !source.audioDeviceId.empty()},
         {"captureStreaming", streaming},
         {"captureFramesReceived", static_cast<double>(framesReceived)},
+        {"emptyPacketPolls", static_cast<double>(emptyPacketPolls)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
+        {"endpointId", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointId},
+        {"endpointName", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointName},
+        {"lastError", lastError},
         {"warning", sourceWarning},
     });
   }

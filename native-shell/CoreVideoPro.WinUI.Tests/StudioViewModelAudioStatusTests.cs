@@ -516,13 +516,16 @@ public sealed class StudioViewModelAudioStatusTests
             AudioSourceKind = "wasapi-loopback",
             Paired = true,
             CaptureStreaming = true,
+            EmptyPacketPolls = 12,
             CaptureSampleRate = 48000,
             CaptureChannels = 2,
+            EndpointName = "Game (TC-HELICON GoXLR)",
+            LastError = "GetNextPacketSize hr=0x88890004",
             Warning = "WASAPI capture is open on 'Game (TC-HELICON GoXLR)' ({0.0.0.00000000}.{e05ed7eb-60cc-4d05-82f9-341ed8b4e6b4}) but the endpoint has not produced loopback packets."
         });
 
         Assert.Equal(
-            "Game (TC-HELICON GoXLR) (wasapi-loopback) -> local-machine-audio: loopback idle - play audio through this output or choose an input, 0 frames 48000 Hz/2 ch, issue: no loopback packets from selected output; play audio through that output or choose another source",
+            "Game (TC-HELICON GoXLR) (wasapi-loopback) -> local-machine-audio: loopback idle - play audio through this output or choose an input, 0 frames, 12 silent polls 48000 Hz/2 ch via Game (TC-HELICON GoXLR), GetNextPacketSize hr=0x88890004, issue: no loopback packets from selected output; play audio through that output or choose another source",
             status);
     }
 

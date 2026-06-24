@@ -97,8 +97,12 @@ public sealed class NativeMediaCoreCaptureAudioSource
     public bool Paired { get; init; }
     public bool CaptureStreaming { get; init; }
     public long CaptureFramesReceived { get; init; }
+    public long EmptyPacketPolls { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }
+    public string? EndpointId { get; init; }
+    public string? EndpointName { get; init; }
+    public string? LastError { get; init; }
     public string? Warning { get; init; }
 }
 

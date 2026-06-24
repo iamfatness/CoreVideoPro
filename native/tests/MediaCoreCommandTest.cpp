@@ -2025,8 +2025,12 @@ TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenStreamStartsWithoutPcmFrames) 
       "wasapi-loopback",
       true,
       0,
+      3,
       48000,
       2,
+      "default-render",
+      "System audio loopback",
+      {},
       {}});
   modules.audioCapture.reset(audioCapture);
   corevideo::core::MediaCore mediaCore(std::move(modules));
@@ -2075,8 +2079,12 @@ TEST(MediaCoreCommand, CaptureAudioSourcePreservesAdapterWarningWhenStreamStarts
       "wasapi-loopback",
       true,
       0,
+      4,
       48000,
       2,
+      "default-render",
+      "Game",
+      "GetNextPacketSize hr=0x88890004",
       "WASAPI capture is open on 'Game' but the endpoint has not produced loopback packets."});
   modules.audioCapture.reset(audioCapture);
   corevideo::core::MediaCore mediaCore(std::move(modules));
@@ -2222,6 +2230,18 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
   ASSERT_NE(local, nullptr);
   EXPECT_TRUE(local->get("outputLevel")->asNumber() > 0);
   EXPECT_TRUE(local->get("rmsDbfs")->asNumber() > -60);
+
+  const auto* captureSources = state.get("captureAudioSources");
+  ASSERT_NE(captureSources, nullptr);
+  const auto* sources = captureSources->get("sources");
+  ASSERT_NE(sources, nullptr);
+  ASSERT_TRUE(sources->isArray());
+  ASSERT_FALSE(sources->asArray().empty());
+  const auto& firstSource = sources->asArray().front();
+  ASSERT_NE(firstSource.get("emptyPacketPolls"), nullptr);
+  ASSERT_NE(firstSource.get("endpointId"), nullptr);
+  ASSERT_NE(firstSource.get("endpointName"), nullptr);
+  ASSERT_NE(firstSource.get("lastError"), nullptr);
 }
 
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {

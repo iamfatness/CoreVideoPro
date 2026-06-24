@@ -165,8 +165,12 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           source.config.audioSourceKind,
           source.started,
           source.framesReceived,
+          source.emptyPacketPolls,
           source.sampleRate,
           source.channels,
+          source.endpointId,
+          source.endpointName,
+          source.lastError,
           source.warning});
     }
     return metrics;
@@ -189,6 +193,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     int64_t emptyPacketPolls = 0;
     std::string endpointId;
     std::string endpointName;
+    std::string lastError;
     std::string warning;
   };
 
@@ -360,7 +365,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     }
 
     UINT32 packetFrames = 0;
-    if (FAILED(source.captureClient->GetNextPacketSize(&packetFrames))) {
+    HRESULT hr = source.captureClient->GetNextPacketSize(&packetFrames);
+    if (FAILED(hr)) {
+      source.lastError = "GetNextPacketSize hr=" + hexHrCapture(hr);
       source.warning = "WASAPI capture could not query packet size for " + diagnosticEndpointLabel(source) + ".";
       return;
     }
@@ -374,7 +381,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       BYTE* data = nullptr;
       UINT32 frameCount = 0;
       DWORD flags = 0;
-      if (FAILED(source.captureClient->GetBuffer(&data, &frameCount, &flags, nullptr, nullptr))) {
+      hr = source.captureClient->GetBuffer(&data, &frameCount, &flags, nullptr, nullptr);
+      if (FAILED(hr)) {
+        source.lastError = "GetBuffer hr=" + hexHrCapture(hr);
         source.warning = "WASAPI capture could not read a packet from " + diagnosticEndpointLabel(source) + ".";
         return;
       }
@@ -393,12 +402,15 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           convertPacket(source, data, frameCount, frame.pcm);
         }
         source.framesReceived += frameCount;
+        source.lastError.clear();
         source.warning.clear();
         frames.push_back(std::move(frame));
       }
 
       source.captureClient->ReleaseBuffer(frameCount);
-      if (FAILED(source.captureClient->GetNextPacketSize(&packetFrames))) {
+      hr = source.captureClient->GetNextPacketSize(&packetFrames);
+      if (FAILED(hr)) {
+        source.lastError = "GetNextPacketSize hr=" + hexHrCapture(hr);
         source.warning = "WASAPI capture could not query the next packet for " + diagnosticEndpointLabel(source) + ".";
         return;
       }
