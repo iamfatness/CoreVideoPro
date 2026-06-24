@@ -725,16 +725,17 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void ResolveLocalAudioSourceDeviceId_PrefersInputWhenSelectionIsEmpty()
+    public void ResolveLocalAudioSourceDeviceId_PrefersDefaultLoopbackWhenSelectionIsEmpty()
     {
         var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
             selectedDeviceId: "",
             [
-                AudioDevice("mic-1", "wasapi-input", "Studio Mic"),
-                AudioDevice("loopback-1", "wasapi-loopback", "Speakers")
+                AudioDevice("mic-1", "wasapi-input", "Studio Mic", isDefault: true),
+                AudioDevice("loopback-1", "wasapi-loopback", "Speakers"),
+                AudioDevice("loopback-2", "wasapi-loopback", "Headphones", isDefault: true)
             ]);
 
-        Assert.Equal("mic-1", selected);
+        Assert.Equal("loopback-2", selected);
     }
 
     [Fact]

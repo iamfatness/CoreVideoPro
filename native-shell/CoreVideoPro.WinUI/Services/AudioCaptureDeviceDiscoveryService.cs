@@ -57,13 +57,13 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
 
     public static string ResolveDefaultLocalMachineAudioDeviceId(IEnumerable<AudioCaptureDevice> devices) =>
         devices
-            .Where(IsWasapiInputSource)
+            .Where(IsLoopbackSource)
             .OrderBy(device => device.IsDefault ? 0 : 1)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .Select(device => device.Id)
             .FirstOrDefault() ??
         devices
-            .Where(IsLoopbackSource)
+            .Where(IsWasapiInputSource)
             .OrderBy(device => device.IsDefault ? 0 : 1)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .Select(device => device.Id)
