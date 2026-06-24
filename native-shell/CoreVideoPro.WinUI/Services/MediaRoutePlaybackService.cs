@@ -68,6 +68,6 @@ public static class MediaRoutePlaybackService
             return new PlaybackSelection(programAssetId, Playing: true);
         }
 
-        return new PlaybackSelection(selectedMediaAssetId, selectedMediaAssetPlaying);
+        return new PlaybackSelection(selectedMediaAssetId, Playing: false);
     }
 }

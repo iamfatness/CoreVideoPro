@@ -124,7 +124,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolvePlaybackSelection_PreservesManualPlaybackWhenProgramHasNoMediaRoute()
+    public void ResolvePlaybackSelection_CuesManualSelectionWhenProgramHasNoMediaRoute()
     {
         var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             selectedMediaAssetId: "bumper",
@@ -140,7 +140,7 @@ public sealed class MediaRoutePlaybackServiceTests
             ]);
 
         Assert.Equal("bumper", selection.MediaAssetId);
-        Assert.True(selection.Playing);
+        Assert.False(selection.Playing);
     }
 
     private static SourceRoute MediaRoute(string assetId) =>
