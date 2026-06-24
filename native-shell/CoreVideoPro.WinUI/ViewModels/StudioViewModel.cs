@@ -921,6 +921,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string StreamRenderProfileSummary =>
         $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)} - {NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0} Mbps - {FormatStreamEncoderMode(StreamEncoderMode)}";
 
+    public string StreamBitrateSummary =>
+        FormatStreamBitrateSummary(StreamTargetBitrateMbps);
+
     public string RecordingRenderProfileSummary =>
         $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)}";
 
@@ -5456,6 +5459,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public static double NormalizeStreamTargetBitrateMbps(double value) =>
         Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.5, 80.0) : 8.2, 1, MidpointRounding.AwayFromZero);
 
+    public static string FormatStreamBitrateSummary(double value)
+    {
+        var normalized = NormalizeStreamTargetBitrateMbps(value);
+        return $"{normalized:0.0} Mbps ({normalized * 1000:0} kbps)";
+    }
+
     private static string NormalizeVideoCodec(string? codec)
     {
         var normalized = codec?.Trim().ToLowerInvariant().Replace("hevc", "h265");
@@ -5529,6 +5538,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramResolutionLabel = TransportFormatting.ShortResolutionLabel(canvasProfile.Resolution, canvasProfile.Fps);
         OnPropertyChanged(nameof(CanvasProfileSummary));
         OnPropertyChanged(nameof(StreamRenderProfileSummary));
+        OnPropertyChanged(nameof(StreamBitrateSummary));
         OnPropertyChanged(nameof(RecordingRenderProfileSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(RecordingOptionsSummary));

@@ -330,6 +330,15 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.NormalizeStreamTargetBitrateMbps(value));
     }
 
+    [Theory]
+    [InlineData(6, "6.0 Mbps (6000 kbps)")]
+    [InlineData(4.15, "4.2 Mbps (4200 kbps)")]
+    [InlineData(double.NaN, "8.2 Mbps (8200 kbps)")]
+    public void FormatStreamBitrateSummary_ShowsOperatorMbpsAndKbps(double value, string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatStreamBitrateSummary(value));
+    }
+
     private static AudioCaptureDevice AudioDevice(string id, string sourceKind = "wasapi-loopback", string name = "Loopback") =>
         new()
         {

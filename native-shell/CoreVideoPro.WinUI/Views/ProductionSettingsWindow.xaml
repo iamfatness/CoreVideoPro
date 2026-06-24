@@ -97,6 +97,7 @@
                         <StackPanel Spacing="2">
                             <TextBlock Text="STREAM" Style="{StaticResource SettingsLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                            <TextBlock Text="{x:Bind ViewModel.StreamBitrateSummary, Mode=OneWay}" Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -219,6 +220,23 @@
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
                             <TextBlock Text="Destinations" Style="{StaticResource SettingsLabel}" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <NumberBox Header="Video bitrate Mbps"
+                                           Value="{x:Bind ViewModel.StreamTargetBitrateMbps, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="80"
+                                           SmallChange="0.5"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Current stream bitrate" Style="{StaticResource SettingsLabel}" />
+                                    <TextBlock Text="{x:Bind ViewModel.StreamBitrateSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                                </StackPanel>
+                            </Grid>
                             <StackPanel Orientation="Horizontal" Spacing="18">
                                 <CheckBox Content="RTMP / RTMPS"
                                           IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
