@@ -421,6 +421,10 @@ export class MediaCoreRuntime {
                 captureDeviceId: source.captureDeviceId,
                 audioDeviceId: source.audioDeviceId ?? null,
                 audioDeviceName: source.audioDeviceName ?? null,
+                audioSourceKind: source.audioSourceKind ?? (source.audioDeviceId ? "wasapi-input" : "none"),
+                nativeAudioDeviceId: source.nativeAudioDeviceId ?? null,
+                audioDriverName: source.audioDriverName ?? null,
+                embedded: source.embedded === true,
                 audioSyncOffsetMs: Math.max(-500, Math.min(500, source.audioSyncOffsetMs ?? 0))
               }))
           : [];
@@ -778,22 +782,48 @@ export class MediaCoreRuntime {
   }
 
   private captureAudioSourcesSnapshot(): MediaCoreStateSnapshot["captureAudioSources"] {
-    const sources = this.captureAudioSources.map((source) => ({
-      captureDeviceId: source.captureDeviceId,
-      audioDeviceId: source.audioDeviceId ?? null,
-      audioDeviceName: source.audioDeviceName ?? null,
-      audioSyncOffsetMs: Math.max(-500, Math.min(500, source.audioSyncOffsetMs ?? 0)),
-      paired: Boolean(source.audioDeviceId)
-    }));
+    const warnings: string[] = [];
+    const sources = this.captureAudioSources.map((source) => {
+      const paired = Boolean(source.audioDeviceId);
+      const audioSourceKind = source.audioSourceKind ?? (source.audioDeviceId ? "wasapi-input" : "none");
+      const warning = paired ? "Audio source configured; native PCM capture has not reported frames in this runtime." : null;
+      if (warning) {
+        warnings.push(`${source.captureDeviceId}: ${warning}`);
+      }
+
+      return {
+        captureDeviceId: source.captureDeviceId,
+        sourceId: source.captureDeviceId === "local-machine-audio" ? "local-machine-audio" : `capture:${source.captureDeviceId}`,
+        audioDeviceId: source.audioDeviceId ?? null,
+        audioDeviceName: source.audioDeviceName ?? null,
+        audioSourceKind,
+        nativeAudioDeviceId: source.nativeAudioDeviceId ?? null,
+        audioDriverName: source.audioDriverName ?? null,
+        embedded: source.embedded === true,
+        audioSyncOffsetMs: Math.max(-500, Math.min(500, source.audioSyncOffsetMs ?? 0)),
+        paired,
+        captureStreaming: false,
+        captureFramesReceived: 0,
+        captureSampleRate: 0,
+        captureChannels: 0,
+        warning
+      };
+    });
     const pairedCount = sources.filter((source) => source.paired).length;
 
     return {
       sourceCount: sources.length,
       pairedCount,
+      streamingCount: 0,
+      captureFramesReceived: 0,
+      routedMasterFrames: 0,
+      routedMonitorFrames: 0,
+      monitorFramesPlayed: 0,
       sources,
-      status: this.captureAudioSourcesSynced ? "ready" : "idle",
+      warnings,
+      status: !this.captureAudioSourcesSynced ? "idle" : warnings.length > 0 ? "warning" : "ready",
       summary: this.captureAudioSourcesSynced
-        ? `${pairedCount} of ${sources.length} capture source${sources.length === 1 ? "" : "s"} paired with microphone input.`
+        ? `${pairedCount} of ${sources.length} capture source${sources.length === 1 ? "" : "s"} paired with audio input; 0 streaming, 0 PCM frames received; 0 master bus frames, 0 MON bus frames, 0 monitor playback frames.`
         : "Capture audio source pairing idle."
     };
   }

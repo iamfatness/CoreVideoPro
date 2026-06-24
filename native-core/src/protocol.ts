@@ -380,17 +380,33 @@ export type MediaCoreEvent = {
 
 export type MediaCoreCaptureAudioSource = {
   captureDeviceId: string;
+  sourceId?: string | null;
   audioDeviceId?: string | null;
   audioDeviceName?: string | null;
+  audioSourceKind?: string | null;
+  nativeAudioDeviceId?: string | null;
+  audioDriverName?: string | null;
+  embedded?: boolean;
   audioSyncOffsetMs: number;
   paired: boolean;
+  captureStreaming?: boolean;
+  captureFramesReceived?: number;
+  captureSampleRate?: number;
+  captureChannels?: number;
+  warning?: string | null;
 };
 
 export type MediaCoreCaptureAudioSources = {
-  status: "idle" | "ready";
+  status: "idle" | "ready" | "warning";
   sourceCount: number;
   pairedCount: number;
+  streamingCount?: number;
+  captureFramesReceived?: number;
+  routedMasterFrames?: number;
+  routedMonitorFrames?: number;
+  monitorFramesPlayed?: number;
   sources: MediaCoreCaptureAudioSource[];
+  warnings?: string[];
   summary: string;
 };
 
@@ -567,6 +583,10 @@ export type MediaCoreCommand =
         captureDeviceId: string;
         audioDeviceId?: string | null;
         audioDeviceName?: string | null;
+        audioSourceKind?: string | null;
+        nativeAudioDeviceId?: string | null;
+        audioDriverName?: string | null;
+        embedded?: boolean;
         audioSyncOffsetMs?: number;
       }>;
     }

@@ -1375,6 +1375,65 @@ describe("MediaCoreRuntime", () => {
     expect(response.state.warnings.length).toBeGreaterThan(0);
   });
 
+  it("preserves local audio capture identity and does not report configured sources as streaming", () => {
+    const runtime = new MediaCoreRuntime();
+    const response = runtime.handle({
+      id: "local-audio-source",
+      type: "sync",
+      commands: [
+        {
+          type: "sync-capture-audio-sources",
+          sources: [
+            {
+              captureDeviceId: "local-machine-audio",
+              audioDeviceId: "render-default",
+              audioDeviceName: "Default System Output",
+              audioSourceKind: "wasapi-loopback",
+              nativeAudioDeviceId: "{0.0.0.00000000}.default-render",
+              audioDriverName: "WASAPI loopback",
+              embedded: false,
+              audioSyncOffsetMs: 12
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(response.ok).toBe(true);
+    if (!response.ok) {
+      return;
+    }
+
+    expect(response.state.captureAudioSources).toMatchObject({
+      status: "warning",
+      sourceCount: 1,
+      pairedCount: 1,
+      streamingCount: 0,
+      captureFramesReceived: 0,
+      routedMasterFrames: 0,
+      routedMonitorFrames: 0,
+      monitorFramesPlayed: 0,
+      sources: [
+        {
+          captureDeviceId: "local-machine-audio",
+          sourceId: "local-machine-audio",
+          audioDeviceId: "render-default",
+          audioDeviceName: "Default System Output",
+          audioSourceKind: "wasapi-loopback",
+          nativeAudioDeviceId: "{0.0.0.00000000}.default-render",
+          audioDriverName: "WASAPI loopback",
+          embedded: false,
+          audioSyncOffsetMs: 12,
+          paired: true,
+          captureStreaming: false,
+          captureFramesReceived: 0,
+          warning: expect.stringContaining("native PCM capture has not reported frames")
+        }
+      ],
+      warnings: [expect.stringContaining("local-machine-audio")]
+    });
+  });
+
   it("plays a media asset and reports the playback state in the snapshot", () => {
     const runtime = new MediaCoreRuntime();
     const response = runtime.handle({
