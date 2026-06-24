@@ -6791,6 +6791,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Name = asset.Name,
                 Kind = asset.Kind,
                 DurationMs = asset.DurationMs,
+                NaturalWidth = asset.NaturalWidth,
+                NaturalHeight = asset.NaturalHeight,
                 RelativePath = asset.RelativePath,
                 FilePath = asset.FilePath,
                 FileType = asset.FileType,
@@ -6896,7 +6898,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     asset.Name,
                     asset.FilePath,
                     asset.Kind,
-                    SelectedMediaAssetPlaying),
+                    SelectedMediaAssetPlaying,
+                    naturalSourceWidth: asset.NaturalWidth,
+                    naturalSourceHeight: asset.NaturalHeight),
                 SourceIndex = tiles.Count + 1
             });
         }
@@ -7476,7 +7480,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 asset.FilePath,
                 asset.Kind,
                 isSelectedAndPlaying,
-                playbackKey)
+                playbackKey,
+                asset.NaturalWidth,
+                asset.NaturalHeight)
         };
     }
 

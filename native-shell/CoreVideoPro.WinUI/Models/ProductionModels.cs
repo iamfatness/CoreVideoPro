@@ -601,6 +601,8 @@ public sealed class MediaAsset
     public required string Name { get; init; }
     public required string Kind { get; init; }
     public int? DurationMs { get; init; }
+    public int? NaturalWidth { get; init; }
+    public int? NaturalHeight { get; init; }
     public string RelativePath { get; init; } = string.Empty;
     public string FilePath { get; init; } = string.Empty;
     public string FileType { get; init; } = string.Empty;
@@ -610,8 +612,11 @@ public sealed class MediaAsset
     public string DurationLabel =>
         DurationMs is { } ms ? $"{Math.Round(ms / 100.0) / 10.0:0.#}s" : string.Empty;
 
+    public string ResolutionLabel =>
+        NaturalWidth is > 0 && NaturalHeight is > 0 ? $"{NaturalWidth}x{NaturalHeight}" : string.Empty;
+
     public string DetailLabel =>
-        string.Join(" - ", new[] { Kind, FileType, RelativePath }.Where(part => !string.IsNullOrWhiteSpace(part)));
+        string.Join(" - ", new[] { Kind, FileType, ResolutionLabel, RelativePath }.Where(part => !string.IsNullOrWhiteSpace(part)));
 
     public string SelectionLabel => IsSelected ? "Selected" : "Select";
 

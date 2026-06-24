@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
+using System.Buffers.Binary;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -48,6 +49,7 @@ public sealed class MediaBinService
             File.Copy(sourcePath, destinationPath);
 
             var relativePath = Path.GetRelativePath(MediaBinClassifier.DefaultMediaRoot, destinationPath);
+            var dimensions = ProbeMediaDimensions(destinationPath, kind);
             imported.Add(new MediaAsset
             {
                 Id = MediaBinClassifier.BuildAssetId(relativePath),
@@ -55,7 +57,9 @@ public sealed class MediaBinService
                 Kind = kind,
                 RelativePath = relativePath,
                 FilePath = destinationPath,
-                FileType = MediaBinClassifier.BuildFileType(fileName)
+                FileType = MediaBinClassifier.BuildFileType(fileName),
+                NaturalWidth = dimensions.Width,
+                NaturalHeight = dimensions.Height
             });
         }
 
@@ -70,8 +74,10 @@ public sealed class MediaBinService
             Assets = group.Assets.Select(ToMediaAsset).ToList()
         };
 
-    private static MediaAsset ToMediaAsset(MediaBinAssetDescriptor asset) =>
-        new()
+    private static MediaAsset ToMediaAsset(MediaBinAssetDescriptor asset)
+    {
+        var dimensions = ProbeMediaDimensions(asset.FilePath, asset.Kind);
+        return new MediaAsset
         {
             Id = asset.Id,
             Name = asset.Name,
@@ -79,8 +85,138 @@ public sealed class MediaBinService
             DurationMs = asset.DurationMs,
             RelativePath = asset.RelativePath,
             FilePath = asset.FilePath,
-            FileType = asset.FileType
+            FileType = asset.FileType,
+            NaturalWidth = dimensions.Width,
+            NaturalHeight = dimensions.Height
         };
+    }
+
+    private static (int? Width, int? Height) ProbeMediaDimensions(string filePath, string kind)
+    {
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        try
+        {
+            if (extension == ".png")
+            {
+                return ProbePngDimensions(filePath);
+            }
+
+            if (extension is ".jpg" or ".jpeg")
+            {
+                return ProbeJpegDimensions(filePath);
+            }
+
+            if (extension == ".gif")
+            {
+                return ProbeGifDimensions(filePath);
+            }
+        }
+        catch
+        {
+            // Dimension probing is best-effort; media remains usable without metadata.
+        }
+
+        return kind.Equals("video", StringComparison.OrdinalIgnoreCase) ||
+            kind.Equals("stinger", StringComparison.OrdinalIgnoreCase) ||
+            kind.Equals("slate", StringComparison.OrdinalIgnoreCase)
+                ? (1920, 1080)
+                : (null, null);
+    }
+
+    private static (int? Width, int? Height) ProbePngDimensions(string filePath)
+    {
+        Span<byte> header = stackalloc byte[24];
+        using var stream = File.OpenRead(filePath);
+        if (stream.Read(header) < header.Length ||
+            header[0] != 0x89 ||
+            header[1] != (byte)'P' ||
+            header[2] != (byte)'N' ||
+            header[3] != (byte)'G')
+        {
+            return (null, null);
+        }
+
+        return (
+            BinaryPrimitives.ReadInt32BigEndian(header[16..20]),
+            BinaryPrimitives.ReadInt32BigEndian(header[20..24]));
+    }
+
+    private static (int? Width, int? Height) ProbeGifDimensions(string filePath)
+    {
+        Span<byte> header = stackalloc byte[10];
+        using var stream = File.OpenRead(filePath);
+        if (stream.Read(header) < header.Length ||
+            header[0] != (byte)'G' ||
+            header[1] != (byte)'I' ||
+            header[2] != (byte)'F')
+        {
+            return (null, null);
+        }
+
+        return (
+            BinaryPrimitives.ReadUInt16LittleEndian(header[6..8]),
+            BinaryPrimitives.ReadUInt16LittleEndian(header[8..10]));
+    }
+
+    private static (int? Width, int? Height) ProbeJpegDimensions(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        if (stream.ReadByte() != 0xFF || stream.ReadByte() != 0xD8)
+        {
+            return (null, null);
+        }
+
+        while (stream.Position < stream.Length)
+        {
+            var markerPrefix = stream.ReadByte();
+            if (markerPrefix != 0xFF)
+            {
+                continue;
+            }
+
+            int marker;
+            do
+            {
+                marker = stream.ReadByte();
+            }
+            while (marker == 0xFF);
+
+            if (marker < 0)
+            {
+                break;
+            }
+
+            if (marker is 0xD8 or 0xD9)
+            {
+                continue;
+            }
+
+            var length = ReadBigEndianUInt16(stream);
+            if (length < 2)
+            {
+                break;
+            }
+
+            if (marker is 0xC0 or 0xC1 or 0xC2 or 0xC3 or 0xC5 or 0xC6 or 0xC7 or 0xC9 or 0xCA or 0xCB or 0xCD or 0xCE or 0xCF)
+            {
+                _ = stream.ReadByte();
+                var height = ReadBigEndianUInt16(stream);
+                var width = ReadBigEndianUInt16(stream);
+                return (width, height);
+            }
+
+            stream.Seek(length - 2, SeekOrigin.Current);
+        }
+
+        return (null, null);
+    }
+
+    private static int ReadBigEndianUInt16(Stream stream)
+    {
+        var high = stream.ReadByte();
+        var low = stream.ReadByte();
+        return high < 0 || low < 0 ? 0 : (high << 8) | low;
+    }
 
     private static string BuildUniqueDestinationPath(string folder, string fileName)
     {

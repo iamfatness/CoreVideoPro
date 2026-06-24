@@ -144,7 +144,9 @@ public sealed record VideoSurfaceState
         string path,
         string kind,
         bool playing,
-        string? playbackKey = null) =>
+        string? playbackKey = null,
+        int? naturalSourceWidth = null,
+        int? naturalSourceHeight = null) =>
         new()
         {
             SurfaceKey = surfaceKey,
@@ -155,7 +157,9 @@ public sealed record VideoSurfaceState
             MediaAssetPath = path,
             MediaAssetKind = kind,
             MediaAssetPlaying = playing,
-            MediaPlaybackKey = playbackKey ?? surfaceKey
+            MediaPlaybackKey = playbackKey ?? surfaceKey,
+            NaturalSourceWidth = naturalSourceWidth.GetValueOrDefault(),
+            NaturalSourceHeight = naturalSourceHeight.GetValueOrDefault()
         };
 
     public VideoSurfaceState WithFrame(VideoFrameMetadata frame, string statusLine, string? detailLine = null) =>

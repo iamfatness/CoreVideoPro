@@ -350,7 +350,9 @@ public static class ShowInputRosterService
                     asset.Name,
                     asset.FilePath,
                     asset.Kind,
-                    asset.IsPlaying),
+                    asset.IsPlaying,
+                    naturalSourceWidth: asset.NaturalWidth,
+                    naturalSourceHeight: asset.NaturalHeight),
                 SourceIndex = slot.SlotNumber
             };
         }

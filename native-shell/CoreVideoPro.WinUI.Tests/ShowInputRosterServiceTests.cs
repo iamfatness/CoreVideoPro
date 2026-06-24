@@ -430,6 +430,8 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal("media:asset-1", tile.Surface.SurfaceKey);
         Assert.Equal("video", tile.Surface.MediaAssetKind);
         Assert.True(tile.Surface.MediaAssetPlaying);
+        Assert.Equal(1920, tile.Surface.FramingSourceWidth);
+        Assert.Equal(1080, tile.Surface.FramingSourceHeight);
     }
 
     [Fact]
@@ -479,6 +481,8 @@ public sealed class ShowInputRosterServiceTests
             Name = name,
             Kind = kind,
             FilePath = $"C:\\media\\{id}.mp4",
+            NaturalWidth = 1920,
+            NaturalHeight = 1080,
             IsPlaying = isPlaying
         };
 
