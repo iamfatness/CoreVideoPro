@@ -8204,7 +8204,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var surfaceKey = isProgramScene ? $"program:{mediaSourceId}" : $"preview:{mediaSourceId}";
         var playbackKey = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
             asset.Id,
-            isProgramScene,
+            isSelectedAndPlaying,
             _programMediaPlaybackTakeVersion);
         return new ParticipantSurfaceTile
         {

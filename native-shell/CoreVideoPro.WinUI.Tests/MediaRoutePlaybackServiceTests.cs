@@ -232,6 +232,25 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.NotEqual(first, second);
     }
 
+    [Fact]
+    public void BuildSceneMediaPlaybackKey_UsesPreviewKeyWhenProgramMediaIsPaused()
+    {
+        var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
+            "intro",
+            isProgramScene: true,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")]);
+
+        var key = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
+            "intro",
+            isProgramScene: shouldPlay,
+            programTakeVersion: 7);
+
+        Assert.False(shouldPlay);
+        Assert.Equal("preview:media:intro", key);
+    }
+
     private static SourceRoute MediaRoute(string assetId) =>
         new()
         {
