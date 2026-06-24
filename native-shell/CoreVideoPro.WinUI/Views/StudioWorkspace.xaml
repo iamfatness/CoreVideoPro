@@ -958,10 +958,89 @@
                         </StackPanel>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            Command="{x:Bind ViewModel.OpenProductionSettingsSectionCommand}"
-                            CommandParameter="recording"
                             ToolTipService.ToolTip="Recording bitrate, format, and folder">
                         <FontIcon Glyph="&#xE713;" FontSize="14" />
+                        <Button.Flyout>
+                            <Flyout Placement="Top">
+                                <StackPanel Spacing="12" MinWidth="420" MaxWidth="520">
+                                    <TextBlock Text="Recording output"
+                                               FontSize="14"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="{x:Bind ViewModel.RecordingOptionsSummary, Mode=OneWay}"
+                                               FontSize="12"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                    <Grid ColumnSpacing="10" RowSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <ComboBox Header="Format"
+                                                  ItemsSource="{x:Bind ViewModel.RecordingFormatOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.RecordingFormat, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Column="1"
+                                                  Header="Quality"
+                                                  ItemsSource="{x:Bind ViewModel.RecordingQualityOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.RecordingQuality, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Row="1"
+                                                  Header="Codec"
+                                                  ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.RecordingVideoCodec, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <NumberBox Grid.Row="1" Grid.Column="1"
+                                                   Header="Bitrate Mbps"
+                                                   Value="{x:Bind ViewModel.RecordingTargetBitrateMbps, Mode=TwoWay}"
+                                                   Minimum="0.5"
+                                                   Maximum="80"
+                                                   SmallChange="0.5"
+                                                   LargeChange="1"
+                                                   SpinButtonPlacementMode="Inline" />
+                                        <ComboBox Grid.Row="2"
+                                                  Header="Render size"
+                                                  ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.RecordingRenderResolution, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Row="2" Grid.Column="1"
+                                                  Header="FPS"
+                                                  ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.RecordingRenderFps, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind ViewModel.RecordingBitrateSummary, Mode=OneWay}"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <Button Grid.Column="1"
+                                                Content="More"
+                                                MinWidth="76"
+                                                Command="{x:Bind ViewModel.OpenProductionSettingsSectionCommand}"
+                                                CommandParameter="recording"
+                                                Style="{StaticResource StudioGhostButton}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
                     </Button>
                     <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
@@ -974,10 +1053,93 @@
                         </StackPanel>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            Command="{x:Bind ViewModel.OpenProductionSettingsSectionCommand}"
-                            CommandParameter="streaming"
                             ToolTipService.ToolTip="Streaming destinations, bitrate, and encoder">
                         <FontIcon Glyph="&#xE713;" FontSize="14" />
+                        <Button.Flyout>
+                            <Flyout Placement="Top">
+                                <StackPanel Spacing="12" MinWidth="420" MaxWidth="520">
+                                    <TextBlock Text="Streaming output"
+                                               FontSize="14"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="{x:Bind ViewModel.StreamConfigurationSummary, Mode=OneWay}"
+                                               FontSize="12"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                    <Grid ColumnSpacing="10" RowSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <NumberBox Header="Bitrate Mbps"
+                                                   Value="{x:Bind ViewModel.StreamTargetBitrateMbps, Mode=TwoWay}"
+                                                   Minimum="0.5"
+                                                   Maximum="80"
+                                                   SmallChange="0.5"
+                                                   LargeChange="1"
+                                                   SpinButtonPlacementMode="Inline" />
+                                        <ComboBox Grid.Column="1"
+                                                  Header="Encoder"
+                                                  ItemsSource="{x:Bind ViewModel.StreamEncoderModeOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.StreamEncoderMode, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Row="1"
+                                                  Header="Render size"
+                                                  ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.StreamRenderResolution, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Row="1" Grid.Column="1"
+                                                  Header="FPS"
+                                                  ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.StreamRenderFps, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <ComboBox Grid.Row="2"
+                                                  Header="Codec"
+                                                  ItemsSource="{x:Bind ViewModel.VideoCodecOptions}"
+                                                  SelectedValue="{x:Bind ViewModel.StreamVideoCodec, Mode=TwoWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" />
+                                        <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
+                                            <TextBlock Text="Destinations" FontSize="11" />
+                                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                                <CheckBox Content="RTMP"
+                                                          IsChecked="{x:Bind ViewModel.StreamRtmpEnabled, Mode=TwoWay}" />
+                                                <CheckBox Content="NDI"
+                                                          IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
+                                                <CheckBox Content="SRT"
+                                                          IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind ViewModel.StreamBitrateSummary, Mode=OneWay}"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <Button Grid.Column="1"
+                                                Content="More"
+                                                MinWidth="76"
+                                                Command="{x:Bind ViewModel.OpenProductionSettingsSectionCommand}"
+                                                CommandParameter="streaming"
+                                                Style="{StaticResource StudioGhostButton}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
                             Command="{x:Bind ViewModel.OpenProductionSettingsCommand}"
