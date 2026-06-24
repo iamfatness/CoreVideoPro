@@ -75,6 +75,18 @@ public sealed class SceneBackgroundSelectionServiceTests
         Assert.False(backgrounds.ContainsKey("scene-c"));
     }
 
+    [Fact]
+    public void SelectionAffectsProgramScene_WhenPreviewSceneIsActiveProgramScene()
+    {
+        Assert.True(SceneBackgroundSelectionService.SelectionAffectsProgramScene("scene-a", "scene-a"));
+    }
+
+    [Fact]
+    public void SelectionAffectsProgramScene_IgnoresQueuedPreviewScene()
+    {
+        Assert.False(SceneBackgroundSelectionService.SelectionAffectsProgramScene("scene-preview", "scene-program"));
+    }
+
     private static MediaAsset? Find(string assetId) => assetId switch
     {
         "video-bg" => new MediaAsset

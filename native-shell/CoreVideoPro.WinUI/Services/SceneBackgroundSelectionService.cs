@@ -64,4 +64,8 @@ public static class SceneBackgroundSelectionService
             }
         }
     }
+
+    public static bool SelectionAffectsProgramScene(string selectedSceneId, string activeSceneId) =>
+        !string.IsNullOrWhiteSpace(selectedSceneId) &&
+        string.Equals(selectedSceneId, activeSceneId, StringComparison.Ordinal);
 }

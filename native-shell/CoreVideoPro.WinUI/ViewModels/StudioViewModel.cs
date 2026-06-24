@@ -1496,6 +1496,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         NotifySceneBackgroundChanged();
         SchedulePreviewRoutingRefresh();
+        if (SceneBackgroundSelectionService.SelectionAffectsProgramScene(PreviewSceneId, ActiveSceneId))
+        {
+            _ = TrySyncMediaCoreAsync();
+        }
     }
 
     partial void OnLocalAudioSourceEnabledChanged(bool value)
