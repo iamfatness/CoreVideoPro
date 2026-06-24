@@ -16,6 +16,7 @@ public sealed partial class AudioMixerWindow : Window
 {
     private const int WindowWidth = 1080;
     private const int WindowHeight = 700;
+    private bool _chromeApplied;
     private bool _ready;
 
     public AudioMixerWindow(StudioViewModel viewModel)
@@ -23,7 +24,7 @@ public sealed partial class AudioMixerWindow : Window
         ViewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         InitializeComponent();
         Closed += OnWindowClosed;
-        ApplyChromeAndSize();
+        Activated += OnWindowActivated;
         ShowRotaryStyle();
         _ready = true;
     }
@@ -35,7 +36,26 @@ public sealed partial class AudioMixerWindow : Window
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         Closed -= OnWindowClosed;
+        Activated -= OnWindowActivated;
         WindowClosed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnWindowActivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (_chromeApplied)
+        {
+            return;
+        }
+
+        _chromeApplied = true;
+        try
+        {
+            ApplyChromeAndSize();
+        }
+        catch (Exception ex)
+        {
+            ViewModel.ReportAudioMixerFailure(ex);
+        }
     }
 
     private void OnRotaryStyleClicked(object sender, RoutedEventArgs args) => ShowRotaryStyle();
@@ -153,13 +173,13 @@ public sealed partial class AudioMixerWindow : Window
     private static bool TryResolveParticipantId(object sender, out string participantId)
     {
         participantId = string.Empty;
-        if (sender is not FrameworkElement { Tag: string { Length: > 0 } tag })
+        if (sender is not FrameworkElement { Tag: { } tag })
         {
             return false;
         }
 
-        participantId = tag;
-        return true;
+        participantId = tag.ToString()?.Trim() ?? string.Empty;
+        return participantId.Length > 0;
     }
 
     private void ApplyChromeAndSize()
