@@ -569,6 +569,55 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void BuildAudioMeterSourceSummary_LabelsCaptureSourceDrivingMeters()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            Participants =
+            [
+                new NativeMediaCoreParticipantAudioChannel
+                {
+                    ParticipantId = "local-machine-audio",
+                    InputLevel = 72,
+                    OutputLevel = 64,
+                    GainDb = 0,
+                    RmsDbfs = -18.2,
+                    PeakDbfs = -7.4,
+                    Status = "balanced"
+                }
+            ]
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            Sources =
+            [
+                new NativeMediaCoreCaptureAudioSource
+                {
+                    CaptureDeviceId = "local-machine-audio",
+                    SourceId = "local-machine-audio",
+                    AudioDeviceName = "Desk Mix",
+                    AudioSourceKind = "wasapi-loopback",
+                    Paired = true,
+                    CaptureStreaming = true,
+                    CaptureFramesReceived = 960
+                }
+            ]
+        };
+
+        var status = StudioViewModel.BuildAudioMeterSourceSummary(audio, capture);
+
+        Assert.Equal("Meters: Desk Mix 64% peak -7.4 dBFS; monitor listens to MON bus.", status);
+    }
+
+    [Fact]
     public void FormatAudioProofSummary_ShowsProgramRoutingGap()
     {
         var audio = new NativeMediaCoreAudioMixSession

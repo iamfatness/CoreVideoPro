@@ -688,8 +688,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "Audio proof waiting for media core.";
 
     public string AudioMeterSourceSummary =>
-        _bridge.LastSnapshot?.AudioMixSession is { } audio
-            ? BuildAudioMeterSourceSummary(audio)
+        _bridge.LastSnapshot is { } snapshot
+            ? BuildAudioMeterSourceSummary(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
             : "Meters show media-core program/master bus telemetry when the engine is running.";
 
     public string CaptureAudioSignalSummary =>
@@ -5019,7 +5019,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"{label} ({kind}, {state})";
     }
 
-    private static string BuildAudioMeterSourceSummary(NativeMediaCoreAudioMixSession audio)
+    public static string BuildAudioMeterSourceSummary(
+        NativeMediaCoreAudioMixSession audio,
+        NativeMediaCoreCaptureAudioSources? capture = null)
     {
         if (audio.MixedFrameCount <= 0)
         {
@@ -5028,11 +5030,45 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : "Meters idle: no PCM channels reported by media core.";
         }
 
-        var sourceLabel = audio.Participants.Count == 1 ? "1 PCM channel" : $"{audio.Participants.Count} PCM channels";
+        var activeSources = audio.Participants
+            .Where(participant => participant.OutputLevel > 0 || participant.InputLevel > 0 || participant.PeakDbfs > -59)
+            .OrderByDescending(participant => participant.OutputLevel)
+            .ThenByDescending(participant => participant.InputLevel)
+            .Take(4)
+            .Select(participant => FormatAudioMeterParticipantLabel(participant, capture))
+            .ToList();
+        var sourceLabel = activeSources.Count > 0
+            ? string.Join(", ", activeSources)
+            : audio.Participants.Count == 1
+                ? FormatAudioMeterParticipantLabel(audio.Participants[0], capture)
+                : $"{audio.Participants.Count} configured PCM channels, all silent";
         return audio.Warnings.Count > 0
             ? $"Meters: {sourceLabel}, warning: {audio.Warnings[0]}"
             : $"Meters: {sourceLabel}; monitor listens to MON bus.";
     }
+
+    private static string FormatAudioMeterParticipantLabel(
+        NativeMediaCoreParticipantAudioChannel participant,
+        NativeMediaCoreCaptureAudioSources? capture)
+    {
+        var source = capture?.Sources.FirstOrDefault(item =>
+            string.Equals(item.SourceId, participant.ParticipantId, StringComparison.Ordinal) ||
+            string.Equals(ResolveCaptureTelemetrySourceId(item), participant.ParticipantId, StringComparison.Ordinal));
+        var name = source is null
+            ? participant.ParticipantId
+            : !string.IsNullOrWhiteSpace(source.AudioDeviceName)
+                ? source.AudioDeviceName
+                : !string.IsNullOrWhiteSpace(source.EndpointName)
+                    ? source.EndpointName
+                    : source.CaptureDeviceId;
+        var peak = double.IsFinite(participant.PeakDbfs) ? participant.PeakDbfs : -60;
+        return $"{name} {participant.OutputLevel}% peak {peak:0.0} dBFS";
+    }
+
+    private static string ResolveCaptureTelemetrySourceId(NativeMediaCoreCaptureAudioSource source) =>
+        string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)
+            ? "local-machine-audio"
+            : $"capture:{source.CaptureDeviceId}";
 
     private static string BuildCaptureAudioSignalSummary(NativeMediaCoreCaptureAudioSources capture)
     {
