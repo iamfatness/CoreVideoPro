@@ -74,7 +74,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_RespectsPausedSelectedProgramMedia()
+    public void ShouldPlaySceneMediaRoute_AutoplaysPausedSelectedProgramMedia()
     {
         var programRoutes = new[]
         {
@@ -88,7 +88,7 @@ public sealed class MediaRoutePlaybackServiceTests
             selectedMediaAssetPlaying: false,
             programRoutes);
 
-        Assert.False(shouldPlay);
+        Assert.True(shouldPlay);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolvePlaybackSelection_RespectsPausedSelectedProgramMediaRoute()
+    public void ResolvePlaybackSelection_AutoplaysPausedSelectedProgramMediaRoute()
     {
         var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             selectedMediaAssetId: "intro",
@@ -176,7 +176,7 @@ public sealed class MediaRoutePlaybackServiceTests
             programRoutes: [MediaRoute("intro")]);
 
         Assert.Equal("intro", selection.MediaAssetId);
-        Assert.False(selection.Playing);
+        Assert.True(selection.Playing);
     }
 
     [Fact]
@@ -233,7 +233,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void BuildSceneMediaPlaybackKey_UsesPreviewKeyWhenProgramMediaIsPaused()
+    public void BuildSceneMediaPlaybackKey_UsesProgramTakeKeyWhenProgramMediaIsPaused()
     {
         var shouldPlay = MediaRoutePlaybackService.ShouldPlaySceneMediaRoute(
             "intro",
@@ -247,8 +247,8 @@ public sealed class MediaRoutePlaybackServiceTests
             isProgramScene: shouldPlay,
             programTakeVersion: 7);
 
-        Assert.False(shouldPlay);
-        Assert.Equal("preview:media:intro", key);
+        Assert.True(shouldPlay);
+        Assert.Equal("program-take:7:media:intro", key);
     }
 
     private static SourceRoute MediaRoute(string assetId) =>
