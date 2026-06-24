@@ -4764,7 +4764,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (audio.MonitorEnabled && capture.RoutedMonitorFrames <= 0)
         {
-            return $"{status} - no PCM on MON bus";
+            return $"{status} - {FormatMonitorBusEvidence(capture)}";
         }
 
         if (audio.MonitorEnabled && audio.MonitorFramesPlayed <= 0 && capture.RoutedMonitorFrames > 0)
@@ -4786,9 +4786,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         bool monitorToggleEnabled,
         string selectedDeviceName)
     {
-        var monBus = capture.RoutedMonitorFrames > 0
-            ? $"MON bus {capture.RoutedMonitorFrames} frames"
-            : "no PCM on MON bus";
+        var monBus = FormatMonitorBusEvidence(capture);
         if (!monitorToggleEnabled || !audio.MonitorEnabled)
         {
             return $"Monitor off - {monBus}";
@@ -4808,6 +4806,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}";
+    }
+
+    private static string FormatMonitorBusEvidence(NativeMediaCoreCaptureAudioSources capture)
+    {
+        if (capture.RoutedMonitorFrames > 0)
+        {
+            return $"MON bus {capture.RoutedMonitorFrames} frames";
+        }
+
+        if (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0)
+        {
+            return $"no PCM on MON bus; source PCM {capture.CaptureFramesReceived}, PGM {capture.RoutedMasterFrames}";
+        }
+
+        return "no PCM on MON bus";
     }
 
     public static string FormatMonitorStatus(NativeMediaCoreAudioMixSession audio) =>
