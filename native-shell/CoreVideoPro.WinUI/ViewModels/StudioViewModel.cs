@@ -353,6 +353,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _automationTakeInFlight;
     private bool _previewRoutingRefreshScheduled;
     private bool _showInputRefreshScheduled;
+    private int _programMediaPlaybackTakeVersion;
     private readonly IShowInputRosterStore _showInputRosterStore = CreateShowInputRosterStore();
     private bool _showInputRosterLoaded;
     private bool _multiviewGridRefreshScheduled;
@@ -2040,6 +2041,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         ActiveSceneId = takenSceneId;
         PreviewSceneId = previousProgramSceneId;
+        _programMediaPlaybackTakeVersion++;
         PromoteProgramMediaRouteToPlayback();
         RefreshPreviewRoutingState();
         CommandStatus = $"{ProgramSceneSummary} taken with {TakeTransitionLabel.ToLowerInvariant()}";
@@ -7454,6 +7456,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var isSelectedAndPlaying = ShouldAutoPlayMediaRoute(asset.Id, isProgramScene);
         var mediaSourceId = ShowInputRosterService.ToMediaSourceId(asset.Id);
         var surfaceKey = isProgramScene ? $"program:{mediaSourceId}" : $"preview:{mediaSourceId}";
+        var playbackKey = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
+            asset.Id,
+            isProgramScene,
+            _programMediaPlaybackTakeVersion);
         return new ParticipantSurfaceTile
         {
             Participant = new Participant
@@ -7469,7 +7475,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 asset.Name,
                 asset.FilePath,
                 asset.Kind,
-                isSelectedAndPlaying)
+                isSelectedAndPlaying,
+                playbackKey)
         };
     }
 

@@ -67,6 +67,7 @@ public sealed record VideoSurfaceState
     public string? MediaAssetPath { get; init; }
     public string? MediaAssetKind { get; init; }
     public bool MediaAssetPlaying { get; init; }
+    public string? MediaPlaybackKey { get; init; }
     public byte[]? PreviewBgra { get; init; }
     public int PreviewWidth { get; init; }
     public int PreviewHeight { get; init; }
@@ -137,7 +138,13 @@ public sealed record VideoSurfaceState
             DetailLine = "Waiting for capture frames."
         };
 
-    public static VideoSurfaceState MediaAssetPreview(string surfaceKey, string title, string path, string kind, bool playing) =>
+    public static VideoSurfaceState MediaAssetPreview(
+        string surfaceKey,
+        string title,
+        string path,
+        string kind,
+        bool playing,
+        string? playbackKey = null) =>
         new()
         {
             SurfaceKey = surfaceKey,
@@ -147,7 +154,8 @@ public sealed record VideoSurfaceState
             DetailLine = playing ? "Selected media is active in playout." : "Selected media is ready for playout.",
             MediaAssetPath = path,
             MediaAssetKind = kind,
-            MediaAssetPlaying = playing
+            MediaAssetPlaying = playing,
+            MediaPlaybackKey = playbackKey ?? surfaceKey
         };
 
     public VideoSurfaceState WithFrame(VideoFrameMetadata frame, string statusLine, string? detailLine = null) =>
@@ -163,6 +171,7 @@ public sealed record VideoSurfaceState
             MediaAssetPath = MediaAssetPath,
             MediaAssetKind = MediaAssetKind,
             MediaAssetPlaying = MediaAssetPlaying,
+            MediaPlaybackKey = MediaPlaybackKey,
             PreviewBgra = PreviewBgra,
             PreviewWidth = PreviewWidth,
             PreviewHeight = PreviewHeight,
@@ -183,6 +192,7 @@ public sealed record VideoSurfaceState
             MediaAssetPath = MediaAssetPath,
             MediaAssetKind = MediaAssetKind,
             MediaAssetPlaying = MediaAssetPlaying,
+            MediaPlaybackKey = MediaPlaybackKey,
             PreviewBgra = bgra,
             PreviewWidth = width,
             PreviewHeight = height,
@@ -203,6 +213,7 @@ public sealed record VideoSurfaceState
             MediaAssetPath = MediaAssetPath,
             MediaAssetKind = MediaAssetKind,
             MediaAssetPlaying = MediaAssetPlaying,
+            MediaPlaybackKey = MediaPlaybackKey,
             PreviewBgra = PreviewBgra,
             PreviewWidth = PreviewWidth,
             PreviewHeight = PreviewHeight,

@@ -162,6 +162,8 @@ public sealed partial class ParticipantTileControl : UserControl
 
     public bool MediaAssetPlaying => SurfaceState?.MediaAssetPlaying == true;
 
+    public string? MediaPlaybackKey => SurfaceState?.MediaPlaybackKey ?? SurfaceState?.SurfaceKey;
+
     public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
 
     private bool _sourceFramingRefreshScheduled;

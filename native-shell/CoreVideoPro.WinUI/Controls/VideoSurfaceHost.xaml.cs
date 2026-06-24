@@ -153,6 +153,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool MediaAssetPlaying => SurfaceState?.MediaAssetPlaying == true;
 
+    public string? MediaPlaybackKey => SurfaceState?.MediaPlaybackKey ?? SurfaceState?.SurfaceKey;
+
     public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
 
     public bool IsDirect3DReady => _direct3DInterop.IsReady || _direct3DDevicePointer != 0;

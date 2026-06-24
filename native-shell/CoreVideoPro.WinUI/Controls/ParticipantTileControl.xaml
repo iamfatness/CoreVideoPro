@@ -30,7 +30,7 @@
                                                   FilePath="{x:Bind MediaAssetPath, Mode=OneWay}"
                                                   Kind="{x:Bind MediaAssetKind, Mode=OneWay}"
                                                   IsPlaying="{x:Bind MediaAssetPlaying, Mode=OneWay}"
-                                                  PlaybackKey="{x:Bind SurfaceKey, Mode=OneWay}"
+                                                  PlaybackKey="{x:Bind MediaPlaybackKey, Mode=OneWay}"
                                                   PreviewStretch="Fill"
                                                   Visibility="{x:Bind HasMediaAssetPreview, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
             </Canvas>

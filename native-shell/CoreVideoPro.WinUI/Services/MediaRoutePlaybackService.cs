@@ -70,4 +70,12 @@ public static class MediaRoutePlaybackService
 
         return new PlaybackSelection(selectedMediaAssetId, Playing: false);
     }
+
+    public static string BuildSceneMediaPlaybackKey(string mediaAssetId, bool isProgramScene, int programTakeVersion)
+    {
+        var normalizedAssetId = string.IsNullOrWhiteSpace(mediaAssetId) ? "unknown" : mediaAssetId.Trim();
+        return isProgramScene
+            ? $"program-take:{Math.Max(0, programTakeVersion)}:media:{normalizedAssetId}"
+            : $"preview:media:{normalizedAssetId}";
+    }
 }
