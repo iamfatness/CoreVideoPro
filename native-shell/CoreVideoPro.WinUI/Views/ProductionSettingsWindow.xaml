@@ -146,6 +146,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="160" />
                                     <ColumnDefinition Width="180" />
+                                    <ColumnDefinition Width="160" />
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -171,6 +172,14 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Column="3"
+                                           Header="Stream bitrate Mbps"
+                                           Value="{x:Bind ViewModel.StreamTargetBitrateMbps, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="80"
+                                           SmallChange="0.5"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
                                 <ComboBox Grid.Row="1"
                                           Header="Recording render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
