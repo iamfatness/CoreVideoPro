@@ -36,7 +36,12 @@ public sealed class ProductionOutputPreferencesStoreTests
             LowerThirdBuildInMs = 450,
             LowerThirdBuildOutMs = 300,
             BrandLowerThirdStyle = "minimal",
-            BrandDefaultOverlayBehavior = "manual"
+            BrandDefaultOverlayBehavior = "manual",
+            SceneBackgroundAssetIds = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["speaker-slides"] = "media-bg-1",
+                ["eight-up"] = "media-bg-2"
+            }
         };
 
         var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
@@ -56,6 +61,8 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal(300, roundTripped.LowerThirdBuildOutMs);
         Assert.Equal("minimal", roundTripped.BrandLowerThirdStyle);
         Assert.Equal("manual", roundTripped.BrandDefaultOverlayBehavior);
+        Assert.Equal("media-bg-1", roundTripped.SceneBackgroundAssetIds["speaker-slides"]);
+        Assert.Equal("media-bg-2", roundTripped.SceneBackgroundAssetIds["eight-up"]);
     }
 
     [Fact]
@@ -73,7 +80,11 @@ public sealed class ProductionOutputPreferencesStoreTests
             RecordingQuality = "standard",
             LowerThirdPosition = "upper-left",
             LowerThirdBuildInMs = 250,
-            LowerThirdBuildOutMs = 200
+            LowerThirdBuildOutMs = 200,
+            SceneBackgroundAssetIds = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["show-open"] = "media-bg-3"
+            }
         });
 
         var loaded = store.Load();
@@ -87,6 +98,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("upper-left", loaded.LowerThirdPosition);
         Assert.Equal(250, loaded.LowerThirdBuildInMs);
         Assert.Equal(200, loaded.LowerThirdBuildOutMs);
+        Assert.Equal("media-bg-3", loaded.SceneBackgroundAssetIds["show-open"]);
     }
 
     [Fact]

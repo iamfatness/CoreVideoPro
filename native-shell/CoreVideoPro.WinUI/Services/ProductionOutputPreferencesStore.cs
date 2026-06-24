@@ -41,6 +41,7 @@ public sealed class ProductionOutputPreferences
     public double LowerThirdBuildOutMs { get; set; }
     public string? BrandLowerThirdStyle { get; set; }
     public string? BrandDefaultOverlayBehavior { get; set; }
+    public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
 }
 
 public interface IProductionOutputPreferencesStore

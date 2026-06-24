@@ -1473,6 +1473,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _sceneBackgroundAssetIds,
             FindMediaAsset,
             IsVisualMediaAsset);
+        SaveProductionOutputPreferences();
         CommandStatus = selection.HasBackground
             ? $"{selection.AssetName ?? selection.SelectedAssetId} set as SuperSource background for {PreviewScene.Name}"
             : $"SuperSource background cleared for {PreviewScene.Name}";
@@ -6884,7 +6885,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
-            BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
+            BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
+            SceneBackgroundAssetIds = _sceneBackgroundAssetIds.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal)
         };
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
@@ -6960,6 +6965,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
             Overlays.NotifyBrandKitChanged();
         }
+
+        _sceneBackgroundAssetIds.Clear();
+        foreach (var pair in preferences.SceneBackgroundAssetIds)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                _sceneBackgroundAssetIds[pair.Key] = pair.Value;
+            }
+        }
+
+        RefreshSceneBackgroundSelection();
     }
 
     // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
