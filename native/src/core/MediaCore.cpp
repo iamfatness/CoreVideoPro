@@ -102,8 +102,16 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   if (renderer != "software") {
     result.emplace_back("gpu-compositor");
     result.emplace_back("chroma-key");
-    result.emplace_back("smart-framing");
+  result.emplace_back("smart-framing");
   }
+
+#if COREVIDEO_WITH_WASAPI_CAPTURE
+  result.emplace_back("local-audio-capture");
+#endif
+
+#if COREVIDEO_WITH_WASAPI_MONITOR
+  result.emplace_back("audio-monitor-output");
+#endif
 
 #if COREVIDEO_WITH_ZOOM
   result.emplace_back("zoom-raw-video");

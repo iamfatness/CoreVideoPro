@@ -100,6 +100,13 @@
                             <TextBlock Text="{x:Bind ViewModel.StreamBitrateSummary, Mode=OneWay}" Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
+                    <Border Style="{StaticResource OperatorReadoutBorder}">
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="RECORD" Style="{StaticResource SettingsLabel}" />
+                            <TextBlock Text="{x:Bind ViewModel.RecordingOptionsSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                            <TextBlock Text="{x:Bind ViewModel.RecordingBitrateSummary, Mode=OneWay}" Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </Grid>
         </Border>
@@ -233,7 +240,7 @@
                                     <ColumnDefinition Width="220" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <NumberBox Header="Video bitrate Mbps"
+                                <NumberBox Header="Stream bitrate Mbps"
                                            Value="{x:Bind ViewModel.StreamTargetBitrateMbps, Mode=TwoWay}"
                                            Minimum="0.5"
                                            Maximum="80"
@@ -241,7 +248,7 @@
                                            LargeChange="1"
                                            SpinButtonPlacementMode="Inline" />
                                 <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="Current stream bitrate" Style="{StaticResource SettingsLabel}" />
+                                    <TextBlock Text="Selected stream bitrate" Style="{StaticResource SettingsLabel}" />
                                     <TextBlock Text="{x:Bind ViewModel.StreamBitrateSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
                                 </StackPanel>
                             </Grid>
@@ -588,8 +595,18 @@
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
                             </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}"
-                                       Style="{StaticResource OperatorSummary}" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="220" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{x:Bind ViewModel.RecordingRenderProfileSummary, Mode=OneWay}"
+                                           Style="{StaticResource OperatorSummary}" />
+                                <StackPanel Grid.Column="1" Spacing="2">
+                                    <TextBlock Text="Selected recording bitrate" Style="{StaticResource SettingsLabel}" />
+                                    <TextBlock Text="{x:Bind ViewModel.RecordingBitrateSummary, Mode=OneWay}" Style="{StaticResource SettingsValue}" />
+                                </StackPanel>
+                            </Grid>
                             <TextBox Header="Filename prefix"
                                      Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             <TextBox Header="Target folder"

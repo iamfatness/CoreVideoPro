@@ -5,7 +5,7 @@
 
 namespace corevideo::core {
 
-inline constexpr std::array<std::string_view, 14> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 16> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -14,6 +14,8 @@ inline constexpr std::array<std::string_view, 14> kNativeMediaCoreCapabilities =
     "chroma-key",
     "smart-framing",
     "audio-mixer",
+    "local-audio-capture",
+    "audio-monitor-output",
     "program-recording",
     "iso-recording",
     "rtmp-output",
@@ -22,7 +24,7 @@ inline constexpr std::array<std::string_view, 14> kNativeMediaCoreCapabilities =
     "webrtc-output",
 };
 
-inline constexpr std::array<std::string_view, 11> kRequiredMvpCapabilities = {
+inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -31,6 +33,8 @@ inline constexpr std::array<std::string_view, 11> kRequiredMvpCapabilities = {
     "chroma-key",
     "smart-framing",
     "audio-mixer",
+    "local-audio-capture",
+    "audio-monitor-output",
     "program-recording",
     "iso-recording",
     "rtmp-output",

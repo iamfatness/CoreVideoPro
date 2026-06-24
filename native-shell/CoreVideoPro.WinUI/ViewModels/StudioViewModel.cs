@@ -941,6 +941,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string StreamBitrateSummary =>
         FormatStreamBitrateSummary(StreamTargetBitrateMbps);
 
+    public string RecordingBitrateSummary =>
+        FormatStreamBitrateSummary(RecordingTargetBitrateMbps);
+
     public string RecordingRenderProfileSummary =>
         $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)} - {NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0} Mbps";
 
@@ -5603,6 +5606,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanvasProfileSummary));
         OnPropertyChanged(nameof(StreamRenderProfileSummary));
         OnPropertyChanged(nameof(StreamBitrateSummary));
+        OnPropertyChanged(nameof(RecordingBitrateSummary));
         OnPropertyChanged(nameof(RecordingRenderProfileSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(RecordingOptionsSummary));

@@ -9,6 +9,8 @@ export type NativeMediaCoreCapability =
   | "chroma-key"
   | "smart-framing"
   | "audio-mixer"
+  | "local-audio-capture"
+  | "audio-monitor-output"
   | "program-recording"
   | "iso-recording"
   | "rtmp-output"
@@ -663,6 +665,8 @@ export const requiredMvpMediaCoreCapabilities: NativeMediaCoreCapability[] = [
   "chroma-key",
   "smart-framing",
   "audio-mixer",
+  "local-audio-capture",
+  "audio-monitor-output",
   "program-recording",
   "iso-recording",
   "rtmp-output"

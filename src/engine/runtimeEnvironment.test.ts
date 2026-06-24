@@ -34,6 +34,8 @@ const readyProfile: NativeMediaCoreProfile = {
     "chroma-key",
     "smart-framing",
     "audio-mixer",
+    "local-audio-capture",
+    "audio-monitor-output",
     "program-recording",
     "iso-recording",
     "rtmp-output"

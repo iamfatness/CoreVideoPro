@@ -1897,7 +1897,8 @@ describe("A4 capability-gated outputs", () => {
       label: "Native media ready",
       capabilities: ["ndi-output", "webrtc-output", "rtmp-output", "program-recording", "iso-recording",
         "zoom-raw-video", "zoom-raw-audio", "gpu-compositor", "scene-graph-rendering",
-        "dynamic-overlays", "chroma-key", "smart-framing", "audio-mixer"]
+        "dynamic-overlays", "chroma-key", "smart-framing", "audio-mixer",
+        "local-audio-capture", "audio-monitor-output"]
     };
     renderApp(createMockEngineBundle(), capRuntime);
 

@@ -841,6 +841,16 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
+#if COREVIDEO_WITH_WASAPI_CAPTURE
+  EXPECT_TRUE(jsonArrayContains(capabilities, "local-audio-capture"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "local-audio-capture"));
+#endif
+#if COREVIDEO_WITH_WASAPI_MONITOR
+  EXPECT_TRUE(jsonArrayContains(capabilities, "audio-monitor-output"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "audio-monitor-output"));
+#endif
 #if COREVIDEO_WITH_D3D11
   EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));

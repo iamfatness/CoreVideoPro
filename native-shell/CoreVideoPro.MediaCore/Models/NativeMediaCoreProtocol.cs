@@ -13,6 +13,8 @@ public enum NativeMediaCoreCapability
     [JsonStringEnumMemberName("chroma-key")] ChromaKey,
     [JsonStringEnumMemberName("smart-framing")] SmartFraming,
     [JsonStringEnumMemberName("audio-mixer")] AudioMixer,
+    [JsonStringEnumMemberName("local-audio-capture")] LocalAudioCapture,
+    [JsonStringEnumMemberName("audio-monitor-output")] AudioMonitorOutput,
     [JsonStringEnumMemberName("program-recording")] ProgramRecording,
     [JsonStringEnumMemberName("iso-recording")] IsoRecording,
     [JsonStringEnumMemberName("rtmp-output")] RtmpOutput,
@@ -613,6 +615,8 @@ public static class NativeMediaCoreProfileValidator
         "chroma-key",
         "smart-framing",
         "audio-mixer",
+        "local-audio-capture",
+        "audio-monitor-output",
         "program-recording",
         "iso-recording",
         "rtmp-output"

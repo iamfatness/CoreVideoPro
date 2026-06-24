@@ -40,4 +40,27 @@ public sealed class NativeMediaCoreProfileValidatorTests
         Assert.False(validation.Ready);
         Assert.Contains(validation.Warnings, warning => warning.Contains("Software rendering"));
     }
+
+    [Fact]
+    public void FlagsMissingLocalAudioCapabilitiesAsNotReady()
+    {
+        var capabilities = NativeMediaCoreProfileValidator.RequiredMvpCapabilities
+            .Where(capability => capability is not "local-audio-capture" and not "audio-monitor-output")
+            .ToList();
+
+        var validation = NativeMediaCoreProfileValidator.Validate(new NativeMediaCoreProfile
+        {
+            Name = "No WASAPI",
+            Renderer = "direct3d11",
+            MaxProgramResolution = "3840x2160",
+            MaxProgramFps = 60,
+            MaxParticipantFeeds = 8,
+            MaxIsoRecordings = 8,
+            Capabilities = capabilities
+        });
+
+        Assert.False(validation.Ready);
+        Assert.Contains("local-audio-capture", validation.MissingCapabilities);
+        Assert.Contains("audio-monitor-output", validation.MissingCapabilities);
+    }
 }
