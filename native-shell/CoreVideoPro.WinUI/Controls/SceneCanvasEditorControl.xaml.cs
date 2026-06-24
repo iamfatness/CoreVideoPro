@@ -15,7 +15,6 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 {
     private const double DesignWidth = 1600;
     private const double DesignHeight = 900;
-    private const double MaxViewportHeight = 520;
     private const double MinLayerSize = 0.08;
 
     private readonly Dictionary<int, Border> _layerFrames = new();
@@ -55,7 +54,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             viewportWidth,
             viewportHeight,
             DesignWidth / DesignHeight,
-            MaxViewportHeight);
+            SceneCanvasViewportService.DefaultEditorMaxHeight);
         if (fitSize.Width <= 0 || fitSize.Height <= 0)
         {
             return;

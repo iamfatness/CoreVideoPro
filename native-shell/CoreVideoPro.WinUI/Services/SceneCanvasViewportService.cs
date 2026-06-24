@@ -4,6 +4,8 @@ public sealed record SceneCanvasViewportSize(double Width, double Height);
 
 public static class SceneCanvasViewportService
 {
+    public const double DefaultEditorMaxHeight = 360;
+
     public static SceneCanvasViewportSize ResolveFitSize(
         double availableWidth,
         double availableHeight,

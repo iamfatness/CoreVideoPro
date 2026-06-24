@@ -348,10 +348,10 @@ public sealed class SceneCanvasIaTests
             availableWidth: 1600,
             availableHeight: 0,
             canvasAspectRatio: 16.0 / 9,
-            maxHeight: 520);
+            maxHeight: SceneCanvasViewportService.DefaultEditorMaxHeight);
 
-        Assert.Equal(924.444, fitSize.Width, precision: 3);
-        Assert.Equal(520, fitSize.Height, precision: 3);
+        Assert.Equal(640, fitSize.Width, precision: 3);
+        Assert.Equal(360, fitSize.Height, precision: 3);
     }
 
     [Fact]
@@ -361,10 +361,10 @@ public sealed class SceneCanvasIaTests
             availableWidth: 1800,
             availableHeight: 900,
             canvasAspectRatio: 16.0 / 9,
-            maxHeight: 520);
+            maxHeight: SceneCanvasViewportService.DefaultEditorMaxHeight);
 
-        Assert.Equal(924.444, fitSize.Width, precision: 3);
-        Assert.Equal(520, fitSize.Height, precision: 3);
+        Assert.Equal(640, fitSize.Width, precision: 3);
+        Assert.Equal(360, fitSize.Height, precision: 3);
     }
 
     [Fact]
