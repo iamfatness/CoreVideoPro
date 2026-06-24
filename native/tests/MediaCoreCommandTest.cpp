@@ -887,16 +887,10 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "audio-mixer"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "scene-graph-rendering"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "dynamic-overlays"));
-#if COREVIDEO_WITH_WASAPI_CAPTURE
-  EXPECT_TRUE(jsonArrayContains(capabilities, "local-audio-capture"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "local-audio-capture"));
-#endif
-#if COREVIDEO_WITH_WASAPI_MONITOR
-  EXPECT_TRUE(jsonArrayContains(capabilities, "audio-monitor-output"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "audio-monitor-output"));
-#endif
+  const bool hasWasapiCapture = corevideo::modules::createWasapiAudioCaptureSource() != nullptr;
+  const bool hasWasapiMonitor = corevideo::modules::createWasapiMonitorOutput() != nullptr;
+  EXPECT_EQ(jsonArrayContains(capabilities, "local-audio-capture"), hasWasapiCapture);
+  EXPECT_EQ(jsonArrayContains(capabilities, "audio-monitor-output"), hasWasapiMonitor);
 #if COREVIDEO_WITH_D3D11
   EXPECT_TRUE(jsonArrayContains(capabilities, "gpu-compositor"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "chroma-key"));
@@ -2434,6 +2428,34 @@ TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArme
   EXPECT_NE(header.find("ftyp"), std::string::npos);
   input.close();
   std::filesystem::remove(artifactPath);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+TEST(HardwareEncoderAdapter, MediaFoundationWarnsWhenRequestedContainerIsNotMp4) {
+#if COREVIDEO_WITH_MF_ENCODER
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.filenamePrefix = "container-request";
+  request.format = "mkv";
+  request.targetBitrateMbps = 12;
+  encoder->configureRecording(request);
+
+  const auto started = encoder->start({"recording"}, {});
+  ASSERT_FALSE(started.recordingArtifactPath.empty());
+  EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
+  EXPECT_EQ(started.recordingFormat, "mkv");
+  EXPECT_EQ(started.recordingContainerFormat, "mp4");
+  EXPECT_NE(started.recordingWarning.find("requested mkv will be recorded as MP4"), std::string::npos);
+
+  const auto artifactPath = started.recordingArtifactPath;
+  encoder.reset();
+  if (std::filesystem::exists(artifactPath)) {
+    std::filesystem::remove(artifactPath);
+  }
 #else
   EXPECT_TRUE(true);
 #endif

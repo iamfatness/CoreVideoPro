@@ -541,6 +541,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     const int fps = request_.fps > 0 ? request_.fps : kDefaultFps;
     const int bitrate = request_.targetBitrateMbps > 0 ? request_.targetBitrateMbps : 18;
     const std::string codec = request_.videoCodec.empty() ? "h264" : request_.videoCodec;
+    const std::string requestedFormat = request_.format.empty() ? "mp4" : request_.format;
+    if (requestedFormat != "mp4" && session_.recordingWarning.empty()) {
+      session_.recordingWarning = "Media Foundation recorder currently writes MP4 artifacts; requested " +
+                                  requestedFormat + " will be recorded as MP4.";
+    }
 
     const auto baseDir = resolveTargetDir();
     const std::string suffix = "-" + std::to_string(now) + ".mp4";
