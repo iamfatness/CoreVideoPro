@@ -49,6 +49,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly Dictionary<string, List<string>> _audioProcessingInserts = new(StringComparer.Ordinal);
     private readonly IProductionOutputPreferencesStore _outputPreferencesStore = CreateProductionOutputPreferencesStore();
     private bool _outputPreferencesLoaded;
+    private bool _programLowerThirdAutomationSuppressed;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -3115,6 +3116,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled)
         {
             ProgramLowerThirdEnabled = false;
+            _programLowerThirdAutomationSuppressed = true;
             foreach (var graphic in Graphics.Where(graphic =>
                 graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)))
             {
@@ -3133,6 +3135,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
 
+            _programLowerThirdAutomationSuppressed = false;
             ProgramLowerThirdEnabled = true;
             CommandStatus = "Lower third keyed in";
         }
@@ -3152,6 +3155,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        _programLowerThirdAutomationSuppressed = false;
         ProgramLowerThirdEnabled = true;
         RefreshProgramLowerThirdKeyPosition();
         CommandStatus = "Lower third rebuilt";
@@ -7689,9 +7693,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void UpdateProgramLowerThirdKey(LowerThirdSource? source, bool force = false)
     {
-        var lowerThirdEnabled = ProgramLowerThirdEnabled ||
-            (ProductionMode == ProductionMode.SetAndForget && AutomationLowerThirdsEnabled) ||
-            Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase));
+        var lowerThirdEnabled = ShouldEnableProgramLowerThird(
+            ProgramLowerThirdEnabled,
+            ProductionMode,
+            AutomationLowerThirdsEnabled,
+            _programLowerThirdAutomationSuppressed,
+            Graphics.Any(graphic => graphic.Enabled && graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)));
 
         if (!lowerThirdEnabled || source is null)
         {
@@ -7764,6 +7771,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         (int)Math.Round(
             double.IsFinite(value) ? Math.Clamp(value, 50, 2000) : 250,
             MidpointRounding.AwayFromZero);
+
+    public static bool ShouldEnableProgramLowerThird(
+        bool manuallyEnabled,
+        ProductionMode productionMode,
+        bool automationLowerThirdsEnabled,
+        bool automationSuppressed,
+        bool graphicLowerThirdEnabled) =>
+        manuallyEnabled ||
+        graphicLowerThirdEnabled ||
+        (productionMode == ProductionMode.SetAndForget &&
+         automationLowerThirdsEnabled &&
+         !automationSuppressed);
 
     private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
     {

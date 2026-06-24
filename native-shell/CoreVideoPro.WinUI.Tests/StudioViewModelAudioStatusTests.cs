@@ -593,6 +593,30 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData(true, ProductionMode.Manual, false, false, false, true)]
+    [InlineData(false, ProductionMode.SetAndForget, true, false, false, true)]
+    [InlineData(false, ProductionMode.SetAndForget, true, true, false, false)]
+    [InlineData(false, ProductionMode.SetAndForget, false, false, true, true)]
+    [InlineData(false, ProductionMode.Manual, true, false, false, false)]
+    public void ShouldEnableProgramLowerThird_LetsManualOutOverrideAutomation(
+        bool manuallyEnabled,
+        ProductionMode productionMode,
+        bool automationLowerThirdsEnabled,
+        bool automationSuppressed,
+        bool graphicLowerThirdEnabled,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            StudioViewModel.ShouldEnableProgramLowerThird(
+                manuallyEnabled,
+                productionMode,
+                automationLowerThirdsEnabled,
+                automationSuppressed,
+                graphicLowerThirdEnabled));
+    }
+
+    [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]
     [InlineData(4.15, 4.2)]
