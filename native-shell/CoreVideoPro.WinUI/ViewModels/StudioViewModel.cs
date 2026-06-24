@@ -2222,15 +2222,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             catch (Exception ex)
             {
+                var failureStatus = FormatStreamingFailureStatus(starting ? "start" : "stop", ex);
                 RunOnUiThread(() =>
                 {
-                    OutputStatus = FormatStreamingFailureStatus(starting ? "start" : "stop", ex);
+                    Streaming = ResolveStreamingStateAfterFailedRetry(starting);
+                    RefreshOutputStatus();
+                    OutputStatus = failureStatus;
                     OutputSessionStatus = OutputStatus;
                 });
+
+                if (starting)
+                {
+                    _ = SyncFailedStreamStartRollbackAsync(failureStatus);
+                }
                 return;
             }
         }
     }
+
+    public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
 
     [RelayCommand]
     private void SetViewMode(string mode)
