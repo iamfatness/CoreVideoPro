@@ -595,7 +595,11 @@ TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
           {"position", "lower-third"},
           {"sourceId", "p2"},
           {"sourceName", "David Chen"},
+          {"title", "Chief Product Officer"},
+          {"org", "Main room"},
           {"keyPhase", "building-in"},
+          {"buildInMs", 350},
+          {"buildOutMs", 275},
       },
   });
   const auto second = mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -612,6 +616,25 @@ TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
 
   EXPECT_EQ(first.get("overlayCount")->asNumber(), 1);
   EXPECT_EQ(second.get("overlayCount")->asNumber(), 1);
+
+  const auto* overlayState = second.get("overlayState");
+  ASSERT_NE(overlayState, nullptr);
+  EXPECT_EQ(overlayState->getString("status"), "live");
+  EXPECT_EQ(overlayState->get("lowerThirdCount")->asNumber(), 1);
+  const auto* overlays = overlayState->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_TRUE(overlays->isArray());
+  ASSERT_TRUE(overlays->asArray().size() == 1u);
+  const auto& lowerThird = overlays->asArray().front();
+  EXPECT_EQ(lowerThird.getString("overlayId"), "key:lower-third");
+  EXPECT_EQ(lowerThird.getString("kind"), "lower-third");
+  EXPECT_EQ(lowerThird.getString("sourceId"), "p2");
+  EXPECT_EQ(lowerThird.getString("sourceName"), "David Chen");
+  EXPECT_EQ(lowerThird.getString("title"), "Chief Product Officer");
+  EXPECT_EQ(lowerThird.getString("org"), "Main room");
+  EXPECT_EQ(lowerThird.getString("keyPhase"), "on-air");
+  EXPECT_EQ(lowerThird.get("buildInMs")->asNumber(), 350);
+  EXPECT_EQ(lowerThird.get("buildOutMs")->asNumber(), 275);
 }
 
 TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {

@@ -90,6 +90,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json captureAudioSourcesState() const;
   [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json brandKitState() const;
+  [[nodiscard]] rpc::Json overlayState() const;
   [[nodiscard]] rpc::Json mediaPlaybackState() const;
   [[nodiscard]] rpc::Json autoProductionState() const;
   [[nodiscard]] rpc::Json outputSenderSessionState() const;
@@ -157,12 +158,16 @@ class MediaCore {
     std::string overlayId;
     std::string text;
     std::string imageUri;
+    std::string sourceId;
+    std::string sourceName;
     std::string position = "lower-third";
     std::string title;
     std::string org;
     std::string keyPosition = "lower-left";
     std::string keyPhase = "on-air";
     std::string keyer = "downstream";
+    int buildInMs = 420;
+    int buildOutMs = 420;
     int insertionOrder = 0;
     // Animation clock: the keyPhase the layer is animating toward, and the
     // monotonically-advanced progress [0,1] within the current phase.

@@ -117,10 +117,12 @@ public static class NativeMediaCoreStateMapper
         }
         var captionTrack = wire.CaptionTrack ?? baseSnapshot.CaptionTrack;
         var brandKit = wire.BrandKit ?? baseSnapshot.BrandKit;
+        var overlayState = wire.OverlayState ?? baseSnapshot.OverlayState;
         var mergedWarnings = warnings
             .Concat(audioMixSession.Warnings.Where(warning => !warnings.Contains(warning)))
             .Concat(captionTrack.Warnings.Where(warning => !warnings.Contains(warning)))
             .Concat(brandKit.Warnings.Where(warning => !warnings.Contains(warning)))
+            .Concat(overlayState.Warnings.Where(warning => !warnings.Contains(warning)))
             .Distinct()
             .ToList();
 
@@ -161,6 +163,7 @@ public static class NativeMediaCoreStateMapper
             CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
+            OverlayState = overlayState,
             Warnings = mergedWarnings
         };
 
@@ -186,6 +189,7 @@ public static class NativeMediaCoreStateMapper
             CaptureAudioSources = captureAudioSources,
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
+            OverlayState = overlayState,
             Diagnostics = diagnostics,
             Warnings = mergedWarnings,
             MeetingState = wire.MeetingState ?? baseSnapshot.MeetingState,

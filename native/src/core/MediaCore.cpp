@@ -468,6 +468,7 @@ rpc::Json MediaCore::sessionState() const {
       {"captureAudioSources", captureAudioSourcesState()},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
+      {"overlayState", overlayState()},
       {"mediaPlayback", mediaPlaybackState()},
       {"autoProduction", autoProductionState()},
       {"meetingState", resolveMeetingStateForSession()},
@@ -1038,11 +1039,15 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
   }
   asset.text = command.getString("text", asset.text);
   asset.imageUri = command.getString("imageUri", asset.imageUri);
+  asset.sourceId = command.getString("sourceId", asset.sourceId);
+  asset.sourceName = command.getString("sourceName", asset.sourceName);
   asset.position = command.getString("position", asset.position);
   asset.title = command.getString("title", asset.title);
   asset.org = command.getString("org", asset.org);
   asset.keyPosition = command.getString("keyPosition", asset.keyPosition);
   asset.keyer = command.getString("keyer", asset.keyer);
+  asset.buildInMs = clampIntValue(static_cast<int>(command.getNumber("buildInMs", asset.buildInMs)), 50, 2000);
+  asset.buildOutMs = clampIntValue(static_cast<int>(command.getNumber("buildOutMs", asset.buildOutMs)), 50, 2000);
   // An explicit keyPhase from the command overrides the auto in/out animation.
   if (const auto* phase = command.get("keyPhase"); phase && phase->isString()) {
     const std::string requested = phase->asString();
@@ -2184,6 +2189,74 @@ rpc::Json MediaCore::brandKitState() const {
       {"appliedOverlayCount", appliedOverlayCount},
       {"summary", summary.str()},
       {"warnings", warnings},
+  };
+}
+
+rpc::Json MediaCore::overlayState() const {
+  rpc::Json::Array overlays;
+  int lowerThirdCount = 0;
+  int buildingCount = 0;
+  int onAirCount = 0;
+  int hiddenCount = 0;
+
+  std::vector<const OverlayAssetState*> orderedOverlays;
+  orderedOverlays.reserve(overlayAssets_.size());
+  for (const auto& [overlayId, asset] : overlayAssets_) {
+    orderedOverlays.push_back(&asset);
+  }
+  std::sort(
+      orderedOverlays.begin(),
+      orderedOverlays.end(),
+      [](const OverlayAssetState* left, const OverlayAssetState* right) {
+        return left->insertionOrder < right->insertionOrder;
+      });
+
+  for (const auto* asset : orderedOverlays) {
+    const bool isLowerThird = asset->position == "lower-third" || asset->position == "bottom-right";
+    if (isLowerThird) {
+      ++lowerThirdCount;
+    }
+    if (asset->keyPhase == "on-air") {
+      ++onAirCount;
+    } else if (asset->keyPhase == "hidden") {
+      ++hiddenCount;
+    } else if (asset->keyPhase == "building-in" || asset->keyPhase == "building-out") {
+      ++buildingCount;
+    }
+
+    overlays.emplace_back(rpc::Json::Object{
+        {"overlayId", asset->overlayId},
+        {"kind", isLowerThird ? "lower-third" : "overlay"},
+        {"position", asset->position},
+        {"sourceId", asset->sourceId},
+        {"sourceName", asset->sourceName},
+        {"title", asset->title},
+        {"org", asset->org},
+        {"text", asset->text},
+        {"keyPosition", asset->keyPosition},
+        {"keyPhase", asset->keyPhase},
+        {"keyProgress", asset->keyProgress},
+        {"keyer", asset->keyer},
+        {"buildInMs", asset->buildInMs},
+        {"buildOutMs", asset->buildOutMs},
+        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out"},
+    });
+  }
+
+  std::ostringstream summary;
+  summary << lowerThirdCount << " lower-third overlay" << (lowerThirdCount == 1 ? "" : "s")
+          << ", " << onAirCount << " on-air, " << buildingCount << " building.";
+
+  return rpc::Json::Object{
+      {"status", overlayAssets_.empty() ? "idle" : buildingCount > 0 ? "transitioning" : onAirCount > 0 ? "live" : "ready"},
+      {"overlayCount", static_cast<int>(overlayAssets_.size())},
+      {"lowerThirdCount", lowerThirdCount},
+      {"onAirCount", onAirCount},
+      {"buildingCount", buildingCount},
+      {"hiddenCount", hiddenCount},
+      {"overlays", overlays},
+      {"summary", summary.str()},
+      {"warnings", rpc::Json::Array{}},
   };
 }
 

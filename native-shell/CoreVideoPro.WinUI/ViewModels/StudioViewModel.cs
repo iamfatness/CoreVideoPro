@@ -576,6 +576,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? $"Ready: {source.SourceName}"
                 : "Take a scene with a source first";
 
+    public string NativeLowerThirdStatus =>
+        _bridge.LastSnapshot?.OverlayState is { } overlay
+            ? FormatNativeLowerThirdStatus(overlay)
+            : "Native lower-third state waiting for media core.";
+
     public string LowerThirdTimingSummary =>
         $"Build {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
 
@@ -5143,6 +5148,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return warning.Length <= 140 ? warning : $"{warning[..137]}...";
     }
 
+    public static string FormatNativeLowerThirdStatus(NativeMediaCoreOverlayState overlay)
+    {
+        if (overlay.OverlayCount <= 0 || overlay.LowerThirdCount <= 0)
+        {
+            return "Native: no lower third keyed.";
+        }
+
+        var lowerThird = overlay.Overlays.FirstOrDefault(item =>
+            item.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)) ??
+            overlay.Overlays.FirstOrDefault();
+        if (lowerThird is null)
+        {
+            return overlay.Summary;
+        }
+
+        var source = !string.IsNullOrWhiteSpace(lowerThird.SourceName)
+            ? lowerThird.SourceName
+            : !string.IsNullOrWhiteSpace(lowerThird.SourceId)
+                ? lowerThird.SourceId
+                : "unknown source";
+        var phase = FormatLowerThirdPhaseLabel(lowerThird.KeyPhase);
+        var title = !string.IsNullOrWhiteSpace(lowerThird.Title)
+            ? $" - {lowerThird.Title}"
+            : string.Empty;
+        return $"Native: {phase} for {source}{title}; build {lowerThird.BuildInMs} ms / out {lowerThird.BuildOutMs} ms.";
+    }
+
     private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() is
             "loopback" or
@@ -6214,6 +6246,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyConfiguredOutputReadouts(snapshot);
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
+        OnPropertyChanged(nameof(NativeLowerThirdStatus));
         MaybeLogAudioTelemetry(snapshot);
         Settings.RefreshDiagnosticsReadout();
 

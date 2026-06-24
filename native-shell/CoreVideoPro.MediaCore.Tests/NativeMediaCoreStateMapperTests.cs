@@ -298,6 +298,38 @@ public sealed class NativeMediaCoreStateMapperTests
                 },
                 LatencyMs = 180,
                 Warnings = []
+            },
+            OverlayState = new NativeMediaCoreOverlayState
+            {
+                Status = "live",
+                OverlayCount = 1,
+                LowerThirdCount = 1,
+                OnAirCount = 1,
+                BuildingCount = 0,
+                HiddenCount = 0,
+                Summary = "1 lower-third overlay, 1 on-air, 0 building.",
+                Overlays =
+                [
+                    new NativeMediaCoreOverlayAssetState
+                    {
+                        OverlayId = "key:lower-third",
+                        Kind = "lower-third",
+                        Position = "lower-third",
+                        SourceId = "p2",
+                        SourceName = "David Chen",
+                        Title = "Chief Product Officer",
+                        Org = "Main room",
+                        Text = "David Chen",
+                        KeyPosition = "lower-left",
+                        KeyPhase = "on-air",
+                        KeyProgress = 1,
+                        Keyer = "downstream",
+                        BuildInMs = 350,
+                        BuildOutMs = 275,
+                        Visible = true
+                    }
+                ],
+                Warnings = []
             }
         });
 
@@ -321,6 +353,11 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("master", snapshot.AudioRoutingMatrix.BusTaps[0].BusId);
         Assert.Equal(-8.5, snapshot.AudioRoutingMatrix.BusTaps[0].PeakDbfs);
         Assert.Equal("Welcome to the webinar.", snapshot.CaptionTrack.CurrentCue?.Text);
+        Assert.Equal("live", snapshot.OverlayState.Status);
+        Assert.Equal(1, snapshot.OverlayState.LowerThirdCount);
+        Assert.Equal("key:lower-third", snapshot.OverlayState.Overlays[0].OverlayId);
+        Assert.Equal("p2", snapshot.OverlayState.Overlays[0].SourceId);
+        Assert.Equal("on-air", snapshot.Diagnostics.OverlayState.Overlays[0].KeyPhase);
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
         Assert.Equal(2, snapshot.Diagnostics.AudioRoutingMatrix.BusTaps.Count);
         Assert.Equal(960, snapshot.Diagnostics.CaptureAudioSources.CaptureFramesReceived);

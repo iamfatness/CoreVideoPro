@@ -54,6 +54,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource DiagnosticTile}">
@@ -120,6 +121,17 @@
                             <TextBlock Text="{x:Bind ViewModel.CaptureAudioSignalSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="{x:Bind ViewModel.CaptureAudioSourceSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource DiagnosticTile}">
+                        <StackPanel Spacing="5">
+                            <TextBlock Text="Lower third" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.NativeLowerThirdStatus, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>

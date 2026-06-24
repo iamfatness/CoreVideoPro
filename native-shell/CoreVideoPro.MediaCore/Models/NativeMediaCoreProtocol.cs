@@ -426,6 +426,38 @@ public sealed class NativeMediaCoreBrandKit
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
+public sealed class NativeMediaCoreOverlayAssetState
+{
+    public required string OverlayId { get; init; }
+    public required string Kind { get; init; }
+    public required string Position { get; init; }
+    public string? SourceId { get; init; }
+    public string? SourceName { get; init; }
+    public string? Title { get; init; }
+    public string? Org { get; init; }
+    public string? Text { get; init; }
+    public required string KeyPosition { get; init; }
+    public required string KeyPhase { get; init; }
+    public double KeyProgress { get; init; }
+    public required string Keyer { get; init; }
+    public int BuildInMs { get; init; }
+    public int BuildOutMs { get; init; }
+    public bool Visible { get; init; }
+}
+
+public sealed class NativeMediaCoreOverlayState
+{
+    public required string Status { get; init; }
+    public int OverlayCount { get; init; }
+    public int LowerThirdCount { get; init; }
+    public int OnAirCount { get; init; }
+    public int BuildingCount { get; init; }
+    public int HiddenCount { get; init; }
+    public IReadOnlyList<NativeMediaCoreOverlayAssetState> Overlays { get; init; } = [];
+    public required string Summary { get; init; }
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
 public sealed class NativeMediaCoreOperatorAction
 {
     public required string ActionId { get; init; }
@@ -501,6 +533,11 @@ public sealed record NativeMediaCoreDiagnosticsSnapshot
         CaptionStyle = "medium sentence captions",
         DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
+    };
+    public NativeMediaCoreOverlayState OverlayState { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "No overlays."
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
@@ -578,6 +615,11 @@ public sealed record NativeMediaCoreStateSnapshot
         CaptionStyle = "medium sentence captions",
         DefaultOverlayBehavior = "all-off",
         Summary = "Idle"
+    };
+    public NativeMediaCoreOverlayState OverlayState { get; init; } = new()
+    {
+        Status = "idle",
+        Summary = "No overlays."
     };
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];

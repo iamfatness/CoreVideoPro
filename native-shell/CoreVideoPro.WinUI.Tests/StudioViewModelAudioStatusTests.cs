@@ -892,6 +892,40 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.FormatLowerThirdPhaseLabel(phase));
     }
 
+    [Fact]
+    public void FormatNativeLowerThirdStatus_UsesNativeOverlayEvidence()
+    {
+        var status = StudioViewModel.FormatNativeLowerThirdStatus(new NativeMediaCoreOverlayState
+        {
+            Status = "live",
+            OverlayCount = 1,
+            LowerThirdCount = 1,
+            OnAirCount = 1,
+            Summary = "1 lower-third overlay, 1 on-air, 0 building.",
+            Overlays =
+            [
+                new NativeMediaCoreOverlayAssetState
+                {
+                    OverlayId = "key:lower-third",
+                    Kind = "lower-third",
+                    Position = "lower-third",
+                    SourceId = "p2",
+                    SourceName = "David Chen",
+                    Title = "Chief Product Officer",
+                    KeyPosition = "lower-left",
+                    KeyPhase = "on-air",
+                    Keyer = "downstream",
+                    KeyProgress = 1,
+                    BuildInMs = 350,
+                    BuildOutMs = 275,
+                    Visible = true
+                }
+            ]
+        });
+
+        Assert.Equal("Native: On for David Chen - Chief Product Officer; build 350 ms / out 275 ms.", status);
+    }
+
     [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]
