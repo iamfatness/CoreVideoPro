@@ -31,7 +31,12 @@ public sealed class ProductionOutputPreferencesStoreTests
             RecordingTargetFolder = "D:\\Shows",
             RecordingFilenamePrefix = "alpha-show",
             RecordingFormat = "mkv",
-            RecordingQuality = "archive"
+            RecordingQuality = "archive",
+            LowerThirdPosition = "lower-right",
+            LowerThirdBuildInMs = 450,
+            LowerThirdBuildOutMs = 300,
+            BrandLowerThirdStyle = "minimal",
+            BrandDefaultOverlayBehavior = "manual"
         };
 
         var json = ProductionOutputPreferencesSerializer.Serialize(preferences);
@@ -46,6 +51,11 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal(32, roundTripped.RecordingTargetBitrateMbps);
         Assert.Equal("mkv", roundTripped.RecordingFormat);
         Assert.Equal("archive", roundTripped.RecordingQuality);
+        Assert.Equal("lower-right", roundTripped.LowerThirdPosition);
+        Assert.Equal(450, roundTripped.LowerThirdBuildInMs);
+        Assert.Equal(300, roundTripped.LowerThirdBuildOutMs);
+        Assert.Equal("minimal", roundTripped.BrandLowerThirdStyle);
+        Assert.Equal("manual", roundTripped.BrandDefaultOverlayBehavior);
     }
 
     [Fact]
@@ -60,7 +70,10 @@ public sealed class ProductionOutputPreferencesStoreTests
             StreamTargetBitrateMbps = 6,
             RecordingTargetBitrateMbps = 18,
             RecordingFormat = "mov",
-            RecordingQuality = "standard"
+            RecordingQuality = "standard",
+            LowerThirdPosition = "upper-left",
+            LowerThirdBuildInMs = 250,
+            LowerThirdBuildOutMs = 200
         });
 
         var loaded = store.Load();
@@ -71,6 +84,9 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal(18, loaded.RecordingTargetBitrateMbps);
         Assert.Equal("mov", loaded.RecordingFormat);
         Assert.Equal("standard", loaded.RecordingQuality);
+        Assert.Equal("upper-left", loaded.LowerThirdPosition);
+        Assert.Equal(250, loaded.LowerThirdBuildInMs);
+        Assert.Equal(200, loaded.LowerThirdBuildOutMs);
     }
 
     [Fact]

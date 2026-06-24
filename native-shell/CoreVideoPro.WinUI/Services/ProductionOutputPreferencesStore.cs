@@ -36,6 +36,11 @@ public sealed class ProductionOutputPreferences
     public string? RecordingFilenamePrefix { get; set; }
     public string? RecordingFormat { get; set; }
     public string? RecordingQuality { get; set; }
+    public string? LowerThirdPosition { get; set; }
+    public double LowerThirdBuildInMs { get; set; }
+    public double LowerThirdBuildOutMs { get; set; }
+    public string? BrandLowerThirdStyle { get; set; }
+    public string? BrandDefaultOverlayBehavior { get; set; }
 }
 
 public interface IProductionOutputPreferencesStore

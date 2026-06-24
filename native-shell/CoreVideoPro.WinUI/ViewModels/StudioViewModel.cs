@@ -402,7 +402,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BrandKit = brandKit;
         ApplyBrandOverlayDefaults(brandKit.DefaultOverlayBehavior);
         Overlays?.NotifyBrandKitChanged();
+        SaveProductionOutputPreferences();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    public void NotifyLowerThirdPresentationChanged()
+    {
+        SaveProductionOutputPreferences();
+        RefreshProgramLowerThirdKeyPosition();
     }
 
     public bool ApplySelectedMediaAssetAsBrandLogo()
@@ -805,8 +812,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         });
         _zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
-        LoadProductionOutputPreferences();
         Overlays = new OverlaysViewModel(this);
+        LoadProductionOutputPreferences();
         _automationTimer = _dispatcher.CreateTimer();
         _automationTimer.Interval = TimeSpan.FromMilliseconds(500);
         _automationTimer.Tick += (_, _) => EvaluateAutomationPolicy();
@@ -1429,6 +1436,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyProgramLowerThirdTimingChange()
     {
         OnPropertyChanged(nameof(LowerThirdTimingSummary));
+        SaveProductionOutputPreferences();
 
         if (!ProgramLowerThirdKey.IsVisible)
         {
@@ -6856,7 +6864,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RecordingTargetFolder = RecordingTargetFolder,
             RecordingFilenamePrefix = RecordingFilenamePrefix,
             RecordingFormat = RecordingFormat,
-            RecordingQuality = RecordingQuality
+            RecordingQuality = RecordingQuality,
+            LowerThirdPosition = Overlays.LowerThirdPosition,
+            LowerThirdBuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
+            LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
+            BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
+            BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         };
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
@@ -6896,6 +6909,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RecordingFilenamePrefix = preferences.RecordingFilenamePrefix ?? RecordingFilenamePrefix;
         RecordingFormat = preferences.RecordingFormat ?? RecordingFormat;
         RecordingQuality = preferences.RecordingQuality ?? RecordingQuality;
+        LowerThirdBuildInMs = preferences.LowerThirdBuildInMs > 0
+            ? NormalizeLowerThirdTimingMs(preferences.LowerThirdBuildInMs)
+            : LowerThirdBuildInMs;
+        LowerThirdBuildOutMs = preferences.LowerThirdBuildOutMs > 0
+            ? NormalizeLowerThirdTimingMs(preferences.LowerThirdBuildOutMs)
+            : LowerThirdBuildOutMs;
+
+        if (!string.IsNullOrWhiteSpace(preferences.LowerThirdPosition))
+        {
+            Overlays.LowerThirdPosition = preferences.LowerThirdPosition;
+        }
+
+        if (!string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle) ||
+            !string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior))
+        {
+            BrandKit = new BrandKit
+            {
+                Name = BrandKit.Name,
+                LogoText = BrandKit.LogoText,
+                LogoAssetId = BrandKit.LogoAssetId,
+                LogoAssetName = BrandKit.LogoAssetName,
+                LogoAssetPath = BrandKit.LogoAssetPath,
+                BrandColor = BrandKit.BrandColor,
+                AccentColor = BrandKit.AccentColor,
+                BackgroundColor = BrandKit.BackgroundColor,
+                FontFamily = BrandKit.FontFamily,
+                LowerThirdStyle = string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle)
+                    ? BrandKit.LowerThirdStyle
+                    : preferences.BrandLowerThirdStyle,
+                CaptionStyle = BrandKit.CaptionStyle,
+                DefaultOverlayBehavior = string.IsNullOrWhiteSpace(preferences.BrandDefaultOverlayBehavior)
+                    ? BrandKit.DefaultOverlayBehavior
+                    : preferences.BrandDefaultOverlayBehavior
+            };
+            Overlays.NotifyBrandKitChanged();
+        }
     }
 
     // Persistence for Input 1-10 slot assignments (alpha #2). The store is abstracted so the
