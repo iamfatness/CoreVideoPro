@@ -161,6 +161,7 @@ export class AudioMixSessionModel {
         mixedFrameCount: 0,
         participants: participants.map((participant) => ({
           ...participant,
+          inputLevel: 0,
           outputLevel: 0,
           gainDb: 0,
           rmsDbfs: -120,

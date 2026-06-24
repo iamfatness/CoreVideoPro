@@ -61,7 +61,7 @@ describe("AudioMixSessionModel", () => {
       participants: [
         expect.objectContaining({
           participantId: "local-machine-audio",
-          inputLevel: 82,
+          inputLevel: 0,
           outputLevel: 0,
           rmsDbfs: -120,
           peakDbfs: -120,
