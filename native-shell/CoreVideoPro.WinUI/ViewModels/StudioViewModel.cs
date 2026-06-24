@@ -3824,6 +3824,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BuildAudioRoutingMatrix();
         RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
+        _ = TrySyncMediaCoreAsync();
     }
 
     private void NormalizeCaptureAudioAssignments()
@@ -4664,14 +4665,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : lowered.Contains("program frame", StringComparison.Ordinal) ||
                      lowered.Contains("program pixels", StringComparison.Ordinal)
             ? "Program video is not ready. Put a valid source on Program before streaming."
-            : rtmpContext ||
-              lowered.Contains("connection refused", StringComparison.Ordinal)
-                ? "RTMP output failed. Check the server URL, stream key, and network."
-                : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
-                    ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
+            : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
+                ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
+                : rtmpContext ||
+                  lowered.Contains("connection refused", StringComparison.Ordinal)
+                    ? "RTMP output failed. Check the server URL, stream key, and network."
                     : mediaCoreFailure
                         ? "Media core failed while starting stream. Open Details for the native error."
-                    : "Media core rejected the stream request.";
+                        : "Media core rejected the stream request.";
 
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
         return $"Streaming {normalizedAction} failed: {prefix} {detail}";

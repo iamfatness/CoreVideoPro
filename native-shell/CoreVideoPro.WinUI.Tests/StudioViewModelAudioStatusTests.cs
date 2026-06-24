@@ -69,6 +69,19 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_PrioritizesFfmpegRuntimeOverRtmpContext()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: start-program-output failed: RTMP sender requires FFmpeg runtime on this machine (ffmpeg.exe was not found)."));
+
+        Assert.StartsWith(
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
+            status);
+        Assert.Equal("FFmpeg not ready", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_RemovesRtmpSenderWrappers()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(
