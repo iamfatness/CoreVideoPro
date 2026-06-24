@@ -44,6 +44,7 @@
                     <Button Content="6-up" Tag="six-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
                     <Button Content="7-up" Tag="seven-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
                     <Button Content="8-up" Tag="eight-up" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
+                    <Button Content="Grid" Tag="grid" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
                     <Button Content="PIP" Tag="pip" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
                     <Button Content="Speaker+slides" Tag="speaker-slides" Click="OnPresetClick" Style="{StaticResource OperatorGhostButton}" />
                 </StackPanel>
