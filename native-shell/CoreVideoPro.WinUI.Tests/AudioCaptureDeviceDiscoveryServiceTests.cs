@@ -7,7 +7,7 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class AudioCaptureDeviceDiscoveryServiceTests
 {
     [Fact]
-    public void SortForOperatorSelection_PrefersPhysicalInputBeforeLoopbackForLocalMachineAudioDefault()
+    public void SortForOperatorSelection_PrefersLoopbackBeforePhysicalInputForLocalMachineAudio()
     {
         var sorted = AudioCaptureDeviceDiscoveryService.SortForOperatorSelection(
             [
@@ -17,8 +17,8 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("loopback", "wasapi-loopback", "Studio monitor output")
             ]);
 
-        Assert.Equal("mic", sorted[0].Id);
-        Assert.Equal("loopback", sorted[1].Id);
+        Assert.Equal("loopback", sorted[0].Id);
+        Assert.Equal("mic", sorted[1].Id);
         Assert.Equal("embedded", sorted[2].Id);
         Assert.Equal("asio", sorted[3].Id);
     }
@@ -59,10 +59,10 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
     }
 
     [Theory]
-    [InlineData("wasapi-input", 0)]
-    [InlineData("wasapi-capture", 0)]
-    [InlineData("wasapi-loopback", 1)]
-    [InlineData("loopback", 1)]
+    [InlineData("wasapi-loopback", 0)]
+    [InlineData("loopback", 0)]
+    [InlineData("wasapi-input", 1)]
+    [InlineData("wasapi-capture", 1)]
     [InlineData("embedded-capture-audio", 2)]
     [InlineData("asio-input", 3)]
     [InlineData("unknown", 4)]
