@@ -1409,6 +1409,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnLocalAudioSourceEnabledChanged(bool value)
     {
+        if (value &&
+            AudioCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)) is { } selected &&
+            !AudioCaptureDeviceDiscoveryService.IsLoopbackSource(selected))
+        {
+            var defaultLocalDeviceId = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(AudioCaptureDevices);
+            if (!string.IsNullOrWhiteSpace(defaultLocalDeviceId) &&
+                !string.Equals(defaultLocalDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal))
+            {
+                SelectedLocalAudioCaptureDeviceId = defaultLocalDeviceId;
+                return;
+            }
+        }
+
         BuildAudioRoutingMatrix();
         RefreshAudioParticipantRows();
         RefreshLocalAudioSourceBindings();
@@ -3572,7 +3586,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(selectedAudioId) ||
             AudioCaptureDevices.All(device => !string.Equals(device.Id, selectedAudioId, StringComparison.Ordinal)))
         {
-            SelectedLocalAudioCaptureDeviceId = AudioCaptureDevices.FirstOrDefault()?.Id ?? string.Empty;
+            SelectedLocalAudioCaptureDeviceId = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(AudioCaptureDevices);
         }
         else if (!string.Equals(SelectedLocalAudioCaptureDeviceId, selectedAudioId, StringComparison.Ordinal))
         {

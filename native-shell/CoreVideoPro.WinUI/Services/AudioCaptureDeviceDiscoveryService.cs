@@ -53,6 +53,23 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+    public static string ResolveDefaultLocalMachineAudioDeviceId(IEnumerable<AudioCaptureDevice> devices) =>
+        devices
+            .Where(IsLoopbackSource)
+            .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(device => device.Id)
+            .FirstOrDefault() ??
+        devices
+            .OrderBy(device => SourceKindPriority(device.SourceKind))
+            .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(device => device.Id)
+            .FirstOrDefault() ??
+        string.Empty;
+
+    public static bool IsLoopbackSource(AudioCaptureDevice device) =>
+        device.SourceKind?.Trim().ToLowerInvariant() is "wasapi-loopback" or "loopback" or "wasapi-render-loopback" or "system-loopback";
+
     public static int SourceKindPriority(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() switch
         {

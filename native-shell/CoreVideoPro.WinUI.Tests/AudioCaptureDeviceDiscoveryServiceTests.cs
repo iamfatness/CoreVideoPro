@@ -23,6 +23,41 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
         Assert.Equal("asio", sorted[3].Id);
     }
 
+    [Fact]
+    public void ResolveDefaultLocalMachineAudioDeviceId_PrefersLoopbackOverMicrophone()
+    {
+        var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
+            [
+                Device("mic", "wasapi-input", "USB microphone"),
+                Device("loopback", "wasapi-loopback", "Studio monitor output")
+            ]);
+
+        Assert.Equal("loopback", selected);
+    }
+
+    [Fact]
+    public void ResolveDefaultLocalMachineAudioDeviceId_FallsBackToFirstUsableDeviceWhenNoLoopbackExists()
+    {
+        var selected = AudioCaptureDeviceDiscoveryService.ResolveDefaultLocalMachineAudioDeviceId(
+            [
+                Device("asio", "asio-input", "Focusrite USB ASIO"),
+                Device("mic", "wasapi-input", "USB microphone")
+            ]);
+
+        Assert.Equal("mic", selected);
+    }
+
+    [Theory]
+    [InlineData("wasapi-loopback", true)]
+    [InlineData("loopback", true)]
+    [InlineData("wasapi-render-loopback", true)]
+    [InlineData("system-loopback", true)]
+    [InlineData("wasapi-input", false)]
+    public void IsLoopbackSource_IdentifiesRenderEndpointCaptureKinds(string sourceKind, bool expected)
+    {
+        Assert.Equal(expected, AudioCaptureDeviceDiscoveryService.IsLoopbackSource(Device("device", sourceKind, "Device")));
+    }
+
     [Theory]
     [InlineData("wasapi-input", 0)]
     [InlineData("wasapi-capture", 0)]
