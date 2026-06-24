@@ -560,14 +560,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramLowerThirdKey.IsVisible ? "Lower third out" : "Lower third in";
 
     public string StudioLowerThirdCompactLabel =>
-        ProgramLowerThirdKey.IsVisible ? "LT out" : "LT in";
+        "Lower third";
 
     public string StudioLowerThirdCompactStatus =>
         ProgramLowerThirdKey.IsVisible
-            ? ProgramLowerThirdKey.PhaseLabel
+            ? FormatLowerThirdPhaseLabel(ProgramLowerThirdKey.Phase)
             : ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not null
-                ? "ready"
-                : "no source";
+                ? "Ready"
+                : "No source";
 
     public string StudioLowerThirdSourceLabel =>
         ProgramLowerThirdKey.IsVisible
@@ -7924,6 +7924,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         (productionMode == ProductionMode.SetAndForget &&
          automationLowerThirdsEnabled &&
          !automationSuppressed);
+
+    public static string FormatLowerThirdPhaseLabel(string? phase) =>
+        phase?.Trim().ToLowerInvariant() switch
+        {
+            "building-in" => "Building in",
+            "building-out" => "Building out",
+            "on-air" => "On",
+            _ => "On"
+        };
 
     private LowerThirdSource? ResolveProgramLowerThirdSource(IReadOnlyList<SourceRoute> workingRoutes)
     {

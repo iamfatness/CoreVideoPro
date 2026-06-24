@@ -782,6 +782,16 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData("building-in", "Building in")]
+    [InlineData("building-out", "Building out")]
+    [InlineData("on-air", "On")]
+    [InlineData("", "On")]
+    public void FormatLowerThirdPhaseLabel_UsesOperatorFacingLabels(string phase, string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatLowerThirdPhaseLabel(phase));
+    }
+
+    [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]
     [InlineData(4.15, 4.2)]
