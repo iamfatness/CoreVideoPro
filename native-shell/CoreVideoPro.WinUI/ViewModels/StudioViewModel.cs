@@ -2536,14 +2536,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void OpenProductionSettings()
     {
+        OpenProductionSettingsSection("output");
+    }
+
+    [RelayCommand]
+    private void OpenProductionSettingsSection(string? section)
+    {
         if (_productionSettingsWindow is not null)
         {
+            _productionSettingsWindow.ShowSection(section);
             _productionSettingsWindow.Activate();
             return;
         }
 
         _productionSettingsWindow = new ProductionSettingsWindow(this);
         _productionSettingsWindow.WindowClosed += OnProductionSettingsWindowClosed;
+        _productionSettingsWindow.ShowSection(section);
         _productionSettingsWindow.Activate();
     }
 

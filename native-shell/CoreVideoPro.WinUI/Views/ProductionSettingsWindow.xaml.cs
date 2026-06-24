@@ -18,12 +18,29 @@ public sealed partial class ProductionSettingsWindow : Window
         InitializeComponent();
         Closed += OnWindowClosed;
         ApplyChromeAndSize();
-        ShowPanel(OutputPanel);
+        ShowSection("output");
     }
 
     public StudioViewModel ViewModel { get; }
 
     public event EventHandler? WindowClosed;
+
+    public void ShowSection(string? section)
+    {
+        var normalized = string.IsNullOrWhiteSpace(section)
+            ? "output"
+            : section.Trim().ToLowerInvariant();
+
+        ShowPanel(normalized switch
+        {
+            "stream" or "streaming" => StreamingPanel,
+            "audio" => AudioPanel,
+            "record" or "recording" => RecordingPanel,
+            "license" or "plan" => LicensePanel,
+            "ffmpeg" => FfmpegPanel,
+            _ => OutputPanel
+        });
+    }
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
@@ -31,17 +48,17 @@ public sealed partial class ProductionSettingsWindow : Window
         WindowClosed?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnOutputClicked(object sender, RoutedEventArgs args) => ShowPanel(OutputPanel);
+    private void OnOutputClicked(object sender, RoutedEventArgs args) => ShowSection("output");
 
-    private void OnStreamingClicked(object sender, RoutedEventArgs args) => ShowPanel(StreamingPanel);
+    private void OnStreamingClicked(object sender, RoutedEventArgs args) => ShowSection("streaming");
 
-    private void OnAudioClicked(object sender, RoutedEventArgs args) => ShowPanel(AudioPanel);
+    private void OnAudioClicked(object sender, RoutedEventArgs args) => ShowSection("audio");
 
-    private void OnRecordingClicked(object sender, RoutedEventArgs args) => ShowPanel(RecordingPanel);
+    private void OnRecordingClicked(object sender, RoutedEventArgs args) => ShowSection("recording");
 
-    private void OnLicenseClicked(object sender, RoutedEventArgs args) => ShowPanel(LicensePanel);
+    private void OnLicenseClicked(object sender, RoutedEventArgs args) => ShowSection("license");
 
-    private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowPanel(FfmpegPanel);
+    private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowSection("ffmpeg");
 
     private void ShowPanel(FrameworkElement activePanel)
     {
