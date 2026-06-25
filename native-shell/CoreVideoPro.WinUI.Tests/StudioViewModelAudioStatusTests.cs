@@ -146,7 +146,7 @@ public sealed class StudioViewModelAudioStatusTests
             "settings",
             new InvalidOperationException("media-core sync failed: output sender failed during sync: RTMP sender exited. Connection refused"));
 
-        Assert.Equal("Stream settings failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Equal("RTMP output failed", StudioViewModel.FormatOutputStatusBrief(fullStatus));
         Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
     }
 

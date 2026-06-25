@@ -4692,48 +4692,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var normalized = status.Trim();
         if (normalized.StartsWith("Streaming start failed:", StringComparison.OrdinalIgnoreCase))
         {
-            if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Program video not ready";
-            }
-
-            if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
-            {
-                return "RTMP output failed";
-            }
-
-            if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
-            {
-                return "FFmpeg not ready";
-            }
-
-            if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Media core rejected stream";
-            }
-
-            if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
-            {
-                if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
-                    normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "Native core exited";
-                }
-
-                if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "Native core pipe failed";
-                }
-
-                return "Media core failed";
-            }
-
-            if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Media core busy";
-            }
-
-            return "Streaming start failed";
+            return FormatStreamingFailureBrief(normalized, "Streaming start failed");
         }
 
         if (normalized.StartsWith("Streaming stop failed:", StringComparison.OrdinalIgnoreCase))
@@ -4748,7 +4707,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (normalized.StartsWith("Streaming settings failed:", StringComparison.OrdinalIgnoreCase))
         {
-            return "Stream settings failed";
+            return FormatStreamingFailureBrief(normalized, "Stream settings failed");
         }
 
         if (normalized.StartsWith("RTMP output failed:", StringComparison.OrdinalIgnoreCase) ||
@@ -4792,6 +4751,52 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         return normalized.Length <= 28 ? normalized : $"{normalized[..25]}...";
+    }
+
+    private static string FormatStreamingFailureBrief(string normalized, string fallback)
+    {
+        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Program video not ready";
+        }
+
+        if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return "RTMP output failed";
+        }
+
+        if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return "FFmpeg not ready";
+        }
+
+        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Media core rejected stream";
+        }
+
+        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
+                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Native core exited";
+            }
+
+            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Native core pipe failed";
+            }
+
+            return "Media core failed";
+        }
+
+        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Media core busy";
+        }
+
+        return fallback;
     }
 
     public static bool ShouldShowOutputStatusDetails(string? status)
