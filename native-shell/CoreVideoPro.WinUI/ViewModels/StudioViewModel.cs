@@ -963,8 +963,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string StreamBitrateSummary =>
         FormatStreamBitrateSummary(StreamTargetBitrateMbps);
 
+    public string CompactStreamOutputLabel =>
+        FormatTransportStreamConfigLabel(StreamTargetBitrateMbps);
+
     public string RecordingBitrateSummary =>
         FormatStreamBitrateSummary(RecordingTargetBitrateMbps);
+
+    public string CompactRecordingOutputLabel =>
+        FormatTransportRecordingConfigLabel(RecordingFormat, RecordingTargetBitrateMbps);
 
     public string RecordingRenderProfileSummary =>
         $"{RecordingRenderResolution} - {NormalizeFpsText(RecordingRenderFps)} fps - {FormatVideoCodec(RecordingVideoCodec)} - {NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0} Mbps";
@@ -6200,7 +6206,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanvasProfileSummary));
         OnPropertyChanged(nameof(StreamRenderProfileSummary));
         OnPropertyChanged(nameof(StreamBitrateSummary));
+        OnPropertyChanged(nameof(CompactStreamOutputLabel));
         OnPropertyChanged(nameof(RecordingBitrateSummary));
+        OnPropertyChanged(nameof(CompactRecordingOutputLabel));
         OnPropertyChanged(nameof(RecordingRenderProfileSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(RecordingOptionsSummary));
@@ -6267,6 +6275,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async void OnRecordingOutputOptionChanged()
     {
         OnPropertyChanged(nameof(RecordingOptionsSummary));
+        OnPropertyChanged(nameof(CompactRecordingOutputLabel));
         RefreshTransportState();
         SaveProductionOutputPreferences();
 

@@ -944,21 +944,29 @@
                             </Button.Flyout>
                         </Button>
                     </StackPanel>
-                    <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button MinWidth="92" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RecordButtonForeground, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Ellipse Width="8" Height="8" Fill="#FFF8F8"
-                                     Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}" />
-                            <FontIcon Glyph="&#xE1CE;" FontSize="16"
-                                      Visibility="{x:Bind ViewModel.RecordIconVisibility, Mode=OneWay}" />
-                            <TextBlock Text="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}" />
+                        <StackPanel Spacing="1">
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                                <Ellipse Width="8" Height="8" Fill="#FFF8F8"
+                                         Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}" />
+                                <FontIcon Glyph="&#xE1CE;" FontSize="16"
+                                          Visibility="{x:Bind ViewModel.RecordIconVisibility, Mode=OneWay}" />
+                                <TextBlock Text="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.CompactRecordingOutputLabel, Mode=OneWay}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Opacity="0.78"
+                                       TextTrimming="CharacterEllipsis"
+                                       HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            ToolTipService.ToolTip="Recording bitrate, format, and folder">
+                            ToolTipService.ToolTip="Set recording bitrate, format, codec, size, and folder">
                         <FontIcon Glyph="&#xE713;" FontSize="14" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
@@ -1042,18 +1050,26 @@
                             </Flyout>
                         </Button.Flyout>
                     </Button>
-                    <Button MinWidth="86" MinHeight="40" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button MinWidth="92" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <FontIcon Glyph="&#xE958;" FontSize="16" />
-                            <TextBlock Text="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}" />
+                        <StackPanel Spacing="1">
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                                <FontIcon Glyph="&#xE958;" FontSize="16" />
+                                <TextBlock Text="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.CompactStreamOutputLabel, Mode=OneWay}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Opacity="0.78"
+                                       TextTrimming="CharacterEllipsis"
+                                       HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
                     <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            ToolTipService.ToolTip="Streaming destinations, bitrate, and encoder">
+                            ToolTipService.ToolTip="Set streaming destinations, bitrate, encoder, size, and codec">
                         <FontIcon Glyph="&#xE713;" FontSize="14" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
