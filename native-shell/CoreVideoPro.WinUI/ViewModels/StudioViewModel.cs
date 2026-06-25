@@ -5141,7 +5141,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? audio.MonitorFramesPlayed > 0
                 ? $"playback {audio.MonitorFramesPlayed}"
                 : $"playback none ({FormatMonitorStatus(audio)})"
-            : "playback off";
+            : "monitor off";
         var sourceDetail = capture.Sources.FirstOrDefault(source => source.CaptureStreaming || source.CaptureFramesReceived > 0) ??
             capture.Sources.FirstOrDefault();
         var sourceLabel = sourceDetail is null

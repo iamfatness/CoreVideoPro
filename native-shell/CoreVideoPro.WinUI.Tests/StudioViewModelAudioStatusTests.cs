@@ -572,7 +572,46 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM none | mix none | PGM none | MON none | playback off | check source PCM - Desk Mix (loopback, streaming, no frames)", status);
+        Assert.Equal("sources 1/1 | PCM none | mix none | PGM none | MON none | monitor off | check source PCM - Desk Mix (loopback, streaming, no frames)", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsMonitorOffWhenMonBusHasSignal()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = false,
+            MonitorStatus = "muted"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 960,
+            Sources =
+            [
+                new NativeMediaCoreCaptureAudioSource
+                {
+                    CaptureDeviceId = "local-machine-audio",
+                    AudioDeviceName = "Desk Mix",
+                    AudioSourceKind = "wasapi-loopback",
+                    Paired = true,
+                    CaptureStreaming = true,
+                    CaptureFramesReceived = 960
+                }
+            ]
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | monitor off - Desk Mix (wasapi-loopback, 960 frames)", status);
     }
 
     [Fact]
