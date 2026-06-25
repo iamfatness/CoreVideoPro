@@ -241,6 +241,49 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void TryFormatStreamingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "warning",
+                    Message = "RTMP sender requires FFmpeg runtime on this machine (ffmpeg.exe was not found)."
+                }
+            ]
+        };
+
+        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.StartsWith(
+            "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
+            failureStatus);
+        Assert.Equal("FFmpeg not ready", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartHealthFailure_IgnoresIdleOutputSnapshot()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "idle",
+                    Message = "RTMP idle."
+                }
+            ]
+        };
+
+        Assert.False(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.Equal(string.Empty, failureStatus);
+    }
+
+    [Fact]
     public void FormatAudioMonitorEngineStatus_UsesFramesAndMonitorStateWithoutMasterPercent()
     {
         var audio = new NativeMediaCoreAudioMixSession

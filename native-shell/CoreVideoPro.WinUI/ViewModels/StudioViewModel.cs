@@ -2202,7 +2202,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try
             {
                 await EnsureMediaCoreRunningAsync(starting ? "Starting media core for stream..." : "Updating media core...").ConfigureAwait(false);
-                await SyncActiveSceneAsync().ConfigureAwait(false);
+                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
+                if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
+                {
+                    RunOnUiThread(() =>
+                    {
+                        Streaming = previousStreaming;
+                        RefreshOutputStatus();
+                        OutputStatus = healthFailureStatus;
+                        OutputSessionStatus = OutputStatus;
+                    });
+                    _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
+                    return;
+                }
+
                 RunOnUiThread(() =>
                 {
                     OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
@@ -2294,7 +2307,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             await Task.Delay(150).ConfigureAwait(false);
             try
             {
-                await SyncActiveSceneAsync().ConfigureAwait(false);
+                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
+                if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
+                {
+                    RunOnUiThread(() =>
+                    {
+                        Streaming = ResolveStreamingStateAfterFailedRetry(starting);
+                        RefreshOutputStatus();
+                        OutputStatus = healthFailureStatus;
+                        OutputSessionStatus = OutputStatus;
+                    });
+                    _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
+                    return;
+                }
+
                 RunOnUiThread(() =>
                 {
                     OutputStatus = starting ? "Streaming start requested." : "Streaming stopped.";
@@ -2328,6 +2354,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
+
+    public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
+    {
+        var detail = snapshot.OutputHealth
+            .Where(item =>
+                item.Status is "failed" or "warning" &&
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Message)
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+
+        detail ??= snapshot.OutputSenderSession.Senders
+            .Where(static sender => sender.Status is "failed" or "warning")
+            .Select(static sender => sender.Warning ?? sender.LastError)
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+
+        detail ??= snapshot.OutputSenderSession.Warnings
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            failureStatus = string.Empty;
+            return false;
+        }
+
+        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
+        return true;
+    }
 
     [RelayCommand]
     private void SetViewMode(string mode)
@@ -5444,13 +5497,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
     }
 
-    private async Task SyncActiveSceneAsync()
+    private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync()
     {
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(BuildProductionSyncContext());
         var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(false);
         ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
         CommandStatus = $"{scene.Name} synced to media core";
+        return snapshot;
     }
 
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
