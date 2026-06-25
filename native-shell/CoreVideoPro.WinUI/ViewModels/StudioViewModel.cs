@@ -4556,7 +4556,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var signature =
             $"{LocalAudioSourceEnabled}|{SelectedLocalAudioCaptureDeviceId}|{SelectedAudioMonitorDeviceId}|{AudioMonitoringEnabled}|" +
             $"{audio.Status}|{audio.MixedFrameCount}|{audio.MonitorStatus}|{audio.MonitorFramesPlayed}|" +
-            $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|{capture.CaptureFramesReceived}|{capture.RoutedMasterFrames}|{capture.RoutedMonitorFrames}|" +
+            $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|{capture.CaptureFramesReceived}|{capture.RoutedMasterFrames}|{capture.RoutedMonitorFrames}|{capture.FallbackMonitorFrames}|" +
             $"{matrix.Status}|{matrix.RoutedSendCount}|{matrix.ProgramTapFrames}|{matrix.BusTaps.Count}|" +
             $"{FirstOrEmpty(audio.Warnings)}|{FirstOrEmpty(capture.Warnings)}|{FirstOrEmpty(matrix.Warnings)}|" +
             $"{BuildCaptureAudioSourceTelemetry(capture)}";
@@ -4587,6 +4587,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             $"captureFrames={capture.CaptureFramesReceived} " +
             $"routedMaster={capture.RoutedMasterFrames} " +
             $"routedMon={capture.RoutedMonitorFrames} " +
+            $"fallbackMon={capture.FallbackMonitorFrames} " +
             $"routeStatus={TelemetryValue(matrix.Status)} " +
             $"routedSends={matrix.RoutedSendCount} " +
             $"programTapFrames={matrix.ProgramTapFrames} " +
@@ -4987,9 +4988,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (audio.MonitorEnabled &&
             audio.MonitorFramesPlayed > 0 &&
             capture.RoutedMonitorFrames <= 0 &&
-            (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
+            (capture.FallbackMonitorFrames > 0 || capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
         {
-            return $"{status} - playback via mixer monitor bus; no routed MON bus";
+            return $"{status} - fallback monitor mix {Math.Max(capture.FallbackMonitorFrames, (int)audio.MonitorFramesPlayed)} frames; no routed MON bus";
         }
 
         if (audio.MonitorEnabled && capture.RoutedMonitorFrames <= 0)
@@ -5037,9 +5038,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (audio.MonitorFramesPlayed > 0 &&
             capture.RoutedMonitorFrames <= 0 &&
-            (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
+            (capture.FallbackMonitorFrames > 0 || capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0))
         {
-            return $"Monitor {FormatMonitorStatus(audio)} - {device} - playback via mixer monitor bus; no routed MON bus";
+            return $"Monitor {FormatMonitorStatus(audio)} - {device} - fallback monitor mix {Math.Max(capture.FallbackMonitorFrames, (int)audio.MonitorFramesPlayed)} frames; no routed MON bus";
         }
 
         return $"Monitor {FormatMonitorStatus(audio)} - {device} - {monBus}";
@@ -5054,6 +5055,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (capture.CaptureFramesReceived > 0 || capture.RoutedMasterFrames > 0)
         {
+            if (capture.FallbackMonitorFrames > 0)
+            {
+                return $"fallback monitor mix {capture.FallbackMonitorFrames} frames; no routed MON bus";
+            }
+
             return $"no PCM on MON bus; source PCM {capture.CaptureFramesReceived}, PGM {capture.RoutedMasterFrames}";
         }
 
@@ -5092,6 +5098,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "PGM none";
         var monState = capture.RoutedMonitorFrames > 0
             ? $"MON {capture.RoutedMonitorFrames}"
+            : capture.FallbackMonitorFrames > 0
+                ? $"MON fallback {capture.FallbackMonitorFrames}"
             : "MON none";
         var playbackState = audio.MonitorEnabled
             ? audio.MonitorFramesPlayed > 0
@@ -5124,6 +5132,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (capture.RoutedMasterFrames > 0 &&
             capture.RoutedMonitorFrames <= 0 &&
+            capture.FallbackMonitorFrames <= 0 &&
             (!audio.MonitorEnabled || audio.MonitorFramesPlayed <= 0))
         {
             return " | route source to MON";
@@ -5224,7 +5233,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var pcmState = capture.CaptureFramesReceived > 0
             ? $"{capture.CaptureFramesReceived} PCM frames received"
             : "no PCM frames received";
-        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - master {capture.RoutedMasterFrames}, MON {capture.RoutedMonitorFrames}, monitor {capture.MonitorFramesPlayed}";
+        var monitorState = capture.RoutedMonitorFrames > 0
+            ? $"MON {capture.RoutedMonitorFrames}"
+            : capture.FallbackMonitorFrames > 0
+                ? $"MON fallback {capture.FallbackMonitorFrames}"
+                : "MON 0";
+        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - master {capture.RoutedMasterFrames}, {monitorState}, monitor {capture.MonitorFramesPlayed}";
     }
 
     private static string BuildAudioBusTapSummary(NativeMediaCoreAudioRoutingMatrix matrix)

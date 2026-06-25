@@ -115,6 +115,7 @@ public sealed class NativeMediaCoreCaptureAudioSources
     public long CaptureFramesReceived { get; init; }
     public int RoutedMasterFrames { get; init; }
     public int RoutedMonitorFrames { get; init; }
+    public int FallbackMonitorFrames { get; init; }
     public long MonitorFramesPlayed { get; init; }
     public IReadOnlyList<NativeMediaCoreCaptureAudioSource> Sources { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];

@@ -1586,6 +1586,10 @@ TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume
   ASSERT_NE(audio, nullptr);
   EXPECT_EQ(audio->getString("monitorStatus"), "playing");
   EXPECT_TRUE(audio->get("monitorFramesPlayed")->asNumber() > 0);
+  const auto* captureAudioSources = state.get("captureAudioSources");
+  ASSERT_NE(captureAudioSources, nullptr);
+  EXPECT_TRUE(captureAudioSources->get("fallbackMonitorFrames")->asNumber() > 0);
+  EXPECT_EQ(captureAudioSources->get("routedMonitorFrames")->asNumber(), 0);
 
   EXPECT_TRUE(monitor->active());
   EXPECT_GE(monitor->startCount, 1);

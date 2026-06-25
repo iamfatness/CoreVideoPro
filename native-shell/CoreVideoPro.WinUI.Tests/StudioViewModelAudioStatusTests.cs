@@ -479,7 +479,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatStudioMonitorSummary(audio, capture, true, "Studio Headphones");
 
-        Assert.Equal("Monitor 480 playback frames - Studio Headphones - playback via mixer monitor bus; no routed MON bus", status);
+        Assert.Equal("Monitor 480 playback frames - Studio Headphones - fallback monitor mix 480 frames; no routed MON bus", status);
     }
 
     [Fact]
@@ -530,7 +530,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioMonitorEngineStatus(audio, capture);
 
-        Assert.Equal("960 mixed frames - monitor 480 playback frames - playback via mixer monitor bus; no routed MON bus", status);
+        Assert.Equal("960 mixed frames - monitor 480 playback frames - fallback monitor mix 480 frames; no routed MON bus", status);
     }
 
     [Fact]
@@ -797,6 +797,36 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
         Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback 480", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_ShowsFallbackMonitorFramesSeparatelyFromRoutedMon()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program mix balanced",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio ready",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 0,
+            FallbackMonitorFrames = 480,
+            MonitorFramesPlayed = 480
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON fallback 480 | playback 480", status);
     }
 
     [Fact]

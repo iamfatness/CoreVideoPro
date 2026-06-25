@@ -2033,6 +2033,10 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   int64_t totalFramesReceived = 0;
   const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
   const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
+  const int fallbackMonitorFrames = routedMonitorFrames > 0 || !modules_.mixer
+                                        ? 0
+                                        : static_cast<int>(modules_.mixer->monitorBusPcm().size() /
+                                                           static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
   std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
   auto addWarning = [&](const std::string& warning) {
     if (!warning.empty() && warningSet.insert(warning).second) {
@@ -2121,6 +2125,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
           << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input; "
           << streamingCount << " streaming, " << totalFramesReceived << " PCM frames received; "
           << routedMasterFrames << " master bus frames, " << routedMonitorFrames << " MON bus frames, "
+          << fallbackMonitorFrames << " fallback monitor frames, "
           << audioMonitorFramesPlayed_ << " monitor playback frames.";
 
   return rpc::Json::Object{
@@ -2131,6 +2136,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       {"captureFramesReceived", static_cast<double>(totalFramesReceived)},
       {"routedMasterFrames", routedMasterFrames},
       {"routedMonitorFrames", routedMonitorFrames},
+      {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"sources", sources},
       {"warnings", warnings},
