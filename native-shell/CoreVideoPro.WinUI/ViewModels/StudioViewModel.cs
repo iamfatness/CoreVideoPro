@@ -6261,6 +6261,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private async void OnRecordingOutputOptionChanged()
     {
         OnPropertyChanged(nameof(RecordingOptionsSummary));
+        RefreshTransportState();
         SaveProductionOutputPreferences();
 
         if (!Recording || !_bridge.Running)
