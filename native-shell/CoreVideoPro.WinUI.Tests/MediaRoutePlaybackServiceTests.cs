@@ -1,5 +1,6 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.ViewModels;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -314,10 +315,47 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
     }
 
+    [Fact]
+    public void BuildProgramMediaRouteSignature_TracksOnlyMediaRouteIdentity()
+    {
+        var signature = StudioViewModel.BuildProgramMediaRouteSignature(
+        [
+            MediaRoute("intro", "route-b"),
+            new SourceRoute
+            {
+                Id = "route-guest",
+                Mode = SourceRouteMode.Fixed,
+                ParticipantId = "guest-1"
+            },
+            MediaRoute("outro", "route-a")
+        ]);
+
+        Assert.Equal("route-a:outro|route-b:intro", signature);
+    }
+
+    [Fact]
+    public void BuildProgramMediaRouteSignature_IgnoresFramingChangesForSameMediaRoute()
+    {
+        var before = MediaRoute("intro");
+        before.SourceScale = 1;
+        before.SourceOffsetX = 0;
+
+        var after = MediaRoute("intro");
+        after.SourceScale = 1.4;
+        after.SourceOffsetX = 0.25;
+
+        Assert.Equal(
+            StudioViewModel.BuildProgramMediaRouteSignature([before]),
+            StudioViewModel.BuildProgramMediaRouteSignature([after]));
+    }
+
     private static SourceRoute MediaRoute(string assetId) =>
+        MediaRoute(assetId, $"route-{assetId}");
+
+    private static SourceRoute MediaRoute(string assetId, string routeId) =>
         new()
         {
-            Id = $"route-{assetId}",
+            Id = routeId,
             Mode = SourceRouteMode.Fixed,
             ParticipantId = ShowInputRosterService.ToMediaSourceId(assetId)
         };

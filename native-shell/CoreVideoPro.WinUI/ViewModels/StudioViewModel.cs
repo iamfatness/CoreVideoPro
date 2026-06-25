@@ -2076,6 +2076,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var scene = PreviewScene;
         var trimmed = string.IsNullOrWhiteSpace(name) ? scene.Name : name.Trim();
+        var updatesProgramScene = string.Equals(scene.Id, ActiveSceneId, StringComparison.Ordinal);
+        var previousProgramMediaRoutes = updatesProgramScene
+            ? BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id))
+            : string.Empty;
         var duplicate = _scenes.FirstOrDefault(item =>
             !string.Equals(item.Id, scene.Id, StringComparison.Ordinal) &&
             string.Equals(item.Name, trimmed, StringComparison.OrdinalIgnoreCase));
@@ -2088,6 +2092,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         CopyPreviewRoutesToScene(scene.Id);
+        if (updatesProgramScene &&
+            !string.Equals(previousProgramMediaRoutes, BuildProgramMediaRouteSignature(GetMutableRoutes(scene.Id)), StringComparison.Ordinal))
+        {
+            _programMediaPlaybackTakeVersion++;
+            PromoteProgramMediaRouteToPlayback();
+        }
+
         if (!string.Equals(scene.Name, trimmed, StringComparison.Ordinal))
         {
             RenameScene(scene.Id, trimmed);
@@ -2098,6 +2109,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         RefreshProductionReadouts();
         SchedulePreviewRoutingRefresh();
+        if (updatesProgramScene)
+        {
+            OutputStatus = "Program updated";
+            _ = TrySyncMediaCoreAsync();
+        }
     }
 
     private void RenameScene(string sceneId, string name)
@@ -7711,6 +7727,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
             .ToList();
+
+    public static string BuildProgramMediaRouteSignature(IReadOnlyList<SourceRoute> routes)
+    {
+        var mediaRouteIds = routes
+            .Select(route =>
+            {
+                var resolved = route.Mode == SourceRouteMode.Fixed &&
+                    ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId)
+                        ? mediaAssetId
+                        : null;
+                return string.IsNullOrWhiteSpace(resolved)
+                    ? null
+                    : $"{route.Id}:{resolved}";
+            })
+            .OfType<string>()
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToList();
+
+        return string.Join("|", mediaRouteIds);
+    }
 
     private static bool IsVisualMediaAsset(MediaAsset asset)
     {
