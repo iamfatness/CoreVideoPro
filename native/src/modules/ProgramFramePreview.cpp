@@ -511,7 +511,8 @@ void fillSyntheticProgramFramePreview(
           frameForLayer = findFrameForParticipant(frames, layer.participantId);
         } else if (!layer.mediaAssetId.empty()) {
           color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
-          frameForLayer = findFrameForParticipant(frames, "media:" + layer.mediaAssetId);
+          const std::string frameSourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+          frameForLayer = findFrameForParticipant(frames, frameSourceId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
           color = compositor::colorFromParticipantId(frameForLayer->participantId);

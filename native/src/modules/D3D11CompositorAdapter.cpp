@@ -404,7 +404,8 @@ class D3D11Compositor final : public ICompositor {
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
         } else if (!layer.plan.mediaAssetId.empty()) {
           layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
-          layer.frame = frameForParticipant(frames, "media:" + layer.plan.mediaAssetId);
+          const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
+          layer.frame = frameForParticipant(frames, frameSourceId);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);

@@ -96,6 +96,20 @@ bool isStillImagePath(const std::string& path) {
          lower.ends_with(".bmp") || lower.ends_with(".tif") || lower.ends_with(".tiff");
 }
 
+std::string mediaFrameSourceId(const CompositorRenderPlanLayer& layer) {
+  return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+}
+
+std::string mediaLayerPlaybackKey(const CompositorRenderPlanLayer& layer) {
+  return layer.mediaPlaybackKey.empty()
+             ? layer.mediaAssetId + ":" + (layer.mediaAssetPlaying ? "playing" : "paused")
+             : layer.mediaPlaybackKey;
+}
+
+std::string mediaLayerStateKey(const CompositorRenderPlanLayer& layer) {
+  return mediaFrameSourceId(layer) + "|" + normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer);
+}
+
 bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, VideoFrame& frame) {
   if (!factory) {
     return false;
@@ -173,11 +187,11 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
         continue;
       }
-      if (!seen.insert(layer.mediaAssetId).second) {
+      if (!seen.insert(mediaLayerStateKey(layer)).second) {
         continue;
       }
       VideoFrame frame;
-      frame.participantId = "media:" + layer.mediaAssetId;
+      frame.participantId = mediaFrameSourceId(layer);
       frame.timestampMs = timestampMs;
       if (decodeLayer(layer, timestampMs, frame) && frame.hasPixels()) {
         frames.push_back(std::move(frame));
@@ -201,18 +215,17 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
   };
 
   bool decodeLayer(const CompositorRenderPlanLayer& layer, int64_t timestampMs, VideoFrame& frame) {
-    auto& state = states_[layer.mediaAssetId];
+    const std::string frameSourceId = mediaFrameSourceId(layer);
+    auto& state = states_[frameSourceId];
     const auto path = normalizeMediaPath(layer.mediaAssetPath);
     if (state.path != path) {
       state = {};
       state.path = path;
     }
-    const std::string playbackKey = layer.mediaPlaybackKey.empty()
-                                        ? layer.mediaAssetId + ":" + (layer.mediaAssetPlaying ? "playing" : "paused")
-                                        : layer.mediaPlaybackKey;
+    const std::string playbackKey = mediaLayerPlaybackKey(layer);
     if (isStillImagePath(path)) {
       if (!state.imageLoaded) {
-        state.lastFrame.participantId = "media:" + layer.mediaAssetId;
+        state.lastFrame.participantId = frameSourceId;
         if (!copyWicImageToFrame(wicFactory_.get(), path, state.lastFrame)) {
           warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be decoded as an image.");
           return false;
@@ -220,6 +233,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
         state.imageLoaded = true;
       }
       frame = state.lastFrame;
+      frame.participantId = frameSourceId;
       frame.timestampMs = timestampMs;
       return true;
     }
@@ -228,6 +242,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       state.playbackKey = playbackKey;
       if (state.lastFrame.hasPixels()) {
         frame = state.lastFrame;
+        frame.participantId = frameSourceId;
         frame.timestampMs = timestampMs;
         return true;
       }
@@ -247,12 +262,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (state.ended) {
       if (state.lastFrame.hasPixels()) {
         frame = state.lastFrame;
+        frame.participantId = frameSourceId;
         frame.timestampMs = timestampMs;
         return true;
       }
       return false;
     }
-    if (!readNextVideoFrame(layer.mediaAssetId, state, timestampMs)) {
+    if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) {
       return false;
     }
     frame = state.lastFrame;
@@ -277,7 +293,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     return true;
   }
 
-  bool readNextVideoFrame(const std::string& assetId, AssetState& state, int64_t timestampMs) {
+  bool readNextVideoFrame(const std::string& assetId, const std::string& frameSourceId, AssetState& state, int64_t timestampMs) {
     if (!state.reader) {
       return false;
     }
@@ -324,7 +340,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     buffer->Unlock();
 
     VideoFrame frame;
-    frame.participantId = "media:" + assetId;
+    frame.participantId = frameSourceId;
     frame.width = static_cast<int>(width);
     frame.height = static_cast<int>(height);
     frame.naturalWidth = frame.width;

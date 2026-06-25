@@ -128,14 +128,16 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       int64_t timestampMs) override {
     ++pollCount;
     seenPlaybackKeys.clear();
+    seenSourceIds.clear();
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
         continue;
       }
       seenPlaybackKeys.push_back(layer.mediaPlaybackKey);
+      seenSourceIds.push_back(layer.sourceId);
       corevideo::modules::VideoFrame frame;
-      frame.participantId = "media:" + layer.mediaAssetId;
+      frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
       frame.width = kWidth;
       frame.height = kHeight;
       frame.naturalWidth = kWidth;
@@ -165,6 +167,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
   uint8_t red = 0xf1;
   int64_t pollCount = 0;
   std::vector<std::string> seenPlaybackKeys;
+  std::vector<std::string> seenSourceIds;
 };
 
 class CapturingOutputSender final : public corevideo::modules::IOutputSender {
@@ -2929,6 +2932,56 @@ TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
   const bool matchesSynthetic =
       decoded[offset + 0] == syntheticBlue && decoded[offset + 1] == syntheticGreen && decoded[offset + 2] == syntheticRed;
   EXPECT_FALSE(matchesSynthetic);
+}
+
+TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDistinct) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-background-program"},
+          {"background",
+           corevideo::rpc::Json::Object{
+               {"mediaAssetId", "clip-intro"},
+               {"mediaAssetName", "Intro Background"},
+               {"mediaAssetKind", "video"},
+               {"mediaAssetPath", "C:\\media\\intro.mp4"},
+               {"playing", true},
+           }},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "media-main"},
+                             {"mode", "fixed"},
+                             {"mediaAssetId", "clip-intro"},
+                             {"mediaAssetName", "Intro"},
+                             {"mediaAssetKind", "video"},
+                             {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                             {"mediaPlaybackKey", "program-take:8:media:clip-intro"},
+                             {"mediaAssetPlaying", true},
+                             {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+                         },
+                     }},
+      },
+  });
+
+  ASSERT_TRUE(mediaFramesPtr->seenSourceIds.size() == 2u);
+  EXPECT_EQ(mediaFramesPtr->seenSourceIds[0], "background:clip-intro");
+  EXPECT_EQ(mediaFramesPtr->seenSourceIds[1], "media:clip-intro");
+  ASSERT_TRUE(mediaFramesPtr->seenPlaybackKeys.size() == 2u);
+  EXPECT_TRUE(mediaFramesPtr->seenPlaybackKeys[0].empty());
+  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys[1], "program-take:8:media:clip-intro");
+
+  const auto previews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  ASSERT_NE(preview, nullptr);
+  const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  EXPECT_FALSE(decoded.empty());
 }
 
 TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {

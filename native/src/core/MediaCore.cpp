@@ -2588,7 +2588,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
     modules::CompositorRenderPlanLayer layer;
     layer.layerId = "background:" + sceneBackground_.mediaAssetId;
     layer.kind = "media-background";
-    layer.sourceId = "media:" + sceneBackground_.mediaAssetId;
+    layer.sourceId = layer.layerId;
     layer.mediaAssetId = sceneBackground_.mediaAssetId;
     layer.mediaAssetName = sceneBackground_.mediaAssetName;
     layer.mediaAssetKind = sceneBackground_.mediaAssetKind;
