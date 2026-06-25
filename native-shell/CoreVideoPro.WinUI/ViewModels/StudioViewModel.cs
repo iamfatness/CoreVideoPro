@@ -2213,10 +2213,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _streamToggleInFlight = true;
         ToggleStreamingCommand.NotifyCanExecuteChanged();
         var starting = !Streaming;
+        LaunchLog.Write(
+            $"stream: toggle requested action={(starting ? "start" : "stop")} " +
+            $"rtmp={StreamRtmpEnabled} ndi={StreamNdiEnabled} srt={StreamSrtEnabled} " +
+            $"bitrate={NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0}Mbps " +
+            $"codec={StreamVideoCodec} encoder={StreamEncoderMode}");
         try
         {
             if (starting && ValidateStreamDestinations() is { Length: > 0 } validationError)
             {
+                LaunchLog.Write($"stream: start blocked ({validationError})");
                 OutputStatus = validationError;
                 OutputSessionStatus = validationError;
                 return;
@@ -2260,12 +2266,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     OutputStatus = starting ? "Streaming starting - applying..." : "Streaming stopping - applying...";
                     OutputSessionStatus = OutputStatus;
                 });
+                LaunchLog.Write($"stream: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
                 _ = RetryStreamSyncAsync(starting);
             }
             catch (Exception ex)
             {
                 var action = starting ? "start" : "stop";
                 var failureStatus = FormatStreamingFailureStatus(action, ex);
+                LaunchLog.Write($"stream: {action} failed {ex.GetType().Name}: {ex.Message}");
                 RunOnUiThread(() =>
                 {
                     Streaming = previousStreaming;
@@ -6344,8 +6352,40 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (_bridge.Running)
         {
-            _ = TrySyncMediaCoreAsync();
+            _ = SyncOutputProfileChangeAsync();
         }
+    }
+
+    private async Task SyncOutputProfileChangeAsync()
+    {
+        if (Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
+        {
+            LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
+            RunOnUiThread(() =>
+            {
+                Streaming = false;
+                RefreshOutputStatus();
+                OutputStatus = $"{validationError} Streaming stopped.";
+                OutputSessionStatus = OutputStatus;
+            });
+
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = $"Streaming stop sync failed after invalid output profile: {ex.Message}";
+                    OutputSessionStatus = OutputStatus;
+                });
+            }
+
+            return;
+        }
+
+        await TrySyncMediaCoreAsync().ConfigureAwait(false);
     }
 
     private async void OnStreamOutputOptionChanged()
