@@ -26,6 +26,15 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatMixerLufsLabel_UsesLufsUnitsNotDbfs()
+    {
+        var label = StudioViewModel.FormatMixerLufsLabel(-18.37);
+
+        Assert.Equal("-18.4 LUFS", label);
+        Assert.DoesNotContain("dBFS", label, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_LeadsWithFfmpegActionAndRemovesMediaCorePrefix()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(

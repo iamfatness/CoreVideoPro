@@ -7000,7 +7000,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         : NormalizeMixerPan(mix.Pan) < 0
                             ? $"L {Math.Abs(NormalizeMixerPan(mix.Pan)):0.00}"
                             : $"R {NormalizeMixerPan(mix.Pan):0.00}",
-                    LufsLabel = $"{NormalizeMeterDb(mix.Lufs):0.0} dBFS",
+                    LufsLabel = FormatMixerLufsLabel(mix.Lufs),
                     TruePeakLabel = $"{NormalizeMeterDb(mix.TruePeakDb):0.0} dBTP",
                     BusLabel = ResolvePrimaryAudioBusLabel(mix.ParticipantId),
                     InsertLabel = mix.PluginInserts.Count == 0
@@ -7075,7 +7075,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : pan < 0
                     ? $"L {Math.Abs(pan):0.00}"
                     : $"R {pan:0.00}",
-            LufsLabel = $"{lufs:0.0} dBFS",
+            LufsLabel = FormatMixerLufsLabel(lufs),
             TruePeakLabel = $"{truePeak:0.0} dBTP",
             BusLabel = ResolvePrimaryAudioBusLabel(mix.ParticipantId),
             InsertLabel = mix.PluginInserts.Count == 0
@@ -7115,6 +7115,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         target.MuteStateLabel = source.MuteStateLabel;
         target.IsSelected = source.IsSelected;
     }
+
+    public static string FormatMixerLufsLabel(double value) =>
+        $"{NormalizeMeterDb(value):0.0} LUFS";
 
     private void RefreshAudioProcessingTargets()
     {
