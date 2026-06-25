@@ -971,16 +971,40 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void EnsureDefaultLocalAudioRoutingSends_DoesNotDuplicateExplicitLocalRoutes()
+    public void EnsureDefaultLocalAudioRoutingSends_CompletesMissingProgramAndMonitorRoutes()
     {
         var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
             [new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", -6)],
             localAudioConfigured: true,
             localRoutingRowExists: false);
 
-        Assert.Single(sends);
-        Assert.Equal("mon", sends[0].BusId);
-        Assert.Equal(-6, sends[0].GainDb);
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("local-machine-audio", "mon", -6), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)));
+    }
+
+    [Fact]
+    public void EnsureDefaultLocalAudioRoutingSends_DoesNotDuplicateExistingLocalBusRoutes()
+    {
+        var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
+            [
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "master", -3),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-l", -2),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-r", -2),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", -6)
+            ],
+            localAudioConfigured: true,
+            localRoutingRowExists: true);
+
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("local-machine-audio", "master", -3), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-l", -2), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "pgm-r", -2), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "mon", -6), (send.SourceId, send.BusId, send.GainDb)));
     }
 
     [Theory]

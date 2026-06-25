@@ -5749,21 +5749,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         bool localRoutingRowExists)
     {
         _ = localRoutingRowExists;
-        if (!localAudioConfigured ||
-            sends.Any(send => string.Equals(send.SourceId, "local-machine-audio", StringComparison.Ordinal)))
+        if (!localAudioConfigured)
         {
             return sends;
         }
 
-        return sends
-            .Concat(new[]
+        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "mon"];
+        var completed = sends.ToList();
+        foreach (var busId in requiredBusIds)
+        {
+            if (!completed.Any(send =>
+                    string.Equals(send.SourceId, "local-machine-audio", StringComparison.Ordinal) &&
+                    string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
             {
-                new MediaCoreAudioRoutingSendWire("local-machine-audio", "master", 0),
-                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-l", 0),
-                new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-r", 0),
-                new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", 0)
-            })
-            .ToList();
+                completed.Add(new MediaCoreAudioRoutingSendWire("local-machine-audio", busId, 0));
+            }
+        }
+
+        return completed;
     }
 
     private MediaCoreAudioMixChannelWire BuildAudioMixChannelWire(
