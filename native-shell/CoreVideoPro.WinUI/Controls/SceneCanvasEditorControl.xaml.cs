@@ -33,6 +33,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     public SceneCanvasEditorControl()
     {
         InitializeComponent();
+        BuildPresetButtons();
         SizeChanged += OnEditorSizeChanged;
     }
 
@@ -81,6 +82,28 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         if (sender is Button button && button.Tag is string preset)
         {
             PresetRequested?.Invoke(this, preset);
+        }
+    }
+
+    private void BuildPresetButtons()
+    {
+        PresetButtonPanel.Children.Clear();
+        Resources.TryGetValue("OperatorGhostButton", out var style);
+        var buttonStyle = style as Style;
+        foreach (var option in SceneCanvasLayoutService.PresetOptions)
+        {
+            var button = new Button
+            {
+                Content = option.Label,
+                Tag = option.Value
+            };
+            if (buttonStyle is not null)
+            {
+                button.Style = buttonStyle;
+            }
+
+            button.Click += OnPresetClick;
+            PresetButtonPanel.Children.Add(button);
         }
     }
 

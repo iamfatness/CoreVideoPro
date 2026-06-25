@@ -69,6 +69,26 @@ public sealed class SceneCanvasIaTests
         Assert.Contains("eight-up", values);
     }
 
+    [Fact]
+    public void CanvasPresetOptions_AreTheOperatorButtonSourceInExpectedOrder()
+    {
+        Assert.Equal(
+            [
+                ("single", "Single"),
+                ("two-up", "2-up"),
+                ("three-up", "3-up"),
+                ("four-up", "4-up"),
+                ("five-up", "5-up"),
+                ("six-up", "6-up"),
+                ("seven-up", "7-up"),
+                ("eight-up", "8-up"),
+                ("pip", "Picture in picture"),
+                ("grid", "Grid"),
+                ("speaker-slides", "Speaker + slides")
+            ],
+            SceneCanvasLayoutService.PresetOptions.Select(option => (option.Value, option.Label)).ToList());
+    }
+
     [Theory]
     [InlineData("single", 1)]
     [InlineData("two-up", 2)]
