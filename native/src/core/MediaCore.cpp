@@ -2076,6 +2076,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     if (!source.audioDeviceId.empty() && metric == metricsByCaptureId.end()) {
       sourceWarning = "Audio source is paired but no native PCM adapter is streaming it.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);
+    } else if (metric != metricsByCaptureId.end() && !streaming && sourceWarning.empty() && !lastError.empty()) {
+      sourceWarning = "Audio capture adapter is not streaming: " + lastError;
+      addWarning(source.captureDeviceId + ": " + sourceWarning);
     } else if (streaming && framesReceived <= 0 && sourceWarning.empty()) {
       sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);

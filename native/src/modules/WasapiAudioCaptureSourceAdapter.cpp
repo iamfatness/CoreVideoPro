@@ -221,7 +221,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
 
     IMMDevice* device = resolveDevice(enumerator, config, state.loopback);
     if (device == nullptr) {
-      warn("WASAPI capture source " + state.participantId + " has no matching endpoint.");
+      failOpenSource(state, "WASAPI capture source " + state.participantId + " has no matching endpoint.");
       return;
     }
     state.endpointName = friendlyName(device);
@@ -233,17 +233,15 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
 
     HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&state.client));
     if (FAILED(hr) || state.client == nullptr) {
-      warn("Could not activate WASAPI capture client for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").");
+      failOpenSource(state, "Could not activate WASAPI capture client for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").", hr);
       safeReleaseCapture(device);
-      cleanup(state);
       return;
     }
     safeReleaseCapture(device);
 
     hr = state.client->GetMixFormat(&state.mixFormat);
     if (FAILED(hr) || state.mixFormat == nullptr || !describeFormat(state)) {
-      warn("Unsupported WASAPI capture format for " + state.participantId + ".");
-      cleanup(state);
+      failOpenSource(state, "Unsupported WASAPI capture format for " + state.participantId + ".", hr);
       return;
     }
 
@@ -251,26 +249,33 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     const DWORD flags = state.loopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
     hr = state.client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, kBufferDuration, 0, state.mixFormat, nullptr);
     if (FAILED(hr)) {
-      warn("Could not initialize WASAPI capture stream for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").");
-      cleanup(state);
+      failOpenSource(state, "Could not initialize WASAPI capture stream for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").", hr);
       return;
     }
 
     hr = state.client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&state.captureClient));
     if (FAILED(hr) || state.captureClient == nullptr) {
-      warn("Could not obtain WASAPI capture service for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").");
-      cleanup(state);
+      failOpenSource(state, "Could not obtain WASAPI capture service for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").", hr);
       return;
     }
 
     hr = state.client->Start();
     if (FAILED(hr)) {
-      warn("Could not start WASAPI capture for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").");
-      cleanup(state);
+      failOpenSource(state, "Could not start WASAPI capture for " + state.participantId + " (hr=" + hexHrCapture(hr) + ").", hr);
       return;
     }
 
     state.started = true;
+    sources_.push_back(std::move(state));
+  }
+
+  void failOpenSource(SourceState& state, std::string message, HRESULT hr = S_OK) {
+    if (FAILED(hr)) {
+      state.lastError = "WASAPI open hr=" + hexHrCapture(hr);
+    }
+    state.warning = std::move(message);
+    warn(state.warning);
+    cleanup(state);
     sources_.push_back(std::move(state));
   }
 

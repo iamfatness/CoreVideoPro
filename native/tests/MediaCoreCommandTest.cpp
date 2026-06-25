@@ -2140,6 +2140,54 @@ TEST(MediaCoreCommand, CaptureAudioSourcePreservesAdapterWarningWhenStreamStarts
       std::string::npos);
 }
 
+TEST(MediaCoreCommand, CaptureAudioSourceReportsAdapterLastErrorWhenNotStreaming) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* audioCapture = new RecordingAudioCaptureSource();
+  audioCapture->reportedMetrics.push_back(corevideo::modules::CaptureAudioSourceMetrics{
+      "local-machine-audio",
+      "local-machine-audio",
+      "wasapi-loopback",
+      false,
+      0,
+      0,
+      0,
+      0,
+      "default-render",
+      "Game",
+      "WASAPI open hr=0x88890004",
+      {}});
+  modules.audioCapture.reset(audioCapture);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+  });
+
+  const auto* captureAudio = state.get("captureAudioSources");
+  ASSERT_NE(captureAudio, nullptr);
+  ASSERT_TRUE(captureAudio->get("sources")->asArray().size() == 1u);
+  EXPECT_EQ(captureAudio->getString("status"), "warning");
+  EXPECT_NE(
+      captureAudio->get("sources")->asArray()[0].getString("warning").find("Audio capture adapter is not streaming"),
+      std::string::npos);
+  EXPECT_NE(
+      captureAudio->get("sources")->asArray()[0].getString("warning").find("0x88890004"),
+      std::string::npos);
+}
+
 TEST(MediaCoreCommand, CaptureAudioSourceSyncDoesNotRestartUnchangedAdapter) {
   auto modules = corevideo::modules::createStubModules();
   auto* audioCapture = new RecordingAudioCaptureSource();
