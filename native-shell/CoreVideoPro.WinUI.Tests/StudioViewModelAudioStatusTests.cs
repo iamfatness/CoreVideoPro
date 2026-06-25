@@ -240,6 +240,21 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expectedStreaming, StudioViewModel.ResolveStreamingStateAfterFailedRetry(requestedStarting));
     }
 
+    [Theory]
+    [InlineData(true, "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again.", "Media core busy")]
+    [InlineData(false, "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.", "Stream stop failed")]
+    public void FormatStreamSyncRetryExhaustedStatus_ShowsActionableBusyState(
+        bool requestedStarting,
+        string expectedStatus,
+        string expectedBrief)
+    {
+        var status = StudioViewModel.FormatStreamSyncRetryExhaustedStatus(requestedStarting);
+
+        Assert.Equal(expectedStatus, status);
+        Assert.Equal(expectedBrief, StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+    }
+
     [Fact]
     public void TryFormatStreamingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
     {

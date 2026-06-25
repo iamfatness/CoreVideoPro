@@ -2352,9 +2352,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return;
             }
         }
+
+        var exhaustedStatus = FormatStreamSyncRetryExhaustedStatus(starting);
+        RunOnUiThread(() =>
+        {
+            Streaming = ResolveStreamingStateAfterFailedRetry(starting);
+            RefreshOutputStatus();
+            OutputStatus = exhaustedStatus;
+            OutputSessionStatus = OutputStatus;
+        });
+
+        if (starting)
+        {
+            _ = SyncFailedStreamStartRollbackAsync(exhaustedStatus);
+        }
     }
 
     public static bool ResolveStreamingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
+
+    public static string FormatStreamSyncRetryExhaustedStatus(bool requestedStarting) =>
+        requestedStarting
+            ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
+            : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
 
     public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
