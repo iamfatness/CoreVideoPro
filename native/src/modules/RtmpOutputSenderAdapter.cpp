@@ -569,12 +569,19 @@ class RtmpOutputSender final : public IOutputSender {
     if (!writeFrameToFfmpeg(*frame)) {
       sender_.status = "failed";
       ++sender_.retryCount;
-      sender_.warning = "FFmpeg stdin write failed; the RTMP process stopped or rejected frames.";
+      const auto detailedFailure =
+          sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
+              ? sender_.lastError
+              : std::string("FFmpeg stdin write failed; the RTMP process stopped or rejected frames.");
+      sender_.warning = detailedFailure;
       sender_.destinationHealth = "failed";
-      sender_.lastResultCode = "ffmpeg-write-failed";
+      if (sender_.lastResultCode != "ffmpeg-exited") {
+        sender_.lastResultCode = "ffmpeg-write-failed";
+      }
       sender_.lastError = sender_.warning;
+      const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
       stopFfmpegProcess();
-      appendSendProof(frame, "ffmpeg-write-failed");
+      appendSendProof(frame, proofStatus);
       return snapshot();
     }
 
@@ -934,6 +941,8 @@ class RtmpOutputSender final : public IOutputSender {
     }
     DWORD exitCode = 0;
     if (ffmpegProcess_ && GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode != STILL_ACTIVE) {
+      sender_.lastResultCode = "ffmpeg-exited";
+      sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".";
       return false;
     }
     // Write the audio PCM for this tick first so FFmpeg has matched A/V data per
@@ -961,6 +970,14 @@ class RtmpOutputSender final : public IOutputSender {
       const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
       if (result == ffmpegPid_) {
         ffmpegPid_ = 0;
+        sender_.lastResultCode = "ffmpeg-exited";
+        if (WIFEXITED(status)) {
+          sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(WEXITSTATUS(status)) + ".";
+        } else if (WIFSIGNALED(status)) {
+          sender_.lastError = "FFmpeg process exited before accepting program frames. Signal " + std::to_string(WTERMSIG(status)) + ".";
+        } else {
+          sender_.lastError = "FFmpeg process exited before accepting program frames.";
+        }
         return false;  // FFmpeg exited
       }
     }
