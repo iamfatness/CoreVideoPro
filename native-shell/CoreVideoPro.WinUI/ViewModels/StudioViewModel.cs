@@ -2503,7 +2503,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private List<RoutingSource> BuildAssignedAudioSources()
     {
         var sources = new List<RoutingSource>();
-        foreach (var input in ShowInputs.Where(slot => slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned))
+        foreach (var input in ShowInputs.Where(IsShowInputAudioSource))
         {
             var sourceId = ResolveAudioRoutingMatrixSourceId(FormatInputSourceId(input.SlotNumber));
             AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)}"));
@@ -2519,6 +2519,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return sources;
     }
+
+    public static bool IsShowInputAudioSource(ShowInputSlot slot) =>
+        slot.IsAssigned && slot.Kind == ShowInputKind.ZoomParticipant;
 
     private static void AddUniqueRoutingSource(ICollection<RoutingSource> sources, RoutingSource source)
     {

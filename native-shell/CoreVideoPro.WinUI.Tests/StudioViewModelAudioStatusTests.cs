@@ -25,6 +25,29 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("Audio mixer action failed: Mixer channel disappeared while updating gain.", status);
     }
 
+    [Theory]
+    [InlineData(ShowInputKind.ZoomParticipant, true)]
+    [InlineData(ShowInputKind.UvcWebcam, false)]
+    [InlineData(ShowInputKind.Blackmagic, false)]
+    [InlineData(ShowInputKind.SrtIngest, false)]
+    [InlineData(ShowInputKind.Media, false)]
+    [InlineData(ShowInputKind.Unassigned, false)]
+    public void IsShowInputAudioSource_OnlyTreatsZoomInputsAsImplicitAudioSources(
+        ShowInputKind kind,
+        bool expected)
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 1,
+            Kind = kind,
+            ParticipantId = kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media ? "source-1" : null,
+            CaptureDeviceId = kind is ShowInputKind.UvcWebcam or ShowInputKind.Blackmagic or ShowInputKind.SrtIngest ? "capture-1" : null,
+            InShow = true
+        };
+
+        Assert.Equal(expected, StudioViewModel.IsShowInputAudioSource(slot));
+    }
+
     [Fact]
     public void FormatMixerLufsLabel_UsesLufsUnitsNotDbfs()
     {
