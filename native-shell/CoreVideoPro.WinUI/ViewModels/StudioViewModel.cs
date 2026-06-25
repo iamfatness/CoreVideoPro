@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Models;
@@ -8195,7 +8196,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 ProgramLowerThirdKey = ProgramLowerThirdKey with { Phase = "building-out" };
                 _ = TrySyncMediaCoreAsync();
-                await Task.Delay((int)Math.Round(Math.Clamp(LowerThirdBuildOutMs, 50, 2000)), cancellationToken).ConfigureAwait(true);
+                await WaitForLowerThirdPhaseAsync(
+                    () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
+                    cancellationToken).ConfigureAwait(true);
             }
 
             ProgramLowerThirdKey = BuildLowerThirdKey(source, "building-in");
@@ -8203,12 +8206,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdTitle = source.Title;
             LowerThirdOrg = source.Org;
             _ = TrySyncMediaCoreAsync();
-            await Task.Delay((int)Math.Round(Math.Clamp(LowerThirdBuildInMs, 50, 2000)), cancellationToken).ConfigureAwait(true);
+            await WaitForLowerThirdPhaseAsync(
+                () => NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
+                cancellationToken).ConfigureAwait(true);
             ProgramLowerThirdKey = BuildLowerThirdKey(source, "on-air");
             _ = TrySyncMediaCoreAsync();
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private static async Task WaitForLowerThirdPhaseAsync(Func<int> currentDurationMs, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remainingMs = RemainingLowerThirdPhaseDelayMs(stopwatch.ElapsedMilliseconds, currentDurationMs());
+            if (remainingMs <= 0)
+            {
+                return;
+            }
+
+            await Task.Delay(Math.Min(remainingMs, 50), cancellationToken).ConfigureAwait(true);
         }
     }
 
@@ -8230,6 +8251,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         (int)Math.Round(
             double.IsFinite(value) ? Math.Clamp(value, 50, 2000) : 250,
             MidpointRounding.AwayFromZero);
+
+    public static int RemainingLowerThirdPhaseDelayMs(long elapsedMs, double currentDurationMs) =>
+        Math.Max(0, NormalizeLowerThirdTimingMs(currentDurationMs) - ClampElapsedToInt(elapsedMs));
+
+    private static int ClampElapsedToInt(long value) =>
+        value <= int.MinValue ? int.MinValue :
+        value >= int.MaxValue ? int.MaxValue :
+        (int)value;
 
     public static bool ShouldEnableProgramLowerThird(
         bool manuallyEnabled,

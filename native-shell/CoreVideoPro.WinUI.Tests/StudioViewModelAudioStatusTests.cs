@@ -1113,6 +1113,22 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData(0, 250, 250)]
+    [InlineData(100, 250, 150)]
+    [InlineData(249, 250, 1)]
+    [InlineData(250, 250, 0)]
+    [InlineData(500, 250, 0)]
+    [InlineData(25, 10, 25)]
+    [InlineData(25, 9999, 1975)]
+    public void RemainingLowerThirdPhaseDelayMs_UsesCurrentNormalizedDuration(
+        long elapsedMs,
+        double currentDurationMs,
+        int expected)
+    {
+        Assert.Equal(expected, StudioViewModel.RemainingLowerThirdPhaseDelayMs(elapsedMs, currentDurationMs));
+    }
+
+    [Theory]
     [InlineData(true, ProductionMode.Manual, false, false, false, true)]
     [InlineData(false, ProductionMode.SetAndForget, true, false, false, true)]
     [InlineData(false, ProductionMode.SetAndForget, true, true, false, false)]
