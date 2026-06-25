@@ -3153,6 +3153,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         OnPropertyChanged(nameof(EnabledGraphics));
         RefreshProgramLowerThirdKeyPosition();
+        _ = TrySyncMediaCoreAsync();
     }
 
     [RelayCommand]
@@ -3170,6 +3171,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ProgramLowerThirdEnabled = true;
         RefreshProgramLowerThirdKeyPosition();
         CommandStatus = "Lower third rebuilt";
+        _ = TrySyncMediaCoreAsync();
     }
 
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
