@@ -5524,8 +5524,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? null
             : MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
                 selectedMediaAsset.Id,
-                isProgramScene: playbackSelection.Playing &&
-                    MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(selectedMediaAsset.Id, resolvedProgramRoutes),
+                isProgramScene: MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(selectedMediaAsset.Id, resolvedProgramRoutes),
                 _programMediaPlaybackTakeVersion);
 
         return new MediaCoreProductionSyncContext

@@ -74,7 +74,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ShouldPlaySceneMediaRoute_AutoplaysPausedSelectedProgramMedia()
+    public void ShouldPlaySceneMediaRoute_RespectsPausedSelectedProgramMedia()
     {
         var programRoutes = new[]
         {
@@ -88,7 +88,7 @@ public sealed class MediaRoutePlaybackServiceTests
             selectedMediaAssetPlaying: false,
             programRoutes);
 
-        Assert.True(shouldPlay);
+        Assert.False(shouldPlay);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolvePlaybackSelection_AutoplaysPausedSelectedProgramMediaRoute()
+    public void ResolvePlaybackSelection_RespectsPausedSelectedProgramMediaRoute()
     {
         var selection = MediaRoutePlaybackService.ResolvePlaybackSelection(
             selectedMediaAssetId: "intro",
@@ -176,7 +176,7 @@ public sealed class MediaRoutePlaybackServiceTests
             programRoutes: [MediaRoute("intro")]);
 
         Assert.Equal("intro", selection.MediaAssetId);
-        Assert.True(selection.Playing);
+        Assert.False(selection.Playing);
     }
 
     [Fact]
@@ -244,10 +244,10 @@ public sealed class MediaRoutePlaybackServiceTests
 
         var key = MediaRoutePlaybackService.BuildSceneMediaPlaybackKey(
             "intro",
-            isProgramScene: shouldPlay,
+            isProgramScene: true,
             programTakeVersion: 7);
 
-        Assert.True(shouldPlay);
+        Assert.False(shouldPlay);
         Assert.Equal("program-take:7:media:intro", key);
     }
 
@@ -278,6 +278,21 @@ public sealed class MediaRoutePlaybackServiceTests
             programTakeVersion: 4);
 
         Assert.True(playback.Playing);
+        Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
+    }
+
+    [Fact]
+    public void ResolveSceneRoutePlayback_KeepsPausedSelectedProgramMediaOnProgramKey()
+    {
+        var playback = MediaRoutePlaybackService.ResolveSceneRoutePlayback(
+            "intro",
+            isProgramScene: true,
+            selectedMediaAssetId: "intro",
+            selectedMediaAssetPlaying: false,
+            programRoutes: [MediaRoute("intro")],
+            programTakeVersion: 4);
+
+        Assert.False(playback.Playing);
         Assert.Equal("program-take:4:media:intro", playback.MediaPlaybackKey);
     }
 
