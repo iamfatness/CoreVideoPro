@@ -794,7 +794,7 @@
 
                     <Button Style="{StaticResource AutomationToggleButton}"
                             Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
+                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <FontIcon Glyph="&#xE8D2;" FontSize="18" />
                             <StackPanel Spacing="1">
@@ -812,7 +812,7 @@
                     <Button Style="{StaticResource AutomationToggleButton}"
                             MinWidth="42"
                             Padding="10,8"
-                            ToolTipService.ToolTip="Lower third timing and style">
+                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
                         <FontIcon Glyph="&#xE713;" FontSize="16" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
@@ -864,6 +864,11 @@
                                     </Grid>
                                     <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
                                                FontSize="11"
+                                               Foreground="{StaticResource StudioMutedBrush}" />
+                                    <TextBlock Text="{x:Bind ViewModel.NativeLowerThirdStatus, Mode=OneWay}"
+                                               FontSize="11"
+                                               TextWrapping="WrapWholeWords"
+                                               IsTextSelectionEnabled="True"
                                                Foreground="{StaticResource StudioMutedBrush}" />
                                     <Button Content="Rebuild lower third"
                                             Style="{StaticResource StudioAccentButton}"

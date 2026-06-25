@@ -577,6 +577,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? $"Ready: {source.SourceName}"
                 : "Take a scene with a source first";
 
+    public string StudioLowerThirdToolTip =>
+        $"{StudioLowerThirdSourceLabel} - {LowerThirdTimingSummary}";
+
     public string NativeLowerThirdStatus =>
         _bridge.LastSnapshot?.OverlayState is { } overlay
             ? FormatNativeLowerThirdStatus(overlay)
@@ -1462,6 +1465,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyProgramLowerThirdTimingChange()
     {
         OnPropertyChanged(nameof(LowerThirdTimingSummary));
+        OnPropertyChanged(nameof(StudioLowerThirdToolTip));
         SaveProductionOutputPreferences();
 
         if (!ProgramLowerThirdKey.IsVisible)
@@ -1484,6 +1488,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioLowerThirdCompactLabel));
         OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
         OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdToolTip));
     }
 
     partial void OnPreviewSceneBackgroundAssetIdChanged(string value)
@@ -1742,6 +1747,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StudioLowerThirdCompactLabel));
         OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
         OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+        OnPropertyChanged(nameof(StudioLowerThirdToolTip));
     }
 
     partial void OnAutomationAutoTakeEnabledChanged(bool value) => OnAutomationPolicyChanged();
@@ -3242,6 +3248,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 CommandStatus = "Lower third needs a program source";
                 OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
                 OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+                OnPropertyChanged(nameof(StudioLowerThirdToolTip));
                 return;
             }
 
@@ -3263,6 +3270,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CommandStatus = "Lower third needs a program source";
             OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
             OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+            OnPropertyChanged(nameof(StudioLowerThirdToolTip));
             return;
         }
 
@@ -8225,6 +8233,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(ProgramSceneBackgroundAsset));
             OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
             OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+            OnPropertyChanged(nameof(StudioLowerThirdToolTip));
             UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(workingRoutes));
         }
     }
