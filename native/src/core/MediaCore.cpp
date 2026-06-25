@@ -2890,7 +2890,7 @@ void MediaCore::renderSyntheticTick() {
       if (frameCount <= 0) {
         // Device is open but neither the routed MON bus nor fallback mix carried real PCM this tick.
         audioMonitorStatus_ = "armed";
-        audioMonitorWarning_.clear();
+        audioMonitorWarning_ = "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix.";
       } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
         audioMonitorStatus_ = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
         audioMonitorWarning_.clear();

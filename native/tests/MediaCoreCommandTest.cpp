@@ -561,6 +561,9 @@ TEST(MediaCoreCommand, DefaultFallbackDoesNotFabricateAudioSignal) {
   EXPECT_EQ(mix->get("mixedFrameCount")->asNumber(), 0);
   EXPECT_EQ(mix->getString("monitorStatus"), "armed");
   EXPECT_EQ(mix->get("monitorFramesPlayed")->asNumber(), 0);
+  EXPECT_TRUE(jsonArrayContains(
+      *mix->get("warnings"),
+      "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix."));
   ASSERT_NE(mix->get("participants"), nullptr);
   EXPECT_TRUE(mix->get("participants")->asArray().empty());
 }
