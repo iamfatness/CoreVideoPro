@@ -515,6 +515,28 @@ public static class LiveProductionSync
         return null;
     }
 
+    private static string? FormatStreamOutputDetail(string? status, params string?[] details)
+    {
+        if (!string.Equals(status, "warning", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var detail = details
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?
+            .Trim()
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            return null;
+        }
+
+        const int maxLength = 120;
+        return detail.Length <= maxLength ? detail : $"{detail[..(maxLength - 3)]}...";
+    }
+
     private static string FormatStreamOutputLabel(
         NativeMediaCoreOutputHealth output,
         NativeMediaCoreStateSnapshot snapshot,
@@ -523,6 +545,12 @@ public static class LiveProductionSync
         var sender = snapshot.OutputSenderSession.Senders.FirstOrDefault(item =>
             item.Destination.Equals(output.Destination, StringComparison.OrdinalIgnoreCase));
         var bitrateMbps = sender?.BitrateMbps ?? snapshot.OutputProfile.TargetBitrateMbps;
+        var detail = FormatStreamOutputDetail(output.Status, output.Message, sender?.Warning ?? sender?.LastError);
+        if (detail is not null)
+        {
+            return $"{output.Destination.ToUpperInvariant()} - {output.Status} - {bitrateMbps:0.#} Mbps - {detail}";
+        }
+
         return $"{output.Destination.ToUpperInvariant()} · {output.Status} · {bitrateMbps:0.#} Mbps";
     }
 

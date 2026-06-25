@@ -359,6 +359,48 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
+    public void SummarizeStreamStatIncludesWarningMessageForStreamFailures()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "warning",
+                    Message = "RTMP sender requires FFmpeg runtime on this machine.",
+                    DroppedFrames = 0
+                }
+            ],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp:program",
+                        Destination = "rtmp",
+                        Status = "warning",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 8.2,
+                        Warning = "ffmpeg.exe was not found in C:\\ffmpeg\\bin."
+                    }
+                ]
+            }
+        };
+
+        var summary = LiveProductionSync.SummarizeStreamStat(snapshot, streaming: true, programResolutionLabel: "1080p60");
+
+        Assert.Contains("RTMP - warning", summary);
+        Assert.Contains("FFmpeg runtime", summary);
+    }
+
+    [Fact]
     public void MapsTransportReadoutsFromIdleSnapshotPatch()
     {
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(BuildSnapshot(), Context);
