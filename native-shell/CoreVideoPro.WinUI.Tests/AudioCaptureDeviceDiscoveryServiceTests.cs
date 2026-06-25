@@ -75,6 +75,31 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
         Assert.Equal("mic", selected);
     }
 
+    [Fact]
+    public void EnsureDefaultLoopbackFallback_AddsNativeDefaultEndpointWhenNoRenderLoopbackWasDiscovered()
+    {
+        var devices = AudioCaptureDeviceDiscoveryService.EnsureDefaultLoopbackFallback(
+            [Device("mic", "wasapi-input", "USB microphone")]);
+
+        var fallback = Assert.Single(devices, AudioCaptureDeviceDiscoveryService.IsLoopbackSource);
+        Assert.Equal("default-render-loopback", fallback.Id);
+        Assert.Equal("default-render", fallback.NativeDeviceId);
+        Assert.True(fallback.IsDefault);
+    }
+
+    [Fact]
+    public void EnsureDefaultLoopbackFallback_DoesNotAddFallbackWhenRenderLoopbackWasDiscovered()
+    {
+        var devices = AudioCaptureDeviceDiscoveryService.EnsureDefaultLoopbackFallback(
+            [
+                Device("mic", "wasapi-input", "USB microphone"),
+                Device("system", "wasapi-loopback", "System", isDefault: true)
+            ]);
+
+        Assert.DoesNotContain(devices, device => device.Id == "default-render-loopback");
+        Assert.Contains(devices, device => device.Id == "system");
+    }
+
     [Theory]
     [InlineData("wasapi-loopback", true)]
     [InlineData("loopback", true)]

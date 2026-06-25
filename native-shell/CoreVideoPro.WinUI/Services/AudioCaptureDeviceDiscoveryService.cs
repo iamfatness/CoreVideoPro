@@ -32,7 +32,8 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
                 })
                 .ToList();
 
-            var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
+            var loopbackDevices = EnsureDefaultLoopbackFallback(
+                await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false));
 
             return SortForOperatorSelection(wasapiDevices
                 .Concat(loopbackDevices)
@@ -42,7 +43,8 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
         }
         catch
         {
-            var loopbackDevices = await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false);
+            var loopbackDevices = EnsureDefaultLoopbackFallback(
+                await DiscoverWasapiLoopbackDevicesAsync().ConfigureAwait(false));
             return SortForOperatorSelection(loopbackDevices.Concat(DiscoverAsioDevices()));
         }
     }
@@ -111,6 +113,29 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
             })
             .OrderBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    public static IReadOnlyList<AudioCaptureDevice> EnsureDefaultLoopbackFallback(IReadOnlyList<AudioCaptureDevice> devices)
+    {
+        if (devices.Any(IsLoopbackSource))
+        {
+            return devices;
+        }
+
+        return devices
+            .Concat([CreateDefaultLoopbackFallbackDevice()])
+            .ToList();
+    }
+
+    public static AudioCaptureDevice CreateDefaultLoopbackFallbackDevice() =>
+        new()
+        {
+            Id = "default-render-loopback",
+            NativeDeviceId = "default-render",
+            Name = "Default system output",
+            SourceKind = "wasapi-loopback",
+            DriverName = "WASAPI loopback",
+            IsDefault = true
+        };
 
     public void StartWatching(Action onDevicesChanged)
     {
