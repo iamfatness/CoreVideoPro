@@ -401,6 +401,28 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
+    public void SummarizeOutputSessionIncludesStreamWarningMessage()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "rtmp",
+                    Status = "warning",
+                    Message = "RTMP sender needs a stream key before streaming.",
+                    DroppedFrames = 0
+                }
+            ]
+        };
+
+        var summary = LiveProductionSync.SummarizeOutputSession(snapshot);
+
+        Assert.Equal("RTMP output warning: RTMP sender needs a stream key before streaming.", summary);
+    }
+
+    [Fact]
     public void MapsTransportReadoutsFromIdleSnapshotPatch()
     {
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(BuildSnapshot(), Context);

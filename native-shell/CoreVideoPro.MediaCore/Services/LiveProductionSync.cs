@@ -405,6 +405,23 @@ public static class LiveProductionSync
             .Distinct()
             .ToList();
 
+        var warningOutput = snapshot.OutputHealth
+            .FirstOrDefault(item =>
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
+                item.Status is "failed" or "warning");
+        if (warningOutput is not null)
+        {
+            var sender = snapshot.OutputSenderSession.Senders.FirstOrDefault(item =>
+                item.Destination.Equals(warningOutput.Destination, StringComparison.OrdinalIgnoreCase));
+            var detail = FormatStreamOutputDetail(
+                warningOutput.Status,
+                warningOutput.Message,
+                sender?.Warning ?? sender?.LastError);
+            return detail is null
+                ? $"{warningOutput.Destination.ToUpperInvariant()} output {warningOutput.Status}"
+                : $"{warningOutput.Destination.ToUpperInvariant()} output {warningOutput.Status}: {detail}";
+        }
+
         if (liveOutputs.Count > 0)
         {
             return $"Live: {string.Join(", ", liveOutputs)}";
