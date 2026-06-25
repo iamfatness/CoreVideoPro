@@ -54,6 +54,11 @@ public sealed class SupportBundleBuilderTests
                 Protocol = "rtmps",
                 Enabled = true,
                 Active = true,
+                Resolution = "1920x1080",
+                Fps = "60",
+                Codec = "h264",
+                EncoderMode = "nvenc",
+                TargetBitrateMbps = 8.2,
                 Endpoint = "rtmps://live.example.com/app?token=SECRET_TOKEN",
                 StreamKey = "sk_live_DO_NOT_LEAK"
             }
@@ -69,6 +74,11 @@ public sealed class SupportBundleBuilderTests
         var destination = Assert.Single(bundle.Outputs);
         Assert.Equal("present-redacted", destination.StreamKey);
         Assert.DoesNotContain("SECRET_TOKEN", destination.Endpoint, StringComparison.Ordinal);
+        Assert.Equal("1920x1080", destination.Resolution);
+        Assert.Equal("60", destination.Fps);
+        Assert.Equal("h264", destination.Codec);
+        Assert.Equal("nvenc", destination.EncoderMode);
+        Assert.Equal(8.2, destination.TargetBitrateMbps);
     }
 
     [Fact]

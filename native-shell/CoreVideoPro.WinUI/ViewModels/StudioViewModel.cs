@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CoreVideoPro.MediaCore.Models;
@@ -6506,12 +6507,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     /// <summary>
-    /// Supplies the configured stream outputs (RTMP/SRT/NDI) for the support bundle.
+    /// Supplies the configured stream and recording outputs for the support bundle.
     /// Endpoints and stream keys are redacted by <see cref="SupportBundleBuilder"/>.
     /// </summary>
     private IReadOnlyList<SupportBundleOutputDestination> BuildSupportBundleOutputDestinations()
     {
         var destinations = new List<SupportBundleOutputDestination>();
+        var streamProfile = BuildRequestedOutputProfile(
+            "stream",
+            StreamRenderResolution,
+            StreamRenderFps,
+            StreamVideoCodec,
+            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps));
+        var recordingProfile = BuildRequestedOutputProfile(
+            "recording",
+            RecordingRenderResolution,
+            RecordingRenderFps,
+            RecordingVideoCodec,
+            NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps));
 
         if (!string.IsNullOrWhiteSpace(StreamRtmpServerUrl) || !string.IsNullOrWhiteSpace(StreamRtmpStreamKey))
         {
@@ -6522,6 +6535,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Protocol = StreamRtmpProtocol,
                 Enabled = !string.IsNullOrWhiteSpace(StreamRtmpServerUrl),
                 Active = Streaming,
+                Resolution = streamProfile.Resolution,
+                Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
+                Codec = streamProfile.Codec,
+                EncoderMode = NormalizeStreamEncoderMode(StreamEncoderMode),
+                TargetBitrateMbps = streamProfile.TargetBitrateMbps,
                 Endpoint = StreamRtmpServerUrl,
                 StreamKey = StreamRtmpStreamKey
             });
@@ -6536,6 +6554,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Protocol = "srt",
                 Enabled = StreamSrtEnabled,
                 Active = Streaming && StreamSrtEnabled,
+                Resolution = streamProfile.Resolution,
+                Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
+                Codec = streamProfile.Codec,
+                EncoderMode = NormalizeStreamEncoderMode(StreamEncoderMode),
+                TargetBitrateMbps = streamProfile.TargetBitrateMbps,
                 Endpoint = string.IsNullOrWhiteSpace(StreamSrtHost)
                     ? null
                     : $"srt://{StreamSrtHost}:{StreamSrtPort}",
@@ -6552,10 +6575,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Protocol = "ndi",
                 Enabled = StreamNdiEnabled,
                 Active = Streaming && StreamNdiEnabled,
+                Resolution = streamProfile.Resolution,
+                Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
+                Codec = streamProfile.Codec,
+                EncoderMode = NormalizeStreamEncoderMode(StreamEncoderMode),
+                TargetBitrateMbps = streamProfile.TargetBitrateMbps,
                 Endpoint = StreamNdiProgramName,
                 StreamKey = null
             });
         }
+
+        destinations.Add(new SupportBundleOutputDestination
+        {
+            Id = "recording",
+            Name = "Recording",
+            Protocol = "file",
+            Enabled = true,
+            Active = Recording,
+            Resolution = recordingProfile.Resolution,
+            Fps = recordingProfile.Fps.ToString(CultureInfo.InvariantCulture),
+            Codec = recordingProfile.Codec,
+            TargetBitrateMbps = recordingProfile.TargetBitrateMbps,
+            Format = NormalizeRecordingFormat(RecordingFormat),
+            Quality = NormalizeRecordingQuality(RecordingQuality),
+            Endpoint = RecordingTargetFolder,
+            StreamKey = null
+        });
 
         return destinations;
     }

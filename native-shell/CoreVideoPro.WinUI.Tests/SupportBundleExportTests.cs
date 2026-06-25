@@ -24,6 +24,11 @@ public sealed class SupportBundleExportTests
                 Protocol = "rtmps",
                 Enabled = true,
                 Active = true,
+                Resolution = "1920x1080",
+                Fps = "60",
+                Codec = "h264",
+                EncoderMode = "auto",
+                TargetBitrateMbps = 8.2,
                 Endpoint = "rtmps://a.rtmp.youtube.com/live2",
                 StreamKey = "abcd-1234-SECRET-stream-key"
             },
@@ -34,8 +39,29 @@ public sealed class SupportBundleExportTests
                 Protocol = "srt",
                 Enabled = true,
                 Active = false,
+                Resolution = "1920x1080",
+                Fps = "60",
+                Codec = "h264",
+                EncoderMode = "auto",
+                TargetBitrateMbps = 8.2,
                 Endpoint = "srt://cdn.example.com:9000",
                 StreamKey = "srt-passphrase-SECRET"
+            },
+            new SupportBundleOutputDestination
+            {
+                Id = "recording",
+                Name = "Recording",
+                Protocol = "file",
+                Enabled = true,
+                Active = false,
+                Resolution = "1920x1080",
+                Fps = "60",
+                Codec = "h265",
+                TargetBitrateMbps = 18,
+                Format = "mp4",
+                Quality = "high",
+                Endpoint = "D:\\Shows",
+                StreamKey = null
             }
         };
 
@@ -49,8 +75,14 @@ public sealed class SupportBundleExportTests
         Assert.DoesNotContain("abcd-1234-SECRET-stream-key", json, StringComparison.Ordinal);
         Assert.DoesNotContain("srt-passphrase-SECRET", json, StringComparison.Ordinal);
 
-        Assert.Equal(2, bundle.Outputs.Count);
-        Assert.All(bundle.Outputs, destination => Assert.Equal("present-redacted", destination.StreamKey));
+        Assert.Equal(3, bundle.Outputs.Count);
+        Assert.Equal("present-redacted", bundle.Outputs[0].StreamKey);
+        Assert.Equal("present-redacted", bundle.Outputs[1].StreamKey);
+        Assert.Equal("absent", bundle.Outputs[2].StreamKey);
+        Assert.All(bundle.Outputs, destination => Assert.Equal("1920x1080", destination.Resolution));
+        Assert.All(bundle.Outputs, destination => Assert.NotNull(destination.TargetBitrateMbps));
+        Assert.Equal("mp4", bundle.Outputs[2].Format);
+        Assert.Equal("high", bundle.Outputs[2].Quality);
         Assert.Equal("winui-desktop", bundle.App.Platform);
     }
 

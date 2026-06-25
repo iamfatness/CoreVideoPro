@@ -56,6 +56,13 @@ public sealed record SupportBundleOutputDestinationSummary
     public string Protocol { get; init; } = "rtmp";
     public bool Enabled { get; init; }
     public bool Active { get; init; }
+    public string? Resolution { get; init; }
+    public string? Fps { get; init; }
+    public string? Codec { get; init; }
+    public string? EncoderMode { get; init; }
+    public double? TargetBitrateMbps { get; init; }
+    public string? Format { get; init; }
+    public string? Quality { get; init; }
     /// <summary>Redacted endpoint/URL — credentials and secret query params stripped.</summary>
     public string Endpoint { get; init; } = string.Empty;
     /// <summary>Always "absent" or "present-redacted" — the raw key is never emitted.</summary>

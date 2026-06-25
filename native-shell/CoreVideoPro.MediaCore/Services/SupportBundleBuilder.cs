@@ -34,6 +34,13 @@ public sealed class SupportBundleOutputDestination
     public string Protocol { get; init; } = "rtmp";
     public bool Enabled { get; init; }
     public bool Active { get; init; }
+    public string? Resolution { get; init; }
+    public string? Fps { get; init; }
+    public string? Codec { get; init; }
+    public string? EncoderMode { get; init; }
+    public double? TargetBitrateMbps { get; init; }
+    public string? Format { get; init; }
+    public string? Quality { get; init; }
     public string? Endpoint { get; init; }
     public string? StreamKey { get; init; }
 }
@@ -104,6 +111,13 @@ public static class SupportBundleBuilder
                 Protocol = destination.Protocol,
                 Enabled = destination.Enabled,
                 Active = destination.Active,
+                Resolution = destination.Resolution,
+                Fps = destination.Fps,
+                Codec = destination.Codec,
+                EncoderMode = destination.EncoderMode,
+                TargetBitrateMbps = destination.TargetBitrateMbps,
+                Format = destination.Format,
+                Quality = destination.Quality,
                 Endpoint = RedactEndpoint(destination.Endpoint),
                 StreamKey = RedactSecret(destination.StreamKey)
             })
