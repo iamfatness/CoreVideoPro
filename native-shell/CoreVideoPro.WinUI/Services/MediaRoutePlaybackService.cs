@@ -92,6 +92,14 @@ public static class MediaRoutePlaybackService
             : $"preview:media:{normalizedAssetId}";
     }
 
+    public static bool ShouldAdvanceProgramPlaybackKey(
+        string mediaAssetId,
+        bool startingPlayback,
+        IReadOnlyList<SourceRoute> programRoutes) =>
+        startingPlayback &&
+        !string.IsNullOrWhiteSpace(mediaAssetId) &&
+        IsMediaAssetRoutedOnProgram(mediaAssetId, programRoutes);
+
     public static SceneRoutePlayback ResolveSceneRoutePlayback(
         string mediaAssetId,
         bool isProgramScene,

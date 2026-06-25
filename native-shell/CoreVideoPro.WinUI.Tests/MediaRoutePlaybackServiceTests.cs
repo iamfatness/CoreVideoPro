@@ -251,6 +251,24 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Equal("program-take:7:media:intro", key);
     }
 
+    [Theory]
+    [InlineData("intro", true, true)]
+    [InlineData("intro", false, false)]
+    [InlineData("bumper", true, false)]
+    [InlineData("", true, false)]
+    public void ShouldAdvanceProgramPlaybackKey_OnlyAdvancesWhenStartingProgramRoutedMedia(
+        string mediaAssetId,
+        bool startingPlayback,
+        bool expected)
+    {
+        var shouldAdvance = MediaRoutePlaybackService.ShouldAdvanceProgramPlaybackKey(
+            mediaAssetId,
+            startingPlayback,
+            [MediaRoute("intro")]);
+
+        Assert.Equal(expected, shouldAdvance);
+    }
+
     [Fact]
     public void ResolveSceneRoutePlayback_KeepsPreviewMediaPausedWithStablePreviewKey()
     {

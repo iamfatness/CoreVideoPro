@@ -3744,6 +3744,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = !(resumeSameAsset && SelectedMediaAssetPlaying);
+        if (MediaRoutePlaybackService.ShouldAdvanceProgramPlaybackKey(
+                asset.Id,
+                SelectedMediaAssetPlaying,
+                GetResolvedProgramRoutes()))
+        {
+            _programMediaPlaybackTakeVersion++;
+        }
+
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
         MediaPlaybackStatus = SelectedMediaAssetPlaying
