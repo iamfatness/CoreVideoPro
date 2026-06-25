@@ -8781,6 +8781,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
     }
 
     [RelayCommand]
@@ -8815,6 +8816,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
     }
 
     private void UpdateSceneLayout(string sceneId, string layout)
@@ -8864,6 +8866,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene,
             routes.Select(ResolveRouteFromShowInput).ToList());
         OnPropertyChanged(nameof(PreviewCanvasLayers));
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    private void SyncLiveSceneEditIfNeeded(string sceneId)
+    {
+        if (SceneBackgroundSelectionService.SelectionAffectsProgramScene(sceneId, ActiveSceneId))
+        {
+            _ = TrySyncMediaCoreAsync();
+        }
     }
 
     private void CopyPreviewRoutesToScene(string sceneId)
