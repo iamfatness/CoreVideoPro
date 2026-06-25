@@ -103,14 +103,16 @@ public static class NativeMediaCoreStateMapper
         var captureAudioSources = wire.CaptureAudioSources ?? baseSnapshot.CaptureAudioSources;
         if (wire.CaptureAudioSources is { } captureAudio)
         {
-            var captureWarning = $"Capture audio: {captureAudio.Summary}";
-            if (!audioMixSession.Warnings.Contains(captureWarning, StringComparer.Ordinal))
+            var captureWarnings = captureAudio.Warnings
+                .Where(warning => !string.IsNullOrWhiteSpace(warning))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (captureWarnings.Count > 0)
             {
                 audioMixSession = CopyAudioMixSession(
                     audioMixSession,
                     audioMixSession.Warnings
-                        .Concat([captureWarning])
-                        .Concat(captureAudio.Warnings)
+                        .Concat(captureWarnings)
                         .Distinct(StringComparer.Ordinal)
                         .ToList());
             }

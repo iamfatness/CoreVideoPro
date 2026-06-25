@@ -382,18 +382,52 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal(480, snapshot.Diagnostics.CaptureAudioSources.RoutedMonitorFrames);
         Assert.Equal(120, snapshot.Diagnostics.CaptureAudioSources.FallbackMonitorFrames);
         Assert.Equal("Sophia Martinez", snapshot.Diagnostics.CaptionTrack.CurrentCue?.Speaker);
-        Assert.Contains(
-            "Capture audio: 1 of 1 capture source paired with audio input; 1 streaming, 960 PCM frames received; 480 master bus frames, 480 MON bus frames, 480 monitor playback frames.",
-            snapshot.AudioMixSession.Warnings);
-        Assert.Contains(
+        Assert.Empty(snapshot.AudioMixSession.Warnings);
+        Assert.DoesNotContain(
             snapshot.Diagnostics.Warnings,
             warning => warning.Contains("960 PCM frames received", StringComparison.Ordinal));
+        Assert.Contains("960 PCM frames received", snapshot.Diagnostics.CaptureAudioSources.Summary);
+        Assert.Contains("480 MON bus frames", snapshot.Diagnostics.CaptureAudioSources.Summary);
+        Assert.Contains("480 monitor playback frames", snapshot.Diagnostics.CaptureAudioSources.Summary);
+    }
+
+    [Fact]
+    public void NativeCaptureAudioWarningsStillPromoteToAudioMixWarnings()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            AudioMixSession = new NativeMediaCoreAudioMixSession
+            {
+                Status = "live",
+                MasterLevel = 42,
+                LoudnessLufs = -18,
+                MixedFrameCount = 12,
+                Summary = "Program mix receiving PCM.",
+                Warnings = []
+            },
+            CaptureAudioSources = new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                SourceCount = 1,
+                PairedCount = 1,
+                StreamingCount = 1,
+                CaptureFramesReceived = 0,
+                RoutedMasterFrames = 0,
+                RoutedMonitorFrames = 0,
+                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 0 PCM frames received; 0 master bus frames, 0 MON bus frames, 0 monitor playback frames.",
+                Warnings = ["local-machine-audio: Audio capture stream is open but no PCM frames have arrived."]
+            }
+        });
+
         Assert.Contains(
-            snapshot.Diagnostics.Warnings,
-            warning => warning.Contains("480 MON bus frames", StringComparison.Ordinal));
+            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
+            snapshot.AudioMixSession.Warnings);
         Assert.Contains(
+            "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
+            snapshot.Diagnostics.Warnings);
+        Assert.DoesNotContain(
             snapshot.Diagnostics.Warnings,
-            warning => warning.Contains("480 monitor playback frames", StringComparison.Ordinal));
+            warning => warning.StartsWith("Capture audio:", StringComparison.Ordinal));
     }
 
     [Fact]
