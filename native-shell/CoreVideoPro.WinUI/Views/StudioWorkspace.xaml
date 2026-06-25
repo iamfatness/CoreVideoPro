@@ -882,7 +882,7 @@
                                    Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
                                    MaxWidth="190" TextTrimming="CharacterEllipsis"
                                    ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" />
-                        <Button Content="Details"
+                        <Button Content="{x:Bind ViewModel.OutputStatusDetailsLabel, Mode=OneWay}"
                                 Padding="8,4"
                                 MinWidth="0"
                                 MinHeight="0"
@@ -1054,7 +1054,8 @@
                             FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
-                            Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}">
+                            Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
+                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}">
                         <StackPanel Spacing="1">
                             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
                                 <FontIcon Glyph="&#xE958;" FontSize="16" />

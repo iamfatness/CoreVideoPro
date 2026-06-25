@@ -1024,6 +1024,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string OutputStatusBrief => FormatOutputStatusBrief(OutputStatus);
 
+    public string OutputStatusDetailsLabel =>
+        ShouldShowOutputStatusDetails(OutputStatus) ? "Show error" : "Details";
+
     public Visibility OutputStatusDetailsVisibility =>
         ShouldShowOutputStatusDetails(OutputStatus) ? Visibility.Visible : Visibility.Collapsed;
 
@@ -1587,6 +1590,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnOutputStatusChanged(string value)
     {
         OnPropertyChanged(nameof(OutputStatusBrief));
+        OnPropertyChanged(nameof(OutputStatusDetailsLabel));
         OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
     }
 
