@@ -1619,6 +1619,7 @@ double deriveRmsDbfs(int outputLevel) {
 
 std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics& participant) {
   if (participant.muted) return "muted";
+  if (participant.noiseSuppressionActive) return "cleaning";
   if (participant.gainDb > 0) return "boosting";
   if (participant.gainDb < 0) return "ducking";
   return "balanced";
@@ -1757,9 +1758,6 @@ rpc::Json MediaCore::audioMixSessionState() const {
       if (warningSet.insert("vst-bridge-scan-only").second) {
         warnings.emplace_back("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
       }
-    }
-    if (noiseSuppression && measuredInputLevel < 35 && warningSet.insert("low-level-noise-suppression").second) {
-      warnings.emplace_back("Noise suppression active on low-level sources.");
     }
     if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
       warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");

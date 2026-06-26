@@ -86,6 +86,33 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
   int64_t tick_ = 0;
 };
 
+class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+ public:
+  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = "quiet-speaker";
+    frame.width = 1280;
+    frame.height = 720;
+    frame.naturalWidth = 1280;
+    frame.naturalHeight = 720;
+    frame.timestampMs = ++tick_ * 16;
+    return {frame};
+  }
+
+  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "quiet-speaker";
+    frame.sampleRate = 48000;
+    frame.channels = 2;
+    frame.sampleCount = 480;
+    frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.04f);
+    return {frame};
+  }
+
+ private:
+  int64_t tick_ = 0;
+};
+
 class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
@@ -1250,6 +1277,29 @@ TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   EXPECT_TRUE(mix->get("masterLevel")->asNumber() > 0);
   EXPECT_EQ(mix->get("participants")->asArray().size(), 1u);
   EXPECT_NE(mix->getString("summary").find("native DSP mix"), std::string::npos);
+}
+
+TEST(MediaCoreCommand, LowLevelNoiseSuppressionDoesNotMakeAudioMixWarning) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<QuietPcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"recording"}},
+      {"isoParticipantIds", corevideo::rpc::Json::Array{}},
+  });
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  EXPECT_EQ(mix->getString("status"), "live");
+  EXPECT_TRUE(mix->get("mixedFrameCount")->asNumber() > 0);
+  EXPECT_TRUE(mix->get("masterLevel")->asNumber() > 0);
+  EXPECT_TRUE(mix->get("warnings")->asArray().empty());
+  const auto* participant = findParticipantMix(*mix, "quiet-speaker");
+  ASSERT_NE(participant, nullptr);
+  EXPECT_TRUE(participant->get("noiseSuppression")->asBool());
+  EXPECT_EQ(participant->getString("status"), "cleaning");
 }
 
 TEST(MediaCoreCommand, AudioMixSessionUsesRealPcmMetersForSyncedChannels) {

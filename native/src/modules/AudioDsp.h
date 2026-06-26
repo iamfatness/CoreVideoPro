@@ -892,9 +892,6 @@ inline AudioMixMetrics summarizeAudioMixMetrics(std::vector<AudioParticipantMixM
   session.limiterActive = session.limiterActive || session.masterLevel >= 88;
   session.loudnessLufs = audibleCount > 0 ? clampAudioDouble(-24.0 + session.masterLevel * 0.12, -60.0, -12.0) : -60.0;
 
-  if (cleanedCount > 0) {
-    session.warnings.emplace_back("Noise suppression active on one or more participant sources.");
-  }
   if (limitedCount > 0) {
     session.warnings.emplace_back("Limiter engaged on one or more participant sources.");
   }
