@@ -247,8 +247,10 @@ public sealed partial class OverlaysViewModel : ObservableObject
     [RelayCommand]
     private void AddGraphic(string kind)
     {
-        _studio.AddGraphicOverlay(kind);
-        OnPropertyChanged(nameof(HasGraphics));
+        if (_studio.AddGraphicOverlay(kind))
+        {
+            OnPropertyChanged(nameof(HasGraphics));
+        }
     }
 
     [RelayCommand]

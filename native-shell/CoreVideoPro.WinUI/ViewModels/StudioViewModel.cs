@@ -3498,9 +3498,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
         Graphics.Where(graphic => graphic.Enabled).ToList();
 
-    public void AddGraphicOverlay(string kind)
+    public bool AddGraphicOverlay(string kind)
     {
         var normalizedKind = string.IsNullOrWhiteSpace(kind) ? "lower-third" : kind.Trim().ToLowerInvariant();
+        if (normalizedKind == "lower-third" &&
+            ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
+        {
+            CommandStatus = "Lower third needs a program source";
+            OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
+            OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
+            OnPropertyChanged(nameof(StudioLowerThirdToolTip));
+            return false;
+        }
+
         var label = normalizedKind switch
         {
             "bug" => "Corner bug",
@@ -3530,6 +3540,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshProgramLowerThirdKeyPosition();
         CommandStatus = $"{label} added";
         _ = TrySyncMediaCoreAsync();
+        return true;
     }
 
     [RelayCommand]
