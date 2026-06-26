@@ -6734,11 +6734,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (Streaming && ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
             LaunchLog.Write($"stream: profile change blocked invalid destination ({validationError})");
+            var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             RunOnUiThread(() =>
             {
                 Streaming = false;
                 RefreshOutputStatus();
-                OutputStatus = $"{validationError} Streaming stopped.";
+                OutputStatus = $"{failureStatus} Streaming stopped.";
                 OutputSessionStatus = OutputStatus;
             });
 
@@ -6748,9 +6749,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             catch (Exception ex)
             {
+                var cleanupStatus = FormatStreamingFailureStatus("stop", ex);
                 RunOnUiThread(() =>
                 {
-                    OutputStatus = $"Streaming stop sync failed after invalid output profile: {ex.Message}";
+                    OutputStatus = $"Streaming settings cleanup failed: {cleanupStatus}";
                     OutputSessionStatus = OutputStatus;
                 });
             }
@@ -6777,9 +6779,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (ValidateStreamDestinations() is { Length: > 0 } validationError)
         {
+            var failureStatus = FormatStreamingFailureStatus("settings", new InvalidOperationException(validationError));
             Streaming = false;
             RefreshOutputStatus();
-            OutputStatus = $"{validationError} Streaming stopped.";
+            OutputStatus = $"{failureStatus} Streaming stopped.";
             OutputSessionStatus = OutputStatus;
             try
             {
@@ -6787,9 +6790,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             catch (Exception ex)
             {
+                var cleanupStatus = FormatStreamingFailureStatus("stop", ex);
                 RunOnUiThread(() =>
                 {
-                    OutputStatus = $"Streaming stop sync failed after invalid settings: {ex.Message}";
+                    OutputStatus = $"Streaming settings cleanup failed: {cleanupStatus}";
                     OutputSessionStatus = OutputStatus;
                 });
             }

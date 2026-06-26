@@ -246,6 +246,18 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatOutputStatusBrief_CollapsesInvalidStreamingSettingsStoppedStatus()
+    {
+        var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
+            "settings",
+            new InvalidOperationException("Configure RTMP stream key before streaming.")) + " Streaming stopped.";
+
+        Assert.Equal("RTMP settings missing", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(fullStatus));
+        Assert.Contains("Streaming stopped", fullStatus, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatOutputStatusBrief_SurfacesActionableStreamingFailureAndKeepsDetailsAvailable()
     {
         var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
