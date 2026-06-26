@@ -269,6 +269,19 @@ public static class SupportBundleBuilder
                     TotalFramesWritten = recording.TotalFramesWritten,
                     TotalDroppedFrames = recording.TotalDroppedFrames,
                     EstimatedDiskRateMBps = recording.EstimatedDiskRateMBps,
+                    Proof = recording.Proof is { } proof
+                        ? new SupportBundleMediaCoreRecordingProof
+                        {
+                            AudioPacketsObserved = proof.AudioPacketsObserved,
+                            AudioPresent = proof.AudioPresent,
+                            AudioSampleCount = proof.AudioSampleCount,
+                            AudioChannels = proof.AudioChannels,
+                            AudioSampleRate = proof.AudioSampleRate,
+                            MetadataValid = proof.MetadataValid,
+                            ContainerFormat = proof.ContainerFormat,
+                            AudioCodec = proof.AudioCodec
+                        }
+                        : null,
                     Streams = recording.Streams
                         .Select(stream => new SupportBundleMediaCoreRecordingStream
                         {
@@ -509,13 +522,30 @@ public static class SupportBundleBuilder
                 {
                     lines.Add(
                         $"Output senders: {mediaCore.Senders.Status}; active {mediaCore.Senders.ActiveSenderCount}");
-                    if (audio?.Capture.RoutedMasterFrames > 0)
+                    if (audio.Capture.RoutedMasterFrames > 0)
                     {
                         foreach (var sender in mediaCore.Senders.Destinations.Where(sender =>
                                      sender.Status == "live" && sender.AudioFramesSent <= 0))
                         {
                             lines.Add($"Output audio fault: {sender.Destination} is live but has accepted no program-audio frames.");
                         }
+                    }
+                }
+
+                if (mediaCore.Recording is { Status: "recording" or "warning" } recording)
+                {
+                    var proof = recording.Proof;
+                    if (proof is not null)
+                    {
+                        lines.Add(
+                            $"Recording audio proof: packets {proof.AudioPacketsObserved}; samples {proof.AudioSampleCount}; {proof.AudioChannels} ch @ {proof.AudioSampleRate} Hz");
+                    }
+
+                    if (audio.Capture.RoutedMasterFrames > 0 &&
+                        (proof?.AudioSampleCount ?? 0) <= 0 &&
+                        (proof?.AudioPacketsObserved ?? 0) <= 0)
+                    {
+                        lines.Add("Recording audio fault: program/master PCM is present but the active recording has no audio samples.");
                     }
                 }
             }

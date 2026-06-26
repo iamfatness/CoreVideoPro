@@ -234,7 +234,20 @@ public sealed record SupportBundleMediaCoreRecording
     public int TotalFramesWritten { get; init; }
     public int TotalDroppedFrames { get; init; }
     public double EstimatedDiskRateMBps { get; init; }
+    public SupportBundleMediaCoreRecordingProof? Proof { get; init; }
     public IReadOnlyList<SupportBundleMediaCoreRecordingStream> Streams { get; init; } = [];
+}
+
+public sealed record SupportBundleMediaCoreRecordingProof
+{
+    public long AudioPacketsObserved { get; init; }
+    public bool AudioPresent { get; init; }
+    public long AudioSampleCount { get; init; }
+    public int AudioChannels { get; init; }
+    public int AudioSampleRate { get; init; }
+    public bool MetadataValid { get; init; }
+    public string? ContainerFormat { get; init; }
+    public string? AudioCodec { get; init; }
 }
 
 public sealed record SupportBundleMediaCoreRecordingStream

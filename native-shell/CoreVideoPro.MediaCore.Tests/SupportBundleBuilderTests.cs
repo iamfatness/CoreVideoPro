@@ -206,6 +206,58 @@ public sealed class SupportBundleBuilderTests
     }
 
     [Fact]
+    public void Build_MapsRecordingAudioProof()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            Recording = BuildRecordingSession(new NativeMediaCoreRecordingProof
+            {
+                AudioPacketsObserved = 3,
+                AudioPresent = true,
+                AudioSampleCount = 1440,
+                AudioChannels = 2,
+                AudioSampleRate = 48000,
+                MetadataValid = true,
+                ContainerFormat = "mp4",
+                AudioCodec = "aac"
+            })
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.NotNull(bundle.MediaCore?.Recording?.Proof);
+        Assert.Equal(3, bundle.MediaCore!.Recording!.Proof!.AudioPacketsObserved);
+        Assert.Equal(1440, bundle.MediaCore.Recording.Proof.AudioSampleCount);
+        Assert.Equal(2, bundle.MediaCore.Recording.Proof.AudioChannels);
+        Assert.Equal(48000, bundle.MediaCore.Recording.Proof.AudioSampleRate);
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Recording audio proof: packets 3; samples 1440; 2 ch @ 48000 Hz", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_FlagsActiveRecordingWithNoAudioSamples()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            Recording = BuildRecordingSession(new NativeMediaCoreRecordingProof
+            {
+                AudioPacketsObserved = 0,
+                AudioPresent = false,
+                AudioSampleCount = 0,
+                AudioChannels = 0,
+                AudioSampleRate = 0
+            })
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Recording audio fault: program/master PCM is present but the active recording has no audio samples.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Build_WithoutSnapshot_StillProducesRuntimeAndTriage()
     {
         var bundle = SupportBundleBuilder.Build(
@@ -367,4 +419,25 @@ public sealed class SupportBundleBuilderTests
         ],
         Warnings = ["compositor degraded"]
     };
+
+    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof proof) =>
+        new()
+        {
+            SessionId = "recording",
+            Active = true,
+            Status = "recording",
+            WriterStatus = "writing",
+            StartedAtMs = 1000,
+            ElapsedMs = 2000,
+            TargetFolder = "Recordings",
+            FilenamePrefix = "show",
+            Format = "mp4",
+            Quality = "high",
+            EstimatedDiskRateMBps = 4.99,
+            ProgramPath = "Recordings/show-program-0.mp4",
+            Proof = proof,
+            TotalFramesWritten = 120,
+            TotalDroppedFrames = 0,
+            TotalBytesWritten = 4096
+        };
 }
