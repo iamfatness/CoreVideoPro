@@ -2372,6 +2372,16 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
                },
            }},
       },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "capture:decklink-1"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "capture:decklink-1"}, {"busId", "mon"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "mon"}, {"gainDb", 0}},
+           }},
+      },
   });
 
   const auto* mix = state.get("audioMixSession");
@@ -2392,6 +2402,32 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
 
   const auto* captureSources = state.get("captureAudioSources");
   ASSERT_NE(captureSources, nullptr);
+  const auto* matrix = state.get("audioRoutingMatrix");
+  ASSERT_NE(matrix, nullptr);
+  const auto* busTaps = matrix->get("busTaps");
+  ASSERT_NE(busTaps, nullptr);
+  bool sawMasterTap = false;
+  bool sawMonitorTap = false;
+  for (const auto& tap : busTaps->asArray()) {
+    if (tap.getString("busId") == "master") {
+      sawMasterTap = true;
+      EXPECT_TRUE(tap.get("frames")->asNumber() > 0);
+    }
+    if (tap.getString("busId") == "mon") {
+      sawMonitorTap = true;
+      EXPECT_TRUE(tap.get("frames")->asNumber() > 0);
+    }
+  }
+  EXPECT_TRUE(sawMasterTap);
+  EXPECT_TRUE(sawMonitorTap);
+  EXPECT_EQ(captureSources->get("sourceCount")->asNumber(), 2);
+  EXPECT_EQ(captureSources->get("pairedCount")->asNumber(), 2);
+  EXPECT_EQ(captureSources->get("streamingCount")->asNumber(), 2);
+  EXPECT_TRUE(captureSources->get("captureFramesReceived")->asNumber() > 0);
+  EXPECT_TRUE(captureSources->get("routedMasterFrames")->asNumber() > 0);
+  EXPECT_TRUE(captureSources->get("routedMonitorFrames")->asNumber() > 0);
+  EXPECT_EQ(captureSources->get("fallbackMonitorFrames")->asNumber(), 0);
+  EXPECT_TRUE(captureSources->get("monitorFramesPlayed")->asNumber() > 0);
   const auto* sources = captureSources->get("sources");
   ASSERT_NE(sources, nullptr);
   ASSERT_TRUE(sources->isArray());
