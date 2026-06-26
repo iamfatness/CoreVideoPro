@@ -1500,6 +1500,36 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("Native: Intro Sting playing; key program-take:3:media:clip-intro.", status);
     }
 
+    [Fact]
+    public void FormatNativeCoreRuntimeStatus_ShowsPathAndAudioCapabilities()
+    {
+        var status = StudioViewModel.FormatNativeCoreRuntimeStatus(
+            @"C:\repo\native\build-dev\corevideo-native.exe",
+            new NativeMediaCoreProfile
+            {
+                Name = "CoreVideo Native",
+                Renderer = "d3d11",
+                MaxProgramResolution = "1920x1080",
+                MaxProgramFps = 60,
+                MaxParticipantFeeds = 10,
+                MaxIsoRecordings = 8,
+                Capabilities = ["local-audio-capture", "audio-monitor-output"]
+            });
+
+        Assert.Contains(@"C:\repo\native\build-dev\corevideo-native.exe", status);
+        Assert.Contains("CoreVideo Native", status);
+        Assert.Contains("local audio on", status);
+        Assert.Contains("monitor output on", status);
+    }
+
+    [Fact]
+    public void FormatNativeCoreRuntimeStatus_ShowsHandshakePending()
+    {
+        var status = StudioViewModel.FormatNativeCoreRuntimeStatus(null, null);
+
+        Assert.Equal("Native core: not resolved; profile waiting for handshake.", status);
+    }
+
     [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]

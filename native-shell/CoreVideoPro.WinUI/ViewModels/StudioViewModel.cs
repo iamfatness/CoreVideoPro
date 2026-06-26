@@ -715,6 +715,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? string.Join(" | ", capture.Sources.Take(3).Select(FormatCaptureAudioSourceStatus))
             : "No paired local/capture audio sources reported by native core.";
 
+    public string NativeCoreRuntimeStatus =>
+        FormatNativeCoreRuntimeStatus(MediaCorePaths.ResolveNativeCoreExecutable(), _bridge.Profile);
+
     public string StudioMonitorSummary =>
         _bridge.LastSnapshot is { } snapshot
             ? FormatStudioMonitorSummary(
@@ -839,6 +842,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _bridge.HealthChanged += OnBridgeHealthChanged;
         _bridge.StatusChanged += OnBridgeStatusChanged;
+        _bridge.ProfileChanged += OnBridgeProfileChanged;
         _bridge.SnapshotChanged += OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
@@ -5758,6 +5762,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"Native: {name} {state}; key {key}.";
     }
 
+    public static string FormatNativeCoreRuntimeStatus(string? executablePath, NativeMediaCoreProfile? profile)
+    {
+        var path = string.IsNullOrWhiteSpace(executablePath)
+            ? "not resolved"
+            : Path.GetFullPath(executablePath);
+        if (profile is null)
+        {
+            return $"Native core: {path}; profile waiting for handshake.";
+        }
+
+        var localAudio = profile.Capabilities.Any(capability =>
+            string.Equals(capability, "local-audio-capture", StringComparison.OrdinalIgnoreCase))
+                ? "local audio on"
+                : "local audio missing";
+        var monitor = profile.Capabilities.Any(capability =>
+            string.Equals(capability, "audio-monitor-output", StringComparison.OrdinalIgnoreCase))
+                ? "monitor output on"
+                : "monitor output missing";
+
+        return $"Native core: {path}; {profile.Name}; {profile.Renderer}; {localAudio}; {monitor}.";
+    }
+
     private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() is
             "loopback" or
@@ -6806,6 +6832,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OnBridgeStatusChanged(string status) =>
         RunOnUiThread(() => EngineStatus = status);
 
+    private void OnBridgeProfileChanged(NativeMediaCoreProfile profile) =>
+        RunOnUiThread(() => OnPropertyChanged(nameof(NativeCoreRuntimeStatus)));
+
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
 
@@ -6822,6 +6851,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         Settings.RefreshDiagnosticsReadout();
+        OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
     }
 
     /// <summary>
@@ -9274,6 +9304,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _automationTimer.Stop();
         _bridge.HealthChanged -= OnBridgeHealthChanged;
         _bridge.StatusChanged -= OnBridgeStatusChanged;
+        _bridge.ProfileChanged -= OnBridgeProfileChanged;
         _bridge.SnapshotChanged -= OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;

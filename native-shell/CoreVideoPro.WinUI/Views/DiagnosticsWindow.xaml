@@ -35,6 +35,9 @@
                            Foreground="{StaticResource StudioTextBrush}" />
                 <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}"
                            Style="{StaticResource OperatorSummary}" />
+                <TextBlock Text="{x:Bind ViewModel.NativeCoreRuntimeStatus, Mode=OneWay}"
+                           Style="{StaticResource OperatorSummary}"
+                           TextWrapping="WrapWholeWords" />
             </StackPanel>
             <Button Grid.Column="1"
                     Content="Export support bundle"
