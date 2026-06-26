@@ -560,10 +560,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "Lower-third key follows the active program source.";
 
     public string StudioLowerThirdButtonLabel =>
-        ProgramLowerThirdKey.IsVisible ? "Lower third out" : "Lower third in";
+        FormatStudioLowerThirdActionLabel(ProgramLowerThirdKey.IsVisible);
 
     public string StudioLowerThirdCompactLabel =>
-        "Lower third";
+        FormatStudioLowerThirdActionLabel(ProgramLowerThirdKey.IsVisible);
 
     public string StudioLowerThirdCompactStatus =>
         ProgramLowerThirdKey.IsVisible
@@ -8767,6 +8767,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         (productionMode == ProductionMode.SetAndForget &&
          automationLowerThirdsEnabled &&
          !automationSuppressed);
+
+    public static string FormatStudioLowerThirdActionLabel(bool isVisible) =>
+        isVisible ? "LT out" : "LT in";
 
     public static string FormatLowerThirdPhaseLabel(string? phase) =>
         phase?.Trim().ToLowerInvariant() switch

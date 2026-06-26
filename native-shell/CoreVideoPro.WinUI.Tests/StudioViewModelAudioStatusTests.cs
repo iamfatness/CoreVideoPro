@@ -1431,6 +1431,14 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData(false, "LT in")]
+    [InlineData(true, "LT out")]
+    public void FormatStudioLowerThirdActionLabel_MakesFooterActionExplicit(bool isVisible, string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatStudioLowerThirdActionLabel(isVisible));
+    }
+
+    [Theory]
     [InlineData("building-in", "Building in")]
     [InlineData("building-out", "Building out")]
     [InlineData("on-air", "On")]
