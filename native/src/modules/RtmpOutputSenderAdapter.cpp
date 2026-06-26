@@ -263,6 +263,24 @@ bool fileExists(const std::filesystem::path& path) {
   return std::filesystem::is_regular_file(path, error);
 }
 
+std::filesystem::path currentExecutableDirectory() {
+#if defined(_WIN32)
+  std::vector<char> buffer(MAX_PATH);
+  for (;;) {
+    const DWORD length = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+      return {};
+    }
+    if (length < buffer.size() - 1) {
+      return std::filesystem::path(std::string(buffer.data(), length)).parent_path();
+    }
+    buffer.resize(buffer.size() * 2);
+  }
+#else
+  return {};
+#endif
+}
+
 std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
 #if defined(_WIN32)
   constexpr const char* executableName = "ffmpeg.exe";
@@ -278,6 +296,10 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
   }
   if (const char* env = std::getenv("FFMPEG_BIN_DIR"); env && *env) {
     candidates.emplace_back(std::filesystem::path(env) / executableName);
+  }
+  const auto executableDirectory = currentExecutableDirectory();
+  if (!executableDirectory.empty()) {
+    candidates.emplace_back(executableDirectory / executableName);
   }
   candidates.emplace_back(std::filesystem::current_path() / executableName);
 
