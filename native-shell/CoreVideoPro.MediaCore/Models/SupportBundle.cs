@@ -194,6 +194,9 @@ public sealed record SupportBundleMediaCoreCaptureAudioSource
     public long EmptyPacketPolls { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }
+    public double PeakDbfs { get; init; } = -120;
+    public double RmsDbfs { get; init; } = -120;
+    public bool SignalPresent { get; init; }
     public string? EndpointName { get; init; }
     public string? LastError { get; init; }
     public string? Warning { get; init; }

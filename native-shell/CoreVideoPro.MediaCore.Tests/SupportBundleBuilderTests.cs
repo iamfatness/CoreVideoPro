@@ -147,6 +147,9 @@ public sealed class SupportBundleBuilderTests
         var captureSource = Assert.Single(bundle.MediaCore.Audio.Capture.Sources);
         Assert.Equal("local-machine-audio", captureSource.CaptureDeviceId);
         Assert.Equal("loopback", captureSource.AudioSourceKind);
+        Assert.True(captureSource.SignalPresent);
+        Assert.Equal(-12.5, captureSource.PeakDbfs);
+        Assert.Equal(-24.2, captureSource.RmsDbfs);
         Assert.Contains("compositor degraded", bundle.MediaCore.Warnings);
 
         Assert.NotNull(bundle.Runtime);
@@ -294,6 +297,9 @@ public sealed class SupportBundleBuilderTests
                     CaptureFramesReceived = 48000,
                     CaptureSampleRate = 48000,
                     CaptureChannels = 2,
+                    PeakDbfs = -12.5,
+                    RmsDbfs = -24.2,
+                    SignalPresent = true,
                     EndpointName = "Speaker Out"
                 }
             ]

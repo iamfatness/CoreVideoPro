@@ -349,6 +349,9 @@ struct CaptureAudioSourceMetrics {
   std::string endpointName;
   std::string lastError;
   std::string warning;
+  double peakDbfs = -120.0;
+  double rmsDbfs = -120.0;
+  bool signalPresent = false;
 };
 
 struct SrtIngestSourceConfig {

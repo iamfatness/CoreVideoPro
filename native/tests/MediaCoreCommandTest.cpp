@@ -2276,6 +2276,56 @@ TEST(MediaCoreCommand, CaptureAudioSourceReportsAdapterLastErrorWhenNotStreaming
       std::string::npos);
 }
 
+TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenPcmFramesAreSilent) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* audioCapture = new RecordingAudioCaptureSource();
+  audioCapture->reportedMetrics.push_back(corevideo::modules::CaptureAudioSourceMetrics{
+      "local-machine-audio",
+      "local-machine-audio",
+      "wasapi-loopback",
+      true,
+      960,
+      0,
+      48000,
+      2,
+      "default-render",
+      "System audio loopback",
+      {},
+      {},
+      -120.0,
+      -120.0,
+      false});
+  modules.audioCapture.reset(audioCapture);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+  });
+
+  const auto* captureAudio = state.get("captureAudioSources");
+  ASSERT_NE(captureAudio, nullptr);
+  EXPECT_EQ(captureAudio->getString("status"), "warning");
+  EXPECT_EQ(captureAudio->get("captureFramesReceived")->asNumber(), 960);
+  ASSERT_TRUE(captureAudio->get("sources")->asArray().size() == 1u);
+  const auto& source = captureAudio->get("sources")->asArray()[0];
+  EXPECT_FALSE(source.get("signalPresent")->asBool());
+  EXPECT_EQ(source.get("peakDbfs")->asNumber(), -120.0);
+  EXPECT_NE(source.getString("warning").find("silent PCM frames"), std::string::npos);
+}
+
 TEST(MediaCoreCommand, CaptureAudioSourceSyncDoesNotRestartUnchangedAdapter) {
   auto modules = corevideo::modules::createStubModules();
   auto* audioCapture = new RecordingAudioCaptureSource();
@@ -2437,6 +2487,10 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
   ASSERT_NE(firstSource.get("endpointId"), nullptr);
   ASSERT_NE(firstSource.get("endpointName"), nullptr);
   ASSERT_NE(firstSource.get("lastError"), nullptr);
+  ASSERT_NE(firstSource.get("peakDbfs"), nullptr);
+  ASSERT_NE(firstSource.get("rmsDbfs"), nullptr);
+  ASSERT_NE(firstSource.get("signalPresent"), nullptr);
+  EXPECT_TRUE(firstSource.get("signalPresent")->asBool());
 }
 
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {

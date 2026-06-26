@@ -2070,6 +2070,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
     const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
     const int64_t emptyPacketPolls = metric == metricsByCaptureId.end() ? 0 : metric->second.emptyPacketPolls;
+    const double peakDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.peakDbfs;
+    const double rmsDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.rmsDbfs;
+    const bool signalPresent = metric != metricsByCaptureId.end() && metric->second.signalPresent;
     std::string sourceWarning = metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning;
     const std::string lastError = metric == metricsByCaptureId.end() ? std::string{} : metric->second.lastError;
     if (!source.audioDeviceId.empty() && metric == metricsByCaptureId.end()) {
@@ -2080,6 +2083,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       addWarning(source.captureDeviceId + ": " + sourceWarning);
     } else if (streaming && framesReceived <= 0 && sourceWarning.empty()) {
       sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
+      addWarning(source.captureDeviceId + ": " + sourceWarning);
+    } else if (streaming && framesReceived > 0 && !signalPresent && sourceWarning.empty()) {
+      sourceWarning = "Audio capture is receiving silent PCM frames; check the selected endpoint or play audio through it.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);
     }
     // Fall back to the hardware caveat when no more-specific warning applies, so
@@ -2108,6 +2114,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"emptyPacketPolls", static_cast<double>(emptyPacketPolls)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
+        {"peakDbfs", peakDbfs},
+        {"rmsDbfs", rmsDbfs},
+        {"signalPresent", signalPresent},
         {"endpointId", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointId},
         {"endpointName", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointName},
         {"lastError", lastError},

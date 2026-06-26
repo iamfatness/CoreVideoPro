@@ -5,6 +5,7 @@
 // and returns interleaved float PCM frames to MediaCore's mixer each tick.
 
 #include "modules/Interfaces.h"
+#include "modules/AudioDsp.h"
 
 #include <memory>
 #include <string>
@@ -171,7 +172,10 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           source.endpointId,
           source.endpointName,
           source.lastError,
-          source.warning});
+          source.warning,
+          source.lastPeakDbfs,
+          source.lastRmsDbfs,
+          source.signalPresent});
     }
     return metrics;
   }
@@ -191,6 +195,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     bool isFloat = true;
     int64_t framesReceived = 0;
     int64_t emptyPacketPolls = 0;
+    double lastPeakDbfs = -120.0;
+    double lastRmsDbfs = -120.0;
+    bool signalPresent = false;
     std::string endpointId;
     std::string endpointName;
     std::string lastError;
@@ -406,6 +413,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
         } else {
           convertPacket(source, data, frameCount, frame.pcm);
         }
+        source.lastPeakDbfs = computeSamplePeakDbfs(frame.pcm.data(), frame.pcm.size());
+        source.lastRmsDbfs = computeRmsDbfs(frame.pcm.data(), frame.pcm.size());
+        source.signalPresent = source.lastPeakDbfs > -60.0;
         source.framesReceived += frameCount;
         source.lastError.clear();
         source.warning.clear();

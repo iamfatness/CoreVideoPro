@@ -4945,6 +4945,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     $"streaming={source.CaptureStreaming}:" +
                     $"frames={source.CaptureFramesReceived}:" +
                     $"emptyPolls={source.EmptyPacketPolls}:" +
+                    $"signal={source.SignalPresent}:" +
+                    $"peak={source.PeakDbfs:0.0}dB:" +
+                    $"rms={source.RmsDbfs:0.0}dB:" +
                     $"fmt={source.CaptureSampleRate}x{source.CaptureChannels}:" +
                     $"endpoint={TelemetryValue(source.EndpointName ?? source.EndpointId ?? "unknown")}:" +
                     $"lastError={TelemetryValue(source.LastError ?? "none")}:" +
@@ -5617,7 +5620,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : capture.FallbackMonitorFrames > 0
                 ? $"MON fallback {capture.FallbackMonitorFrames}"
                 : "MON 0";
-        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - master {capture.RoutedMasterFrames}, {monitorState}, monitor {capture.MonitorFramesPlayed}";
+        var signalCount = capture.Sources.Count(source => source.SignalPresent);
+        var loudestPeak = capture.Sources.Count > 0
+            ? capture.Sources.Max(source => source.PeakDbfs)
+            : -120;
+        var signalState = capture.CaptureFramesReceived > 0
+            ? signalCount > 0
+                ? $"{signalCount} source(s) with signal, peak {loudestPeak:0.0} dBFS"
+                : "silent PCM"
+            : "signal waiting";
+        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - {signalState} - master {capture.RoutedMasterFrames}, {monitorState}, monitor {capture.MonitorFramesPlayed}";
     }
 
     private static string BuildAudioBusTapSummary(NativeMediaCoreAudioRoutingMatrix matrix)
@@ -5700,6 +5712,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var emptyPolls = source.EmptyPacketPolls > 0 && source.CaptureFramesReceived <= 0
             ? $", {source.EmptyPacketPolls} silent polls"
             : string.Empty;
+        var level = source.CaptureFramesReceived > 0
+            ? $", peak {source.PeakDbfs:0.0} dBFS, rms {source.RmsDbfs:0.0} dBFS" +
+              (source.SignalPresent ? string.Empty : ", silent PCM")
+            : string.Empty;
         var lastError = !string.IsNullOrWhiteSpace(source.LastError)
             ? $", {source.LastError}"
             : string.Empty;
@@ -5713,7 +5729,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var warningText = !string.IsNullOrWhiteSpace(warning)
             ? $", issue: {warning}"
             : string.Empty;
-        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{emptyPolls}{format}{endpoint}{lastError}{warningText}";
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{emptyPolls}{level}{format}{endpoint}{lastError}{warningText}";
     }
 
     public static string FormatCaptureAudioSourceWarningForOperator(string? warning)
@@ -5726,6 +5742,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (warning.Contains("endpoint has not produced loopback packets", StringComparison.OrdinalIgnoreCase))
         {
             return "no loopback packets from selected output; play audio through that output or choose another source";
+        }
+
+        if (warning.Contains("receiving silent PCM frames", StringComparison.OrdinalIgnoreCase))
+        {
+            return "silent PCM from selected source; choose the active output/input or play audio through it";
         }
 
         if (warning.Contains("could not query", StringComparison.OrdinalIgnoreCase) ||

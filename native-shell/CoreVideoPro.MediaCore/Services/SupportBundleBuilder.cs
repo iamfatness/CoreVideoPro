@@ -382,6 +382,9 @@ public static class SupportBundleBuilder
                         EmptyPacketPolls = source.EmptyPacketPolls,
                         CaptureSampleRate = source.CaptureSampleRate,
                         CaptureChannels = source.CaptureChannels,
+                        PeakDbfs = source.PeakDbfs,
+                        RmsDbfs = source.RmsDbfs,
+                        SignalPresent = source.SignalPresent,
                         EndpointName = source.EndpointName,
                         LastError = source.LastError,
                         Warning = source.Warning

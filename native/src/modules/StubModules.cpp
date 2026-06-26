@@ -352,7 +352,10 @@ class StubAudioCaptureSource final : public IAudioCaptureSource {
           source.nativeAudioDeviceId,
           source.audioDeviceName,
           {},
-          {}});
+          {},
+          -20.0,
+          -23.0,
+          true});
     }
     return metrics;
   }

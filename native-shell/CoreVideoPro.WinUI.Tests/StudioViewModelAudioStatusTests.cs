@@ -1309,6 +1309,43 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatLocalAudioSourceStatus_ShowsSilentPcmLevelEvidence()
+    {
+        var status = StudioViewModel.FormatLocalAudioSourceStatus(
+            "loopback-game",
+            "Game audio loopback",
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                Summary = "1 source streaming, silent PCM.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "loopback-game",
+                        AudioDeviceName = "Game audio loopback",
+                        AudioSourceKind = "wasapi-loopback",
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 960,
+                        CaptureSampleRate = 48000,
+                        CaptureChannels = 2,
+                        PeakDbfs = -120,
+                        RmsDbfs = -120,
+                        SignalPresent = false,
+                        EndpointName = "Game output",
+                        Warning = "Audio capture is receiving silent PCM frames; check the selected endpoint or play audio through it."
+                    }
+                ],
+                Warnings = ["local-machine-audio: Audio capture is receiving silent PCM frames."]
+            });
+
+        Assert.Contains("silent PCM", status, StringComparison.Ordinal);
+        Assert.Contains("peak -120.0 dBFS", status, StringComparison.Ordinal);
+        Assert.Contains("silent PCM from selected source", status, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EnsureDefaultLocalAudioRoutingSends_AddsProgramAndMonitorBeforeMatrixRowExists()
     {
         var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
