@@ -369,6 +369,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _canvasInteractionActive;
     private bool _refreshingSceneBackgroundSelection;
     private bool _applyingDualCaptureSelection;
+    private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
     private readonly HashSet<string> _captureAutoConnectInFlight = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _captureConnectGate = new(1, 1);
@@ -882,7 +883,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Recording rights can be requested in a breakout room without capture running,
     // so recording only requires being in a meeting (NOT an active capture subscription).
-    public bool CanToggleRecording => Settings.IsInMeeting;
+    public bool CanToggleRecording => Settings.IsInMeeting && !_recordingToggleInFlight;
 
     public string CaptureEngineHint => CanToggleCapture
         ? "Requests the raw Zoom capture subscription for the active meeting."
@@ -2188,16 +2189,182 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
     private async Task ToggleRecordingAsync()
     {
-        Recording = !Recording;
+        if (_recordingToggleInFlight)
+        {
+            return;
+        }
+
+        _recordingToggleInFlight = true;
+        ToggleRecordingCommand.NotifyCanExecuteChanged();
+        var starting = !Recording;
+        var previousRecording = Recording;
+        LaunchLog.Write(
+            $"recording: toggle requested action={(starting ? "start" : "stop")} " +
+            $"format={NormalizeRecordingFormat(RecordingFormat)} " +
+            $"bitrate={NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps):0.0}Mbps " +
+            $"codec={RecordingVideoCodec}");
+
+        Recording = starting;
         RefreshOutputStatus();
 
         try
         {
-            await SyncActiveSceneAsync().ConfigureAwait(false);
+            await EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
+            var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
+            if (starting && TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
+            {
+                RunOnUiThread(() =>
+                {
+                    Recording = previousRecording;
+                    RefreshOutputStatus();
+                    OutputStatus = healthFailureStatus;
+                    OutputSessionStatus = OutputStatus;
+                });
+                _ = SyncFailedRecordingStartRollbackAsync(healthFailureStatus);
+                return;
+            }
+
+            RunOnUiThread(() =>
+            {
+                OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                OutputSessionStatus = OutputStatus;
+            });
+        }
+        catch (MediaCoreSyncInFlightException)
+        {
+            RunOnUiThread(() =>
+            {
+                OutputStatus = starting ? "Recording starting - applying..." : "Recording stopping - applying...";
+                OutputSessionStatus = OutputStatus;
+            });
+            LaunchLog.Write($"recording: {(starting ? "start" : "stop")} deferred because media core sync is in flight");
+            _ = RetryRecordingSyncAsync(starting);
         }
         catch (Exception ex)
         {
-            OutputStatus = ex.Message;
+            var action = starting ? "start" : "stop";
+            var failureStatus = FormatRecordingFailureStatus(action, ex);
+            LaunchLog.Write($"recording: {action} failed {ex.GetType().Name}: {ex.Message}");
+            RunOnUiThread(() =>
+            {
+                Recording = previousRecording;
+                RefreshOutputStatus();
+                OutputStatus = failureStatus;
+                OutputSessionStatus = OutputStatus;
+            });
+
+            if (starting && !previousRecording)
+            {
+                _ = SyncFailedRecordingStartRollbackAsync(failureStatus);
+            }
+        }
+        finally
+        {
+            RunOnUiThread(() =>
+            {
+                _recordingToggleInFlight = false;
+                ToggleRecordingCommand.NotifyCanExecuteChanged();
+            });
+        }
+    }
+
+    private async Task SyncFailedRecordingStartRollbackAsync(string failureStatus)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            await Task.Delay(150).ConfigureAwait(false);
+            try
+            {
+                await SyncActiveSceneAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                // Still busy; retry shortly.
+            }
+            catch (Exception ex)
+            {
+                var rollbackFailure = NormalizeStreamingFailureDetail(ex.Message);
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = $"{failureStatus} Recording cleanup also failed: {rollbackFailure}";
+                    OutputSessionStatus = OutputStatus;
+                });
+                return;
+            }
+        }
+
+        RunOnUiThread(() =>
+        {
+            OutputStatus = $"{failureStatus} Recording cleanup is still waiting for media core.";
+            OutputSessionStatus = OutputStatus;
+        });
+    }
+
+    private async Task RetryRecordingSyncAsync(bool starting)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            await Task.Delay(150).ConfigureAwait(false);
+            try
+            {
+                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
+                if (starting && TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
+                {
+                    RunOnUiThread(() =>
+                    {
+                        Recording = ResolveRecordingStateAfterFailedRetry(starting);
+                        RefreshOutputStatus();
+                        OutputStatus = healthFailureStatus;
+                        OutputSessionStatus = OutputStatus;
+                    });
+                    _ = SyncFailedRecordingStartRollbackAsync(healthFailureStatus);
+                    return;
+                }
+
+                RunOnUiThread(() =>
+                {
+                    OutputStatus = starting ? "Recording start requested." : "Recording stopped.";
+                    OutputSessionStatus = OutputStatus;
+                    RefreshOutputStatus();
+                });
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                // Still busy; try again shortly.
+            }
+            catch (Exception ex)
+            {
+                var failureStatus = FormatRecordingFailureStatus(starting ? "start" : "stop", ex);
+                RunOnUiThread(() =>
+                {
+                    Recording = ResolveRecordingStateAfterFailedRetry(starting);
+                    RefreshOutputStatus();
+                    OutputStatus = failureStatus;
+                    OutputSessionStatus = OutputStatus;
+                });
+
+                if (starting)
+                {
+                    _ = SyncFailedRecordingStartRollbackAsync(failureStatus);
+                }
+                return;
+            }
+        }
+
+        var exhaustedStatus = FormatRecordingSyncRetryExhaustedStatus(starting);
+        RunOnUiThread(() =>
+        {
+            Recording = ResolveRecordingStateAfterFailedRetry(starting);
+            RefreshOutputStatus();
+            OutputStatus = exhaustedStatus;
+            OutputSessionStatus = OutputStatus;
+        });
+
+        if (starting)
+        {
+            _ = SyncFailedRecordingStartRollbackAsync(exhaustedStatus);
         }
     }
 
@@ -2410,6 +2577,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         requestedStarting
             ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
             : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
+
+    public static bool ResolveRecordingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
+
+    public static string FormatRecordingSyncRetryExhaustedStatus(bool requestedStarting) =>
+        requestedStarting
+            ? "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again."
+            : "Recording stop failed: Media core is busy applying changes. Wait a moment and try Record again.";
+
+    public static bool TryFormatRecordingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
+    {
+        var detail = snapshot.OutputHealth
+            .Where(item =>
+                item.Status is "failed" or "warning" &&
+                item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Message)
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+
+        detail ??= snapshot.Recording is { Active: true, Status: "failed" or "warning" } recording
+            ? recording.Error ?? recording.Warning
+            : null;
+
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            failureStatus = string.Empty;
+            return false;
+        }
+
+        failureStatus = FormatRecordingFailureStatus("start", new InvalidOperationException(detail));
+        return true;
+    }
 
     public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
@@ -4768,6 +4965,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return cleaned.Length <= maxLength ? cleaned : $"{cleaned[..(maxLength - 3)]}...";
     }
 
+    public static string FormatRecordingFailureStatus(string action, Exception exception)
+    {
+        var detail = NormalizeStreamingFailureDetail(exception.Message);
+        var lowered = detail.ToLowerInvariant();
+        var mediaCoreFailure =
+            lowered.Contains("media core", StringComparison.Ordinal) ||
+            lowered.Contains("media-core", StringComparison.Ordinal) ||
+            lowered.Contains("native media core", StringComparison.Ordinal) ||
+            lowered.Contains("native-media-core", StringComparison.Ordinal) ||
+            lowered.Contains("json-rpc", StringComparison.Ordinal) ||
+            lowered.Contains("json rpc", StringComparison.Ordinal) ||
+            lowered.Contains("broken pipe", StringComparison.Ordinal) ||
+            lowered.Contains("process exited", StringComparison.Ordinal) ||
+            lowered.Contains("process is not running", StringComparison.Ordinal);
+        var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
+                     lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
+            ? "Media core is busy applying changes. Wait a moment and try Record again."
+            : lowered.Contains("program frame", StringComparison.Ordinal) ||
+              lowered.Contains("program pixels", StringComparison.Ordinal)
+                ? "Program video is not ready. Put a valid source on Program before recording."
+            : lowered.Contains("target folder", StringComparison.Ordinal) ||
+              lowered.Contains("path", StringComparison.Ordinal) ||
+              lowered.Contains("directory", StringComparison.Ordinal) ||
+              lowered.Contains("disk", StringComparison.Ordinal)
+                ? "Recording target is not ready. Check the folder path and disk space."
+            : mediaCoreFailure
+                ? "Media core failed while starting recording. Open Details for the native error."
+                : "Media core rejected the recording request.";
+
+        var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
+        return $"Recording {normalizedAction} failed: {prefix} {detail}";
+    }
+
     public static string FormatStreamingFailureStatus(string action, Exception exception)
     {
         var rawLowered = exception.Message?.ToLowerInvariant() ?? string.Empty;
@@ -4844,6 +5074,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return "Stream stop failed";
         }
 
+        if (normalized.StartsWith("Recording start failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return FormatRecordingFailureBrief(normalized, "Recording start failed");
+        }
+
+        if (normalized.StartsWith("Recording stop failed:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Recording stop failed";
+        }
+
         if (normalized.StartsWith("Streaming settings sync failed:", StringComparison.OrdinalIgnoreCase))
         {
             return "Stream settings failed";
@@ -4895,6 +5135,47 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         return normalized.Length <= 28 ? normalized : $"{normalized[..25]}...";
+    }
+
+    private static string FormatRecordingFailureBrief(string normalized, string fallback)
+    {
+        if (normalized.Contains("Program video is not ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Program video not ready";
+        }
+
+        if (normalized.Contains("Recording target is not ready", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Recording target not ready";
+        }
+
+        if (normalized.Contains("Media core rejected", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Media core rejected recording";
+        }
+
+        if (normalized.Contains("Media core failed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (normalized.Contains("process exited", StringComparison.OrdinalIgnoreCase) ||
+                normalized.Contains("process is not running", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Native core exited";
+            }
+
+            if (normalized.Contains("broken pipe", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Native core pipe failed";
+            }
+
+            return "Media core failed";
+        }
+
+        if (normalized.Contains("Media core is busy", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Media core busy";
+        }
+
+        return fallback;
     }
 
     private static string FormatStreamingFailureBrief(string normalized, string fallback)

@@ -244,6 +244,48 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatRecordingFailureStatus_SurfacesProgramReadinessFailure()
+    {
+        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync failed: output sender failed: recording is waiting for a program frame."));
+
+        Assert.StartsWith(
+            "Recording start failed: Program video is not ready. Put a valid source on Program before recording.",
+            fullStatus);
+        Assert.Equal("Program video not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.DoesNotContain("media-core sync failed", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatRecordingFailureStatus_SurfacesBusyMediaCoreFailure()
+    {
+        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+            "start",
+            new InvalidOperationException("media-core sync in flight; skipped for backpressure"));
+
+        Assert.StartsWith(
+            "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again.",
+            fullStatus);
+        Assert.Equal("Media core busy", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.DoesNotContain("backpressure", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatRecordingFailureStatus_SurfacesTargetFailures()
+    {
+        var fullStatus = StudioViewModel.FormatRecordingFailureStatus(
+            "start",
+            new IOException("media-core request failed: target folder path is not writable or disk is full."));
+
+        Assert.StartsWith(
+            "Recording start failed: Recording target is not ready. Check the folder path and disk space.",
+            fullStatus);
+        Assert.Equal("Recording target not ready", StudioViewModel.FormatOutputStatusBrief(fullStatus));
+        Assert.Contains("disk is full", fullStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_SurfacesNativeMediaCoreFailures()
     {
         var fullStatus = StudioViewModel.FormatStreamingFailureStatus(
@@ -313,6 +355,29 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ResolveRecordingStateAfterFailedRetry_RollsBackRequestedState(bool requestedStarting, bool expectedRecording)
+    {
+        Assert.Equal(expectedRecording, StudioViewModel.ResolveRecordingStateAfterFailedRetry(requestedStarting));
+    }
+
+    [Theory]
+    [InlineData(true, "Recording start failed: Media core is busy applying changes. Wait a moment and try Record again.", "Media core busy")]
+    [InlineData(false, "Recording stop failed: Media core is busy applying changes. Wait a moment and try Record again.", "Recording stop failed")]
+    public void FormatRecordingSyncRetryExhaustedStatus_ShowsActionableBusyState(
+        bool requestedStarting,
+        string expectedStatus,
+        string expectedBrief)
+    {
+        var status = StudioViewModel.FormatRecordingSyncRetryExhaustedStatus(requestedStarting);
+
+        Assert.Equal(expectedStatus, status);
+        Assert.Equal(expectedBrief, StudioViewModel.FormatOutputStatusBrief(status));
+        Assert.True(StudioViewModel.ShouldShowOutputStatusDetails(status));
+    }
+
     [Fact]
     public void TryFormatStreamingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
     {
@@ -337,6 +402,56 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void TryFormatRecordingStartHealthFailure_MapsNativeOutputWarningsToStartFailure()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "recording",
+                    Status = "failed",
+                    Message = "Recording target folder path is not writable."
+                }
+            ]
+        };
+
+        Assert.True(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.StartsWith(
+            "Recording start failed: Recording target is not ready. Check the folder path and disk space.",
+            failureStatus);
+        Assert.Equal("Recording target not ready", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
+    public void TryFormatRecordingStartHealthFailure_MapsRecordingSessionError()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = "session-1",
+                Active = true,
+                Status = "failed",
+                WriterStatus = "failed",
+                TargetFolder = @"C:\recordings",
+                FilenamePrefix = "show",
+                Format = "mkv",
+                Quality = "high",
+                ProgramPath = @"C:\recordings\show.mkv",
+                Error = "Native media core process exited while starting recording."
+            }
+        };
+
+        Assert.True(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.StartsWith(
+            "Recording start failed: Media core failed while starting recording. Open Details for the native error.",
+            failureStatus);
+        Assert.Equal("Native core exited", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
     public void TryFormatStreamingStartHealthFailure_IgnoresIdleOutputSnapshot()
     {
         var snapshot = new NativeMediaCoreStateSnapshot
@@ -355,6 +470,27 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.False(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
         Assert.Equal(string.Empty, failureStatus);
     }
+
+    [Fact]
+    public void TryFormatRecordingStartHealthFailure_IgnoresIdleOutputSnapshot()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "recording",
+                    Status = "idle",
+                    Message = "Recording idle."
+                }
+            ]
+        };
+
+        Assert.False(StudioViewModel.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.Equal(string.Empty, failureStatus);
+    }
+
 
     [Fact]
     public void FormatAudioMonitorEngineStatus_UsesFramesAndMonitorStateWithoutMasterPercent()
