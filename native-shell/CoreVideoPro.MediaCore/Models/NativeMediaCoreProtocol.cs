@@ -335,11 +335,34 @@ public sealed record NativeMediaCoreRecordingSession
     public double EstimatedDiskRateMBps { get; init; }
     public required string ProgramPath { get; init; }
     public IReadOnlyList<NativeMediaCoreRecordingStream> Streams { get; init; } = [];
+    public NativeMediaCoreRecordingProof? Proof { get; init; }
     public int TotalFramesWritten { get; init; }
     public int TotalDroppedFrames { get; init; }
     public long TotalBytesWritten { get; init; }
     public string? Warning { get; init; }
     public string? Error { get; init; }
+}
+
+public sealed class NativeMediaCoreRecordingProof
+{
+    public double DurationMs { get; init; }
+    public int ProgramFrameCount { get; init; }
+    public int IsoFrameCount { get; init; }
+    public long AudioPacketsObserved { get; init; }
+    public bool AudioPresent { get; init; }
+    public long AudioSampleCount { get; init; }
+    public int AudioChannels { get; init; }
+    public int AudioSampleRate { get; init; }
+    public bool MetadataValid { get; init; }
+    public string? ContainerFormat { get; init; }
+    public string? VideoCodec { get; init; }
+    public string? AudioCodec { get; init; }
+    public double TargetBitrateMbps { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int FrameRate { get; init; }
+    public int FailureCount { get; init; }
+    public int RecoveryCount { get; init; }
 }
 
 public sealed class NativeMediaCoreRecordingEncoder

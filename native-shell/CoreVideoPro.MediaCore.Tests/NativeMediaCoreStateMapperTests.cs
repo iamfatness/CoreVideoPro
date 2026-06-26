@@ -120,6 +120,14 @@ public sealed class NativeMediaCoreStateMapperTests
                 EstimatedDiskRateMBps = 4.99,
                 ProgramPath = "Recordings/program-program-0.mp4",
                 Streams = [],
+                Proof = new NativeMediaCoreRecordingProof
+                {
+                    AudioPacketsObserved = 2,
+                    AudioPresent = true,
+                    AudioSampleCount = 960,
+                    AudioChannels = 2,
+                    AudioSampleRate = 48000
+                },
                 TotalFramesWritten = 12,
                 TotalDroppedFrames = 0,
                 TotalBytesWritten = 4096
@@ -155,6 +163,8 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("encoding", snapshot.EncoderSession.Status);
         Assert.Equal("live", snapshot.OutputSenderSession.Status);
         Assert.Equal("recording", snapshot.Recording?.Status);
+        Assert.Equal(960, snapshot.Recording?.Proof?.AudioSampleCount);
+        Assert.Equal(48000, snapshot.Recording?.Proof?.AudioSampleRate);
         Assert.Contains("corevideo-mf-recording-123.mp4", snapshot.Warnings[0]);
         Assert.Contains(
             snapshot.OutputHealth,

@@ -690,7 +690,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string AudioProofSummary =>
         _bridge.LastSnapshot is { } snapshot
-            ? FormatAudioProofSummary(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
+            ? FormatAudioProofSummary(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                snapshot.OutputSenderSession,
+                snapshot.Recording)
             : "Audio proof waiting for media core.";
 
     public string AudioMeterSourceSummary =>
@@ -5464,7 +5468,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static string FormatAudioProofSummary(
         NativeMediaCoreAudioMixSession audio,
-        NativeMediaCoreCaptureAudioSources capture)
+        NativeMediaCoreCaptureAudioSources capture,
+        NativeMediaCoreOutputSenderSession? outputSenderSession = null,
+        NativeMediaCoreRecordingSession? recording = null)
     {
         var sourceState = capture.SourceCount <= 0
             ? "sources none"
@@ -5493,23 +5499,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sourceLabel = sourceDetail is null
             ? string.Empty
             : $" - {FormatAudioProofSourceLabel(sourceDetail)}";
-        var faultLabel = FormatAudioProofFaultLabel(audio, capture);
+        var outputState = FormatAudioOutputProofState(outputSenderSession);
+        var recordingState = FormatRecordingAudioProofState(recording);
+        var faultLabel = FormatAudioProofFaultLabel(audio, capture, outputSenderSession, recording);
 
-        return $"{sourceState} | {pcmState} | {mixState} | {pgmState} | {monState} | {playbackState}{faultLabel}{sourceLabel}";
+        return $"{sourceState} | {pcmState} | {mixState} | {pgmState} | {monState} | {playbackState}{outputState}{recordingState}{faultLabel}{sourceLabel}";
     }
 
     private static string FormatAudioProofFaultLabel(
         NativeMediaCoreAudioMixSession audio,
-        NativeMediaCoreCaptureAudioSources capture)
+        NativeMediaCoreCaptureAudioSources capture,
+        NativeMediaCoreOutputSenderSession? outputSenderSession = null,
+        NativeMediaCoreRecordingSession? recording = null)
     {
+        var faults = new List<string>();
         if (capture.SourceCount > 0 && capture.CaptureFramesReceived <= 0)
         {
-            return " | check source PCM";
+            faults.Add("check source PCM");
         }
 
         if (capture.CaptureFramesReceived > 0 && capture.RoutedMasterFrames <= 0)
         {
-            return " | route source to PGM";
+            faults.Add("route source to PGM");
         }
 
         if (capture.RoutedMasterFrames > 0 &&
@@ -5517,15 +5528,82 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             capture.FallbackMonitorFrames <= 0 &&
             (!audio.MonitorEnabled || audio.MonitorFramesPlayed <= 0))
         {
-            return " | route source to MON";
+            faults.Add("route source to MON");
         }
 
         if (audio.MonitorEnabled && capture.RoutedMonitorFrames > 0 && audio.MonitorFramesPlayed <= 0)
         {
-            return " | check monitor output";
+            faults.Add("check monitor output");
         }
 
-        return string.Empty;
+        if (capture.RoutedMasterFrames > 0 &&
+            outputSenderSession is { ActiveSenderCount: > 0 } &&
+            outputSenderSession.Senders.Any(sender => string.Equals(sender.Status, "live", StringComparison.OrdinalIgnoreCase)) &&
+            outputSenderSession.Senders.Where(sender => string.Equals(sender.Status, "live", StringComparison.OrdinalIgnoreCase)).Sum(sender => sender.AudioFramesSent) <= 0)
+        {
+            faults.Add("check stream audio");
+        }
+
+        if (capture.RoutedMasterFrames > 0 &&
+            recording is { Active: true } &&
+            (recording.Proof?.AudioSampleCount ?? 0) <= 0 &&
+            (recording.Proof?.AudioPacketsObserved ?? 0) <= 0)
+        {
+            faults.Add("check recording audio");
+        }
+
+        return faults.Count > 0
+            ? $" | {string.Join("; ", faults)}"
+            : string.Empty;
+    }
+
+    private static string FormatAudioOutputProofState(NativeMediaCoreOutputSenderSession? outputSenderSession)
+    {
+        if (outputSenderSession is not { ActiveSenderCount: > 0 })
+        {
+            return string.Empty;
+        }
+
+        var liveSenders = outputSenderSession.Senders
+            .Where(sender => string.Equals(sender.Status, "live", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (liveSenders.Length == 0)
+        {
+            return " | stream audio waiting";
+        }
+
+        var audioFrames = liveSenders.Sum(sender => sender.AudioFramesSent);
+        if (audioFrames > 0)
+        {
+            var sampleRate = liveSenders.Select(sender => sender.AudioSampleRate).FirstOrDefault(value => value > 0);
+            return sampleRate > 0
+                ? $" | stream audio {audioFrames} frames @ {sampleRate} Hz"
+                : $" | stream audio {audioFrames} frames";
+        }
+
+        return " | stream audio none";
+    }
+
+    private static string FormatRecordingAudioProofState(NativeMediaCoreRecordingSession? recording)
+    {
+        if (recording is not { Active: true })
+        {
+            return string.Empty;
+        }
+
+        if (recording.Proof is { AudioSampleCount: > 0 } proof)
+        {
+            return proof.AudioSampleRate > 0
+                ? $" | record audio {proof.AudioSampleCount} samples @ {proof.AudioSampleRate} Hz"
+                : $" | record audio {proof.AudioSampleCount} samples";
+        }
+
+        if (recording.Proof is { AudioPacketsObserved: > 0 } packetProof)
+        {
+            return $" | record audio {packetProof.AudioPacketsObserved} packets";
+        }
+
+        return " | record audio none";
     }
 
     private static string FormatAudioProofSourceLabel(NativeMediaCoreCaptureAudioSource source)

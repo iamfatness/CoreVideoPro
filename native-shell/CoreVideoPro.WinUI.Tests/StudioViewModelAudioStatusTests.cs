@@ -951,6 +951,109 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatAudioProofSummary_ShowsStreamAndRecordingAudioProof()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 480
+        };
+        var senders = new NativeMediaCoreOutputSenderSession
+        {
+            Status = "live",
+            ActiveSenderCount = 1,
+            Senders =
+            [
+                new NativeMediaCoreOutputSender
+                {
+                    SenderId = "rtmp",
+                    Destination = "rtmp",
+                    Status = "live",
+                    AudioFramesSent = 960,
+                    AudioBytesSent = 7680,
+                    AudioChannels = 2,
+                    AudioSampleRate = 48000
+                }
+            ]
+        };
+        var recording = BuildRecordingSession(new NativeMediaCoreRecordingProof
+        {
+            AudioPacketsObserved = 2,
+            AudioPresent = true,
+            AudioSampleCount = 960,
+            AudioChannels = 2,
+            AudioSampleRate = 48000
+        });
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture, senders, recording);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | stream audio 960 frames @ 48000 Hz | record audio 960 samples @ 48000 Hz", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_FlagsStreamAndRecordingAudioGaps()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 480
+        };
+        var senders = new NativeMediaCoreOutputSenderSession
+        {
+            Status = "live",
+            ActiveSenderCount = 1,
+            Senders =
+            [
+                new NativeMediaCoreOutputSender
+                {
+                    SenderId = "rtmp",
+                    Destination = "rtmp",
+                    Status = "live",
+                    AudioFramesSent = 0
+                }
+            ]
+        };
+        var recording = BuildRecordingSession(new NativeMediaCoreRecordingProof
+        {
+            AudioPacketsObserved = 0,
+            AudioPresent = false,
+            AudioSampleCount = 0
+        });
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture, senders, recording);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | stream audio none | record audio none | check stream audio; check recording audio", status);
+    }
+
+    [Fact]
     public void BuildAudioMeterSourceSummary_LabelsCaptureSourceDrivingMeters()
     {
         var audio = new NativeMediaCoreAudioMixSession
@@ -1701,6 +1804,24 @@ public sealed class StudioViewModelAudioStatusTests
     {
         Assert.Equal(expected, StudioViewModel.FormatTransportRecordingConfigLabel(format, value));
     }
+
+    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof proof) =>
+        new()
+        {
+            SessionId = "recording",
+            Active = true,
+            Status = "recording",
+            WriterStatus = "writing",
+            StartedAtMs = 1000,
+            ElapsedMs = 2000,
+            TargetFolder = "Recordings",
+            FilenamePrefix = "show",
+            Format = "mp4",
+            Quality = "high",
+            EstimatedDiskRateMBps = 4.99,
+            ProgramPath = "Recordings/show-program-0.mp4",
+            Proof = proof
+        };
 
     private static AudioCaptureDevice AudioDevice(
         string id,
