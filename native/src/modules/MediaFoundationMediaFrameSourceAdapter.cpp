@@ -357,6 +357,11 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (FAILED(MFCreateMediaType(mediaType.put())) ||
         FAILED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio)) ||
         FAILED(mediaType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float)) ||
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000)) ||
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2)) ||
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32)) ||
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 8)) ||
+        FAILED(mediaType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000 * 8)) ||
         FAILED(state.audioReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mediaType.get()))) {
       state.audioReader = {};
       return false;

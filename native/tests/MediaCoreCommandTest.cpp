@@ -300,34 +300,33 @@ void writeLe32(std::ofstream& stream, uint32_t value) {
   stream.write(bytes, sizeof(bytes));
 }
 
-void writeSineWaveFile(const std::filesystem::path& path) {
-  constexpr int kSampleRate = 48000;
-  constexpr int kChannels = 2;
+void writeSineWaveFile(const std::filesystem::path& path, int sampleRate = 48000, int channels = 2) {
   constexpr int kFrames = 4800;
   constexpr int kBitsPerSample = 16;
-  constexpr int kBlockAlign = kChannels * kBitsPerSample / 8;
-  constexpr int kByteRate = kSampleRate * kBlockAlign;
-  constexpr int kDataBytes = kFrames * kBlockAlign;
+  const int blockAlign = channels * kBitsPerSample / 8;
+  const int byteRate = sampleRate * blockAlign;
+  const int dataBytes = kFrames * blockAlign;
 
   std::ofstream stream(path, std::ios::binary | std::ios::trunc);
   stream.write("RIFF", 4);
-  writeLe32(stream, 36u + static_cast<uint32_t>(kDataBytes));
+  writeLe32(stream, 36u + static_cast<uint32_t>(dataBytes));
   stream.write("WAVE", 4);
   stream.write("fmt ", 4);
   writeLe32(stream, 16);
   writeLe16(stream, 1);
-  writeLe16(stream, static_cast<uint16_t>(kChannels));
-  writeLe32(stream, kSampleRate);
-  writeLe32(stream, kByteRate);
-  writeLe16(stream, static_cast<uint16_t>(kBlockAlign));
+  writeLe16(stream, static_cast<uint16_t>(channels));
+  writeLe32(stream, static_cast<uint32_t>(sampleRate));
+  writeLe32(stream, static_cast<uint32_t>(byteRate));
+  writeLe16(stream, static_cast<uint16_t>(blockAlign));
   writeLe16(stream, kBitsPerSample);
   stream.write("data", 4);
-  writeLe32(stream, kDataBytes);
+  writeLe32(stream, static_cast<uint32_t>(dataBytes));
   for (int index = 0; index < kFrames; ++index) {
-    const double phase = 2.0 * corevideo::modules::kAudioPi * 440.0 * static_cast<double>(index) / kSampleRate;
+    const double phase = 2.0 * corevideo::modules::kAudioPi * 440.0 * static_cast<double>(index) / sampleRate;
     const auto sample = static_cast<int16_t>(std::round(std::sin(phase) * 12000.0));
-    writeLe16(stream, static_cast<uint16_t>(sample));
-    writeLe16(stream, static_cast<uint16_t>(sample));
+    for (int channel = 0; channel < channels; ++channel) {
+      writeLe16(stream, static_cast<uint16_t>(sample));
+    }
   }
 }
 
@@ -2286,7 +2285,7 @@ TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
 TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   const auto wavPath = std::filesystem::temp_directory_path() / "corevideo-mf-media-audio-test.wav";
   std::filesystem::remove(wavPath);
-  writeSineWaveFile(wavPath);
+  writeSineWaveFile(wavPath, 44100, 1);
 
   auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
   ASSERT_NE(source, nullptr);
