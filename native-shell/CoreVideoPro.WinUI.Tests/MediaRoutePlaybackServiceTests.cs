@@ -330,7 +330,7 @@ public sealed class MediaRoutePlaybackServiceTests
             MediaRoute("outro", "route-a")
         ]);
 
-        Assert.Equal("route-a:outro|route-b:intro", signature);
+        Assert.Equal("intro:1|outro:1", signature);
     }
 
     [Fact]
@@ -347,6 +347,32 @@ public sealed class MediaRoutePlaybackServiceTests
         Assert.Equal(
             StudioViewModel.BuildProgramMediaRouteSignature([before]),
             StudioViewModel.BuildProgramMediaRouteSignature([after]));
+    }
+
+    [Fact]
+    public void BuildProgramMediaRouteSignature_IgnoresRouteIdChurnForSameMediaAsset()
+    {
+        var before = MediaRoute("intro", "route-old");
+        var after = MediaRoute("intro", "route-new");
+
+        Assert.Equal(
+            StudioViewModel.BuildProgramMediaRouteSignature([before]),
+            StudioViewModel.BuildProgramMediaRouteSignature([after]));
+    }
+
+    [Fact]
+    public void BuildProgramMediaRouteSignature_TracksDuplicateMediaAssetCount()
+    {
+        var single = StudioViewModel.BuildProgramMediaRouteSignature([MediaRoute("intro", "route-a")]);
+        var duplicate = StudioViewModel.BuildProgramMediaRouteSignature(
+        [
+            MediaRoute("intro", "route-a"),
+            MediaRoute("intro", "route-b")
+        ]);
+
+        Assert.Equal("intro:1", single);
+        Assert.Equal("intro:2", duplicate);
+        Assert.NotEqual(single, duplicate);
     }
 
     private static SourceRoute MediaRoute(string assetId) =>

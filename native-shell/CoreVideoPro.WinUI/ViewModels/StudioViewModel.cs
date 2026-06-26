@@ -8144,22 +8144,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static string BuildProgramMediaRouteSignature(IReadOnlyList<SourceRoute> routes)
     {
-        var mediaRouteIds = routes
+        var mediaAssetIds = routes
             .Select(route =>
             {
                 var resolved = route.Mode == SourceRouteMode.Fixed &&
                     ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var mediaAssetId)
                         ? mediaAssetId
                         : null;
-                return string.IsNullOrWhiteSpace(resolved)
-                    ? null
-                    : $"{route.Id}:{resolved}";
+                return string.IsNullOrWhiteSpace(resolved) ? null : resolved;
             })
             .OfType<string>()
+            .GroupBy(value => value, StringComparer.Ordinal)
+            .Select(group => $"{group.Key}:{group.Count()}")
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToList();
 
-        return string.Join("|", mediaRouteIds);
+        return string.Join("|", mediaAssetIds);
     }
 
     private static bool IsVisualMediaAsset(MediaAsset asset)
