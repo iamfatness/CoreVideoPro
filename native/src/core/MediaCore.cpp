@@ -1255,18 +1255,15 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
     return;
   }
 
-  if (audioMonitorDeviceId_.empty()) {
-    if (modules_.monitorOutput) {
-      modules_.monitorOutput->stop();
-    }
-    audioMonitorStatus_ = "missing-device";
-    audioMonitorWarning_ = "Audio monitor is enabled but no render device is selected.";
-    return;
+  // Open (or re-target) the real render endpoint for the selected device. An
+  // empty device id intentionally means "system default"; the WASAPI adapter
+  // resolves that to the current default render endpoint.
+  if (audioMonitorDeviceName_.empty() && audioMonitorDeviceId_.empty()) {
+    audioMonitorDeviceName_ = "System default output";
   }
 
-  // Open (or re-target) the real render endpoint for the selected device. The
-  // mixer describes the source bus format; the output adapter converts to the
-  // device's own mix format.
+  // The mixer describes the source bus format; the output adapter converts to
+  // the device's own mix format.
   if (modules_.monitorOutput) {
     const int sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
     const int channels = modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
@@ -2876,7 +2873,7 @@ void MediaCore::renderSyntheticTick() {
     }
   }
 
-  if (audioMonitorEnabled_ && !audioMonitorDeviceId_.empty()) {
+  if (audioMonitorEnabled_) {
     if (audioMonitorVolume_ <= 0.0) {
       // Enabled and armed, but the operator pulled the monitor fader to zero.
       audioMonitorStatus_ = "volume-zero";

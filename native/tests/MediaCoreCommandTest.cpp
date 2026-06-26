@@ -1649,6 +1649,34 @@ TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume
   EXPECT_TRUE(std::fabs(monitor->lastVolume - 0.5) < 1e-6);
 }
 
+TEST(MediaCoreAudioMonitor, EmptyMonitorDeviceUsesSystemDefaultOutput) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  auto* monitor = new RecordingMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", ""},
+          {"deviceName", ""},
+          {"volume", 0.5},
+      },
+  });
+
+  const auto* audio = state.get("audioMixSession");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_EQ(audio->getString("monitorStatus"), "playing");
+  EXPECT_EQ(audio->getString("monitorDeviceId"), "");
+  EXPECT_EQ(audio->getString("monitorDeviceName"), "System default output");
+  EXPECT_TRUE(audio->get("monitorFramesPlayed")->asNumber() > 0);
+  EXPECT_GE(monitor->startCount, 1);
+  EXPECT_EQ(monitor->lastDeviceId, "");
+  EXPECT_TRUE(monitor->framesRendered > 0);
+}
+
 TEST(MediaCoreAudioMonitor, TransientRenderFailureReportsDroppingAndClearsAfterRecovery) {
   auto modules = corevideo::modules::createStubModules();
   modules.zoom = std::make_unique<PcmTestZoomSource>();
