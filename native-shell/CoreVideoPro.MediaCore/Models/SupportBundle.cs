@@ -184,8 +184,11 @@ public sealed record SupportBundleMediaCoreCaptureAudioSource
 {
     public required string CaptureDeviceId { get; init; }
     public string? SourceId { get; init; }
+    public string? AudioDeviceId { get; init; }
     public string? AudioDeviceName { get; init; }
     public string? AudioSourceKind { get; init; }
+    public string? NativeAudioDeviceId { get; init; }
+    public string? AudioDriverName { get; init; }
     public bool Embedded { get; init; }
     public int AudioSyncOffsetMs { get; init; }
     public bool Paired { get; init; }
@@ -197,6 +200,7 @@ public sealed record SupportBundleMediaCoreCaptureAudioSource
     public double PeakDbfs { get; init; } = -120;
     public double RmsDbfs { get; init; } = -120;
     public bool SignalPresent { get; init; }
+    public string? EndpointId { get; init; }
     public string? EndpointName { get; init; }
     public string? LastError { get; init; }
     public string? Warning { get; init; }

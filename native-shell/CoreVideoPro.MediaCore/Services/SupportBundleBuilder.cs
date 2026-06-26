@@ -389,8 +389,11 @@ public static class SupportBundleBuilder
                     {
                         CaptureDeviceId = source.CaptureDeviceId,
                         SourceId = source.SourceId,
+                        AudioDeviceId = source.AudioDeviceId,
                         AudioDeviceName = source.AudioDeviceName,
                         AudioSourceKind = source.AudioSourceKind,
+                        NativeAudioDeviceId = source.NativeAudioDeviceId,
+                        AudioDriverName = source.AudioDriverName,
                         Embedded = source.Embedded,
                         AudioSyncOffsetMs = source.AudioSyncOffsetMs,
                         Paired = source.Paired,
@@ -402,6 +405,7 @@ public static class SupportBundleBuilder
                         PeakDbfs = source.PeakDbfs,
                         RmsDbfs = source.RmsDbfs,
                         SignalPresent = source.SignalPresent,
+                        EndpointId = source.EndpointId,
                         EndpointName = source.EndpointName,
                         LastError = source.LastError,
                         Warning = source.Warning

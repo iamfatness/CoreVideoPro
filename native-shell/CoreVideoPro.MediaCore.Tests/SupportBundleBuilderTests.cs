@@ -154,10 +154,15 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal(48000, Assert.Single(bundle.MediaCore.Audio.Routing.BusTaps).Frames);
         var captureSource = Assert.Single(bundle.MediaCore.Audio.Capture.Sources);
         Assert.Equal("local-machine-audio", captureSource.CaptureDeviceId);
+        Assert.Equal("system-loopback", captureSource.AudioDeviceId);
+        Assert.Equal("wasapi:{speaker-out}", captureSource.NativeAudioDeviceId);
+        Assert.Equal("WASAPI", captureSource.AudioDriverName);
         Assert.Equal("loopback", captureSource.AudioSourceKind);
         Assert.True(captureSource.SignalPresent);
         Assert.Equal(-12.5, captureSource.PeakDbfs);
         Assert.Equal(-24.2, captureSource.RmsDbfs);
+        Assert.Equal("{speaker-out}", captureSource.EndpointId);
+        Assert.Equal("Speaker Out", captureSource.EndpointName);
         Assert.Contains("compositor degraded", bundle.MediaCore.Warnings);
 
         Assert.NotNull(bundle.Runtime);
@@ -380,8 +385,11 @@ public sealed class SupportBundleBuilderTests
                 {
                     CaptureDeviceId = "local-machine-audio",
                     SourceId = "local-machine-audio",
+                    AudioDeviceId = "system-loopback",
                     AudioDeviceName = "System loopback",
                     AudioSourceKind = "loopback",
+                    NativeAudioDeviceId = "wasapi:{speaker-out}",
+                    AudioDriverName = "WASAPI",
                     Paired = true,
                     CaptureStreaming = true,
                     CaptureFramesReceived = 48000,
@@ -390,6 +398,7 @@ public sealed class SupportBundleBuilderTests
                     PeakDbfs = -12.5,
                     RmsDbfs = -24.2,
                     SignalPresent = true,
+                    EndpointId = "{speaker-out}",
                     EndpointName = "Speaker Out"
                 }
             ]
