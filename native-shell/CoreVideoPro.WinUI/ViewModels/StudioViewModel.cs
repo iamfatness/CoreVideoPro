@@ -2223,9 +2223,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             if (starting && ValidateStreamDestinations() is { Length: > 0 } validationError)
             {
+                var failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(validationError));
                 LaunchLog.Write($"stream: start blocked ({validationError})");
-                OutputStatus = validationError;
-                OutputSessionStatus = validationError;
+                OutputStatus = failureStatus;
+                OutputSessionStatus = failureStatus;
                 return;
             }
 
@@ -4799,6 +4800,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : lowered.Contains("program frame", StringComparison.Ordinal) ||
                      lowered.Contains("program pixels", StringComparison.Ordinal)
             ? "Program video is not ready. Put a valid source on Program before streaming."
+            : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
+                ? "No stream destination is selected. Enable RTMP, NDI, or SRT before streaming."
+            : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
+              lowered.Contains("rtmp server url", StringComparison.Ordinal) ||
+              lowered.Contains("rtmp stream key", StringComparison.Ordinal)
+                ? "RTMP settings are incomplete. Configure the server URL and stream key before streaming."
+            : lowered.Contains("configure an ndi program name", StringComparison.Ordinal)
+                ? "NDI settings are incomplete. Set the NDI program name before streaming."
+            : lowered.Contains("srt", StringComparison.Ordinal) &&
+              (lowered.Contains("configure", StringComparison.Ordinal) ||
+               lowered.Contains("must", StringComparison.Ordinal) ||
+               lowered.Contains("passphrase", StringComparison.Ordinal))
+                ? "SRT settings are incomplete. Check host, port, latency, and passphrase before streaming."
             : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
                 ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
                 : rtmpContext ||
@@ -4893,6 +4907,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
         {
             return "RTMP output failed";
+        }
+
+        if (normalized.Contains("No stream destination is selected", StringComparison.OrdinalIgnoreCase))
+        {
+            return "No stream destination";
+        }
+
+        if (normalized.Contains("RTMP settings are incomplete", StringComparison.OrdinalIgnoreCase))
+        {
+            return "RTMP settings missing";
+        }
+
+        if (normalized.Contains("NDI settings are incomplete", StringComparison.OrdinalIgnoreCase))
+        {
+            return "NDI settings missing";
+        }
+
+        if (normalized.Contains("SRT settings are incomplete", StringComparison.OrdinalIgnoreCase))
+        {
+            return "SRT settings missing";
         }
 
         if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))

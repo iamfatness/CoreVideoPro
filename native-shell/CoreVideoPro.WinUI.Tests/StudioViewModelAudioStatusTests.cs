@@ -114,6 +114,32 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_MapsMissingRtmpConfiguration()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("Configure RTMP server URL before streaming."));
+
+        Assert.StartsWith(
+            "Streaming start failed: RTMP settings are incomplete. Configure the server URL and stream key before streaming.",
+            status);
+        Assert.Equal("RTMP settings missing", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_MapsNoSelectedDestination()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("Select at least one stream destination."));
+
+        Assert.StartsWith(
+            "Streaming start failed: No stream destination is selected. Enable RTMP, NDI, or SRT before streaming.",
+            status);
+        Assert.Equal("No stream destination", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_RemovesRtmpSenderWrappers()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(
