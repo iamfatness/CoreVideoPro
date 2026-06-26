@@ -6215,14 +6215,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             sourceIds.AddRange(audioRoutingSends
                 .Select(send => send.SourceId)
-                .Where(IsConcreteAudioSourceId));
+                .Where(IsConcreteAudioMixSourceId));
         }
         else
         {
             sourceIds.AddRange(AudioRoutingMatrix.Rows
                 .Where(row => row.Cells.Any(cell => cell.IsRouted))
                 .Select(row => ResolveAudioRoutingMatrixSourceId(row.SourceId))
-                .Where(IsConcreteAudioSourceId));
+                .Where(IsConcreteAudioMixSourceId));
         }
 
         return sourceIds
@@ -6297,9 +6297,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "local-machine-audio"
             : $"capture:{source.CaptureDeviceId}";
 
-    private static bool IsConcreteAudioSourceId(string sourceId) =>
+    public static bool IsConcreteAudioMixSourceId(string sourceId) =>
         !string.Equals(sourceId, "zoom-mix", StringComparison.OrdinalIgnoreCase) &&
-        !string.Equals(sourceId, "media", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 

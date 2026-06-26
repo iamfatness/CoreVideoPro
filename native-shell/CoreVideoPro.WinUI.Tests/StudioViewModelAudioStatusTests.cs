@@ -26,6 +26,20 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Theory]
+    [InlineData("local-machine-audio", true)]
+    [InlineData("capture:uvc-01", true)]
+    [InlineData("media", true)]
+    [InlineData("zoom-mix", false)]
+    [InlineData("active-speaker", false)]
+    [InlineData("screen-share", false)]
+    public void IsConcreteAudioMixSourceId_TreatsMediaAsMixerChannelButKeepsPlaceholdersOut(
+        string sourceId,
+        bool expected)
+    {
+        Assert.Equal(expected, StudioViewModel.IsConcreteAudioMixSourceId(sourceId));
+    }
+
+    [Theory]
     [InlineData(ShowInputKind.ZoomParticipant, true)]
     [InlineData(ShowInputKind.UvcWebcam, false)]
     [InlineData(ShowInputKind.Blackmagic, false)]
