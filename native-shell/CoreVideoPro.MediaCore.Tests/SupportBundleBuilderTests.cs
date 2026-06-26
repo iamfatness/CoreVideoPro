@@ -135,6 +135,18 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal("plan-1", bundle.MediaCore.RenderPlanId);
         Assert.Equal(42, bundle.MediaCore.Source.DeliveredFrameCount);
         Assert.Equal("native-frame", bundle.MediaCore.Source.Backing);
+        Assert.Equal(48000, bundle.MediaCore.Audio.Capture.CaptureFramesReceived);
+        Assert.Equal(48000, bundle.MediaCore.Audio.Capture.RoutedMasterFrames);
+        Assert.Equal(0, bundle.MediaCore.Audio.Capture.RoutedMonitorFrames);
+        Assert.Equal(0, bundle.MediaCore.Audio.Capture.FallbackMonitorFrames);
+        Assert.Equal(0, bundle.MediaCore.Audio.MonitorFramesPlayed);
+        Assert.Equal("playing", bundle.MediaCore.Audio.MonitorStatus);
+        Assert.Equal("Speaker Out", bundle.MediaCore.Audio.MonitorDeviceName);
+        Assert.Equal(2, bundle.MediaCore.Audio.Routing.RoutedSendCount);
+        Assert.Equal(48000, Assert.Single(bundle.MediaCore.Audio.Routing.BusTaps).Frames);
+        var captureSource = Assert.Single(bundle.MediaCore.Audio.Capture.Sources);
+        Assert.Equal("local-machine-audio", captureSource.CaptureDeviceId);
+        Assert.Equal("loopback", captureSource.AudioSourceKind);
         Assert.Contains("compositor degraded", bundle.MediaCore.Warnings);
 
         Assert.NotNull(bundle.Runtime);
@@ -148,6 +160,8 @@ public sealed class SupportBundleBuilderTests
 
         Assert.Contains(bundle.TriageLines, line => line.Contains("Media core restarts: 2", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Latest crash: exit 9", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio capture: 1/1 streaming; PCM 48000; master 48000; MON 0; monitor played 0", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio monitor fault: program/master PCM is present but the MON bus has no routed PCM.", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -231,7 +245,58 @@ public sealed class SupportBundleBuilderTests
             Status = "warning",
             Summary = "Limiter active",
             LimiterActive = true,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorDeviceName = "Speaker Out",
             Warnings = ["clipping on master bus"]
+        },
+        AudioRoutingMatrix = new NativeMediaCoreAudioRoutingMatrix
+        {
+            Status = "ready",
+            RoutedSendCount = 2,
+            RoutedSourceCount = 1,
+            ProgramTapFrames = 48000,
+            Summary = "2 sends routed",
+            BusTaps =
+            [
+                new NativeMediaCoreAudioBusTap
+                {
+                    BusId = "master",
+                    Channels = 2,
+                    Frames = 48000,
+                    PeakDbfs = -12.5,
+                    RmsDbfs = -24.2
+                }
+            ]
+        },
+        CaptureAudioSources = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            SourceCount = 1,
+            PairedCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 48000,
+            RoutedMasterFrames = 48000,
+            RoutedMonitorFrames = 0,
+            FallbackMonitorFrames = 0,
+            MonitorFramesPlayed = 0,
+            Summary = "1 capture source paired",
+            Sources =
+            [
+                new NativeMediaCoreCaptureAudioSource
+                {
+                    CaptureDeviceId = "local-machine-audio",
+                    SourceId = "local-machine-audio",
+                    AudioDeviceName = "System loopback",
+                    AudioSourceKind = "loopback",
+                    Paired = true,
+                    CaptureStreaming = true,
+                    CaptureFramesReceived = 48000,
+                    CaptureSampleRate = 48000,
+                    CaptureChannels = 2,
+                    EndpointName = "Speaker Out"
+                }
+            ]
         },
         OperatorActions =
         [

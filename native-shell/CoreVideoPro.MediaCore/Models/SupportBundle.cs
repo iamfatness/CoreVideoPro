@@ -128,6 +128,10 @@ public sealed record SupportBundleMediaCoreAudio
     public double LoudnessLufs { get; init; }
     public bool LimiterActive { get; init; }
     public int MixedFrameCount { get; init; }
+    public bool MonitorEnabled { get; init; }
+    public string? MonitorStatus { get; init; }
+    public string? MonitorDeviceName { get; init; }
+    public long MonitorFramesPlayed { get; init; }
     public int ParticipantCount { get; init; }
     public int MutedParticipantCount { get; init; }
     public int BoostedParticipantCount { get; init; }
@@ -138,6 +142,61 @@ public sealed record SupportBundleMediaCoreAudio
     public int WarningCount { get; init; }
     public IReadOnlyList<string> WarningCategories { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
+    public SupportBundleMediaCoreAudioRouting Routing { get; init; } = new();
+    public SupportBundleMediaCoreCaptureAudio Capture { get; init; } = new();
+}
+
+public sealed record SupportBundleMediaCoreAudioRouting
+{
+    public string Status { get; init; } = "idle";
+    public int RoutedSendCount { get; init; }
+    public int RoutedSourceCount { get; init; }
+    public int ProgramTapFrames { get; init; }
+    public IReadOnlyList<SupportBundleMediaCoreAudioBusTap> BusTaps { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed record SupportBundleMediaCoreAudioBusTap
+{
+    public required string BusId { get; init; }
+    public int Channels { get; init; }
+    public int Frames { get; init; }
+    public double PeakDbfs { get; init; }
+    public double RmsDbfs { get; init; }
+}
+
+public sealed record SupportBundleMediaCoreCaptureAudio
+{
+    public string Status { get; init; } = "idle";
+    public int SourceCount { get; init; }
+    public int PairedCount { get; init; }
+    public int StreamingCount { get; init; }
+    public long CaptureFramesReceived { get; init; }
+    public int RoutedMasterFrames { get; init; }
+    public int RoutedMonitorFrames { get; init; }
+    public int FallbackMonitorFrames { get; init; }
+    public long MonitorFramesPlayed { get; init; }
+    public IReadOnlyList<SupportBundleMediaCoreCaptureAudioSource> Sources { get; init; } = [];
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed record SupportBundleMediaCoreCaptureAudioSource
+{
+    public required string CaptureDeviceId { get; init; }
+    public string? SourceId { get; init; }
+    public string? AudioDeviceName { get; init; }
+    public string? AudioSourceKind { get; init; }
+    public bool Embedded { get; init; }
+    public int AudioSyncOffsetMs { get; init; }
+    public bool Paired { get; init; }
+    public bool CaptureStreaming { get; init; }
+    public long CaptureFramesReceived { get; init; }
+    public long EmptyPacketPolls { get; init; }
+    public int CaptureSampleRate { get; init; }
+    public int CaptureChannels { get; init; }
+    public string? EndpointName { get; init; }
+    public string? LastError { get; init; }
+    public string? Warning { get; init; }
 }
 
 public sealed record SupportBundleMediaCoreSenders

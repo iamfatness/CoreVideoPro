@@ -196,6 +196,8 @@ public static class SupportBundleBuilder
         var encoder = snapshot.EncoderSession;
         var senders = snapshot.OutputSenderSession;
         var audio = snapshot.AudioMixSession;
+        var routing = snapshot.AudioRoutingMatrix;
+        var capture = snapshot.CaptureAudioSources;
 
         return new SupportBundleMediaCore
         {
@@ -233,7 +235,7 @@ public static class SupportBundleBuilder
                 Lifecycle = encoder.Lifecycle.Status,
                 TargetCount = encoder.Targets.Count
             },
-            Audio = SummarizeAudio(audio),
+            Audio = SummarizeAudio(audio, routing, capture),
             Senders = new SupportBundleMediaCoreSenders
             {
                 Status = senders.Status,
@@ -306,7 +308,10 @@ public static class SupportBundleBuilder
         };
     }
 
-    private static SupportBundleMediaCoreAudio SummarizeAudio(NativeMediaCoreAudioMixSession session)
+    private static SupportBundleMediaCoreAudio SummarizeAudio(
+        NativeMediaCoreAudioMixSession session,
+        NativeMediaCoreAudioRoutingMatrix routing,
+        NativeMediaCoreCaptureAudioSources capture)
     {
         var warnings = session.Warnings.ToArray();
         var participants = session.Participants;
@@ -319,6 +324,10 @@ public static class SupportBundleBuilder
             LoudnessLufs = session.LoudnessLufs,
             LimiterActive = session.LimiterActive,
             MixedFrameCount = session.MixedFrameCount,
+            MonitorEnabled = session.MonitorEnabled,
+            MonitorStatus = session.MonitorStatus,
+            MonitorDeviceName = session.MonitorDeviceName,
+            MonitorFramesPlayed = session.MonitorFramesPlayed,
             ParticipantCount = participants.Count,
             MutedParticipantCount = participants.Count(p => p.Muted),
             BoostedParticipantCount = participants.Count(p => p.Status == "boosting"),
@@ -328,7 +337,58 @@ public static class SupportBundleBuilder
             PeakOutputLevel = peakOutput,
             WarningCount = warnings.Length,
             WarningCategories = CategorizeAudioWarnings(session),
-            Warnings = warnings
+            Warnings = warnings,
+            Routing = new SupportBundleMediaCoreAudioRouting
+            {
+                Status = routing.Status,
+                RoutedSendCount = routing.RoutedSendCount,
+                RoutedSourceCount = routing.RoutedSourceCount,
+                ProgramTapFrames = routing.ProgramTapFrames,
+                BusTaps = routing.BusTaps
+                    .Select(tap => new SupportBundleMediaCoreAudioBusTap
+                    {
+                        BusId = tap.BusId,
+                        Channels = tap.Channels,
+                        Frames = tap.Frames,
+                        PeakDbfs = tap.PeakDbfs,
+                        RmsDbfs = tap.RmsDbfs
+                    })
+                    .ToArray(),
+                Warnings = routing.Warnings.ToArray()
+            },
+            Capture = new SupportBundleMediaCoreCaptureAudio
+            {
+                Status = capture.Status,
+                SourceCount = capture.SourceCount,
+                PairedCount = capture.PairedCount,
+                StreamingCount = capture.StreamingCount,
+                CaptureFramesReceived = capture.CaptureFramesReceived,
+                RoutedMasterFrames = capture.RoutedMasterFrames,
+                RoutedMonitorFrames = capture.RoutedMonitorFrames,
+                FallbackMonitorFrames = capture.FallbackMonitorFrames,
+                MonitorFramesPlayed = capture.MonitorFramesPlayed,
+                Sources = capture.Sources
+                    .Select(source => new SupportBundleMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = source.CaptureDeviceId,
+                        SourceId = source.SourceId,
+                        AudioDeviceName = source.AudioDeviceName,
+                        AudioSourceKind = source.AudioSourceKind,
+                        Embedded = source.Embedded,
+                        AudioSyncOffsetMs = source.AudioSyncOffsetMs,
+                        Paired = source.Paired,
+                        CaptureStreaming = source.CaptureStreaming,
+                        CaptureFramesReceived = source.CaptureFramesReceived,
+                        EmptyPacketPolls = source.EmptyPacketPolls,
+                        CaptureSampleRate = source.CaptureSampleRate,
+                        CaptureChannels = source.CaptureChannels,
+                        EndpointName = source.EndpointName,
+                        LastError = source.LastError,
+                        Warning = source.Warning
+                    })
+                    .ToArray(),
+                Warnings = capture.Warnings.ToArray()
+            }
         };
     }
 
@@ -415,6 +475,27 @@ public static class SupportBundleBuilder
                         ? string.Join(", ", audio.WarningCategories)
                         : "none";
                     lines.Add($"Audio diagnostics: {audio.Status}; categories: {categories}; warnings: {audio.WarningCount}");
+                }
+
+                if (audio.Capture.SourceCount > 0)
+                {
+                    lines.Add(
+                        $"Audio capture: {audio.Capture.StreamingCount}/{audio.Capture.SourceCount} streaming; PCM {audio.Capture.CaptureFramesReceived}; master {audio.Capture.RoutedMasterFrames}; MON {audio.Capture.RoutedMonitorFrames}; monitor played {audio.Capture.MonitorFramesPlayed}");
+
+                    if (audio.Capture.CaptureFramesReceived > 0 && audio.Capture.RoutedMasterFrames <= 0)
+                    {
+                        lines.Add("Audio capture fault: source PCM is present but not reaching the master bus.");
+                    }
+
+                    if (audio.Capture.RoutedMasterFrames > 0 && audio.Capture.RoutedMonitorFrames <= 0 && audio.Capture.FallbackMonitorFrames <= 0)
+                    {
+                        lines.Add("Audio monitor fault: program/master PCM is present but the MON bus has no routed PCM.");
+                    }
+
+                    if (audio.MonitorEnabled && audio.Capture.RoutedMonitorFrames > 0 && audio.MonitorFramesPlayed <= 0)
+                    {
+                        lines.Add("Audio monitor fault: MON bus has PCM but the monitor output reported no playback frames.");
+                    }
                 }
 
                 if (mediaCore.Senders.ActiveSenderCount > 0)
