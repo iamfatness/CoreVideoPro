@@ -204,11 +204,23 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
       const corevideo::modules::ProgramFrame*,
       double,
       const std::vector<corevideo::modules::OutputDestinationSettings>& destinationSettings = {},
-      const std::vector<float>* = nullptr,
-      int = 0,
-      int = 0) override {
+      const std::vector<float>* programAudioPcm = nullptr,
+      int audioChannels = 0,
+      int audioSampleRate = 0) override {
     destinations_ = destinations;
     destinationSettings_ = destinationSettings;
+    audioFramesSent_ = programAudioPcm && audioChannels > 0
+                           ? static_cast<int>(programAudioPcm->size() / static_cast<size_t>(audioChannels))
+                           : 0;
+    audioChannels_ = audioChannels;
+    audioSampleRate_ = audioSampleRate;
+    firstAudioSample_ = programAudioPcm && !programAudioPcm->empty() ? programAudioPcm->front() : 0.f;
+    maxAudioSample_ = 0.f;
+    if (programAudioPcm) {
+      for (const auto sample : *programAudioPcm) {
+        maxAudioSample_ = std::max(maxAudioSample_, std::abs(sample));
+      }
+    }
     corevideo::modules::OutputSenderSession session;
     session.status = destinations.empty() ? "idle" : "live";
     session.activeSenderCount = static_cast<int>(destinations.size());
@@ -229,6 +241,11 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
 
   std::vector<std::string> destinations_;
   std::vector<corevideo::modules::OutputDestinationSettings> destinationSettings_;
+  int audioFramesSent_ = 0;
+  int audioChannels_ = 0;
+  int audioSampleRate_ = 0;
+  float firstAudioSample_ = 0.f;
+  float maxAudioSample_ = 0.f;
 };
 
 class ThrowingOutputSender final : public corevideo::modules::IOutputSender {
@@ -2046,6 +2063,67 @@ TEST(OutputSenderAdapter, SyncAcceptsRealProgramAudioWithoutChangingDiagnostics)
   EXPECT_EQ(withoutAudio.senders[0].audioSampleRate, 0);
 }
 
+TEST(MediaCoreCommand, StreamOutputPrefersRoutedStreamBusAudio) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* outputSender = new CapturingOutputSender();
+  modules.outputSender.reset(outputSender);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "master"}, {"gainDb", -20}},
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "stream"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "mon"}, {"gainDb", 0}},
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+      },
+  });
+
+  const auto peakOf = [](const std::vector<float>& samples) {
+    float peak = 0.f;
+    for (const auto sample : samples) {
+      peak = std::max(peak, std::abs(sample));
+    }
+    return peak;
+  };
+
+  const auto& master = mediaCore.programAudioTapPcm();
+  const auto& stream = mediaCore.audioBusTapPcm("stream");
+  ASSERT_FALSE(master.empty());
+  ASSERT_FALSE(stream.empty());
+  EXPECT_TRUE(peakOf(stream) > peakOf(master) * 5.f);
+  EXPECT_EQ(outputSender->destinations_, std::vector<std::string>{"rtmp"});
+  EXPECT_EQ(outputSender->audioFramesSent_, static_cast<int>(stream.size() / 2u));
+  EXPECT_EQ(outputSender->audioChannels_, 2);
+  EXPECT_EQ(outputSender->audioSampleRate_, 48000);
+  EXPECT_TRUE(std::abs(outputSender->maxAudioSample_ - peakOf(stream)) <= 0.0001f);
+
+  const auto* captureSources = state.get("captureAudioSources");
+  ASSERT_NE(captureSources, nullptr);
+  EXPECT_TRUE(captureSources->get("routedMasterFrames")->asNumber() > 0);
+  EXPECT_TRUE(captureSources->get("routedStreamFrames")->asNumber() > 0);
+}
+
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   corevideo::core::MediaCore mediaCore;
   const auto devices = mediaCore.captureDevices();
@@ -2442,8 +2520,10 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
           {"sends",
            corevideo::rpc::Json::Array{
                corevideo::rpc::Json::Object{{"sourceId", "capture:decklink-1"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "capture:decklink-1"}, {"busId", "stream"}, {"gainDb", 0}},
                corevideo::rpc::Json::Object{{"sourceId", "capture:decklink-1"}, {"busId", "mon"}, {"gainDb", 0}},
                corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "stream"}, {"gainDb", 0}},
                corevideo::rpc::Json::Object{{"sourceId", "local-machine-audio"}, {"busId", "mon"}, {"gainDb", 0}},
            }},
       },
@@ -2472,10 +2552,15 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
   const auto* busTaps = matrix->get("busTaps");
   ASSERT_NE(busTaps, nullptr);
   bool sawMasterTap = false;
+  bool sawStreamTap = false;
   bool sawMonitorTap = false;
   for (const auto& tap : busTaps->asArray()) {
     if (tap.getString("busId") == "master") {
       sawMasterTap = true;
+      EXPECT_TRUE(tap.get("frames")->asNumber() > 0);
+    }
+    if (tap.getString("busId") == "stream") {
+      sawStreamTap = true;
       EXPECT_TRUE(tap.get("frames")->asNumber() > 0);
     }
     if (tap.getString("busId") == "mon") {
@@ -2484,12 +2569,14 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
     }
   }
   EXPECT_TRUE(sawMasterTap);
+  EXPECT_TRUE(sawStreamTap);
   EXPECT_TRUE(sawMonitorTap);
   EXPECT_EQ(captureSources->get("sourceCount")->asNumber(), 2);
   EXPECT_EQ(captureSources->get("pairedCount")->asNumber(), 2);
   EXPECT_EQ(captureSources->get("streamingCount")->asNumber(), 2);
   EXPECT_TRUE(captureSources->get("captureFramesReceived")->asNumber() > 0);
   EXPECT_TRUE(captureSources->get("routedMasterFrames")->asNumber() > 0);
+  EXPECT_TRUE(captureSources->get("routedStreamFrames")->asNumber() > 0);
   EXPECT_TRUE(captureSources->get("routedMonitorFrames")->asNumber() > 0);
   EXPECT_EQ(captureSources->get("fallbackMonitorFrames")->asNumber(), 0);
   EXPECT_TRUE(captureSources->get("monitorFramesPlayed")->asNumber() > 0);

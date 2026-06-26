@@ -5707,7 +5707,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? $"{signalCount} source(s) with signal, peak {loudestPeak:0.0} dBFS"
                 : "silent PCM"
             : "signal waiting";
-        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - {signalState} - master {capture.RoutedMasterFrames}, {monitorState}, monitor {capture.MonitorFramesPlayed}";
+        return $"{capture.StreamingCount}/{capture.SourceCount} source(s) streaming - {pcmState} - {signalState} - master {capture.RoutedMasterFrames}, stream {capture.RoutedStreamFrames}, {monitorState}, monitor {capture.MonitorFramesPlayed}";
     }
 
     private static string BuildAudioBusTapSummary(NativeMediaCoreAudioRoutingMatrix matrix)
@@ -6391,7 +6391,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sends;
         }
 
-        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "mon"];
+        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
         foreach (var busId in requiredBusIds)
         {

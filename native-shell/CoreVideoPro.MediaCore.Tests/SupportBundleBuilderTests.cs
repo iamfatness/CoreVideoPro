@@ -145,6 +145,7 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal("native-frame", bundle.MediaCore.Source.Backing);
         Assert.Equal(48000, bundle.MediaCore.Audio.Capture.CaptureFramesReceived);
         Assert.Equal(48000, bundle.MediaCore.Audio.Capture.RoutedMasterFrames);
+        Assert.Equal(0, bundle.MediaCore.Audio.Capture.RoutedStreamFrames);
         Assert.Equal(0, bundle.MediaCore.Audio.Capture.RoutedMonitorFrames);
         Assert.Equal(0, bundle.MediaCore.Audio.Capture.FallbackMonitorFrames);
         Assert.Equal(0, bundle.MediaCore.Audio.MonitorFramesPlayed);
@@ -179,7 +180,8 @@ public sealed class SupportBundleBuilderTests
 
         Assert.Contains(bundle.TriageLines, line => line.Contains("Media core restarts: 2", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Latest crash: exit 9", StringComparison.Ordinal));
-        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio capture: 1/1 streaming; PCM 48000; master 48000; MON 0; monitor played 0", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio capture: 1/1 streaming; PCM 48000; master 48000; stream 0; MON 0; monitor played 0", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio stream fault: source PCM is present but not reaching the stream bus.", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio monitor fault: program/master PCM is present but the MON bus has no routed PCM.", StringComparison.Ordinal));
     }
 
@@ -378,6 +380,7 @@ public sealed class SupportBundleBuilderTests
             StreamingCount = 1,
             CaptureFramesReceived = 48000,
             RoutedMasterFrames = 48000,
+            RoutedStreamFrames = 0,
             RoutedMonitorFrames = 0,
             FallbackMonitorFrames = 0,
             MonitorFramesPlayed = 0,

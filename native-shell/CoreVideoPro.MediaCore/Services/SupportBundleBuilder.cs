@@ -381,6 +381,7 @@ public static class SupportBundleBuilder
                 StreamingCount = capture.StreamingCount,
                 CaptureFramesReceived = capture.CaptureFramesReceived,
                 RoutedMasterFrames = capture.RoutedMasterFrames,
+                RoutedStreamFrames = capture.RoutedStreamFrames,
                 RoutedMonitorFrames = capture.RoutedMonitorFrames,
                 FallbackMonitorFrames = capture.FallbackMonitorFrames,
                 MonitorFramesPlayed = capture.MonitorFramesPlayed,
@@ -507,11 +508,16 @@ public static class SupportBundleBuilder
                 if (audio.Capture.SourceCount > 0)
                 {
                     lines.Add(
-                        $"Audio capture: {audio.Capture.StreamingCount}/{audio.Capture.SourceCount} streaming; PCM {audio.Capture.CaptureFramesReceived}; master {audio.Capture.RoutedMasterFrames}; MON {audio.Capture.RoutedMonitorFrames}; monitor played {audio.Capture.MonitorFramesPlayed}");
+                        $"Audio capture: {audio.Capture.StreamingCount}/{audio.Capture.SourceCount} streaming; PCM {audio.Capture.CaptureFramesReceived}; master {audio.Capture.RoutedMasterFrames}; stream {audio.Capture.RoutedStreamFrames}; MON {audio.Capture.RoutedMonitorFrames}; monitor played {audio.Capture.MonitorFramesPlayed}");
 
                     if (audio.Capture.CaptureFramesReceived > 0 && audio.Capture.RoutedMasterFrames <= 0)
                     {
                         lines.Add("Audio capture fault: source PCM is present but not reaching the master bus.");
+                    }
+
+                    if (audio.Capture.CaptureFramesReceived > 0 && audio.Capture.RoutedStreamFrames <= 0)
+                    {
+                        lines.Add("Audio stream fault: source PCM is present but not reaching the stream bus.");
                     }
 
                     if (audio.Capture.RoutedMasterFrames > 0 && audio.Capture.RoutedMonitorFrames <= 0 && audio.Capture.FallbackMonitorFrames <= 0)

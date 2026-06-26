@@ -1489,6 +1489,7 @@ public sealed class StudioViewModelAudioStatusTests
             send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "stream", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "mon", 0), (send.SourceId, send.BusId, send.GainDb)));
     }
 
@@ -1505,6 +1506,7 @@ public sealed class StudioViewModelAudioStatusTests
             send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "stream", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "mon", 0), (send.SourceId, send.BusId, send.GainDb)));
     }
 
@@ -1521,7 +1523,8 @@ public sealed class StudioViewModelAudioStatusTests
             send => Assert.Equal(("local-machine-audio", "mon", -6), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
-            send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)));
+            send => Assert.Equal(("local-machine-audio", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "stream", 0), (send.SourceId, send.BusId, send.GainDb)));
     }
 
     [Fact]
@@ -1532,6 +1535,7 @@ public sealed class StudioViewModelAudioStatusTests
                 new MediaCoreAudioRoutingSendWire("local-machine-audio", "master", -3),
                 new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-l", -2),
                 new MediaCoreAudioRoutingSendWire("local-machine-audio", "pgm-r", -2),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "stream", -1),
                 new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", -6)
             ],
             localAudioConfigured: true,
@@ -1542,6 +1546,7 @@ public sealed class StudioViewModelAudioStatusTests
             send => Assert.Equal(("local-machine-audio", "master", -3), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-l", -2), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "pgm-r", -2), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("local-machine-audio", "stream", -1), (send.SourceId, send.BusId, send.GainDb)),
             send => Assert.Equal(("local-machine-audio", "mon", -6), (send.SourceId, send.BusId, send.GainDb)));
     }
 

@@ -2027,6 +2027,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   int streamingCount = 0;
   int64_t totalFramesReceived = 0;
   const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
+  const int routedStreamFrames = static_cast<int>(audioBusTapPcm("stream").size() / 2);
   const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
   const int fallbackMonitorFrames = routedMonitorFrames > 0 || !modules_.mixer
                                         ? 0
@@ -2134,7 +2135,8 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   summary << pairedCount << " of " << captureAudioSources_.size() << " capture source"
           << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input; "
           << streamingCount << " streaming, " << totalFramesReceived << " PCM frames received; "
-          << routedMasterFrames << " master bus frames, " << routedMonitorFrames << " MON bus frames, "
+          << routedMasterFrames << " master bus frames, " << routedStreamFrames << " stream bus frames, "
+          << routedMonitorFrames << " MON bus frames, "
           << fallbackMonitorFrames << " fallback monitor frames, "
           << audioMonitorFramesPlayed_ << " monitor playback frames.";
 
@@ -2145,6 +2147,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       {"streamingCount", streamingCount},
       {"captureFramesReceived", static_cast<double>(totalFramesReceived)},
       {"routedMasterFrames", routedMasterFrames},
+      {"routedStreamFrames", routedStreamFrames},
       {"routedMonitorFrames", routedMonitorFrames},
       {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
@@ -2957,13 +2960,15 @@ void MediaCore::renderSyntheticTick() {
   enqueueProgramSharedTextureEvent();
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();
-  // Hand the real program-audio mix to the output senders so RTMP carries the
-  // F2 program tap (or routed master bus) as a real AAC track instead of
-  // silence. Prefer the routed master bus; fall back to the mixer monitor bus
-  // when audio is not routed through the matrix.
+  // Hand real routed audio to the output senders so RTMP carries a real AAC
+  // track instead of silence. Prefer the stream bus, then the routed master bus,
+  // then the mixer's fallback monitor/program mix when no matrix tap exists.
+  const std::vector<float>& streamBusAudio = audioBusTapPcm("stream");
   const std::vector<float>& outputProgramAudio =
-      !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
-  const int outputAudioChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
+      !streamBusAudio.empty() ? streamBusAudio
+                              : !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
+  const int outputAudioChannels =
+      !streamBusAudio.empty() || !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
   const auto failOutputSenderSync = [&](const std::string& message) {
     const auto destination =
         std::find(session.destinations.begin(), session.destinations.end(), "rtmp") != session.destinations.end()

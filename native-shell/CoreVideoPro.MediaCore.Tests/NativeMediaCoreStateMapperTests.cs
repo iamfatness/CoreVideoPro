@@ -242,10 +242,11 @@ public sealed class NativeMediaCoreStateMapperTests
                 StreamingCount = 1,
                 CaptureFramesReceived = 960,
                 RoutedMasterFrames = 480,
+                RoutedStreamFrames = 480,
                 RoutedMonitorFrames = 480,
                 FallbackMonitorFrames = 120,
                 MonitorFramesPlayed = 480,
-                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 960 PCM frames received; 480 master bus frames, 480 MON bus frames, 480 monitor playback frames.",
+                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 960 PCM frames received; 480 master bus frames, 480 stream bus frames, 480 MON bus frames, 480 monitor playback frames.",
                 Sources =
                 [
                     new NativeMediaCoreCaptureAudioSource
@@ -361,6 +362,7 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("ready", snapshot.CaptureAudioSources.Status);
         Assert.Equal(960, snapshot.CaptureAudioSources.CaptureFramesReceived);
         Assert.Equal(480, snapshot.CaptureAudioSources.RoutedMasterFrames);
+        Assert.Equal(480, snapshot.CaptureAudioSources.RoutedStreamFrames);
         Assert.Equal(480, snapshot.CaptureAudioSources.RoutedMonitorFrames);
         Assert.Equal(120, snapshot.CaptureAudioSources.FallbackMonitorFrames);
         Assert.Equal(480, snapshot.CaptureAudioSources.MonitorFramesPlayed);
@@ -389,6 +391,7 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal(72, snapshot.Diagnostics.AudioMixSession.MasterLevel);
         Assert.Equal(2, snapshot.Diagnostics.AudioRoutingMatrix.BusTaps.Count);
         Assert.Equal(960, snapshot.Diagnostics.CaptureAudioSources.CaptureFramesReceived);
+        Assert.Equal(480, snapshot.Diagnostics.CaptureAudioSources.RoutedStreamFrames);
         Assert.Equal(480, snapshot.Diagnostics.CaptureAudioSources.RoutedMonitorFrames);
         Assert.Equal(120, snapshot.Diagnostics.CaptureAudioSources.FallbackMonitorFrames);
         Assert.Equal("Sophia Martinez", snapshot.Diagnostics.CaptionTrack.CurrentCue?.Speaker);
@@ -397,6 +400,7 @@ public sealed class NativeMediaCoreStateMapperTests
             snapshot.Diagnostics.Warnings,
             warning => warning.Contains("960 PCM frames received", StringComparison.Ordinal));
         Assert.Contains("960 PCM frames received", snapshot.Diagnostics.CaptureAudioSources.Summary);
+        Assert.Contains("480 stream bus frames", snapshot.Diagnostics.CaptureAudioSources.Summary);
         Assert.Contains("480 MON bus frames", snapshot.Diagnostics.CaptureAudioSources.Summary);
         Assert.Contains("480 monitor playback frames", snapshot.Diagnostics.CaptureAudioSources.Summary);
     }
@@ -423,8 +427,9 @@ public sealed class NativeMediaCoreStateMapperTests
                 StreamingCount = 1,
                 CaptureFramesReceived = 0,
                 RoutedMasterFrames = 0,
+                RoutedStreamFrames = 0,
                 RoutedMonitorFrames = 0,
-                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 0 PCM frames received; 0 master bus frames, 0 MON bus frames, 0 monitor playback frames.",
+                Summary = "1 of 1 capture source paired with audio input; 1 streaming, 0 PCM frames received; 0 master bus frames, 0 stream bus frames, 0 MON bus frames, 0 monitor playback frames.",
                 Warnings = ["local-machine-audio: Audio capture stream is open but no PCM frames have arrived."]
             }
         });

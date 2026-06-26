@@ -173,6 +173,7 @@ public sealed record SupportBundleMediaCoreCaptureAudio
     public int StreamingCount { get; init; }
     public long CaptureFramesReceived { get; init; }
     public int RoutedMasterFrames { get; init; }
+    public int RoutedStreamFrames { get; init; }
     public int RoutedMonitorFrames { get; init; }
     public int FallbackMonitorFrames { get; init; }
     public long MonitorFramesPlayed { get; init; }
