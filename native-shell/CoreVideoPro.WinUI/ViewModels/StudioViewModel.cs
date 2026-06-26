@@ -6137,6 +6137,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioRoutingMatrix.Rows.Any(row =>
                 string.Equals(ResolveAudioRoutingMatrixSourceId(row.SourceId), "local-machine-audio", StringComparison.Ordinal)))
             .ToList();
+        audioRoutingSends = EnsureDefaultMediaAudioRoutingSends(
+            audioRoutingSends,
+            ResolveSceneMediaAudioSourceIds(resolvedProgramRoutes).Count > 0)
+            .ToList();
 
         RefreshAudioMixChannels();
         var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
@@ -6400,6 +6404,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
             {
                 completed.Add(new MediaCoreAudioRoutingSendWire("local-machine-audio", busId, 0));
+            }
+        }
+
+        return completed;
+    }
+
+    public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultMediaAudioRoutingSends(
+        IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
+        bool mediaAudioConfigured)
+    {
+        if (!mediaAudioConfigured)
+        {
+            return sends;
+        }
+
+        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        var completed = sends.ToList();
+        foreach (var busId in requiredBusIds)
+        {
+            if (!completed.Any(send =>
+                    string.Equals(send.SourceId, "media", StringComparison.Ordinal) &&
+                    string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+            {
+                completed.Add(new MediaCoreAudioRoutingSendWire("media", busId, 0));
             }
         }
 

@@ -1550,6 +1550,34 @@ public sealed class StudioViewModelAudioStatusTests
             send => Assert.Equal(("local-machine-audio", "mon", -6), (send.SourceId, send.BusId, send.GainDb)));
     }
 
+    [Fact]
+    public void EnsureDefaultMediaAudioRoutingSends_AddsProgramStreamAndMonitorRoutes()
+    {
+        var sends = StudioViewModel.EnsureDefaultMediaAudioRoutingSends(
+            [new MediaCoreAudioRoutingSendWire("media", "mon", -6)],
+            mediaAudioConfigured: true);
+
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("media", "mon", -6), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("media", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("media", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("media", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("media", "stream", 0), (send.SourceId, send.BusId, send.GainDb)));
+    }
+
+    [Fact]
+    public void EnsureDefaultMediaAudioRoutingSends_LeavesMatrixUnchangedWithoutMedia()
+    {
+        var existing = new MediaCoreAudioRoutingSendWire("guest-1", "master", -3);
+
+        var sends = StudioViewModel.EnsureDefaultMediaAudioRoutingSends(
+            [existing],
+            mediaAudioConfigured: false);
+
+        Assert.Equal([existing], sends);
+    }
+
     [Theory]
     [InlineData(-1, 0)]
     [InlineData(0.625, 0.63)]

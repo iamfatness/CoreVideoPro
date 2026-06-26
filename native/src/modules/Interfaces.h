@@ -400,6 +400,11 @@ class IMediaFrameSource {
  public:
   virtual ~IMediaFrameSource() = default;
   virtual std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) = 0;
+  virtual std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) {
+    (void)layers;
+    (void)timestampMs;
+    return {};
+  }
   [[nodiscard]] virtual std::vector<std::string> warnings() const { return {}; }
 };
 

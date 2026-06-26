@@ -2842,6 +2842,19 @@ void MediaCore::renderSyntheticTick() {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
   }
+
+  // Advance the overlay animation clock before building the render plan so the
+  // compositor reflects this tick's keyPhase progress. The same render plan
+  // also tells media sources which scene media layers are active so their audio
+  // reaches the mixer in the same tick as their video.
+  advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
+
+  auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  if (modules_.mediaFrames) {
+    auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(renderPlan.layers, frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
+  }
+
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
   // Mix the routing-matrix crosspoints over real PCM into program/ISO/aux bus
   // taps. Each polled audio frame is a source; its channel strip (gain/pan/
@@ -2938,11 +2951,6 @@ void MediaCore::renderSyntheticTick() {
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
 
-  // Advance the overlay animation clock before building the render plan so the
-  // compositor reflects this tick's keyPhase progress.
-  advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
-
-  auto renderPlan = buildCompositorRenderPlan(videoFrames);
   if (modules_.mediaFrames) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());

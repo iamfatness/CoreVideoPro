@@ -187,12 +187,46 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
     return frames;
   }
 
+  std::vector<corevideo::modules::AudioFrame> pollMediaAudioFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      int64_t timestampMs) override {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    for (const auto& layer : layers) {
+      if (layer.kind != "media-video" || layer.mediaAssetId.empty() || !layer.mediaAssetPlaying) {
+        continue;
+      }
+
+      corevideo::modules::AudioFrame frame;
+      frame.participantId = "media";
+      frame.sampleRate = 48000;
+      frame.channels = 2;
+      frame.timestampMs = timestampMs;
+      frame.sampleCount = 480;
+      frame.voiceActive = true;
+      frame.pcm.resize(static_cast<size_t>(frame.sampleCount) * static_cast<size_t>(frame.channels));
+      const int64_t baseSample = audioPollCount * frame.sampleCount;
+      for (int sampleIndex = 0; sampleIndex < frame.sampleCount; ++sampleIndex) {
+        const double phase = 2.0 * corevideo::modules::kAudioPi * 330.0 *
+                             static_cast<double>(baseSample + sampleIndex) / static_cast<double>(frame.sampleRate);
+        const auto sample = static_cast<float>(0.2 * std::sin(phase));
+        frame.pcm[static_cast<size_t>(sampleIndex) * 2u] = sample;
+        frame.pcm[static_cast<size_t>(sampleIndex) * 2u + 1u] = sample;
+      }
+      frames.push_back(std::move(frame));
+    }
+    if (!frames.empty()) {
+      ++audioPollCount;
+    }
+    return frames;
+  }
+
   static constexpr int kWidth = 16;
   static constexpr int kHeight = 16;
   uint8_t blue = 0x22;
   uint8_t green = 0xb4;
   uint8_t red = 0xf1;
   int64_t pollCount = 0;
+  int64_t audioPollCount = 0;
   std::vector<std::string> seenPlaybackKeys;
   std::vector<std::string> seenSourceIds;
 };
@@ -2122,6 +2156,81 @@ TEST(MediaCoreCommand, StreamOutputPrefersRoutedStreamBusAudio) {
   ASSERT_NE(captureSources, nullptr);
   EXPECT_TRUE(captureSources->get("routedMasterFrames")->asNumber() > 0);
   EXPECT_TRUE(captureSources->get("routedStreamFrames")->asNumber() > 0);
+}
+
+TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  auto* mediaFramesPtr = mediaFrames.get();
+  modules.mediaFrames = std::move(mediaFrames);
+  auto* outputSender = new CapturingOutputSender();
+  modules.outputSender.reset(outputSender);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-program-audio"},
+          {"routes",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"routeId", "media-main"},
+                   {"mode", "fixed"},
+                   {"mediaAssetId", "clip-intro"},
+                   {"mediaAssetName", "Intro"},
+                   {"mediaAssetKind", "video"},
+                   {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                   {"mediaPlaybackKey", "program-take:9:media:clip-intro"},
+                   {"mediaAssetPlaying", true},
+                   {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+               },
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "media"}, {"busId", "master"}, {"gainDb", -18}},
+               corevideo::rpc::Json::Object{{"sourceId", "media"}, {"busId", "stream"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "media"}, {"busId", "mon"}, {"gainDb", 0}},
+           }},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+      },
+  });
+
+  const auto peakOf = [](const std::vector<float>& samples) {
+    float peak = 0.f;
+    for (const auto sample : samples) {
+      peak = std::max(peak, std::abs(sample));
+    }
+    return peak;
+  };
+
+  EXPECT_TRUE(mediaFramesPtr->audioPollCount > 0);
+  const auto& stream = mediaCore.audioBusTapPcm("stream");
+  const auto& master = mediaCore.programAudioTapPcm();
+  ASSERT_FALSE(stream.empty());
+  ASSERT_FALSE(master.empty());
+  EXPECT_TRUE(peakOf(stream) > peakOf(master) * 5.f);
+  EXPECT_EQ(outputSender->destinations_, std::vector<std::string>{"rtmp"});
+  EXPECT_EQ(outputSender->audioFramesSent_, static_cast<int>(stream.size() / 2u));
+  EXPECT_EQ(outputSender->audioChannels_, 2);
+  EXPECT_EQ(outputSender->audioSampleRate_, 48000);
+  EXPECT_TRUE(outputSender->maxAudioSample_ > 0.05f);
+
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* participants = mix->get("participants");
+  ASSERT_NE(participants, nullptr);
+  const auto mediaParticipant = std::find_if(
+      participants->asArray().begin(), participants->asArray().end(), [](const corevideo::rpc::Json& participant) {
+        return participant.getString("participantId") == "media";
+      });
+  ASSERT_TRUE(mediaParticipant != participants->asArray().end());
+  EXPECT_TRUE(mediaParticipant->get("outputLevel")->asNumber() > 0);
 }
 
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
