@@ -194,6 +194,9 @@ public sealed record SupportBundleMediaCoreCaptureAudioSource
     public bool Paired { get; init; }
     public bool CaptureStreaming { get; init; }
     public long CaptureFramesReceived { get; init; }
+    public long CaptureFramesRendered { get; init; }
+    public long CaptureQueuedFrames { get; init; }
+    public long CaptureUnderrunCount { get; init; }
     public long EmptyPacketPolls { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }

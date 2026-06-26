@@ -2138,7 +2138,7 @@ TEST(MediaCoreCommand, SyncsTypedCaptureAudioSources) {
 TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenStreamStartsWithoutPcmFrames) {
   auto modules = corevideo::modules::createStubModules();
   auto* audioCapture = new RecordingAudioCaptureSource();
-  audioCapture->reportedMetrics.push_back(corevideo::modules::CaptureAudioSourceMetrics{
+  corevideo::modules::CaptureAudioSourceMetrics metric{
       "local-machine-audio",
       "local-machine-audio",
       "wasapi-loopback",
@@ -2150,7 +2150,11 @@ TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenStreamStartsWithoutPcmFrames) 
       "default-render",
       "System audio loopback",
       {},
-      {}});
+      {}};
+  metric.framesRendered = 0;
+  metric.queuedFrames = 128;
+  metric.underrunCount = 2;
+  audioCapture->reportedMetrics.push_back(metric);
   modules.audioCapture.reset(audioCapture);
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
@@ -2177,6 +2181,9 @@ TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenStreamStartsWithoutPcmFrames) 
   EXPECT_EQ(captureAudio->get("streamingCount")->asNumber(), 1);
   EXPECT_EQ(captureAudio->get("captureFramesReceived")->asNumber(), 0);
   ASSERT_TRUE(captureAudio->get("sources")->asArray().size() == 1u);
+  EXPECT_EQ(captureAudio->get("sources")->asArray()[0].get("captureFramesRendered")->asNumber(), 0);
+  EXPECT_EQ(captureAudio->get("sources")->asArray()[0].get("captureQueuedFrames")->asNumber(), 128);
+  EXPECT_EQ(captureAudio->get("sources")->asArray()[0].get("captureUnderrunCount")->asNumber(), 2);
   EXPECT_NE(
       captureAudio->get("sources")->asArray()[0].getString("warning").find("no PCM frames"),
       std::string::npos);

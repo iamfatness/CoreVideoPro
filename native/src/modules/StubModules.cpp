@@ -355,7 +355,10 @@ class StubAudioCaptureSource final : public IAudioCaptureSource {
           {},
           -20.0,
           -23.0,
-          true});
+          true,
+          tick_ * 480,
+          0,
+          0});
     }
     return metrics;
   }

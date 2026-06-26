@@ -175,7 +175,10 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           source.warning,
           source.lastPeakDbfs,
           source.lastRmsDbfs,
-          source.signalPresent});
+          source.signalPresent,
+          source.framesRendered,
+          source.queuedFrames,
+          source.underrunCount});
     }
     return metrics;
   }
@@ -194,6 +197,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     int bytesPerSample = 4;
     bool isFloat = true;
     int64_t framesReceived = 0;
+    int64_t framesRendered = 0;
+    int64_t queuedFrames = 0;
+    int64_t underrunCount = 0;
     int64_t emptyPacketPolls = 0;
     double lastPeakDbfs = -120.0;
     double lastRmsDbfs = -120.0;
@@ -379,6 +385,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     UINT32 packetFrames = 0;
     HRESULT hr = source.captureClient->GetNextPacketSize(&packetFrames);
     if (FAILED(hr)) {
+      ++source.underrunCount;
       source.lastError = "GetNextPacketSize hr=" + hexHrCapture(hr);
       source.warning = "WASAPI capture could not query packet size for " + diagnosticEndpointLabel(source) + ".";
       return;
@@ -395,6 +402,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       DWORD flags = 0;
       hr = source.captureClient->GetBuffer(&data, &frameCount, &flags, nullptr, nullptr);
       if (FAILED(hr)) {
+        ++source.underrunCount;
         source.lastError = "GetBuffer hr=" + hexHrCapture(hr);
         source.warning = "WASAPI capture could not read a packet from " + diagnosticEndpointLabel(source) + ".";
         return;
@@ -417,6 +425,8 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
         source.lastRmsDbfs = computeRmsDbfs(frame.pcm.data(), frame.pcm.size());
         source.signalPresent = source.lastPeakDbfs > -60.0;
         source.framesReceived += frameCount;
+        source.framesRendered += frameCount;
+        source.queuedFrames = 0;
         source.lastError.clear();
         source.warning.clear();
         frames.push_back(std::move(frame));
@@ -425,6 +435,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       source.captureClient->ReleaseBuffer(frameCount);
       hr = source.captureClient->GetNextPacketSize(&packetFrames);
       if (FAILED(hr)) {
+        ++source.underrunCount;
         source.lastError = "GetNextPacketSize hr=" + hexHrCapture(hr);
         source.warning = "WASAPI capture could not query the next packet for " + diagnosticEndpointLabel(source) + ".";
         return;

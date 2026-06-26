@@ -159,6 +159,9 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal("WASAPI", captureSource.AudioDriverName);
         Assert.Equal("loopback", captureSource.AudioSourceKind);
         Assert.True(captureSource.SignalPresent);
+        Assert.Equal(47952, captureSource.CaptureFramesRendered);
+        Assert.Equal(48, captureSource.CaptureQueuedFrames);
+        Assert.Equal(2, captureSource.CaptureUnderrunCount);
         Assert.Equal(-12.5, captureSource.PeakDbfs);
         Assert.Equal(-24.2, captureSource.RmsDbfs);
         Assert.Equal("{speaker-out}", captureSource.EndpointId);
@@ -393,6 +396,9 @@ public sealed class SupportBundleBuilderTests
                     Paired = true,
                     CaptureStreaming = true,
                     CaptureFramesReceived = 48000,
+                    CaptureFramesRendered = 47952,
+                    CaptureQueuedFrames = 48,
+                    CaptureUnderrunCount = 2,
                     CaptureSampleRate = 48000,
                     CaptureChannels = 2,
                     PeakDbfs = -12.5,

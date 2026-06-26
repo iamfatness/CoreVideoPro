@@ -923,6 +923,34 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatCaptureAudioSourceStatus_ShowsQueuedAndUnderrunEvidence()
+    {
+        var status = StudioViewModel.FormatCaptureAudioSourceStatus(new NativeMediaCoreCaptureAudioSource
+        {
+            CaptureDeviceId = "local-machine-audio",
+            SourceId = "local-machine-audio",
+            AudioDeviceName = "Desk Mix",
+            AudioSourceKind = "wasapi-loopback",
+            Paired = true,
+            CaptureStreaming = true,
+            CaptureFramesReceived = 960,
+            CaptureFramesRendered = 480,
+            CaptureQueuedFrames = 480,
+            CaptureUnderrunCount = 2,
+            CaptureSampleRate = 48000,
+            CaptureChannels = 2,
+            PeakDbfs = -12,
+            RmsDbfs = -18,
+            SignalPresent = true,
+            EndpointName = "Speakers"
+        });
+
+        Assert.Equal(
+            "Desk Mix (wasapi-loopback) -> local-machine-audio: streaming, 960 frames, rendered 480, queued 480, underruns 2, peak -12.0 dBFS, rms -18.0 dBFS 48000 Hz/2 ch via Speakers",
+            status);
+    }
+
+    [Fact]
     public void FormatAudioProofSummary_ShowsMonitorPlaybackWorking()
     {
         var audio = new NativeMediaCoreAudioMixSession

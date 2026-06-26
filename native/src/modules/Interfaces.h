@@ -356,6 +356,9 @@ struct CaptureAudioSourceMetrics {
   double peakDbfs = -120.0;
   double rmsDbfs = -120.0;
   bool signalPresent = false;
+  int64_t framesRendered = 0;
+  int64_t queuedFrames = 0;
+  int64_t underrunCount = 0;
 };
 
 struct SrtIngestSourceConfig {

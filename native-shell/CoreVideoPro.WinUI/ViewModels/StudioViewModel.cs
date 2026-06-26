@@ -5794,6 +5794,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? $", peak {source.PeakDbfs:0.0} dBFS, rms {source.RmsDbfs:0.0} dBFS" +
               (source.SignalPresent ? string.Empty : ", silent PCM")
             : string.Empty;
+        var renderEvidence = source.CaptureFramesRendered > 0 && source.CaptureFramesRendered != source.CaptureFramesReceived
+            ? $", rendered {source.CaptureFramesRendered}"
+            : string.Empty;
+        var queueEvidence = source.CaptureQueuedFrames > 0
+            ? $", queued {source.CaptureQueuedFrames}"
+            : string.Empty;
+        var underrunEvidence = source.CaptureUnderrunCount > 0
+            ? $", underruns {source.CaptureUnderrunCount}"
+            : string.Empty;
         var lastError = !string.IsNullOrWhiteSpace(source.LastError)
             ? $", {source.LastError}"
             : string.Empty;
@@ -5807,7 +5816,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var warningText = !string.IsNullOrWhiteSpace(warning)
             ? $", issue: {warning}"
             : string.Empty;
-        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{emptyPolls}{level}{format}{endpoint}{lastError}{warningText}";
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{renderEvidence}{queueEvidence}{underrunEvidence}{emptyPolls}{level}{format}{endpoint}{lastError}{warningText}";
     }
 
     public static string FormatCaptureAudioSourceWarningForOperator(string? warning)

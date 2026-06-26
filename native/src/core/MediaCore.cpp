@@ -2069,6 +2069,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     const auto metric = metricsByCaptureId.find(source.captureDeviceId);
     const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
     const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
+    const int64_t framesRendered = metric == metricsByCaptureId.end() ? 0 : metric->second.framesRendered;
+    const int64_t queuedFrames = metric == metricsByCaptureId.end() ? 0 : metric->second.queuedFrames;
+    const int64_t underrunCount = metric == metricsByCaptureId.end() ? 0 : metric->second.underrunCount;
     const int64_t emptyPacketPolls = metric == metricsByCaptureId.end() ? 0 : metric->second.emptyPacketPolls;
     const double peakDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.peakDbfs;
     const double rmsDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.rmsDbfs;
@@ -2111,6 +2114,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"paired", !source.audioDeviceId.empty()},
         {"captureStreaming", streaming},
         {"captureFramesReceived", static_cast<double>(framesReceived)},
+        {"captureFramesRendered", static_cast<double>(framesRendered)},
+        {"captureQueuedFrames", static_cast<double>(queuedFrames)},
+        {"captureUnderrunCount", static_cast<double>(underrunCount)},
         {"emptyPacketPolls", static_cast<double>(emptyPacketPolls)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
