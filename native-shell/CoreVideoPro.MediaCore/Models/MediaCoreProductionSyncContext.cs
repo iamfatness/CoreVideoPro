@@ -142,6 +142,7 @@ public sealed record MediaCoreStreamDestinationWire(
     string? FfmpegBinDirectory = null,
     int? Fps = null,
     double? TargetBitrateMbps = null,
+    int? AudioBitrateKbps = null,
     string? VideoCodec = null,
     string? EncoderMode = null);
 
@@ -163,7 +164,8 @@ public sealed record MediaCoreOutputProfileWire(
     int Height,
     int Fps,
     double TargetBitrateMbps,
-    string Codec = "h264");
+    string Codec = "h264",
+    int AudioBitrateKbps = 160);
 
 /// <summary>
 /// Production inputs for building a media-core-sync command batch.
@@ -208,11 +210,13 @@ public sealed record MediaCoreProductionSyncContext
         Width: 1920,
         Height: 1080,
         Fps: 60,
-        TargetBitrateMbps: 8.2);
+        TargetBitrateMbps: 8.2,
+        Codec: "h264",
+        AudioBitrateKbps: 160);
 
     public static MediaCoreOutputProfileWire DefaultStreamOutputProfile { get; } = DefaultCanvasOutputProfile;
 
-    public static MediaCoreOutputProfileWire DefaultRecordingOutputProfile { get; } = DefaultCanvasOutputProfile;
+    public static MediaCoreOutputProfileWire DefaultRecordingOutputProfile { get; } = DefaultCanvasOutputProfile with { AudioBitrateKbps = 192 };
 
     public static MediaCoreRecordingTargetsWire DefaultRecordingTargets { get; } = new(
         TargetFolder: "Recordings/CoreVideo Pro",

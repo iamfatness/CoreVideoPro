@@ -49,8 +49,10 @@ TEST(RtmpFfmpegArgs, HonorsAudioChannelsAndSampleRate) {
   config.hasAudio = true;
   config.audioChannels = 1;
   config.audioSampleRate = 44100;
+  config.audioBitrateKbps = 192;
   const auto args = buildRtmpFfmpegArguments(config);
   EXPECT_NE(args.find("-ar 44100 -ac 1"), std::string::npos);
+  EXPECT_NE(args.find("-c:a aac -b:a 192k -ar 48000"), std::string::npos);
 }
 
 TEST(RtmpFfmpegArgs, PosixNamedPipeOrFdInputIsPlumbedThrough) {

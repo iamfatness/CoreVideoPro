@@ -37,6 +37,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingContainerFormat = request.format;
     session_.recordingVideoCodec = request.videoCodec;
     session_.recordingAudioCodec = request.audioCodec;
+    session_.recordingAudioBitrateKbps = request.audioBitrateKbps;
     session_.recordingFps = request.fps;
     session_.targetBitrateMbps = request.targetBitrateMbps;
   }
@@ -66,6 +67,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingContainerFormat.clear();
     session_.recordingVideoCodec.clear();
     session_.recordingAudioCodec.clear();
+    session_.recordingAudioBitrateKbps = request_.audioBitrateKbps;
     session_.recordingAudioPacketCount = 0;
     session_.recordingAudioSampleCount = 0;
     session_.recordingAudioChannels = 0;
@@ -79,6 +81,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
       session_.recordingContainerFormat = request_.format;
       session_.recordingVideoCodec = session_.codec;
       session_.recordingAudioCodec = request_.audioCodec;
+      session_.recordingAudioBitrateKbps = request_.audioBitrateKbps;
       if (request_.format != "mp4") {
         session_.recordingWarning = "Stub recording session accepted non-mp4 format for state tracking only.";
       }

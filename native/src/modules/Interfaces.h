@@ -227,6 +227,7 @@ struct OutputSession {
   std::string recordingContainerFormat;
   std::string recordingVideoCodec;
   std::string recordingAudioCodec;
+  int recordingAudioBitrateKbps = 0;
   int64_t recordingAudioPacketCount = 0;
   int64_t recordingAudioSampleCount = 0;
   int recordingAudioChannels = 0;
@@ -248,6 +249,7 @@ struct RecordingSessionRequest {
   int fps = 30;
   std::string videoCodec = "h264";
   std::string audioCodec = "aac";
+  int audioBitrateKbps = 192;
   int targetBitrateMbps = 10;
 };
 
@@ -302,6 +304,7 @@ struct OutputDestinationSettings {
   std::string ndiGroup;
   int fps = 30;
   double targetBitrateMbps = 6.0;
+  int audioBitrateKbps = 160;
   std::string videoCodec = "h264";
   std::string encoderMode = "auto";
   // Opt in to enhanced-RTMP (E-RTMP) so H.265/AV1 can ride the FLV transport

@@ -531,6 +531,7 @@ class RtmpOutputSender final : public IOutputSender {
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
     configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
     configuredAllowEnhancedRtmp_ = settings->allowEnhancedRtmp;
+    configuredAudioBitrateKbps_ = (std::max)(32, (std::min)(512, settings->audioBitrateKbps));
     sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
@@ -679,6 +680,7 @@ class RtmpOutputSender final : public IOutputSender {
     const bool executableChanged = ffmpegExecutable_ != activeFfmpegExecutable_;
     const bool fpsChanged = configuredFps_ != activeFps_;
     const bool bitrateChanged = sender_.bitrateMbps != activeBitrateMbps_;
+    const bool audioBitrateChanged = configuredAudioBitrateKbps_ != activeAudioBitrateKbps_;
     const bool codecChanged = configuredVideoCodec_ != activeVideoCodec_;
     const bool encoderModeChanged = configuredEncoderMode_ != activeEncoderMode_;
     const bool enhancedChanged = configuredAllowEnhancedRtmp_ != activeAllowEnhancedRtmp_;
@@ -688,7 +690,7 @@ class RtmpOutputSender final : public IOutputSender {
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
-    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !codecChanged && !encoderModeChanged && !enhancedChanged && !audioChanged) {
+    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !enhancedChanged && !audioChanged) {
       return true;
     }
 
@@ -699,6 +701,7 @@ class RtmpOutputSender final : public IOutputSender {
     activeFfmpegExecutable_ = ffmpegExecutable_;
     activeFps_ = configuredFps_;
     activeBitrateMbps_ = sender_.bitrateMbps;
+    activeAudioBitrateKbps_ = configuredAudioBitrateKbps_;
     activeVideoCodec_ = configuredVideoCodec_;
     activeEncoderMode_ = configuredEncoderMode_;
     activeAllowEnhancedRtmp_ = configuredAllowEnhancedRtmp_;
@@ -732,6 +735,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.hasAudio = activeAudioPresent_;
     config.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 2;
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
+    config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     return buildRtmpFfmpegArguments(config);
@@ -1223,8 +1227,10 @@ class RtmpOutputSender final : public IOutputSender {
   int ffmpegFrameWidth_ = 0;
   int ffmpegFrameHeight_ = 0;
   int configuredFps_ = 30;
+  int configuredAudioBitrateKbps_ = 160;
   int activeFps_ = 0;
   double activeBitrateMbps_ = 0;
+  int activeAudioBitrateKbps_ = 0;
   bool ffmpegRunning_ = false;
   // Latest real program-audio mix for this tick (interleaved float PCM), and the
   // audio layout currently baked into the running FFmpeg process. `pending*` is

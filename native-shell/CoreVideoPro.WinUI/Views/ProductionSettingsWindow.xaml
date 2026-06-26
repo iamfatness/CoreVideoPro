@@ -159,6 +159,7 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <ComboBox Header="Stream render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
@@ -216,6 +217,22 @@
                                            Maximum="80"
                                            SmallChange="0.5"
                                            LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
+                                <NumberBox Grid.Row="2" Grid.Column="2"
+                                           Header="Stream audio kbps"
+                                           Value="{x:Bind ViewModel.StreamAudioBitrateKbps, Mode=TwoWay}"
+                                           Minimum="32"
+                                           Maximum="512"
+                                           SmallChange="16"
+                                           LargeChange="32"
+                                           SpinButtonPlacementMode="Inline" />
+                                <NumberBox Grid.Row="2" Grid.Column="3"
+                                           Header="Recording audio kbps"
+                                           Value="{x:Bind ViewModel.RecordingAudioBitrateKbps, Mode=TwoWay}"
+                                           Minimum="32"
+                                           Maximum="512"
+                                           SmallChange="16"
+                                           LargeChange="32"
                                            SpinButtonPlacementMode="Inline" />
                             </Grid>
                         </StackPanel>
@@ -594,6 +611,14 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Row="1" Grid.Column="2"
+                                           Header="Audio kbps"
+                                           Value="{x:Bind ViewModel.RecordingAudioBitrateKbps, Mode=TwoWay}"
+                                           Minimum="32"
+                                           Maximum="512"
+                                           SmallChange="16"
+                                           LargeChange="32"
+                                           SpinButtonPlacementMode="Inline" />
                             </Grid>
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>

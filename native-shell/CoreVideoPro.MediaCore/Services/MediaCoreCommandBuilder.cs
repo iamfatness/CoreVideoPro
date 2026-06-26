@@ -424,6 +424,7 @@ public static class MediaCoreCommandBuilder
                 ["ffmpegBinDirectory"] = destination.FfmpegBinDirectory,
                 ["fps"] = destination.Fps,
                 ["targetBitrateMbps"] = destination.TargetBitrateMbps,
+                ["audioBitrateKbps"] = destination.AudioBitrateKbps,
                 ["videoCodec"] = destination.VideoCodec,
                 ["encoderMode"] = destination.EncoderMode
             }).ToList(),
@@ -457,6 +458,7 @@ public static class MediaCoreCommandBuilder
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
+            ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });
@@ -469,6 +471,7 @@ public static class MediaCoreCommandBuilder
             ["format"] = targets.Format,
             ["quality"] = targets.Quality,
             ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
+            ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
             ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
             ["isoParticipantIds"] = targets.IsoParticipantIds
         });
@@ -483,6 +486,7 @@ public static class MediaCoreCommandBuilder
             ["height"] = profile.Height,
             ["fps"] = profile.Fps,
             ["targetBitrateMbps"] = profile.TargetBitrateMbps,
+            ["audioBitrateKbps"] = profile.AudioBitrateKbps,
             ["codec"] = profile.Codec
         };
 

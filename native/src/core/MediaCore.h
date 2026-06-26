@@ -189,6 +189,7 @@ class MediaCore {
   int recordingOutputHeight_ = 1080;
   int recordingOutputFps_ = 60;
   double recordingTargetBitrateMbps_ = 8.2;
+  int recordingAudioBitrateKbps_ = 192;
   std::string recordingVideoCodec_ = "h264";
   std::vector<modules::OutputDestinationSettings> outputDestinationSettings_;
   modules::CompositorColorGrade colorGrade_;

@@ -176,6 +176,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _streamTargetBitrateMbps = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.TargetBitrateMbps;
 
     [ObservableProperty]
+    private double _streamAudioBitrateKbps = MediaCoreProductionSyncContext.DefaultStreamOutputProfile.AudioBitrateKbps;
+
+    [ObservableProperty]
     private string _streamEncoderMode = "auto";
 
     [ObservableProperty]
@@ -189,6 +192,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private double _recordingTargetBitrateMbps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.TargetBitrateMbps;
+
+    [ObservableProperty]
+    private double _recordingAudioBitrateKbps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.AudioBitrateKbps;
 
     [ObservableProperty]
     private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
@@ -1640,6 +1646,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnOutputProfileChanged();
     }
 
+    partial void OnStreamAudioBitrateKbpsChanged(double value)
+    {
+        var normalized = NormalizeAudioBitrateKbps(value);
+        if (!value.Equals(normalized))
+        {
+            StreamAudioBitrateKbps = normalized;
+            return;
+        }
+
+        OnOutputProfileChanged();
+    }
+
     partial void OnStreamEncoderModeChanged(string value) => OnOutputProfileChanged();
 
     partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
@@ -1654,6 +1672,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (!value.Equals(normalized))
         {
             RecordingTargetBitrateMbps = normalized;
+            return;
+        }
+
+        OnOutputProfileChanged();
+    }
+
+    partial void OnRecordingAudioBitrateKbpsChanged(double value)
+    {
+        var normalized = NormalizeAudioBitrateKbps(value);
+        if (!value.Equals(normalized))
+        {
+            RecordingAudioBitrateKbps = normalized;
             return;
         }
 
@@ -6181,13 +6211,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 StreamRenderResolution,
                 StreamRenderFps,
                 StreamVideoCodec,
-                NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps)),
+                NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+                NormalizeAudioBitrateKbps(StreamAudioBitrateKbps)),
             RecordingOutputProfile = BuildRequestedOutputProfile(
                 "recording",
                 RecordingRenderResolution,
                 RecordingRenderFps,
                 RecordingVideoCodec,
-                NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps)),
+                NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
+                NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps)),
             RecordingTargets = BuildRecordingTargets(isoParticipantIds),
             Graphics = Graphics
                 .Select(graphic => new MediaCoreGraphicWire(
@@ -6535,7 +6567,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRenderResolution,
             StreamRenderFps,
             StreamVideoCodec,
-            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps));
+            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
         if (StreamRtmpEnabled &&
             StudioStreamOutputValidation.CanSerializeRtmpSettings(
                 StreamRtmpProtocol,
@@ -6565,6 +6598,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
                 Fps: streamProfile.Fps,
                 TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+                AudioBitrateKbps: streamProfile.AudioBitrateKbps,
                 VideoCodec: streamProfile.Codec,
                 EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
         }
@@ -6739,7 +6773,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         string? resolution,
         string? fpsText,
         string? codec,
-        double? targetBitrateMbps = null)
+        double? targetBitrateMbps = null,
+        int? audioBitrateKbps = null)
     {
         var normalizedResolution = NormalizeResolutionText(resolution);
         var parts = normalizedResolution.Split('x', StringSplitOptions.RemoveEmptyEntries);
@@ -6756,6 +6791,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Height: height,
             Fps: fps,
             TargetBitrateMbps: targetBitrateMbps ?? EstimateTargetBitrateMbps(width, height, fps),
+            AudioBitrateKbps: NormalizeAudioBitrateKbps(audioBitrateKbps ?? (scope == "recording" ? 192 : 160)),
             Codec: NormalizeVideoCodec(codec));
     }
 
@@ -6764,6 +6800,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static double NormalizeStreamTargetBitrateMbps(double value) =>
         NormalizeOutputTargetBitrateMbps(value);
+
+    public static int NormalizeAudioBitrateKbps(double value) =>
+        (int)Math.Round(double.IsFinite(value) ? Math.Clamp(value, 32, 512) : 160, MidpointRounding.AwayFromZero);
 
     public static double NormalizeAudioMonitorVolume(double value) =>
         Math.Round(double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : DefaultAudioMonitorVolume, 2, MidpointRounding.AwayFromZero);
@@ -7062,13 +7101,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRenderResolution,
             StreamRenderFps,
             StreamVideoCodec,
-            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps));
+            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
         var recordingProfile = BuildRequestedOutputProfile(
             "recording",
             RecordingRenderResolution,
             RecordingRenderFps,
             RecordingVideoCodec,
-            NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps));
+            NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
+            NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps));
 
         if (!string.IsNullOrWhiteSpace(StreamRtmpServerUrl) || !string.IsNullOrWhiteSpace(StreamRtmpStreamKey))
         {
@@ -8056,11 +8097,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRenderFps = StreamRenderFps,
             StreamVideoCodec = StreamVideoCodec,
             StreamTargetBitrateMbps = NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
+            StreamAudioBitrateKbps = NormalizeAudioBitrateKbps(StreamAudioBitrateKbps),
             StreamEncoderMode = StreamEncoderMode,
             RecordingRenderResolution = RecordingRenderResolution,
             RecordingRenderFps = RecordingRenderFps,
             RecordingVideoCodec = RecordingVideoCodec,
             RecordingTargetBitrateMbps = NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
+            RecordingAudioBitrateKbps = NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps),
             RecordingTargetFolder = RecordingTargetFolder,
             RecordingFilenamePrefix = RecordingFilenamePrefix,
             RecordingFormat = RecordingFormat,
@@ -8107,6 +8150,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamTargetBitrateMbps = preferences.StreamTargetBitrateMbps > 0
             ? NormalizeStreamTargetBitrateMbps(preferences.StreamTargetBitrateMbps)
             : StreamTargetBitrateMbps;
+        StreamAudioBitrateKbps = preferences.StreamAudioBitrateKbps > 0
+            ? NormalizeAudioBitrateKbps(preferences.StreamAudioBitrateKbps)
+            : StreamAudioBitrateKbps;
         StreamEncoderMode = preferences.StreamEncoderMode ?? StreamEncoderMode;
         RecordingRenderResolution = preferences.RecordingRenderResolution ?? RecordingRenderResolution;
         RecordingRenderFps = preferences.RecordingRenderFps ?? RecordingRenderFps;
@@ -8114,6 +8160,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RecordingTargetBitrateMbps = preferences.RecordingTargetBitrateMbps > 0
             ? NormalizeOutputTargetBitrateMbps(preferences.RecordingTargetBitrateMbps)
             : RecordingTargetBitrateMbps;
+        RecordingAudioBitrateKbps = preferences.RecordingAudioBitrateKbps > 0
+            ? NormalizeAudioBitrateKbps(preferences.RecordingAudioBitrateKbps)
+            : RecordingAudioBitrateKbps;
         RecordingTargetFolder = preferences.RecordingTargetFolder ?? RecordingTargetFolder;
         RecordingFilenamePrefix = preferences.RecordingFilenamePrefix ?? RecordingFilenamePrefix;
         RecordingFormat = preferences.RecordingFormat ?? RecordingFormat;

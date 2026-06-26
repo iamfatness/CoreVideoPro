@@ -138,12 +138,13 @@ class Mp4Writer {
   // Lazily configures the AAC audio stream the first time real audio arrives.
   // BeginWriting is deferred until both streams are configured, so the audio
   // stream can still be added after the first video frames.
-  bool ensureAudioStream(int channels, int sampleRate, std::string& errorOut) {
+  bool ensureAudioStream(int channels, int sampleRate, int audioBitrateKbps, std::string& errorOut) {
     if (!open_ || audioConfigured_) {
       return audioConfigured_;
     }
     audioChannels_ = std::clamp(channels, 1, 2);
     audioSampleRate_ = sampleRate > 0 ? sampleRate : 48000;
+    audioBitrateKbps_ = std::clamp(audioBitrateKbps, 32, 512);
 
     ComPtr<IMFMediaType> outputType;
     HRESULT result = MFCreateMediaType(&outputType);
@@ -156,7 +157,7 @@ class Mp4Writer {
     outputType->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
     outputType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, static_cast<UINT32>(audioSampleRate_));
     outputType->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, static_cast<UINT32>(audioChannels_));
-    outputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16000);  // 128 kbps AAC.
+    outputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, static_cast<UINT32>((audioBitrateKbps_ * 1000) / 8));
     outputType->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29);
 
     result = sinkWriter_->AddStream(outputType.Get(), &audioStreamIndex_);
@@ -347,6 +348,7 @@ class Mp4Writer {
   int64_t audioSampleCount() const { return audioSampleCount_; }
   int audioChannels() const { return audioChannels_; }
   int audioSampleRate() const { return audioSampleRate_; }
+  int audioBitrateKbps() const { return audioBitrateKbps_; }
   int64_t bytesWritten() const { return bytesWritten_; }
   const std::filesystem::path& path() const { return path_; }
 
@@ -363,6 +365,7 @@ class Mp4Writer {
   LONGLONG audioTime100ns_ = 0;
   int audioChannels_ = 2;
   int audioSampleRate_ = 48000;
+  int audioBitrateKbps_ = 192;
   std::string videoCodec_ = "h264";
   int64_t videoFrameCount_ = 0;
   int64_t audioPacketCount_ = 0;
@@ -407,6 +410,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingContainerFormat = request.format;
     session_.recordingVideoCodec = request.videoCodec;
     session_.recordingAudioCodec = request.audioCodec;
+    session_.recordingAudioBitrateKbps = request.audioBitrateKbps;
     session_.recordingFps = request.fps;
     session_.targetBitrateMbps = request.targetBitrateMbps;
     if (!request.isoParticipantIds.empty()) {
@@ -431,6 +435,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingContainerFormat.clear();
     session_.recordingVideoCodec.clear();
     session_.recordingAudioCodec.clear();
+    session_.recordingAudioBitrateKbps = request_.audioBitrateKbps;
     session_.recordingAudioPacketCount = 0;
     session_.recordingAudioSampleCount = 0;
     session_.recordingAudioChannels = 0;
@@ -496,12 +501,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
     std::string error;
     if (!program_.audioConfigured()) {
-      if (!program_.ensureAudioStream(channels, sampleRate, error)) {
+      if (!program_.ensureAudioStream(channels, sampleRate, request_.audioBitrateKbps, error)) {
         setRecordingFailure("Media Foundation could not add program AAC stream", error);
         return;
       }
       for (auto& iso : isoWriters_) {
-        iso.ensureAudioStream(channels, sampleRate, error);
+        iso.ensureAudioStream(channels, sampleRate, request_.audioBitrateKbps, error);
       }
       // Both video and audio streams are now configured; (re)begin writing.
       if (!program_.beginWriting(error)) {
@@ -522,6 +527,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingAudioSampleCount = program_.audioSampleCount();
       session_.recordingAudioChannels = program_.audioChannels();
       session_.recordingAudioSampleRate = program_.audioSampleRate();
+      session_.recordingAudioBitrateKbps = program_.audioBitrateKbps();
     }
     for (auto& iso : isoWriters_) {
       iso.writeAudio(interleaved, frameCount, error);

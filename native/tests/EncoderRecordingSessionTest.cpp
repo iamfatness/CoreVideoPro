@@ -21,6 +21,7 @@ TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterminist
   request.fps = 25;
   request.videoCodec = "h264";
   request.audioCodec = "aac";
+  request.audioBitrateKbps = 224;
   request.targetBitrateMbps = 8;
   encoder->configureRecording(request);
 
@@ -35,6 +36,7 @@ TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterminist
   EXPECT_EQ(started.recordingQuality, "medium");
   EXPECT_EQ(started.isoParticipantIds.size(), 2u);
   EXPECT_EQ(started.targetBitrateMbps, 8);
+  EXPECT_EQ(started.recordingAudioBitrateKbps, 224);
   EXPECT_FALSE(started.hardwareAccelerated);
 
   encoder->submit({1280, 720, 3, 10, "plan-a", "software"});
@@ -51,6 +53,7 @@ TEST(EncoderRecordingSession, StubTracksRequestedProfilePathAndFramesDeterminist
   EXPECT_EQ(session.recordingContainerFormat, "mp4");
   EXPECT_EQ(session.recordingVideoCodec, "h264");
   EXPECT_EQ(session.recordingAudioCodec, "aac");
+  EXPECT_EQ(session.recordingAudioBitrateKbps, 224);
   EXPECT_TRUE(session.recordingBytesWritten > 0);
   EXPECT_TRUE(session.recordingMetadataValid);
   EXPECT_TRUE(session.recordingWarning.empty());
@@ -154,6 +157,7 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
           {"format", "mkv"},
           {"quality", "archive"},
           {"targetBitrateMbps", 24.0},
+          {"audioBitrateKbps", 256},
           {"renderProfile",
            corevideo::rpc::Json::Object{
                {"profileId", "recording-720p30-h265"},
@@ -180,6 +184,7 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
   EXPECT_EQ(encoderSession->getString("recordingFormat"), "mkv");
   EXPECT_EQ(encoderSession->getString("recordingVideoCodec"), "h265");
   EXPECT_EQ(encoderSession->getString("recordingAudioCodec"), "aac");
+  EXPECT_EQ(encoderSession->get("recordingAudioBitrateKbps")->asNumber(), 256);
 
   const auto* recording = state.get("recording");
   ASSERT_NE(recording, nullptr);
@@ -192,4 +197,5 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
   const auto* proofTargetBitrate = proof->get("targetBitrateMbps");
   ASSERT_NE(proofTargetBitrate, nullptr);
   EXPECT_EQ(proofTargetBitrate->asNumber(), 24.0);
+  EXPECT_EQ(proof->get("audioBitrateKbps")->asNumber(), 256);
 }

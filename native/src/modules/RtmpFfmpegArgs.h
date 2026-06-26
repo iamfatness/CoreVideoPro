@@ -29,6 +29,7 @@ struct RtmpFfmpegArgsConfig {
   bool hasAudio = false;
   int audioChannels = 2;
   int audioSampleRate = 48000;
+  int audioBitrateKbps = 160;
   std::string audioSampleFormat = "f32le";      // raw PCM format on the audio pipe
   // Path/identifier of the second input. On Windows this is the inherited pipe
   // handle exposed as "pipe:3"; on POSIX it is the read end fd exposed as
@@ -52,6 +53,7 @@ inline std::string quoteRtmpArgument(const std::string& value) {
 inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) {
   const int fps = (std::max)(1, config.fps);
   const int bitrateKbps = (std::max)(1, config.bitrateKbps);
+  const int audioBitrateKbps = (std::max)(32, config.audioBitrateKbps);
   const int bufferKbps = bitrateKbps * 2;
   std::ostringstream args;
   args << " -hide_banner -loglevel warning"
@@ -69,7 +71,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
        << " -c:v " << config.videoEncoder << config.videoEncoderExtraArgs
        << " -b:v " << bitrateKbps << "k -maxrate " << bitrateKbps << "k -bufsize " << bufferKbps << "k"
        << " -g " << (fps * 2) << " -pix_fmt yuv420p"
-       << " -c:a aac -b:a 160k -ar 48000"
+       << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
        // Keep the audio clock tied to wallclock-paced video so A/V stays in sync
        // when the PCM pipe briefly under/overruns relative to the frame pipe.
        << " -af aresample=async=1:first_pts=0"

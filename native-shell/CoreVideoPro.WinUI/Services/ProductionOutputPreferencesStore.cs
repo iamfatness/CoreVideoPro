@@ -32,11 +32,13 @@ public sealed class ProductionOutputPreferences
     public string? StreamRenderFps { get; set; }
     public string? StreamVideoCodec { get; set; }
     public double StreamTargetBitrateMbps { get; set; }
+    public int StreamAudioBitrateKbps { get; set; } = 160;
     public string? StreamEncoderMode { get; set; }
     public string? RecordingRenderResolution { get; set; }
     public string? RecordingRenderFps { get; set; }
     public string? RecordingVideoCodec { get; set; }
     public double RecordingTargetBitrateMbps { get; set; }
+    public int RecordingAudioBitrateKbps { get; set; } = 192;
     public string? RecordingTargetFolder { get; set; }
     public string? RecordingFilenamePrefix { get; set; }
     public string? RecordingFormat { get; set; }

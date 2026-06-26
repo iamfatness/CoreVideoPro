@@ -79,6 +79,8 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     destination.ndiGroup = value.getString("ndiGroup");
     destination.fps = static_cast<int>(value.getNumber("fps", destination.fps));
     destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
+    destination.audioBitrateKbps =
+        std::max(32, std::min(512, static_cast<int>(value.getNumber("audioBitrateKbps", destination.audioBitrateKbps))));
     destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
     destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
     if (const auto* enhanced = value.get("allowEnhancedRtmp")) {
@@ -1125,6 +1127,8 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   recordingFormat_ = command.getString("format", recordingFormat_);
   recordingQuality_ = command.getString("quality", recordingQuality_);
   recordingTargetBitrateMbps_ = std::max(0.5, std::min(80.0, command.getNumber("targetBitrateMbps", recordingTargetBitrateMbps_)));
+  recordingAudioBitrateKbps_ =
+      std::max(32, std::min(512, static_cast<int>(command.getNumber("audioBitrateKbps", recordingAudioBitrateKbps_))));
   if (const rpc::Json* renderProfile = command.get("renderProfile"); renderProfile && renderProfile->isObject()) {
     applyRecordingProfile(
         *renderProfile,
@@ -1207,6 +1211,7 @@ void MediaCore::configureEncoderRecordingRequest() {
   request.fps = recordingOutputFps_ > 0 ? recordingOutputFps_ : outputFps_;
   request.videoCodec = normalizeVideoCodec(recordingVideoCodec_, "h264");
   request.audioCodec = "aac";
+  request.audioBitrateKbps = std::max(32, std::min(512, recordingAudioBitrateKbps_));
   request.targetBitrateMbps = static_cast<int>(std::max(1.0, recordingTargetBitrateMbps_));
   modules_.encoder->configureRecording(request);
 }
@@ -2378,6 +2383,7 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
       {"recordingFormat", session.recordingFormat.empty() ? recordingFormat_ : session.recordingFormat},
       {"recordingVideoCodec", session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec},
       {"recordingAudioCodec", session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec},
+      {"recordingAudioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
       {"targets", targets},
       {"lifecycle", lifecycle},
       {"warnings", warnings},
@@ -2517,6 +2523,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"codec", session.codec},
            {"hardwareAccelerated", session.hardwareAccelerated},
            {"targetBitrateMbps", session.targetBitrateMbps},
+           {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
        }},
       {"estimatedDiskRateMBps", 4.99},
       {"programPath", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-program-0." + recordingFormat_},
@@ -2535,6 +2542,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
            {"containerFormat", containerFormat},
            {"videoCodec", videoCodec},
            {"audioCodec", audioCodec},
+           {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
            {"targetBitrateMbps", session.targetBitrateMbps},
            {"width", recordingWidth},
            {"height", recordingHeight},
