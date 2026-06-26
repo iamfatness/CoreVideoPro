@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Xunit;
 
@@ -37,6 +38,28 @@ public sealed class StudioViewModelAudioStatusTests
         bool expected)
     {
         Assert.Equal(expected, StudioViewModel.IsConcreteAudioMixSourceId(sourceId));
+    }
+
+    [Fact]
+    public void ResolveSceneMediaAudioSourceIds_AddsGenericMediaMixerChannelForMediaRoutes()
+    {
+        var sourceIds = StudioViewModel.ResolveSceneMediaAudioSourceIds(
+            [
+                new SourceRoute
+                {
+                    Id = "media-route",
+                    Mode = SourceRouteMode.Fixed,
+                    ParticipantId = ShowInputRosterService.ToMediaSourceId("clip-intro")
+                },
+                new SourceRoute
+                {
+                    Id = "guest-route",
+                    Mode = SourceRouteMode.Fixed,
+                    ParticipantId = "guest-1"
+                }
+            ]);
+
+        Assert.Equal(["media"], sourceIds);
     }
 
     [Theory]

@@ -1039,6 +1039,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public Visibility OutputStatusDetailsVisibility =>
         ShouldShowOutputStatusDetails(OutputStatus) ? Visibility.Visible : Visibility.Collapsed;
 
+    public Visibility AudioMixerEmptyStateVisibility =>
+        AudioParticipantRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility AudioMixerRowsVisibility =>
+        AudioParticipantRows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
     public Brush RecordButtonBackground => Recording
         ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77))
         : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 74, 32, 32));
@@ -6190,6 +6196,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var sourceIds = new List<string>();
         sourceIds.AddRange(RoomVideoParticipants.Select(participant => participant.Id));
         sourceIds.AddRange(_audioMixChannels.Select(channel => channel.ParticipantId));
+        sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(PreviewSceneRoutes));
+        sourceIds.AddRange(ResolveSceneMediaAudioSourceIds(ProgramSceneRoutes));
 
         if (captureAudioSources is not null)
         {
@@ -6227,6 +6235,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return sourceIds
             .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public static IReadOnlyList<string> ResolveSceneMediaAudioSourceIds(IEnumerable<SourceRoute> routes)
+    {
+        return routes
+            .Where(route => route.Mode == SourceRouteMode.Fixed &&
+                ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out _))
+            .Select(_ => "media")
             .Distinct(StringComparer.Ordinal)
             .ToList();
     }
@@ -7471,6 +7489,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AudioParticipantRows.Add(row);
             }
         }
+
+        OnPropertyChanged(nameof(AudioMixerEmptyStateVisibility));
+        OnPropertyChanged(nameof(AudioMixerRowsVisibility));
         RefreshAudioProcessingTargets();
     }
 

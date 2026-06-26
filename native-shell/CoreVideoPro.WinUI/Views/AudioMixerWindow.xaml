@@ -63,6 +63,7 @@
                     <TextBlock Text="Rotary source controls"
                                Style="{StaticResource OperatorSectionTitle}" />
                     <ScrollViewer Grid.Row="1"
+                                  Visibility="{x:Bind ViewModel.AudioMixerRowsVisibility, Mode=OneWay}"
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Disabled">
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
@@ -244,6 +245,25 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </ScrollViewer>
+                    <Border Grid.Row="1"
+                            Visibility="{x:Bind ViewModel.AudioMixerEmptyStateVisibility, Mode=OneWay}"
+                            Style="{StaticResource OperatorReadoutBorder}"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch">
+                        <StackPanel Spacing="8"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    MaxWidth="420">
+                            <TextBlock Text="No routable audio sources"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="Assign a Zoom participant, capture audio device, local audio source, or media source to the show, then route it to Program, Master, Monitor, or an Aux bus."
+                                       TextWrapping="WrapWholeWords"
+                                       TextAlignment="Center"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 
@@ -259,6 +279,7 @@
                     <TextBlock Text="DAW-style channel strips"
                                Style="{StaticResource OperatorSectionTitle}" />
                     <ScrollViewer Grid.Row="1"
+                                  Visibility="{x:Bind ViewModel.AudioMixerRowsVisibility, Mode=OneWay}"
                                   HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Disabled">
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
@@ -362,6 +383,25 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </ScrollViewer>
+                    <Border Grid.Row="1"
+                            Visibility="{x:Bind ViewModel.AudioMixerEmptyStateVisibility, Mode=OneWay}"
+                            Style="{StaticResource OperatorReadoutBorder}"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch">
+                        <StackPanel Spacing="8"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    MaxWidth="420">
+                            <TextBlock Text="No routable audio sources"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="Assign a Zoom participant, capture audio device, local audio source, or media source to the show, then route it to Program, Master, Monitor, or an Aux bus."
+                                       TextWrapping="WrapWholeWords"
+                                       TextAlignment="Center"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
             </Border>
 
