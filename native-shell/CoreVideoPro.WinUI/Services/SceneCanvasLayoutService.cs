@@ -18,7 +18,6 @@ public static class SceneCanvasLayoutService
         new() { Value = "seven-up", Label = "7-up" },
         new() { Value = "eight-up", Label = "8-up" },
         new() { Value = "pip", Label = "Picture in picture" },
-        new() { Value = "grid", Label = "Grid" },
         new() { Value = "speaker-slides", Label = "Speaker + slides" }
     ];
 

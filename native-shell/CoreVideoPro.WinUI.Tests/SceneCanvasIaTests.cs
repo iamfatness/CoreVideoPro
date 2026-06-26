@@ -83,10 +83,16 @@ public sealed class SceneCanvasIaTests
                 ("seven-up", "7-up"),
                 ("eight-up", "8-up"),
                 ("pip", "Picture in picture"),
-                ("grid", "Grid"),
                 ("speaker-slides", "Speaker + slides")
             ],
             SceneCanvasLayoutService.PresetOptions.Select(option => (option.Value, option.Label)).ToList());
+    }
+
+    [Fact]
+    public void CanvasPresetOptions_HideGenericGridButtonBecauseItIsNotAnInputTemplate()
+    {
+        Assert.DoesNotContain(SceneCanvasLayoutService.PresetOptions, option => option.Value == "grid");
+        Assert.Equal(SceneCanvasPreset.Grid, SceneCanvasLayoutService.PresetFromWire("grid"));
     }
 
     [Theory]
