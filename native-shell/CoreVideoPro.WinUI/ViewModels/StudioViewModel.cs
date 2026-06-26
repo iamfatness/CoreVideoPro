@@ -718,6 +718,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string NativeCoreRuntimeStatus =>
         FormatNativeCoreRuntimeStatus(MediaCorePaths.ResolveNativeCoreExecutable(), _bridge.Profile);
 
+    public string NativeAudioRuntimeStatus =>
+        FormatNativeAudioRuntimeStatus(_bridge.Profile);
+
     public string StudioMonitorSummary =>
         _bridge.LastSnapshot is { } snapshot
             ? FormatStudioMonitorSummary(
@@ -5801,6 +5804,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return $"Native core: {path}; {profile.Name}; {profile.Renderer}; {localAudio}; {monitor}.";
     }
 
+    public static string FormatNativeAudioRuntimeStatus(NativeMediaCoreProfile? profile)
+    {
+        if (profile is null)
+        {
+            return "Audio runtime: waiting for native profile handshake.";
+        }
+
+        string[] requiredAudioCapabilities = ["audio-mixer", "local-audio-capture", "audio-monitor-output"];
+        var missing = requiredAudioCapabilities
+            .Where(capability => !profile.Capabilities.Contains(capability, StringComparer.Ordinal))
+            .ToList();
+
+        if (missing.Count == 0)
+        {
+            return "Audio runtime: ready - native mixer, WASAPI capture, and monitor output are enabled.";
+        }
+
+        return $"Audio runtime: blocked - native profile missing {string.Join(", ", missing)}.";
+    }
+
     private static bool IsLoopbackAudioSourceKind(string? sourceKind) =>
         sourceKind?.Trim().ToLowerInvariant() is
             "loopback" or
@@ -6865,7 +6888,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RunOnUiThread(() => EngineStatus = status);
 
     private void OnBridgeProfileChanged(NativeMediaCoreProfile profile) =>
-        RunOnUiThread(() => OnPropertyChanged(nameof(NativeCoreRuntimeStatus)));
+        RunOnUiThread(() =>
+        {
+            OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
+            OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
+        });
 
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
@@ -6884,6 +6911,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         Settings.RefreshDiagnosticsReadout();
         OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
+        OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
     }
 
     /// <summary>

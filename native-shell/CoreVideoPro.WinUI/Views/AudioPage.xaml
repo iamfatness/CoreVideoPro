@@ -37,6 +37,9 @@
                         </Grid>
                         <Border Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="3">
+                                <TextBlock Text="{x:Bind ViewModel.NativeAudioRuntimeStatus, Mode=OneWay}"
+                                           FontSize="12"
+                                           TextWrapping="WrapWholeWords" />
                                 <TextBlock Text="What the meters show"
                                            FontSize="10"
                                            Foreground="{StaticResource StudioMutedBrush}" />

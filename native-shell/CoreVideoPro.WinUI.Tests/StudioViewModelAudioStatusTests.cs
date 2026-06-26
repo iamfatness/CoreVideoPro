@@ -1579,6 +1579,52 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal("Native core: not resolved; profile waiting for handshake.", status);
     }
 
+    [Fact]
+    public void FormatNativeAudioRuntimeStatus_ShowsReadyWhenNativeAudioCapabilitiesExist()
+    {
+        var status = StudioViewModel.FormatNativeAudioRuntimeStatus(new NativeMediaCoreProfile
+        {
+            Name = "CoreVideo Native",
+            Renderer = "d3d11",
+            MaxProgramResolution = "1920x1080",
+            MaxProgramFps = 60,
+            MaxParticipantFeeds = 10,
+            MaxIsoRecordings = 8,
+            Capabilities = ["audio-mixer", "local-audio-capture", "audio-monitor-output"]
+        });
+
+        Assert.Equal(
+            "Audio runtime: ready - native mixer, WASAPI capture, and monitor output are enabled.",
+            status);
+    }
+
+    [Fact]
+    public void FormatNativeAudioRuntimeStatus_NamesMissingAudioCapabilities()
+    {
+        var status = StudioViewModel.FormatNativeAudioRuntimeStatus(new NativeMediaCoreProfile
+        {
+            Name = "CoreVideo Native",
+            Renderer = "d3d11",
+            MaxProgramResolution = "1920x1080",
+            MaxProgramFps = 60,
+            MaxParticipantFeeds = 10,
+            MaxIsoRecordings = 8,
+            Capabilities = ["audio-mixer"]
+        });
+
+        Assert.Equal(
+            "Audio runtime: blocked - native profile missing local-audio-capture, audio-monitor-output.",
+            status);
+    }
+
+    [Fact]
+    public void FormatNativeAudioRuntimeStatus_ShowsHandshakePending()
+    {
+        Assert.Equal(
+            "Audio runtime: waiting for native profile handshake.",
+            StudioViewModel.FormatNativeAudioRuntimeStatus(null));
+    }
+
     [Theory]
     [InlineData(0, 0.5)]
     [InlineData(4.14, 4.1)]
