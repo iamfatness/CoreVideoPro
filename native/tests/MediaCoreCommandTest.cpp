@@ -282,6 +282,55 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
   float maxAudioSample_ = 0.f;
 };
 
+void writeLe16(std::ofstream& stream, uint16_t value) {
+  const char bytes[] = {
+      static_cast<char>(value & 0xff),
+      static_cast<char>((value >> 8) & 0xff),
+  };
+  stream.write(bytes, sizeof(bytes));
+}
+
+void writeLe32(std::ofstream& stream, uint32_t value) {
+  const char bytes[] = {
+      static_cast<char>(value & 0xff),
+      static_cast<char>((value >> 8) & 0xff),
+      static_cast<char>((value >> 16) & 0xff),
+      static_cast<char>((value >> 24) & 0xff),
+  };
+  stream.write(bytes, sizeof(bytes));
+}
+
+void writeSineWaveFile(const std::filesystem::path& path) {
+  constexpr int kSampleRate = 48000;
+  constexpr int kChannels = 2;
+  constexpr int kFrames = 4800;
+  constexpr int kBitsPerSample = 16;
+  constexpr int kBlockAlign = kChannels * kBitsPerSample / 8;
+  constexpr int kByteRate = kSampleRate * kBlockAlign;
+  constexpr int kDataBytes = kFrames * kBlockAlign;
+
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  stream.write("RIFF", 4);
+  writeLe32(stream, 36u + static_cast<uint32_t>(kDataBytes));
+  stream.write("WAVE", 4);
+  stream.write("fmt ", 4);
+  writeLe32(stream, 16);
+  writeLe16(stream, 1);
+  writeLe16(stream, static_cast<uint16_t>(kChannels));
+  writeLe32(stream, kSampleRate);
+  writeLe32(stream, kByteRate);
+  writeLe16(stream, static_cast<uint16_t>(kBlockAlign));
+  writeLe16(stream, kBitsPerSample);
+  stream.write("data", 4);
+  writeLe32(stream, kDataBytes);
+  for (int index = 0; index < kFrames; ++index) {
+    const double phase = 2.0 * corevideo::modules::kAudioPi * 440.0 * static_cast<double>(index) / kSampleRate;
+    const auto sample = static_cast<int16_t>(std::round(std::sin(phase) * 12000.0));
+    writeLe16(stream, static_cast<uint16_t>(sample));
+    writeLe16(stream, static_cast<uint16_t>(sample));
+  }
+}
+
 class ThrowingOutputSender final : public corevideo::modules::IOutputSender {
  public:
   corevideo::modules::OutputSenderSession sync(
@@ -2232,6 +2281,43 @@ TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
   ASSERT_TRUE(mediaParticipant != participants->asArray().end());
   EXPECT_TRUE(mediaParticipant->get("outputLevel")->asNumber() > 0);
 }
+
+#if !COREVIDEO_STUB && COREVIDEO_WITH_MF_ENCODER
+TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
+  const auto wavPath = std::filesystem::temp_directory_path() / "corevideo-mf-media-audio-test.wav";
+  std::filesystem::remove(wavPath);
+  writeSineWaveFile(wavPath);
+
+  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  ASSERT_NE(source, nullptr);
+
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.kind = "media-video";
+  layer.sourceId = "media:clip-audio";
+  layer.mediaAssetId = "clip-audio";
+  layer.mediaAssetKind = "video";
+  layer.mediaAssetPath = wavPath.string();
+  layer.mediaPlaybackKey = "program-take:1:media:clip-audio";
+  layer.mediaAssetPlaying = true;
+
+  const auto frames = source->pollMediaAudioFrames({layer}, 33);
+  ASSERT_FALSE(frames.empty());
+  EXPECT_EQ(frames.front().participantId, "media");
+  EXPECT_EQ(frames.front().sampleRate, 48000);
+  EXPECT_EQ(frames.front().channels, 2);
+  EXPECT_TRUE(frames.front().sampleCount > 0);
+  ASSERT_FALSE(frames.front().pcm.empty());
+
+  float peak = 0.f;
+  for (const auto sample : frames.front().pcm) {
+    peak = std::max(peak, std::abs(sample));
+  }
+  EXPECT_TRUE(peak > 0.05f);
+  EXPECT_TRUE(source->warnings().empty());
+
+  std::filesystem::remove(wavPath);
+}
+#endif
 
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   corevideo::core::MediaCore mediaCore;

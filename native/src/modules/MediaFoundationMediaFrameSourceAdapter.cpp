@@ -180,7 +180,6 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
   }
 
   std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
-    warnings_.clear();
     std::vector<VideoFrame> frames;
     std::set<std::string> seen;
     for (const auto& layer : layers) {
@@ -200,6 +199,27 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     return frames;
   }
 
+  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+    warnings_.clear();
+    std::vector<AudioFrame> frames;
+    std::set<std::string> seen;
+    for (const auto& layer : layers) {
+      if (layer.kind != "media-video" || layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
+        continue;
+      }
+      if (!layer.mediaAssetPlaying || isStillImagePath(normalizeMediaPath(layer.mediaAssetPath))) {
+        continue;
+      }
+      if (!seen.insert(mediaLayerStateKey(layer)).second) {
+        continue;
+      }
+      if (auto frame = decodeLayerAudio(layer, timestampMs); frame.sampleCount > 0 && !frame.pcm.empty()) {
+        frames.push_back(std::move(frame));
+      }
+    }
+    return frames;
+  }
+
   std::vector<std::string> warnings() const override { return warnings_; }
 
  private:
@@ -209,9 +229,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     bool imageLoaded = false;
     bool ended = false;
     bool wasPlaying = false;
+    bool audioWasPlaying = false;
     int64_t frameId = 0;
     VideoFrame lastFrame;
     ComPtrLite<IMFSourceReader> reader;
+    ComPtrLite<IMFSourceReader> audioReader;
+    bool audioEnded = false;
+    std::string audioPlaybackKey;
   };
 
   bool decodeLayer(const CompositorRenderPlanLayer& layer, int64_t timestampMs, VideoFrame& frame) {
@@ -275,6 +299,35 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     return frame.hasPixels();
   }
 
+  AudioFrame decodeLayerAudio(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
+    AudioFrame frame;
+    const std::string frameSourceId = mediaFrameSourceId(layer);
+    auto& state = states_[frameSourceId];
+    const auto path = normalizeMediaPath(layer.mediaAssetPath);
+    if (state.path != path) {
+      state = {};
+      state.path = path;
+    }
+    const std::string playbackKey = mediaLayerPlaybackKey(layer);
+    if (!state.audioWasPlaying || state.audioPlaybackKey != playbackKey) {
+      state.audioReader = {};
+      state.audioEnded = false;
+    }
+    state.audioWasPlaying = true;
+    state.audioPlaybackKey = playbackKey;
+    if (!state.audioReader && !openAudioReader(path, state)) {
+      warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program audio.");
+      return frame;
+    }
+    if (state.audioEnded) {
+      return frame;
+    }
+    if (!readNextAudioFrame(layer.mediaAssetId, state, timestampMs, frame)) {
+      return {};
+    }
+    return frame;
+  }
+
   bool openVideoReader(const std::string& path, AssetState& state) {
     if (!mfStarted_) {
       return false;
@@ -288,6 +341,24 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
         FAILED(mediaType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32)) ||
         FAILED(state.reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, mediaType.get()))) {
       state.reader = {};
+      return false;
+    }
+    return true;
+  }
+
+  bool openAudioReader(const std::string& path, AssetState& state) {
+    if (!mfStarted_) {
+      return false;
+    }
+    if (FAILED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), nullptr, state.audioReader.put()))) {
+      return false;
+    }
+    ComPtrLite<IMFMediaType> mediaType;
+    if (FAILED(MFCreateMediaType(mediaType.put())) ||
+        FAILED(mediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio)) ||
+        FAILED(mediaType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float)) ||
+        FAILED(state.audioReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mediaType.get()))) {
+      state.audioReader = {};
       return false;
     }
     return true;
@@ -353,6 +424,72 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     frame.pixels = std::move(pixels);
     state.lastFrame = std::move(frame);
     return true;
+  }
+
+  bool readNextAudioFrame(const std::string& assetId, AssetState& state, int64_t timestampMs, AudioFrame& frame) {
+    if (!state.audioReader) {
+      return false;
+    }
+    DWORD streamIndex = 0;
+    DWORD flags = 0;
+    LONGLONG sampleTime = 0;
+    ComPtrLite<IMFSample> sample;
+    const HRESULT read = state.audioReader->ReadSample(
+        MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &streamIndex, &flags, &sampleTime, sample.put());
+    if (FAILED(read)) {
+      warnings_.push_back("Media asset " + assetId + " failed while decoding Program audio.");
+      return false;
+    }
+    if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) {
+      state.audioEnded = true;
+      return false;
+    }
+    if (!sample) {
+      return false;
+    }
+
+    ComPtrLite<IMFMediaBuffer> buffer;
+    if (FAILED(sample->ConvertToContiguousBuffer(buffer.put()))) {
+      warnings_.push_back("Media asset " + assetId + " audio sample could not be copied.");
+      return false;
+    }
+    BYTE* data = nullptr;
+    DWORD maxLength = 0;
+    DWORD currentLength = 0;
+    if (FAILED(buffer->Lock(&data, &maxLength, &currentLength)) || !data || currentLength < sizeof(float)) {
+      return false;
+    }
+
+    ComPtrLite<IMFMediaType> currentType;
+    UINT32 sampleRate = 48000;
+    UINT32 channels = 2;
+    if (SUCCEEDED(state.audioReader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, currentType.put()))) {
+      UINT32 typeSampleRate = 0;
+      UINT32 typeChannels = 0;
+      if (SUCCEEDED(currentType->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &typeSampleRate)) && typeSampleRate > 0) {
+        sampleRate = typeSampleRate;
+      }
+      if (SUCCEEDED(currentType->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &typeChannels)) && typeChannels > 0) {
+        channels = typeChannels;
+      }
+    }
+    const size_t floatCount = static_cast<size_t>(currentLength / sizeof(float));
+    if (channels == 0 || floatCount < channels) {
+      buffer->Unlock();
+      return false;
+    }
+    std::vector<float> pcm(floatCount);
+    std::memcpy(pcm.data(), data, floatCount * sizeof(float));
+    buffer->Unlock();
+
+    frame.participantId = "media";
+    frame.sampleRate = static_cast<int>(sampleRate);
+    frame.channels = static_cast<int>(channels);
+    frame.timestampMs = timestampMs;
+    frame.sampleCount = static_cast<int>(floatCount / static_cast<size_t>(channels));
+    frame.voiceActive = true;
+    frame.pcm = std::move(pcm);
+    return frame.sampleCount > 0;
   }
 
   bool comInitialized_ = false;
