@@ -613,6 +613,8 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.lastFrameNumber = frame->frameNumber;
     ++sender_.framesSent;
     sender_.bytesSent += estimatedFrameBytes(sender_.bitrateMbps);
+    sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
+    sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
     sender_.lastResultCode = "ok";
     appendSendProof(frame, "sent");
@@ -1029,6 +1031,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     const auto* bytes = reinterpret_cast<const char*>(pendingAudioPcm_->data());
     size_t remaining = pendingAudioPcm_->size() * sizeof(float);
+    size_t accepted = 0;
 #if defined(_WIN32)
     if (!audioPipeServer_) {
       return;
@@ -1052,10 +1055,11 @@ class RtmpOutputSender final : public IOutputSender {
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
       if (!WriteFile(audioPipeServer_, bytes, chunk, &written, nullptr) || written == 0) {
-        return;  // non-fatal; FFmpeg will pad with the resampler
+        break;  // non-fatal; FFmpeg will pad with the resampler
       }
       bytes += written;
       remaining -= written;
+      accepted += written;
     }
 #else
     if (ffmpegAudioFd_ < 0) {
@@ -1067,12 +1071,18 @@ class RtmpOutputSender final : public IOutputSender {
         if (written < 0 && errno == EINTR) {
           continue;
         }
-        return;  // non-fatal
+        break;  // non-fatal
       }
       bytes += written;
       remaining -= static_cast<size_t>(written);
+      accepted += static_cast<size_t>(written);
     }
 #endif
+    if (accepted > 0) {
+      sender_.audioBytesSent += static_cast<int64_t>(accepted);
+      const int bytesPerFrame = (std::max)(1, activeAudioChannels_) * static_cast<int>(sizeof(float));
+      sender_.audioFramesSent += static_cast<int64_t>(accepted / static_cast<size_t>(bytesPerFrame));
+    }
   }
 
 #if defined(_WIN32)

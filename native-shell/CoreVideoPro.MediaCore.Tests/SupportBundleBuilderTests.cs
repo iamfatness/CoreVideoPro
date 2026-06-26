@@ -97,7 +97,11 @@ public sealed class SupportBundleBuilderTests
                         SenderId = "s1",
                         Destination = "rtmps://cdn.example.com/live?key=PRIVATE_KEY",
                         Status = "live",
-                        FramesSent = 10
+                        FramesSent = 10,
+                        AudioFramesSent = 48000,
+                        AudioBytesSent = 384000,
+                        AudioChannels = 2,
+                        AudioSampleRate = 48000
                     }
                 ]
             }
@@ -110,6 +114,10 @@ public sealed class SupportBundleBuilderTests
         Assert.NotNull(bundle.MediaCore);
         var sender = Assert.Single(bundle.MediaCore!.Senders.Destinations);
         Assert.Contains("key=redacted", sender.Destination, StringComparison.Ordinal);
+        Assert.Equal(48000, sender.AudioFramesSent);
+        Assert.Equal(384000, sender.AudioBytesSent);
+        Assert.Equal(2, sender.AudioChannels);
+        Assert.Equal(48000, sender.AudioSampleRate);
     }
 
     [Fact]
@@ -165,6 +173,36 @@ public sealed class SupportBundleBuilderTests
         Assert.Contains(bundle.TriageLines, line => line.Contains("Latest crash: exit 9", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio capture: 1/1 streaming; PCM 48000; master 48000; MON 0; monitor played 0", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio monitor fault: program/master PCM is present but the MON bus has no routed PCM.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_FlagsLiveSenderWithNoAcceptedProgramAudio()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "live",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "rtmp",
+                        Destination = "rtmps://cdn.example.com/live",
+                        Status = "live",
+                        FramesSent = 120,
+                        AudioFramesSent = 0
+                    }
+                ]
+            }
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Output audio fault: rtmps://cdn.example.com/live is live but has accepted no program-audio frames.", StringComparison.Ordinal));
     }
 
     [Fact]

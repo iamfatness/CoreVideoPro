@@ -427,12 +427,10 @@ class SyntheticOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
-    // The synthetic sender reports diagnostics only; it does not encode, so the
-    // real program-audio mix is accepted and ignored (behavior is identical to
-    // before audio was threaded through the IOutputSender boundary).
-    (void)programAudioPcm;
-    (void)audioChannels;
-    (void)audioSampleRate;
+    const int programAudioFrames =
+        programAudioPcm && !programAudioPcm->empty() && audioChannels > 0
+            ? static_cast<int>(programAudioPcm->size() / static_cast<size_t>(audioChannels))
+            : 0;
     std::vector<std::string> activeDestinations;
     for (const auto& destination : destinations) {
       if (isNetworkDestination(destination) && std::find(activeDestinations.begin(), activeDestinations.end(), destination) == activeDestinations.end()) {
@@ -489,6 +487,12 @@ class SyntheticOutputSender final : public IOutputSender {
       sender.lastFrameNumber = frame->frameNumber;
       ++sender.framesSent;
       sender.bytesSent += estimatedFrameBytes(sender.bitrateMbps);
+      if (programAudioFrames > 0) {
+        sender.audioFramesSent += programAudioFrames;
+        sender.audioBytesSent += static_cast<int64_t>(programAudioPcm->size() * sizeof(float));
+        sender.audioChannels = audioChannels;
+        sender.audioSampleRate = audioSampleRate;
+      }
       if (frame->health == "degraded") {
         sender.status = "warning";
         sender.warning = uppercase(destination) + " sender is publishing degraded program frames.";

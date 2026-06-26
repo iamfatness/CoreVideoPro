@@ -2030,12 +2030,20 @@ TEST(OutputSenderAdapter, SyncAcceptsRealProgramAudioWithoutChangingDiagnostics)
   EXPECT_EQ(withAudio.senders[0].destination, "rtmp");
   EXPECT_EQ(withAudio.senders[0].destinationHealth, "ok");
   EXPECT_EQ(withAudio.senders[0].lastResultCode, "ok");
+  EXPECT_EQ(withAudio.senders[0].audioFramesSent, 480);
+  EXPECT_EQ(withAudio.senders[0].audioBytesSent, static_cast<int64_t>(programAudioPcm.size() * sizeof(float)));
+  EXPECT_EQ(withAudio.senders[0].audioChannels, 2);
+  EXPECT_EQ(withAudio.senders[0].audioSampleRate, 48000);
 
   // Same call without audio (default args) yields the same health/result.
   auto withoutAudio = corevideo::modules::createStubModules().outputSender->sync({"rtmp"}, &frame, 33);
   ASSERT_TRUE(withoutAudio.senders.size() == 1u);
   EXPECT_EQ(withoutAudio.senders[0].destinationHealth, withAudio.senders[0].destinationHealth);
   EXPECT_EQ(withoutAudio.senders[0].lastResultCode, withAudio.senders[0].lastResultCode);
+  EXPECT_EQ(withoutAudio.senders[0].audioFramesSent, 0);
+  EXPECT_EQ(withoutAudio.senders[0].audioBytesSent, 0);
+  EXPECT_EQ(withoutAudio.senders[0].audioChannels, 0);
+  EXPECT_EQ(withoutAudio.senders[0].audioSampleRate, 0);
 }
 
 TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {

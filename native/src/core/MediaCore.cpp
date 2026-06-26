@@ -2398,6 +2398,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
         {"destinationHealth", sender.destinationHealth},
         {"lastResultCode", sender.lastResultCode},
         {"bytesSent", static_cast<double>(sender.bytesSent)},
+        {"audioFramesSent", static_cast<double>(sender.audioFramesSent)},
+        {"audioBytesSent", static_cast<double>(sender.audioBytesSent)},
+        {"audioChannels", sender.audioChannels},
+        {"audioSampleRate", sender.audioSampleRate},
     };
     if (sender.startedAtMs > 0) {
       senderJson.emplace("startedAtMs", sender.startedAtMs);

@@ -290,6 +290,10 @@ public sealed class NativeMediaCoreOutputSender
     public int RetryCount { get; init; }
     public double LatencyMs { get; init; }
     public double BitrateMbps { get; init; }
+    public long AudioFramesSent { get; init; }
+    public long AudioBytesSent { get; init; }
+    public int AudioChannels { get; init; }
+    public int AudioSampleRate { get; init; }
     public string? Warning { get; init; }
     public string? LastError { get; init; }
 }

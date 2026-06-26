@@ -267,6 +267,10 @@ struct OutputSender {
   std::string lastResultCode = "waiting-for-frame";
   std::string lastError;
   int64_t bytesSent = 0;
+  int64_t audioFramesSent = 0;
+  int64_t audioBytesSent = 0;
+  int audioChannels = 0;
+  int audioSampleRate = 0;
   std::string sendArtifactPath;
   int64_t sendBytesWritten = 0;
   std::string runtimeDetail;

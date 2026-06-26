@@ -253,6 +253,10 @@ public static class SupportBundleBuilder
                         RetryCount = sender.RetryCount,
                         LatencyMs = sender.LatencyMs,
                         BitrateMbps = sender.BitrateMbps,
+                        AudioFramesSent = sender.AudioFramesSent,
+                        AudioBytesSent = sender.AudioBytesSent,
+                        AudioChannels = sender.AudioChannels,
+                        AudioSampleRate = sender.AudioSampleRate,
                         Warning = sender.Warning
                     })
                     .ToArray()
@@ -505,6 +509,14 @@ public static class SupportBundleBuilder
                 {
                     lines.Add(
                         $"Output senders: {mediaCore.Senders.Status}; active {mediaCore.Senders.ActiveSenderCount}");
+                    if (audio?.Capture.RoutedMasterFrames > 0)
+                    {
+                        foreach (var sender in mediaCore.Senders.Destinations.Where(sender =>
+                                     sender.Status == "live" && sender.AudioFramesSent <= 0))
+                        {
+                            lines.Add($"Output audio fault: {sender.Destination} is live but has accepted no program-audio frames.");
+                        }
+                    }
                 }
             }
         }
