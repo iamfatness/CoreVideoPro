@@ -195,10 +195,47 @@ public sealed class Direct3D11InteropService : IDisposable
 
         if (_surfaceWidth > 0 && _surfaceHeight > 0)
         {
+            // The swap chain is sized to the source (e.g. 1920x1080); don't resize
+            // it, just rescale it to fill the new panel size.
+            ApplyPanelTransform();
             return;
         }
 
         EnsureSwapChain(width, height);
+    }
+
+    // The composition swap chain is created at the SOURCE size and composited into
+    // the SwapChainPanel 1:1 at the origin — so a 1920x1080 surface in a smaller
+    // panel shows only a corner (the "super zoomed in" program). Scale the swap
+    // chain to fill the panel's layout rect; the panel then applies its own DPI
+    // composition scale. Source and panel are both 16:9 (AspectRatioHost), so this
+    // fits without distortion.
+    private void ApplyPanelTransform()
+    {
+        if (_panel is null || _swapChain is null || _surfaceWidth <= 0 || _surfaceHeight <= 0)
+        {
+            return;
+        }
+
+        var panelWidth = _panel.ActualWidth;
+        var panelHeight = _panel.ActualHeight;
+        if (panelWidth <= 0 || panelHeight <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            using var swapChain2 = _swapChain.QueryInterface<IDXGISwapChain2>();
+            var scaleX = (float)(panelWidth / _surfaceWidth);
+            var scaleY = (float)(panelHeight / _surfaceHeight);
+            swapChain2.MatrixTransform = new System.Numerics.Matrix3x2(scaleX, 0f, 0f, scaleY, 0f, 0f);
+            LaunchLog.Write($"d3d: panel transform panel={panelWidth:F0}x{panelHeight:F0} surface={_surfaceWidth}x{_surfaceHeight} scale={scaleX:F3}x{scaleY:F3}");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"d3d: panel transform failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private bool EnsureDevice()
@@ -295,6 +332,7 @@ public sealed class Direct3D11InteropService : IDisposable
             _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
             _surfaceWidth = targetWidth;
             _surfaceHeight = targetHeight;
+            ApplyPanelTransform();
             return true;
         }
         catch
