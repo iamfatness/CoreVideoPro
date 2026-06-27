@@ -152,8 +152,16 @@ public sealed class Direct3D11InteropService : IDisposable
             // stalls. Vortice's AcquireSync returns void and can't report
             // WAIT_TIMEOUT (a SUCCEEDED HRESULT), so call the COM vtable directly to
             // get the real HRESULT. hr != S_OK => no new frame: keep the last one.
+            //
+            // SKIP-PRESENT (deliberate): present ONLY on a new keyed-mutex frame. The
+            // "smooth" variant that re-presents the last backbuffer every vsync on idle
+            // destabilized the app (~31s fail-fast) — this method is shared by the
+            // program monitor and now every multiview tile, so an idle re-present runs
+            // N swap chains every vsync. Keep skip-present; it is the known-stable path.
             if (_cachedAcquireSync is not null && _cachedAcquireSync(_cachedKeyedMutex!.NativePointer, 1, 0) != 0)
             {
+                // No new frame: leave the last presented backbuffer on screen.
+                SetPresentationPath(PresentationPath.GpuActive);
                 return true;
             }
             _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
@@ -161,8 +169,7 @@ public sealed class Direct3D11InteropService : IDisposable
             _swapChain!.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
-            // Present runs every vsync now, so log a heartbeat every 120 presents
-            // (compute fps from the timestamp delta) instead of flooding per frame.
+            // Present runs only on new frames; log a heartbeat every 120 presents.
             if (++_presentCount % 120 == 0)
             {
                 LaunchLog.Write($"d3d: present #{_presentCount} 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
@@ -212,7 +219,8 @@ public sealed class Direct3D11InteropService : IDisposable
         // The WinRT IDirect3DDevice RCW throws InvalidCastException (E_NOINTERFACE on
         // the IDisposable QI) on teardown, which fail-fasts the app when a
         // VideoSurfaceHost unloads — e.g. leaving the meeting unloads the Zoom
-        // participant tiles. Teardown must never throw.
+        // participant tiles, and multiview tiles come and go as participants join/leave.
+        // Teardown must never throw.
         try { _context?.Dispose(); } catch { }
         try { _device?.Dispose(); } catch { }
         try { _winrtDevice?.Dispose(); } catch { }
