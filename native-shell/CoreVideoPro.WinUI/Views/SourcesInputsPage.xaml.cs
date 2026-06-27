@@ -1,3 +1,5 @@
+using System.Linq;
+using CoreVideoPro.WinUI;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
@@ -68,26 +70,40 @@ public sealed partial class SourcesInputsPage : UserControl
 
     private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Use Tag (bound via x:Bind to the slot view-model), not DataContext, which
+        // is null for ComboBoxes realized inside the ItemsRepeater.
         if (sender is not ComboBox combo ||
-            combo.DataContext is not ShowInputSlotViewModel editor ||
+            combo.Tag is not ShowInputSlotViewModel editor ||
             combo.SelectedValue is not ShowInputKind kind)
         {
             return;
         }
 
+        if (editor.Kind == kind)
+        {
+            return;
+        }
+
         editor.Kind = kind;
+        LaunchLog.Write($"sources: kind={kind} slot={editor.SlotNumber} -> sourceOptions={editor.SourceOptions.Count}");
     }
 
     private void OnShowInputSourceChanged(object sender, SelectionChangedEventArgs e)
     {
         if (sender is not ComboBox combo ||
-            combo.DataContext is not ShowInputSlotViewModel editor ||
+            combo.Tag is not ShowInputSlotViewModel editor ||
             combo.SelectedValue is not string sourceId)
         {
             return;
         }
 
+        if (string.Equals(editor.SelectedSourceId, sourceId, System.StringComparison.Ordinal))
+        {
+            return;
+        }
+
         editor.SelectedSourceId = sourceId;
+        LaunchLog.Write($"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> ParticipantId={editor.ParticipantId}");
     }
 
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)

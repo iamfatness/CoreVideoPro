@@ -7374,19 +7374,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static int LiveParticipantCountFromPatch(LiveProductionSync.StudioLiveProductionPatch patch) =>
         patch.Participants?.Count ?? 0;
 
+    private string _liveStructureSignature = "";
+
     private void ApplyLiveParticipants(IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         var mapped = ParticipantMapper.ToParticipants(participants);
         RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
         RoomParticipantsForInputs = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
         CurrentRoomLabel = _currentRoomName;
-        MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+
+        // Only rebuild the structural UI collections (multiview tiles, the room
+        // list, and the Sources pickers) when the participant/device SET actually
+        // changes. Doing it every snapshot (~10/s) recreates the tiles (visible
+        // flashing) and resets every Source ComboBox selection mid-pick (the
+        // operator can't hold a selection). Live video/audio update via their own
+        // binding paths, not these rebuilds.
+        var structureSignature =
+            string.Join("|", mapped.Select(p => $"{p.Id}:{p.Health}:{p.IsScreenSharing}")) +
+            "#" + string.Join(",", CaptureDevices.Select(d => d.Id));
+        var structureChanged = structureSignature != _liveStructureSignature;
+        _liveStructureSignature = structureSignature;
+
         OnPropertyChanged(nameof(RoomVideoParticipants));
         OnPropertyChanged(nameof(CurrentRoomHeader));
-        RefreshParticipantListItems();
         RefreshAudioParticipantRows();
-        RefreshShowInputEditors();
-        RefreshMultiviewGridTiles();
+
+        if (structureChanged)
+        {
+            MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+            RefreshParticipantListItems();
+            RefreshShowInputEditors();
+            RefreshMultiviewGridTiles();
+        }
+
         OnPropertyChanged(nameof(CamerasOnCount));
         OnPropertyChanged(nameof(ScreenShareLabel));
         SchedulePreviewRoutingRefresh();
@@ -8315,12 +8335,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ShowInputEditors.Add(new ShowInputSlotViewModel(slot, OnShowInputChanged, SetCaptureDeviceAudioSource));
         }
 
-        RefreshShowInputEditors();
+        RefreshShowInputEditors(force: true);
     }
 
-    private void RefreshShowInputEditors()
+    private string _showInputEditorsSignature = "";
+
+    private void RefreshShowInputEditors(bool force = false)
     {
         var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
+
+        // Rebuild each slot's Source dropdown options ONLY when the set the picker
+        // depends on actually changes. This method is called from many per-snapshot
+        // paths (~10/s); rebuilding the ComboBox ItemsSource every tick resets the
+        // operator's in-progress selection (can't pick a participant) and fires a
+        // SelectionChanged storm. Skip when nothing changed.
+        var signature =
+            string.Join("|", RoomParticipantsForInputs.Select(p => $"{p.Id}:{p.Health}")) + "#" +
+            string.Join(",", CaptureDevices.Select(d => d.Id)) + "#" +
+            AudioCaptureDevices.Count + "#" + mediaAssets.Count;
+        if (!force && signature == _showInputEditorsSignature)
+        {
+            return;
+        }
+        _showInputEditorsSignature = signature;
+
         foreach (var editor in ShowInputEditors)
         {
             editor.RefreshSourceOptions(RoomParticipantsForInputs, CaptureDevices, AudioCaptureDevices, mediaAssets);

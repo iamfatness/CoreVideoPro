@@ -362,6 +362,7 @@
                                         <StackPanel Grid.Column="1" Spacing="4">
                                             <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="KindCombo"
+                                                      Tag="{x:Bind}"
                                                       ItemsSource="{x:Bind KindOptions}"
                                                       SelectedValue="{x:Bind Kind, Mode=OneWay}"
                                                       SelectedValuePath="Value"
@@ -371,6 +372,7 @@
                                         <StackPanel Grid.Column="2" Spacing="4">
                                             <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                             <ComboBox x:Name="SourceCombo"
+                                                      Tag="{x:Bind}"
                                                       ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
                                                       SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
                                                       SelectedValuePath="Value"
