@@ -663,6 +663,12 @@ std::vector<rpc::Json> MediaCore::drainProgramSharedTextureEvents() {
   return events;
 }
 
+std::vector<rpc::Json> MediaCore::drainParticipantSharedTextureEvents() {
+  auto events = std::move(pendingParticipantSharedTextureEvents_);
+  pendingParticipantSharedTextureEvents_.clear();
+  return events;
+}
+
 void MediaCore::enqueueProgramFramePreviewEvent() {
   const auto event = modules::programFramePreviewEvent(lastProgramFrame_);
   if (!event.isNull()) {
@@ -677,6 +683,12 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
   // 30fps Zoom video frames (high latency + drops). Re-enable if/when the program
   // monitor goes back to the GPU shared-texture (VideoSurfaceHost) path.
   return;
+}
+
+void MediaCore::enqueueParticipantSharedTextureEvents() {
+  for (auto& event : modules::participantSharedTextureEvents(lastProgramFrame_)) {
+    pendingParticipantSharedTextureEvents_.emplace_back(std::move(event));
+  }
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
@@ -3076,6 +3088,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // The shared-texture handle is tiny (a handle + dimensions) — emit it on every
     // render so the GPU program present runs at the full render rate (~60fps).
     enqueueProgramSharedTextureEvent();
+    // Per-participant GPU textures for the multiview tiles (also tiny handles).
+    enqueueParticipantSharedTextureEvents();
     // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
     // never emit it on the light display tick (it has no fresh readback).
     if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {

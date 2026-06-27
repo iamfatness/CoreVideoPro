@@ -25,6 +25,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <utility>
 
@@ -249,6 +250,7 @@ class D3D11Compositor final : public ICompositor {
       frame.preview = readProgramFramePreview();
     }
     exportSharedTexture(frame);
+    exportParticipantTextures(frames, frame);
     context_->Flush();
     return frame;
   }
@@ -898,6 +900,72 @@ class D3D11Compositor final : public ICompositor {
     frame.sharedTexture.frameNumber = frame.frameNumber;
   }
 
+  // Export one keyed-mutex shared texture per participant for the multiview tiles,
+  // so the WinUI tiles present on the GPU instead of decoding base64 on the UI
+  // thread. Runs on the (single) render thread, reusing the compositor device/
+  // context. Keyed-mutex textures are DEFAULT usage, so upload via UpdateSubresource
+  // (not Map). Producer acquires key 0 / writes / releases key 1; non-blocking so a
+  // busy consumer just keeps the last frame.
+  void exportParticipantTextures(const std::vector<VideoFrame>& frames, ProgramFrame& outFrame) {
+    if (!device_ || !context_) {
+      return;
+    }
+    for (const auto& f : frames) {
+      if (f.participantId.empty() || !f.hasPixels()) {
+        continue;
+      }
+      auto& pt = participantTextures_[f.participantId];
+      if (!pt.texture || pt.width != f.pixelWidth || pt.height != f.pixelHeight) {
+        pt = ParticipantTex{};
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = static_cast<UINT>(f.pixelWidth);
+        desc.Height = static_cast<UINT>(f.pixelHeight);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        ComPtrLite<IDXGIResource> dxgiResource;
+        HANDLE handle = nullptr;
+        if (FAILED(device_->CreateTexture2D(&desc, nullptr, pt.texture.put())) ||
+            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put()))) ||
+            FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle ||
+            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(pt.mutex.put())))) {
+          participantTextures_.erase(f.participantId);
+          continue;
+        }
+        pt.handle = handle;
+        pt.width = f.pixelWidth;
+        pt.height = f.pixelHeight;
+      }
+      if (pt.mutex && pt.mutex->AcquireSync(0, 0) == S_OK) {
+        context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
+                                    static_cast<UINT>(f.pixelStride), 0);
+        pt.mutex->ReleaseSync(1);
+      }
+      ParticipantSharedTexture info;
+      info.participantId = f.participantId;
+      info.sharedHandleHex = handleToHex(pt.handle);
+      info.width = pt.width;
+      info.height = pt.height;
+      info.frameNumber = outFrame.frameNumber;
+      outFrame.participantSharedTextures.push_back(std::move(info));
+    }
+    // Drop textures for participants that are no longer delivering pixels.
+    for (auto it = participantTextures_.begin(); it != participantTextures_.end();) {
+      bool present = false;
+      for (const auto& f : frames) {
+        if (f.participantId == it->first && f.hasPixels()) {
+          present = true;
+          break;
+        }
+      }
+      it = present ? std::next(it) : participantTextures_.erase(it);
+    }
+  }
+
   ProgramFramePreviewPixels readProgramFramePreview() const {
     ProgramFramePreviewPixels preview;
     if (!renderTarget_ || !stagingTexture_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
@@ -935,6 +1003,15 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
+  // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
+  struct ParticipantTex {
+    ComPtrLite<ID3D11Texture2D> texture;
+    ComPtrLite<IDXGIKeyedMutex> mutex;
+    HANDLE handle = nullptr;
+    int width = 0;
+    int height = 0;
+  };
+  std::map<std::string, ParticipantTex> participantTextures_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   ComPtrLite<ID3D11Texture2D> overlayTexture_;

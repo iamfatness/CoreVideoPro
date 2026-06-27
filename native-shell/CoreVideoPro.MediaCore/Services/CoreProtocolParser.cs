@@ -148,6 +148,58 @@ public static class CoreProtocolParser
         }
     }
 
+    public static CoreParticipantSharedTextureEvent? TryParseParticipantSharedTextureEvent(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var root = document.RootElement;
+            if (root.TryGetProperty("id", out _))
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("type", out var typeElement) ||
+                typeElement.GetString() != "participant-shared-texture" ||
+                !root.TryGetProperty("participantId", out var pidElement) ||
+                pidElement.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("texture", out var textureElement))
+            {
+                return null;
+            }
+
+            var participantId = pidElement.GetString() ?? string.Empty;
+            var texture = TryParseProgramSharedTexture(textureElement);
+            if (string.IsNullOrWhiteSpace(participantId) || texture is null)
+            {
+                return null;
+            }
+
+            return new CoreParticipantSharedTextureEvent
+            {
+                Texture = new ParticipantSharedTexture
+                {
+                    ParticipantId = participantId,
+                    SharedHandleHex = texture.SharedHandleHex,
+                    Width = texture.Width,
+                    Height = texture.Height,
+                    Format = texture.Format,
+                    FrameNumber = texture.FrameNumber,
+                },
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public static NativeMediaCoreProgramFramePreview? TryParseProgramFramePreview(JsonElement previewElement)
     {
         if (previewElement.ValueKind != JsonValueKind.Object ||
