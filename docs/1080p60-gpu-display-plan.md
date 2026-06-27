@@ -85,12 +85,31 @@ read the `d3d:`/handle lines to see the first missing step.
   (`_invalidHandles`), so a single early failure wedges it on base64 — also make
   invalidation retry-friendly.
 
-## 60fps cadence (after the GPU path presents)
+## 60fps cadence — DONE so far + the remaining step
 
-- Emit the shared-texture handle every render (decoupled from the base64 preview,
-  which can stay ~10fps as a fallback) — the handle is tiny, so 60fps is cheap.
-- Ensure the compositor renders at 60fps: the catch-up cap in
-  `MediaCore::applyCommands` (currently 2) + the host sync cadence must allow it.
+DONE (2026-06-27): the program now presents the GPU shared texture (sharp 1080p,
+scaled-to-fit, on the UI thread). The shared-texture handle is emitted every
+render and drained at full rate (`pumpSharedTexture`).
+
+REMAINING (frame rate): the core renders the program only when a host command
+arrives (host syncs are ~2-4/s), so the program updates in ~6fps bursts.
+- TRIED AND REVERTED: an autonomous render tick in the `JsonRpcServer` processing
+  loop (`applyCommands({}, dt)` every 16ms). This runs the FULL `renderSyntheticTick`
+  pipeline on the command-processing thread, which **starved RPC command handling —
+  the Zoom join command was delayed and the SDK engine failed to launch.** Do not
+  render on the command thread.
+- CORRECT FIX: a **dedicated render thread** in `MediaCore` that ticks the D3D11
+  compositor + emits the shared-texture handle at 60fps, with the scene/compositor
+  state protected by a mutex shared with the command path (`applyCommand`/
+  `loadSceneGraph`/transforms). Keep the heavy encoder/output/base64-readback on
+  the host-sync path (or a lower-rate path) so only the light GPU render + tiny
+  handle emit run at 60fps. This decouples rendering from command handling so the
+  join is never starved.
+- Also worth measuring: the WinUI present path does two `RunOnUiThread` hops per
+  handle (receive → coordinator → SurfacesChanged → RefreshSurfaceBindings →
+  binding → present) and competes with per-snapshot UI work. If presents are still
+  bursty after the render thread, present on `CompositionTarget.Rendering` (vsync)
+  using the latest handle, decoupled from the surface-binding churn.
 
 ## Verification
 
