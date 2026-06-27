@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using CoreVideoPro.MediaCore.Json;
 using CoreVideoPro.MediaCore.Models;
 
@@ -27,6 +28,10 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private StreamWriter? _stdin;
     private readonly Dictionary<string, TaskCompletionSource<JsonDocument>> _pending = new();
     private Timer? _frameDrainTimer;
+    // Frame/preview/texture handlers run here (off the stdout read loop) so their
+    // UI-thread marshaling can never stall reading — which would back up stdout and
+    // time out every command response. Drop-oldest: preview is latest-wins.
+    private Channel<Action>? _frameDispatch;
     private int _nextId;
     private int _restarts;
     private const int MaxCrashEvents = 20;
@@ -476,15 +481,70 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
         var process = _process;
         _stdin = process.StandardInput;
+
+        // Bounded, drop-oldest queue so a slow/busy UI handler never throttles the
+        // stdout reader (and thus command-response latency).
+        var frameDispatch = Channel.CreateBounded<Action>(new BoundedChannelOptions(8)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true
+        });
+        _frameDispatch = frameDispatch;
+        _ = Task.Run(async () =>
+        {
+            await foreach (var action in frameDispatch.Reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                try { action(); } catch { /* a frame handler must never kill the pump */ }
+            }
+        });
+
         _ = Task.Run(() => ReadStdoutLoopAsync(process));
         _process.ErrorDataReceived += (_, e) =>
         {
             if (!string.IsNullOrWhiteSpace(e.Data))
             {
                 Debug.WriteLine($"[media-core] {e.Data}");
+                WriteCoreLog(e.Data);
             }
         };
         _process.BeginErrorReadLine();
+        WriteCoreLog($"[bridge] media core process started (pid {(_process.HasExited ? -1 : _process.Id)})");
+    }
+
+    private void DispatchFrame(Action action)
+    {
+        // Non-blocking: if the consumer is behind, the bounded channel drops the
+        // oldest frame rather than stalling the stdout reader.
+        _frameDispatch?.Writer.TryWrite(action);
+    }
+
+    private static readonly object CoreLogGate = new();
+    private static string? _coreLogPath;
+
+    private static void WriteCoreLog(string line)
+    {
+        try
+        {
+            _coreLogPath ??= System.IO.Path.Combine(
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                "CoreVideoPro",
+                "media-core.log");
+            var dir = System.IO.Path.GetDirectoryName(_coreLogPath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                System.IO.Directory.CreateDirectory(dir);
+            }
+            var stamped = $"[{System.DateTimeOffset.Now:O}] {line}{System.Environment.NewLine}";
+            lock (CoreLogGate)
+            {
+                System.IO.File.AppendAllText(_coreLogPath, stamped);
+            }
+        }
+        catch
+        {
+            // Best-effort diagnostic logging; never let it disrupt the media-core pipe.
+        }
     }
 
     private async Task ReadStdoutLoopAsync(Process process)
@@ -521,21 +581,24 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             var frameEvent = CoreProtocolParser.TryParseEvent(line);
             if (frameEvent is not null)
             {
-                ZoomVideoFrameReceived?.Invoke(frameEvent.Frame);
+                var frame = frameEvent.Frame;
+                DispatchFrame(() => ZoomVideoFrameReceived?.Invoke(frame));
                 continue;
             }
 
             var previewEvent = CoreProtocolParser.TryParseProgramFramePreviewEvent(line);
             if (previewEvent is not null)
             {
-                ProgramFramePreviewReceived?.Invoke(previewEvent.Preview);
+                var preview = previewEvent.Preview;
+                DispatchFrame(() => ProgramFramePreviewReceived?.Invoke(preview));
                 continue;
             }
 
             var sharedTextureEvent = CoreProtocolParser.TryParseProgramSharedTextureEvent(line);
             if (sharedTextureEvent is not null)
             {
-                ProgramSharedTextureReceived?.Invoke(sharedTextureEvent.Texture);
+                var texture = sharedTextureEvent.Texture;
+                DispatchFrame(() => ProgramSharedTextureReceived?.Invoke(texture));
                 continue;
             }
 
@@ -700,6 +763,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeoutMs ?? _options.RequestTimeoutMs);
+        var requestType = payload.TryGetValue("type", out var typeValue) ? typeValue as string : null;
         await using var registration = timeoutCts.Token.Register(() =>
         {
             lock (_gate)
@@ -707,11 +771,15 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 _pending.Remove(id);
             }
 
-            tcs.TrySetException(new TimeoutException($"media core request {id} timed out."));
+            WriteCoreLog($"[bridge] TIMEOUT id={id} type={requestType} after {timeoutMs ?? _options.RequestTimeoutMs}ms");
+            tcs.TrySetException(new TimeoutException($"media core request {id} ({requestType}) timed out."));
         });
 
         var json = JsonSerializer.Serialize(payload, MediaCoreJson.Options);
-        await _stdinGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // The timeout must cover gate-acquire + write + flush, not just the response
+        // wait. If the core stalls reading stdin (e.g. during a long blocking join),
+        // the OS pipe buffer fills and the write would otherwise block forever.
+        await _stdinGate.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
         try
         {
             try
@@ -727,14 +795,29 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                     throw new InvalidOperationException("Media core is not running.");
                 }
 
-                await stdin.WriteLineAsync(json).ConfigureAwait(false);
-                await stdin.FlushAsync().ConfigureAwait(false);
+                if (requestType == "zoom-join")
+                {
+                    WriteCoreLog($"[bridge] -> id={id} type=zoom-join bytes={json.Length}");
+                }
+
+                await stdin.WriteLineAsync(json.AsMemory(), timeoutCts.Token).ConfigureAwait(false);
+                await stdin.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+
+                if (requestType == "zoom-join")
+                {
+                    WriteCoreLog($"[bridge] sent id={id} type=zoom-join (awaiting core response)");
+                }
             }
-            catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException or OperationCanceledException)
             {
                 lock (_gate)
                 {
                     _pending.Remove(id);
+                }
+
+                if (requestType == "zoom-join")
+                {
+                    WriteCoreLog($"[bridge] write FAILED id={id} type=zoom-join: {ex.GetType().Name}: {ex.Message}");
                 }
 
                 tcs.TrySetException(ex);

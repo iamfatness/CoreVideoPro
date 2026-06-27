@@ -308,8 +308,23 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(JoinActionHint));
     }
 
-    public void RefreshZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot = null)
+    private DateTime _lastEvidenceRefreshUtc = DateTime.MinValue;
+
+    public void RefreshZoomEngineEvidence(NativeMediaCoreStateSnapshot? snapshot = null, bool throttle = false)
     {
+        // The evidence rows carry live counters (frame/byte counts) that change on
+        // every snapshot (~10/s). Rebuilding + re-notifying that often makes a
+        // wrapping row flip height each tick, which flickers the page's scrollbar
+        // and visibly vibrates the layout. It's diagnostic info — coalesce the
+        // snapshot-driven path to ~1/s. Explicit refreshes (user/state actions)
+        // still update immediately.
+        if (throttle && (DateTime.UtcNow - _lastEvidenceRefreshUtc) < TimeSpan.FromMilliseconds(1000))
+        {
+            return;
+        }
+
+        _lastEvidenceRefreshUtc = DateTime.UtcNow;
+
         if (snapshot is not null)
         {
             _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
@@ -684,7 +699,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         MeetingState = ParseMeetingState(snapshot.MeetingState);
         LiveParticipantCount = snapshot.Participants.Count;
-        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
         NotifyMeetingUi();
     }
 
@@ -728,7 +743,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             LiveParticipantCount = participantCount;
         }
 
-        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
         NotifyMeetingUi();
     }
 

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <exception>
 #include <map>
 #include <set>
@@ -668,7 +669,12 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 
   const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
   const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
-  const int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
+  int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
+  // Cap catch-up: when a sync carries a large elapsedMs (UI/transport hiccup),
+  // never render a synchronous storm of frames. A live program only needs the
+  // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
+  // output path into a blocking burst that wedges the processing thread.
+  additionalTicks = std::min(additionalTicks, 2);
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();
   }
@@ -2972,8 +2978,18 @@ void MediaCore::renderSyntheticTick() {
   if (lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
-  enqueueProgramFramePreviewEvent();
-  enqueueProgramSharedTextureEvent();
+  // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
+  // UI thumbnail, but at full render rate (~60fps) the base64 BGRA payloads
+  // saturate stdout and starve RPC command responses (host then times out and
+  // the channel looks dead). Recording/streaming still use the full-rate frame.
+  {
+    const auto nowTp = std::chrono::steady_clock::now();
+    if (nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {  // ~30fps preview
+      enqueueProgramFramePreviewEvent();
+      enqueueProgramSharedTextureEvent();
+      lastFrameEventEmit_ = nowTp;
+    }
+  }
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();
   // Hand real routed audio to the output senders so RTMP carries a real AAC

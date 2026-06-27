@@ -70,6 +70,10 @@ class ZoomEngineRuntime {
   bool readerRunning_ = false;
   bool initialized_ = false;
   bool mediaStarted_ = false;
+  // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
+  // recording-rights request only starts once this is set, so it no longer
+  // fires automatically on meeting join.
+  bool captureRequested_ = false;
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;

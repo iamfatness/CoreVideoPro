@@ -885,6 +885,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<Participant> RoomVideoParticipants { get; private set; }
 
+    // All in-room participants (incl. video-off) for the Sources/Inputs picker.
+    public IReadOnlyList<Participant> RoomParticipantsForInputs { get; private set; } = [];
+
     public IReadOnlyList<Participant> SceneParticipants => RoomVideoParticipants;
 
     public Scene ProgramScene => Scenes.First(s => s.Id == ActiveSceneId);
@@ -1922,11 +1925,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _surfaces.SetPreviewParticipant(SelectedParticipantId);
                 EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
                 Settings.RefreshSdkReadiness();
-                await SyncActiveSceneAsync().ConfigureAwait(false);
+                try
+                {
+                    await SyncActiveSceneAsync().ConfigureAwait(false);
+                }
+                catch (MediaCoreSyncInFlightException)
+                {
+                    // Transient backpressure: another sync was already running when
+                    // the operator flipped Engine On. Capture is enabled and the
+                    // spine/periodic sync will apply the active scene shortly — this
+                    // is NOT a toggle failure, so keep capture on.
+                    EngineStatus = $"Capture live — {_bridge.ProfileSummary}";
+                }
                 RefreshSurfaceBindings();
                 RefreshTransportState();
                 ToggleRecordingCommand.NotifyCanExecuteChanged();
             }
+        }
+        catch (MediaCoreSyncInFlightException)
+        {
+            // Backpressure during toggle — non-fatal; leave capture enabled.
+            EngineStatus = "Capture starting…";
+            RefreshTransportState();
+            ToggleRecordingCommand.NotifyCanExecuteChanged();
         }
         catch (Exception ex)
         {
@@ -6092,6 +6113,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Recording = Recording,
                 SelectedBreakoutRoomId = _currentRoomId,
                 EngineRunning = ZoomCaptureSubscribed,
+                // Explicit opt-in: raw capture (and the Zoom recording-rights
+                // request) only starts when the operator turns Engine On.
+                StartCapture = ZoomCaptureSubscribed,
                 OAuthSignedIn = Settings.ZoomOAuthSignedIn,
                 SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
                 SdkRuntimeReady = !Settings.SdkIsBlocked
@@ -7354,6 +7378,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var mapped = ParticipantMapper.ToParticipants(participants);
         RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
+        RoomParticipantsForInputs = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
         CurrentRoomLabel = _currentRoomName;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
         OnPropertyChanged(nameof(RoomVideoParticipants));
@@ -8298,7 +8323,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
         foreach (var editor in ShowInputEditors)
         {
-            editor.RefreshSourceOptions(RoomVideoParticipants, CaptureDevices, AudioCaptureDevices, mediaAssets);
+            editor.RefreshSourceOptions(RoomParticipantsForInputs, CaptureDevices, AudioCaptureDevices, mediaAssets);
         }
 
         OnPropertyChanged(nameof(ShowInputSummary));

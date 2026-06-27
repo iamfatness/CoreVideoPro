@@ -9,8 +9,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <execution>
 #include <utility>
+#include <vector>
 
 namespace corevideo::modules {
 namespace {
@@ -49,10 +52,12 @@ void i420ToRgbaPixel(
   const int c = y - 16;
   const int d = u - 128;
   const int e = v - 128;
-  rgba[0] = clampByte((298 * c + 409 * e + 128) >> 8);
-  rgba[1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8);
-  rgba[2] = clampByte((298 * c + 516 * d + 128) >> 8);
-  rgba[3] = 255;
+  // Output BGRA (blue first) to match the compositor/preview pixel order. Emitting
+  // RGBA here swaps red and blue on display (skin tones render blue).
+  rgba[0] = clampByte((298 * c + 516 * d + 128) >> 8);          // B
+  rgba[1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8); // G
+  rgba[2] = clampByte((298 * c + 409 * e + 128) >> 8);          // R
+  rgba[3] = 255;                                                 // A
 }
 
 std::string commandLine(Json::Object object) {
@@ -194,6 +199,14 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
     }
   }
 
+  // Diagnostic: surface every control/status/error event from the engine on the
+  // core's stderr (captured to media-core.log). Exclude high-rate frame/audio
+  // events so the log stays readable while debugging join/auth failures.
+  if (event.kind != ZoomEngineEventKind::Frame && event.kind != ZoomEngineEventKind::Audio) {
+    std::fprintf(stderr, "[zoom-engine] %s\n", line.c_str());
+    std::fflush(stderr);
+  }
+
   return event;
 }
 
@@ -243,7 +256,25 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   }
 
   const auto* bytes = static_cast<const std::uint8_t*>(sharedMemory);
-  const std::uint8_t* yPlane = bytes + sizeof(ShmFrameHeader);
+  // Copy the I420 planes out FAST, then validate the sequence, then convert from
+  // the local copy. The BGRA conversion is far slower than a memcpy; converting
+  // directly from shared memory lets the engine overwrite the frame mid-convert,
+  // and the tear check then rejects it — at higher resolutions that loses almost
+  // every frame (video appears frozen / very slow). Copy-then-convert keeps the
+  // tear window down to the memcpy only.
+  const std::size_t planeBytes = yLength + (yLength / 4) * 2;
+  std::vector<std::uint8_t> planes(planeBytes);
+  std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
+
+  ShmFrameHeader afterCopy{};
+  std::memcpy(&afterCopy, sharedMemory, sizeof(afterCopy));
+  if (afterCopy.sequence != before.sequence || (afterCopy.sequence & 1u) != 0 ||
+      afterCopy.width != before.width || afterCopy.height != before.height ||
+      afterCopy.y_len != before.y_len) {
+    return std::nullopt;  // torn during copy — caller retries next tick
+  }
+
+  const std::uint8_t* yPlane = planes.data();
   const std::uint8_t* uPlane = yPlane + yLength;
   const std::uint8_t* vPlane = uPlane + yLength / 4;
 
@@ -265,7 +296,15 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   frame.frameId = before.sequence;
   frame.rgba.resize(static_cast<std::size_t>(outputWidth) * static_cast<std::size_t>(outputHeight) * 4);
 
+  // Convert rows in parallel: at 1080p the per-pixel YUV->BGRA is the throughput
+  // bottleneck on a single thread (capped fps/res). Rows are independent and
+  // write disjoint output, so parallelizing across cores lets full-res frames
+  // keep up at high frame rates.
+  std::vector<std::uint32_t> rowIndices(outputHeight);
   for (std::uint32_t y = 0; y < outputHeight; ++y) {
+    rowIndices[y] = y;
+  }
+  std::for_each(std::execution::par, rowIndices.begin(), rowIndices.end(), [&](std::uint32_t y) {
     const std::uint32_t sourceY = (std::min)(before.height - 1, static_cast<std::uint32_t>(
         (static_cast<std::uint64_t>(y) * before.height) / outputHeight));
     for (std::uint32_t x = 0; x < outputWidth; ++x) {
@@ -274,14 +313,7 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
       auto* rgba = frame.rgba.data() + (static_cast<std::size_t>(y) * outputWidth + x) * 4;
       i420ToRgbaPixel(yPlane, uPlane, vPlane, before.width, sourceX, sourceY, rgba);
     }
-  }
-
-  ShmFrameHeader after{};
-  std::memcpy(&after, sharedMemory, sizeof(after));
-  if (after.sequence != before.sequence || (after.sequence & 1u) != 0 || after.width != before.width ||
-      after.height != before.height || after.y_len != before.y_len) {
-    return std::nullopt;
-  }
+  });
 
   return frame;
 }

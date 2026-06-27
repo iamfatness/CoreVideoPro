@@ -6,7 +6,7 @@ const integrationFiles = [
 ];
 
 export default defineConfig({
-  base: process.env.VITE_DEMO_BASE ?? "/",
+  base: "/",
   plugins: [react()],
   test: {
     name: "integration",

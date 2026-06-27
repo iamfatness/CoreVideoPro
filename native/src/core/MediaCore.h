@@ -6,6 +6,7 @@
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -304,6 +305,9 @@ class MediaCore {
   std::vector<std::string> mediaPlaybackWarnings_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
+  // Throttles base64 program-preview/shared-texture stdout events so they don't
+  // flood the RPC channel and starve command responses (see JsonRpcServer::run).
+  std::chrono::steady_clock::time_point lastFrameEventEmit_{};
 };
 
 }  // namespace corevideo::core

@@ -20,6 +20,12 @@ public static class ZoomMediaSpinePayloadBuilder
         public bool EngineRunning { get; init; }
         public bool OAuthSignedIn { get; init; }
         public bool SdkRuntimeReady { get; init; } = true;
+        /// <summary>
+        /// Operator opted in to raw capture (Studio "Engine On" toggle). The native
+        /// engine only starts raw recording / requests recording rights when true,
+        /// so it no longer fires automatically on meeting join.
+        /// </summary>
+        public bool StartCapture { get; init; }
     }
 
     public static Dictionary<string, object?> Build(BuildInput input)
@@ -50,6 +56,7 @@ public static class ZoomMediaSpinePayloadBuilder
             ["readiness"] = readiness,
             ["participants"] = participants,
             ["subscriptions"] = subscriptions,
+            ["startCapture"] = input.StartCapture,
             ["blocked"] = blocked,
             ["warnings"] = warnings,
             ["summary"] = summary

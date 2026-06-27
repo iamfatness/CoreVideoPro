@@ -1,7 +1,14 @@
 #include "rpc/JsonRpcServer.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <deque>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace corevideo::rpc {
 namespace {
@@ -150,24 +157,154 @@ Json JsonRpcServer::handle(const Json& request) {
 }
 
 void JsonRpcServer::run(std::istream& input, std::ostream& output) {
-  output << handshake().stringify() << '\n';
-  output.flush();
+  // Decoupled I/O: a dedicated reader thread keeps draining stdin (so the host's
+  // writes never block on a full OS pipe), a dedicated writer thread serializes
+  // all stdout (so a slow consumer can never stall processing), and this thread
+  // owns all command handling (preserving single-threaded access to mediaCore_).
+  // Previously this was one synchronous read->handle->write->flush loop, so a
+  // blocking handler or a full stdout buffer would stop reading stdin and
+  // deadlock the entire host<->core channel.
+  //
+  // CRITICAL: untie the input stream from the output stream. By default std::cin
+  // is tied to std::cout, so every getline() first flushes cout. When stdout is
+  // backed up (host reading slower than the frame stream), the reader thread's
+  // getline would block on that flush and stop draining stdin — re-creating the
+  // deadlock this threading exists to prevent. sync_with_stdio(false) also drops
+  // the C stdio sync overhead on this hot path.
+  std::ios_base::sync_with_stdio(false);
+  input.tie(nullptr);
+  // Two output lanes on one writer: command responses (high priority) are never
+  // stuck behind the high-rate frame-preview stream (low priority, bounded and
+  // droppable). Frame events are pumped on a throttled cadence off the per-command
+  // path so command throughput stays high even while the compositor streams at
+  // 60fps. Sharing one stdout channel without this lets frame data starve RPC
+  // responses, so the host's commands time out and the channel appears dead.
+  constexpr std::size_t kMaxPendingFrameEvents = 180;  // ~ a few seconds of preview
+  constexpr auto kFramePumpInterval = std::chrono::milliseconds(33);  // ~30fps
 
-  std::string line;
-  while (std::getline(input, line)) {
-    if (line.empty()) {
-      continue;
+  std::mutex outMx;
+  std::condition_variable outCv;
+  std::deque<std::string> outHi;  // command responses / failures
+  std::deque<std::string> outLo;  // frame-preview events (droppable)
+  std::atomic<bool> stopping{false};
+
+  auto enqueueResponse = [&](std::string message) {
+    {
+      std::lock_guard<std::mutex> lock(outMx);
+      outHi.push_back(std::move(message));
     }
-    std::string error;
-    auto request = Json::parse(line, &error);
-    if (!request) {
-      output << failure(Json("unknown"), "protocol-error", error).stringify() << '\n';
-      output.flush();
-      continue;
+    outCv.notify_one();
+  };
+  auto enqueueFrame = [&](std::string message) {
+    {
+      std::lock_guard<std::mutex> lock(outMx);
+      if (outLo.size() >= kMaxPendingFrameEvents) {
+        outLo.pop_front();  // drop oldest frame; preview is latest-wins
+      }
+      outLo.push_back(std::move(message));
     }
-    output << handle(*request).stringify() << '\n';
-    flushFrameEvents(output);
-    output.flush();
+    outCv.notify_one();
+  };
+
+  std::thread writer([&] {
+    std::unique_lock<std::mutex> lock(outMx);
+    for (;;) {
+      outCv.wait(lock, [&] { return !outHi.empty() || !outLo.empty() || stopping.load(); });
+      while (!outHi.empty() || !outLo.empty()) {
+        std::string message;
+        if (!outHi.empty()) {
+          message = std::move(outHi.front());
+          outHi.pop_front();
+        } else {
+          message = std::move(outLo.front());
+          outLo.pop_front();
+        }
+        lock.unlock();
+        output << message << '\n';
+        output.flush();
+        lock.lock();
+      }
+      if (stopping.load() && outHi.empty() && outLo.empty()) {
+        break;
+      }
+    }
+  });
+
+  std::mutex inMx;
+  std::condition_variable inCv;
+  std::deque<std::string> inQ;
+  std::atomic<bool> inputClosed{false};
+
+  std::thread reader([&] {
+    std::string line;
+    while (std::getline(input, line)) {
+      {
+        std::lock_guard<std::mutex> lock(inMx);
+        inQ.push_back(std::move(line));
+      }
+      inCv.notify_one();
+    }
+    inputClosed.store(true);
+    inCv.notify_one();
+  });
+
+  enqueueResponse(handshake().stringify());
+
+  auto pumpFrameEvents = [&] {
+    for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
+      enqueueFrame(event.stringify());
+    }
+    for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
+      enqueueFrame(event.stringify());
+    }
+    for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+      enqueueFrame(event.stringify());
+    }
+  };
+
+  auto lastPump = std::chrono::steady_clock::now();
+  for (;;) {
+    std::string line;
+    bool haveLine = false;
+    {
+      std::unique_lock<std::mutex> lock(inMx);
+      inCv.wait_for(lock, std::chrono::milliseconds(10),
+                    [&] { return !inQ.empty() || inputClosed.load(); });
+      if (!inQ.empty()) {
+        line = std::move(inQ.front());
+        inQ.pop_front();
+        haveLine = true;
+      } else if (inputClosed.load()) {
+        break;
+      }
+    }
+
+    if (haveLine && !line.empty()) {
+      std::string error;
+      auto request = Json::parse(line, &error);
+      if (!request) {
+        enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
+      } else {
+        enqueueResponse(handle(*request).stringify());
+      }
+    }
+
+    // Pump frame events on a throttled cadence, NOT once per command, so a flood
+    // of commands is serviced at full speed instead of being paced by frame I/O.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastPump >= kFramePumpInterval) {
+      pumpFrameEvents();
+      lastPump = now;
+    }
+  }
+
+  stopping.store(true);
+  outCv.notify_one();
+  if (reader.joinable()) {
+    reader.join();
+  }
+  if (writer.joinable()) {
+    writer.join();
   }
 }
 

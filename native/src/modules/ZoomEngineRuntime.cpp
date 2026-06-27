@@ -56,6 +56,37 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
+// Nearest-neighbor downscale of a BGRA buffer to fit within maxW x maxH (keeping
+// aspect). Used to keep the base64 multiview-tile payload small: the compositor
+// gets the full-res frame in-process, but streaming a full 720p BGRA frame as
+// base64 over stdout per participant per frame is a multi-MB firehose that
+// saturates the pipe and reader thread (video trickles through = slow motion).
+std::vector<std::uint8_t> downscaleBgraThumbnail(
+    const std::vector<std::uint8_t>& src, int srcW, int srcH, int maxW, int maxH,
+    int& outW, int& outH) {
+  outW = srcW;
+  outH = srcH;
+  if (srcW > maxW || srcH > maxH) {
+    const double scale = (std::min)(static_cast<double>(maxW) / srcW, static_cast<double>(maxH) / srcH);
+    outW = (std::max)(1, static_cast<int>(srcW * scale));
+    outH = (std::max)(1, static_cast<int>(srcH * scale));
+  }
+  if (outW == srcW && outH == srcH) {
+    return src;
+  }
+  std::vector<std::uint8_t> dst(static_cast<std::size_t>(outW) * outH * 4);
+  for (int y = 0; y < outH; ++y) {
+    const int sy = (std::min)(srcH - 1, y * srcH / outH);
+    for (int x = 0; x < outW; ++x) {
+      const int sx = (std::min)(srcW - 1, x * srcW / outW);
+      const std::uint8_t* s = &src[(static_cast<std::size_t>(sy) * srcW + sx) * 4];
+      std::uint8_t* d = &dst[(static_cast<std::size_t>(y) * outW + x) * 4];
+      d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+    }
+  }
+  return dst;
+}
+
 constexpr double kFrameStaleAfterMs = 1000.0;
 
 }  // namespace
@@ -239,7 +270,15 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  (void)ensureMediaStartedLocked();
+  // Raw capture (StartRawRecording / recording-privilege request) must wait for an
+  // explicit operator action — the Studio "Engine On" toggle sets startCapture.
+  // Previously this started unconditionally on the first spine sync after join,
+  // which fired the Zoom recording-rights request the moment the meeting joined.
+  const rpc::Json* startCapture = payload.get("startCapture");
+  captureRequested_ = startCapture != nullptr && startCapture->asBool(false);
+  if (captureRequested_) {
+    (void)ensureMediaStartedLocked();
+  }
   const rpc::Json* subscriptions = payload.get("subscriptions");
   if (process_ && process_->running() && subscriptions && subscriptions->isArray()) {
     for (const auto& request : subscriptions->asArray()) {
@@ -356,7 +395,11 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
   std::lock_guard<std::mutex> lock(mutex_);
   state_.apply(event);
   if (event.kind == ZoomEngineEventKind::Joined) {
-    (void)ensureMediaStartedLocked();
+    // Only auto-start raw media on join if the operator already enabled capture
+    // (Engine On). Otherwise wait — syncSpine starts it when startCapture is set.
+    if (captureRequested_) {
+      (void)ensureMediaStartedLocked();
+    }
   }
   if (event.kind == ZoomEngineEventKind::Frame) {
     enqueueFrameEventLocked(event);
@@ -495,7 +538,10 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     return;
   }
   const auto closeRegion = [&region]() { shm_region_destroy(region); };
-  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 320, 180);
+  // Full resolution (up to 1080p) for the compositor — the GPU composites and
+  // shares at 1080p, so the participant source should match. The convert is
+  // parallelized (readZoomEngineI420FrameSnapshot) so high res stays smooth.
+  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 1920, 1080);
   closeRegion();
   if (!frame) {
     state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory snapshot was incomplete, stale, or malformed");
@@ -521,16 +567,23 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
 
   const auto observedAtMs = runtimeElapsedMs();
 
+  // The compositor already has the full-res frame (latestDecodedFrames_ above).
+  // Stream only a small thumbnail as base64 for the WinUI multiview tiles so the
+  // stdout payload stays tiny — full-res here causes a multi-MB-per-frame firehose.
+  int thumbW = 0;
+  int thumbH = 0;
+  const auto thumb = downscaleBgraThumbnail(
+      frame->rgba, static_cast<int>(frame->width), static_cast<int>(frame->height), 320, 180, thumbW, thumbH);
   pendingFrameEvents_.emplace_back(rpc::Json::Object{
       {"type", "zoom-video-frame"},
       {"frame",
        rpc::Json::Object{
            {"participantId", frame->participantId},
-           {"width", static_cast<int>(frame->width)},
-           {"height", static_cast<int>(frame->height)},
+           {"width", thumbW},
+           {"height", thumbH},
            {"frameId", static_cast<int>(frame->frameId)},
            {"observedAtMs", observedAtMs},
-           {"bgraBase64", base64Encode(frame->rgba.data(), frame->rgba.size())},
+           {"bgraBase64", base64Encode(thumb.data(), thumb.size())},
        }},
   });
 }

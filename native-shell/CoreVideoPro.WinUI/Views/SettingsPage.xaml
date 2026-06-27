@@ -43,8 +43,12 @@
         </Style>
     </UserControl.Resources>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="16" MaxWidth="760" Padding="0,0,8,16">
+    <!-- Scrollbar reserved (not Auto) + left-anchored content so the page never
+         re-centers when the vertical scrollbar toggles. With Auto + centered
+         MaxWidth, live telemetry nudging the content height flickers the
+         scrollbar, shifting the centered panel left/right ("vibrating"). -->
+    <ScrollViewer VerticalScrollBarVisibility="Visible" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="16" MaxWidth="760" HorizontalAlignment="Left" Margin="24,0,0,0" Padding="0,0,8,16">
             <Border Style="{StaticResource SettingsSectionBorder}">
                 <StackPanel Spacing="14">
                     <TextBlock Text="Zoom connection" Style="{StaticResource StudioSectionTitle}" />
