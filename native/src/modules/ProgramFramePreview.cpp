@@ -897,6 +897,27 @@ rpc::Json programSharedTextureEvent(const ProgramFrame& frame) {
   };
 }
 
+std::vector<rpc::Json> participantSharedTextureEvents(const ProgramFrame& frame) {
+  std::vector<rpc::Json> events;
+  for (const auto& pt : frame.participantSharedTextures) {
+    if (pt.participantId.empty() || pt.sharedHandleHex.empty() || pt.width <= 0 || pt.height <= 0) {
+      continue;
+    }
+    events.push_back(rpc::Json::Object{
+        {"type", "participant-shared-texture"},
+        {"participantId", pt.participantId},
+        {"texture", rpc::Json::Object{
+                        {"sharedHandleHex", pt.sharedHandleHex},
+                        {"width", pt.width},
+                        {"height", pt.height},
+                        {"format", pt.format.empty() ? "B8G8R8A8_UNORM" : pt.format},
+                        {"frameNumber", static_cast<double>(pt.frameNumber > 0 ? pt.frameNumber : frame.frameNumber)},
+                    }},
+    });
+  }
+  return events;
+}
+
 rpc::Json programFramePreviewJson(const ProgramFrame& frame) {
   if (frame.preview.width <= 0 || frame.preview.height <= 0 || frame.preview.bgra.empty()) {
     return nullptr;

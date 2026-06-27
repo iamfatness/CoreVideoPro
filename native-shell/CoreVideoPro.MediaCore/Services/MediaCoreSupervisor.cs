@@ -53,6 +53,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
+    public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
 
     public MediaCoreHealth Health
     {
@@ -604,6 +605,16 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 // and the program would never present the GPU surface.
                 var texture = sharedTextureEvent.Texture;
                 try { ProgramSharedTextureReceived?.Invoke(texture); } catch { }
+                continue;
+            }
+
+            var participantTextureEvent = CoreProtocolParser.TryParseParticipantSharedTextureEvent(line);
+            if (participantTextureEvent is not null)
+            {
+                // Per-participant GPU texture handle for the multiview tiles — same
+                // low-rate, light handler as the program texture; invoke directly.
+                var participantTexture = participantTextureEvent.Texture;
+                try { ParticipantSharedTextureReceived?.Invoke(participantTexture); } catch { }
                 continue;
             }
 

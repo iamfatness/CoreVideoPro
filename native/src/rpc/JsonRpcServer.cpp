@@ -286,6 +286,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
+        for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
@@ -397,6 +400,9 @@ void JsonRpcServer::flushFrameEvents(std::ostream& output) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+    output << event.stringify() << '\n';
+  }
+  for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
     output << event.stringify() << '\n';
   }
 }

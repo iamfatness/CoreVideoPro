@@ -83,6 +83,8 @@ bool blitVideoFrameLayerClipped(
 
 [[nodiscard]] rpc::Json programSharedTextureEvent(const ProgramFrame& frame);
 
+[[nodiscard]] std::vector<rpc::Json> participantSharedTextureEvents(const ProgramFrame& frame);
+
 [[nodiscard]] rpc::Json programFramePreviewJson(const ProgramFrame& frame);
 
 [[nodiscard]] rpc::Json programFramePreviewEvent(const ProgramFrame& frame);

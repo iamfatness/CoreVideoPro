@@ -102,6 +102,19 @@ struct ProgramFrameSharedTexture {
   int64_t frameNumber = 0;
 };
 
+// Per-participant GPU shared texture for the multiview tiles — same keyed-mutex
+// shared-handle mechanism as the program texture, but one per participant so the
+// WinUI tiles present on the GPU instead of decoding base64 thumbnails on the UI
+// thread.
+struct ParticipantSharedTexture {
+  std::string participantId;
+  std::string sharedHandleHex;
+  int width = 0;
+  int height = 0;
+  std::string format = "B8G8R8A8_UNORM";
+  int64_t frameNumber = 0;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -116,6 +129,7 @@ struct ProgramFrame {
   std::vector<std::string> warnings;
   ProgramFramePreviewPixels preview;
   ProgramFrameSharedTexture sharedTexture;
+  std::vector<ParticipantSharedTexture> participantSharedTextures;
 };
 
 struct CompositorLayerRect {

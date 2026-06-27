@@ -22,6 +22,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
+        _supervisor.ParticipantSharedTextureReceived += texture => ParticipantSharedTextureReceived?.Invoke(texture);
     }
 
     public event Action<MediaCoreHealth>? HealthChanged;
@@ -31,6 +32,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
+    public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
 
     public MediaCoreHealth Health => _supervisor.Health;
 

@@ -33,6 +33,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
 
@@ -91,6 +92,7 @@ class MediaCore {
   void renderSyntheticTick(bool videoOnly = false);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
+  void enqueueParticipantSharedTextureEvents();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
@@ -314,6 +316,7 @@ class MediaCore {
   std::vector<std::string> mediaPlaybackWarnings_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
+  std::vector<rpc::Json> pendingParticipantSharedTextureEvents_;
   // Throttles base64 program-preview/shared-texture stdout events so they don't
   // flood the RPC channel and starve command responses (see JsonRpcServer::run).
   std::chrono::steady_clock::time_point lastFrameEventEmit_{};

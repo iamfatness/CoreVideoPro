@@ -15,6 +15,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private readonly object _gate = new();
     private readonly Dictionary<string, FrameRateTracker> _trackers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VideoSurfaceState> _participantSurfaces = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SharedTextureHandle> _participantSharedHandles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VideoSurfaceState> _captureDeviceSurfaces = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ZoomVideoFrame> _pendingFrames = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastUiUpdateMs = new(StringComparer.Ordinal);
@@ -71,6 +72,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                     var surface = _participantSurfaces.TryGetValue(key, out var existing)
                         ? existing
                         : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, key, participant.Name);
+                    // Prefer the participant's GPU shared texture (smooth multiview)
+                    // over the base64 thumbnail when available.
+                    if (_participantSharedHandles.TryGetValue(key, out var gpuHandle) && gpuHandle.IsValid)
+                    {
+                        surface = surface.WithSharedHandle(gpuHandle);
+                    }
                     return new ParticipantSurfaceTile
                     {
                         Participant = participant,
@@ -158,6 +165,14 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         var trackerKey = ParticipantKey(frame.ParticipantId);
         lock (_gate)
         {
+            // If this participant has a live GPU shared texture, the tile presents
+            // from it on the GPU — skip the base64 decode + per-frame NotifyChanged
+            // churn entirely (that UI-thread work was the multiview bottleneck).
+            if (_participantSharedHandles.TryGetValue(trackerKey, out var gpuHandle) && gpuHandle.IsValid)
+            {
+                return;
+            }
+
             if (_lastAppliedFrameId.TryGetValue(trackerKey, out var appliedFrameId) &&
                 frame.FrameId <= appliedFrameId &&
                 !_pendingFrames.ContainsKey(trackerKey))
@@ -552,6 +567,48 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             Format = texture.Format,
             FrameNumber = texture.FrameNumber
         };
+
+    // Per-participant GPU shared texture for the multiview tiles. The handle value is
+    // stable (the core reuses the texture), so only refresh bindings when it changes;
+    // the per-tile VideoSurfaceHost re-presents the latest content every vsync.
+    public void OnParticipantSharedTexture(ParticipantSharedTexture texture)
+    {
+        if (texture is null || !texture.IsValid)
+        {
+            return;
+        }
+
+        var handle = new SharedTextureHandle
+        {
+            NtHandle = CoreProtocolParser.ParseSharedHandleHex(texture.SharedHandleHex),
+            Width = texture.Width,
+            Height = texture.Height,
+            Format = texture.Format,
+            FrameNumber = texture.FrameNumber
+        };
+        if (!handle.IsValid)
+        {
+            return;
+        }
+
+        var key = ParticipantKey(texture.ParticipantId);
+        bool structuralChange;
+        lock (_gate)
+        {
+            var previous = _participantSharedHandles.TryGetValue(key, out var existingHandle) ? existingHandle.NtHandle : 0;
+            _participantSharedHandles[key] = handle;
+            var surface = _participantSurfaces.TryGetValue(key, out var existing)
+                ? existing
+                : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, key, texture.ParticipantId);
+            _participantSurfaces[key] = surface.WithSharedHandle(handle);
+            structuralChange = previous != handle.NtHandle;
+        }
+
+        if (structuralChange)
+        {
+            NotifyChanged();
+        }
+    }
 
     private void NotifyChanged() => SurfacesChanged?.Invoke();
 

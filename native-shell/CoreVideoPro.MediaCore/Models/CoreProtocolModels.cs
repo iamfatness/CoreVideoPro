@@ -54,6 +54,28 @@ public sealed class CoreProgramSharedTextureEvent
     public required ProgramSharedTexture Texture { get; init; }
 }
 
+public sealed class ParticipantSharedTexture
+{
+    public string ParticipantId { get; init; } = string.Empty;
+    public string SharedHandleHex { get; init; } = string.Empty;
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string Format { get; init; } = "B8G8R8A8_UNORM";
+    public int FrameNumber { get; init; }
+
+    public bool IsValid =>
+        !string.IsNullOrWhiteSpace(ParticipantId) &&
+        !string.IsNullOrWhiteSpace(SharedHandleHex) &&
+        Width > 0 &&
+        Height > 0;
+}
+
+public sealed class CoreParticipantSharedTextureEvent
+{
+    public string Type => "participant-shared-texture";
+    public required ParticipantSharedTexture Texture { get; init; }
+}
+
 public sealed class CoreError
 {
     public required string Code { get; init; }

@@ -866,6 +866,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
+        _bridge.ParticipantSharedTextureReceived += OnParticipantSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged += OnSurfacesChanged;
 
@@ -9626,6 +9627,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
+        _bridge.ParticipantSharedTextureReceived -= OnParticipantSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged -= OnSurfacesChanged;
         SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
@@ -9722,6 +9724,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         RunOnUiThread(() => _surfaces.OnProgramSharedTexture(texture));
     }
+
+    // Per-participant GPU texture handle for the multiview tiles. Marshal to the UI
+    // thread (touches the SwapChainPanel/surface state for the tile's VideoSurfaceHost).
+    private void OnParticipantSharedTextureReceived(ParticipantSharedTexture texture) =>
+        RunOnUiThread(() => _surfaces.OnParticipantSharedTexture(texture));
 
     private sealed record LowerThirdSource(
         string SourceId,
