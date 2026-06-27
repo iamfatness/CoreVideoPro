@@ -663,9 +663,19 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
+  const auto tCmd0 = std::chrono::steady_clock::now();
   for (const auto& command : commands) {
+    const auto ci0 = std::chrono::steady_clock::now();
     (void)applyCommand(command);
+    const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - ci0)
+                         .count();
+    if (cms >= 10) {
+      std::fprintf(stderr, "[cmd] '%s' %lldms\n", command.getString("type").c_str(),
+                   static_cast<long long>(cms));
+    }
   }
+  const auto tCmd1 = std::chrono::steady_clock::now();
 
   const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
   const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
@@ -678,7 +688,19 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();
   }
-  return sessionState();
+  const auto tRender = std::chrono::steady_clock::now();
+  auto state = sessionState();
+  const auto tState = std::chrono::steady_clock::now();
+
+  const auto cmdMs = std::chrono::duration_cast<std::chrono::milliseconds>(tCmd1 - tCmd0).count();
+  const auto renderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRender - tCmd1).count();
+  const auto stateMs = std::chrono::duration_cast<std::chrono::milliseconds>(tState - tRender).count();
+  if (cmdMs + renderMs + stateMs >= 80) {
+    std::fprintf(stderr, "[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
+                 commands.size(), static_cast<long long>(cmdMs), additionalTicks,
+                 static_cast<long long>(renderMs), static_cast<long long>(stateMs));
+  }
+  return state;
 }
 
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
@@ -1880,10 +1902,20 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   }
 
   const size_t windowed = programMeterL_.size();
-  programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
+  // Momentary (400 ms) / short-term (3 s) are single-pass K-weighted RMS; bound
+  // momentary to its 400 ms window so it isn't scanning the full 3 s buffer.
+  const size_t momentarySamples = std::min(windowed, static_cast<size_t>(rate * 0.4));
+  const size_t momentaryOffset = windowed - momentarySamples;
+  programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data() + momentaryOffset,
+                                                        programMeterR_.data() + momentaryOffset, momentarySamples, rate);
   programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
-  programTruePeakDbfs_ = std::max(modules::computeTruePeakDbfs(programMeterL_.data(), windowed, 4),
-                                  modules::computeTruePeakDbfs(programMeterR_.data(), windowed, 4));
+  // True peak uses 4x oversampling (a polyphase FIR per sample). Re-scanning the
+  // full 3 s window every tick costs ~240ms and was starving the 60fps render —
+  // oversample only THIS chunk and hold a slowly-decaying peak, which is what a
+  // true-peak meter displays anyway.
+  const double chunkTruePeak = std::max(modules::computeTruePeakDbfs(chunkL.data(), frames, 4),
+                                        modules::computeTruePeakDbfs(chunkR.data(), frames, 4));
+  programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
 }
 
@@ -2888,12 +2920,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // device/PCM work and (for outputs) blocking I/O. Skip them on the light
   // display-only tick; they run on the full host-sync tick.
   if (!videoOnly) {
+  const auto tAudioBlock0 = std::chrono::steady_clock::now();
   if (modules_.mediaFrames) {
     auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(renderPlan.layers, frameTimestampMs);
     audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
   }
 
+  const auto tMix0 = std::chrono::steady_clock::now();
   mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
+  const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
+  if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), audioFrames.size());
   // Mix the routing-matrix crosspoints over real PCM into program/ISO/aux bus
   // taps. Each polled audio frame is a source; its channel strip (gain/pan/
   // mute/solo) comes from the synced participant mix and the synced routing
@@ -2926,7 +2962,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     for (const auto& send : audioRoutingSends_) {
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
     }
+    const auto tMrb0 = std::chrono::steady_clock::now();
     routedBusPcm_ = modules::mixRoutedBuses(routedSources, crosspoints);
+    const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
+    if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), audioRoutingSends_.size());
     // Apply each bus's insert chain to its summed PCM so inserts act on samples,
     // not just routing state. The per-bus insert list is taken from the routing
     // sends, matching the routing-matrix snapshot's busProcessing view.
@@ -2937,12 +2976,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
           busInserts[send.busId] = send.busPluginInserts;
         }
       }
+      const auto tBic0 = std::chrono::steady_clock::now();
       for (auto& [busId, pcm] : routedBusPcm_) {
         const auto found = busInserts.find(busId);
         if (found != busInserts.end() && !pcm.empty()) {
           modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
         }
       }
+      const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count();
+      if (bicMs >= 20) std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
   }
 
@@ -2987,6 +3029,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
         !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
     const int meterChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
+  }
+  {
+    const auto audioMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tAudioBlock0).count();
+    if (audioMs >= 30) std::fprintf(stderr, "[audio] full audio block %lldms\n", static_cast<long long>(audioMs));
   }
   }  // end if (!videoOnly): audio mix / routing / monitor / loudness
 
@@ -3046,6 +3092,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     } catch (...) {
     }
   };
+  const auto tOut0 = std::chrono::steady_clock::now();
   try {
     modules_.outputSender->sync(
         session.destinations,
@@ -3055,6 +3102,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
         outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
         outputAudioChannels,
         modules_.mixer->monitorBusSampleRate());
+    const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - tOut0)
+                           .count();
+    if (outMs >= 20) {
+      std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
+                   static_cast<long long>(outMs), session.destinations.size());
+    }
   } catch (const std::exception& ex) {
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
   } catch (...) {

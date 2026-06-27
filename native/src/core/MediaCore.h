@@ -214,6 +214,7 @@ class MediaCore {
   double programLufsShortTerm_ = -120.0;
   double programLufsIntegrated_ = -120.0;
   double programTruePeakDbfs_ = -120.0;
+  std::chrono::steady_clock::time_point lastLoudnessCompute_{};
   modules::ProgramFrame lastProgramFrame_;
   std::string encoderLifecycleStatus_ = "idle";
   std::string encoderLastTransition_ = "Encoder session idle.";

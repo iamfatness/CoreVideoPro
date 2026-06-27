@@ -273,13 +273,34 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    long long frames = 0;
+    long long lockWaitUs = 0;
+    long long renderUs = 0;
+    auto rateStamp = std::chrono::steady_clock::now();
     while (!stopping.load()) {
+      const auto t0 = std::chrono::steady_clock::now();
       {
-        std::lock_guard<std::mutex> lock(coreMutex);
+        std::unique_lock<std::mutex> lock(coreMutex);
+        const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick();
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
+        const auto t2 = std::chrono::steady_clock::now();
+        lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+      }
+      if (++frames >= 120) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        std::fprintf(stderr,
+                     "[render] %.1ffps  lockWait=%.1fms  render=%.1fms  (avg/frame over %lld)\n",
+                     sec > 0 ? frames / sec : 0.0, lockWaitUs / (frames * 1000.0),
+                     renderUs / (frames * 1000.0), frames);
+        frames = 0;
+        lockWaitUs = 0;
+        renderUs = 0;
+        rateStamp = now;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60fps
     }
@@ -315,8 +336,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (!request) {
         enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
       } else {
-        std::lock_guard<std::mutex> lock(coreMutex);
-        enqueueResponse(handle(*request).stringify());
+        const std::string reqType = request->getString("type");
+        std::string responseStr;
+        std::chrono::steady_clock::time_point h0, h1;
+        {
+          std::lock_guard<std::mutex> lock(coreMutex);
+          h0 = std::chrono::steady_clock::now();
+          responseStr = handle(*request).stringify();
+          h1 = std::chrono::steady_clock::now();
+        }
+        const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
+        if (heldMs >= 30) {
+          std::fprintf(stderr, "[cmd] '%s' held core lock %lldms (starves render)\n",
+                       reqType.c_str(), static_cast<long long>(heldMs));
+        }
+        enqueueResponse(responseStr);
       }
     }
 
