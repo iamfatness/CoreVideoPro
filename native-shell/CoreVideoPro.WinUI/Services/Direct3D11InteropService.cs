@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.InteropServices;
 using CoreVideoPro.WinUI;
 using CoreVideoPro.MediaCore.Services;
@@ -86,18 +87,22 @@ public sealed class Direct3D11InteropService : IDisposable
             SharedTextureInteropRules.IsStubHandle(handle.NtHandle) ||
             IsHandleInvalidated(handle.NtHandle))
         {
+            LaunchLog.Write($"d3d: present skip (disposed={_disposed} valid={handle.IsValid} " +
+                $"stub={SharedTextureInteropRules.IsStubHandle(handle.NtHandle)} invalidated={IsHandleInvalidated(handle.NtHandle)}) 0x{handle.NtHandle:X}");
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
 
         if (!EnsureDevice())
         {
+            LaunchLog.Write("d3d: present skip — EnsureDevice failed");
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
 
         if (!EnsureSwapChain(handle.Width, handle.Height))
         {
+            LaunchLog.Write($"d3d: present skip — EnsureSwapChain failed {handle.Width}x{handle.Height}");
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
@@ -112,8 +117,9 @@ public sealed class Direct3D11InteropService : IDisposable
             LaunchLog.Write($"d3d: presented shared handle 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            LaunchLog.Write($"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: {ex.Message}");
             InvalidateSharedHandle(handle.NtHandle);
             ResetSwapChain();
             SetPresentationPath(PresentationPath.CpuFallback);
