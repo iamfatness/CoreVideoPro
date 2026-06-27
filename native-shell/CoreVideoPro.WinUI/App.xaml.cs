@@ -19,6 +19,15 @@ public partial class App : Application
         UnhandledException += (_, e) =>
         {
             LaunchLog.Write($"unhandled: {e.Exception}");
+            // Safety net: if an x:Bind update is ever still raised off the UI thread
+            // it surfaces as COMException RPC_E_WRONG_THREAD (0x8001010E). The bound
+            // value re-applies on the next UI-thread update, so mark it handled and
+            // keep the operator app alive instead of fail-fasting the whole process.
+            if (e.Exception is System.Runtime.InteropServices.COMException com &&
+                unchecked((uint)com.HResult) == 0x8001010Eu)
+            {
+                e.Handled = true;
+            }
         };
     }
 

@@ -813,7 +813,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             () => ZoomCaptureSubscribed,
             _zoomOAuth,
             drainOAuthCallback: () => _zoomOAuthCoordinator.TryDrainPendingCallback(),
-            onMeetingPresenceChanged: () =>
+            // These callbacks update data-bound VM state and may be invoked by the
+            // SettingsViewModel from a background thread; updating a bound property
+            // off the UI thread crashes WinUI (RPC_E_WRONG_THREAD / 0xc000027b).
+            onMeetingPresenceChanged: () => RunOnUiThread(() =>
             {
                 OnPropertyChanged(nameof(CanToggleCapture));
                 OnPropertyChanged(nameof(CanToggleRecording));
@@ -821,18 +824,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 NotifyShowReadinessChanged();
                 ToggleEngineCommand.NotifyCanExecuteChanged();
                 ToggleRecordingCommand.NotifyCanExecuteChanged();
-            },
+            }),
             onBeforeLeaveMeeting: () =>
             {
-                if (ZoomCaptureSubscribed)
+                RunOnUiThread(() =>
                 {
-                    UnsubscribeZoomCapture("Capture off — leaving meeting");
-                }
+                    if (ZoomCaptureSubscribed)
+                    {
+                        UnsubscribeZoomCapture("Capture off — leaving meeting");
+                    }
+                });
 
                 return Task.CompletedTask;
             },
-            zoomStatusChanged: status => ZoomStatus = status,
-            onMeetingJoined: () => ActiveTab = StudioTab.Studio);
+            zoomStatusChanged: status => RunOnUiThread(() => ZoomStatus = status),
+            onMeetingJoined: () => RunOnUiThread(() => ActiveTab = StudioTab.Studio));
         Settings.ConfigureOutputDestinations(BuildSupportBundleOutputDestinations);
         _zoomOAuthCoordinator.SetStatusChangedHandler(message =>
         {

@@ -332,9 +332,15 @@ public sealed partial class SettingsViewModel : ObservableObject
                 snapshot: snapshot);
         }
 
-        _zoomEngineEvidence = BuildZoomEngineEvidence(snapshot ?? _bridge.LastSnapshot);
-        OnPropertyChanged(nameof(ZoomEngineEvidence));
-        RefreshDiagnosticsReadout();
+        // May be called from the background frame-dispatch thread; the evidence is
+        // data-bound, so raise the change notifications on the UI dispatcher. (No-op
+        // marshal when already on the UI thread.)
+        RunOnUiThread(() =>
+        {
+            _zoomEngineEvidence = BuildZoomEngineEvidence(snapshot ?? _bridge.LastSnapshot);
+            OnPropertyChanged(nameof(ZoomEngineEvidence));
+            RefreshDiagnosticsReadout();
+        });
     }
 
     /// <summary>
@@ -344,8 +350,11 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// </summary>
     public void RefreshDiagnosticsReadout()
     {
-        _diagnosticsReadout = BuildDiagnosticsReadout(_bridge.LastSnapshot, _bridge.Health);
-        OnPropertyChanged(nameof(DiagnosticsReadout));
+        RunOnUiThread(() =>
+        {
+            _diagnosticsReadout = BuildDiagnosticsReadout(_bridge.LastSnapshot, _bridge.Health);
+            OnPropertyChanged(nameof(DiagnosticsReadout));
+        });
     }
 
     [RelayCommand]
@@ -488,7 +497,9 @@ public sealed partial class SettingsViewModel : ObservableObject
             existing: _firstFrameEvidence,
             zoomVideoFrame: frame,
             zoomFrameObservedElapsedMs: _firstFrameStopwatch?.Elapsed.TotalMilliseconds);
-        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
+        // Called on the background frame-dispatch thread (~60fps). Throttle so the
+        // bound evidence rebuild runs ~1/s, and it marshals to the UI thread.
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
     }
 
     public void ObserveProgramPreviewFrame(ProgramFramePreview preview)
@@ -496,7 +507,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _firstFrameEvidence = FirstFrameValidationEvidenceBuilder.From(
             existing: _firstFrameEvidence,
             programPreviewFrame: preview);
-        RefreshZoomEngineEvidence(_bridge.LastSnapshot);
+        RefreshZoomEngineEvidence(_bridge.LastSnapshot, throttle: true);
     }
 
     [RelayCommand]
