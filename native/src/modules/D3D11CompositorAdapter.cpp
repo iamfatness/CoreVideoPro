@@ -819,6 +819,7 @@ class D3D11Compositor final : public ICompositor {
     }
 
     sharedTexture_ = {};
+    sharedKeyedMutex_ = {};
     sharedHandle_ = nullptr;
     sharedWidth_ = width;
     sharedHeight_ = height;
@@ -832,7 +833,10 @@ class D3D11Compositor final : public ICompositor {
     textureDesc.SampleDesc.Count = 1;
     textureDesc.Usage = D3D11_USAGE_DEFAULT;
     textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+    // Keyed mutex so the producer (this core) and the consumer (the WinUI shell)
+    // never touch the texture concurrently across processes — unsynchronized
+    // SHARED access caused the GPU to serialize/stall and the render rate to decay.
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, sharedTexture_.put()))) {
       return false;
     }
@@ -849,6 +853,11 @@ class D3D11Compositor final : public ICompositor {
       return false;
     }
 
+    if (FAILED(sharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(sharedKeyedMutex_.put())))) {
+      sharedTexture_ = {};
+      return false;
+    }
+
     sharedHandle_ = handle;
     return true;
   }
@@ -861,7 +870,27 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
 
+    // Producer side: acquire key 0, write, release key 1 (handing the texture to
+    // the consumer). Non-blocking — if the consumer still holds it, keep this
+    // frame in renderTarget_ and copy on the next tick rather than stalling.
+    if (sharedKeyedMutex_) {
+      if (sharedKeyedMutex_->AcquireSync(0, 0) != S_OK) {
+        // Still publish the (unchanged) handle metadata so the consumer keeps the
+        // last frame; just skip this copy.
+        frame.sharedTexture.sharedHandleHex = handleToHex(sharedHandle_);
+        frame.sharedTexture.width = targetWidth_;
+        frame.sharedTexture.height = targetHeight_;
+        frame.sharedTexture.format = "B8G8R8A8_UNORM";
+        frame.sharedTexture.frameNumber = frame.frameNumber;
+        return;
+      }
+    }
     context_->CopyResource(sharedTexture_.get(), renderTarget_.get());
+    if (sharedKeyedMutex_) {
+      // No explicit Flush — the keyed mutex orders the producer's copy before the
+      // consumer's read on the GPU timeline; a per-frame Flush stalls the CPU.
+      sharedKeyedMutex_->ReleaseSync(1);
+    }
     frame.sharedTexture.sharedHandleHex = handleToHex(sharedHandle_);
     frame.sharedTexture.width = targetWidth_;
     frame.sharedTexture.height = targetHeight_;
@@ -905,6 +934,7 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
+  ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   ComPtrLite<ID3D11Texture2D> overlayTexture_;

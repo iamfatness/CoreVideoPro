@@ -40,7 +40,29 @@ public sealed class Direct3D11InteropService : IDisposable
     private ulong _lastPresentedHandle;
     private long _presentCount;
     private ID3D11Texture2D? _cachedSharedTexture;
+    private IDXGIKeyedMutex? _cachedKeyedMutex;
+    private KeyedMutexAcquireSyncThunk? _cachedAcquireSync;
     private ulong _cachedSharedHandle;
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int KeyedMutexAcquireSyncThunk(IntPtr self, ulong key, uint dwMilliseconds);
+
+    // IDXGIKeyedMutex::AcquireSync lives at vtable slot 8:
+    // IUnknown(0-2) + IDXGIObject(3-6) + IDXGIDeviceSubObject.GetDevice(7) + AcquireSync(8).
+    private static KeyedMutexAcquireSyncThunk? BuildAcquireSyncThunk(IDXGIKeyedMutex mutex)
+    {
+        try
+        {
+            var self = mutex.NativePointer;
+            var vtbl = Marshal.ReadIntPtr(self);
+            var fnPtr = Marshal.ReadIntPtr(vtbl, 8 * IntPtr.Size);
+            return Marshal.GetDelegateForFunctionPointer<KeyedMutexAcquireSyncThunk>(fnPtr);
+        }
+        catch
+        {
+            return null;
+        }
+    }
     private nint _cachedDevicePointer;
     private bool _disposed;
     private PresentationPath _path = PresentationPath.Uninitialized;
@@ -118,11 +140,24 @@ public sealed class Direct3D11InteropService : IDisposable
             // crash after a few seconds. Re-open only when the handle value changes.
             if (_cachedSharedTexture is null || _cachedSharedHandle != handle.NtHandle)
             {
+                _cachedKeyedMutex?.Dispose();
                 _cachedSharedTexture?.Dispose();
                 _cachedSharedTexture = _device!.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
+                _cachedKeyedMutex = _cachedSharedTexture.QueryInterface<IDXGIKeyedMutex>();
+                _cachedAcquireSync = BuildAcquireSyncThunk(_cachedKeyedMutex);
                 _cachedSharedHandle = handle.NtHandle;
             }
+            // Consumer side of the keyed mutex: acquire key 1 (the core releases 1
+            // after writing a new frame), non-blocking (0ms) so the UI thread never
+            // stalls. Vortice's AcquireSync returns void and can't report
+            // WAIT_TIMEOUT (a SUCCEEDED HRESULT), so call the COM vtable directly to
+            // get the real HRESULT. hr != S_OK => no new frame: keep the last one.
+            if (_cachedAcquireSync is not null && _cachedAcquireSync(_cachedKeyedMutex!.NativePointer, 1, 0) != 0)
+            {
+                return true;
+            }
             _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
+            _cachedKeyedMutex?.ReleaseSync(0);
             _swapChain!.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
@@ -137,6 +172,9 @@ public sealed class Direct3D11InteropService : IDisposable
         catch (Exception ex)
         {
             LaunchLog.Write($"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: {ex.Message}");
+            _cachedAcquireSync = null;
+            _cachedKeyedMutex?.Dispose();
+            _cachedKeyedMutex = null;
             _cachedSharedTexture?.Dispose();
             _cachedSharedTexture = null;
             _cachedSharedHandle = 0;
@@ -365,6 +403,9 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        _cachedAcquireSync = null;
+        _cachedKeyedMutex?.Dispose();
+        _cachedKeyedMutex = null;
         _cachedSharedTexture?.Dispose();
         _cachedSharedTexture = null;
         _cachedSharedHandle = 0;
