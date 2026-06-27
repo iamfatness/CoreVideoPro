@@ -19,12 +19,18 @@ public partial class App : Application
         UnhandledException += (_, e) =>
         {
             LaunchLog.Write($"unhandled: {e.Exception}");
-            // Safety net: if an x:Bind update is ever still raised off the UI thread
-            // it surfaces as COMException RPC_E_WRONG_THREAD (0x8001010E). The bound
-            // value re-applies on the next UI-thread update, so mark it handled and
-            // keep the operator app alive instead of fail-fasting the whole process.
-            if (e.Exception is System.Runtime.InteropServices.COMException com &&
-                unchecked((uint)com.HResult) == 0x8001010Eu)
+            // Keep the operator app alive on RECOVERABLE exceptions instead of
+            // fail-fasting the whole process. Observed culprits: off-thread x:Bind
+            // updates (COMException RPC_E_WRONG_THREAD 0x8001010E) and async
+            // [RelayCommand] failures surfacing as COM-interop InvalidCastExceptions.
+            // The exception is logged above for root-causing; the failed operation
+            // simply doesn't complete and re-runs on the next tick/user action.
+            // Genuinely fatal conditions (OOM, stack overflow) are not in this set.
+            if (e.Exception is System.Runtime.InteropServices.COMException
+                or System.InvalidCastException
+                or System.InvalidOperationException
+                or System.ObjectDisposedException
+                or System.OperationCanceledException)
             {
                 e.Handled = true;
             }

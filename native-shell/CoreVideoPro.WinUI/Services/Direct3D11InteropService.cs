@@ -152,12 +152,17 @@ public sealed class Direct3D11InteropService : IDisposable
             // stalls. Vortice's AcquireSync returns void and can't report
             // WAIT_TIMEOUT (a SUCCEEDED HRESULT), so call the COM vtable directly to
             // get the real HRESULT. hr != S_OK => no new frame: keep the last one.
-            if (_cachedAcquireSync is not null && _cachedAcquireSync(_cachedKeyedMutex!.NativePointer, 1, 0) != 0)
+            // On a NEW frame (acquire key 1 succeeds): copy it in + release key 0.
+            // On NO new frame (WAIT_TIMEOUT) or no thunk: re-present the last
+            // backbuffer so pacing stays smooth — SKIPPING the Present here is what
+            // made the program look janky. Never touch the texture unless acquired.
+            var acquired = _cachedAcquireSync is not null && _cachedKeyedMutex is not null &&
+                           _cachedAcquireSync(_cachedKeyedMutex.NativePointer, 1, 0) == 0;
+            if (acquired)
             {
-                return true;
+                _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
+                _cachedKeyedMutex!.ReleaseSync(0);
             }
-            _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
-            _cachedKeyedMutex?.ReleaseSync(0);
             _swapChain!.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
@@ -209,9 +214,14 @@ public sealed class Direct3D11InteropService : IDisposable
         _disposed = true;
         DetachPanelHandlers();
         ResetSwapChain();
-        _context?.Dispose();
-        _device?.Dispose();
-        _winrtDevice?.Dispose();
+        // Some of these are raw COM RCWs (e.g. the WinRT IDirect3DDevice) whose
+        // underlying COM object does not support the IDisposable QI — calling
+        // Dispose() throws InvalidCastException (E_NOINTERFACE), which fail-fasts the
+        // whole app when a VideoSurfaceHost unloads (multiview tiles come and go).
+        // Teardown must never throw.
+        try { _context?.Dispose(); } catch { }
+        try { _device?.Dispose(); } catch { }
+        try { _winrtDevice?.Dispose(); } catch { }
         _context = null;
         _device = null;
         _winrtDevice = null;
@@ -403,14 +413,16 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
+        // escape (it fail-fasts the app when a tile/host unloads).
         _cachedAcquireSync = null;
-        _cachedKeyedMutex?.Dispose();
+        try { _cachedKeyedMutex?.Dispose(); } catch { }
         _cachedKeyedMutex = null;
-        _cachedSharedTexture?.Dispose();
+        try { _cachedSharedTexture?.Dispose(); } catch { }
         _cachedSharedTexture = null;
         _cachedSharedHandle = 0;
-        _backBuffer?.Dispose();
-        _swapChain?.Dispose();
+        try { _backBuffer?.Dispose(); } catch { }
+        try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;
         _swapChain = null;
         _surfaceWidth = 0;
@@ -420,9 +432,9 @@ public sealed class Direct3D11InteropService : IDisposable
     private void ResetDevice()
     {
         ResetSwapChain();
-        _context?.Dispose();
-        _device?.Dispose();
-        _winrtDevice?.Dispose();
+        try { _context?.Dispose(); } catch { }
+        try { _device?.Dispose(); } catch { }
+        try { _winrtDevice?.Dispose(); } catch { }
         _context = null;
         _device = null;
         _winrtDevice = null;
