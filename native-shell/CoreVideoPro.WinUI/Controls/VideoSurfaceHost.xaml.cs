@@ -48,6 +48,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
     private bool _sourceFramingRefreshScheduled;
+    private bool _renderingHooked;
     private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
@@ -285,14 +286,31 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             SetDirect3DDevice(_direct3DDevicePointer);
             TryPresentPendingSharedHandle();
             RefreshPathBindings();
+
+            // Present the GPU program every vsync from the latest shared handle.
+            // The core updates the shared texture's content at ~60fps; re-presenting
+            // it on the composition tick shows that content smoothly without routing
+            // a UI refresh through the (heavy) surface-binding rebuild per frame.
+            if (!_renderingHooked)
+            {
+                Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnCompositionRendering;
+                _renderingHooked = true;
+            }
         }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        if (_renderingHooked)
+        {
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnCompositionRendering;
+            _renderingHooked = false;
+        }
         _direct3DInterop.Dispose();
         _direct3DDevicePointer = 0;
     }
+
+    private void OnCompositionRendering(object? sender, object e) => TryPresentPendingSharedHandle();
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {

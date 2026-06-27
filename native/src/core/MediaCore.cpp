@@ -2793,7 +2793,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   return renderPlan;
 }
 
-void MediaCore::renderSyntheticTick() {
+void MediaCore::renderDisplayTick() { renderSyntheticTick(/*videoOnly=*/true); }
+
+void MediaCore::renderSyntheticTick(bool videoOnly) {
   const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * frameIntervalMs;
   // Tap the latest decoded Zoom frames (real BGRA pixels) and ingest them into
@@ -2845,16 +2847,19 @@ void MediaCore::renderSyntheticTick() {
       videoFrames = std::move(merged);
     }
   }
-  auto audioFrames = modules_.zoom->pollAudioFrames();
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
-    if (!engineAudioFrames.empty()) {
-      audioFrames = engineAudioFrames;
+  std::vector<modules::AudioFrame> audioFrames;
+  if (!videoOnly) {
+    audioFrames = modules_.zoom->pollAudioFrames();
+    if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+      const auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
+      if (!engineAudioFrames.empty()) {
+        audioFrames = engineAudioFrames;
+      }
     }
-  }
-  if (modules_.audioCapture) {
-    auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
+    if (modules_.audioCapture) {
+      auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
+      audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
+    }
   }
 
   // Advance the overlay animation clock before building the render plan so the
@@ -2864,6 +2869,10 @@ void MediaCore::renderSyntheticTick() {
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  // Audio mix, routing matrix, monitor output, and loudness metering involve real
+  // device/PCM work and (for outputs) blocking I/O. Skip them on the light
+  // display-only tick; they run on the full host-sync tick.
+  if (!videoOnly) {
   if (modules_.mediaFrames) {
     auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(renderPlan.layers, frameTimestampMs);
     audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
@@ -2964,6 +2973,7 @@ void MediaCore::renderSyntheticTick() {
     const int meterChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
     updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
   }
+  }  // end if (!videoOnly): audio mix / routing / monitor / loudness
 
   if (modules_.mediaFrames) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
@@ -2975,7 +2985,7 @@ void MediaCore::renderSyntheticTick() {
     }
   }
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
-  if (lastProgramFrame_.preview.bgra.empty()) {
+  if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
@@ -2987,12 +2997,18 @@ void MediaCore::renderSyntheticTick() {
     // The shared-texture handle is tiny (a handle + dimensions) — emit it on every
     // render so the GPU program present runs at the full render rate (~60fps).
     enqueueProgramSharedTextureEvent();
-    // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) so its
-    // BGRA payload doesn't saturate stdout and starve RPC command responses.
-    if (nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
+    // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
+    // never emit it on the light display tick (it has no fresh readback).
+    if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
+  }
+  if (videoOnly) {
+    // Display-only tick: the GPU program frame + shared-texture handle are done.
+    // Skip encoder submit, output senders (network I/O) and recording mux — those
+    // run on the full host-sync tick so they never block the 60fps display path.
+    return;
   }
   modules_.encoder->submit(lastProgramFrame_);
   const auto session = modules_.encoder->session();

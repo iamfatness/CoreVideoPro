@@ -21,6 +21,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private readonly Dictionary<string, int> _lastAppliedFrameId = new(StringComparer.Ordinal);
     private readonly Timer _uiFlushTimer;
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
+    private string _lastProgramSharedSignature = "";
     private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
     private string _previewParticipantId = string.Empty;
     private string _compositorRenderer = "software";
@@ -350,6 +351,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         };
 
         var handle = ToSharedTextureHandle(texture);
+        bool structuralChange;
         lock (_gate)
         {
             var next = _programSurface
@@ -365,8 +367,21 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             }
 
             _programSurface = next;
+
+            // The compositor reuses the same shared texture across frames, so the
+            // handle value is stable; the GPU present runs every vsync off that
+            // handle (VideoSurfaceHost). Only fire the heavy surface-binding refresh
+            // when something structural actually changes (handle value, size, or
+            // health) — not on every 60fps frame, which would bog the UI thread.
+            var signature = $"{handle.NtHandle:X}:{texture.Width}x{texture.Height}:{health}";
+            structuralChange = signature != _lastProgramSharedSignature;
+            _lastProgramSharedSignature = signature;
         }
-        NotifyChanged();
+
+        if (structuralChange)
+        {
+            NotifyChanged();
+        }
     }
 
     private void ApplyProgramPreview(

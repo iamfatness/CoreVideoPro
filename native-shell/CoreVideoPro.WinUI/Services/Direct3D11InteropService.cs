@@ -38,6 +38,9 @@ public sealed class Direct3D11InteropService : IDisposable
     private int _panelWidth;
     private int _panelHeight;
     private ulong _lastPresentedHandle;
+    private long _presentCount;
+    private ID3D11Texture2D? _cachedSharedTexture;
+    private ulong _cachedSharedHandle;
     private nint _cachedDevicePointer;
     private bool _disposed;
     private PresentationPath _path = PresentationPath.Uninitialized;
@@ -109,17 +112,34 @@ public sealed class Direct3D11InteropService : IDisposable
 
         try
         {
-            using var sharedTexture = _device!.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
-            _context!.CopyResource(_backBuffer!, sharedTexture);
+            // Open the shared texture once per handle and cache it. The compositor
+            // reuses the same shared texture, and present now runs every vsync, so
+            // re-opening it 60x/sec would churn (and leak) KMT shared handles and
+            // crash after a few seconds. Re-open only when the handle value changes.
+            if (_cachedSharedTexture is null || _cachedSharedHandle != handle.NtHandle)
+            {
+                _cachedSharedTexture?.Dispose();
+                _cachedSharedTexture = _device!.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
+                _cachedSharedHandle = handle.NtHandle;
+            }
+            _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
             _swapChain!.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
-            LaunchLog.Write($"d3d: presented shared handle 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
+            // Present runs every vsync now, so log a heartbeat every 120 presents
+            // (compute fps from the timestamp delta) instead of flooding per frame.
+            if (++_presentCount % 120 == 0)
+            {
+                LaunchLog.Write($"d3d: present #{_presentCount} 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
+            }
             return true;
         }
         catch (Exception ex)
         {
             LaunchLog.Write($"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: {ex.Message}");
+            _cachedSharedTexture?.Dispose();
+            _cachedSharedTexture = null;
+            _cachedSharedHandle = 0;
             InvalidateSharedHandle(handle.NtHandle);
             ResetSwapChain();
             SetPresentationPath(PresentationPath.CpuFallback);
@@ -345,6 +365,9 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        _cachedSharedTexture?.Dispose();
+        _cachedSharedTexture = null;
+        _cachedSharedHandle = 0;
         _backBuffer?.Dispose();
         _swapChain?.Dispose();
         _backBuffer = null;

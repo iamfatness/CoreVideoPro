@@ -36,6 +36,14 @@ class MediaCore {
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
 
+  // Light, video-only render tick for the operator program display. Renders the
+  // GPU compositor and emits the shared-texture handle, but skips the audio mix,
+  // monitor/output senders, encoder submit and base64 preview readback — i.e. no
+  // blocking I/O — so it can run at ~60fps on the command-processing thread
+  // without starving RPC command handling. The full renderSyntheticTick (encoder/
+  // recording/streaming/audio) still runs on the host-sync cadence.
+  void renderDisplayTick();
+
   // Deterministic on-device AI director: derives the richer signal bundle from
   // the core's current state (participant feeds, audio metrics, screen share,
   // feed health) and returns a scene recommendation (ruleId, recommendedSceneId,
@@ -80,7 +88,7 @@ class MediaCore {
   void setMediaPlayback(const rpc::Json& command);
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
-  void renderSyntheticTick();
+  void renderSyntheticTick(bool videoOnly = false);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;

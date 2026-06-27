@@ -267,24 +267,37 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   };
 
+  // Render the operator program display at ~60fps. renderDisplayTick() is the
+  // light, video-only path (GPU compositor + tiny shared-texture handle, no audio/
+  // encoder/output I/O), so it keeps the program smooth between the sparse host
+  // syncs without starving command handling (which the full-pipeline tick did).
+  constexpr auto kDisplayTickInterval = std::chrono::milliseconds(16);  // ~60fps
+  auto lastTick = std::chrono::steady_clock::now();
   auto lastPump = std::chrono::steady_clock::now();
   for (;;) {
-    std::string line;
-    bool haveLine = false;
     {
       std::unique_lock<std::mutex> lock(inMx);
-      inCv.wait_for(lock, std::chrono::milliseconds(10),
-                    [&] { return !inQ.empty() || inputClosed.load(); });
-      if (!inQ.empty()) {
-        line = std::move(inQ.front());
-        inQ.pop_front();
-        haveLine = true;
-      } else if (inputClosed.load()) {
-        break;
+      if (inQ.empty() && !inputClosed.load()) {
+        inCv.wait_for(lock, std::chrono::milliseconds(10),
+                      [&] { return !inQ.empty() || inputClosed.load(); });
       }
     }
 
-    if (haveLine && !line.empty()) {
+    // Drain ALL queued commands before rendering so a burst (e.g. the Zoom join
+    // sequence) is serviced immediately and is never paced by the display tick.
+    for (;;) {
+      std::string line;
+      {
+        std::lock_guard<std::mutex> lock(inMx);
+        if (inQ.empty()) {
+          break;
+        }
+        line = std::move(inQ.front());
+        inQ.pop_front();
+      }
+      if (line.empty()) {
+        continue;
+      }
       std::string error;
       auto request = Json::parse(line, &error);
       if (!request) {
@@ -294,7 +307,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
     }
 
+    {
+      std::lock_guard<std::mutex> lock(inMx);
+      if (inQ.empty() && inputClosed.load()) {
+        break;
+      }
+    }
+
     const auto now = std::chrono::steady_clock::now();
+
+    if (now - lastTick >= kDisplayTickInterval) {
+      mediaCore_.renderDisplayTick();
+      lastTick = now;
+    }
 
     // Drain the tiny shared-texture handles at full rate; pump the heavy base64
     // frame/preview events on a throttled cadence so they don't starve responses.
