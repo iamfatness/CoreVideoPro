@@ -250,14 +250,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   enqueueResponse(handshake().stringify());
 
-  // The shared-texture handle is tiny and drives the 60fps GPU program present, so
-  // drain it every loop iteration. The base64 zoom-frame/preview payloads are heavy
-  // and only a UI thumbnail, so pump them on a throttled (~30fps) cadence.
-  auto pumpSharedTexture = [&] {
-    for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
-      enqueueFrame(event.stringify());
-    }
-  };
+  // The shared-texture handle is tiny and drives the 60fps GPU program present; the
+  // render thread drains it every frame. The base64 zoom-frame/preview payloads are
+  // heavy and only a UI thumbnail, so this loop pumps them on a throttled cadence.
   auto pumpHeavyFrameEvents = [&] {
     for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
       enqueueFrame(event.stringify());
@@ -267,12 +262,29 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   };
 
-  // Render the operator program display at ~60fps. renderDisplayTick() is the
-  // light, video-only path (GPU compositor + tiny shared-texture handle, no audio/
-  // encoder/output I/O), so it keeps the program smooth between the sparse host
-  // syncs without starving command handling (which the full-pipeline tick did).
-  constexpr auto kDisplayTickInterval = std::chrono::milliseconds(16);  // ~60fps
-  auto lastTick = std::chrono::steady_clock::now();
+  // The render thread and this command loop are the only two threads that touch
+  // MediaCore. Serialize ALL core access with one mutex held briefly in each — no
+  // per-method locking inside MediaCore is needed.
+  std::mutex coreMutex;
+
+  // Dedicated render thread: drives the light, video-only display render (GPU
+  // compositor + tiny shared-texture handle, no audio/encoder/output I/O) at
+  // ~60fps, fully decoupled from command handling and the blocking output/encoder
+  // path so neither can stall the on-screen program. The blocking GPU readback is
+  // already skipped on this path, so the lock is held only ~1ms per frame.
+  std::thread renderThread([&] {
+    while (!stopping.load()) {
+      {
+        std::lock_guard<std::mutex> lock(coreMutex);
+        mediaCore_.renderDisplayTick();
+        for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60fps
+    }
+  });
+
   auto lastPump = std::chrono::steady_clock::now();
   for (;;) {
     {
@@ -303,6 +315,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (!request) {
         enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
       } else {
+        std::lock_guard<std::mutex> lock(coreMutex);
         enqueueResponse(handle(*request).stringify());
       }
     }
@@ -316,15 +329,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
     const auto now = std::chrono::steady_clock::now();
 
-    if (now - lastTick >= kDisplayTickInterval) {
-      mediaCore_.renderDisplayTick();
-      lastTick = now;
-    }
-
-    // Drain the tiny shared-texture handles at full rate; pump the heavy base64
-    // frame/preview events on a throttled cadence so they don't starve responses.
-    pumpSharedTexture();
+    // The render thread drives the display render + shared-texture pump. Here we
+    // only pump the heavy base64 frame/preview events, on a throttled cadence so
+    // they don't starve responses. Lock the core while draining its queues.
     if (now - lastPump >= kFramePumpInterval) {
+      std::lock_guard<std::mutex> lock(coreMutex);
       pumpHeavyFrameEvents();
       lastPump = now;
     }
@@ -332,6 +341,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   stopping.store(true);
   outCv.notify_one();
+  if (renderThread.joinable()) {
+    renderThread.join();
+  }
   if (reader.joinable()) {
     reader.join();
   }
