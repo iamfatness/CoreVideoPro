@@ -302,7 +302,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         renderUs = 0;
         rateStamp = now;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));  // ~60fps
+      // Pace ~ a frame interval. The core lock is essentially free now (render
+      // 0.4ms, lockWait ~5ms), so a sub-frame sleep lets the loop publish at the
+      // consumer's vsync rate without busy-spinning.
+      std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
   });
 
