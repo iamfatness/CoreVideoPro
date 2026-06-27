@@ -859,7 +859,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.SnapshotChanged += OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
-        _bridge.ProgramSharedTextureReceived += _surfaces.OnProgramSharedTexture;
+        _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged += OnSurfacesChanged;
 
@@ -9619,7 +9619,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.SnapshotChanged -= OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
-        _bridge.ProgramSharedTextureReceived -= _surfaces.OnProgramSharedTexture;
+        _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged -= OnSurfacesChanged;
         SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
@@ -9694,6 +9694,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _surfaces.OnProgramFramePreview(preview);
         Settings.ObserveProgramPreviewFrame(preview);
     }
+
+    // The shared-texture handle drives the GPU program present (SwapChainPanel + D3D),
+    // which are UI-thread/COM-affinitized. Marshal handling to the UI thread so the
+    // surface update and the present happen on the same thread as every other UI
+    // access — touching them from the core read-loop thread throws RPC_E_WRONG_THREAD.
+    private void OnProgramSharedTextureReceived(ProgramSharedTexture texture) =>
+        RunOnUiThread(() => _surfaces.OnProgramSharedTexture(texture));
 
     private sealed record LowerThirdSource(
         string SourceId,
