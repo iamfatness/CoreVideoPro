@@ -2984,9 +2984,13 @@ void MediaCore::renderSyntheticTick() {
   // the channel looks dead). Recording/streaming still use the full-rate frame.
   {
     const auto nowTp = std::chrono::steady_clock::now();
-    if (nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {  // ~30fps preview
+    // The shared-texture handle is tiny (a handle + dimensions) — emit it on every
+    // render so the GPU program present runs at the full render rate (~60fps).
+    enqueueProgramSharedTextureEvent();
+    // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) so its
+    // BGRA payload doesn't saturate stdout and starve RPC command responses.
+    if (nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
       enqueueProgramFramePreviewEvent();
-      enqueueProgramSharedTextureEvent();
       lastFrameEventEmit_ = nowTp;
     }
   }

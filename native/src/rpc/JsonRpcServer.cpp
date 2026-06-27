@@ -250,14 +250,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   enqueueResponse(handshake().stringify());
 
-  auto pumpFrameEvents = [&] {
+  // The shared-texture handle is tiny and drives the 60fps GPU program present, so
+  // drain it every loop iteration. The base64 zoom-frame/preview payloads are heavy
+  // and only a UI thumbnail, so pump them on a throttled (~30fps) cadence.
+  auto pumpSharedTexture = [&] {
+    for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+      enqueueFrame(event.stringify());
+    }
+  };
+  auto pumpHeavyFrameEvents = [&] {
     for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
       enqueueFrame(event.stringify());
     }
     for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
-      enqueueFrame(event.stringify());
-    }
-    for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
       enqueueFrame(event.stringify());
     }
   };
@@ -289,11 +294,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
     }
 
-    // Pump frame events on a throttled cadence, NOT once per command, so a flood
-    // of commands is serviced at full speed instead of being paced by frame I/O.
     const auto now = std::chrono::steady_clock::now();
+
+    // Drain the tiny shared-texture handles at full rate; pump the heavy base64
+    // frame/preview events on a throttled cadence so they don't starve responses.
+    pumpSharedTexture();
     if (now - lastPump >= kFramePumpInterval) {
-      pumpFrameEvents();
+      pumpHeavyFrameEvents();
       lastPump = now;
     }
   }
