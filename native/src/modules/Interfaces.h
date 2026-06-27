@@ -199,6 +199,11 @@ struct CompositorRenderPlan {
   CompositorColorGrade colorGrade;
   std::vector<CompositorRenderPlanLayer> layers;
   std::vector<std::string> warnings;
+  // When true, the compositor skips the blocking GPU->CPU readbacks (base64
+  // preview + pixel signature) and only updates the GPU shared texture. Set for
+  // the light ~60fps display tick; those readbacks (a CPU Map that stalls the
+  // pipeline every frame) are only needed for the throttled base64 thumbnail.
+  bool skipCpuReadback = false;
 };
 
 struct OutputSession {

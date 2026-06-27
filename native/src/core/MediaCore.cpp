@@ -2793,7 +2793,18 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   return renderPlan;
 }
 
-void MediaCore::renderDisplayTick() { renderSyntheticTick(/*videoOnly=*/true); }
+void MediaCore::renderDisplayTick() {
+  renderSyntheticTick(/*videoOnly=*/true);
+  static int64_t s_displayTickCount = 0;
+  static auto s_displayTickStamp = std::chrono::steady_clock::now();
+  if (++s_displayTickCount % 120 == 0) {
+    const auto now = std::chrono::steady_clock::now();
+    const double sec = std::chrono::duration<double>(now - s_displayTickStamp).count();
+    std::fprintf(stderr, "[render] displayTick #%lld %.1f fps (content render rate)\n",
+                 static_cast<long long>(s_displayTickCount), sec > 0.0 ? 120.0 / sec : 0.0);
+    s_displayTickStamp = now;
+  }
+}
 
 void MediaCore::renderSyntheticTick(bool videoOnly) {
   const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
@@ -2869,6 +2880,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   advanceOverlayAnimation(static_cast<double>(frameIntervalMs));
 
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
+  // On the light display tick, tell the compositor to skip the blocking GPU->CPU
+  // readbacks (base64 preview + pixel signature) — only the GPU shared texture is
+  // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
+  renderPlan.skipCpuReadback = videoOnly;
   // Audio mix, routing matrix, monitor output, and loudness metering involve real
   // device/PCM work and (for outputs) blocking I/O. Skip them on the light
   // display-only tick; they run on the full host-sync tick.

@@ -240,8 +240,14 @@ class D3D11Compositor final : public ICompositor {
     }
 
     frame.gpuComposed = true;
-    frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
-    frame.preview = readProgramFramePreview();
+    // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
+    // readback. On the light ~60fps display tick we skip them — only the GPU shared
+    // texture is needed for the on-screen program, and stalling the CPU on a Map
+    // every frame caps the render rate far below what the GPU can do.
+    if (!renderPlan.skipCpuReadback) {
+      frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
+      frame.preview = readProgramFramePreview();
+    }
     exportSharedTexture(frame);
     context_->Flush();
     return frame;

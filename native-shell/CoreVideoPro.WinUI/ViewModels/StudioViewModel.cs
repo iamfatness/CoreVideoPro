@@ -9699,8 +9699,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // which are UI-thread/COM-affinitized. Marshal handling to the UI thread so the
     // surface update and the present happen on the same thread as every other UI
     // access — touching them from the core read-loop thread throws RPC_E_WRONG_THREAD.
-    private void OnProgramSharedTextureReceived(ProgramSharedTexture texture) =>
+    private long _sharedTextureReceiveCount;
+    private long _sharedTextureRateStampMs;
+
+    private void OnProgramSharedTextureReceived(ProgramSharedTexture texture)
+    {
+        // Diagnostic: how fast the core actually delivers new program frames (the
+        // content render rate). The vsync present re-copies the texture at 60fps
+        // regardless, so this — not the present count — is the real frame rate.
+        if (++_sharedTextureReceiveCount % 120 == 0)
+        {
+            var nowMs = Environment.TickCount64;
+            var dt = nowMs - _sharedTextureRateStampMs;
+            LaunchLog.Write($"sharedtex: received #{_sharedTextureReceiveCount} ~{(dt > 0 ? 120000.0 / dt : 0):F1}/s (core content rate)");
+            _sharedTextureRateStampMs = nowMs;
+        }
         RunOnUiThread(() => _surfaces.OnProgramSharedTexture(texture));
+    }
 
     private sealed record LowerThirdSource(
         string SourceId,
