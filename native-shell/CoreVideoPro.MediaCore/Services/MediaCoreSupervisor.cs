@@ -597,8 +597,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             var sharedTextureEvent = CoreProtocolParser.TryParseProgramSharedTextureEvent(line);
             if (sharedTextureEvent is not null)
             {
+                // The shared-texture handle drives the GPU program display. It is
+                // low-rate and the handler is light (update handle + notify), so
+                // invoke it directly rather than through the bounded drop-oldest
+                // frame queue, where it could be discarded behind high-rate frames
+                // and the program would never present the GPU surface.
                 var texture = sharedTextureEvent.Texture;
-                DispatchFrame(() => ProgramSharedTextureReceived?.Invoke(texture));
+                try { ProgramSharedTextureReceived?.Invoke(texture); } catch { }
                 continue;
             }
 
