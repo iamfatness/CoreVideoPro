@@ -6134,7 +6134,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(BuildProductionSyncContext());
         var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(false);
         ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
-        CommandStatus = $"{scene.Name} synced to media core";
+        // CommandStatus is x:Bound — set it on the UI thread (we're on a thread-pool
+        // continuation here due to ConfigureAwait(false)).
+        RunOnUiThread(() => CommandStatus = $"{scene.Name} synced to media core");
         return snapshot;
     }
 
@@ -7328,6 +7330,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyLiveProductionPatch(LiveProductionSync.StudioLiveProductionPatch patch)
     {
+        // This sets x:Bound VM properties (OutputStatus, Recording, ZoomStatus, ...).
+        // Callers reach here from SyncActiveSceneAsync's `await ....ConfigureAwait(false)`
+        // continuation, i.e. a thread-pool thread — setting a bound property off the UI
+        // thread fail-fasts WinUI (RPC_E_WRONG_THREAD -> 0xc000027b). Marshal to the UI
+        // thread; this was the recurring ~30-60s crash.
+        if (!_dispatcher.HasThreadAccess)
+        {
+            _dispatcher.TryEnqueue(() => ApplyLiveProductionPatch(patch));
+            return;
+        }
+
         ApplyCaptionAndLowerThirdPatch(patch);
 
         if (patch.Recording is { } recording)
