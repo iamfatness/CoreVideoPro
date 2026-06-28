@@ -79,6 +79,18 @@ public sealed partial class ParticipantTileControl : UserControl
             typeof(ParticipantTileControl),
             new PropertyMetadata(0d, OnSourceFramingChanged));
 
+    // Opt-in GPU rendering for program/preview scene layers. When true and the surface
+    // carries a valid GPU shared-texture handle, the embedded VideoSurfaceHost presents
+    // it (1080p, self-refreshing via keyed mutex) instead of the CPU base64 image. Left
+    // off for the many other ParticipantTileControl uses (source picker, etc.) so they
+    // don't each spin up a D3D swap chain.
+    public static readonly DependencyProperty UseGpuSurfaceProperty =
+        DependencyProperty.Register(
+            nameof(UseGpuSurface),
+            typeof(bool),
+            typeof(ParticipantTileControl),
+            new PropertyMetadata(false, OnSurfaceStateChanged));
+
     public ParticipantTileControl()
     {
         InitializeComponent();
@@ -102,6 +114,12 @@ public sealed partial class ParticipantTileControl : UserControl
     {
         get => (VideoSurfaceState?)GetValue(SurfaceStateProperty);
         set => SetValue(SurfaceStateProperty, value);
+    }
+
+    public bool UseGpuSurface
+    {
+        get => (bool)GetValue(UseGpuSurfaceProperty);
+        set => SetValue(UseGpuSurfaceProperty, value);
     }
 
     public string SourceFit
@@ -266,6 +284,29 @@ public sealed partial class ParticipantTileControl : UserControl
 
     private void UpdatePreviewBitmap()
     {
+        // GPU path (program/preview scene layers): if this surface has a live shared
+        // texture, present it through the embedded VideoSurfaceHost. The handle is stable
+        // and the keyed-mutex texture refreshes itself every vsync, so program/preview
+        // stay live without any per-frame tile rebuild (which would churn the GPU hosts).
+        if (UseGpuSurface && SurfaceState?.PendingSharedHandle is { IsValid: true })
+        {
+            GpuVideoHost.SurfaceState = SurfaceState;
+            GpuVideoHost.Visibility = Visibility.Visible;
+            BgraPreviewHelper.SetPreview(PreviewImage, null, 0, 0);
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PlaceholderPanel.Visibility = Visibility.Collapsed;
+            InitialsBadge.Visibility = Visibility.Collapsed;
+            InitialsText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (GpuVideoHost.Visibility == Visibility.Visible)
+        {
+            // Fell out of the GPU path (handle dropped / not a GPU layer): release it.
+            GpuVideoHost.Visibility = Visibility.Collapsed;
+            GpuVideoHost.SurfaceState = null;
+        }
+
         if (SurfaceState is null)
         {
             BgraPreviewHelper.SetPreview(PreviewImage, null, 0, 0);
