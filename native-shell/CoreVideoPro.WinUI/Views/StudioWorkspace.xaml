@@ -533,16 +533,20 @@
                             <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
                                 <cvcontrols:AspectRatioHost.Child>
                                     <Grid>
-                                        <!-- Live program output = the native core's GPU composite, presented
-                                             from its shared D3D texture (1080p60). VideoSurfaceHost falls back
-                                             to the core's base64 preview automatically if the GPU present is
-                                             unavailable. The client-side ScenePreviewControl re-composited from
-                                             low-res participant thumbnails, which is why the program looked
-                                             low-res; the Preview monitor still uses it for the editable next scene. -->
-                                        <cvcontrols:VideoSurfaceHost
+                                        <!-- Program output = the WinUI scene composite (same control as the
+                                             Preview monitor). The native core's GPU shared texture only contains
+                                             sources that reach the core (Zoom participants); capture-card sources
+                                             feed the WinUI layer, so presenting the core texture showed a
+                                             solid-color slate (pink) for capture inputs. ScenePreviewControl
+                                             composites the actual capture/participant frames the shell holds. -->
+                                        <cvcontrols:ScenePreviewControl
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch"
-                                            SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
+                                            Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
+                                            SceneBackgroundAsset="{x:Bind ViewModel.ProgramSceneBackgroundAsset, Mode=OneWay}"
+                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
+                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}"
+                                            IsPreview="False" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
