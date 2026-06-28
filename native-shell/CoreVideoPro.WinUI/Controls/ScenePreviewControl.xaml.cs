@@ -259,7 +259,6 @@ public sealed partial class ScenePreviewControl : UserControl
             {
                 Participant = tile.Participant,
                 TileVariant = "canvas",
-                UseGpuSurface = true,
                 SurfaceState = tile.Surface,
                 SourceFit = route.FitMode,
                 SourceBorderStyle = route.BorderStyle,
@@ -534,7 +533,6 @@ public sealed partial class ScenePreviewControl : UserControl
         {
             Participant = participant,
             TileVariant = variant,
-            UseGpuSurface = true,
             SurfaceState = tile?.Surface,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch

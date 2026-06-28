@@ -20,15 +20,6 @@
             Background="#141B18"
             MinHeight="0">
         <Grid x:Name="TileViewport">
-            <!-- GPU shared-texture renderer for program/preview scene layers (opt-in via
-                 UseGpuSurface). Zoom participants reach the core and get a per-participant
-                 keyed-mutex shared texture; presenting it here gives 1080p live program/
-                 preview with no base64 (the CPU PreviewImage path froze for GPU
-                 participants because their base64 stream is suppressed for the tiles).
-                 Hidden unless UseGpuSurface is set AND the surface has a valid handle. -->
-            <cvcontrols:VideoSurfaceHost x:Name="GpuVideoHost"
-                                         IsHitTestVisible="False"
-                                         Visibility="Collapsed" />
             <Canvas x:Name="SourceLayerCanvas"
                     IsHitTestVisible="False">
                 <Image x:Name="PreviewImage"
