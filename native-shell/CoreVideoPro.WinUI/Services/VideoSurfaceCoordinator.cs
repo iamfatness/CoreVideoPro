@@ -570,7 +570,7 @@ public sealed class VideoSurfaceCoordinator : IDisposable
 
     // Per-participant GPU shared texture for the multiview tiles. The handle value is
     // stable (the core reuses the texture), so only refresh bindings when it changes;
-    // the per-tile VideoSurfaceHost re-presents the latest content every vsync.
+    // the per-tile VideoSurfaceHost then presents each new keyed-mutex frame (skip-present).
     public void OnParticipantSharedTexture(ParticipantSharedTexture texture)
     {
         if (texture is null || !texture.IsValid)
