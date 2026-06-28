@@ -167,7 +167,9 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         {
             // If this participant has a live GPU shared texture, the tile presents
             // from it on the GPU — skip the base64 decode + per-frame NotifyChanged
-            // churn entirely (that UI-thread work was the multiview bottleneck).
+            // churn entirely (that UI-thread work was the multiview bottleneck, and the
+            // per-frame NotifyChanged rebuilds the whole MultiviewTiles collection which
+            // reloads every tile's VideoSurfaceHost -> GPU swap-chain churn -> fail-fast).
             if (_participantSharedHandles.TryGetValue(trackerKey, out var gpuHandle) && gpuHandle.IsValid)
             {
                 return;
