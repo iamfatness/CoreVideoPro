@@ -11,11 +11,25 @@ public partial class App : Application
 {
     private static readonly AppActivationCoordinator Activation = new();
     private static Window? _window;
+    private static int _firstChanceWrongThread;
 
     public App()
     {
         InitializeComponent();
         ApplicationLifecycle.BindActivation(Activation);
+        // DIAGNOSTIC (limited to 5 writes so it can't destabilize): the recurring
+        // CoreMessagingXP 0xc000027b crash is a cross-thread UI access surfacing as
+        // RPC_E_WRONG_THREAD before the native fail-fast (no managed/createdump stack).
+        // First-chance fires BEFORE the fail-fast — log the stack to find the off-thread
+        // binding/UI call, like we did for ApplyLiveProductionPatch.
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            if (unchecked((uint)e.Exception.HResult) == 0x8001010Eu &&
+                System.Threading.Interlocked.Increment(ref _firstChanceWrongThread) <= 5)
+            {
+                try { LaunchLog.Write($"firstchance RPC_E_WRONG_THREAD #{_firstChanceWrongThread}:\n{e.Exception.StackTrace}"); } catch { }
+            }
+        };
         UnhandledException += (_, e) =>
         {
             LaunchLog.Write($"unhandled: {e.Exception}");

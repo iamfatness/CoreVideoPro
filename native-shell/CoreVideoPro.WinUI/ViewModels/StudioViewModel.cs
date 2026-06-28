@@ -1916,7 +1916,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             else
             {
                 // The media core should already be running from launch. If it died, bring it back up rather than dead-ending.
-                await EnsureMediaCoreRunningAsync("Restarting media core...").ConfigureAwait(false);
+                // ConfigureAwait(true): this is a UI [RelayCommand]; the whole
+                // continuation below sets x:Bound properties (EngineStatus,
+                // ZoomCaptureSubscribed) + RefreshSurfaceBindings, so it MUST resume on
+                // the UI thread or it fail-fasts (CoreMessagingXP 0xc000027b). This was
+                // the recurring Engine-On crash.
+                await EnsureMediaCoreRunningAsync("Restarting media core...").ConfigureAwait(true);
 
                 if (!_bridge.Running)
                 {
@@ -1933,7 +1938,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Settings.RefreshSdkReadiness();
                 try
                 {
-                    await SyncActiveSceneAsync().ConfigureAwait(false);
+                    await SyncActiveSceneAsync().ConfigureAwait(true);
                 }
                 catch (MediaCoreSyncInFlightException)
                 {
@@ -2248,7 +2253,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                CommandStatus = ex.Message;
+                RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
             }
         }
     }
@@ -3393,7 +3398,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            CommandStatus = ex.Message;
+            RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
         }
     }
 
@@ -3505,7 +3510,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                CommandStatus = ex.Message;
+                RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
             }
         }
     }
@@ -8043,7 +8048,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return 10_000 + Math.Abs(StringComparer.OrdinalIgnoreCase.GetHashCode(participantId) % 1_000);
     }
 
-    private void OnSurfacesChanged() => RunOnUiThread(RefreshSurfaceBindings);
+    private int _surfaceRefreshPending;
+    private void OnSurfacesChanged()
+    {
+        // Coalesce: surfaces change up to ~100x/s (per-source frames). Without this
+        // every change posts a UI-thread refresh, flooding the dispatcher (suspected
+        // CoreMessagingXP pressure) and scaling badly to 8 participants. Collapse to
+        // at most one pending refresh at a time.
+        if (System.Threading.Interlocked.Exchange(ref _surfaceRefreshPending, 1) == 1)
+        {
+            return;
+        }
+
+        RunOnUiThread(() =>
+        {
+            System.Threading.Interlocked.Exchange(ref _surfaceRefreshPending, 0);
+            RefreshSurfaceBindings();
+        });
+    }
 
     private long _rsbCount;
     private long _rsbTotalMs;
