@@ -139,19 +139,41 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         lock (_gate)
         {
             _previewParticipantId = string.IsNullOrWhiteSpace(participantId) ? string.Empty : participantId;
-            if (_participantSurfaces.TryGetValue(ParticipantKey(_previewParticipantId), out var participantSurface) &&
-                participantSurface.LastFrame is not null)
-            {
-                _previewSurface = participantSurface with
-                {
-                    SurfaceKey = "preview",
-                    Kind = VideoSurfaceKind.Preview,
-                    Title = "Preview"
-                };
-            }
+            RefreshPreviewSurfaceLocked();
         }
 
         NotifyChanged();
+    }
+
+    // Rebuild the single preview-monitor surface from the currently previewed participant,
+    // carrying its GPU shared-texture handle when present. The preview monitor is a single
+    // VideoSurfaceHost on PreviewSurface; the handle is stable and self-refreshes via the
+    // keyed mutex, so the preview stays live for GPU-backed (Zoom) participants without the
+    // base64 path (which is suppressed for them) and without any per-frame tile rebuild.
+    private void RefreshPreviewSurfaceLocked()
+    {
+        if (string.IsNullOrWhiteSpace(_previewParticipantId))
+        {
+            return;
+        }
+
+        var key = ParticipantKey(_previewParticipantId);
+        if (!_participantSurfaces.TryGetValue(key, out var participantSurface))
+        {
+            return;
+        }
+
+        if (_participantSharedHandles.TryGetValue(key, out var handle) && handle.IsValid)
+        {
+            participantSurface = participantSurface.WithSharedHandle(handle);
+        }
+
+        _previewSurface = participantSurface with
+        {
+            SurfaceKey = "preview",
+            Kind = VideoSurfaceKind.Preview,
+            Title = "Preview"
+        };
     }
 
     public void OnZoomVideoFrame(ZoomVideoFrame frame)
@@ -604,6 +626,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                 : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, key, texture.ParticipantId);
             _participantSurfaces[key] = surface.WithSharedHandle(handle);
             structuralChange = previous != handle.NtHandle;
+            // If this participant is the one on the preview monitor, refresh the preview
+            // surface so it picks up the handle (GPU preview, no base64).
+            if (structuralChange && key == ParticipantKey(_previewParticipantId))
+            {
+                RefreshPreviewSurfaceLocked();
+            }
         }
 
         if (structuralChange)

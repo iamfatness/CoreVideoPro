@@ -271,12 +271,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         string.Equals(SurfaceKey, "program", StringComparison.Ordinal) ||
         SurfaceState?.Kind == VideoSurfaceKind.Program;
 
-    // Surfaces that present a GPU shared texture: the program and the per-participant
-    // multiview tiles. Each gets its own swap chain + vsync present. (Preview/capture
-    // surfaces stay on the base64 Image path.)
+    // Surfaces that present a GPU shared texture: the program, the preview monitor, and
+    // the per-participant multiview tiles. Each gets its own swap chain + vsync present.
+    // (Capture surfaces with no handle fall back to the base64 Image path automatically.)
     private bool UsesGpuSharedTexture =>
         IsProgramSurface ||
-        SurfaceState?.Kind is VideoSurfaceKind.Multiview or VideoSurfaceKind.Participant;
+        SurfaceState?.Kind is VideoSurfaceKind.Multiview or VideoSurfaceKind.Participant or VideoSurfaceKind.Preview;
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
