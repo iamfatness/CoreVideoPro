@@ -6137,10 +6137,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(BuildProductionSyncContext());
-        var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(false);
+        // ConfigureAwait(true): resume on the CALLER'S context. UI callers (Engine On/Off,
+        // command handlers) then run ApplyLiveProductionPatch on the real binding thread,
+        // which is more reliable than the captured _dispatcher (the recurring off-thread
+        // set_OutputStatus crash came through here in a re-entrant Engine-On path where the
+        // guard's HasThreadAccess was bypassed). Off-thread callers have no UI context, so
+        // they resume on the pool and ApplyLiveProductionPatch's own guard marshals them.
+        var snapshot = await _bridge.SyncAsync(commands).ConfigureAwait(true);
         ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
-        // CommandStatus is x:Bound — set it on the UI thread (we're on a thread-pool
-        // continuation here due to ConfigureAwait(false)).
         RunOnUiThread(() => CommandStatus = $"{scene.Name} synced to media core");
         return snapshot;
     }

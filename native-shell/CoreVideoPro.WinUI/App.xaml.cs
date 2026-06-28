@@ -24,10 +24,14 @@ public partial class App : Application
         // binding/UI call, like we did for ApplyLiveProductionPatch.
         AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
         {
-            if (unchecked((uint)e.Exception.HResult) == 0x8001010Eu &&
-                System.Threading.Interlocked.Increment(ref _firstChanceWrongThread) <= 5)
+            var hr = unchecked((uint)e.Exception.HResult);
+            if ((hr == 0x8001010Eu /*RPC_E_WRONG_THREAD*/ || hr == 0x80000013u /*RO_E_CLOSED*/ ||
+                 e.Exception is System.InvalidCastException) &&
+                System.Threading.Interlocked.Increment(ref _firstChanceWrongThread) <= 8)
             {
-                try { LaunchLog.Write($"firstchance RPC_E_WRONG_THREAD #{_firstChanceWrongThread}:\n{e.Exception.StackTrace}"); } catch { }
+                // Environment.StackTrace = the LIVE thread stack (the off-thread caller
+                // chain). e.Exception.StackTrace is incomplete at first-chance.
+                try { LaunchLog.Write($"firstchance {e.Exception.GetType().Name} hr=0x{hr:X8} #{_firstChanceWrongThread}:\n{Environment.StackTrace}"); } catch { }
             }
         };
         UnhandledException += (_, e) =>
