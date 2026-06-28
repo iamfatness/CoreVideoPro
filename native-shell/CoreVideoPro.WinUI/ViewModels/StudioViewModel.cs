@@ -9794,8 +9794,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Per-participant GPU texture handle for the multiview tiles. Marshal to the UI
     // thread (touches the SwapChainPanel/surface state for the tile's VideoSurfaceHost).
-    private void OnParticipantSharedTextureReceived(ParticipantSharedTexture texture) =>
+    private readonly HashSet<string> _loggedParticipantTextures = new(StringComparer.Ordinal);
+    private void OnParticipantSharedTextureReceived(ParticipantSharedTexture texture)
+    {
+        // DIAG (multiview bring-up): log the first GPU shared-texture handle seen per
+        // participant so we can confirm the core->bridge->coordinator path end-to-end.
+        if (texture is not null && texture.IsValid && _loggedParticipantTextures.Add(texture.ParticipantId))
+        {
+            LaunchLog.Write($"multiview: participant GPU texture '{texture.ParticipantId}' {texture.Width}x{texture.Height} handle={texture.SharedHandleHex}");
+        }
         RunOnUiThread(() => _surfaces.OnParticipantSharedTexture(texture));
+    }
 
     private sealed record LowerThirdSource(
         string SourceId,
