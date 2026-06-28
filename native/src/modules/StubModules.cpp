@@ -2,6 +2,7 @@
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
+#include "modules/WinUiCaptureDeviceAdapter.h"
 
 #include <algorithm>
 #include <cctype>
@@ -846,6 +847,13 @@ ModuleSet createDefaultModules() {
     modules.captureDevice = std::move(hardwareCaptureDevices.front());
   } else if (!hardwareCaptureDevices.empty()) {
     modules.captureDevice = std::make_unique<CompositeCaptureDevice>(std::move(hardwareCaptureDevices));
+  }
+  // Bridge the WinUI shell's capture-card frames (Game Capture / Elgato / UVC) into
+  // the core compositor via shared memory. Wraps the hardware/composite device so
+  // metadata (enumerate/connect/...) is unchanged; real BGRA frames keyed by
+  // "capture:<deviceId>" now reach the compositor (and thus recording/streaming).
+  if (modules.captureDevice) {
+    modules.captureDevice = std::make_unique<WinUiCaptureDeviceAdapter>(std::move(modules.captureDevice));
   }
   return modules;
 }

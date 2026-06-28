@@ -403,6 +403,32 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    // Announce a WinUI capture-card shared-memory buffer to the core so it ingests
+    // the real BGRA frames as a "capture:<deviceId>" source. Best-effort.
+    public async Task RegisterCaptureShmAsync(
+        string deviceId,
+        string shmName,
+        int width,
+        int height,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "register-capture-shm",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId,
+                    ["shmName"] = shmName,
+                    ["width"] = width,
+                    ["height"] = height
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+        response.Dispose();
+    }
+
     private static bool IsWireSnapshotResponse(JsonDocument response)
     {
         var root = response.RootElement;

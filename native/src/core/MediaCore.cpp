@@ -5,6 +5,7 @@
 #include "modules/AudioDsp.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
+#include "modules/WinUiCaptureDeviceAdapter.h"
 
 #include <algorithm>
 #include <array>
@@ -353,6 +354,18 @@ rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int 
 
 rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
   return captureDeviceArray(modules_.captureDevice->connect(deviceId));
+}
+
+void MediaCore::registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height) {
+  if (auto* adapter = dynamic_cast<modules::WinUiCaptureDeviceAdapter*>(modules_.captureDevice.get())) {
+    adapter->registerCaptureBuffer(deviceId, shmName, width, height);
+  }
+}
+
+void MediaCore::unregisterCaptureShm(const std::string& deviceId) {
+  if (auto* adapter = dynamic_cast<modules::WinUiCaptureDeviceAdapter*>(modules_.captureDevice.get())) {
+    adapter->unregisterCaptureBuffer(deviceId);
+  }
 }
 
 rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {

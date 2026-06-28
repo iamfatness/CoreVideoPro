@@ -101,6 +101,14 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         _supervisor.SetCaptureAudioSyncOffsetAsync(deviceId, offsetMs, cancellationToken);
 
+    public Task RegisterCaptureShmAsync(
+        string deviceId,
+        string shmName,
+        int width,
+        int height,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.RegisterCaptureShmAsync(deviceId, shmName, width, height, cancellationToken);
+
     public async Task<RawCaptureSnapshot> JoinZoomAsync(
         string meetingUrl,
         string displayName,

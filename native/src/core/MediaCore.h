@@ -26,6 +26,8 @@ class MediaCore {
   [[nodiscard]] rpc::Json selectCaptureInput(const std::string& deviceId, const std::string& inputId);
   [[nodiscard]] rpc::Json setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs);
   [[nodiscard]] rpc::Json connectCaptureDevice(const std::string& deviceId);
+  void registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height);
+  void unregisterCaptureShm(const std::string& deviceId);
   [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
   [[nodiscard]] rpc::Json leaveZoom();
   [[nodiscard]] rpc::Json zoomSnapshot() const;

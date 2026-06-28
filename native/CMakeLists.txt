@@ -43,6 +43,7 @@ add_library(corevideo_native
   src/modules/StubModules.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
   src/modules/WasapiMonitorOutputAdapter.cpp
+  src/modules/WinUiCaptureDeviceAdapter.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp

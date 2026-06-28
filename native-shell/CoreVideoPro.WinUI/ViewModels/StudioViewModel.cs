@@ -9693,6 +9693,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnCaptureDeviceFrameReceived(CaptureDeviceFrame frame)
     {
+        // Bridge every capture frame into the native core via shared memory (full
+        // rate, independent of the throttled UI preview update) so the core
+        // composites real capture pixels into the program frame / recording / stream.
+        var shm = CaptureDeviceSharedMemoryWriter.Write(frame.DeviceId, frame.Bgra, frame.Width, frame.Height);
+        if (shm.MappingChanged && !string.IsNullOrEmpty(shm.ShmName))
+        {
+            _ = _bridge.RegisterCaptureShmAsync(frame.DeviceId, shm.ShmName, shm.Width, shm.Height);
+        }
+
         if (_surfaces.OnCaptureDeviceFrame(frame))
         {
             RunOnUiThread(() => ApplyCaptureDeviceFrameTelemetry(frame));

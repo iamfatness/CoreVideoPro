@@ -148,6 +148,28 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
   }
 
+  if (hasType(request, "register-capture-shm")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "register-capture-shm requires a payload.");
+    }
+    mediaCore_.registerCaptureShm(
+        payload->getString("deviceId"),
+        payload->getString("shmName"),
+        static_cast<int>(payload->getNumber("width")),
+        static_cast<int>(payload->getNumber("height")));
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+
+  if (hasType(request, "unregister-capture-shm")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "unregister-capture-shm requires a payload.");
+    }
+    mediaCore_.unregisterCaptureShm(payload->getString("deviceId"));
+    return success(id, Json::Object{{"type", "ack"}});
+  }
+
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
