@@ -209,9 +209,13 @@ public sealed class Direct3D11InteropService : IDisposable
         _disposed = true;
         DetachPanelHandlers();
         ResetSwapChain();
-        _context?.Dispose();
-        _device?.Dispose();
-        _winrtDevice?.Dispose();
+        // The WinRT IDirect3DDevice RCW throws InvalidCastException (E_NOINTERFACE on
+        // the IDisposable QI) on teardown, which fail-fasts the app when a
+        // VideoSurfaceHost unloads — e.g. leaving the meeting unloads the Zoom
+        // participant tiles. Teardown must never throw.
+        try { _context?.Dispose(); } catch { }
+        try { _device?.Dispose(); } catch { }
+        try { _winrtDevice?.Dispose(); } catch { }
         _context = null;
         _device = null;
         _winrtDevice = null;
@@ -403,14 +407,16 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
+        // escape (it fail-fasts the app when a tile/host unloads).
         _cachedAcquireSync = null;
-        _cachedKeyedMutex?.Dispose();
+        try { _cachedKeyedMutex?.Dispose(); } catch { }
         _cachedKeyedMutex = null;
-        _cachedSharedTexture?.Dispose();
+        try { _cachedSharedTexture?.Dispose(); } catch { }
         _cachedSharedTexture = null;
         _cachedSharedHandle = 0;
-        _backBuffer?.Dispose();
-        _swapChain?.Dispose();
+        try { _backBuffer?.Dispose(); } catch { }
+        try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;
         _swapChain = null;
         _surfaceWidth = 0;
@@ -420,9 +426,9 @@ public sealed class Direct3D11InteropService : IDisposable
     private void ResetDevice()
     {
         ResetSwapChain();
-        _context?.Dispose();
-        _device?.Dispose();
-        _winrtDevice?.Dispose();
+        try { _context?.Dispose(); } catch { }
+        try { _device?.Dispose(); } catch { }
+        try { _winrtDevice?.Dispose(); } catch { }
         _context = null;
         _device = null;
         _winrtDevice = null;
