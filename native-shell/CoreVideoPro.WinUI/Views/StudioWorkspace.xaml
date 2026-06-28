@@ -533,20 +533,19 @@
                             <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
                                 <cvcontrols:AspectRatioHost.Child>
                                     <Grid>
-                                        <!-- Program output = the WinUI scene composite (same control as the
-                                             Preview monitor). The native core's GPU shared texture only contains
-                                             sources that reach the core (Zoom participants); capture-card sources
-                                             feed the WinUI layer, so presenting the core texture showed a
-                                             solid-color slate (pink) for capture inputs. ScenePreviewControl
-                                             composites the actual capture/participant frames the shell holds. -->
-                                        <cvcontrols:ScenePreviewControl
+                                        <!-- Program output = the native core's GPU program shared texture (one
+                                             stable swap chain, 1080p60, no churn). The core composites EVERYTHING
+                                             into this frame: Zoom participants AND capture cards (capture now
+                                             reaches the core via the shared-memory bridge, so the old "pink slate
+                                             for capture" problem is gone) plus overlays. Presenting it directly
+                                             gives smooth live program without the per-source WinUI composite (the
+                                             ScenePreviewControl base64 path froze for GPU-backed Zoom sources, and
+                                             a per-layer GPU host exhausted swap chains). ProgramSurface carries the
+                                             core's keyed-mutex handle via ApplyProgramSharedTexture. -->
+                                        <cvcontrols:VideoSurfaceHost
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch"
-                                            Scene="{x:Bind ViewModel.ProgramScene, Mode=OneWay}"
-                                            SceneBackgroundAsset="{x:Bind ViewModel.ProgramSceneBackgroundAsset, Mode=OneWay}"
-                                            Tiles="{x:Bind ViewModel.ProgramSceneTiles, Mode=OneWay}"
-                                            Routes="{x:Bind ViewModel.ProgramSceneRoutes, Mode=OneWay}"
-                                            IsPreview="False" />
+                                            SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
