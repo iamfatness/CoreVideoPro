@@ -32,14 +32,16 @@ std::vector<uint8_t> i420ToRgbaThumbnail(const uint8_t* i420, uint32_t srcWidth,
       const uint32_t sx = std::min(dx * srcWidth / dstWidth, srcWidth - 1u);
       const uint32_t cx = std::min(sx / 2u, chromaWidth - 1u);
 
-      const int32_t c = static_cast<int32_t>(yPlane[static_cast<std::size_t>(sy) * srcWidth + sx]) - 16;
+      const int32_t c = static_cast<int32_t>(yPlane[static_cast<std::size_t>(sy) * srcWidth + sx]);  // full-range Y
       const int32_t d = static_cast<int32_t>(uPlane[static_cast<std::size_t>(cy) * chromaWidth + cx]) - 128;
       const int32_t e = static_cast<int32_t>(vPlane[static_cast<std::size_t>(cy) * chromaWidth + cx]) - 128;
 
       const std::size_t out = (static_cast<std::size_t>(dy) * dstWidth + dx) * 4u;
-      rgba[out + 0] = clampU8((298 * c + 409 * e + 128) >> 8);
-      rgba[out + 1] = clampU8((298 * c - 100 * d - 208 * e + 128) >> 8);
-      rgba[out + 2] = clampU8((298 * c + 516 * d + 128) >> 8);
+      // BT.709 FULL-range YCbCr->RGB. Zoom delivers full-range (0-255) YUV; converting
+      // as limited-range crushed shadows and read as dark in dim scenes. c=Y, d=U-128, e=V-128.
+      rgba[out + 0] = clampU8((256 * c + 403 * e + 128) >> 8);          // R
+      rgba[out + 1] = clampU8((256 * c - 48 * d - 120 * e + 128) >> 8); // G
+      rgba[out + 2] = clampU8((256 * c + 475 * d + 128) >> 8);          // B
       rgba[out + 3] = 255;
     }
   }

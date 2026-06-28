@@ -49,14 +49,17 @@ void i420ToRgbaPixel(
   const int y = static_cast<int>(yPlane[sourceY * sourceWidth + sourceX]);
   const int u = static_cast<int>(uPlane[(sourceY / 2) * (sourceWidth / 2) + (sourceX / 2)]);
   const int v = static_cast<int>(vPlane[(sourceY / 2) * (sourceWidth / 2) + (sourceX / 2)]);
-  const int c = y - 16;
+  const int c = y;  // full-range luma (no -16 offset, unity scale)
   const int d = u - 128;
   const int e = v - 128;
   // Output BGRA (blue first) to match the compositor/preview pixel order. Emitting
   // RGBA here swaps red and blue on display (skin tones render blue).
-  rgba[0] = clampByte((298 * c + 516 * d + 128) >> 8);          // B
-  rgba[1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8); // G
-  rgba[2] = clampByte((298 * c + 409 * e + 128) >> 8);          // R
+  // BT.709 FULL-range YCbCr->RGB. Zoom delivers full-range (0-255) YUV; converting
+  // it as limited-range (the prior -16 / 1.164 scaling) crushed shadows and read as
+  // "way darker" in dim scenes.
+  rgba[0] = clampByte((256 * c + 475 * d + 128) >> 8);          // B
+  rgba[1] = clampByte((256 * c - 48 * d - 120 * e + 128) >> 8); // G
+  rgba[2] = clampByte((256 * c + 403 * e + 128) >> 8);          // R
   rgba[3] = 255;                                                 // A
 }
 
