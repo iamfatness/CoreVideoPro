@@ -308,13 +308,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
-        // Drain the Zoom video frames on the render thread (~8ms cadence) rather than
-        // the command loop's 33ms pump: the command loop stalls behind media-core-sync
-        // (30ms core-lock holds), which delivered Zoom frames in bursts (choppy). The
-        // render thread is far less contended, so the feed is paced evenly.
-        for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
-          enqueueFrame(event.stringify());
-        }
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
@@ -334,6 +327,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       // Pace ~ a frame interval. The core lock is essentially free now (render
       // 0.4ms, lockWait ~5ms), so a sub-frame sleep lets the loop publish at the
       // consumer's vsync rate without busy-spinning.
+      std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+  });
+
+  // Dedicated Zoom-frame pump: drains the engine frame queue -> stdout on its own
+  // ~8ms cadence and NEVER takes the core lock. The render and command threads both
+  // contend on the core lock (media-core-sync holds it 50-100ms), which starved the
+  // Zoom drain and made the feed buffer (~360ms) and drop unevenly.
+  // drainZoomVideoFrameEvents is thread-safe (engine's own mutex); enqueueFrame uses
+  // the output mutex, so this is safe to run concurrently.
+  std::thread zoomPumpThread([&] {
+    while (!stopping.load()) {
+      for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
+        enqueueFrame(event.stringify());
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
   });
@@ -409,6 +417,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   outCv.notify_one();
   if (renderThread.joinable()) {
     renderThread.join();
+  }
+  if (zoomPumpThread.joinable()) {
+    zoomPumpThread.join();
   }
   if (reader.joinable()) {
     reader.join();

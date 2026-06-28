@@ -642,10 +642,13 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
 }
 
 std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->drainFrameEvents();
-  }
-  return {};
+  // THREAD-SAFE (no core lock required): zoomEngineRuntime_ is created once in the
+  // constructor and never reset; drainFrameEvents takes its own mutex and returns
+  // empty when nothing is pending (including before configure). This lets a dedicated
+  // pump thread drain Zoom frames WITHOUT contending on the core lock — the
+  // media-core-sync command holds that lock 50-100ms and was starving the drain,
+  // causing the Zoom feed to buffer (~360ms) and drop unevenly.
+  return zoomEngineRuntime_->drainFrameEvents();
 }
 
 std::vector<rpc::Json> MediaCore::drainProgramFramePreviewEvents() {
