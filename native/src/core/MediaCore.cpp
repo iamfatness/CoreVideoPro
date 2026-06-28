@@ -668,10 +668,12 @@ void MediaCore::enqueueProgramFramePreviewEvent() {
 }
 
 void MediaCore::enqueueProgramSharedTextureEvent() {
-  const auto event = modules::programSharedTextureEvent(lastProgramFrame_);
-  if (!event.isNull()) {
-    pendingProgramSharedTextureEvents_.emplace_back(event);
-  }
+  // DISABLED: the program monitor uses the WinUI ScenePreviewControl composite, not
+  // the GPU shared texture, so this event is unused — and it was emitted at the full
+  // render rate (~125/s), flooding the shared frame-event queue and starving the
+  // 30fps Zoom video frames (high latency + drops). Re-enable if/when the program
+  // monitor goes back to the GPU shared-texture (VideoSurfaceHost) path.
+  return;
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {

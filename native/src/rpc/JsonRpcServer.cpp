@@ -201,8 +201,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so command throughput stays high even while the compositor streams at
   // 60fps. Sharing one stdout channel without this lets frame data starve RPC
   // responses, so the host's commands time out and the channel appears dead.
-  constexpr std::size_t kMaxPendingFrameEvents = 180;  // ~ a few seconds of preview
-  constexpr auto kFramePumpInterval = std::chrono::milliseconds(33);  // ~30fps
+  // Keep the preview queue SHALLOW: it is latest-wins (drop-oldest below), so a deep
+  // queue just adds latency — the monitor would show frames seconds behind reality.
+  // A few frames absorbs jitter while keeping the live feed low-latency.
+  constexpr std::size_t kMaxPendingFrameEvents = 6;
+  constexpr auto kFramePumpInterval = std::chrono::milliseconds(33);  // ~30fps (kept: faster starves RPC)
 
   std::mutex outMx;
   std::condition_variable outCv;
@@ -276,9 +279,6 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // render thread drains it every frame. The base64 zoom-frame/preview payloads are
   // heavy and only a UI thumbnail, so this loop pumps them on a throttled cadence.
   auto pumpHeavyFrameEvents = [&] {
-    for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
-      enqueueFrame(event.stringify());
-    }
     for (const auto& event : mediaCore_.drainProgramFramePreviewEvents()) {
       enqueueFrame(event.stringify());
     }
@@ -306,6 +306,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick();
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
+        // Drain the Zoom video frames on the render thread (~8ms cadence) rather than
+        // the command loop's 33ms pump: the command loop stalls behind media-core-sync
+        // (30ms core-lock holds), which delivered Zoom frames in bursts (choppy). The
+        // render thread is far less contended, so the feed is paced evenly.
+        for (const auto& event : mediaCore_.drainZoomVideoFrameEvents()) {
           enqueueFrame(event.stringify());
         }
         const auto t2 = std::chrono::steady_clock::now();

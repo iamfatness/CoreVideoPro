@@ -32,6 +32,20 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     // UI-thread marshaling can never stall reading — which would back up stdout and
     // time out every command response. Drop-oldest: preview is latest-wins.
     private Channel<Action>? _frameDispatch;
+    private long _zoomFrameCounter;
+
+    private static void PerfLog(string message)
+    {
+        try
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CoreVideoPro", "perf.log"),
+                $"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+        }
+        catch { }
+    }
     private int _nextId;
     private int _restarts;
     private const int MaxCrashEvents = 20;
@@ -608,6 +622,32 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             if (frameEvent is not null)
             {
                 var frame = frameEvent.Frame;
+                // DIAGNOSTIC: measure Zoom transport latency every 30th frame.
+                // recv = core-emit -> WinUI off-stdout (base64+pump+stdout);
+                // consume = + the C# frame-dispatch queue until the UI handler runs.
+                // (This excludes upstream SDK/engine->core, isolating OUR transport.)
+                if ((++_zoomFrameCounter % 30) == 0)
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(line);
+                        if (doc.RootElement.TryGetProperty("frame", out var fe) &&
+                            fe.TryGetProperty("emitWallMs", out var ew))
+                        {
+                            var emit = ew.GetDouble();
+                            var recvAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
+                            PerfLog($"zoom transport emit->recv={recvAge:F0}ms");
+                            DispatchFrame(() =>
+                            {
+                                var consumeAge = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - emit;
+                                PerfLog($"zoom transport emit->UIhandler={consumeAge:F0}ms (queue={consumeAge - recvAge:F0}ms)");
+                                ZoomVideoFrameReceived?.Invoke(frame);
+                            });
+                            continue;
+                        }
+                    }
+                    catch { }
+                }
                 DispatchFrame(() => ZoomVideoFrameReceived?.Invoke(frame));
                 continue;
             }

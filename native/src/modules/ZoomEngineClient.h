@@ -25,7 +25,10 @@ struct ZoomEngineJoinCommand {
 struct ZoomEngineSubscribeCommand {
   std::string sourceUuid;
   std::uint32_t participantId = 0;
-  std::uint32_t resolution = 1;
+  // Request 1080p from Zoom (2 = ZoomSDKResolution_1080P). Zoom adaptively delivers
+  // up to this based on the sender + conditions; the engine falls back to 720/360 if
+  // 1080p subscribe fails. 720p (1) was capping every participant below 1080p.
+  std::uint32_t resolution = 2;
   std::string mode;
   bool isolateAudio = false;
   bool audienceAudio = false;

@@ -8045,14 +8045,33 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnSurfacesChanged() => RunOnUiThread(RefreshSurfaceBindings);
 
+    private long _rsbCount;
+    private long _rsbTotalMs;
+    private long _rsbWindowStartMs;
     private void RefreshSurfaceBindings()
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         ProgramSurface = _surfaces.ProgramSurface;
         PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
         ScheduleMultiviewGridRefresh();
+        sw.Stop();
+        // DIAGNOSTIC: how much UI-thread time the per-frame binding rebuild consumes.
+        // UIbusy% near 100 means the rebuild saturates the UI thread -> frames lag.
+        _rsbTotalMs += sw.ElapsedMilliseconds;
+        _rsbCount++;
+        var now = Environment.TickCount64;
+        if (_rsbWindowStartMs == 0) { _rsbWindowStartMs = now; }
+        if (_rsbCount >= 60)
+        {
+            var span = now - _rsbWindowStartMs;
+            LaunchLog.Write($"perf: RefreshSurfaceBindings {_rsbCount} calls/{span}ms => {(double)_rsbTotalMs / _rsbCount:F1}ms/call, {(span > 0 ? _rsbCount * 1000.0 / span : 0):F0}/s, UIbusy={(span > 0 ? 100.0 * _rsbTotalMs / span : 0):F0}%");
+            _rsbCount = 0;
+            _rsbTotalMs = 0;
+            _rsbWindowStartMs = now;
+        }
     }
 
     private void ScheduleMultiviewGridRefresh()

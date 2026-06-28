@@ -568,12 +568,21 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   const auto observedAtMs = runtimeElapsedMs();
 
   // The compositor already has the full-res frame (latestDecodedFrames_ above).
-  // Stream only a small thumbnail as base64 for the WinUI multiview tiles so the
-  // stdout payload stays tiny — full-res here causes a multi-MB-per-frame firehose.
+  // Stream a downscaled thumbnail as base64 for the WinUI monitors. 320x180 looked
+  // heavily pixelated next to the native-1080p capture cards; 640x360 is ~4x the
+  // detail while staying ~1/9 the cost of full 1080p (which would firehose stdout).
   int thumbW = 0;
   int thumbH = 0;
   const auto thumb = downscaleBgraThumbnail(
-      frame->rgba, static_cast<int>(frame->width), static_cast<int>(frame->height), 320, 180, thumbW, thumbH);
+      frame->rgba, static_cast<int>(frame->width), static_cast<int>(frame->height), 640, 360, thumbW, thumbH);
+  // LATEST-WINS: this queue is drained by the render thread, which gets starved by
+  // command processing (media-core-sync holds the core lock). Unbounded, it
+  // accumulated tens of seconds of stale frames (the "10s+ latency"). Cap it and
+  // drop the oldest so the WinUI always gets near-current frames.
+  constexpr std::size_t kMaxPendingZoomFrameEvents = 16;  // ~2 frames x up to 8 participants
+  if (pendingFrameEvents_.size() >= kMaxPendingZoomFrameEvents) {
+    pendingFrameEvents_.erase(pendingFrameEvents_.begin());
+  }
   pendingFrameEvents_.emplace_back(rpc::Json::Object{
       {"type", "zoom-video-frame"},
       {"frame",
@@ -583,6 +592,9 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
            {"height", thumbH},
            {"frameId", static_cast<int>(frame->frameId)},
            {"observedAtMs", observedAtMs},
+           {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count())},
            {"bgraBase64", base64Encode(thumb.data(), thumb.size())},
        }},
   });
