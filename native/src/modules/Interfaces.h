@@ -28,9 +28,30 @@ struct VideoFrame {
   int pixelHeight = 0;
   int pixelStride = 0;
   int64_t frameId = 0;
+  // Optional I420 (YUV 4:2:0 planar, full-range BT.709) payload. When present,
+  // the GPU compositor uploads the Y/U/V planes to single-channel textures and
+  // converts to RGB in the pixel shader (no CPU per-pixel I420->BGRA convert).
+  // Planes are tightly packed: Y (i420Width*i420Height) then U then V
+  // ((i420Width/2)*(i420Height/2) each). i420Width/i420Height are the (even)
+  // luma dimensions. Carried alongside `pixels` above; a frame may carry either
+  // representation (Zoom participants now flow through as I420 so the convert
+  // happens on the GPU).
+  std::shared_ptr<const std::vector<uint8_t>> i420;
+  int i420Width = 0;
+  int i420Height = 0;
   [[nodiscard]] bool hasPixels() const {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
+  }
+  [[nodiscard]] bool hasI420() const {
+    if (!i420 || i420Width <= 0 || i420Height <= 0) {
+      return false;
+    }
+    if ((i420Width & 1) != 0 || (i420Height & 1) != 0) {
+      return false;
+    }
+    const size_t yLen = static_cast<size_t>(i420Width) * static_cast<size_t>(i420Height);
+    return i420->size() >= yLen + (yLen / 4) * 2;
   }
 };
 
