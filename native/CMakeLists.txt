@@ -233,6 +233,30 @@ add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
 # ---------------------------------------------------------------------------
+# Synthetic (fake) Zoom capture engine — NO Zoom SDK dependency.
+# Speaks the exact same named-pipe + shared-memory protocol as
+# corevideo-zoom-engine, but fabricates a multi-participant meeting so the
+# multi-participant crash/freeze scenario can be reproduced and validated
+# without a real Zoom call. Built unconditionally (pure Win32/POSIX), so both
+# `npm run build:native-dev` and the portable stub build produce it.
+# Point the core at it with COREVIDEO_ZOOM_ENGINE_PATH=<...>/corevideo-zoom-engine-fake.
+# ---------------------------------------------------------------------------
+add_executable(corevideo-zoom-engine-fake zoom-engine/fake/fake-engine.cpp)
+target_include_directories(corevideo-zoom-engine-fake PRIVATE
+  zoom-engine/shared
+  zoom-engine/engine
+)
+if(WIN32)
+  # IPC (named pipes) + SHM (file mappings) use only kernel32 (linked by default).
+elseif(UNIX AND NOT APPLE)
+  find_package(Threads REQUIRED)
+  target_link_libraries(corevideo-zoom-engine-fake PRIVATE Threads::Threads rt)
+else()
+  find_package(Threads REQUIRED)
+  target_link_libraries(corevideo-zoom-engine-fake PRIVATE Threads::Threads)
+endif()
+
+# ---------------------------------------------------------------------------
 # Vendored standalone Zoom capture engine.
 # Built only on a dev machine that has the Zoom Meeting SDK; excluded from the
 # default in-container stub build so `-DCOREVIDEO_STUB=ON` stays green.
