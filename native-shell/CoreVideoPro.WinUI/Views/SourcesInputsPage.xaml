@@ -340,72 +340,77 @@
                             </StackPanel>
                         </Border>
                     </Grid>
+                    <!-- Compact routing table: every input is a single dense row so all 10 fit
+                         in a 1080p window without large per-slot cards. Header + rows share the
+                         same column widths so the columns line up like a broadcast router list. -->
+                    <Grid Padding="8,0,8,2" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="30" />
+                            <ColumnDefinition Width="40" />
+                            <ColumnDefinition Width="1.1*" />
+                            <ColumnDefinition Width="1.7*" />
+                            <ColumnDefinition Width="1.2*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="IN" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="1" Text="SHOW" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="2" Text="TYPE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="3" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="4" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                    </Grid>
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
                                    ElementPrepared="OnShowInputEditorPrepared">
                         <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="6" />
+                            <StackLayout Orientation="Vertical" Spacing="2" />
                         </ItemsRepeater.Layout>
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
-                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="10,8">
-                                    <Grid ColumnSpacing="8" RowSpacing="8">
+                                <Border Background="#0C1118" CornerRadius="4" Padding="8,3">
+                                    <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="72" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="30" />
+                                            <ColumnDefinition Width="40" />
+                                            <ColumnDefinition Width="1.1*" />
+                                            <ColumnDefinition Width="1.7*" />
+                                            <ColumnDefinition Width="1.2*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Text="{x:Bind SlotLabel}" FontWeight="SemiBold" FontSize="12"
+                                        <TextBlock Text="{x:Bind SlotNumber}" FontWeight="SemiBold" FontSize="12"
                                                    VerticalAlignment="Center" />
-                                        <StackPanel Grid.Column="1" Spacing="4">
-                                            <TextBlock Text="Input type" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox x:Name="KindCombo"
-                                                      Tag="{x:Bind}"
-                                                      ItemsSource="{x:Bind KindOptions}"
-                                                      SelectedValue="{x:Bind Kind, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="2" Spacing="4">
-                                            <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox x:Name="SourceCombo"
-                                                      Tag="{x:Bind}"
-                                                      ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
-                                                      SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                        </StackPanel>
-                                        <ToggleSwitch Grid.Column="3"
-                                                      Header="In show"
-                                                      IsOn="{x:Bind InShow, Mode=TwoWay}"
-                                                      IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}"
-                                                      VerticalAlignment="Center" />
-                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Spacing="4"
-                                                    Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="Paired audio source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox x:Name="InputMicCombo"
-                                                      ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
-                                                      SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      HorizontalAlignment="Stretch" />
-                                        </StackPanel>
-                                        <Button Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2"
-                                                Content="Color grade"
+                                        <CheckBox Grid.Column="1" MinWidth="0" Padding="0" HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  IsChecked="{x:Bind InShow, Mode=TwoWay}"
+                                                  IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
+                                        <ComboBox Grid.Column="2" x:Name="KindCombo"
+                                                  Tag="{x:Bind}"
+                                                  ItemsSource="{x:Bind KindOptions}"
+                                                  SelectedValue="{x:Bind Kind, Mode=OneWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                        <ComboBox Grid.Column="3" x:Name="SourceCombo"
+                                                  Tag="{x:Bind}"
+                                                  ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
+                                                  SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
+                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                        <ComboBox Grid.Column="4" x:Name="InputMicCombo"
+                                                  Tag="{x:Bind}"
+                                                  ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
+                                                  SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                        <Button Grid.Column="5"
+                                                Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
-                                                HorizontalAlignment="Right" />
+                                                VerticalAlignment="Center" />
                                     </Grid>
                                 </Border>
                             </DataTemplate>

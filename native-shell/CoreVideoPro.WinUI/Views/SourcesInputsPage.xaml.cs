@@ -108,8 +108,10 @@ public sealed partial class SourcesInputsPage : UserControl
 
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Use Tag (x:Bind to the slot view-model), not DataContext, which is null for
+        // ComboBoxes realized inside the ItemsRepeater.
         if (sender is not ComboBox combo ||
-            combo.DataContext is not ShowInputSlotViewModel editor ||
+            combo.Tag is not ShowInputSlotViewModel editor ||
             combo.SelectedValue is not string audioDeviceId)
         {
             return;
