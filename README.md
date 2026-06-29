@@ -71,6 +71,14 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 > [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md)
 > for the exit bar and the remaining real-implementation work.
 
+> **Current focus (2026-06-29).** Real Zoom multi-participant is now stable on the Windows
+> rig (program-zoom renders on the GPU I420 path; input routing honored by Sources +
+> multiview; compact Sources routing table). Active work: the **GPU core-composited
+> multiview** ([`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md)), a
+> window-resize crash, and decoupling audio from the render lock for locked 60fps. Build,
+> run, the multi-participant test harness, and the `CoreMessagingXP 0xc000027b` crash
+> class are documented in [`CLAUDE.md`](CLAUDE.md).
+
 ## Repository layout
 
 | Path | Role |
@@ -127,6 +135,9 @@ The first fully useful milestone:
 
 ## Further reading
 
+- **Working guide (build/run/architecture/crash class/current state):** [`CLAUDE.md`](CLAUDE.md).
+- GPU multiview implementation plan: [`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md).
+- Compositor architecture (OBS/CasparCG/Natron-informed): [`docs/compositor-architecture-plan.md`](docs/compositor-architecture-plan.md).
 - Sprint-by-sprint demo roadmap: [`docs/roadmap/index.html`](docs/roadmap/index.html) (open in a browser).
 - Alpha build plan & exit bar: [`docs/alpha-plan.md`](docs/alpha-plan.md).
 - Native production completion plan: [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
