@@ -165,16 +165,13 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         var trackerKey = ParticipantKey(frame.ParticipantId);
         lock (_gate)
         {
-            // If this participant has a live GPU shared texture, the tile presents
-            // from it on the GPU — skip the base64 decode + per-frame NotifyChanged
-            // churn entirely (that UI-thread work was the multiview bottleneck, and the
-            // per-frame NotifyChanged rebuilds the whole MultiviewTiles collection which
-            // reloads every tile's VideoSurfaceHost -> GPU swap-chain churn -> fail-fast).
-            if (_participantSharedHandles.TryGetValue(trackerKey, out var gpuHandle) && gpuHandle.IsValid)
-            {
-                return;
-            }
-
+            // Keep the base64 CPU pixels fresh for every participant. The multiview tiles
+            // now render on the CPU (no per-tile GPU swap chain) for stability — N
+            // concurrent 1080p swap chains churning on a live Zoom join/active-speaker
+            // change is what fail-fasts the WinUI (CoreMessagingXP 0xc000027b). The
+            // OnSurfacesChanged refresh is rate-throttled (~12.5/s), so feeding base64 to
+            // the CPU tiles no longer floods the dispatcher. (Program/preview stay GPU via
+            // the core's single composite texture.)
             if (_lastAppliedFrameId.TryGetValue(trackerKey, out var appliedFrameId) &&
                 frame.FrameId <= appliedFrameId &&
                 !_pendingFrames.ContainsKey(trackerKey))

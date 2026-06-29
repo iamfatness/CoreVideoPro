@@ -282,10 +282,17 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // only carries CPU BGRA pixels (no valid shared handle — the current Zoom preview
     // path), the GPU present is a no-op and the CPU BGRA preview (PreviewImage, above the
     // SwapChainPanel in the visual tree) renders instead — safe with or without a handle.
+    // Only the PROGRAM and PREVIEW monitors present a GPU shared texture (one stable swap
+    // chain each, fed by the core's single composite texture). The MULTIVIEW tiles render
+    // on the CPU (base64 Image) — giving each of N participant tiles its own GPU swap chain
+    // and reloading them on every roster/active-speaker change fail-fasts the WinUI under a
+    // live multi-participant meeting (CoreMessagingXP 0xc000027b). Smooth GPU multiview at
+    // scale needs the core to composite the multiview into ONE texture (architecture TODO);
+    // until then, CPU multiview tiles are the stable path.
     private bool UsesGpuSharedTexture =>
         IsProgramSurface ||
         string.Equals(SurfaceKey, "preview", StringComparison.Ordinal) ||
-        SurfaceState?.Kind is VideoSurfaceKind.Multiview or VideoSurfaceKind.Participant or VideoSurfaceKind.Preview;
+        SurfaceState?.Kind == VideoSurfaceKind.Preview;
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
