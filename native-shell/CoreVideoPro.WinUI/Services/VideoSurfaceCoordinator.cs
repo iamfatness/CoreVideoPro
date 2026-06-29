@@ -24,6 +24,9 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
     private string _lastProgramSharedSignature = "";
     private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
+    private VideoSurfaceState _multiviewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Multiview, "multiview", "Multiview");
+    private IReadOnlyList<MultiviewTile> _multiviewTileRects = [];
+    private string _lastMultiviewSharedSignature = "";
     private string _previewParticipantId = string.Empty;
     private string _compositorRenderer = "software";
 
@@ -57,6 +60,36 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             lock (_gate)
             {
                 return _previewSurface;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The ONE core-composited multiview shared texture surface (single swap chain), mirroring
+    /// the program path. Presented by a single VideoSurfaceHost with a transparent click overlay.
+    /// </summary>
+    public VideoSurfaceState MultiviewSurface
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _multiviewSurface;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Normalized [0,1] tile rects for the multiview click overlay + labels. Updated only on a
+    /// structural layout change (rare), never per frame.
+    /// </summary>
+    public IReadOnlyList<MultiviewTile> MultiviewTileRects
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _multiviewTileRects;
             }
         }
     }
@@ -601,6 +634,66 @@ public sealed class VideoSurfaceCoordinator : IDisposable
                 : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, key, texture.ParticipantId);
             _participantSurfaces[key] = surface.WithSharedHandle(handle);
             structuralChange = previous != handle.NtHandle;
+        }
+
+        if (structuralChange)
+        {
+            NotifyChanged();
+        }
+    }
+
+    /// <summary>
+    /// The single GPU shared texture carrying the whole composited multiview grid. Stores ONE
+    /// MultiviewSurface (like ApplyProgramSharedTexture) + the latest normalized tile rects. The
+    /// handle value is stable (the core reuses the texture), so the single multiview VideoSurfaceHost
+    /// presents each new keyed-mutex frame off its own present loop; we only fire the structural
+    /// SurfacesChanged when the handle, size, or tile layout actually changes — never per frame.
+    /// </summary>
+    public void OnMultiviewSharedTexture(MultiviewSharedTexture multiview)
+    {
+        if (multiview is null || !multiview.IsValid)
+        {
+            return;
+        }
+
+        var texture = multiview.Texture;
+        var handle = ToSharedTextureHandle(texture);
+        if (!handle.IsValid)
+        {
+            return;
+        }
+
+        var frameNumber = texture.FrameNumber > 0 ? texture.FrameNumber : 0;
+        var measuredFps = frameNumber > 0 ? TrackFps("multiview", frameNumber) : 0;
+        var metadata = new VideoFrameMetadata
+        {
+            Width = texture.Width,
+            Height = texture.Height,
+            FrameId = frameNumber,
+            Fps = measuredFps,
+            Renderer = "d3d11-multiview",
+            Health = "live",
+            TimestampMs = Environment.TickCount64
+        };
+
+        // Build a compact signature of the layout so the overlay/bindings only rebuild on a
+        // STRUCTURAL change (handle, size, or the ordered tile identities + rects).
+        var layoutSignature = string.Join(
+            "|",
+            multiview.Tiles.Select(tile =>
+                $"{tile.Slot}:{tile.SourceId}:{tile.X:F3},{tile.Y:F3},{tile.W:F3},{tile.H:F3}"));
+        var signature = $"{handle.NtHandle:X}:{texture.Width}x{texture.Height}:{layoutSignature}";
+
+        bool structuralChange;
+        lock (_gate)
+        {
+            _multiviewSurface = VideoSurfaceState
+                .Slate(VideoSurfaceKind.Multiview, "multiview", "Multiview")
+                .WithFrame(metadata, "Multiview GPU surface live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · {metadata.Renderer}")
+                .WithSharedHandle(handle);
+            _multiviewTileRects = multiview.Tiles;
+            structuralChange = signature != _lastMultiviewSharedSignature;
+            _lastMultiviewSharedSignature = signature;
         }
 
         if (structuralChange)

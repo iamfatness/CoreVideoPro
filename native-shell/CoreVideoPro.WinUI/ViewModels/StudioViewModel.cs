@@ -256,6 +256,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private IReadOnlyList<ParticipantSurfaceTile> _multiviewGridTiles = [];
 
+    // The ONE core-composited GPU multiview shared-texture surface + its normalized tile rects
+    // (for the transparent click overlay). Replaces the per-tile CPU multiview path.
+    [ObservableProperty]
+    private VideoSurfaceState _multiviewSurface =
+        VideoSurfaceState.Slate(VideoSurfaceKind.Multiview, "multiview", "Multiview");
+
+    [ObservableProperty]
+    private IReadOnlyList<CoreVideoPro.MediaCore.Models.MultiviewTile> _multiviewTileRects = [];
+
     public ObservableCollection<ShowInputSlot> ShowInputs { get; } =
         new(ShowInputRosterService.CreateDefaultSlots());
 
@@ -867,6 +876,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
         _bridge.ParticipantSharedTextureReceived += OnParticipantSharedTextureReceived;
+        _bridge.MultiviewSharedTextureReceived += OnMultiviewSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged += OnSurfacesChanged;
 
@@ -6236,18 +6246,36 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 isProgramScene: MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(selectedMediaAsset.Id, resolvedProgramRoutes),
                 _programMediaPlaybackTakeVersion);
 
+        var canvasProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
+        // The ordered Show Input roster that drives the core-composited GPU multiview. Built from
+        // the SAME slots that feed ShowInputRosterService.BuildMultiviewTiles, so the multiview
+        // monitor and the Sources roster always agree on which sources are live.
+        var multiviewSources = MultiviewGpuEnabled
+            ? ShowInputRosterService.BuildMultiviewLayoutSources(
+                ShowInputs,
+                RoomParticipantsForInputs,
+                CaptureDevices,
+                VisualMediaAssets)
+            : [];
+        var multiviewGrid = ShowInputRosterService.ResolveGridShape(multiviewSources.Count);
+
         return new MediaCoreProductionSyncContext
         {
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
+            MultiviewSources = multiviewSources,
+            MultiviewCanvasWidth = canvasProfile.Width,
+            MultiviewCanvasHeight = canvasProfile.Height,
+            MultiviewColumns = multiviewGrid.Columns,
+            MultiviewRows = multiviewGrid.Rows,
             Participants = participants,
             Recording = Recording,
             Streaming = Streaming,
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
-            CanvasOutputProfile = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264"),
+            CanvasOutputProfile = canvasProfile,
             StreamOutputProfile = BuildRequestedOutputProfile(
                 "stream",
                 StreamRenderResolution,
@@ -8124,7 +8152,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ProgramSurface = _surfaces.ProgramSurface;
+        // The MULTIVIEW monitor is now ONE core-composited GPU shared texture (single swap chain),
+        // mirrored from the coordinator on structural change only — NOT a per-frame rebuild of N
+        // bound tiles (the retired CPU/per-tile-swap-chain churn vector). MultiviewTiles is still
+        // built here because the PREVIEW bus resolves its primary source's live surface from it
+        // (program/preview stay), but it no longer drives the multiview host.
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        MultiviewSurface = _surfaces.MultiviewSurface;
+        MultiviewTileRects = _surfaces.MultiviewTileRects;
         // Set the preview bus AFTER MultiviewTiles is rebuilt so the previewed source
         // resolves against the freshly-built live surfaces. RefreshSurfaceBindings is the
         // single UI-thread path that mutates VideoSurfaceHost-bound properties (Program,
@@ -8132,7 +8167,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSurface = ResolvePreviewPrimarySurface();
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
-        ScheduleMultiviewGridRefresh();
         sw.Stop();
         // DIAGNOSTIC: how much UI-thread time the per-frame binding rebuild consumes.
         // UIbusy% near 100 means the rebuild saturates the UI thread -> frames lag.
@@ -8897,6 +8931,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MultiviewGridTiles = tiles;
         OnPropertyChanged(nameof(MultiviewHeader));
+
+        // The Show Input roster also drives the core-composited GPU multiview. These are the
+        // structural-change points, so (re)send set-multiview-layout here (deduped). The old
+        // per-tile CPU multiview is retired — MultiviewGridTiles now only feeds the header count.
+        SyncMultiviewLayoutIfChanged();
     }
 
     private void RefreshOutputStatus()
@@ -9811,6 +9850,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
         _bridge.ParticipantSharedTextureReceived -= OnParticipantSharedTextureReceived;
+        _bridge.MultiviewSharedTextureReceived -= OnMultiviewSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
         _surfaces.SurfacesChanged -= OnSurfacesChanged;
         SrtIngestSources.CollectionChanged -= OnSrtIngestSourcesChanged;
@@ -9929,6 +9969,93 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LaunchLog.Write($"multiview: participant GPU texture '{texture.ParticipantId}' {texture.Width}x{texture.Height} handle={texture.SharedHandleHex}");
         }
         RunOnUiThread(() => _surfaces.OnParticipantSharedTexture(texture));
+    }
+
+    // The ONE core-composited multiview GPU shared texture. Low-rate (structural-change only).
+    // Marshal to the UI thread (the coordinator fires SurfacesChanged, which feeds the single
+    // multiview VideoSurfaceHost + click overlay).
+    // GPU core-composited multiview is the intended default. Set COREVIDEO_MULTIVIEW_GPU=0/off/false
+    // to suppress the set-multiview-layout command + GPU surface handling (the multiview monitor
+    // then stays a slate — a debug escape hatch, not a CPU fallback).
+    private static readonly bool MultiviewGpuEnabled = ResolveMultiviewGpuEnabled();
+
+    private static bool ResolveMultiviewGpuEnabled()
+    {
+        var value = Environment.GetEnvironmentVariable("COREVIDEO_MULTIVIEW_GPU");
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        return !(value.Equals("0", StringComparison.Ordinal) ||
+                 value.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                 value.Equals("off", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string _lastSentMultiviewLayoutSignature = "";
+
+    // Sends set-multiview-layout when the Show Input roster STRUCTURE changes (called from the
+    // structural roster/show-input refresh points, deduped by signature). The production sync
+    // (BuildSyncCommands) also carries the layout on scene publishes; this covers roster/show-input
+    // changes that don't publish a scene. Never sent per frame.
+    private void SyncMultiviewLayoutIfChanged()
+    {
+        if (!MultiviewGpuEnabled || !_bridge.Running)
+        {
+            return;
+        }
+
+        var sources = ShowInputRosterService.BuildMultiviewLayoutSources(
+            ShowInputs,
+            RoomParticipantsForInputs,
+            CaptureDevices,
+            VisualMediaAssets);
+        var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
+        var signature = string.Join("|", sources.Select(source => $"{source.Slot}:{source.Kind}:{source.SourceId}:{source.Label}")) +
+            $"#{grid.Columns}x{grid.Rows}";
+        if (string.Equals(signature, _lastSentMultiviewLayoutSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastSentMultiviewLayoutSignature = signature;
+        var canvas = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
+        var command = MediaCoreCommandBuilder.BuildMultiviewLayoutCommand(
+            sources,
+            canvas.Width,
+            canvas.Height,
+            grid.Columns,
+            grid.Rows);
+        _ = SendMultiviewLayoutAsync(command);
+    }
+
+    private async Task SendMultiviewLayoutAsync(NativeMediaCoreCommand command)
+    {
+        try
+        {
+            await _bridge.SyncAsync([command]).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort: the production sync (scene publish) also carries the layout, and the
+            // next structural change re-sends it.
+        }
+    }
+
+    private bool _loggedMultiviewTexture;
+    private void OnMultiviewSharedTextureReceived(CoreVideoPro.MediaCore.Models.MultiviewSharedTexture multiview)
+    {
+        if (!MultiviewGpuEnabled)
+        {
+            return;
+        }
+
+        if (multiview is { } mv && mv.IsValid && !_loggedMultiviewTexture)
+        {
+            _loggedMultiviewTexture = true;
+            LaunchLog.Write($"multiview: GPU shared texture {mv.Texture.Width}x{mv.Texture.Height} handle={mv.Texture.SharedHandleHex} tiles={mv.Tiles.Count}");
+        }
+        RunOnUiThread(() => _surfaces.OnMultiviewSharedTexture(multiview));
     }
 
     private sealed record LowerThirdSource(

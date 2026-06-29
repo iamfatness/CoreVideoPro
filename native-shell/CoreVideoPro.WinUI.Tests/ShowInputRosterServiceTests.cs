@@ -518,6 +518,60 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal("p-camera-on", slot2.Participant.Id);
     }
 
+    [Fact]
+    public void BuildMultiviewLayoutSources_MapsZoomCaptureAndMediaSlotsInOrder()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-1";
+        slots[0].InShow = true;
+        slots[1].Kind = ShowInputKind.UvcWebcam;
+        slots[1].CaptureDeviceId = "cam-uvc";
+        slots[1].InShow = true;
+        slots[2].Kind = ShowInputKind.Media;
+        slots[2].ParticipantId = ShowInputRosterService.ToMediaSourceId("asset-7");
+        slots[2].InShow = true;
+        // Assigned but NOT in show — must be excluded.
+        slots[3].Kind = ShowInputKind.ZoomParticipant;
+        slots[3].ParticipantId = "p-2";
+        slots[3].InShow = false;
+
+        var participants = new[]
+        {
+            new Participant { Id = "p-1", Name = "Host", Health = FeedHealth.Live },
+            new Participant { Id = "p-2", Name = "Guest", Health = FeedHealth.Live }
+        };
+        var devices = new[] { Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: true) };
+        var media = new[] { Media("asset-7", "Bumper", "video") };
+
+        var sources = ShowInputRosterService.BuildMultiviewLayoutSources(slots, participants, devices, media);
+
+        Assert.Equal(3, sources.Count);
+
+        Assert.Equal("zoom", sources[0].Kind);
+        Assert.Equal("p-1", sources[0].ParticipantId);
+        Assert.Equal("zoom:p-1", sources[0].SourceId);
+        Assert.Equal("Host", sources[0].Label);
+        Assert.Equal(0, sources[0].Slot);
+
+        Assert.Equal("capture", sources[1].Kind);
+        Assert.Equal("cam-uvc", sources[1].CaptureDeviceId);
+        Assert.Equal("capture:cam-uvc", sources[1].SourceId);
+
+        Assert.Equal("media", sources[2].Kind);
+        Assert.Equal("asset-7", sources[2].MediaAssetId);
+        Assert.Equal("media:asset-7", sources[2].SourceId);
+    }
+
+    [Fact]
+    public void ResolveGridShape_PicksReasonableColumnsRows()
+    {
+        Assert.Equal((1, 1), ShowInputRosterService.ResolveGridShape(1));
+        Assert.Equal((2, 1), ShowInputRosterService.ResolveGridShape(2));
+        Assert.Equal((2, 2), ShowInputRosterService.ResolveGridShape(4));
+        Assert.Equal((5, 2), ShowInputRosterService.ResolveGridShape(10));
+    }
+
     private static MediaAsset Media(string id, string name, string kind, bool isPlaying = false) =>
         new()
         {

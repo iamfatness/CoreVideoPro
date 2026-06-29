@@ -76,6 +76,44 @@ public sealed class CoreParticipantSharedTextureEvent
     public required ParticipantSharedTexture Texture { get; init; }
 }
 
+/// <summary>
+/// One tile in the core-composited multiview. The rect (x,y,w,h) is normalized [0,1] to the
+/// multiview canvas; the active-speaker border is baked into the shared texture, so this is
+/// only used to position the transparent click overlay and label.
+/// </summary>
+public sealed class MultiviewTile
+{
+    public string SourceId { get; init; } = string.Empty;
+    public string ParticipantId { get; init; } = string.Empty;
+    public int Slot { get; init; }
+    public string Label { get; init; } = string.Empty;
+    public bool ActiveSpeaker { get; init; }
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double W { get; init; }
+    public double H { get; init; }
+}
+
+/// <summary>
+/// The single GPU shared texture carrying the whole composited multiview grid, plus the
+/// normalized tile rects for the transparent click overlay. Mirrors <c>multiview-shared-texture</c>.
+/// </summary>
+public sealed class MultiviewSharedTexture
+{
+    public ProgramSharedTexture Texture { get; init; } = new();
+    public int CanvasWidth { get; init; }
+    public int CanvasHeight { get; init; }
+    public IReadOnlyList<MultiviewTile> Tiles { get; init; } = [];
+
+    public bool IsValid => Texture.IsValid;
+}
+
+public sealed class CoreMultiviewSharedTextureEvent
+{
+    public string Type => "multiview-shared-texture";
+    public required MultiviewSharedTexture Multiview { get; init; }
+}
+
 public sealed class CoreError
 {
     public required string Code { get; init; }

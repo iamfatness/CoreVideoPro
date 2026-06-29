@@ -289,10 +289,15 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // live multi-participant meeting (CoreMessagingXP 0xc000027b). Smooth GPU multiview at
     // scale needs the core to composite the multiview into ONE texture (architecture TODO);
     // until then, CPU multiview tiles are the stable path.
+    // The MULTIVIEW monitor is now ALSO a single GPU shared texture: the core composites the
+    // whole grid into ONE keyed-mutex texture (the proven program model), so SurfaceKey=="multiview"
+    // is one stable swap chain — NOT the old N-per-tile swap chains that fail-fast the WinUI under
+    // roster/active-speaker churn. (Per-tile multiview hosts are gone; this is the single host.)
     private bool UsesGpuSharedTexture =>
         IsProgramSurface ||
         string.Equals(SurfaceKey, "preview", StringComparison.Ordinal) ||
-        SurfaceState?.Kind == VideoSurfaceKind.Preview;
+        SurfaceState?.Kind == VideoSurfaceKind.Preview ||
+        string.Equals(SurfaceKey, "multiview", StringComparison.Ordinal);
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {

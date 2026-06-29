@@ -23,6 +23,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
         _supervisor.ParticipantSharedTextureReceived += texture => ParticipantSharedTextureReceived?.Invoke(texture);
+        _supervisor.MultiviewSharedTextureReceived += texture => MultiviewSharedTextureReceived?.Invoke(texture);
     }
 
     public event Action<MediaCoreHealth>? HealthChanged;
@@ -33,6 +34,7 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
+    public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
     public MediaCoreHealth Health => _supervisor.Health;
 

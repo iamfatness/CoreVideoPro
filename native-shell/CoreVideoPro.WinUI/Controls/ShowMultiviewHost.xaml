@@ -10,7 +10,20 @@
     HorizontalAlignment="Stretch"
     VerticalAlignment="Stretch">
 
-    <Grid x:Name="LayoutSurface" Background="#020304" Padding="2" ColumnSpacing="4" RowSpacing="4">
+    <!-- ONE swap chain: the core composites the whole multiview grid into a single keyed-mutex
+         shared texture (the program model). A transparent Canvas overlays per-tile click targets
+         + labels, positioned from the normalized tile rects through the same letterbox transform
+         the swap chain uses. No per-tile swap chains, so no roster/active-speaker churn crash. -->
+    <Grid x:Name="LayoutSurface" Background="#020304">
+        <cvcontrols:VideoSurfaceHost x:Name="MultiviewSurfaceHost"
+                                     SurfaceState="{x:Bind Surface, Mode=OneWay}"
+                                     HorizontalAlignment="Stretch"
+                                     VerticalAlignment="Stretch" />
+
+        <Canvas x:Name="ClickOverlay"
+                Background="Transparent"
+                SizeChanged="OnOverlaySizeChanged" />
+
         <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
             <TextBlock Text="Assign show inputs in Sources to populate multiview."
                        FontSize="12"

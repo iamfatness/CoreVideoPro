@@ -43,6 +43,48 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ParsesMultiviewSharedTextureEventWithTiles()
+    {
+        var line = """
+            {
+              "type": "multiview-shared-texture",
+              "texture": { "sharedHandleHex": "0x1A2B3C", "width": 1920, "height": 1080, "format": "B8G8R8A8_UNORM", "frameNumber": 42 },
+              "canvasWidth": 1920,
+              "canvasHeight": 1080,
+              "tiles": [
+                { "sourceId": "zoom:p-1", "participantId": "p-1", "slot": 0, "label": "Host", "activeSpeaker": true, "x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5 },
+                { "sourceId": "capture:cam-1", "participantId": "", "slot": 1, "label": "Cam", "activeSpeaker": false, "x": 0.5, "y": 0.0, "w": 0.5, "h": 0.5 }
+              ]
+            }
+            """;
+
+        var multiviewEvent = CoreProtocolParser.TryParseMultiviewSharedTextureEvent(line);
+        Assert.NotNull(multiviewEvent);
+        var multiview = multiviewEvent!.Multiview;
+        Assert.True(multiview.IsValid);
+        Assert.Equal(1920, multiview.CanvasWidth);
+        Assert.Equal(1080, multiview.CanvasHeight);
+        Assert.Equal(42, multiview.Texture.FrameNumber);
+        Assert.Equal(2, multiview.Tiles.Count);
+
+        var host = multiview.Tiles[0];
+        Assert.Equal("zoom:p-1", host.SourceId);
+        Assert.Equal("p-1", host.ParticipantId);
+        Assert.True(host.ActiveSpeaker);
+        Assert.Equal(0.5, host.W, 3);
+
+        var cam = multiview.Tiles[1];
+        Assert.Equal("capture:cam-1", cam.SourceId);
+        Assert.False(cam.ActiveSpeaker);
+        Assert.Equal(0.5, cam.X, 3);
+
+        // A program-shared-texture event must not be misread as multiview, and vice versa.
+        Assert.Null(CoreProtocolParser.TryParseMultiviewSharedTextureEvent(
+            """{"type":"program-shared-texture","texture":{"sharedHandleHex":"0x1","width":16,"height":9}}"""));
+        Assert.Null(CoreProtocolParser.TryParseProgramSharedTextureEvent(line));
+    }
+
+    [Fact]
     public void RejectsZoomVideoFramesWithMismatchedBgraLength()
     {
         var base64 = Convert.ToBase64String(new byte[4]);

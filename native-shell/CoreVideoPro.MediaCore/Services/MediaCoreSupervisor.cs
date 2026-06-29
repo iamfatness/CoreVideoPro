@@ -68,6 +68,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
+    public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
     public MediaCoreHealth Health
     {
@@ -681,6 +682,17 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 // low-rate, light handler as the program texture; invoke directly.
                 var participantTexture = participantTextureEvent.Texture;
                 try { ParticipantSharedTextureReceived?.Invoke(participantTexture); } catch { }
+                continue;
+            }
+
+            var multiviewTextureEvent = CoreProtocolParser.TryParseMultiviewSharedTextureEvent(line);
+            if (multiviewTextureEvent is not null)
+            {
+                // The single core-composited multiview shared-texture handle — low-rate
+                // (emitted on structural change only) and the handler is light (update
+                // handle + tile rects + notify), so invoke directly like the program texture.
+                var multiviewTexture = multiviewTextureEvent.Multiview;
+                try { MultiviewSharedTextureReceived?.Invoke(multiviewTexture); } catch { }
                 continue;
             }
 

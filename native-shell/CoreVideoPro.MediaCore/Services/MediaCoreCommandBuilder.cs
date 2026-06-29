@@ -17,6 +17,12 @@ public static class MediaCoreCommandBuilder
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
             BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground),
+            BuildMultiviewLayoutCommand(
+                context.MultiviewSources,
+                context.MultiviewCanvasWidth,
+                context.MultiviewCanvasHeight,
+                context.MultiviewColumns,
+                context.MultiviewRows),
             BuildColorGradeCommand(context.ColorGrade),
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
@@ -133,6 +139,35 @@ public static class MediaCoreCommandBuilder
                 }
 
                 return payload;
+            }).ToList()
+        });
+
+    /// <summary>
+    /// Builds <c>set-multiview-layout</c> from the ordered Show Input roster. The core composites
+    /// these into ONE shared texture and computes the grid cells itself; cols/rows are advisory.
+    /// An empty source list clears the layout (turns the multiview composite pass off).
+    /// </summary>
+    public static NativeMediaCoreCommand BuildMultiviewLayoutCommand(
+        IReadOnlyList<MediaCoreMultiviewSourceWire> sources,
+        int canvasWidth,
+        int canvasHeight,
+        int columns,
+        int rows) =>
+        Command("set-multiview-layout", new Dictionary<string, object?>
+        {
+            ["canvasWidth"] = canvasWidth > 0 ? canvasWidth : 1920,
+            ["canvasHeight"] = canvasHeight > 0 ? canvasHeight : 1080,
+            ["cols"] = columns,
+            ["rows"] = rows,
+            ["sources"] = sources.Select(source => new Dictionary<string, object?>
+            {
+                ["sourceId"] = source.SourceId,
+                ["kind"] = source.Kind,
+                ["participantId"] = source.ParticipantId,
+                ["captureDeviceId"] = source.CaptureDeviceId,
+                ["mediaAssetId"] = source.MediaAssetId,
+                ["slot"] = source.Slot,
+                ["label"] = source.Label
             }).ToList()
         });
 

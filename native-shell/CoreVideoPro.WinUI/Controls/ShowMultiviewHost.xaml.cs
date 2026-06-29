@@ -1,65 +1,56 @@
 using System;
-using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows.Input;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
-using CoreVideoPro.WinUI.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using System.Windows.Input;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace CoreVideoPro.WinUI.Controls;
 
+/// <summary>
+/// Presents the core-composited multiview as ONE GPU shared-texture surface (a single
+/// VideoSurfaceHost / swap chain — the proven program model) plus a transparent overlay of
+/// click targets + labels. The grid layout, content, and active-speaker border are all baked
+/// into the texture by the core; the overlay only maps taps back to the source identity, so it
+/// rebuilds on a structural layout change (rare) — never per frame, and never per active-speaker
+/// change. This replaces the old per-participant CPU tiles / per-tile swap chains that fail-fast
+/// the WinUI (CoreMessagingXP 0xc000027b) under roster/active-speaker churn.
+/// </summary>
 public sealed partial class ShowMultiviewHost : UserControl
 {
-    public static readonly DependencyProperty TilesProperty =
-        DependencyProperty.Register(nameof(Tiles), typeof(IEnumerable), typeof(ShowMultiviewHost),
-            new PropertyMetadata(null, OnTilesChanged));
+    public static readonly DependencyProperty SurfaceProperty =
+        DependencyProperty.Register(nameof(Surface), typeof(VideoSurfaceState), typeof(ShowMultiviewHost),
+            new PropertyMetadata(null, OnSurfaceChanged));
+
+    public static readonly DependencyProperty TileRectsProperty =
+        DependencyProperty.Register(nameof(TileRects), typeof(IReadOnlyList<MultiviewTile>), typeof(ShowMultiviewHost),
+            new PropertyMetadata(null, OnTileRectsChanged));
 
     public static readonly DependencyProperty TileClickCommandProperty =
         DependencyProperty.Register(nameof(TileClickCommand), typeof(ICommand), typeof(ShowMultiviewHost),
-            new PropertyMetadata(null, OnTileClickCommandChanged));
+            new PropertyMetadata(null));
 
-    private bool _rebuildInProgress;
-    private bool _rebuildScheduled;
-    private IReadOnlyList<ParticipantSurfaceTile> _lastBuiltTiles = [];
-    private (int Columns, int Rows) _currentShape = (0, 0);
+    private IReadOnlyList<MultiviewTile> _tiles = [];
 
     public ShowMultiviewHost()
     {
         InitializeComponent();
-        Loaded += (_, _) => ScheduleRebuildLayout();
-        LayoutSurface.SizeChanged += OnLayoutSizeChanged;
     }
 
-    // The optimal grid shape depends on the container's aspect ratio, so re-lay-out when a
-    // resize changes the chosen rows/cols (e.g. dragging the program/multiview splitter).
-    // Tiles are CPU surfaces here, so this rebuild has no GPU swap-chain churn.
-    private void OnLayoutSizeChanged(object sender, SizeChangedEventArgs e)
+    public VideoSurfaceState? Surface
     {
-        if (_lastBuiltTiles.Count == 0 || _rebuildInProgress)
-        {
-            return;
-        }
-
-        if (ResolveGridShape(_lastBuiltTiles.Count) == _currentShape)
-        {
-            return;
-        }
-
-        _rebuildInProgress = true;
-        try
-        {
-            RebuildLayoutCore(_lastBuiltTiles);
-        }
-        finally
-        {
-            _rebuildInProgress = false;
-        }
+        get => (VideoSurfaceState?)GetValue(SurfaceProperty);
+        set => SetValue(SurfaceProperty, value);
     }
 
-    public IEnumerable? Tiles
+    public IReadOnlyList<MultiviewTile>? TileRects
     {
-        get => (IEnumerable?)GetValue(TilesProperty);
-        set => SetValue(TilesProperty, value);
+        get => (IReadOnlyList<MultiviewTile>?)GetValue(TileRectsProperty);
+        set => SetValue(TileRectsProperty, value);
     }
 
     public ICommand? TileClickCommand
@@ -68,224 +59,181 @@ public sealed partial class ShowMultiviewHost : UserControl
         set => SetValue(TileClickCommandProperty, value);
     }
 
-    private static void OnTilesChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    private static void OnSurfaceChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ShowMultiviewHost host)
         {
-            host.ScheduleRebuildLayout();
+            // The canvas size (texture dims) drives the letterbox transform, so reposition when
+            // the surface handle changes (a rebuild is cheap — only repositions existing buttons).
+            host.PositionOverlay();
         }
     }
 
-    private static void OnTileClickCommandChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    private static void OnTileRectsChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ShowMultiviewHost host)
         {
-            host.ApplyTileClickCommandToChildren();
+            host._tiles = (args.NewValue as IReadOnlyList<MultiviewTile>) ?? [];
+            host.RebuildOverlay();
         }
     }
 
-    private void ScheduleRebuildLayout()
+    private void OnOverlaySizeChanged(object sender, SizeChangedEventArgs e) => PositionOverlay();
+
+    // Builds ≤10 transparent click buttons (one per tile) + labels. Called only when the tile-rect
+    // LAYOUT changes (structural), so there is no per-frame / per-active-speaker UI churn.
+    private void RebuildOverlay()
     {
-        if (_rebuildScheduled || _rebuildInProgress)
-        {
-            return;
-        }
+        ClickOverlay.Children.Clear();
 
-        _rebuildScheduled = true;
-        _ = DispatcherQueue.TryEnqueue(() =>
-        {
-            _rebuildScheduled = false;
-            RebuildLayout();
-        });
-    }
+        var tiles = _tiles.Take(10).ToList();
+        EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-    private void RebuildLayout()
-    {
-        if (_rebuildInProgress)
+        foreach (var tile in tiles)
         {
-            return;
-        }
-
-        _rebuildInProgress = true;
-        try
-        {
-            var tiles = ShowInputRosterService.SelectVisibleMultiviewTiles(Tiles);
-            if (TryPatchTileSurfaces(tiles))
+            var label = new TextBlock
             {
-                return;
-            }
-
-            RebuildLayoutCore(tiles);
-            _lastBuiltTiles = tiles;
-        }
-        finally
-        {
-            _rebuildInProgress = false;
-        }
-    }
-
-    private bool TryPatchTileSurfaces(IReadOnlyList<ParticipantSurfaceTile> tiles)
-    {
-        if (_lastBuiltTiles.Count == 0 ||
-            !ShowInputRosterService.SameMultiviewTileStructure(_lastBuiltTiles, tiles))
-        {
-            return false;
-        }
-
-        var patchIndex = 0;
-        foreach (var child in LayoutSurface.Children)
-        {
-            var multiviewTile = child switch
-            {
-                BroadcastMultiviewTile direct => direct,
-                AspectRatioHost { Child: BroadcastMultiviewTile nested } => nested,
-                _ => null
+                Text = string.IsNullOrWhiteSpace(tile.Label) ? string.Empty : tile.Label,
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                Margin = new Thickness(6, 4, 6, 4),
+                IsHitTestVisible = false,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                TextTrimming = TextTrimming.CharacterEllipsis
             };
 
-            if (multiviewTile is null)
+            var labelChrome = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
+                CornerRadius = new CornerRadius(3),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(4),
+                IsHitTestVisible = false,
+                Child = label
+            };
+
+            var content = new Grid();
+            content.Children.Add(labelChrome);
+
+            var button = new Button
+            {
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Stretch,
+                Content = content,
+                CommandParameter = ToSurfaceTile(tile),
+                Tag = tile
+            };
+            button.SetBinding(Button.CommandProperty, new Microsoft.UI.Xaml.Data.Binding
+            {
+                Source = this,
+                Path = new PropertyPath(nameof(TileClickCommand))
+            });
+
+            ClickOverlay.Children.Add(button);
+        }
+
+        PositionOverlay();
+    }
+
+    // Maps each normalized tile rect into overlay pixel space through the SAME uniform letterbox
+    // (scale + center) the swap chain uses (Direct3D11InteropService.ApplyPanelTransform): the
+    // displayed canvas rect = the largest canvas-aspect rect that fits the overlay, centered.
+    private void PositionOverlay()
+    {
+        var overlayWidth = ClickOverlay.ActualWidth;
+        var overlayHeight = ClickOverlay.ActualHeight;
+        if (overlayWidth <= 0 || overlayHeight <= 0 || ClickOverlay.Children.Count == 0)
+        {
+            return;
+        }
+
+        var (canvasWidth, canvasHeight) = ResolveCanvasSize();
+        if (canvasWidth <= 0 || canvasHeight <= 0)
+        {
+            return;
+        }
+
+        var scale = Math.Min(overlayWidth / canvasWidth, overlayHeight / canvasHeight);
+        var displayedWidth = canvasWidth * scale;
+        var displayedHeight = canvasHeight * scale;
+        var offsetX = (overlayWidth - displayedWidth) / 2.0;
+        var offsetY = (overlayHeight - displayedHeight) / 2.0;
+
+        foreach (var child in ClickOverlay.Children)
+        {
+            if (child is not Button { Tag: MultiviewTile tile } button)
             {
                 continue;
             }
 
-            if (patchIndex >= tiles.Count)
+            var left = offsetX + tile.X * displayedWidth;
+            var top = offsetY + tile.Y * displayedHeight;
+            var width = Math.Max(0, tile.W * displayedWidth);
+            var height = Math.Max(0, tile.H * displayedHeight);
+
+            button.Width = width;
+            button.Height = height;
+            Canvas.SetLeft(button, left);
+            Canvas.SetTop(button, top);
+        }
+    }
+
+    private (double Width, double Height) ResolveCanvasSize()
+    {
+        var handle = Surface?.PendingSharedHandle;
+        if (handle is { Width: > 0, Height: > 0 })
+        {
+            return (handle.Width, handle.Height);
+        }
+
+        var frame = Surface?.LastFrame;
+        if (frame is { Width: > 0, Height: > 0 })
+        {
+            return (frame.Width, frame.Height);
+        }
+
+        // Default to the 16:9 production canvas if the texture dims are not yet known.
+        return (1920.0, 1080.0);
+    }
+
+    // Resolves the source identity the tile-click command (PreviewMultiviewTile / BuildSoloRoute)
+    // expects: a Participant.Id of the raw participant id for Zoom, or "capture:{id}" / "media:{id}".
+    // The core stamps sourceId as "zoom:{pid}" / "capture:{id}" / "media:{id}".
+    private static ParticipantSurfaceTile ToSurfaceTile(MultiviewTile tile)
+    {
+        var routingId = ResolveRoutingId(tile);
+        return new ParticipantSurfaceTile
+        {
+            IsEmpty = string.IsNullOrWhiteSpace(routingId),
+            SourceIndex = tile.Slot + 1,
+            Participant = new Participant
             {
-                return false;
+                Id = routingId,
+                Name = tile.Label,
+                Role = ParticipantRole.Guest,
+                Health = FeedHealth.Live
             }
-
-            multiviewTile.Tile = tiles[patchIndex];
-            multiviewTile.TileClickCommand = TileClickCommand;
-            patchIndex++;
-        }
-
-        if (patchIndex != tiles.Count)
-        {
-            return false;
-        }
-
-        _lastBuiltTiles = tiles;
-        return true;
-    }
-
-    private void RebuildLayoutCore(IReadOnlyList<ParticipantSurfaceTile> tiles)
-    {
-        LayoutSurface.Children.Clear();
-        LayoutSurface.RowDefinitions.Clear();
-        LayoutSurface.ColumnDefinitions.Clear();
-
-        EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (tiles.Count == 0)
-        {
-            Grid.SetRow(EmptyState, 0);
-            Grid.SetColumn(EmptyState, 0);
-            LayoutSurface.Children.Add(EmptyState);
-            return;
-        }
-
-        var (columns, rows) = ResolveGridShape(tiles.Count);
-        _currentShape = (columns, rows);
-        for (var column = 0; column < columns; column++)
-        {
-            LayoutSurface.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
-
-        for (var row = 0; row < rows; row++)
-        {
-            LayoutSurface.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        }
-
-        for (var index = 0; index < tiles.Count; index++)
-        {
-            var tile = tiles[index];
-            var row = index / columns;
-            var column = index % columns;
-            AddTile(tile, row, column);
-        }
-    }
-
-    // Choose the rows×cols that maximizes each (16:9) tile's area inside the actual
-    // container, so the grid fills the space instead of letterboxing every tile. A fixed
-    // count→shape table wastes space because it ignores the container aspect ratio (the
-    // multiview pane is wide and resizable). Falls back to a count table before first measure.
-    private (int Columns, int Rows) ResolveGridShape(int tileCount)
-    {
-        if (tileCount <= 1)
-        {
-            return (1, 1);
-        }
-
-        var width = LayoutSurface.ActualWidth;
-        var height = LayoutSurface.ActualHeight;
-        if (width <= 0 || height <= 0)
-        {
-            return tileCount switch
-            {
-                2 => (2, 1),
-                3 => (3, 1),
-                <= 4 => (2, 2),
-                <= 6 => (3, 2),
-                <= 8 => (4, 2),
-                <= 10 => (5, 2),
-                <= 12 => (4, 3),
-                _ => (4, 4)
-            };
-        }
-
-        const double tileAspect = 16.0 / 9.0;
-        var bestColumns = 1;
-        var bestRows = tileCount;
-        var bestArea = 0.0;
-        for (var columns = 1; columns <= tileCount; columns++)
-        {
-            var rows = (int)Math.Ceiling((double)tileCount / columns);
-            var cellWidth = width / columns;
-            var cellHeight = height / rows;
-            // Largest 16:9 tile that fits the cell (letterboxed within the cell).
-            var tileWidth = Math.Min(cellWidth, cellHeight * tileAspect);
-            var tileHeight = tileWidth / tileAspect;
-            var area = tileWidth * tileHeight;
-            if (area > bestArea + 0.5)
-            {
-                bestArea = area;
-                bestColumns = columns;
-                bestRows = rows;
-            }
-        }
-
-        return (bestColumns, bestRows);
-    }
-
-    private void AddTile(ParticipantSurfaceTile tile, int row, int column, int rowSpan = 1, int columnSpan = 1)
-    {
-        var host = new BroadcastMultiviewTile
-        {
-            Tile = tile,
-            TileClickCommand = TileClickCommand,
-            Margin = new Thickness(2),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
         };
-        Grid.SetRow(host, row);
-        Grid.SetColumn(host, column);
-        Grid.SetRowSpan(host, rowSpan);
-        Grid.SetColumnSpan(host, columnSpan);
-        LayoutSurface.Children.Add(host);
     }
 
-    private void ApplyTileClickCommandToChildren()
+    private static string ResolveRoutingId(MultiviewTile tile)
     {
-        foreach (var child in LayoutSurface.Children)
+        if (!string.IsNullOrWhiteSpace(tile.SourceId))
         {
-            var multiviewTile = child switch
+            if (tile.SourceId.StartsWith("zoom:", StringComparison.Ordinal))
             {
-                BroadcastMultiviewTile direct => direct,
-                AspectRatioHost { Child: BroadcastMultiviewTile nested } => nested,
-                _ => null
-            };
-
-            if (multiviewTile is not null)
-            {
-                multiviewTile.TileClickCommand = TileClickCommand;
+                return tile.SourceId["zoom:".Length..];
             }
+
+            // capture:{deviceId} and media:{assetId} are already the routing identity.
+            return tile.SourceId;
         }
+
+        return tile.ParticipantId;
     }
 }

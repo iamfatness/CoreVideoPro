@@ -26,6 +26,19 @@ public sealed record MediaCoreSceneRouteWire(
     string? MediaPlaybackKey = null,
     bool MediaAssetPlaying = false);
 
+/// <summary>
+/// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is
+/// "zoom" | "capture" | "media"; the matching id field carries the source identity.
+/// </summary>
+public sealed record MediaCoreMultiviewSourceWire(
+    string SourceId,
+    string Kind,
+    int Slot,
+    string Label,
+    string? ParticipantId = null,
+    string? CaptureDeviceId = null,
+    string? MediaAssetId = null);
+
 public sealed record MediaCoreSceneBackgroundWire(
     string MediaAssetId,
     string MediaAssetName,
@@ -176,6 +189,16 @@ public sealed record MediaCoreProductionSyncContext
     public required string ActiveSceneId { get; init; }
     public IReadOnlyList<MediaCoreSceneRouteWire> SceneRoutes { get; init; } = [];
     public MediaCoreSceneBackgroundWire? SceneBackground { get; init; }
+
+    /// <summary>
+    /// Ordered Show Input roster that drives the core-composited GPU multiview (set-multiview-layout).
+    /// Empty clears the layout (turns the second composite pass off).
+    /// </summary>
+    public IReadOnlyList<MediaCoreMultiviewSourceWire> MultiviewSources { get; init; } = [];
+    public int MultiviewCanvasWidth { get; init; }
+    public int MultiviewCanvasHeight { get; init; }
+    public int MultiviewColumns { get; init; }
+    public int MultiviewRows { get; init; }
     public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
     public bool Recording { get; init; }
     public bool Streaming { get; init; }

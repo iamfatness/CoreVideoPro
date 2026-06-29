@@ -1,4 +1,5 @@
 using System.Collections;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -211,6 +212,95 @@ public static class ShowInputRosterService
 
         return routedTiles;
     }
+
+    /// <summary>
+    /// Builds the ordered <c>set-multiview-layout</c> source list from the SAME Show Input slots
+    /// that feed <see cref="BuildMultiviewTiles"/> (InShow + assigned + resolved, capped at
+    /// <see cref="MaxMultiviewBoxes"/>). The core composites these into one GPU shared texture.
+    /// </summary>
+    public static IReadOnlyList<MediaCoreMultiviewSourceWire> BuildMultiviewLayoutSources(
+        IReadOnlyList<ShowInputSlot> slots,
+        IReadOnlyList<Participant> participants,
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyList<MediaAsset>? mediaAssets = null)
+    {
+        var devicesById = captureDevices.ToDictionary(device => device.Id, device => device);
+        var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
+        var mediaAssetsById = (mediaAssets ?? [])
+            .ToDictionary(asset => asset.Id, asset => asset, StringComparer.Ordinal);
+
+        return slots
+            .Where(slot => slot.InShow && slot.IsAssigned &&
+                HasResolvedSource(slot, participantsById, devicesById, mediaAssetsById))
+            .Take(MaxMultiviewBoxes)
+            .Select(slot => ToMultiviewSourceWire(slot, participantsById, devicesById, mediaAssetsById))
+            .Where(source => source is not null)
+            .Select(source => source!)
+            .ToList();
+    }
+
+    private static MediaCoreMultiviewSourceWire? ToMultiviewSourceWire(
+        ShowInputSlot slot,
+        IReadOnlyDictionary<string, Participant> participantsById,
+        IReadOnlyDictionary<string, CaptureDevice> devicesById,
+        IReadOnlyDictionary<string, MediaAsset> mediaAssetsById)
+    {
+        if (slot.Kind == ShowInputKind.ZoomParticipant &&
+            slot.ParticipantId is { Length: > 0 } pid &&
+            participantsById.TryGetValue(pid, out var participant))
+        {
+            return new MediaCoreMultiviewSourceWire(
+                SourceId: $"zoom:{pid}",
+                Kind: "zoom",
+                Slot: slot.SlotNumber - 1,
+                Label: participant.Name,
+                ParticipantId: pid);
+        }
+
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+            slot.CaptureDeviceId is { Length: > 0 } deviceId &&
+            devicesById.TryGetValue(deviceId, out var device))
+        {
+            return new MediaCoreMultiviewSourceWire(
+                SourceId: $"capture:{deviceId}",
+                Kind: "capture",
+                Slot: slot.SlotNumber - 1,
+                Label: device.Name,
+                CaptureDeviceId: deviceId);
+        }
+
+        if (slot.Kind == ShowInputKind.Media &&
+            TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) &&
+            mediaAssetsById.TryGetValue(mediaAssetId, out var asset))
+        {
+            return new MediaCoreMultiviewSourceWire(
+                SourceId: ToMediaSourceId(mediaAssetId),
+                Kind: "media",
+                Slot: slot.SlotNumber - 1,
+                Label: asset.Name,
+                MediaAssetId: mediaAssetId);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Aspect-aware-ish grid shape for the advisory cols/rows in set-multiview-layout. The core
+    /// computes the authoritative cells itself, so this only needs to be a sane count→shape map.
+    /// </summary>
+    public static (int Columns, int Rows) ResolveGridShape(int tileCount) =>
+        tileCount switch
+        {
+            <= 1 => (1, 1),
+            2 => (2, 1),
+            3 => (3, 1),
+            <= 4 => (2, 2),
+            <= 6 => (3, 2),
+            <= 8 => (4, 2),
+            <= 10 => (5, 2),
+            <= 12 => (4, 3),
+            _ => (4, 4)
+        };
 
     public static int CountActiveShowInputs(IReadOnlyList<ShowInputSlot> slots) =>
         slots.Count(slot => slot.InShow && slot.IsAssigned && slot.Kind != ShowInputKind.Unassigned);

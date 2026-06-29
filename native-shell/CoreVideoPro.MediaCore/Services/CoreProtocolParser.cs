@@ -200,6 +200,102 @@ public static class CoreProtocolParser
         }
     }
 
+    public static CoreMultiviewSharedTextureEvent? TryParseMultiviewSharedTextureEvent(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var root = document.RootElement;
+            if (root.TryGetProperty("id", out _))
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("type", out var typeElement) ||
+                typeElement.GetString() != "multiview-shared-texture" ||
+                !root.TryGetProperty("texture", out var textureElement))
+            {
+                return null;
+            }
+
+            var texture = TryParseProgramSharedTexture(textureElement);
+            if (texture is null)
+            {
+                return null;
+            }
+
+            var canvasWidth = root.TryGetProperty("canvasWidth", out var cw) && cw.ValueKind == JsonValueKind.Number
+                ? cw.GetInt32()
+                : texture.Width;
+            var canvasHeight = root.TryGetProperty("canvasHeight", out var ch) && ch.ValueKind == JsonValueKind.Number
+                ? ch.GetInt32()
+                : texture.Height;
+
+            var tiles = new List<MultiviewTile>();
+            if (root.TryGetProperty("tiles", out var tilesElement) && tilesElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var tileElement in tilesElement.EnumerateArray())
+                {
+                    if (tileElement.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    tiles.Add(new MultiviewTile
+                    {
+                        SourceId = ReadString(tileElement, "sourceId"),
+                        ParticipantId = ReadString(tileElement, "participantId"),
+                        Slot = ReadInt(tileElement, "slot"),
+                        Label = ReadString(tileElement, "label"),
+                        ActiveSpeaker = tileElement.TryGetProperty("activeSpeaker", out var asElement) &&
+                            (asElement.ValueKind == JsonValueKind.True ||
+                             (asElement.ValueKind == JsonValueKind.Number && asElement.GetDouble() != 0)),
+                        X = ReadDouble(tileElement, "x"),
+                        Y = ReadDouble(tileElement, "y"),
+                        W = ReadDouble(tileElement, "w"),
+                        H = ReadDouble(tileElement, "h")
+                    });
+                }
+            }
+
+            return new CoreMultiviewSharedTextureEvent
+            {
+                Multiview = new MultiviewSharedTexture
+                {
+                    Texture = texture,
+                    CanvasWidth = canvasWidth > 0 ? canvasWidth : texture.Width,
+                    CanvasHeight = canvasHeight > 0 ? canvasHeight : texture.Height,
+                    Tiles = tiles
+                }
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : string.Empty;
+
+    private static int ReadInt(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetInt32()
+            : 0;
+
+    private static double ReadDouble(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetDouble()
+            : 0;
+
     public static NativeMediaCoreProgramFramePreview? TryParseProgramFramePreview(JsonElement previewElement)
     {
         if (previewElement.ValueKind != JsonValueKind.Object ||
