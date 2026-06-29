@@ -2914,12 +2914,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       std::vector<modules::VideoFrame> merged;
       merged.reserve(engineFrames.size());
       for (auto engineFrame : engineFrames) {
-        const auto withPixels = std::find_if(
+        // Carry over any decoded frame for this participant — I420 (GPU path) OR
+        // BGRA. Matching only hasPixels() dropped the raw-I420 Zoom frames (which
+        // have hasI420() but NOT hasPixels()), replacing them with the metadata-only
+        // engine roster frame -> participant rendered BLANK on program/preview.
+        const auto withContent = std::find_if(
             videoFrames.begin(), videoFrames.end(), [&](const modules::VideoFrame& candidate) {
-              return candidate.participantId == engineFrame.participantId && candidate.hasPixels();
+              return candidate.participantId == engineFrame.participantId &&
+                     (candidate.hasPixels() || candidate.hasI420());
             });
-        if (withPixels != videoFrames.end()) {
-          merged.push_back(*withPixels);
+        if (withContent != videoFrames.end()) {
+          merged.push_back(*withContent);
         } else {
           merged.push_back(std::move(engineFrame));
         }
