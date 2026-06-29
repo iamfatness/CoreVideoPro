@@ -102,6 +102,24 @@ struct ProgramFrameSharedTexture {
   int64_t frameNumber = 0;
 };
 
+// One tile of the core-composited multiview grid. Geometry (x,y,w,h) is
+// normalized [0,1] against the multiview canvas, mirroring the program layer
+// rects, so the WinUI consumer can place click targets through the same
+// letterbox transform the single multiview swap chain uses. `slot` is the
+// ordered position from the layout command; `activeSpeaker` is baked into the
+// texture border in-core (no consumer churn) and surfaced here informationally.
+struct MultiviewTileRect {
+  std::string sourceId;
+  std::string participantId;
+  int slot = 0;
+  float x = 0.f;
+  float y = 0.f;
+  float w = 0.f;
+  float h = 0.f;
+  bool activeSpeaker = false;
+  std::string label;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -116,6 +134,14 @@ struct ProgramFrame {
   std::vector<std::string> warnings;
   ProgramFramePreviewPixels preview;
   ProgramFrameSharedTexture sharedTexture;
+  // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
+  // the whole grid (mirrors `sharedTexture`), plus the per-tile rects and the
+  // canvas dimensions the rects are normalized against. Empty handle when no
+  // multiview layout is set.
+  ProgramFrameSharedTexture multiviewSharedTexture;
+  std::vector<MultiviewTileRect> multiviewTiles;
+  int multiviewWidth = 0;
+  int multiviewHeight = 0;
 };
 
 struct CompositorLayerRect {
@@ -402,6 +428,15 @@ class ICompositor {
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  // Composites the multiview grid into a second keyed-mutex DXGI shared texture
+  // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
+  // returns its handle/dimensions. Defaulted to an empty texture so the
+  // software/stub compositor stays valid; only the GPU adapter implements it.
+  virtual ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
+    (void)renderPlan;
+    (void)frames;
+    return {};
+  }
 };
 
 class IMediaFrameSource {

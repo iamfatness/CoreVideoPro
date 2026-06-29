@@ -507,6 +507,12 @@ rpc::Json MediaCore::sessionState() const {
   if (!sharedTexture.isNull()) {
     state.emplace("programSharedTexture", sharedTexture);
   }
+  // Cold-start snapshot: a newly connected consumer gets the current multiview
+  // shared texture + tile rects without waiting for the next structural change.
+  const auto multiviewSharedTexture = modules::multiviewSharedTextureJson(lastProgramFrame_);
+  if (!multiviewSharedTexture.isNull()) {
+    state.emplace("multiviewSharedTexture", multiviewSharedTexture);
+  }
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -663,6 +669,12 @@ std::vector<rpc::Json> MediaCore::drainProgramSharedTextureEvents() {
   return events;
 }
 
+std::vector<rpc::Json> MediaCore::drainMultiviewSharedTextureEvents() {
+  auto events = std::move(pendingMultiviewSharedTextureEvents_);
+  pendingMultiviewSharedTextureEvents_.clear();
+  return events;
+}
+
 void MediaCore::enqueueProgramFramePreviewEvent() {
   const auto event = modules::programFramePreviewEvent(lastProgramFrame_);
   if (!event.isNull()) {
@@ -677,6 +689,53 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
   // 30fps Zoom video frames (high latency + drops). Re-enable if/when the program
   // monitor goes back to the GPU shared-texture (VideoSurfaceHost) path.
   return;
+}
+
+void MediaCore::enqueueMultiviewSharedTextureEvent() {
+  const auto event = modules::multiviewSharedTextureEvent(lastProgramFrame_);
+  if (event.isNull()) {
+    return;
+  }
+  // Compute a structural signature over the handle, canvas dims, and per-tile
+  // identity + geometry (label, slot, rects) — but NOT the active-speaker flag,
+  // since that border is baked into the texture and must not churn the consumer.
+  uint32_t signature = 2166136261u;
+  auto mix = [&signature](const std::string& value) {
+    for (const unsigned char ch : value) {
+      signature ^= ch;
+      signature *= 16777619u;
+    }
+    signature ^= 0xffu;
+    signature *= 16777619u;
+  };
+  auto mixInt = [&signature](int value) {
+    for (int shift = 0; shift < 32; shift += 8) {
+      signature ^= static_cast<uint8_t>((static_cast<uint32_t>(value) >> shift) & 0xffu);
+      signature *= 16777619u;
+    }
+  };
+  mix(lastProgramFrame_.multiviewSharedTexture.sharedHandleHex);
+  mixInt(lastProgramFrame_.multiviewWidth);
+  mixInt(lastProgramFrame_.multiviewHeight);
+  for (const auto& tile : lastProgramFrame_.multiviewTiles) {
+    mix(tile.sourceId);
+    mix(tile.participantId);
+    mix(tile.label);
+    mixInt(tile.slot);
+    mixInt(static_cast<int>(std::lround(tile.x * 10000.f)));
+    mixInt(static_cast<int>(std::lround(tile.y * 10000.f)));
+    mixInt(static_cast<int>(std::lround(tile.w * 10000.f)));
+    mixInt(static_cast<int>(std::lround(tile.h * 10000.f)));
+  }
+  if (signature == 0u) {
+    signature = 1u;
+  }
+  if (multiviewStructureEmitted_ && signature == lastMultiviewStructureSignature_) {
+    return;
+  }
+  lastMultiviewStructureSignature_ = signature;
+  multiviewStructureEmitted_ = true;
+  pendingMultiviewSharedTextureEvents_.emplace_back(event);
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
@@ -771,6 +830,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setBrandKit(command);
   } else if (type == "set-media-playback") {
     setMediaPlayback(command);
+  } else if (type == "set-multiview-layout") {
+    setMultiviewLayout(command);
   } else if (type == "configure-srt-ingest-sources") {
     configureSrtIngestSources(command);
   } else if (type == "simulate-breakout-room-change") {
@@ -1567,6 +1628,102 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
   if (mediaPlaybackPlaying_ && mediaPlaybackKey_.empty()) {
     mediaPlaybackWarnings_.push_back(mediaAssetId + " is playing without a playback key; replay behavior may be unstable.");
   }
+}
+
+void MediaCore::setMultiviewLayout(const rpc::Json& command) {
+  // The WinUI sends the ordered Show Input roster: each entry is one multiview
+  // tile (sourceId/kind/participantId|captureDeviceId|mediaAssetId, slot, label)
+  // plus the multiview canvas dimensions. An empty/absent sources array clears
+  // the layout, which turns the second (multiview) GPU composite pass off.
+  multiviewSources_.clear();
+  const int canvasWidth = static_cast<int>(command.getNumber("canvasWidth", 0));
+  const int canvasHeight = static_cast<int>(command.getNumber("canvasHeight", 0));
+  multiviewCanvasWidth_ = canvasWidth > 0 ? canvasWidth : outputWidth_;
+  multiviewCanvasHeight_ = canvasHeight > 0 ? canvasHeight : outputHeight_;
+
+  const auto* sources = command.get("sources");
+  if (sources && sources->isArray()) {
+    int autoSlot = 0;
+    for (const auto& entry : sources->asArray()) {
+      if (!entry.isObject()) {
+        continue;
+      }
+      MultiviewSource source;
+      source.sourceId = entry.getString("sourceId");
+      source.kind = entry.getString("kind");
+      source.participantId = entry.getString("participantId");
+      source.captureDeviceId = entry.getString("captureDeviceId");
+      source.mediaAssetId = entry.getString("mediaAssetId");
+      source.label = entry.getString("label");
+      source.slot = entry.get("slot") ? static_cast<int>(entry.getNumber("slot", autoSlot)) : autoSlot;
+      multiviewSources_.push_back(std::move(source));
+      ++autoSlot;
+    }
+  }
+
+  // A layout change is a structural change; force the next render's event emit.
+  multiviewStructureEmitted_ = false;
+}
+
+modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  (void)videoFrames;
+  modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "multiview:" + std::to_string(multiviewSources_.size());
+  renderPlan.sceneId = sceneId_;
+  renderPlan.width = multiviewCanvasWidth_ > 0 ? multiviewCanvasWidth_ : outputWidth_;
+  renderPlan.height = multiviewCanvasHeight_ > 0 ? multiviewCanvasHeight_ : outputHeight_;
+  renderPlan.fps = outputFps_;
+  renderPlan.colorGrade = colorGrade_;
+
+  const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
+  const int count = static_cast<int>(multiviewSources_.size());
+  renderPlan.layers.reserve(multiviewSources_.size());
+  for (int index = 0; index < count; ++index) {
+    const auto& source = multiviewSources_[static_cast<size_t>(index)];
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = "multiview:" + (source.sourceId.empty() ? std::to_string(index) : source.sourceId);
+    layer.order = index;
+    // Resolve the feed using the same source-id conventions as the program plan
+    // so resolveLayers/frameForParticipant matches the same decoded frames.
+    if (source.kind == "media" && !source.mediaAssetId.empty()) {
+      layer.kind = "media-video";
+      layer.sourceId = "media:" + source.mediaAssetId;
+      layer.mediaAssetId = source.mediaAssetId;
+    } else if (source.kind == "capture" && !source.captureDeviceId.empty()) {
+      layer.kind = "participant-video";
+      layer.participantId = "capture:" + source.captureDeviceId;
+      layer.sourceId = layer.participantId;
+    } else if (!source.participantId.empty()) {
+      layer.kind = "participant-video";
+      layer.participantId = source.participantId;
+      layer.sourceId = "zoom:" + source.participantId;
+    } else {
+      layer.kind = "participant-video";
+      layer.sourceId = source.sourceId;
+    }
+
+    // Aspect-aware grid cell, matching the program/preview grid math so the core
+    // and the future consumer agree on rows x cols.
+    const auto cell = compositor::gridCell((std::max)(1, count), index);
+    layer.rect = {cell.x, cell.y, cell.width, cell.height};
+    layer.fitMode = "fill";
+
+    // Active-speaker border baked into the texture (no consumer churn). The rest
+    // get a thin neutral accent so tiles read as distinct cells.
+    const bool isActiveSpeaker = !source.participantId.empty() && source.participantId == activeSpeakerId;
+    if (isActiveSpeaker) {
+      layer.borderStyle = "program";
+      layer.borderColor = "#f5a623";
+      layer.borderThickness = 6.f;
+    } else {
+      layer.borderStyle = "accent";
+      layer.borderColor = "#3ddc97";
+      layer.borderThickness = 2.f;
+    }
+    renderPlan.layers.push_back(std::move(layer));
+  }
+
+  return renderPlan;
 }
 
 void MediaCore::configureSrtIngestSources(const rpc::Json& command) {
@@ -3067,6 +3224,38 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
+  // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
+  // texture (mirrors the program shared texture). Opt-in — only when a layout is
+  // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
+  // stays on the light videoOnly tick (no CPU readback).
+  if (!multiviewSources_.empty()) {
+    auto multiviewPlan = buildMultiviewRenderPlan(videoFrames);
+    multiviewPlan.skipCpuReadback = true;
+    lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);
+    lastProgramFrame_.multiviewWidth = multiviewPlan.width;
+    lastProgramFrame_.multiviewHeight = multiviewPlan.height;
+    // Per-tile rects, zipped 1:1 with the layout sources (the multiview plan adds
+    // exactly one layer per source, in order, before the compositor sorts a copy).
+    const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
+    std::vector<modules::MultiviewTileRect> tiles;
+    tiles.reserve(multiviewSources_.size());
+    for (size_t i = 0; i < multiviewSources_.size() && i < multiviewPlan.layers.size(); ++i) {
+      const auto& source = multiviewSources_[i];
+      const auto& planLayer = multiviewPlan.layers[i];
+      modules::MultiviewTileRect tile;
+      tile.sourceId = planLayer.sourceId.empty() ? source.sourceId : planLayer.sourceId;
+      tile.participantId = source.participantId;
+      tile.slot = source.slot;
+      tile.label = source.label;
+      tile.activeSpeaker = !source.participantId.empty() && source.participantId == activeSpeakerId;
+      tile.x = planLayer.rect.x;
+      tile.y = planLayer.rect.y;
+      tile.w = planLayer.rect.width;
+      tile.h = planLayer.rect.height;
+      tiles.push_back(std::move(tile));
+    }
+    lastProgramFrame_.multiviewTiles = std::move(tiles);
+  }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
   // UI thumbnail, but at full render rate (~60fps) the base64 BGRA payloads
   // saturate stdout and starve RPC command responses (host then times out and
@@ -3076,6 +3265,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // The shared-texture handle is tiny (a handle + dimensions) — emit it on every
     // render so the GPU program present runs at the full render rate (~60fps).
     enqueueProgramSharedTextureEvent();
+    // The multiview shared-texture event is emitted only on structural change
+    // (and once at cold start), so this is safe to call every render.
+    enqueueMultiviewSharedTextureEvent();
     // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
     // never emit it on the light display tick (it has no fresh readback).
     if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {

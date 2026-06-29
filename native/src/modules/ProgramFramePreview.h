@@ -83,6 +83,16 @@ bool blitVideoFrameLayerClipped(
 
 [[nodiscard]] rpc::Json programSharedTextureEvent(const ProgramFrame& frame);
 
+// Serializes the core-composited multiview shared texture + per-tile rects into
+// the body shared by the cold-start snapshot and the event:
+//   { texture{sharedHandleHex,width,height,format,frameNumber},
+//     canvasWidth, canvasHeight, tiles[{sourceId,participantId,slot,label,
+//     activeSpeaker,x,y,w,h}] }
+// Returns null when no multiview texture handle is present.
+[[nodiscard]] rpc::Json multiviewSharedTextureJson(const ProgramFrame& frame);
+
+[[nodiscard]] rpc::Json multiviewSharedTextureEvent(const ProgramFrame& frame);
+
 [[nodiscard]] rpc::Json programFramePreviewJson(const ProgramFrame& frame);
 
 [[nodiscard]] rpc::Json programFramePreviewEvent(const ProgramFrame& frame);

@@ -897,6 +897,53 @@ rpc::Json programSharedTextureEvent(const ProgramFrame& frame) {
   };
 }
 
+rpc::Json multiviewSharedTextureJson(const ProgramFrame& frame) {
+  const auto& texture = frame.multiviewSharedTexture;
+  if (texture.sharedHandleHex.empty() || texture.width <= 0 || texture.height <= 0) {
+    return nullptr;
+  }
+
+  rpc::Json::Array tiles;
+  tiles.reserve(frame.multiviewTiles.size());
+  for (const auto& tile : frame.multiviewTiles) {
+    tiles.emplace_back(rpc::Json::Object{
+        {"sourceId", tile.sourceId},
+        {"participantId", tile.participantId},
+        {"slot", tile.slot},
+        {"label", tile.label},
+        {"activeSpeaker", tile.activeSpeaker},
+        {"x", static_cast<double>(tile.x)},
+        {"y", static_cast<double>(tile.y)},
+        {"w", static_cast<double>(tile.w)},
+        {"h", static_cast<double>(tile.h)},
+    });
+  }
+
+  return rpc::Json::Object{
+      {"texture",
+       rpc::Json::Object{
+           {"sharedHandleHex", texture.sharedHandleHex},
+           {"width", texture.width},
+           {"height", texture.height},
+           {"format", texture.format.empty() ? "B8G8R8A8_UNORM" : texture.format},
+           {"frameNumber", static_cast<double>(texture.frameNumber > 0 ? texture.frameNumber : frame.frameNumber)},
+       }},
+      {"canvasWidth", frame.multiviewWidth > 0 ? frame.multiviewWidth : texture.width},
+      {"canvasHeight", frame.multiviewHeight > 0 ? frame.multiviewHeight : texture.height},
+      {"tiles", tiles},
+  };
+}
+
+rpc::Json multiviewSharedTextureEvent(const ProgramFrame& frame) {
+  auto body = multiviewSharedTextureJson(frame);
+  if (body.isNull()) {
+    return nullptr;
+  }
+  rpc::Json::Object event = body.asObject();
+  event.emplace("type", "multiview-shared-texture");
+  return event;
+}
+
 rpc::Json programFramePreviewJson(const ProgramFrame& frame) {
   if (frame.preview.width <= 0 || frame.preview.height <= 0 || frame.preview.bgra.empty()) {
     return nullptr;
