@@ -107,6 +107,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
+    sentSubscriptions_.clear();  // a fresh join must re-subscribe from scratch
   }
 }
 
@@ -220,6 +221,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   state_.reset();
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
+  sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
 }
@@ -250,6 +252,9 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
   }
   const rpc::Json* subscriptions = payload.get("subscriptions");
   if (process_ && process_->running() && subscriptions && subscriptions->isArray()) {
+    // Build THIS tick's desired subscription set, sending a subscribe command ONLY
+    // for new or resolution-changed entries (not every tick — see sentSubscriptions_).
+    std::map<std::string, int> desired;
     for (const auto& request : subscriptions->asArray()) {
       const auto participantId = request.getString("participantId");
       if (participantId.empty()) {
@@ -278,10 +283,31 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       } else {
         command.resolution = 1;  // 720P interim (target 1080P via the GPU pipeline)
       }
+      // Audio subscriptions have no resolution concept; key them at -1 so a video
+      // and an audio subscription for the same source don't alias.
+      const int subscriptionKey = (kind == "participant-audio") ? -1 : command.resolution;
+      desired[command.sourceUuid] = subscriptionKey;
+
+      const auto existing = sentSubscriptions_.find(command.sourceUuid);
+      if (existing != sentSubscriptions_.end() && existing->second == subscriptionKey) {
+        continue;  // already subscribed at this resolution — don't re-send
+      }
       if (kind == "participant-audio") {
         (void)process_->sendLine(buildZoomEngineSubscribeAudioCommand(command));
       } else {
         (void)process_->sendLine(buildZoomEngineSubscribeCommand(command));
+      }
+      sentSubscriptions_[command.sourceUuid] = subscriptionKey;
+    }
+
+    // Unsubscribe sources that were active but are no longer requested (participant
+    // left / dropped from the show), then forget them.
+    for (auto it = sentSubscriptions_.begin(); it != sentSubscriptions_.end();) {
+      if (desired.find(it->first) == desired.end()) {
+        (void)process_->sendLine(buildZoomEngineUnsubscribeCommand(it->first));
+        it = sentSubscriptions_.erase(it);
+      } else {
+        ++it;
       }
     }
   }

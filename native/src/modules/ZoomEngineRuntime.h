@@ -74,6 +74,13 @@ class ZoomEngineRuntime {
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.
   bool captureRequested_ = false;
+  // Last subscription set sent to the engine (sourceUuid -> resolution), so the
+  // per-tick spine sync only sends a subscribe/unsubscribe command when the set
+  // actually CHANGES. Previously it re-sent every subscription on every spine
+  // tick, flooding the engine command pipe (process_->sendLine blocks once the
+  // pipe buffer fills) and timing out the 4s spine round-trip — which jammed the
+  // whole bridge (roster + multiview layout couldn't get through).
+  std::map<std::string, int> sentSubscriptions_;
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;
