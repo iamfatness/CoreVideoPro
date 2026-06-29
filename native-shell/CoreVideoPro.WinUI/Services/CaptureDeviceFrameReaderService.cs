@@ -280,6 +280,18 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _fpsSampleCount;
         private TaskCompletionSource<CaptureDeviceFormatTelemetry>? _firstFramePublished;
 
+        // Stall watchdog: MediaFrameReader can silently stop raising FrameArrived (USB
+        // hiccup, device grabbed, power management) with no error — the held-frame logic
+        // in the native adapter then surfaces it as a FROZEN preview. Detect "no published
+        // frame for > StallThresholdMs" and restart the reader, with a cooldown so a real
+        // outage doesn't restart-storm.
+        private long _lastPublishTickMs;
+        private long _lastRecoveryTickMs;
+        private int _recovering;
+        private System.Threading.Timer? _stallWatchdog;
+        private const long StallThresholdMs = 2500;
+        private const long RecoveryCooldownMs = 5000;
+
         public CaptureSession(string stableDeviceId, string nativeDeviceId, bool allowLateFirstFrame)
         {
             _stableDeviceId = stableDeviceId;
@@ -464,6 +476,7 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 });
                 _firstFramePublished?.TrySetResult(FormatTelemetry);
                 Interlocked.Increment(ref _publishedSinceHealthLog);
+                Interlocked.Exchange(ref _lastPublishTickMs, now);
                 MaybeLogFrameHealth(now);
             }
             catch (Exception ex)
@@ -649,6 +662,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
 
             LaunchLog.Write($"capture: started {_stableDeviceId} {_formatWidth}x{_formatHeight} {_formatFps}fps output={outputSubtype}");
+            Interlocked.Exchange(ref _lastPublishTickMs, Environment.TickCount64);
+            StartStallWatchdog();
             var completed = await Task.WhenAny(_firstFramePublished.Task, Task.Delay(1500)).ConfigureAwait(false);
             if (completed == _firstFramePublished.Task)
             {
@@ -807,6 +822,73 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             return Math.Clamp((int)Math.Round(fps), 1, 240);
         }
 
+        private void StartStallWatchdog()
+        {
+            _stallWatchdog?.Dispose();
+            _stallWatchdog = new System.Threading.Timer(_ => CheckForStall(), null, 1000, 1000);
+        }
+
+        private void CheckForStall()
+        {
+            // Only after the reader is live and a frame has been published.
+            var last = Interlocked.Read(ref _lastPublishTickMs);
+            if (last <= 0)
+            {
+                return;
+            }
+
+            var now = Environment.TickCount64;
+            if (now - last < StallThresholdMs)
+            {
+                return;
+            }
+
+            // Don't restart-storm: respect a cooldown, and never run two recoveries at once.
+            if (now - Interlocked.Read(ref _lastRecoveryTickMs) < RecoveryCooldownMs)
+            {
+                return;
+            }
+
+            if (Interlocked.Exchange(ref _recovering, 1) == 1)
+            {
+                return;
+            }
+
+            _ = RecoverFromStallAsync(now - last);
+        }
+
+        private async Task RecoverFromStallAsync(long stalledMs)
+        {
+            try
+            {
+                var reader = _reader;
+                if (reader is null)
+                {
+                    return;
+                }
+
+                LaunchLog.Write($"capture: stall detected {_stableDeviceId} ({stalledMs}ms with no frame) — restarting reader");
+                try { await reader.StopAsync().AsTask().ConfigureAwait(false); } catch { /* best effort */ }
+                try
+                {
+                    var status = await reader.StartAsync().AsTask().ConfigureAwait(false);
+                    LaunchLog.Write($"capture: reader restart {_stableDeviceId} status={status}");
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"capture: reader restart failed {_stableDeviceId}: {DescribeException(ex)}");
+                }
+
+                var now = Environment.TickCount64;
+                Interlocked.Exchange(ref _lastPublishTickMs, now);
+                Interlocked.Exchange(ref _lastRecoveryTickMs, now);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _recovering, 0);
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             await DisposeReaderAsync().ConfigureAwait(false);
@@ -817,6 +899,10 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         private async Task DisposeReaderAsync()
         {
+            _stallWatchdog?.Dispose();
+            _stallWatchdog = null;
+            Interlocked.Exchange(ref _lastPublishTickMs, 0);
+
             if (_reader is null)
             {
                 return;
