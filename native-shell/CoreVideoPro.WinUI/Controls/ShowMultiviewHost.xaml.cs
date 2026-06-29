@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
@@ -20,11 +21,39 @@ public sealed partial class ShowMultiviewHost : UserControl
     private bool _rebuildInProgress;
     private bool _rebuildScheduled;
     private IReadOnlyList<ParticipantSurfaceTile> _lastBuiltTiles = [];
+    private (int Columns, int Rows) _currentShape = (0, 0);
 
     public ShowMultiviewHost()
     {
         InitializeComponent();
         Loaded += (_, _) => ScheduleRebuildLayout();
+        LayoutSurface.SizeChanged += OnLayoutSizeChanged;
+    }
+
+    // The optimal grid shape depends on the container's aspect ratio, so re-lay-out when a
+    // resize changes the chosen rows/cols (e.g. dragging the program/multiview splitter).
+    // Tiles are CPU surfaces here, so this rebuild has no GPU swap-chain churn.
+    private void OnLayoutSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_lastBuiltTiles.Count == 0 || _rebuildInProgress)
+        {
+            return;
+        }
+
+        if (ResolveGridShape(_lastBuiltTiles.Count) == _currentShape)
+        {
+            return;
+        }
+
+        _rebuildInProgress = true;
+        try
+        {
+            RebuildLayoutCore(_lastBuiltTiles);
+        }
+        finally
+        {
+            _rebuildInProgress = false;
+        }
     }
 
     public IEnumerable? Tiles
@@ -153,6 +182,7 @@ public sealed partial class ShowMultiviewHost : UserControl
         }
 
         var (columns, rows) = ResolveGridShape(tiles.Count);
+        _currentShape = (columns, rows);
         for (var column = 0; column < columns; column++)
         {
             LayoutSurface.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -172,17 +202,57 @@ public sealed partial class ShowMultiviewHost : UserControl
         }
     }
 
-    private static (int Columns, int Rows) ResolveGridShape(int tileCount) =>
-        tileCount switch
+    // Choose the rows×cols that maximizes each (16:9) tile's area inside the actual
+    // container, so the grid fills the space instead of letterboxing every tile. A fixed
+    // count→shape table wastes space because it ignores the container aspect ratio (the
+    // multiview pane is wide and resizable). Falls back to a count table before first measure.
+    private (int Columns, int Rows) ResolveGridShape(int tileCount)
+    {
+        if (tileCount <= 1)
         {
-            1 => (1, 1),
-            2 => (2, 1),
-            3 => (3, 1),
-            <= 4 => (2, 2),
-            <= 6 => (3, 2),
-            <= 8 => (4, 2),
-            _ => (5, 2)
-        };
+            return (1, 1);
+        }
+
+        var width = LayoutSurface.ActualWidth;
+        var height = LayoutSurface.ActualHeight;
+        if (width <= 0 || height <= 0)
+        {
+            return tileCount switch
+            {
+                2 => (2, 1),
+                3 => (3, 1),
+                <= 4 => (2, 2),
+                <= 6 => (3, 2),
+                <= 8 => (4, 2),
+                <= 10 => (5, 2),
+                <= 12 => (4, 3),
+                _ => (4, 4)
+            };
+        }
+
+        const double tileAspect = 16.0 / 9.0;
+        var bestColumns = 1;
+        var bestRows = tileCount;
+        var bestArea = 0.0;
+        for (var columns = 1; columns <= tileCount; columns++)
+        {
+            var rows = (int)Math.Ceiling((double)tileCount / columns);
+            var cellWidth = width / columns;
+            var cellHeight = height / rows;
+            // Largest 16:9 tile that fits the cell (letterboxed within the cell).
+            var tileWidth = Math.Min(cellWidth, cellHeight * tileAspect);
+            var tileHeight = tileWidth / tileAspect;
+            var area = tileWidth * tileHeight;
+            if (area > bestArea + 0.5)
+            {
+                bestArea = area;
+                bestColumns = columns;
+                bestRows = rows;
+            }
+        }
+
+        return (bestColumns, bestRows);
+    }
 
     private void AddTile(ParticipantSurfaceTile tile, int row, int column, int rowSpan = 1, int columnSpan = 1)
     {
