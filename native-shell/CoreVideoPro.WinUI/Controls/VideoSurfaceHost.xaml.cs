@@ -271,11 +271,23 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         string.Equals(SurfaceKey, "program", StringComparison.Ordinal) ||
         SurfaceState?.Kind == VideoSurfaceKind.Program;
 
+    // Surfaces that present the native GPU shared texture (DXGI) directly through the
+    // SwapChainPanel. PROGRAM has always used this; PREVIEW now joins it so the operator's
+    // preview bus presents the previewed source's GPU shared texture at full res when one is
+    // available. When the preview surface only carries CPU BGRA pixels (the current Zoom
+    // path), the GPU present is a no-op and the CPU BGRA preview (PreviewImage, which sits
+    // above the SwapChainPanel in the visual tree) renders instead — so this is safe even
+    // when no shared handle is present.
+    private bool UsesGpuSharedTexture =>
+        IsProgramSurface ||
+        string.Equals(SurfaceKey, "preview", StringComparison.Ordinal) ||
+        SurfaceState?.Kind == VideoSurfaceKind.Preview;
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         RefreshSourceFraming();
 
-        if (!IsProgramSurface)
+        if (!UsesGpuSharedTexture)
         {
             return;
         }
@@ -322,7 +334,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void TryPresentPendingSharedHandle()
     {
-        if (!IsProgramSurface || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
+        if (!UsesGpuSharedTexture || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
         {
             return;
         }
