@@ -8079,8 +8079,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ProgramSurface = _surfaces.ProgramSurface;
-        PreviewSurface = _surfaces.PreviewSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        // Set the preview bus AFTER MultiviewTiles is rebuilt so the previewed source
+        // resolves against the freshly-built live surfaces. RefreshSurfaceBindings is the
+        // single UI-thread path that mutates VideoSurfaceHost-bound properties (Program,
+        // Preview, Multiview), so this is safe (no off-thread VideoSurfaceHost writes).
+        PreviewSurface = ResolvePreviewPrimarySurface();
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
         ScheduleMultiviewGridRefresh();
@@ -8099,6 +8103,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _rsbTotalMs = 0;
             _rsbWindowStartMs = now;
         }
+    }
+
+    /// <summary>
+    /// Resolves the surface the PREVIEW monitor presents: the queued scene's PRIMARY
+    /// source, ATEM preview-bus style. PreviewSceneTiles[0] identifies that source (already
+    /// resolved from the queued scene's routes); we pull its LIVE surface from the
+    /// freshly-built MultiviewTiles so the preview updates every frame instead of from the
+    /// scene-publish snapshot. Falls back to the snapshot tile, then to the coordinator's
+    /// preview surface (selected-participant / capture-paused slate). Must run on the UI
+    /// thread (it feeds a VideoSurfaceHost-bound property) — it is only called from
+    /// RefreshSurfaceBindings, which is always marshalled to the UI thread.
+    /// </summary>
+    private VideoSurfaceState ResolvePreviewPrimarySurface()
+    {
+        var primary = PreviewSceneTiles is { Count: > 0 } tiles ? tiles[0] : null;
+        if (primary is not null)
+        {
+            VideoSurfaceState? liveSurface =
+                MultiviewTiles.FirstOrDefault(t => t.Participant.Id == primary.Participant.Id)?.Surface;
+
+            // Capture-device primaries are not part of the participant multiview roster;
+            // pull their live surface from the coordinator's capture surface map.
+            if (liveSurface is null &&
+                primary.Participant.Id.StartsWith("capture:", StringComparison.Ordinal))
+            {
+                var deviceId = primary.Participant.Id["capture:".Length..];
+                if (_surfaces.CaptureDeviceSurfaces.TryGetValue(deviceId, out var captureSurface))
+                {
+                    liveSurface = captureSurface;
+                }
+            }
+
+            liveSurface ??= primary.Surface;
+            if (liveSurface is not null)
+            {
+                return liveSurface with
+                {
+                    SurfaceKey = "preview",
+                    Kind = VideoSurfaceKind.Preview,
+                    Title = "Preview"
+                };
+            }
+        }
+
+        return _surfaces.PreviewSurface;
     }
 
     private void ScheduleMultiviewGridRefresh()

@@ -484,14 +484,15 @@
                             <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
                                 <cvcontrols:AspectRatioHost.Child>
                                     <Grid>
-                                        <cvcontrols:ScenePreviewControl
+                                        <!-- Preview bus = a SINGLE VideoSurfaceHost bound to the queued
+                                             scene's primary source (ViewModel.PreviewSurface). This presents
+                                             the previewed source steadily (in-place WriteableBitmap updates,
+                                             GPU shared texture when available) instead of the per-frame tile
+                                             teardown/rebuild that made the Zoom preview flicker/freeze. -->
+                                        <cvcontrols:VideoSurfaceHost
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch"
-                                            Scene="{x:Bind ViewModel.PreviewScene, Mode=OneWay}"
-                                            SceneBackgroundAsset="{x:Bind ViewModel.PreviewSceneBackgroundAsset, Mode=OneWay}"
-                                            Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
-                                            Routes="{x:Bind ViewModel.PreviewSceneRoutes, Mode=OneWay}"
-                                            IsPreview="True" />
+                                            SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
