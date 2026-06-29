@@ -8834,7 +8834,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         // MUST run on the UI thread: it assigns MultiviewGridTiles (x:Bound to the grid's
         // ItemsRepeater) + OnPropertyChanged, and reads UI-owned collections (ShowInputs,
-        // RoomVideoParticipants, MultiviewTiles). It is called from ~20 sites including the
+        // RoomParticipantsForInputs, MultiviewTiles). It is called from ~20 sites including the
         // roster/active-speaker churn path (~1.3x/s under a live meeting); if even one
         // fires off the UI thread the bound-prop set is a native fail-fast
         // (CoreMessagingXP +0x93b66 / 0xc000027b, no managed stack — reproduced under
@@ -8846,9 +8846,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Resolve Zoom slots against the FULL in-room roster (RoomParticipantsForInputs), not
+        // the video-only subset (RoomVideoParticipants). The Sources picker assigns from the
+        // full roster, so a slot can be bound to a participant whose camera is momentarily off.
+        // Resolving here against the video-only list silently dropped that slot from the
+        // multiview, and because the grid packs sequentially every later slot then shifted -
+        // surfacing as the reported "wrong / stale / missing source". Passing the full roster
+        // lets ToSurfaceTile emit a waiting/video-off placeholder in the slot's own position,
+        // so the operator's routing is honored deterministically and matches the Sources screen.
+        // Live video frames still flow from MultiviewTiles, which is built from the video-only
+        // participants, so a camera-on participant still gets their live surface.
         var tiles = ShowInputRosterService.BuildMultiviewTiles(
             ShowInputs,
-            RoomVideoParticipants,
+            RoomParticipantsForInputs,
             CaptureDevices,
             MultiviewTiles,
             _surfaces.CaptureDeviceSurfaces,

@@ -474,6 +474,50 @@ public sealed class ShowInputRosterServiceTests
         Assert.Null(route.ParticipantId);
     }
 
+    [Fact]
+    public void BuildMultiviewTiles_KeepsZoomSlotInOwnPositionWhenParticipantHasNoLiveTile()
+    {
+        // Regression: the operator assigns a Zoom participant whose camera is momentarily off.
+        // The participant is present in the in-room roster (what the Sources picker offers) but
+        // has no live video tile yet. The slot must still surface in its own position as a
+        // waiting placeholder - it must NOT be dropped (which would shift every later slot and
+        // make the multiview disagree with the Sources screen).
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-camera-off";
+        slots[0].InShow = true;
+        slots[1].Kind = ShowInputKind.ZoomParticipant;
+        slots[1].ParticipantId = "p-camera-on";
+        slots[1].InShow = true;
+
+        var participants = new[]
+        {
+            new Participant { Id = "p-camera-off", Name = "Camera Off Guest", Health = FeedHealth.VideoOff },
+            new Participant { Id = "p-camera-on", Name = "Live Host", Health = FeedHealth.Live }
+        };
+
+        // MultiviewTiles (live video tiles) only contains the camera-on participant.
+        var liveTile = new ParticipantSurfaceTile
+        {
+            Participant = participants[1],
+            Surface = VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, "p-camera-on", "Live Host"),
+            SourceIndex = 2
+        };
+
+        var tiles = ShowInputRosterService.BuildMultiviewTiles(
+            slots,
+            participants,
+            [],
+            [liveTile]);
+
+        Assert.Equal(2, tiles.Count);
+        var slot1 = tiles.Single(tile => tile.SourceIndex == 1);
+        Assert.Equal("p-camera-off", slot1.Participant.Id);
+        Assert.Equal("Camera Off Guest", slot1.Participant.Name);
+        var slot2 = tiles.Single(tile => tile.SourceIndex == 2);
+        Assert.Equal("p-camera-on", slot2.Participant.Id);
+    }
+
     private static MediaAsset Media(string id, string name, string kind, bool isPlaying = false) =>
         new()
         {
