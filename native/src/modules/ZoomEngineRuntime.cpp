@@ -296,19 +296,18 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       const auto purpose = request.getString("purpose");
       command.sourceUuid = kind + "-" + participantId + "-" + purpose;
       command.mode = kind == "screen-share" ? "screenshare" : "";
-      // Resolution by purpose (0=360P, 1=720P, 2=1080P). The default was 2 (1080P) for
-      // EVERY participant — six concurrent 1080P raw subscriptions overloaded the Zoom SDK
-      // (corevideo-zoom-engine crashed in ntdll 0xc000000d) and the per-participant CPU
-      // I420->BGRA. Only the screen share and the active-speaker (program/feature
-      // candidate) need full res; the rest are small multiview thumbnails -> 360P (1/9th
-      // the pixels of 1080P). This is the latency/scale path toward 8x participants; the
-      // engine downgrades further if a given resolution fails.
-      if (kind == "screen-share") {
+      // Resolution by purpose (0=360P, 1=720P, 2=1080P). TARGET is 1080p60 for EVERY
+      // participant (product spec). But N concurrent 1080P raw subscriptions overloaded
+      // the Zoom SDK (corevideo-zoom-engine ntdll 0xc000000d) and the CPU I420->BGRA path.
+      // INTERIM until the GPU pipeline lands (GPU I420->BGRA + zero-copy composite, which
+      // removes the CPU bottleneck and lets us pull all feeds at full res): the
+      // active-speaker + screen share get 1080P (the program/feature candidate the user
+      // explicitly wants full res), other multiview participants get 720P. The engine
+      // downgrades further on per-feed failure.
+      if (kind == "screen-share" || purpose == "active-speaker") {
         command.resolution = 2;  // 1080P
-      } else if (purpose == "active-speaker") {
-        command.resolution = 1;  // 720P
       } else {
-        command.resolution = 0;  // 360P multiview thumbnail
+        command.resolution = 1;  // 720P interim (target 1080P via the GPU pipeline)
       }
       if (kind == "participant-audio") {
         (void)process_->sendLine(buildZoomEngineSubscribeAudioCommand(command));
