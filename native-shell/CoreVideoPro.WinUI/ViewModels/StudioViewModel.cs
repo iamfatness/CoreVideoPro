@@ -10049,9 +10049,68 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // as a belt-and-suspenders. The old debounced re-entrant-sync machinery (which backpressured
     // against the spine flood and never reliably landed) is retired; this is now a no-op kept so
     // the structural roster/show-input refresh points have a harmless hook.
+    private string _lastSentMultiviewLayoutSignature = "";
+    private NativeMediaCoreCommand? _pendingMultiviewLayoutCommand;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _multiviewLayoutTimer;
+
+    // Deliver the multiview layout whenever it STRUCTURALLY changes, independent of Zoom.
+    // The spine sync also carries it, but ONLY while in a Zoom meeting (MeetingState==in_meeting)
+    // — so capture-only shows (UVC/Blackmagic/AJA, no Zoom) had no delivery path once the
+    // production-sync loop was removed. This sends a standalone set-multiview-layout (now that the
+    // JSON \uXXXX parse fix lets it reach the core) on a debounced, signature-gated trigger: fires
+    // only when the source set/slots/grid change (NOT on active-speaker churn — that's baked into
+    // the texture in-core), so it neither loops nor floods.
     private void SyncMultiviewLayoutIfChanged()
     {
-        // Intentionally empty: the spine sync carries the live layout continuously.
+        if (!MultiviewGpuEnabled || !_bridge.Running)
+        {
+            return;
+        }
+
+        var sources = ShowInputRosterService.BuildMultiviewLayoutSources(
+            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
+        var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
+        var signature = string.Join("|", sources.Select(s => $"{s.Slot}:{s.Kind}:{s.SourceId}:{s.Label}")) +
+            $"#{grid.Columns}x{grid.Rows}";
+        if (string.Equals(signature, _lastSentMultiviewLayoutSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastSentMultiviewLayoutSignature = signature;
+        var canvas = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
+        _pendingMultiviewLayoutCommand = MediaCoreCommandBuilder.BuildMultiviewLayoutCommand(
+            sources, canvas.Width, canvas.Height, grid.Columns, grid.Rows);
+
+        if (_multiviewLayoutTimer is null)
+        {
+            _multiviewLayoutTimer = _dispatcher.CreateTimer();
+            _multiviewLayoutTimer.IsRepeating = false;
+            _multiviewLayoutTimer.Tick += (_, _) => _ = SendPendingMultiviewLayoutAsync();
+        }
+        _multiviewLayoutTimer.Interval = TimeSpan.FromMilliseconds(150);  // coalesce rapid changes
+        _multiviewLayoutTimer.Start();
+    }
+
+    private async Task SendPendingMultiviewLayoutAsync()
+    {
+        var command = _pendingMultiviewLayoutCommand;
+        if (command is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // Standalone sync — does NOT apply the response snapshot, so it can't re-trigger the
+            // production-sync path (no loop).
+            await _bridge.SyncAsync([command]).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Backpressure/transient — drop the cached signature so the next structural change retries.
+            _lastSentMultiviewLayoutSignature = "";
+        }
     }
 
     private bool _loggedMultiviewTexture;
