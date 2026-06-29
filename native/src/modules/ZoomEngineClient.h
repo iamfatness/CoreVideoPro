@@ -78,10 +78,20 @@ struct ZoomEngineEvent {
 struct ZoomEngineRgbaFrame {
   std::string sourceUuid;
   std::string participantId;
+  // Dimensions of the (downscaled) BGRA `rgba` thumbnail below.
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint32_t frameId = 0;
+  // Downscaled BGRA thumbnail (capped at the maxWidth/maxHeight passed to
+  // readZoomEngineI420FrameSnapshot) for the WinUI base64 multiview path.
   std::vector<std::uint8_t> rgba;
+  // Full-resolution I420 (YUV 4:2:0 planar) planes copied verbatim from shared
+  // memory: Y (i420Width*i420Height) then U then V. The compositor uploads these
+  // to GPU textures and converts to RGB in-shader, so the per-pixel CPU convert
+  // is no longer paid at full resolution (only for the small thumbnail above).
+  std::vector<std::uint8_t> i420;
+  std::uint32_t i420Width = 0;
+  std::uint32_t i420Height = 0;
 };
 
 std::string buildZoomEngineInitCommand(const ZoomEngineInitCommand& command);
