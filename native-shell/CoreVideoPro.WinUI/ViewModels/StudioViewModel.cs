@@ -8737,9 +8737,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshMultiviewGridTiles()
     {
+        // Resolve Zoom slots against the FULL in-room roster (RoomParticipantsForInputs), not
+        // the video-only subset (RoomVideoParticipants). The Sources picker assigns from the
+        // full roster, so a slot can be bound to a participant whose camera is momentarily off.
+        // Resolving here against the video-only list silently dropped that slot from the
+        // multiview, and because the grid packs sequentially every later slot then shifted -
+        // surfacing as the reported "wrong / stale / missing source". Passing the full roster
+        // lets ToSurfaceTile emit a waiting/video-off placeholder in the slot's own position,
+        // so the operator's routing is honored deterministically and matches the Sources screen.
+        // Live video frames still flow from MultiviewTiles, which is built from the video-only
+        // participants, so a camera-on participant still gets their live surface.
         var tiles = ShowInputRosterService.BuildMultiviewTiles(
             ShowInputs,
-            RoomVideoParticipants,
+            RoomParticipantsForInputs,
             CaptureDevices,
             MultiviewTiles,
             _surfaces.CaptureDeviceSurfaces,
