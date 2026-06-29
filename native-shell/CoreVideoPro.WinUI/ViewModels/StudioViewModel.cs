@@ -9267,9 +9267,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!lowerThirdEnabled || source is null)
         {
-            _lowerThirdKeyTransitionCts?.Cancel();
-            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
-            _ = TrySyncMediaCoreAsync();
+            // Idempotent: only push a hidden key (and re-sync the media core) when the key
+            // ACTUALLY changes. RefreshSceneCompositionState(program) calls this on every
+            // production-sync response — it runs via the dispatcher-scheduled
+            // SchedulePreviewRoutingRefresh, which fires AFTER ApplyLiveProductionPatch clears
+            // _applyingProductionPatch. So an unconditional TrySyncMediaCoreAsync() here re-armed
+            // a self-sustaining production-sync loop (~13/s back-to-back) that starved the render
+            // (frozen preview) and fail-fast-crashed WinUI (CoreMessagingXP 0xc000027b). When the
+            // lower third is already hidden (the steady state) we now do nothing -> loop broken.
+            var hidden = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
+            if (ProgramLowerThirdKey != hidden)
+            {
+                _lowerThirdKeyTransitionCts?.Cancel();
+                ProgramLowerThirdKey = hidden;
+                _ = TrySyncMediaCoreAsync();
+            }
             return;
         }
 
