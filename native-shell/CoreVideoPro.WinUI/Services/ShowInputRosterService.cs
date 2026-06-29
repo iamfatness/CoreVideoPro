@@ -218,6 +218,8 @@ public static class ShowInputRosterService
     /// that feed <see cref="BuildMultiviewTiles"/> (InShow + assigned + resolved, capped at
     /// <see cref="MaxMultiviewBoxes"/>). The core composites these into one GPU shared texture.
     /// </summary>
+    private static string _lastMvResolveDiagSig = "";
+
     public static IReadOnlyList<MediaCoreMultiviewSourceWire> BuildMultiviewLayoutSources(
         IReadOnlyList<ShowInputSlot> slots,
         IReadOnlyList<Participant> participants,
@@ -228,6 +230,20 @@ public static class ShowInputRosterService
         var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
         var mediaAssetsById = (mediaAssets ?? [])
             .ToDictionary(asset => asset.Id, asset => asset, StringComparer.Ordinal);
+
+        // DIAGNOSTIC (change-gated): why do in-show slots resolve (or not) into multiview sources?
+        var inShowAssigned = slots.Where(s => s.InShow && s.IsAssigned).ToList();
+        var diagSig = string.Join("|", inShowAssigned.Select(s => $"{s.SlotNumber}:{s.Kind}:{s.CaptureDeviceId}:{s.ParticipantId}")) +
+            "#dev:" + string.Join(",", devicesById.Keys) + "#par:" + string.Join(",", participantsById.Keys);
+        if (diagSig != _lastMvResolveDiagSig)
+        {
+            _lastMvResolveDiagSig = diagSig;
+            foreach (var s in inShowAssigned)
+            {
+                LaunchLog.Write($"mv-resolve: slot{s.SlotNumber} kind={s.Kind} capId='{s.CaptureDeviceId}' pid='{s.ParticipantId}' resolved={HasResolvedSource(s, participantsById, devicesById, mediaAssetsById)}");
+            }
+            LaunchLog.Write($"mv-resolve: inShowAssigned={inShowAssigned.Count} captureDevices=[{string.Join(",", devicesById.Keys)}] participants=[{string.Join(",", participantsById.Keys.Take(8))}]");
+        }
 
         return slots
             .Where(slot => slot.InShow && slot.IsAssigned &&
