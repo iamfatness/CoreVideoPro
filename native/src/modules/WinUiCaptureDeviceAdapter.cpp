@@ -120,46 +120,47 @@ std::vector<VideoFrame> WinUiCaptureDeviceAdapter::pollVideoFrames(int64_t times
 
     const uint8_t* base = buffer.view;
     const uint32_t s1 = loadSeq(base);
-    if ((s1 & 1u) != 0) {
-      continue;  // writer mid-update
-    }
-    if (s1 == buffer.lastSequence) {
-      continue;  // no new frame since last poll
+    // Try to pick up a NEW frame; if there isn't one this tick we fall through and
+    // re-emit the last held frame (below) so the compositor never starves.
+    if ((s1 & 1u) == 0 && s1 != buffer.lastSequence) {
+      const uint32_t w = loadU32(base, 4);
+      const uint32_t h = loadU32(base, 8);
+      const std::size_t bgraBytes = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
+      if (w != 0 && h != 0 && kHeaderBytes + bgraBytes <= buffer.mappedBytes) {
+        auto pixels = std::make_shared<std::vector<uint8_t>>(base + kHeaderBytes, base + kHeaderBytes + bgraBytes);
+        const uint32_t s2 = loadSeq(base);
+        if (s2 == s1) {  // not torn
+          buffer.lastSequence = s1;
+          if (buffer.frameId == 0) {
+            std::fprintf(stderr, "[capture-shm] first frame '%s' %ux%u (core now compositing real capture pixels)\n",
+                         deviceId.c_str(), w, h);
+          }
+          ++buffer.frameId;
+          buffer.lastPixels = std::move(pixels);
+          buffer.lastWidth = static_cast<int>(w);
+          buffer.lastHeight = static_cast<int>(h);
+        }
+      }
     }
 
-    const uint32_t w = loadU32(base, 4);
-    const uint32_t h = loadU32(base, 8);
-    if (w == 0 || h == 0) {
-      continue;
-    }
-    const std::size_t bgraBytes = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
-    if (kHeaderBytes + bgraBytes > buffer.mappedBytes) {
-      continue;  // frame larger than the mapped view — wait for a re-register at new size
-    }
-
-    auto pixels = std::make_shared<std::vector<uint8_t>>(base + kHeaderBytes, base + kHeaderBytes + bgraBytes);
-
-    const uint32_t s2 = loadSeq(base);
-    if (s2 != s1) {
-      continue;  // torn read — writer updated mid-copy, drop this one
-    }
-    buffer.lastSequence = s1;
-    if (buffer.frameId == 0) {
-      std::fprintf(stderr, "[capture-shm] first frame '%s' %ux%u (core now compositing real capture pixels)\n",
-                   deviceId.c_str(), w, h);
+    // Emit the latest frame we have — read this tick OR the last one held — so a render
+    // tick with no fresh capture frame still composites real pixels instead of the pink
+    // "no pixels" slate (that gap was the flashing-pink program/preview).
+    if (!buffer.lastPixels || buffer.lastWidth == 0 || buffer.lastHeight == 0) {
+      continue;  // no frame ever received for this device yet
     }
 
     VideoFrame frame;
     frame.participantId = "capture:" + deviceId;
-    frame.width = static_cast<int>(w);
-    frame.height = static_cast<int>(h);
-    frame.naturalWidth = static_cast<int>(w);
-    frame.naturalHeight = static_cast<int>(h);
-    frame.pixels = pixels;
-    frame.pixelWidth = static_cast<int>(w);
-    frame.pixelHeight = static_cast<int>(h);
-    frame.pixelStride = static_cast<int>(w) * 4;
-    frame.frameId = ++buffer.frameId;
+    frame.width = buffer.lastWidth;
+    frame.height = buffer.lastHeight;
+    frame.naturalWidth = buffer.lastWidth;
+    frame.naturalHeight = buffer.lastHeight;
+    frame.pixels = buffer.lastPixels;
+    frame.pixelWidth = buffer.lastWidth;
+    frame.pixelHeight = buffer.lastHeight;
+    frame.pixelStride = buffer.lastWidth * 4;
+    frame.frameId = buffer.frameId;
     frame.timestampMs = timestampMs;
 
     // A real capture frame supersedes any inner (test-pattern) frame for the same id.

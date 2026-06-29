@@ -63,6 +63,12 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
     std::size_t mappedBytes = 0;
     uint32_t lastSequence = 0;
     int64_t frameId = 0;
+    // Last consistent frame, held so the compositor always has capture pixels even on
+    // render ticks with no new frame (capture ~30/60fps vs the render tick) — otherwise
+    // those ticks composite the pink "no pixels" slate (flashing pink program/preview).
+    std::shared_ptr<std::vector<uint8_t>> lastPixels;
+    int lastWidth = 0;
+    int lastHeight = 0;
   };
 
   void closeBufferLocked(Buffer& buffer);
