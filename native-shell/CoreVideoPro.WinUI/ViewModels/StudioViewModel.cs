@@ -10002,7 +10002,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (!MultiviewGpuEnabled || !_bridge.Running)
         {
-            LaunchLog.Write($"multiview-layout: skip (gpuEnabled={MultiviewGpuEnabled} running={_bridge.Running})");
             return;
         }
 
@@ -10011,7 +10010,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RoomParticipantsForInputs,
             CaptureDevices,
             VisualMediaAssets);
-        LaunchLog.Write($"multiview-layout: built sources={sources.Count} (inShow assigned+resolved slots)");
         var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
         var signature = string.Join("|", sources.Select(source => $"{source.Slot}:{source.Kind}:{source.SourceId}:{source.Label}")) +
             $"#{grid.Columns}x{grid.Rows}";
@@ -10020,27 +10018,57 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        _lastSentMultiviewLayoutSignature = signature;
-        var canvas = BuildRequestedOutputProfile("canvas", CanvasResolution, CanvasFps, "h264");
-        var command = MediaCoreCommandBuilder.BuildMultiviewLayoutCommand(
-            sources,
-            canvas.Width,
-            canvas.Height,
-            grid.Columns,
-            grid.Rows);
-        _ = SendMultiviewLayoutAsync(command);
+        // Deliver via the proven FULL production sync (its BuildSyncCommands carries the
+        // current multiview layout), but NEVER force it re-entrantly from this refresh path:
+        // the bridge serializes syncs (MediaCoreSyncInFlightException) and a sync started while
+        // the UI thread is inside the refresh deadlocks/times out. Mark the target signature and
+        // schedule a DEBOUNCED, TOP-LEVEL sync (timer tick → UI thread free), retrying on
+        // backpressure until it lands.
+        _pendingMultiviewLayoutSignature = signature;
+        ScheduleMultiviewLayoutSync();
     }
 
-    private async Task SendMultiviewLayoutAsync(NativeMediaCoreCommand command)
+    private string _pendingMultiviewLayoutSignature = "";
+    private bool _multiviewSyncInFlight;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _multiviewSyncTimer;
+
+    private void ScheduleMultiviewLayoutSync()
     {
+        if (_multiviewSyncTimer is null)
+        {
+            _multiviewSyncTimer = _dispatcher.CreateTimer();
+            _multiviewSyncTimer.IsRepeating = false;
+            _multiviewSyncTimer.Tick += (_, _) => _ = RunMultiviewLayoutSyncAsync();
+        }
+        _multiviewSyncTimer.Interval = TimeSpan.FromMilliseconds(400);
+        _multiviewSyncTimer.Start();
+    }
+
+    private async Task RunMultiviewLayoutSyncAsync()
+    {
+        // Already current, or a sync is mid-flight — nothing to do (the latter reschedules).
+        if (_multiviewSyncInFlight ||
+            string.Equals(_pendingMultiviewLayoutSignature, _lastSentMultiviewLayoutSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _multiviewSyncInFlight = true;
+        var target = _pendingMultiviewLayoutSignature;
         try
         {
-            await _bridge.SyncAsync([command]).ConfigureAwait(false);
+            await SyncActiveSceneAsync().ConfigureAwait(true);
+            _lastSentMultiviewLayoutSignature = target;
         }
         catch
         {
-            // Best-effort: the production sync (scene publish) also carries the layout, and the
-            // next structural change re-sends it.
+            // Sync in flight (backpressure) or timed out — retry shortly; the layout the next
+            // sync carries is always current, so this self-heals once the bridge is free.
+            ScheduleMultiviewLayoutSync();
+        }
+        finally
+        {
+            _multiviewSyncInFlight = false;
         }
     }
 
