@@ -30,9 +30,15 @@ if ($UseDevNativeCore) {
     throw "Missing dev native Zoom build. Run .\scripts\build-native-dev.ps1 first."
   }
   $env:COREVIDEO_STUDIO_USE_DEV_CORE = "1"
-  $env:COREVIDEO_ZOOM_ENGINE_PATH = $devZoomEngine
+  # Respect a pre-set engine path so the SYNTHETIC multi-participant engine
+  # (native\build-dev\corevideo-zoom-engine-fake.exe) can be used to test the
+  # multiview/program/preview paths WITHOUT a real Zoom meeting:
+  #   $env:COREVIDEO_ZOOM_ENGINE_PATH = "...\corevideo-zoom-engine-fake.exe"; npm run app
+  if (-not $env:COREVIDEO_ZOOM_ENGINE_PATH) {
+    $env:COREVIDEO_ZOOM_ENGINE_PATH = $devZoomEngine
+  }
   Write-Host "[run-studio] using dev native core: $devNativeExe" -ForegroundColor Cyan
-  Write-Host "[run-studio] using Zoom engine: $devZoomEngine" -ForegroundColor Cyan
+  Write-Host "[run-studio] using Zoom engine: $env:COREVIDEO_ZOOM_ENGINE_PATH" -ForegroundColor Cyan
 }
 
 Write-Host "[run-studio] launching $studioExe" -ForegroundColor Cyan
