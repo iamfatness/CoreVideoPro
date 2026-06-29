@@ -8054,22 +8054,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private int _surfaceRefreshPending;
+    private long _lastRsbTickMs;
+    private bool _rsbThrottleScheduled;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _rsbThrottleTimer;
+    private const long RsbMinIntervalMs = 80;  // cap surface-binding refresh to ~12.5/s
+
     private void OnSurfacesChanged()
     {
-        // Coalesce: surfaces change up to ~100x/s (per-source frames). Without this
-        // every change posts a UI-thread refresh, flooding the dispatcher (suspected
-        // CoreMessagingXP pressure) and scaling badly to 8 participants. Collapse to
-        // at most one pending refresh at a time.
+        // Surfaces change up to ~100x/s (per-source pixel frames). The old 1-pending
+        // coalesce did NOT cap the RATE — it re-ran RefreshSurfaceBindings as fast as the
+        // UI thread drained (~98/s), and each run REBUILDS MultiviewTiles (wholesale
+        // collection replace). That frame-rate rebuild + dispatcher flood is the
+        // multi-participant fail-fast (CoreMessagingXP 0xc000027b — confirmed reproduced).
+        // GPU surfaces self-refresh at 60fps via their own present loop, so bindings only
+        // need to catch STRUCTURAL changes within ~80ms. Throttle to ~12.5/s.
         if (System.Threading.Interlocked.Exchange(ref _surfaceRefreshPending, 1) == 1)
         {
             return;
         }
 
-        RunOnUiThread(() =>
+        RunOnUiThread(ApplyThrottledSurfaceRefresh);
+    }
+
+    private void ApplyThrottledSurfaceRefresh()
+    {
+        System.Threading.Interlocked.Exchange(ref _surfaceRefreshPending, 0);
+        var now = Environment.TickCount64;
+        var since = now - _lastRsbTickMs;
+        if (since >= RsbMinIntervalMs)
         {
-            System.Threading.Interlocked.Exchange(ref _surfaceRefreshPending, 0);
+            _lastRsbTickMs = now;
             RefreshSurfaceBindings();
-        });
+            return;
+        }
+        // Too soon — schedule a single trailing refresh so the latest state still lands.
+        if (_rsbThrottleScheduled)
+        {
+            return;
+        }
+        _rsbThrottleScheduled = true;
+        if (_rsbThrottleTimer is null)
+        {
+            _rsbThrottleTimer = _dispatcher.CreateTimer();
+            _rsbThrottleTimer.IsRepeating = false;
+            _rsbThrottleTimer.Tick += (_, _) =>
+            {
+                _rsbThrottleScheduled = false;
+                _lastRsbTickMs = Environment.TickCount64;
+                RefreshSurfaceBindings();
+            };
+        }
+        _rsbThrottleTimer.Interval = TimeSpan.FromMilliseconds(RsbMinIntervalMs - since);
+        _rsbThrottleTimer.Start();
     }
 
     private long _rsbCount;
