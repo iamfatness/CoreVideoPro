@@ -940,10 +940,17 @@ class D3D11Compositor final : public ICompositor {
         pt.width = f.pixelWidth;
         pt.height = f.pixelHeight;
       }
-      if (pt.mutex && pt.mutex->AcquireSync(0, 0) == S_OK) {
+      // Only re-upload when the frame actually changed. Capture frames are now HELD and
+      // re-emitted every render tick (so the program composite never starves -> no pink),
+      // but re-uploading an unchanged frame to the per-participant export texture every
+      // tick cost ~15ms/tick (3+ capture + Zoom at 1080p) and collapsed the render to
+      // ~11fps. The texture already holds these pixels; just keep emitting the handle.
+      const bool frameChanged = (f.frameId != pt.lastFrameId);
+      if (frameChanged && pt.mutex && pt.mutex->AcquireSync(0, 0) == S_OK) {
         context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
                                     static_cast<UINT>(f.pixelStride), 0);
         pt.mutex->ReleaseSync(1);
+        pt.lastFrameId = f.frameId;
       }
       ParticipantSharedTexture info;
       info.participantId = f.participantId;
@@ -1010,6 +1017,7 @@ class D3D11Compositor final : public ICompositor {
     HANDLE handle = nullptr;
     int width = 0;
     int height = 0;
+    int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
   };
   std::map<std::string, ParticipantTex> participantTextures_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
