@@ -1,10 +1,18 @@
 # GPU multiview — implementation plan (core-composited single texture)
 
-_Status: 2026-06-29. **Supersedes the earlier per-tile-shared-texture plan**, which was
-implemented and FAILED: giving each participant tile its own DXGI swap chain fail-fasts
-the WinUI (`CoreMessagingXP 0xc000027b`) under live roster/active-speaker churn — N swap
-chains created/reloaded per change. The tiles are currently CPU/base64 as a stable but
-choppy, non-scaling stopgap (the owner correctly rejected CPU for 8 Zoom + 2 capture)._
+_Status: 2026-06-29 — **IMPLEMENTED + MERGED** (Phase 1 native `f64b4ac`, Phase 2–3 WinUI
+`d0a169b`). The core composites the whole grid into ONE keyed-mutex shared texture and the
+WinUI presents it in ONE VideoSurfaceHost + transparent click-overlay; the per-frame tile
+churn is retired. Build green; survived 4.5 min fake-engine churn with zero
+`CoreMessagingXP 0xc000027b`. NEEDS a human GUI pass: assign 2–3 Show Inputs and confirm
+the grid presents smoothly + tapping a tile cues it to preview. The plan below is the
+as-built design (kept for reference)._
+
+_Supersedes the earlier per-tile-shared-texture approach, which FAILED: giving each
+participant tile its own DXGI swap chain fail-fasts the WinUI (`CoreMessagingXP
+0xc000027b`) under live roster/active-speaker churn — N swap chains created/reloaded per
+change. CPU/base64 tiles were a stable-but-choppy, non-scaling stopgap (the owner
+correctly rejected CPU for 8 Zoom + 2 capture)._
 
 ## The approach
 
