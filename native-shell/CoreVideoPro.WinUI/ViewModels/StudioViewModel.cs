@@ -4141,8 +4141,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PlayMediaAsset(SelectedMediaAssetId);
     }
 
+    private bool _applyingProductionPatch;
+
     private async Task TrySyncMediaCoreAsync()
     {
+        // Don't re-sync in response to a sync's OWN snapshot patch. ApplyLiveProductionPatch
+        // applies the snapshot to bound state, which (on a structural change) rebuilds the
+        // roster/multiview/show-input collections; some of those paths call TrySyncMediaCoreAsync,
+        // which fed a self-sustaining production-sync loop (~13/s back-to-back, each running the
+        // full media-core tick ~60ms and starving the render → frozen preview). The bridge's 4s
+        // timeouts previously masked it; with the JSON-parse fix the syncs now complete and the
+        // loop ran at full speed.
+        if (_applyingProductionPatch)
+        {
+            return;
+        }
+
         try
         {
             await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
@@ -7394,6 +7408,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Suppress production-sync re-triggers while applying this sync's own response (see
+        // TrySyncMediaCoreAsync) so the roster/multiview rebuilds below can't start a sync loop.
+        _applyingProductionPatch = true;
+        try
+        {
         ApplyCaptionAndLowerThirdPatch(patch);
 
         if (patch.Recording is { } recording)
@@ -7440,6 +7459,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         else if (patch.Participants is { Count: 0 } && !Settings.IsInMeeting)
         {
             ClearLiveProductionParticipants();
+        }
+        }
+        finally
+        {
+            _applyingProductionPatch = false;
         }
     }
 
