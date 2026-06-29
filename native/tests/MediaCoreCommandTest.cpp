@@ -3509,3 +3509,85 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
       decoded[offset + 2] == static_cast<uint8_t>((syntheticColor >> 16) & 0xff);
   EXPECT_FALSE(matchesSynthetic);
 }
+
+// HEADLESS multiview validation: with the real GPU compositor wired in, a
+// set-multiview-layout + one render tick must produce a non-empty multiview
+// shared-texture handle and emit exactly one multiview-shared-texture event
+// carrying the canvas dims + one tile per layout source. Skips when no D3D11
+// device is available (e.g. the portable stub build / no GPU).
+TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
+  auto gpuCompositor = corevideo::modules::createD3D11Compositor();
+  if (!gpuCompositor) {
+    std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
+    return;
+  }
+  ASSERT_TRUE(gpuCompositor->rendererName() == "d3d11");
+
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::move(gpuCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  corevideo::rpc::Json::Array sources;
+  const std::vector<std::string> ids = {"alice", "bob", "carol", "dave"};
+  for (size_t i = 0; i < ids.size(); ++i) {
+    sources.emplace_back(corevideo::rpc::Json::Object{
+        {"sourceId", "zoom:" + ids[i]},
+        {"kind", "participant"},
+        {"participantId", ids[i]},
+        {"slot", static_cast<int>(i)},
+        {"label", "Tile " + ids[i]},
+    });
+  }
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-multiview-layout"},
+      {"canvasWidth", 1920},
+      {"canvasHeight", 1080},
+      {"sources", sources},
+  });
+
+  // One light video-only render tick drives the second (multiview) GPU composite.
+  mediaCore.renderDisplayTick();
+
+  const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+  ASSERT_FALSE(events.empty()) << "expected a cold-start multiview-shared-texture event";
+  const auto& event = events.back();
+  EXPECT_TRUE(event.getString("type") == "multiview-shared-texture");
+  EXPECT_EQ(static_cast<int>(event.getNumber("canvasWidth")), 1920);
+  EXPECT_EQ(static_cast<int>(event.getNumber("canvasHeight")), 1080);
+
+  const auto* texture = event.get("texture");
+  ASSERT_NE(texture, nullptr);
+  const std::string handleHex = texture->getString("sharedHandleHex");
+  EXPECT_FALSE(handleHex.empty());
+  const int texWidth = static_cast<int>(texture->getNumber("width"));
+  const int texHeight = static_cast<int>(texture->getNumber("height"));
+  EXPECT_EQ(texWidth, 1920);
+  EXPECT_EQ(texHeight, 1080);
+
+  const auto* tiles = event.get("tiles");
+  ASSERT_NE(tiles, nullptr);
+  ASSERT_TRUE(tiles->isArray());
+  EXPECT_EQ(tiles->asArray().size(), ids.size());
+  for (const auto& tile : tiles->asArray()) {
+    EXPECT_TRUE(tile.getNumber("w") > 0.0);
+    EXPECT_TRUE(tile.getNumber("h") > 0.0);
+  }
+
+  // Validation log for the headless report.
+  std::fprintf(
+      stderr,
+      "[multiview-validation] handle=%s dims=%dx%d tiles=%zu\n",
+      handleHex.c_str(), texWidth, texHeight, tiles->asArray().size());
+
+  // Structural-change gating: a second render with the same layout must NOT
+  // re-emit (the handle/geometry are unchanged).
+  mediaCore.renderDisplayTick();
+  EXPECT_TRUE(mediaCore.drainMultiviewSharedTextureEvents().empty())
+      << "multiview event must only emit on structural change";
+
+  // The cold-start snapshot must also carry the multiview shared texture.
+  const auto snapshot = mediaCore.sessionState();
+  const auto* snapshotMultiview = snapshot.get("multiviewSharedTexture");
+  ASSERT_NE(snapshotMultiview, nullptr);
+  EXPECT_FALSE(snapshotMultiview->get("texture")->getString("sharedHandleHex").empty());
+}

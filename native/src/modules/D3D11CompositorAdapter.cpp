@@ -306,6 +306,59 @@ class D3D11Compositor final : public ICompositor {
     return frame;
   }
 
+  // Second compositor pass: render the whole multiview grid into its own
+  // keyed-mutex DXGI shared texture, reusing the exact program pipeline +
+  // resolveLayers/drawLayer path (so participant + capture tiles work for free).
+  // Runs after render() each tick; saves/restores the shared targetWidth_/Height_
+  // members the draw helpers read (risk #1 — corruption, not a crash) so the
+  // program pass is never affected.
+  ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    ProgramFrameSharedTexture out;
+    if (!pipelineReady_ || !device_ || !context_) {
+      return out;
+    }
+    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    const int width = deterministicPlan.width;
+    const int height = deterministicPlan.height;
+    if (width <= 0 || height <= 0) {
+      return out;
+    }
+    if (!ensureMultiviewRenderTarget(width, height)) {
+      return out;
+    }
+
+    // Save the program pass's target dims and point the draw helpers at the
+    // multiview canvas. Restored before returning so the next program render()
+    // and its exportSharedTexture() see the original dimensions.
+    const int savedWidth = targetWidth_;
+    const int savedHeight = targetHeight_;
+    targetWidth_ = width;
+    targetHeight_ = height;
+
+    const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
+    ID3D11RenderTargetView* renderTargets[] = {multiviewRenderTargetView_.get()};
+    context_->OMSetRenderTargets(1, renderTargets, nullptr);
+    context_->ClearRenderTargetView(multiviewRenderTargetView_.get(), background);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
+
+    const auto layers = resolveLayers(deterministicPlan, frames);
+    for (const auto& layer : layers) {
+      drawLayer(layer, deterministicPlan);
+    }
+
+    exportMultiviewSharedTexture(out);
+
+    targetWidth_ = savedWidth;
+    targetHeight_ = savedHeight;
+    context_->Flush();
+    return out;
+  }
+
  private:
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
@@ -1225,6 +1278,122 @@ class D3D11Compositor final : public ICompositor {
     return true;
   }
 
+  // Multiview render target: mirrors ensureRenderTarget but with NO CPU staging
+  // texture (the multiview path never does a GPU->CPU readback — it only exports
+  // the GPU shared texture).
+  bool ensureMultiviewRenderTarget(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (multiviewRenderTarget_ && multiviewWidth_ == width && multiviewHeight_ == height) {
+      return true;
+    }
+
+    multiviewRenderTarget_ = {};
+    multiviewRenderTargetView_ = {};
+    multiviewWidth_ = width;
+    multiviewHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, multiviewRenderTarget_.put()))) {
+      return false;
+    }
+    return SUCCEEDED(device_->CreateRenderTargetView(multiviewRenderTarget_.get(), nullptr, multiviewRenderTargetView_.put()));
+  }
+
+  // Multiview keyed-mutex shared texture: an exact copy of ensureSharedTexture
+  // for the second (multiview) texture, so the WinUI consumer presents it the
+  // same proven way it presents the program shared texture.
+  bool ensureMultiviewSharedTexture(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (multiviewSharedTexture_ && multiviewSharedWidth_ == width && multiviewSharedHeight_ == height) {
+      return true;
+    }
+
+    multiviewSharedTexture_ = {};
+    multiviewKeyedMutex_ = {};
+    multiviewSharedHandle_ = nullptr;
+    multiviewSharedWidth_ = width;
+    multiviewSharedHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, multiviewSharedTexture_.put()))) {
+      return false;
+    }
+
+    ComPtrLite<IDXGIResource> dxgiResource;
+    if (FAILED(multiviewSharedTexture_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put())))) {
+      multiviewSharedTexture_ = {};
+      return false;
+    }
+
+    HANDLE handle = nullptr;
+    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
+      multiviewSharedTexture_ = {};
+      return false;
+    }
+
+    if (FAILED(multiviewSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(multiviewKeyedMutex_.put())))) {
+      multiviewSharedTexture_ = {};
+      return false;
+    }
+
+    multiviewSharedHandle_ = handle;
+    return true;
+  }
+
+  // Mirrors exportSharedTexture for the multiview texture: acquire key 0, copy
+  // the multiview render target, release key 1. Non-blocking — if the consumer
+  // still holds the texture, publish the unchanged handle metadata and skip the
+  // copy rather than stalling.
+  void exportMultiviewSharedTexture(ProgramFrameSharedTexture& out) {
+    if (!multiviewRenderTarget_ || !context_ || multiviewWidth_ <= 0 || multiviewHeight_ <= 0) {
+      return;
+    }
+    if (!ensureMultiviewSharedTexture(multiviewWidth_, multiviewHeight_)) {
+      return;
+    }
+
+    if (multiviewKeyedMutex_) {
+      if (multiviewKeyedMutex_->AcquireSync(0, 0) != S_OK) {
+        out.sharedHandleHex = handleToHex(multiviewSharedHandle_);
+        out.width = multiviewWidth_;
+        out.height = multiviewHeight_;
+        out.format = "B8G8R8A8_UNORM";
+        out.frameNumber = frameNumber_;
+        return;
+      }
+    }
+    context_->CopyResource(multiviewSharedTexture_.get(), multiviewRenderTarget_.get());
+    if (multiviewKeyedMutex_) {
+      multiviewKeyedMutex_->ReleaseSync(1);
+    }
+    out.sharedHandleHex = handleToHex(multiviewSharedHandle_);
+    out.width = multiviewWidth_;
+    out.height = multiviewHeight_;
+    out.format = "B8G8R8A8_UNORM";
+    out.frameNumber = frameNumber_;
+  }
+
   ProgramFramePreviewPixels readProgramFramePreview() const {
     ProgramFramePreviewPixels preview;
     if (!renderTarget_ || !stagingTexture_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
@@ -1266,6 +1435,12 @@ class D3D11Compositor final : public ICompositor {
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
   std::map<std::string, ParticipantTex> participantTextures_;
+  // Multiview pass: a second render target + keyed-mutex shared texture mirroring
+  // the program members above (no CPU staging — multiview never reads back).
+  ComPtrLite<ID3D11Texture2D> multiviewRenderTarget_;
+  ComPtrLite<ID3D11RenderTargetView> multiviewRenderTargetView_;
+  ComPtrLite<ID3D11Texture2D> multiviewSharedTexture_;
+  ComPtrLite<IDXGIKeyedMutex> multiviewKeyedMutex_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   // I420 plane textures (R8_UNORM) shared by the program-composite draw and the
@@ -1285,6 +1460,11 @@ class D3D11Compositor final : public ICompositor {
   HANDLE sharedHandle_ = nullptr;
   int sharedWidth_ = 0;
   int sharedHeight_ = 0;
+  HANDLE multiviewSharedHandle_ = nullptr;
+  int multiviewWidth_ = 0;
+  int multiviewHeight_ = 0;
+  int multiviewSharedWidth_ = 0;
+  int multiviewSharedHeight_ = 0;
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;

@@ -36,6 +36,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
 
@@ -89,12 +90,19 @@ class MediaCore {
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
   void setMediaPlayback(const rpc::Json& command);
+  void setMultiviewLayout(const rpc::Json& command);
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
   void enqueueParticipantSharedTextureEvents();
+  // Enqueues a multiview-shared-texture event, but only when the multiview
+  // structure (handle/dimensions/tile identity+geometry) changes or on the
+  // first emit (cold start) — never per-frame. The active-speaker border is
+  // baked into the texture in-core, so a speaker change alone does not re-emit
+  // (avoids the WinUI churn that the per-tile path crashed on).
+  void enqueueMultiviewSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
@@ -152,6 +160,12 @@ class MediaCore {
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  // Sibling of buildCompositorRenderPlan that lays out the multiview grid: one
+  // layer per layout entry placed in an aspect-aware grid cell, with an
+  // active-speaker border on the layer whose participant matches the core's
+  // current activeSpeakerId. Reuses the same source-id conventions as the
+  // program plan so resolveLayers/frameForParticipant match the same frames.
+  [[nodiscard]] modules::CompositorRenderPlan buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
   // Advances the overlay animation clock and each overlay's keyPhase progress by
   // one render tick, retiring overlays whose building-out animation has settled.
   void advanceOverlayAnimation(double frameIntervalMs);
@@ -316,6 +330,27 @@ class MediaCore {
   std::string mediaPlaybackKey_;
   bool mediaPlaybackPlaying_ = false;
   std::vector<std::string> mediaPlaybackWarnings_;
+  // Ordered multiview layout (the Show Input roster the WinUI sends via
+  // set-multiview-layout). Each entry is one tile; kind selects which feed the
+  // grid cell samples. Empty until a layout is set, which keeps the multiview
+  // pass (a second GPU composite) entirely opt-in.
+  struct MultiviewSource {
+    std::string sourceId;
+    std::string kind;  // participant | capture | media
+    std::string participantId;
+    std::string captureDeviceId;
+    std::string mediaAssetId;
+    int slot = 0;
+    std::string label;
+  };
+  std::vector<MultiviewSource> multiviewSources_;
+  int multiviewCanvasWidth_ = 1920;
+  int multiviewCanvasHeight_ = 1080;
+  // Structural signature of the last emitted multiview event, so the event is
+  // emitted only on structural change (and once at cold start).
+  uint32_t lastMultiviewStructureSignature_ = 0;
+  bool multiviewStructureEmitted_ = false;
+  std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
   std::vector<rpc::Json> pendingParticipantSharedTextureEvents_;
