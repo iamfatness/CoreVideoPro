@@ -710,11 +710,12 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const int targetTicks = elapsedMs > 0.0 ? std::max(1, static_cast<int>(std::floor(elapsedMs / 33.0))) : 1;
   const auto ticksAlreadyRendered = static_cast<int>(lastProgramFrame_.frameNumber - frameNumberBefore);
   int additionalTicks = elapsedMs > 0.0 ? std::max(0, targetTicks - ticksAlreadyRendered) : 1;
-  // Cap catch-up: when a sync carries a large elapsedMs (UI/transport hiccup),
-  // never render a synchronous storm of frames. A live program only needs the
-  // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
-  // output path into a blocking burst that wedges the processing thread.
-  additionalTicks = std::min(additionalTicks, 2);
+  // Cap catch-up to a SINGLE tick. The dedicated render thread (renderDisplayTick)
+  // already produces display frames at 60fps off the core lock; applyCommands only needs
+  // one trailing full tick to flush audio/output state after the command batch. Rendering
+  // 2 full ticks here (on top of the per-command ones, now removed) held the core lock
+  // ~28-55ms per sync and starved the render thread. One tick halves that.
+  additionalTicks = std::min(additionalTicks, 1);
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();
   }
@@ -1300,7 +1301,11 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
       audioChannels_.push_back(std::move(input));
     }
   }
-  renderSyntheticTick();
+  // Do NOT render here. This command arrives on EVERY media-core-sync (~10/sec); a full
+  // renderSyntheticTick (14-27ms) per call held the core lock and starved the dedicated
+  // 60fps render thread (lockWait 40-65ms). The new audio config is stored in
+  // audioChannels_ and processed by applyCommands' single trailing tick (and the live
+  // audio path), so the mix still updates each sync without 3x redundant renders.
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
