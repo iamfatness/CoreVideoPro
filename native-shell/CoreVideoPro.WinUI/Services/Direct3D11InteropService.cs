@@ -297,10 +297,16 @@ public sealed class Direct3D11InteropService : IDisposable
         try
         {
             using var swapChain2 = _swapChain.QueryInterface<IDXGISwapChain2>();
-            var scaleX = (float)(panelWidth / _surfaceWidth);
-            var scaleY = (float)(panelHeight / _surfaceHeight);
-            swapChain2.MatrixTransform = new System.Numerics.Matrix3x2(scaleX, 0f, 0f, scaleY, 0f, 0f);
-            LaunchLog.Write($"d3d: panel transform panel={panelWidth:F0}x{panelHeight:F0} surface={_surfaceWidth}x{_surfaceHeight} scale={scaleX:F3}x{scaleY:F3}");
+            // UNIFORM (aspect-preserving) fit, then center — letterbox/pillarbox. The old
+            // code scaled X and Y independently (panelW/surfaceW, panelH/surfaceH), which
+            // STRETCHED the video whenever the panel aspect != source aspect — that's the
+            // multiviewer distortion (16:9 source in a non-16:9 grid cell). Fit by the
+            // smaller scale and center the remainder so circles stay circles.
+            var scale = (float)Math.Min(panelWidth / _surfaceWidth, panelHeight / _surfaceHeight);
+            var offsetX = (float)((panelWidth - _surfaceWidth * scale) / 2.0);
+            var offsetY = (float)((panelHeight - _surfaceHeight * scale) / 2.0);
+            swapChain2.MatrixTransform = new System.Numerics.Matrix3x2(scale, 0f, 0f, scale, offsetX, offsetY);
+            LaunchLog.Write($"d3d: panel transform panel={panelWidth:F0}x{panelHeight:F0} surface={_surfaceWidth}x{_surfaceHeight} uniformScale={scale:F3} offset={offsetX:F0},{offsetY:F0}");
         }
         catch (Exception ex)
         {
