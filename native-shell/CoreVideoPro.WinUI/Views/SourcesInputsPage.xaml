@@ -11,6 +11,11 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
+            <!-- Compact, broadcast-density control text: shrink the default content
+                 font (combo boxes, text boxes, headers, toggles) from 14 to 12 so
+                 interactive controls match the page's dense typography. Scoped to
+                 this page only via the resource tree; templates are untouched. -->
+            <x:Double x:Key="ControlContentThemeFontSize">12</x:Double>
         </ResourceDictionary>
     </UserControl.Resources>
 
