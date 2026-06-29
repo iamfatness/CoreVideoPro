@@ -94,5 +94,82 @@ Repro each with the fake engine + Capture-On (see CLAUDE.md). **Success bar: `[b
 - `native/src/modules/ZoomEngineRuntime.cpp`
 - `native-shell/CoreVideoPro.MediaCore/Services/MediaCoreSupervisor.cs`
 - `native-shell/CoreVideoPro.MediaCore/Services/MediaCoreBridgeService.cs`
+
+## 6. Implementation log (2026-06-29, branch `worktree-agent-af20fe26631f34348`)
+
+### Increment 1 — SHIPPED (C# bridge traffic)
+`MediaCoreSupervisorOptions.FrameDrainIntervalMs` 16ms → **1000ms**
+(`MediaCoreSupervisor.cs`). The "frame drain" timer only sends a `ping`; all
+video/preview/texture frames pump autonomously on the core's own threads (render
+thread + zoom pump), so the timer never moves a frame — it was ~62 `ping`/s, and
+every `ping` still took `coreMutex` in the command loop (serialized behind real
+syncs, contending the render thread). 1s keeps a liveness heartbeat and removes the
+contention. Production syncs were already coalesced (`_syncInFlight` /
+`_spineSyncInFlight` single-in-flight gates) — left as-is. Validated: C# MediaCore
+builds clean (0/0); MediaCore.Tests 203/203; native tests 233 pass / 6 known
+pre-existing fails (ZoomEngineClient I420 thumbnail set).
+
+### Increments 2 + 5 — DEFERRED (with implementation-ready design below)
+**Why deferred:** the headline goal (locked 60fps under load) provably requires
+Increment 5 — any design that keeps the audio mix / routed-bus matrix / monitor
+render / BS.1770 / `encoder->submit` / `outputSender->sync` under `coreMutex` at
+*any* cadence starves the render thread (e.g. 10Hz × ~60ms hold ≈ 600ms/s
+contention), and Increment 2 (de-heavy the empty poll) starves audio unless the
+audio cadence has already moved off the poll (i.e. unless 5 lands). So 2 cannot ship
+without 5, and 5 is the riskiest change of the session. Its two hard gates —
+**no audio glitches** and **no data races** — are validated by the plan's own
+≥10-min audio-routed + recording soak. That gate could not be executed in the
+implementing (headless, automated) session: audio glitch-freedom needs ears (no
+programmatic glitch signal exists yet) and race-freedom needs TSan (not wired into
+CI yet — see §5.2). Per the risk section, shipped the safe subset (Inc 1) rather
+than land an unvalidatable real-time-audio lock restructuring.
+
+**Design to execute (dedicated-lock variant — preferred over lock-free for
+race-auditability):**
+1. Add `mutable std::mutex audioOutputMutex_` to `MediaCore`. Lock hierarchy:
+   `coreMutex` is OUTER, `audioOutputMutex_` is INNER. The render thread takes
+   ONLY `coreMutex` (so it is never blocked by audio/output work). The audio worker
+   takes `coreMutex` *briefly* to gather/publish and `audioOutputMutex_` for the
+   long DSP/IO span — never both at once (sequential, no nesting on the worker).
+2. Split `renderSyntheticTick(videoOnly=false)` (`MediaCore.cpp:~3132-3418`):
+   - keep the video half (ingest/poll video, build plan, `compositor->render` →
+     `lastProgramFrame_`, multiview composite, texture-event enqueue) on the render
+     thread under `coreMutex` exactly as the `videoOnly=true` path does today;
+   - move the audio/output half into a new `MediaCore::renderAudioOutputTick()`.
+3. `renderAudioOutputTick()` runs on a new dedicated worker thread in
+   `JsonRpcServer::run` at a fixed cadence (~20–50ms, finer & steadier than today's
+   bursty 250ms poll — strictly better for the monitor device, NOT a new glitch
+   source: it reuses the existing source-drain model, no new PCM ring buffer):
+   - **Gather (brief `coreMutex`):** `pollAudioFrames()` from zoom/engine/capture/
+     media; copy plain-data inputs (`audioChannels_`, `audioRoutingSends_`, monitor
+     flags+volume, recording/output flags, `lastProgramFrame_` copy for encoder/
+     output, encoder session destinations, `outputDestinationSettings_`).
+   - **Work (`audioOutputMutex_` only, NO `coreMutex`):** `mixer->mix`,
+     `mixRoutedBuses`+insert chains (into a LOCAL bus map), `monitorOutput->render`,
+     `updateProgramLoudnessMeter` (into LOCAL meter accumulators), `encoder->submit`,
+     `outputSender->sync` (the blocking network I/O), recording `submitAudio`.
+   - **Publish (brief `coreMutex`):** swap LOCAL results into the plain-data members
+     `sessionState()` reads (`routedBusPcm_`, `mixedAudioFrameCount_`,
+     `audioMonitorStatus_/Warning_/FramesPlayed_`, `programLufs*`, recording
+     counters). Drop-newest-on-overrun + monotonic tick id (never reorder).
+4. Guard EVERY audio/output control-plane command with `audioOutputMutex_`
+   (`startProgramOutput`, prepare/start/stop`EncoderSession`, fail/recover
+   `OutputSender`, start/stop/fail/recover`RecordingSession`, `syncAudioMonitor`
+   which calls `monitorOutput->start/stop`, `setRecordingTargets`,
+   `configureEncoderRecordingRequest`) and guard the module reads inside
+   `sessionState()` helpers (`encoderSessionState`, `outputSenderSessionState`,
+   `audioMixSessionState`, `masterMeterState`, `recordingState`) — these run under
+   `coreMutex`, so they take `coreMutex`→`audioOutputMutex_` in that fixed order.
+   A single missed guard = data race; this is why the change needs TSan + soak.
+5. THEN Increment 2: route the empty `media-core-sync` poll (and `snapshot`/
+   `get-output-health`/`get-output-session`) to a `coreMutex`-brief read of the
+   already-published plain-data snapshot, with NO tick (audio now ticks on the
+   worker). Keep snapshots timer-paced — do NOT raise the UI snapshot/frame-event
+   rate (CoreMessagingXP 0xc000027b guardrail, §4).
+6. Validation gate before merge: build + native/WinUI suites green (minus the 6
+   known fails); ≥10-min fake-engine soak (4 participants + Capture-On) showing
+   `[render]` ~60fps / lockWait ~0ms, `[cmd] ... held core lock` warnings gone,
+   audio meters live + glitch-free, 0 `media-core-sync` TIMEOUTs, 0 CoreMessagingXP
+   fail-fast; ideally a TSan run over the gather/work/publish handoff.
 </content>
 </invoke>

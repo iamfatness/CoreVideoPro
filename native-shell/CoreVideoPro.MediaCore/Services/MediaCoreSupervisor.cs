@@ -16,7 +16,13 @@ public sealed class MediaCoreSupervisorOptions
     public int HandshakeRequestTimeoutMs { get; init; } = 15000;
     public int ZoomJoinRequestTimeoutMs { get; init; } = 60000;
     public int MaxRestarts { get; init; } = 5;
-    public int FrameDrainIntervalMs { get; init; } = 16;
+    // Phase 2 / Increment 1: the "frame drain" ping is a pure liveness heartbeat —
+    // video/preview/texture frames pump autonomously on the core's own threads
+    // (render thread, zoom pump), so this timer never moves a frame. At the old
+    // 16ms cadence it fired ~62/s, and every ping still acquired the core's command
+    // mutex (serialized behind real syncs and contending the render thread). Slowed
+    // to 1s: ~62/s of pure lock contention removed, a heartbeat retained for liveness.
+    public int FrameDrainIntervalMs { get; init; } = 1000;
 }
 
 public sealed class MediaCoreSupervisor : IAsyncDisposable
