@@ -35,6 +35,15 @@ public sealed partial class SourcesInputsPage : UserControl
             return;
         }
 
+        // Resolve the slot view-model by index (DataContext is null for elements realized
+        // inside an ItemsRepeater). We set each ComboBox's SelectedValue explicitly here —
+        // after the element + its ItemsSource are realized — because the OneWay x:Bind
+        // selection does not reliably resolve at realization for the Kind combo (its bound
+        // value never gets a post-realization PropertyChanged the way Source does), leaving
+        // the TYPE column blank. Setting it with the SelectionChanged handler detached keeps
+        // the model authoritative without a spurious write-back.
+        var editor = ViewModel?.ShowInputEditors.ElementAtOrDefault(args.Index);
+
         var kindCombo = FindDescendant<ComboBox>(root, "KindCombo");
         if (kindCombo is null)
         {
@@ -42,6 +51,10 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         kindCombo.SelectionChanged -= OnShowInputKindChanged;
+        if (editor is not null)
+        {
+            kindCombo.SelectedValue = editor.Kind;
+        }
         kindCombo.SelectionChanged += OnShowInputKindChanged;
 
         var sourceCombo = FindDescendant<ComboBox>(root, "SourceCombo");
@@ -51,6 +64,10 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         sourceCombo.SelectionChanged -= OnShowInputSourceChanged;
+        if (editor is not null && editor.SelectedSourceId is not null)
+        {
+            sourceCombo.SelectedValue = editor.SelectedSourceId;
+        }
         sourceCombo.SelectionChanged += OnShowInputSourceChanged;
 
         var inputMicCombo = FindDescendant<ComboBox>(root, "InputMicCombo");
