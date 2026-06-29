@@ -11,6 +11,11 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
+            <!-- Compact, broadcast-density control text: shrink the default content
+                 font (combo boxes, text boxes, headers) from 14 to 12 so interactive
+                 controls match the page's dense typography. Scoped to this page only
+                 via the resource tree; templates are untouched. -->
+            <x:Double x:Key="ControlContentThemeFontSize">12</x:Double>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -50,12 +55,12 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal" Spacing="10">
-                                <FontIcon Glyph="&#xE8F1;" FontSize="18" Foreground="{StaticResource StudioAccentBrush}" />
+                                <FontIcon Glyph="&#xE8F1;" FontSize="16" Foreground="{StaticResource StudioAccentBrush}" />
                                 <StackPanel Spacing="2">
-                                    <TextBlock Text="Scene builder" FontSize="18" FontWeight="Bold"
+                                    <TextBlock Text="Scene builder" FontSize="15" FontWeight="Bold"
                                                Foreground="{StaticResource StudioTextBrush}" />
                                     <TextBlock Text="Freeform canvas - drag sources anywhere on the 16:9 frame. Presets are starting points."
-                                               FontSize="12" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </StackPanel>
                             <Button Grid.Column="1" Content="Back to Studio"
