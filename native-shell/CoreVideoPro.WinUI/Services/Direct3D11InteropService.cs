@@ -26,6 +26,19 @@ public sealed class Direct3D11InteropService : IDisposable
         CpuFallback
     }
 
+    // Serializes D3D device + swap-chain creation across ALL interop instances. On a
+    // multi-participant join, program/preview/multiview hosts attach near-simultaneously;
+    // creating N swap chains at the same instant spikes GPU/driver resource pressure and
+    // makes EnsureSwapChain fail (and churn). Holding this during creation flattens the
+    // peak so each creation sees a stable driver state.
+    private static readonly object CreationGate = new();
+
+    // After an EnsureSwapChain failure under resource pressure, don't retry every vsync
+    // (~60x/s) — that churn is itself a crash vector. Back off and stay on the CPU
+    // fallback path until the cooldown elapses.
+    private const long SwapChainRetryCooldownMs = 750;
+    private long _swapChainRetryAfterMs;
+
     private readonly HashSet<ulong> _invalidHandles = [];
     private IDirect3DDevice? _winrtDevice;
     private ID3D11Device? _device;
@@ -164,9 +177,18 @@ public sealed class Direct3D11InteropService : IDisposable
                 SetPresentationPath(PresentationPath.GpuActive);
                 return true;
             }
-            _context!.CopyResource(_backBuffer!, _cachedSharedTexture);
+            // Defensive: a concurrent teardown (ResetSwapChain/Dispose triggered by an
+            // unload or a prior present failure) can null these out between the
+            // EnsureSwapChain check above and here. Presenting onto a torn-down swap
+            // chain / context is a native fail-fast, so bail to the CPU path instead.
+            if (_disposed || _context is null || _backBuffer is null || _swapChain is null || _cachedSharedTexture is null)
+            {
+                SetPresentationPath(PresentationPath.CpuFallback);
+                return false;
+            }
+            _context.CopyResource(_backBuffer, _cachedSharedTexture);
             _cachedKeyedMutex?.ReleaseSync(0);
-            _swapChain!.Present(1, PresentFlags.None);
+            _swapChain.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
             SetPresentationPath(PresentationPath.GpuActive);
             // Present runs only on new frames; log a heartbeat every 120 presents.
@@ -323,24 +345,39 @@ public sealed class Direct3D11InteropService : IDisposable
 
         try
         {
-            _device = D3D11.D3D11CreateDevice(
-                DriverType.Hardware,
-                DeviceCreationFlags.BgraSupport);
-            _context = _device.ImmediateContext;
-
-            using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
-            var hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out var winrtDevicePtr);
-            if (hr < 0 || winrtDevicePtr == IntPtr.Zero)
+            // Serialize device creation across instances (see CreationGate) so a
+            // multi-host attach burst doesn't create N devices simultaneously.
+            lock (CreationGate)
             {
+                if (_disposed)
+                {
+                    return false;
+                }
+
+                if (_device is not null && _context is not null)
+                {
+                    return true;
+                }
+
+                _device = D3D11.D3D11CreateDevice(
+                    DriverType.Hardware,
+                    DeviceCreationFlags.BgraSupport);
+                _context = _device.ImmediateContext;
+
+                using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+                var hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out var winrtDevicePtr);
+                if (hr < 0 || winrtDevicePtr == IntPtr.Zero)
+                {
+                    SetPresentationPath(PresentationPath.DeviceReady);
+                    return true;
+                }
+
+                _winrtDevice = (IDirect3DDevice)Marshal.GetObjectForIUnknown(winrtDevicePtr);
+                _cachedDevicePointer = winrtDevicePtr;
+                Marshal.Release(winrtDevicePtr);
                 SetPresentationPath(PresentationPath.DeviceReady);
                 return true;
             }
-
-            _winrtDevice = (IDirect3DDevice)Marshal.GetObjectForIUnknown(winrtDevicePtr);
-            _cachedDevicePointer = winrtDevicePtr;
-            Marshal.Release(winrtDevicePtr);
-            SetPresentationPath(PresentationPath.DeviceReady);
-            return true;
         }
         catch
         {
@@ -352,7 +389,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private bool EnsureSwapChain(int width = 0, int height = 0)
     {
-        if (_panel is null || _device is null)
+        if (_disposed || _panel is null || _device is null)
         {
             return false;
         }
@@ -373,47 +410,67 @@ public sealed class Direct3D11InteropService : IDisposable
             return true;
         }
 
+        // Back off after a recent creation failure so we don't churn swap-chain
+        // create/teardown every vsync (a crash vector) — stay on CPU until cooldown ends.
+        if (_swapChain is null && Environment.TickCount64 < _swapChainRetryAfterMs)
+        {
+            return false;
+        }
+
         try
         {
-            ResetSwapChain();
-
-            using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
-            using var adapter = dxgiDevice.GetAdapter();
-            using var factory = adapter.GetParent<IDXGIFactory2>();
-
-            var swapChainDesc = new SwapChainDescription1
+            // Serialize creation across all interop instances to flatten the resource
+            // spike when 3+ hosts attach at once on a multi-participant join.
+            lock (CreationGate)
             {
-                Width = (uint)targetWidth,
-                Height = (uint)targetHeight,
-                Format = Format.B8G8R8A8_UNorm,
-                Stereo = false,
-                SampleDescription = new SampleDescription(1, 0),
-                BufferUsage = Usage.RenderTargetOutput,
-                BufferCount = 2,
-                Scaling = Scaling.Stretch,
-                SwapEffect = SwapEffect.FlipSequential,
-                AlphaMode = AlphaMode.Premultiplied,
-                Flags = SwapChainFlags.None
-            };
+                if (_disposed)
+                {
+                    return false;
+                }
 
-            _swapChain = factory.CreateSwapChainForComposition(_device, swapChainDesc);
-            if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
-            {
-                LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
                 ResetSwapChain();
-                SetPresentationPath(PresentationPath.CpuFallback);
-                return false;
-            }
 
-            _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
-            _surfaceWidth = targetWidth;
-            _surfaceHeight = targetHeight;
-            ApplyPanelTransform();
-            return true;
+                using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+                using var adapter = dxgiDevice.GetAdapter();
+                using var factory = adapter.GetParent<IDXGIFactory2>();
+
+                var swapChainDesc = new SwapChainDescription1
+                {
+                    Width = (uint)targetWidth,
+                    Height = (uint)targetHeight,
+                    Format = Format.B8G8R8A8_UNorm,
+                    Stereo = false,
+                    SampleDescription = new SampleDescription(1, 0),
+                    BufferUsage = Usage.RenderTargetOutput,
+                    BufferCount = 2,
+                    Scaling = Scaling.Stretch,
+                    SwapEffect = SwapEffect.FlipSequential,
+                    AlphaMode = AlphaMode.Premultiplied,
+                    Flags = SwapChainFlags.None
+                };
+
+                _swapChain = factory.CreateSwapChainForComposition(_device, swapChainDesc);
+                if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
+                {
+                    LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
+                    ResetSwapChain();
+                    _swapChainRetryAfterMs = Environment.TickCount64 + SwapChainRetryCooldownMs;
+                    SetPresentationPath(PresentationPath.CpuFallback);
+                    return false;
+                }
+
+                _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+                _surfaceWidth = targetWidth;
+                _surfaceHeight = targetHeight;
+                _swapChainRetryAfterMs = 0;
+                ApplyPanelTransform();
+                return true;
+            }
         }
         catch
         {
             ResetSwapChain();
+            _swapChainRetryAfterMs = Environment.TickCount64 + SwapChainRetryCooldownMs;
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
