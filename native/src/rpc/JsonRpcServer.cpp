@@ -220,14 +220,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   std::mutex outMx;
   std::condition_variable outCv;
-  std::deque<std::string> outHi;  // command responses / failures
-  std::deque<std::string> outLo;  // frame-preview events (droppable)
+  // INSTRUMENTATION: each queued message carries its enqueue timestamp so the
+  // writer can report a response's "sojourn" (enqueue -> actually written). This is
+  // the key signal that distinguishes "the core was slow to handle" (queue-wait +
+  // handle, measured on the command loop below) from "the response was generated
+  // fast but stuck in the output queue / blocked in flush() because the stdout pipe
+  // is backed up by the high-rate base64 frame stream and a slow consumer".
+  using Stamp = std::chrono::steady_clock::time_point;
+  std::deque<std::pair<std::string, Stamp>> outHi;  // command responses / failures
+  std::deque<std::pair<std::string, Stamp>> outLo;  // frame-preview events (droppable)
   std::atomic<bool> stopping{false};
 
   auto enqueueResponse = [&](std::string message) {
     {
       std::lock_guard<std::mutex> lock(outMx);
-      outHi.push_back(std::move(message));
+      outHi.emplace_back(std::move(message), std::chrono::steady_clock::now());
     }
     outCv.notify_one();
   };
@@ -237,7 +244,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (outLo.size() >= kMaxPendingFrameEvents) {
         outLo.pop_front();  // drop oldest frame; preview is latest-wins
       }
-      outLo.push_back(std::move(message));
+      outLo.emplace_back(std::move(message), std::chrono::steady_clock::now());
     }
     outCv.notify_one();
   };
@@ -248,16 +255,39 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       outCv.wait(lock, [&] { return !outHi.empty() || !outLo.empty() || stopping.load(); });
       while (!outHi.empty() || !outLo.empty()) {
         std::string message;
+        Stamp enqueuedAt;
+        bool isResponse;
+        std::size_t hiDepth = outHi.size();
+        std::size_t loDepth = outLo.size();
         if (!outHi.empty()) {
-          message = std::move(outHi.front());
+          message = std::move(outHi.front().first);
+          enqueuedAt = outHi.front().second;
           outHi.pop_front();
+          isResponse = true;
         } else {
-          message = std::move(outLo.front());
+          message = std::move(outLo.front().first);
+          enqueuedAt = outLo.front().second;
           outLo.pop_front();
+          isResponse = false;
         }
         lock.unlock();
+        const auto wStart = std::chrono::steady_clock::now();
+        const auto sojournMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(wStart - enqueuedAt).count();
         output << message << '\n';
         output.flush();
+        const auto flushMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - wStart)
+                                 .count();
+        // A response that sat >500ms before it could be written, or any single
+        // write that blocked >200ms in flush(), means the stdout pipe is the
+        // bottleneck (slow consumer / frame flood), NOT the core's handler.
+        if ((isResponse && sojournMs >= 500) || flushMs >= 200) {
+          std::fprintf(stderr,
+                       "[writer] %s sojourn=%lldms flush=%lldms bytes=%zu hiDepth=%zu loDepth=%zu\n",
+                       isResponse ? "RESPONSE" : "frame", static_cast<long long>(sojournMs),
+                       static_cast<long long>(flushMs), message.size(), hiDepth, loDepth);
+        }
         lock.lock();
       }
       if (stopping.load() && outHi.empty() && outLo.empty()) {
@@ -268,7 +298,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
 
   std::mutex inMx;
   std::condition_variable inCv;
-  std::deque<std::string> inQ;
+  // INSTRUMENTATION: stamp each request as the reader enqueues it so the command
+  // loop can report queue-wait (dequeue - enqueue) separately from handle duration.
+  std::deque<std::pair<std::string, Stamp>> inQ;
   std::atomic<bool> inputClosed{false};
 
   std::thread reader([&] {
@@ -276,7 +308,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     while (std::getline(input, line)) {
       {
         std::lock_guard<std::mutex> lock(inMx);
-        inQ.push_back(std::move(line));
+        inQ.emplace_back(std::move(line), std::chrono::steady_clock::now());
       }
       inCv.notify_one();
     }
@@ -336,6 +368,14 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        // The 120-frame average below can hide a single multi-second stall; surface
+        // any individual coreMutex acquire or render tick that blocks > 200ms.
+        const auto holdLockMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        const auto holdRenderMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+        if (holdLockMs >= 200 || holdRenderMs >= 200) {
+          std::fprintf(stderr, "[render] STALL lockWait=%lldms render=%lldms\n",
+                       static_cast<long long>(holdLockMs), static_cast<long long>(holdRenderMs));
+        }
       }
       if (++frames >= 120) {
         const auto now = std::chrono::steady_clock::now();
@@ -391,20 +431,32 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // sequence) is serviced immediately and is never paced by the display tick.
     for (;;) {
       std::string line;
+      Stamp enqueuedAt;
       {
         std::lock_guard<std::mutex> lock(inMx);
         if (inQ.empty()) {
           break;
         }
-        line = std::move(inQ.front());
+        line = std::move(inQ.front().first);
+        enqueuedAt = inQ.front().second;
         inQ.pop_front();
       }
       if (line.empty()) {
         continue;
       }
+      // Queue-wait: how long this request sat in inQ before the command loop got to
+      // it (i.e. the loop was busy handling earlier commands or pumping frames).
+      const auto dequeuedAt = std::chrono::steady_clock::now();
+      const auto queueWaitMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(dequeuedAt - enqueuedAt).count();
       std::string error;
       auto request = Json::parse(line, &error);
       if (!request) {
+        // Ungated: a request that failed to parse (e.g. a truncated/split large line)
+        // is answered with id="unknown", so the bridge's real request id never matches
+        // and it times out. Surface the length + error to catch line-protocol breakage.
+        std::fprintf(stderr, "[parse-dbg] FAILED len=%zu err='%s' head='%.60s'\n",
+                     line.size(), error.c_str(), line.c_str());
         enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
       } else {
         const std::string reqType = request->getString("type");
@@ -417,9 +469,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           h1 = std::chrono::steady_clock::now();
         }
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
+        const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
           std::fprintf(stderr, "[cmd] '%s' held core lock %lldms (starves render)\n",
                        reqType.c_str(), static_cast<long long>(heldMs));
+        }
+        // The whole in-core latency for this request: time spent waiting in inQ +
+        // waiting for coreMutex + handling. If this is small but the host still
+        // times out, the delay is downstream in the writer/pipe (see [writer]).
+        if (queueWaitMs + lockWaitMs + heldMs >= 500) {
+          std::fprintf(stderr,
+                       "[req] '%s' queueWait=%lldms lockWait=%lldms handle=%lldms (total in-core=%lldms)\n",
+                       reqType.c_str(), static_cast<long long>(queueWaitMs),
+                       static_cast<long long>(lockWaitMs), static_cast<long long>(heldMs),
+                       static_cast<long long>(queueWaitMs + lockWaitMs + heldMs));
         }
         enqueueResponse(responseStr);
       }
@@ -438,8 +501,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // only pump the heavy base64 frame/preview events, on a throttled cadence so
     // they don't starve responses. Lock the core while draining its queues.
     if (now - lastPump >= kFramePumpInterval) {
-      std::lock_guard<std::mutex> lock(coreMutex);
-      pumpHeavyFrameEvents();
+      const auto p0 = std::chrono::steady_clock::now();
+      {
+        std::lock_guard<std::mutex> lock(coreMutex);
+        pumpHeavyFrameEvents();
+      }
+      const auto pumpMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
+      // pumpHeavyFrameEvents runs on the command loop under coreMutex; if it ever
+      // blocks for long it stalls both command handling and the render thread.
+      if (pumpMs >= 200) {
+        std::fprintf(stderr, "[pump] pumpHeavyFrameEvents %lldms (blocks command loop + render)\n",
+                     static_cast<long long>(pumpMs));
+      }
       lastPump = now;
     }
   }

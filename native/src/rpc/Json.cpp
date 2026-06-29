@@ -92,6 +92,33 @@ class Parser {
           case 'n': result.push_back('\n'); break;
           case 'r': result.push_back('\r'); break;
           case 't': result.push_back('\t'); break;
+          case 'u': {
+            // \uXXXX unicode escape. The host (System.Text.Json default encoder)
+            // emits these for non-ASCII and HTML-sensitive characters (e.g. the
+            // "·" in participant labels, "+", "&"), which appear in the larger
+            // media-core-sync / spine payloads. Without this the parser threw and
+            // every such request was answered with id="unknown" -> the bridge never
+            // matched the real id and timed out at 4s. Decode to a code point
+            // (combining surrogate pairs) and append as UTF-8.
+            unsigned int cp = parseHex4();
+            if (cp >= 0xD800 && cp <= 0xDBFF) {  // high surrogate -> expect low surrogate
+              if (pos_ + 1 < input_.size() && input_[pos_] == '\\' && input_[pos_ + 1] == 'u') {
+                pos_ += 2;
+                const unsigned int low = parseHex4();
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                  cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                } else {
+                  cp = 0xFFFD;  // unpaired low -> replacement char
+                }
+              } else {
+                cp = 0xFFFD;  // lone high surrogate -> replacement char
+              }
+            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+              cp = 0xFFFD;  // lone low surrogate -> replacement char
+            }
+            appendUtf8(result, cp);
+            break;
+          }
           default: throw std::runtime_error("Unsupported JSON escape sequence.");
         }
       } else {
@@ -99,6 +126,39 @@ class Parser {
       }
     }
     throw std::runtime_error("Unterminated JSON string.");
+  }
+
+  // Read exactly 4 hex digits (consumed) and return their value.
+  unsigned int parseHex4() {
+    if (pos_ + 4 > input_.size()) throw std::runtime_error("Invalid \\u escape: truncated.");
+    unsigned int value = 0;
+    for (int i = 0; i < 4; ++i) {
+      const char c = input_[pos_++];
+      value <<= 4;
+      if (c >= '0' && c <= '9') value |= static_cast<unsigned int>(c - '0');
+      else if (c >= 'a' && c <= 'f') value |= static_cast<unsigned int>(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F') value |= static_cast<unsigned int>(c - 'A' + 10);
+      else throw std::runtime_error("Invalid \\u escape: non-hex digit.");
+    }
+    return value;
+  }
+
+  static void appendUtf8(std::string& out, unsigned int cp) {
+    if (cp <= 0x7F) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FF) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
   }
 
   double parseNumber() {
