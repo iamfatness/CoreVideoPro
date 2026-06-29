@@ -39,6 +39,8 @@ public sealed partial class ShowMultiviewHost : UserControl
     public ShowMultiviewHost()
     {
         InitializeComponent();
+        // Surface starts null — keep the host collapsed so only the EmptyState shows.
+        MultiviewSurfaceHost.Visibility = Visibility.Collapsed;
     }
 
     public VideoSurfaceState? Surface
@@ -63,6 +65,11 @@ public sealed partial class ShowMultiviewHost : UserControl
     {
         if (sender is ShowMultiviewHost host)
         {
+            // Collapse the surface host until there's a multiview texture, so its internal
+            // "waiting for media engine" placeholder doesn't overlap the EmptyState message
+            // (the two were stacking on top of each other when nothing was assigned).
+            host.MultiviewSurfaceHost.Visibility =
+                args.NewValue is VideoSurfaceState ? Visibility.Visible : Visibility.Collapsed;
             // The canvas size (texture dims) drives the letterbox transform, so reposition when
             // the surface handle changes (a rebuild is cheap — only repositions existing buttons).
             host.PositionOverlay();

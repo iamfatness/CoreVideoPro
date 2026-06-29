@@ -10002,6 +10002,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (!MultiviewGpuEnabled || !_bridge.Running)
         {
+            LaunchLog.Write($"multiview-layout: skip (gpuEnabled={MultiviewGpuEnabled} running={_bridge.Running})");
             return;
         }
 
@@ -10010,6 +10011,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RoomParticipantsForInputs,
             CaptureDevices,
             VisualMediaAssets);
+        LaunchLog.Write($"multiview-layout: built sources={sources.Count} (inShow assigned+resolved slots)");
         var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
         var signature = string.Join("|", sources.Select(source => $"{source.Slot}:{source.Kind}:{source.SourceId}:{source.Label}")) +
             $"#{grid.Columns}x{grid.Rows}";

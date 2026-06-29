@@ -844,6 +844,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setMediaPlayback(command);
   } else if (type == "set-multiview-layout") {
     setMultiviewLayout(command);
+    std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources\n",
+                 multiviewSources_.size());
   } else if (type == "configure-srt-ingest-sources") {
     configureSrtIngestSources(command);
   } else if (type == "simulate-breakout-room-change") {
@@ -3261,6 +3263,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.multiviewSharedTexture = modules_.compositor->renderMultiview(multiviewPlan, videoFrames);
     lastProgramFrame_.multiviewWidth = multiviewPlan.width;
     lastProgramFrame_.multiviewHeight = multiviewPlan.height;
+    static bool loggedMultiview = false;
+    if (!loggedMultiview) {
+      loggedMultiview = true;
+      std::fprintf(stderr, "[multiview] composite: sources=%zu layers=%zu handle='%s' %dx%d\n",
+                   multiviewSources_.size(), multiviewPlan.layers.size(),
+                   lastProgramFrame_.multiviewSharedTexture.sharedHandleHex.c_str(),
+                   multiviewPlan.width, multiviewPlan.height);
+    }
     // Per-tile rects, zipped 1:1 with the layout sources (the multiview plan adds
     // exactly one layer per source, in order, before the compositor sorts a copy).
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
