@@ -53,7 +53,11 @@ public sealed partial class SourcesInputsPage : UserControl
         kindCombo.SelectionChanged -= OnShowInputKindChanged;
         if (editor is not null)
         {
-            kindCombo.SelectedValue = editor.Kind;
+            // Select by the actual option object (SelectedItem), not SelectedValue: a ComboBox
+            // SelectedValue bound to an enum + SelectedValuePath does not reliably resolve the
+            // selection (string Source values do, enum Kind values render blank). Matching the
+            // option instance from the same ItemsSource is deterministic.
+            kindCombo.SelectedItem = editor.KindOptions.FirstOrDefault(option => option.Value == editor.Kind);
         }
         kindCombo.SelectionChanged += OnShowInputKindChanged;
 
@@ -87,15 +91,17 @@ public sealed partial class SourcesInputsPage : UserControl
 
     private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Use Tag (bound via x:Bind to the slot view-model), not DataContext, which
-        // is null for ComboBoxes realized inside the ItemsRepeater.
+        // Read the selected option object (SelectedItem), not SelectedValue — an enum
+        // SelectedValue does not resolve reliably on this ComboBox. Tag (x:Bind), not
+        // DataContext (null inside the ItemsRepeater).
         if (sender is not ComboBox combo ||
             combo.Tag is not ShowInputSlotViewModel editor ||
-            combo.SelectedValue is not ShowInputKind kind)
+            combo.SelectedItem is not ShowInputKindOption option)
         {
             return;
         }
 
+        var kind = option.Value;
         if (editor.Kind == kind)
         {
             return;

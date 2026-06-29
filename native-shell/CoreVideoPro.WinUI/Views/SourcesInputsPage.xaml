@@ -382,11 +382,12 @@
                                                   VerticalAlignment="Center"
                                                   IsChecked="{x:Bind InShow, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
+                                        <!-- Selection is driven via SelectedItem in code-behind
+                                             (OnShowInputEditorPrepared): an enum SelectedValue +
+                                             SelectedValuePath does not resolve reliably here. -->
                                         <ComboBox Grid.Column="2" x:Name="KindCombo"
                                                   Tag="{x:Bind}"
                                                   ItemsSource="{x:Bind KindOptions, Mode=OneWay}"
-                                                  SelectedValue="{x:Bind Kind, Mode=OneWay}"
-                                                  SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
                                                   HorizontalAlignment="Stretch" VerticalAlignment="Center" />
                                         <ComboBox Grid.Column="3" x:Name="SourceCombo"
