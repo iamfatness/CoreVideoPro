@@ -9321,7 +9321,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // preview/program bus rather than "waiting for media engine". One-up shows the
         // primary source; multi-source preview composites need the core to composite the
         // preview scene (program already is core-composited).
-        PreviewSurface = PreviewSceneTiles.Count > 0
+        //
+        // MUST set PreviewSurface on the UI thread: it drives a VideoSurfaceHost
+        // (DependencyObject). This method is called off-thread from the join/roster path,
+        // and an off-thread x:Bound set fail-fasts (CoreMessagingXP 0xc000027b).
+        var previewSurface = PreviewSceneTiles.Count > 0
             ? PreviewSceneTiles[0].Surface with
             {
                 SurfaceKey = "preview",
@@ -9329,6 +9333,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Title = "Preview"
             }
             : VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
+        RunOnUiThread(() => PreviewSurface = previewSurface);
         OnPropertyChanged(nameof(PreviewRouteWarnings));
         OnPropertyChanged(nameof(HasPreviewRouteWarnings));
         OnPropertyChanged(nameof(PreviewSceneTiles));
