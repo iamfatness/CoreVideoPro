@@ -56,37 +56,6 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   return result;
 }
 
-// Nearest-neighbor downscale of a BGRA buffer to fit within maxW x maxH (keeping
-// aspect). Used to keep the base64 multiview-tile payload small: the compositor
-// gets the full-res frame in-process, but streaming a full 720p BGRA frame as
-// base64 over stdout per participant per frame is a multi-MB firehose that
-// saturates the pipe and reader thread (video trickles through = slow motion).
-std::vector<std::uint8_t> downscaleBgraThumbnail(
-    const std::vector<std::uint8_t>& src, int srcW, int srcH, int maxW, int maxH,
-    int& outW, int& outH) {
-  outW = srcW;
-  outH = srcH;
-  if (srcW > maxW || srcH > maxH) {
-    const double scale = (std::min)(static_cast<double>(maxW) / srcW, static_cast<double>(maxH) / srcH);
-    outW = (std::max)(1, static_cast<int>(srcW * scale));
-    outH = (std::max)(1, static_cast<int>(srcH * scale));
-  }
-  if (outW == srcW && outH == srcH) {
-    return src;
-  }
-  std::vector<std::uint8_t> dst(static_cast<std::size_t>(outW) * outH * 4);
-  for (int y = 0; y < outH; ++y) {
-    const int sy = (std::min)(srcH - 1, y * srcH / outH);
-    for (int x = 0; x < outW; ++x) {
-      const int sx = (std::min)(srcW - 1, x * srcW / outW);
-      const std::uint8_t* s = &src[(static_cast<std::size_t>(sy) * srcW + sx) * 4];
-      std::uint8_t* d = &dst[(static_cast<std::size_t>(y) * outW + x) * 4];
-      d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
-    }
-  }
-  return dst;
-}
-
 constexpr double kFrameStaleAfterMs = 1000.0;
 
 }  // namespace
@@ -342,7 +311,7 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
   for (const auto& [participantId, decoded] : latestDecodedFrames_) {
-    if (!decoded.pixels || decoded.width <= 0 || decoded.height <= 0) {
+    if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
     }
     VideoFrame frame;
@@ -352,10 +321,9 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.naturalWidth = decoded.width;
     frame.naturalHeight = decoded.height;
     frame.timestampMs = timestampMs;
-    frame.pixels = decoded.pixels;
-    frame.pixelWidth = decoded.width;
-    frame.pixelHeight = decoded.height;
-    frame.pixelStride = decoded.width * 4;
+    frame.i420 = decoded.i420;
+    frame.i420Width = decoded.width;
+    frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
     frames.push_back(std::move(frame));
   }
@@ -553,10 +521,11 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     return;
   }
   const auto closeRegion = [&region]() { shm_region_destroy(region); };
-  // Full resolution (up to 1080p) for the compositor — the GPU composites and
-  // shares at 1080p, so the participant source should match. The convert is
-  // parallelized (readZoomEngineI420FrameSnapshot) so high res stays smooth.
-  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 1920, 1080);
+  // Snapshot the I420 planes for the GPU compositor and a small (<=640x360) BGRA
+  // thumbnail for the WinUI base64 path. The expensive per-pixel I420->BGRA
+  // convert at full resolution is gone — only the small thumbnail is converted on
+  // the CPU; the compositor converts the I420 planes on the GPU in-shader.
+  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 640, 360);
   closeRegion();
   if (!frame) {
     state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory snapshot was incomplete, stale, or malformed");
@@ -570,26 +539,24 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
       frame->frameId,
       runtimeElapsedMs());
 
-  // Tap the decoded BGRA pixels for the compositor without disturbing the
+  // Tap the full-resolution I420 planes for the compositor without disturbing the
   // stdout/event queue below that feeds the WinUI multiview tiles.
-  if (!frame->participantId.empty() && frame->width > 0 && frame->height > 0 && !frame->rgba.empty()) {
+  if (!frame->participantId.empty() && frame->i420Width > 0 && frame->i420Height > 0 && !frame->i420.empty()) {
     DecodedFrame& decoded = latestDecodedFrames_[frame->participantId];
-    decoded.pixels = std::make_shared<const std::vector<std::uint8_t>>(frame->rgba);
-    decoded.width = static_cast<int>(frame->width);
-    decoded.height = static_cast<int>(frame->height);
+    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(frame->i420);
+    decoded.width = static_cast<int>(frame->i420Width);
+    decoded.height = static_cast<int>(frame->i420Height);
     decoded.frameId = static_cast<std::int64_t>(frame->frameId);
   }
 
   const auto observedAtMs = runtimeElapsedMs();
 
-  // The compositor already has the full-res frame (latestDecodedFrames_ above).
-  // Stream a downscaled thumbnail as base64 for the WinUI monitors. 320x180 looked
-  // heavily pixelated next to the native-1080p capture cards; 640x360 is ~4x the
-  // detail while staying ~1/9 the cost of full 1080p (which would firehose stdout).
-  int thumbW = 0;
-  int thumbH = 0;
-  const auto thumb = downscaleBgraThumbnail(
-      frame->rgba, static_cast<int>(frame->width), static_cast<int>(frame->height), 640, 360, thumbW, thumbH);
+  // The compositor already has the full-res I420 frame (latestDecodedFrames_
+  // above). The snapshot already produced a downscaled BGRA thumbnail (capped at
+  // 640x360) for the WinUI monitors; stream it directly as base64.
+  const int thumbW = static_cast<int>(frame->width);
+  const int thumbH = static_cast<int>(frame->height);
+  const auto& thumb = frame->rgba;
   // LATEST-WINS: this queue is drained by the render thread, which gets starved by
   // command processing (media-core-sync holds the core lock). Unbounded, it
   // accumulated tens of seconds of stale frames (the "10s+ latency"). Cap it and
