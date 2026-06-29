@@ -311,6 +311,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
         if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
         {
+            _direct3DInterop.Label = SurfaceKey;
             _direct3DDevicePointer = _direct3DInterop.DevicePointer;
             SetDirect3DDevice(_direct3DDevicePointer);
             TryPresentPendingSharedHandle();

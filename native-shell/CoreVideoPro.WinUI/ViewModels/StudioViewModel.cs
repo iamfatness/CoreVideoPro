@@ -8233,13 +8233,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// thread (it feeds a VideoSurfaceHost-bound property) — it is only called from
     /// RefreshSurfaceBindings, which is always marshalled to the UI thread.
     /// </summary>
+    private string _lastPreviewResolveSig = string.Empty;
     private VideoSurfaceState ResolvePreviewPrimarySurface()
     {
         var primary = PreviewSceneTiles is { Count: > 0 } tiles ? tiles[0] : null;
         if (primary is not null)
         {
+            string branch;
             VideoSurfaceState? liveSurface =
                 MultiviewTiles.FirstOrDefault(t => t.Participant.Id == primary.Participant.Id)?.Surface;
+            branch = liveSurface is not null ? "multiview-tile" : "none";
 
             // Capture-device primaries are not part of the participant multiview roster;
             // pull their live surface from the coordinator's capture surface map.
@@ -8250,22 +8253,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 if (_surfaces.CaptureDeviceSurfaces.TryGetValue(deviceId, out var captureSurface))
                 {
                     liveSurface = captureSurface;
+                    branch = "capture-map";
                 }
             }
 
-            liveSurface ??= primary.Surface;
+            if (liveSurface is null && primary.Surface is not null)
+            {
+                liveSurface = primary.Surface;
+                branch = "primary.Surface";
+            }
             if (liveSurface is not null)
             {
-                return liveSurface with
+                var resolved = liveSurface with
                 {
                     SurfaceKey = "preview",
                     Kind = VideoSurfaceKind.Preview,
                     Title = "Preview"
                 };
+                // DIAGNOSTIC (preview-freeze): log only when branch / handle / primary id changes.
+                var h = resolved.PendingSharedHandle;
+                var hv = h is { IsValid: true } hh ? hh.NtHandle : 0UL;
+                var sig = $"{branch}|{primary.Participant.Id}|0x{hv:X}";
+                if (sig != _lastPreviewResolveSig)
+                {
+                    _lastPreviewResolveSig = sig;
+                    LaunchLog.Write($"preview-resolve: branch={branch} primary={primary.Participant.Id} handle=0x{hv:X} valid={(hv != 0)}");
+                }
+                return resolved;
             }
         }
 
-        return _surfaces.PreviewSurface;
+        var fallback = _surfaces.PreviewSurface;
+        var fh = fallback.PendingSharedHandle;
+        var fhv = fh is { IsValid: true } fhh ? fhh.NtHandle : 0UL;
+        var fsig = $"fallback|{primary?.Participant.Id ?? "<none>"}|0x{fhv:X}";
+        if (fsig != _lastPreviewResolveSig)
+        {
+            _lastPreviewResolveSig = fsig;
+            LaunchLog.Write($"preview-resolve: branch=fallback(_surfaces.PreviewSurface) primary={primary?.Participant.Id ?? "<none>"} handle=0x{fhv:X} valid={(fhv != 0)}");
+        }
+        return fallback;
     }
 
     private void ScheduleMultiviewGridRefresh()

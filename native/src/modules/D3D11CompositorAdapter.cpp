@@ -1196,18 +1196,41 @@ class D3D11Compositor final : public ICompositor {
       // tick cost ~15ms/tick (3+ capture + Zoom at 1080p) and collapsed the render to
       // ~11fps. The texture already holds these pixels; just keep emitting the handle.
       const bool frameChanged = (f.frameId != pt.lastFrameId);
-      if (frameChanged && pt.mutex && pt.mutex->AcquireSync(0, 0) == S_OK) {
-        bool uploaded = false;
-        if (useI420) {
-          uploaded = renderI420ToParticipantTexture(f, pt, width, height);
-        } else {
-          context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
-                                      static_cast<UINT>(f.pixelStride), 0);
-          uploaded = true;
+      if (frameChanged && pt.mutex) {
+        // The per-participant export texture is a single-consumer keyed-mutex texture, but its
+        // consumer (the preview host, when it shows this source) is INTERMITTENT: the preview
+        // bus cycles its primary source (active-speaker), and capture / idle participants may
+        // have NO consumer at all. A plain producer AcquireSync(0) only succeeds after the
+        // consumer releases key 0; once the consumer moves away (leaving the mutex at key 1,
+        // which the producer released) the producer can NEVER re-acquire key 0, so the texture
+        // WEDGES on its last frame. That is exactly the "preview frozen when the same source is
+        // also in program" bug: the preview's per-participant handle stops advancing while the
+        // always-released program/multiview composites keep going.
+        //
+        // Fix: if AcquireSync(0) fails (no consumer returned the key), reclaim our own released
+        // slot via AcquireSync(1). The producer then ALWAYS makes progress and the texture stays
+        // fresh — like the always-released program/multiview composites — so a returning or
+        // newly-attached consumer immediately sees live frames. The keyed mutex still guarantees
+        // mutual exclusion (a consumer mid-copy holds the mutex, so the reclaim just fails that
+        // tick and we skip the upload), so there is no tearing. Non-blocking (0ms) throughout, so
+        // the render thread never stalls.
+        HRESULT acquire = pt.mutex->AcquireSync(0, 0);
+        if (acquire != S_OK) {
+          acquire = pt.mutex->AcquireSync(1, 0);
         }
-        pt.mutex->ReleaseSync(1);
-        if (uploaded) {
-          pt.lastFrameId = f.frameId;
+        if (acquire == S_OK) {
+          bool uploaded = false;
+          if (useI420) {
+            uploaded = renderI420ToParticipantTexture(f, pt, width, height);
+          } else {
+            context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
+                                        static_cast<UINT>(f.pixelStride), 0);
+            uploaded = true;
+          }
+          pt.mutex->ReleaseSync(1);
+          if (uploaded) {
+            pt.lastFrameId = f.frameId;
+          }
         }
       }
       ParticipantSharedTexture info;

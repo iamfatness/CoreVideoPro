@@ -123,6 +123,10 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public event Action? PresentationPathChanged;
 
+    // DIAGNOSTIC (preview-freeze): a short label (the host's SurfaceKey) so the present
+    // heartbeat shows WHICH surface advanced (preview / program / multiview / tile).
+    public string? Label { get; set; }
+
     public bool IsReady => s_sharedDevice is not null && _swapChain is not null && _backBuffer is not null;
 
     public bool IsGpuPresenting => _path == PresentationPath.GpuActive;
@@ -243,7 +247,7 @@ public sealed class Direct3D11InteropService : IDisposable
             // launch log shows BOTH hosts' present # advancing when they share a handle.
             if (++_presentCount % 120 == 0)
             {
-                LaunchLog.Write($"d3d: present #{_presentCount} 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
+                LaunchLog.Write($"d3d: present #{_presentCount} [{Label}] 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
             }
             return true;
         }
