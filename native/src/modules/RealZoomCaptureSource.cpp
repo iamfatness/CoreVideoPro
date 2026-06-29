@@ -25,37 +25,9 @@ void RealZoomCaptureSource::ingestFrame(const std::string& participantId,
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];
   stored.pixels = std::move(buffer);
-  stored.i420 = nullptr;  // latest representation wins
   stored.width = width;
   stored.height = height;
   stored.stride = stride;
-  stored.frameId = frameId;
-  stored.timestampMs = timestampMs;
-}
-
-void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
-                                            const uint8_t* i420,
-                                            int width,
-                                            int height,
-                                            int64_t frameId,
-                                            int64_t timestampMs) {
-  if (participantId.empty() || !i420 || width <= 0 || height <= 0) {
-    return;
-  }
-  if ((width & 1) != 0 || (height & 1) != 0) {
-    return;  // I420 requires even dimensions (2x2 chroma subsampling)
-  }
-  const size_t yLength = static_cast<size_t>(width) * static_cast<size_t>(height);
-  const size_t total = yLength + (yLength / 4) * 2;
-  auto buffer = std::make_shared<std::vector<uint8_t>>(i420, i420 + total);
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  StoredFrame& stored = frames_[participantId];
-  stored.i420 = std::move(buffer);
-  stored.pixels = nullptr;  // latest representation wins
-  stored.width = width;
-  stored.height = height;
-  stored.stride = 0;
   stored.frameId = frameId;
   stored.timestampMs = timestampMs;
 }
@@ -99,17 +71,11 @@ std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
       frame.naturalWidth = stored.width;
       frame.naturalHeight = stored.height;
       frame.timestampMs = stored.timestampMs;
+      frame.pixels = stored.pixels;
+      frame.pixelWidth = stored.width;
+      frame.pixelHeight = stored.height;
+      frame.pixelStride = stored.stride;
       frame.frameId = stored.frameId;
-      if (stored.i420) {
-        frame.i420 = stored.i420;
-        frame.i420Width = stored.width;
-        frame.i420Height = stored.height;
-      } else {
-        frame.pixels = stored.pixels;
-        frame.pixelWidth = stored.width;
-        frame.pixelHeight = stored.height;
-        frame.pixelStride = stored.stride;
-      }
       result.push_back(std::move(frame));
     }
   }

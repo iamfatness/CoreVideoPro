@@ -79,14 +79,12 @@ class ZoomEngineRuntime {
   std::vector<rpc::Json> pendingFrameEvents_;
 
   struct DecodedFrame {
-    // Full-resolution I420 planes (Y + U + V tightly packed). The compositor
-    // uploads these to the GPU and converts to RGB in-shader.
-    std::shared_ptr<const std::vector<std::uint8_t>> i420;
-    int width = 0;   // luma width
-    int height = 0;  // luma height
+    std::shared_ptr<const std::vector<std::uint8_t>> pixels;
+    int width = 0;
+    int height = 0;
     std::int64_t frameId = 0;
   };
-  // Latest decoded I420 frame per participantId, tapped alongside the stdout
+  // Latest decoded BGRA frame per participantId, tapped alongside the stdout
   // event queue so the compositor can read real pixels without draining the
   // multiview event path.
   std::map<std::string, DecodedFrame> latestDecodedFrames_;

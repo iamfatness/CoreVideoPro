@@ -153,51 +153,6 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 }
 )";
 
-// I420 (YUV 4:2:0 planar) variant: samples a participant's Y/U/V planes from
-// three single-channel (R8_UNORM) textures, converts to RGB in-shader, then
-// applies the same color grade as the textured BGRA path. This moves the Zoom
-// I420->BGRA color conversion off the CPU and onto the GPU (the way OBS /
-// CasparCG do it). The chroma planes are half resolution; sampling them with the
-// same [0,1] UV (and a linear sampler) up-samples them for free.
-constexpr char kCompositorYuvPixelShader[] = R"(
-cbuffer LayerConstants : register(b0) {
-  float4 color;
-  float exposure;
-  float contrast;
-  float saturation;
-  float temperature;
-  float2 uvScale;
-  float2 uvOffset;
-};
-
-Texture2D yTexture : register(t0);
-Texture2D uTexture : register(t1);
-Texture2D vTexture : register(t2);
-SamplerState layerSampler : register(s0);
-
-float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-  float2 sourceUv = uvOffset + uv * uvScale;
-  float Y = yTexture.Sample(layerSampler, sourceUv).r;
-  float U = uTexture.Sample(layerSampler, sourceUv).r - 0.5;
-  float V = vTexture.Sample(layerSampler, sourceUv).r - 0.5;
-  // BT.709 FULL-range YCbCr->RGB. These coefficients mirror the CPU
-  // i420ToRgbaPixel exactly (403/256, 48/256, 120/256, 475/256), so the GPU
-  // colors match the prior CPU path: Zoom delivers full-range (0-255) YUV with
-  // no Y bias, so c=Y (no -16/1.164 limited-range scaling).
-  float3 rgb;
-  rgb.r = Y + 1.57421875 * V;
-  rgb.g = Y - 0.1875 * U - 0.46875 * V;
-  rgb.b = Y + 1.85546875 * U;
-  rgb = saturate(rgb);
-  rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
-  float luma = dot(rgb, float3(0.299, 0.587, 0.114));
-  rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
-  rgb.r += temperature * 0.05;
-  rgb.b -= temperature * 0.05;
-  return float4(saturate(rgb), color.a);
-}
-)";
-
 ComPtrLite<ID3DBlob> compileShader(const char* source, const char* entry, const char* profile, std::string& error) {
   ComPtrLite<ID3DBlob> blob;
   ComPtrLite<ID3DBlob> errors;
@@ -222,12 +177,6 @@ ComPtrLite<ID3DBlob> compileShader(const char* source, const char* entry, const 
     return {};
   }
   return blob;
-}
-
-// A frame is drawable when it carries either decoded BGRA pixels or raw I420
-// planes (the GPU converts the latter in-shader).
-bool frameHasContent(const VideoFrame& frame) {
-  return frame.hasPixels() || frame.hasI420();
 }
 
 uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -313,20 +262,6 @@ class D3D11Compositor final : public ICompositor {
     const VideoFrame* frame = nullptr;
   };
 
-  // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
-  // Declared up here so member-function signatures (renderI420ToParticipantTexture)
-  // can take it by reference.
-  struct ParticipantTex {
-    ComPtrLite<ID3D11Texture2D> texture;
-    ComPtrLite<IDXGIKeyedMutex> mutex;
-    // Render-target view used by the I420->BGRA GPU convert path.
-    ComPtrLite<ID3D11RenderTargetView> rtv;
-    HANDLE handle = nullptr;
-    int width = 0;
-    int height = 0;
-    int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
-  };
-
   void initializePipeline() {
     std::string error;
     const auto vertexBlob = compileShader(kCompositorVertexShader, "main", "vs_5_0", error);
@@ -355,15 +290,6 @@ class D3D11Compositor final : public ICompositor {
     }
     if (FAILED(device_->CreatePixelShader(texturedPixelBlob->GetBufferPointer(), texturedPixelBlob->GetBufferSize(), nullptr, texturedPixelShader_.put()))) {
       initError_ = "CreatePixelShader (textured) failed.";
-      return;
-    }
-    const auto yuvPixelBlob = compileShader(kCompositorYuvPixelShader, "main", "ps_5_0", error);
-    if (!yuvPixelBlob) {
-      initError_ = "yuv pixel shader: " + error;
-      return;
-    }
-    if (FAILED(device_->CreatePixelShader(yuvPixelBlob->GetBufferPointer(), yuvPixelBlob->GetBufferSize(), nullptr, yuvPixelShader_.put()))) {
-      initError_ = "CreatePixelShader (yuv) failed.";
       return;
     }
 
@@ -491,7 +417,7 @@ class D3D11Compositor final : public ICompositor {
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
-          if (frameHasContent(fallbackFrame)) {
+          if (fallbackFrame.hasPixels()) {
             layer.frame = &fallbackFrame;
           }
         }
@@ -512,7 +438,7 @@ class D3D11Compositor final : public ICompositor {
       const auto layout = compositor::gridCell((std::max)(1, count), index);
       layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
       layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
-      if (frameHasContent(frames[static_cast<size_t>(index)])) {
+      if (frames[static_cast<size_t>(index)].hasPixels()) {
         layer.frame = &frames[static_cast<size_t>(index)];
       }
       layers.push_back(std::move(layer));
@@ -525,7 +451,7 @@ class D3D11Compositor final : public ICompositor {
       return nullptr;
     }
     for (const auto& frame : frames) {
-      if (frame.participantId == participantId && frameHasContent(frame)) {
+      if (frame.participantId == participantId && frame.hasPixels()) {
         return &frame;
       }
     }
@@ -710,25 +636,13 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
 
-    // Prefer the GPU I420->RGB path for Zoom participants; fall back to the
-    // BGRA textured path for capture/media frames, and to the solid-color shader
-    // when the layer has no decoded pixels at all.
-    const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
-    const bool textured = layer.frame != nullptr &&
-        (isI420 ? uploadLayerI420Texture(*layer.frame)
-                : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame)));
+    const bool textured = layer.frame != nullptr && layer.frame->hasPixels() && uploadLayerTexture(*layer.frame);
     if (textured) {
+      context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
+      ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
       ID3D11SamplerState* samplers[] = {samplerState_.get()};
+      context_->PSSetShaderResources(0, 1, views);
       context_->PSSetSamplers(0, 1, samplers);
-      if (isI420) {
-        context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
-        context_->PSSetShaderResources(0, 3, views);
-      } else {
-        context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
-        context_->PSSetShaderResources(0, 1, views);
-      }
     } else {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
@@ -737,8 +651,8 @@ class D3D11Compositor final : public ICompositor {
     context_->Draw(3, 0);
     context_->RSSetState(rasterizerState_.get());
     if (textured) {
-      ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
-      context_->PSSetShaderResources(0, isI420 ? 3 : 1, nullViews);
+      ID3D11ShaderResourceView* nullViews[] = {nullptr};
+      context_->PSSetShaderResources(0, 1, nullViews);
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
 
@@ -875,108 +789,6 @@ class D3D11Compositor final : public ICompositor {
     return true;
   }
 
-  // Creates a single-channel (R8_UNORM) dynamic texture + SRV for one I420 plane.
-  bool createR8Texture(int width, int height, ComPtrLite<ID3D11Texture2D>& texture,
-                       ComPtrLite<ID3D11ShaderResourceView>& view) {
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    textureDesc.Width = static_cast<UINT>(width);
-    textureDesc.Height = static_cast<UINT>(height);
-    textureDesc.MipLevels = 1;
-    textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_R8_UNORM;
-    textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_DYNAMIC;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, texture.put()))) {
-      return false;
-    }
-    if (FAILED(device_->CreateShaderResourceView(texture.get(), nullptr, view.put()))) {
-      texture = {};
-      return false;
-    }
-    return true;
-  }
-
-  // Maps a single-channel plane and copies it row by row (honoring RowPitch).
-  bool uploadPlane(ID3D11Texture2D* texture, const uint8_t* source, int sourceStride, int width, int height) {
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context_->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-      return false;
-    }
-    auto* destination = static_cast<uint8_t*>(mapped.pData);
-    for (int y = 0; y < height; ++y) {
-      std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch,
-                  source + static_cast<size_t>(y) * static_cast<size_t>(sourceStride),
-                  static_cast<size_t>(width));
-    }
-    context_->Unmap(texture, 0);
-    return true;
-  }
-
-  // Uploads a frame's I420 planes into the shared Y/U/V GPU textures (recreating
-  // them when the dimensions change). The YUV pixel shader then converts to RGB.
-  bool uploadLayerI420Texture(const VideoFrame& frame) {
-    if (!frame.hasI420()) {
-      return false;
-    }
-    const int width = frame.i420Width;
-    const int height = frame.i420Height;
-    const int chromaWidth = width / 2;
-    const int chromaHeight = height / 2;
-    if (!yTexture_ || yuvTextureWidth_ != width || yuvTextureHeight_ != height) {
-      yTexture_ = {};
-      yTextureView_ = {};
-      uTexture_ = {};
-      uTextureView_ = {};
-      vTexture_ = {};
-      vTextureView_ = {};
-      yuvTextureWidth_ = 0;
-      yuvTextureHeight_ = 0;
-      if (!createR8Texture(width, height, yTexture_, yTextureView_) ||
-          !createR8Texture(chromaWidth, chromaHeight, uTexture_, uTextureView_) ||
-          !createR8Texture(chromaWidth, chromaHeight, vTexture_, vTextureView_)) {
-        yTexture_ = {};
-        uTexture_ = {};
-        vTexture_ = {};
-        return false;
-      }
-      yuvTextureWidth_ = width;
-      yuvTextureHeight_ = height;
-    }
-
-    const auto* base = frame.i420->data();
-    const auto yLength = static_cast<size_t>(width) * static_cast<size_t>(height);
-    const auto* yPlane = base;
-    const auto* uPlane = base + yLength;
-    const auto* vPlane = uPlane + static_cast<size_t>(chromaWidth) * static_cast<size_t>(chromaHeight);
-    if (!uploadPlane(yTexture_.get(), yPlane, width, width, height) ||
-        !uploadPlane(uTexture_.get(), uPlane, chromaWidth, chromaWidth, chromaHeight) ||
-        !uploadPlane(vTexture_.get(), vPlane, chromaWidth, chromaWidth, chromaHeight)) {
-      return false;
-    }
-    return true;
-  }
-
-  // Writes neutral/identity layer constants (white opaque, no color grade,
-  // identity UV) — used when rendering an I420 frame to a per-participant export
-  // texture, where no framing or grade applies.
-  bool writeIdentityConstants() {
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-      return false;
-    }
-    auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
-    constants->color[0] = constants->color[1] = constants->color[2] = constants->color[3] = 1.f;
-    constants->exposure = constants->contrast = constants->saturation = constants->temperature = 0.f;
-    constants->uvScale[0] = constants->uvScale[1] = 1.f;
-    constants->uvOffset[0] = constants->uvOffset[1] = 0.f;
-    context_->Unmap(constantBuffer_.get(), 0);
-    ID3D11Buffer* buffers[] = {constantBuffer_.get()};
-    context_->PSSetConstantBuffers(0, 1, buffers);
-    return true;
-  }
-
   uint32_t readProgramPixelSignature(int x, int y) const {
     if (!renderTarget_ || !stagingTexture_ || !context_) {
       return 0;
@@ -1091,51 +903,42 @@ class D3D11Compositor final : public ICompositor {
   // Export one keyed-mutex shared texture per participant for the multiview tiles,
   // so the WinUI tiles present on the GPU instead of decoding base64 on the UI
   // thread. Runs on the (single) render thread, reusing the compositor device/
-  // context. The shared texture is BGRA (the cross-process consumer expects BGRA):
-  // BGRA source frames are copied via UpdateSubresource; I420 source frames are
-  // converted to BGRA on the GPU with the YUV shader (render into the texture's
-  // render-target view). Producer acquires key 0 / writes / releases key 1;
-  // non-blocking so a busy consumer just keeps the last frame.
+  // context. Keyed-mutex textures are DEFAULT usage, so upload via UpdateSubresource
+  // (not Map). Producer acquires key 0 / writes / releases key 1; non-blocking so a
+  // busy consumer just keeps the last frame.
   void exportParticipantTextures(const std::vector<VideoFrame>& frames, ProgramFrame& outFrame) {
     if (!device_ || !context_) {
       return;
     }
     for (const auto& f : frames) {
-      if (f.participantId.empty() || !frameHasContent(f)) {
+      if (f.participantId.empty() || !f.hasPixels()) {
         continue;
       }
-      const bool useI420 = f.hasI420();
-      const int width = useI420 ? f.i420Width : f.pixelWidth;
-      const int height = useI420 ? f.i420Height : f.pixelHeight;
       auto& pt = participantTextures_[f.participantId];
-      if (!pt.texture || pt.width != width || pt.height != height) {
+      if (!pt.texture || pt.width != f.pixelWidth || pt.height != f.pixelHeight) {
         pt = ParticipantTex{};
         D3D11_TEXTURE2D_DESC desc{};
-        desc.Width = static_cast<UINT>(width);
-        desc.Height = static_cast<UINT>(height);
+        desc.Width = static_cast<UINT>(f.pixelWidth);
+        desc.Height = static_cast<UINT>(f.pixelHeight);
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
-        // RENDER_TARGET so the I420->BGRA shader can render into it; SHADER_RESOURCE
-        // for the cross-process consumer. UpdateSubresource (BGRA path) still works
-        // on a DEFAULT-usage render-target texture.
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         ComPtrLite<IDXGIResource> dxgiResource;
         HANDLE handle = nullptr;
         if (FAILED(device_->CreateTexture2D(&desc, nullptr, pt.texture.put())) ||
             FAILED(pt.texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put()))) ||
             FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle ||
-            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(pt.mutex.put()))) ||
-            FAILED(device_->CreateRenderTargetView(pt.texture.get(), nullptr, pt.rtv.put()))) {
+            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(pt.mutex.put())))) {
           participantTextures_.erase(f.participantId);
           continue;
         }
         pt.handle = handle;
-        pt.width = width;
-        pt.height = height;
+        pt.width = f.pixelWidth;
+        pt.height = f.pixelHeight;
       }
       // Only re-upload when the frame actually changed. Capture frames are now HELD and
       // re-emitted every render tick (so the program composite never starves -> no pink),
@@ -1144,18 +947,10 @@ class D3D11Compositor final : public ICompositor {
       // ~11fps. The texture already holds these pixels; just keep emitting the handle.
       const bool frameChanged = (f.frameId != pt.lastFrameId);
       if (frameChanged && pt.mutex && pt.mutex->AcquireSync(0, 0) == S_OK) {
-        bool uploaded = false;
-        if (useI420) {
-          uploaded = renderI420ToParticipantTexture(f, pt, width, height);
-        } else {
-          context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
-                                      static_cast<UINT>(f.pixelStride), 0);
-          uploaded = true;
-        }
+        context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
+                                    static_cast<UINT>(f.pixelStride), 0);
         pt.mutex->ReleaseSync(1);
-        if (uploaded) {
-          pt.lastFrameId = f.frameId;
-        }
+        pt.lastFrameId = f.frameId;
       }
       ParticipantSharedTexture info;
       info.participantId = f.participantId;
@@ -1165,64 +960,17 @@ class D3D11Compositor final : public ICompositor {
       info.frameNumber = outFrame.frameNumber;
       outFrame.participantSharedTextures.push_back(std::move(info));
     }
-    // Drop textures for participants that are no longer delivering content.
+    // Drop textures for participants that are no longer delivering pixels.
     for (auto it = participantTextures_.begin(); it != participantTextures_.end();) {
       bool present = false;
       for (const auto& f : frames) {
-        if (f.participantId == it->first && frameHasContent(f)) {
+        if (f.participantId == it->first && f.hasPixels()) {
           present = true;
           break;
         }
       }
       it = present ? std::next(it) : participantTextures_.erase(it);
     }
-  }
-
-  // Converts a participant's I420 frame to BGRA on the GPU by rendering a
-  // full-screen triangle with the YUV shader into the participant export
-  // texture's render-target view. The caller holds the keyed-mutex lock. Returns
-  // true when the convert was issued. Clobbers render state (render target,
-  // viewport, shaders) — only called from exportParticipantTextures, which runs
-  // after the program composite + share, so the next render() re-binds its state.
-  bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height) {
-    if (!pt.rtv || !uploadLayerI420Texture(frame)) {
-      return false;
-    }
-    ID3D11RenderTargetView* renderTargets[] = {pt.rtv.get()};
-    context_->OMSetRenderTargets(1, renderTargets, nullptr);
-
-    D3D11_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(width);
-    viewport.Height = static_cast<float>(height);
-    viewport.MinDepth = 0.f;
-    viewport.MaxDepth = 1.f;
-    context_->RSSetViewports(1, &viewport);
-
-    context_->IASetInputLayout(nullptr);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context_->RSSetState(rasterizerState_.get());
-    // Opaque overwrite (no source-over blend) — the export texture is a 1:1 copy.
-    context_->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
-    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
-    if (!writeIdentityConstants()) {
-      ID3D11RenderTargetView* nullTargets[] = {nullptr};
-      context_->OMSetRenderTargets(1, nullTargets, nullptr);
-      return false;
-    }
-    context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
-    ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
-    context_->PSSetShaderResources(0, 3, views);
-    ID3D11SamplerState* samplers[] = {samplerState_.get()};
-    context_->PSSetSamplers(0, 1, samplers);
-    context_->Draw(3, 0);
-
-    ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
-    context_->PSSetShaderResources(0, 3, nullViews);
-    ID3D11RenderTargetView* nullTargets[] = {nullptr};
-    context_->OMSetRenderTargets(1, nullTargets, nullptr);
-    // Restore the blend state the program composite expects for the next frame.
-    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
-    return true;
   }
 
   ProgramFramePreviewPixels readProgramFramePreview() const {
@@ -1252,7 +1000,6 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11VertexShader> vertexShader_;
   ComPtrLite<ID3D11PixelShader> pixelShader_;
   ComPtrLite<ID3D11PixelShader> texturedPixelShader_;
-  ComPtrLite<ID3D11PixelShader> yuvPixelShader_;
   ComPtrLite<ID3D11SamplerState> samplerState_;
   ComPtrLite<ID3D11Buffer> constantBuffer_;
   ComPtrLite<ID3D11BlendState> blendState_;
@@ -1264,20 +1011,17 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
-  // (ParticipantTex is declared near the top of the class.)
+  struct ParticipantTex {
+    ComPtrLite<ID3D11Texture2D> texture;
+    ComPtrLite<IDXGIKeyedMutex> mutex;
+    HANDLE handle = nullptr;
+    int width = 0;
+    int height = 0;
+    int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
+  };
   std::map<std::string, ParticipantTex> participantTextures_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
-  // I420 plane textures (R8_UNORM) shared by the program-composite draw and the
-  // per-participant export convert; recreated when the source dimensions change.
-  ComPtrLite<ID3D11Texture2D> yTexture_;
-  ComPtrLite<ID3D11ShaderResourceView> yTextureView_;
-  ComPtrLite<ID3D11Texture2D> uTexture_;
-  ComPtrLite<ID3D11ShaderResourceView> uTextureView_;
-  ComPtrLite<ID3D11Texture2D> vTexture_;
-  ComPtrLite<ID3D11ShaderResourceView> vTextureView_;
-  int yuvTextureWidth_ = 0;
-  int yuvTextureHeight_ = 0;
   ComPtrLite<ID3D11Texture2D> overlayTexture_;
   ComPtrLite<ID3D11ShaderResourceView> overlayTextureView_;
   int layerTextureWidth_ = 0;

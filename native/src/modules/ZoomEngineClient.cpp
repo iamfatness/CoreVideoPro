@@ -277,6 +277,10 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     return std::nullopt;  // torn during copy — caller retries next tick
   }
 
+  const std::uint8_t* yPlane = planes.data();
+  const std::uint8_t* uPlane = yPlane + yLength;
+  const std::uint8_t* vPlane = uPlane + yLength / 4;
+
   std::uint32_t outputWidth = before.width;
   std::uint32_t outputHeight = before.height;
   if (outputWidth > maxWidth || outputHeight > maxHeight) {
@@ -293,21 +297,12 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   frame.width = outputWidth;
   frame.height = outputHeight;
   frame.frameId = before.sequence;
-  // Carry the full-resolution I420 planes to the compositor (GPU convert). The
-  // planes are taken by move; the plane pointers below read from the moved-into
-  // buffer for the (small) thumbnail convert.
-  frame.i420Width = before.width;
-  frame.i420Height = before.height;
-  frame.i420 = std::move(planes);
-  const std::uint8_t* yPlane = frame.i420.data();
-  const std::uint8_t* uPlane = yPlane + yLength;
-  const std::uint8_t* vPlane = uPlane + yLength / 4;
   frame.rgba.resize(static_cast<std::size_t>(outputWidth) * static_cast<std::size_t>(outputHeight) * 4);
 
-  // Convert rows in parallel for the (downscaled) thumbnail only — callers ask
-  // for a small output size (e.g. 640x360), so this is cheap. The full-resolution
-  // per-pixel convert that used to dominate the render is gone: the compositor
-  // converts the I420 planes on the GPU instead.
+  // Convert rows in parallel: at 1080p the per-pixel YUV->BGRA is the throughput
+  // bottleneck on a single thread (capped fps/res). Rows are independent and
+  // write disjoint output, so parallelizing across cores lets full-res frames
+  // keep up at high frame rates.
   std::vector<std::uint32_t> rowIndices(outputHeight);
   for (std::uint32_t y = 0; y < outputHeight; ++y) {
     rowIndices[y] = y;

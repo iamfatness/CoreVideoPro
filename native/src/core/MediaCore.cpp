@@ -2871,24 +2871,14 @@ void MediaCore::renderDisplayTick() {
 void MediaCore::renderSyntheticTick(bool videoOnly) {
   const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * frameIntervalMs;
-  // Tap the latest decoded Zoom frames (raw I420 planes) and ingest them into
-  // the RealZoomCaptureSource so pollVideoFrames() returns them. Reading them
+  // Tap the latest decoded Zoom frames (real BGRA pixels) and ingest them into
+  // the RealZoomCaptureSource so pollVideoFrames() returns pixels. Reading them
   // here does NOT drain the stdout/event queue that feeds the multiview tiles.
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     for (const auto& frame : decoded) {
-      if (frame.hasI420()) {
-        // GPU path: carry the raw I420 planes through to the compositor, which
-        // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
-        realZoom->ingestI420Frame(
-            frame.participantId,
-            frame.i420->data(),
-            frame.i420Width,
-            frame.i420Height,
-            frame.frameId,
-            frame.timestampMs);
-      } else if (frame.hasPixels()) {
+      if (frame.hasPixels()) {
         realZoom->ingestFrame(
             frame.participantId,
             frame.pixels->data(),
