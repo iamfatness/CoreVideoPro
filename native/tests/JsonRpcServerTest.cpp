@@ -6,6 +6,27 @@
 
 #include <sstream>
 
+// Regression: the host (System.Text.Json default encoder) escapes non-ASCII and
+// HTML-sensitive characters as \uXXXX. These appear in the larger media-core-sync
+// (multiview layout labels) and zoom-media-spine-sync (roster) payloads — e.g. the
+// "·" in a "Guest · Live" label. The parser used to throw "Unsupported JSON escape
+// sequence" on \u, so every such request was answered with id="unknown", the bridge
+// never matched the real id, and the request timed out at 4s. The parser must decode
+// \u (including surrogate pairs) to UTF-8.
+TEST(Json, ParsesUnicodeEscapesIncludingSurrogatePairs) {
+  std::string error;
+
+  // U+00B7 MIDDLE DOT -> UTF-8 0xC2 0xB7; U+002B '+'.
+  auto basic = corevideo::rpc::Json::parse("{\"label\":\"Guest \\u00b7 Live \\u002B1\"}", &error);
+  ASSERT_TRUE(basic.has_value()) << error;
+  EXPECT_EQ(basic->getString("label"), std::string("Guest \xC2\xB7 Live +1"));
+
+  // Surrogate pair: U+1F600 GRINNING FACE -> UTF-8 0xF0 0x9F 0x98 0x80.
+  auto emoji = corevideo::rpc::Json::parse("{\"e\":\"\\uD83D\\uDE00\"}", &error);
+  ASSERT_TRUE(emoji.has_value()) << error;
+  EXPECT_EQ(emoji->getString("e"), std::string("\xF0\x9F\x98\x80"));
+}
+
 TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
   corevideo::core::MediaCore mediaCore;
   corevideo::rpc::JsonRpcServer server(mediaCore);
