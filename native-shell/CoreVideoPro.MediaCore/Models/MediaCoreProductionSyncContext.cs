@@ -39,6 +39,19 @@ public sealed record MediaCoreMultiviewSourceWire(
     string? CaptureDeviceId = null,
     string? MediaAssetId = null);
 
+/// <summary>
+/// Full multiview layout carried on the frequent <c>zoom-media-spine-sync</c> channel so the
+/// core-composited GPU multiview receives the roster continuously (the user-action-triggered
+/// production sync only sends it on scene publishes). Same per-source shape as
+/// <c>set-multiview-layout</c>.
+/// </summary>
+public sealed record MediaCoreMultiviewLayout(
+    int CanvasWidth,
+    int CanvasHeight,
+    int Cols,
+    int Rows,
+    IReadOnlyList<MediaCoreMultiviewSourceWire> Sources);
+
 public sealed record MediaCoreSceneBackgroundWire(
     string MediaAssetId,
     string MediaAssetName,

@@ -26,6 +26,13 @@ public static class ZoomMediaSpinePayloadBuilder
         /// so it no longer fires automatically on meeting join.
         /// </summary>
         public bool StartCapture { get; init; }
+
+        /// <summary>
+        /// Ordered Show Input roster that drives the core-composited GPU multiview. Delivered on
+        /// this frequent, reliable channel (the production sync only carries it on scene publishes,
+        /// which almost never re-run). Null leaves the multiview untouched.
+        /// </summary>
+        public MediaCoreMultiviewLayout? Multiview { get; init; }
     }
 
     public static Dictionary<string, object?> Build(BuildInput input)
@@ -74,6 +81,11 @@ public static class ZoomMediaSpinePayloadBuilder
             };
         }
 
+        if (input.Multiview is { } multiview)
+        {
+            payload["multiview"] = BuildMultiviewPayload(multiview);
+        }
+
         return payload;
     }
 
@@ -83,6 +95,29 @@ public static class ZoomMediaSpinePayloadBuilder
     {
         return Build(options with { Participants = context.Participants, Recording = context.Recording });
     }
+
+    /// <summary>
+    /// Serializes the multiview layout into the same per-source shape the standalone
+    /// <c>set-multiview-layout</c> command uses, so the core can parse both with one helper.
+    /// </summary>
+    private static Dictionary<string, object?> BuildMultiviewPayload(MediaCoreMultiviewLayout multiview) =>
+        new()
+        {
+            ["canvasWidth"] = multiview.CanvasWidth,
+            ["canvasHeight"] = multiview.CanvasHeight,
+            ["cols"] = multiview.Cols,
+            ["rows"] = multiview.Rows,
+            ["sources"] = multiview.Sources.Select(source => new Dictionary<string, object?>
+            {
+                ["sourceId"] = source.SourceId,
+                ["kind"] = source.Kind,
+                ["participantId"] = source.ParticipantId,
+                ["captureDeviceId"] = source.CaptureDeviceId,
+                ["mediaAssetId"] = source.MediaAssetId,
+                ["slot"] = source.Slot,
+                ["label"] = source.Label
+            }).ToList()
+        };
 
     private static IReadOnlyList<MediaCoreParticipantWire> FilterParticipants(
         IReadOnlyList<MediaCoreParticipantWire> participants,

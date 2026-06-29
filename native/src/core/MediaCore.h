@@ -91,6 +91,12 @@ class MediaCore {
   void setBrandKit(const rpc::Json& command);
   void setMediaPlayback(const rpc::Json& command);
   void setMultiviewLayout(const rpc::Json& command);
+  // Parses + applies a multiview layout node ({canvasWidth,canvasHeight,cols,rows,
+  // sources:[...]}) shared by the standalone set-multiview-layout command AND the
+  // frequent zoom-media-spine-sync `multiview` object. Cheap signature compare:
+  // only rebuilds multiviewSources_/dims and resets the structural-emit flag when
+  // the layout content actually changed. Returns true when it applied a change.
+  bool applyMultiviewLayout(const rpc::Json& layout);
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false);
@@ -346,6 +352,10 @@ class MediaCore {
   std::vector<MultiviewSource> multiviewSources_;
   int multiviewCanvasWidth_ = 1920;
   int multiviewCanvasHeight_ = 1080;
+  // Content signature of the currently-applied multiview layout. The spine sync calls
+  // applyMultiviewLayout every tick; this lets it cheaply skip the clear/rebuild +
+  // structural-emit reset when the layout has not actually changed.
+  std::string multiviewLayoutSignature_;
   // Structural signature of the last emitted multiview event, so the event is
   // emitted only on structural change (and once at cold start).
   uint32_t lastMultiviewStructureSignature_ = 0;

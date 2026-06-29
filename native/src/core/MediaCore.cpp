@@ -521,6 +521,19 @@ rpc::Json MediaCore::sessionState() const {
 }
 
 rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
+  // Deliver the GPU multiview layout on this frequent, reliable channel. The production sync's
+  // set-multiview-layout fires only on user actions (and sends an EMPTY layout at startup), so
+  // the multiview never gets the live Show Input roster from it. applyMultiviewLayout dedups by
+  // content signature, so re-applying every spine tick does NOT churn multiviewSources_ unless
+  // the layout actually changed. Done BEFORE the runtime delegate so it works on both the stub
+  // and the real-engine paths (the multiview lives in MediaCore, not the Zoom runtime).
+  if (const rpc::Json* multiview = payload.get("multiview"); multiview && multiview->isObject()) {
+    if (applyMultiviewLayout(*multiview)) {
+      std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources (spine)\n",
+                   multiviewSources_.size());
+    }
+  }
+
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->syncSpine(payload, elapsedMs);
   }
@@ -1645,17 +1658,26 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
 }
 
 void MediaCore::setMultiviewLayout(const rpc::Json& command) {
+  // The standalone set-multiview-layout command IS a layout node; share the parse/apply
+  // path with the frequent zoom-media-spine-sync `multiview` object.
+  applyMultiviewLayout(command);
+}
+
+bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   // The WinUI sends the ordered Show Input roster: each entry is one multiview
   // tile (sourceId/kind/participantId|captureDeviceId|mediaAssetId, slot, label)
   // plus the multiview canvas dimensions. An empty/absent sources array clears
   // the layout, which turns the second (multiview) GPU composite pass off.
-  multiviewSources_.clear();
-  const int canvasWidth = static_cast<int>(command.getNumber("canvasWidth", 0));
-  const int canvasHeight = static_cast<int>(command.getNumber("canvasHeight", 0));
-  multiviewCanvasWidth_ = canvasWidth > 0 ? canvasWidth : outputWidth_;
-  multiviewCanvasHeight_ = canvasHeight > 0 ? canvasHeight : outputHeight_;
+  const int canvasWidth = static_cast<int>(layout.getNumber("canvasWidth", 0));
+  const int canvasHeight = static_cast<int>(layout.getNumber("canvasHeight", 0));
+  const int resolvedWidth = canvasWidth > 0 ? canvasWidth : outputWidth_;
+  const int resolvedHeight = canvasHeight > 0 ? canvasHeight : outputHeight_;
 
-  const auto* sources = command.get("sources");
+  // Parse into a temp vector first + build a cheap content signature, so the per-spine-tick
+  // call can skip the clear/rebuild + structural-emit reset when nothing changed.
+  std::vector<MultiviewSource> parsed;
+  std::string signature = std::to_string(resolvedWidth) + "x" + std::to_string(resolvedHeight) + ";";
+  const auto* sources = layout.get("sources");
   if (sources && sources->isArray()) {
     int autoSlot = 0;
     for (const auto& entry : sources->asArray()) {
@@ -1670,13 +1692,26 @@ void MediaCore::setMultiviewLayout(const rpc::Json& command) {
       source.mediaAssetId = entry.getString("mediaAssetId");
       source.label = entry.getString("label");
       source.slot = entry.get("slot") ? static_cast<int>(entry.getNumber("slot", autoSlot)) : autoSlot;
-      multiviewSources_.push_back(std::move(source));
+      signature += std::to_string(source.slot) + ":" + source.kind + ":" + source.sourceId + ":" +
+                   source.participantId + ":" + source.captureDeviceId + ":" + source.mediaAssetId + ":" +
+                   source.label + "|";
+      parsed.push_back(std::move(source));
       ++autoSlot;
     }
   }
 
+  if (signature == multiviewLayoutSignature_) {
+    // Unchanged layout — do NOT churn multiviewSources_ or reset the structural-emit flag.
+    return false;
+  }
+
+  multiviewLayoutSignature_ = std::move(signature);
+  multiviewSources_ = std::move(parsed);
+  multiviewCanvasWidth_ = resolvedWidth;
+  multiviewCanvasHeight_ = resolvedHeight;
   // A layout change is a structural change; force the next render's event emit.
   multiviewStructureEmitted_ = false;
+  return true;
 }
 
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {

@@ -6128,6 +6128,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList();
         }
 
+        // Carry the multiview layout on this frequent, reliable channel. The production sync
+        // (BuildSyncCommands → set-multiview-layout) only fires on user actions (Take, scene
+        // change, Engine toggle) and sends an EMPTY layout at startup, so the GPU multiview never
+        // gets the live roster from it. The spine sync runs continuously, so the core applies the
+        // layout here (deduped by signature core-side). syncContext already built the sources/dims.
+        var multiview = MultiviewGpuEnabled
+            ? new MediaCoreMultiviewLayout(
+                syncContext.MultiviewCanvasWidth,
+                syncContext.MultiviewCanvasHeight,
+                syncContext.MultiviewColumns,
+                syncContext.MultiviewRows,
+                syncContext.MultiviewSources)
+            : null;
+
         return ZoomMediaSpinePayloadBuilder.Build(
             new ZoomMediaSpinePayloadBuilder.BuildInput
             {
@@ -6140,7 +6154,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 StartCapture = ZoomCaptureSubscribed,
                 OAuthSignedIn = Settings.ZoomOAuthSignedIn,
                 SdkVersion = _bridge.Profile?.Name ?? "zoom-engine",
-                SdkRuntimeReady = !Settings.SdkIsBlocked
+                SdkRuntimeReady = !Settings.SdkIsBlocked,
+                Multiview = multiview
             });
     }
 
@@ -9992,84 +10007,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                  value.Equals("off", StringComparison.OrdinalIgnoreCase));
     }
 
-    private string _lastSentMultiviewLayoutSignature = "";
-
-    // Sends set-multiview-layout when the Show Input roster STRUCTURE changes (called from the
-    // structural roster/show-input refresh points, deduped by signature). The production sync
-    // (BuildSyncCommands) also carries the layout on scene publishes; this covers roster/show-input
-    // changes that don't publish a scene. Never sent per frame.
+    // The multiview layout is now delivered on the frequent, reliable zoom-media-spine-sync
+    // channel (see BuildSpinePayload → ZoomMediaSpinePayloadBuilder; the core applies + dedups it
+    // in MediaCore::syncZoomMediaSpine). The production sync's set-multiview-layout command stays
+    // as a belt-and-suspenders. The old debounced re-entrant-sync machinery (which backpressured
+    // against the spine flood and never reliably landed) is retired; this is now a no-op kept so
+    // the structural roster/show-input refresh points have a harmless hook.
     private void SyncMultiviewLayoutIfChanged()
     {
-        if (!MultiviewGpuEnabled || !_bridge.Running)
-        {
-            return;
-        }
-
-        var sources = ShowInputRosterService.BuildMultiviewLayoutSources(
-            ShowInputs,
-            RoomParticipantsForInputs,
-            CaptureDevices,
-            VisualMediaAssets);
-        var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
-        var signature = string.Join("|", sources.Select(source => $"{source.Slot}:{source.Kind}:{source.SourceId}:{source.Label}")) +
-            $"#{grid.Columns}x{grid.Rows}";
-        if (string.Equals(signature, _lastSentMultiviewLayoutSignature, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        // Deliver via the proven FULL production sync (its BuildSyncCommands carries the
-        // current multiview layout), but NEVER force it re-entrantly from this refresh path:
-        // the bridge serializes syncs (MediaCoreSyncInFlightException) and a sync started while
-        // the UI thread is inside the refresh deadlocks/times out. Mark the target signature and
-        // schedule a DEBOUNCED, TOP-LEVEL sync (timer tick → UI thread free), retrying on
-        // backpressure until it lands.
-        _pendingMultiviewLayoutSignature = signature;
-        ScheduleMultiviewLayoutSync();
-    }
-
-    private string _pendingMultiviewLayoutSignature = "";
-    private bool _multiviewSyncInFlight;
-    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _multiviewSyncTimer;
-
-    private void ScheduleMultiviewLayoutSync()
-    {
-        if (_multiviewSyncTimer is null)
-        {
-            _multiviewSyncTimer = _dispatcher.CreateTimer();
-            _multiviewSyncTimer.IsRepeating = false;
-            _multiviewSyncTimer.Tick += (_, _) => _ = RunMultiviewLayoutSyncAsync();
-        }
-        _multiviewSyncTimer.Interval = TimeSpan.FromMilliseconds(400);
-        _multiviewSyncTimer.Start();
-    }
-
-    private async Task RunMultiviewLayoutSyncAsync()
-    {
-        // Already current, or a sync is mid-flight — nothing to do (the latter reschedules).
-        if (_multiviewSyncInFlight ||
-            string.Equals(_pendingMultiviewLayoutSignature, _lastSentMultiviewLayoutSignature, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        _multiviewSyncInFlight = true;
-        var target = _pendingMultiviewLayoutSignature;
-        try
-        {
-            await SyncActiveSceneAsync().ConfigureAwait(true);
-            _lastSentMultiviewLayoutSignature = target;
-        }
-        catch
-        {
-            // Sync in flight (backpressure) or timed out — retry shortly; the layout the next
-            // sync carries is always current, so this self-heals once the bridge is free.
-            ScheduleMultiviewLayoutSync();
-        }
-        finally
-        {
-            _multiviewSyncInFlight = false;
-        }
+        // Intentionally empty: the spine sync carries the live layout continuously.
     }
 
     private bool _loggedMultiviewTexture;

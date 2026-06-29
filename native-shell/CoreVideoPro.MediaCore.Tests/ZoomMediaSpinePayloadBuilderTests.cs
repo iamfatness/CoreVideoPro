@@ -29,6 +29,50 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
     }
 
     [Fact]
+    public void BuildOmitsMultiviewWhenLayoutIsNull()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true
+        });
+
+        Assert.False(payload.ContainsKey("multiview"));
+    }
+
+    [Fact]
+    public void BuildCarriesMultiviewLayoutWhenProvided()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Multiview = new MediaCoreMultiviewLayout(
+                1920,
+                1080,
+                2,
+                1,
+                [
+                    new MediaCoreMultiviewSourceWire("participant:p1", "zoom", 0, "Alex", ParticipantId: "p1"),
+                    new MediaCoreMultiviewSourceWire("capture:cam1", "capture", 1, "Cam 1", CaptureDeviceId: "cam1")
+                ])
+        });
+
+        var multiview = Assert.IsType<Dictionary<string, object?>>(payload["multiview"]);
+        Assert.Equal(1920, multiview["canvasWidth"]);
+        Assert.Equal(1080, multiview["canvasHeight"]);
+        Assert.Equal(2, multiview["cols"]);
+        Assert.Equal(1, multiview["rows"]);
+
+        var sources = Assert.IsAssignableFrom<IReadOnlyList<Dictionary<string, object?>>>(multiview["sources"]);
+        Assert.Equal(2, sources.Count);
+        Assert.Equal("participant:p1", sources[0]["sourceId"]);
+        Assert.Equal("zoom", sources[0]["kind"]);
+        Assert.Equal("p1", sources[0]["participantId"]);
+        Assert.Equal(0, sources[0]["slot"]);
+        Assert.Equal("capture", sources[1]["kind"]);
+        Assert.Equal("cam1", sources[1]["captureDeviceId"]);
+    }
+
+    [Fact]
     public void BuildBlocksWhenEngineIsOff()
     {
         var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
