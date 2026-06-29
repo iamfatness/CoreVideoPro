@@ -8077,6 +8077,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private long _rsbWindowStartMs;
     private void RefreshSurfaceBindings()
     {
+        // MUST run on the UI thread: it assigns ProgramSurface/PreviewSurface/MultiviewTiles
+        // (all x:Bound to VideoSurfaceHosts). Off-thread = native fail-fast (CoreMessagingXP
+        // 0xc000027b). Marshal defensively; runs inline when already on the UI thread.
+        if (!_dispatcher.HasThreadAccess)
+        {
+            _dispatcher.TryEnqueue(RefreshSurfaceBindings);
+            return;
+        }
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ProgramSurface = _surfaces.ProgramSurface;
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
@@ -8787,6 +8796,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshMultiviewGridTiles()
     {
+        // MUST run on the UI thread: it assigns MultiviewGridTiles (x:Bound to the grid's
+        // ItemsRepeater) + OnPropertyChanged, and reads UI-owned collections (ShowInputs,
+        // RoomVideoParticipants, MultiviewTiles). It is called from ~20 sites including the
+        // roster/active-speaker churn path (~1.3x/s under a live meeting); if even one
+        // fires off the UI thread the bound-prop set is a native fail-fast
+        // (CoreMessagingXP +0x93b66 / 0xc000027b, no managed stack — reproduced under
+        // sustained multi-participant churn). Marshal here so every caller is safe; runs
+        // inline when already on the UI thread.
+        if (!_dispatcher.HasThreadAccess)
+        {
+            _dispatcher.TryEnqueue(RefreshMultiviewGridTiles);
+            return;
+        }
+
         var tiles = ShowInputRosterService.BuildMultiviewTiles(
             ShowInputs,
             RoomVideoParticipants,
