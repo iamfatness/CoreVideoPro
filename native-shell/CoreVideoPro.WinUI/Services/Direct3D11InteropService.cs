@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using CoreVideoPro.WinUI;
 using CoreVideoPro.MediaCore.Services;
@@ -15,6 +16,22 @@ namespace CoreVideoPro.WinUI.Services;
 /// <summary>
 /// WinRT IDirect3DDevice ↔ native D3D11 bridge for opening DXGI shared handles
 /// and presenting them through a <see cref="SwapChainPanel"/>.
+///
+/// SHARED-SOURCE SAFETY: the core exports each surface as a single-consumer keyed-mutex
+/// DXGI shared texture (producer acquires key 0 / writes / releases key 1; consumer
+/// acquires key 1 / copies / releases key 0 — a strict ping-pong that serves ONE
+/// consumer). When the SAME source is routed to two monitors (e.g. preview AND program),
+/// two hosts open the SAME NtHandle. Because all presents run serialized on the UI thread
+/// (CompositionTarget.Rendering), the first host to present each vsync always wins the
+/// key-1 acquire and the other host's non-blocking acquire perpetually fails -> it freezes.
+///
+/// To make BOTH present smoothly we decouple keyed-mutex *acquisition* from *presentation*:
+/// a process-wide per-handle <see cref="HandleIngest"/> broker (on a single shared device)
+/// acquires the producer's keyed mutex at most once per produced frame, copies the shared
+/// texture into a device-private "latest frame" texture, and releases the key immediately.
+/// Every host then presents from that private copy (a same-device CopyResource), so there is
+/// exactly ONE keyed-mutex consumer regardless of how many hosts show the source. All host
+/// swap chains live on the one shared device so the private->backbuffer copy is in-device.
 /// </summary>
 public sealed class Direct3D11InteropService : IDisposable
 {
@@ -26,12 +43,37 @@ public sealed class Direct3D11InteropService : IDisposable
         CpuFallback
     }
 
-    // Serializes D3D device + swap-chain creation across ALL interop instances. On a
-    // multi-participant join, program/preview/multiview hosts attach near-simultaneously;
-    // creating N swap chains at the same instant spikes GPU/driver resource pressure and
-    // makes EnsureSwapChain fail (and churn). Holding this during creation flattens the
-    // peak so each creation sees a stable driver state.
+    // Serializes shared device + per-host swap-chain creation, and guards the process-wide
+    // ingest map. On a multi-participant join, program/preview/multiview hosts attach
+    // near-simultaneously; serializing creation flattens the driver resource peak so each
+    // creation sees a stable state.
     private static readonly object CreationGate = new();
+
+    // The ONE D3D device shared by every interop instance. A single process-wide device
+    // (a) lets the per-handle ingest broker copy its private "latest frame" texture into any
+    // host's swap-chain back buffer (same-device CopyResource), and (b) removes the per-host
+    // device churn on tile load/unload that is itself a fail-fast vector. Created once and
+    // kept for the app lifetime (never torn down per host) — device churn destabilizes WinUI.
+    private static ID3D11Device? s_sharedDevice;
+    private static ID3D11DeviceContext? s_sharedContext;
+    private static IDirect3DDevice? s_sharedWinrtDevice;
+    private static nint s_sharedDevicePointer;
+
+    // Per-handle keyed-mutex ingest broker (see class remarks). Keyed by NtHandle and shared
+    // across all interop instances. Structural changes are guarded by CreationGate.
+    private sealed class HandleIngest
+    {
+        public ID3D11Texture2D Shared = null!;
+        public IDXGIKeyedMutex Mutex = null!;
+        public KeyedMutexAcquireSyncThunk? Acquire;
+        public ID3D11Texture2D? Private;
+        public int Width;
+        public int Height;
+        public long Generation;
+        public int RefCount;
+    }
+
+    private static readonly Dictionary<ulong, HandleIngest> s_ingests = new();
 
     // After an EnsureSwapChain failure under resource pressure, don't retry every vsync
     // (~60x/s) — that churn is itself a crash vector. Back off and stay on the CPU
@@ -40,9 +82,6 @@ public sealed class Direct3D11InteropService : IDisposable
     private long _swapChainRetryAfterMs;
 
     private readonly HashSet<ulong> _invalidHandles = [];
-    private IDirect3DDevice? _winrtDevice;
-    private ID3D11Device? _device;
-    private ID3D11DeviceContext? _context;
     private IDXGISwapChain1? _swapChain;
     private ID3D11Texture2D? _backBuffer;
     private SwapChainPanel? _panel;
@@ -52,10 +91,12 @@ public sealed class Direct3D11InteropService : IDisposable
     private int _panelHeight;
     private ulong _lastPresentedHandle;
     private long _presentCount;
-    private ID3D11Texture2D? _cachedSharedTexture;
-    private IDXGIKeyedMutex? _cachedKeyedMutex;
-    private KeyedMutexAcquireSyncThunk? _cachedAcquireSync;
-    private ulong _cachedSharedHandle;
+    // The handle whose ingest this instance currently holds a ref on (0 = none). Used to
+    // release the ingest ref when the presented handle changes or the host is disposed.
+    private ulong _ingestHandle;
+    // The ingest generation this instance last presented. Skip-present when unchanged so an
+    // idle source doesn't re-present every vsync (the known-stable behavior).
+    private long _lastPresentedGeneration = -1;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int KeyedMutexAcquireSyncThunk(IntPtr self, ulong key, uint dwMilliseconds);
@@ -76,13 +117,13 @@ public sealed class Direct3D11InteropService : IDisposable
             return null;
         }
     }
-    private nint _cachedDevicePointer;
+
     private bool _disposed;
     private PresentationPath _path = PresentationPath.Uninitialized;
 
     public event Action? PresentationPathChanged;
 
-    public bool IsReady => _device is not null && _swapChain is not null && _backBuffer is not null;
+    public bool IsReady => s_sharedDevice is not null && _swapChain is not null && _backBuffer is not null;
 
     public bool IsGpuPresenting => _path == PresentationPath.GpuActive;
 
@@ -90,7 +131,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public PresentationPath ActivePath => _path;
 
-    public nint DevicePointer => _cachedDevicePointer;
+    public nint DevicePointer => s_sharedDevicePointer;
 
     public bool TryAttachSwapChainPanel(SwapChainPanel panel)
     {
@@ -147,51 +188,59 @@ public sealed class Direct3D11InteropService : IDisposable
 
         try
         {
-            // Open the shared texture once per handle and cache it. The compositor
-            // reuses the same shared texture, and present now runs every vsync, so
-            // re-opening it 60x/sec would churn (and leak) KMT shared handles and
-            // crash after a few seconds. Re-open only when the handle value changes.
-            if (_cachedSharedTexture is null || _cachedSharedHandle != handle.NtHandle)
+            // Resolve (and ref) the process-wide ingest for this handle. When the presented
+            // handle changes, release the old ref so an unused ingest can be reclaimed.
+            if (_ingestHandle != handle.NtHandle)
             {
-                _cachedKeyedMutex?.Dispose();
-                _cachedSharedTexture?.Dispose();
-                _cachedSharedTexture = _device!.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
-                _cachedKeyedMutex = _cachedSharedTexture.QueryInterface<IDXGIKeyedMutex>();
-                _cachedAcquireSync = BuildAcquireSyncThunk(_cachedKeyedMutex);
-                _cachedSharedHandle = handle.NtHandle;
+                ReleaseIngestRef(_ingestHandle);
+                _ingestHandle = 0;
+                _lastPresentedGeneration = -1;
             }
-            // Consumer side of the keyed mutex: acquire key 1 (the core releases 1
-            // after writing a new frame), non-blocking (0ms) so the UI thread never
-            // stalls. Vortice's AcquireSync returns void and can't report
-            // WAIT_TIMEOUT (a SUCCEEDED HRESULT), so call the COM vtable directly to
-            // get the real HRESULT. hr != S_OK => no new frame: keep the last one.
-            //
-            // SKIP-PRESENT (deliberate): present ONLY on a new keyed-mutex frame. The
-            // "smooth" variant that re-presents the last backbuffer every vsync on idle
-            // destabilized the app (~31s fail-fast) — this method is shared by the
-            // program monitor and now every multiview tile, so an idle re-present runs
-            // N swap chains every vsync. Keep skip-present; it is the known-stable path.
-            if (_cachedAcquireSync is not null && _cachedAcquireSync(_cachedKeyedMutex!.NativePointer, 1, 0) != 0)
-            {
-                // No new frame: leave the last presented backbuffer on screen.
-                SetPresentationPath(PresentationPath.GpuActive);
-                return true;
-            }
-            // Defensive: a concurrent teardown (ResetSwapChain/Dispose triggered by an
-            // unload or a prior present failure) can null these out between the
-            // EnsureSwapChain check above and here. Presenting onto a torn-down swap
-            // chain / context is a native fail-fast, so bail to the CPU path instead.
-            if (_disposed || _context is null || _backBuffer is null || _swapChain is null || _cachedSharedTexture is null)
+
+            var ingest = AcquireIngest(handle);
+            if (ingest is null)
             {
                 SetPresentationPath(PresentationPath.CpuFallback);
                 return false;
             }
-            _context.CopyResource(_backBuffer, _cachedSharedTexture);
-            _cachedKeyedMutex?.ReleaseSync(0);
+            _ingestHandle = handle.NtHandle;
+
+            // Pump the keyed mutex at most once per produced frame, across ALL hosts: the
+            // first host this vsync to find a new frame (AcquireSync key 1 succeeds) copies
+            // the shared texture into the ingest's private "latest frame" texture and
+            // releases key 0 immediately — handing the key straight back to the producer.
+            // A second host the same vsync sees AcquireSync fail (no newer frame) and simply
+            // presents the private copy. So there is exactly ONE keyed-mutex consumer no
+            // matter how many hosts show the source -> neither host starves.
+            PumpIngest(ingest);
+
+            // Skip-present when this host already showed the current frame (idle source):
+            // re-presenting the same backbuffer every vsync across N hosts destabilizes WinUI.
+            if (_lastPresentedGeneration == ingest.Generation || ingest.Private is null)
+            {
+                SetPresentationPath(PresentationPath.GpuActive);
+                return true;
+            }
+
+            // Defensive: a concurrent teardown can null these out between the EnsureSwapChain
+            // check above and here. Presenting onto a torn-down swap chain / context is a
+            // native fail-fast, so bail to the CPU path instead.
+            if (_disposed || s_sharedContext is null || _backBuffer is null || _swapChain is null)
+            {
+                SetPresentationPath(PresentationPath.CpuFallback);
+                return false;
+            }
+
+            // Same-device copy from the ingest's private latest-frame texture into our back
+            // buffer, then present. No keyed mutex is touched here, so two hosts presenting
+            // the same source never contend.
+            s_sharedContext.CopyResource(_backBuffer, ingest.Private);
             _swapChain.Present(1, PresentFlags.None);
             _lastPresentedHandle = handle.NtHandle;
+            _lastPresentedGeneration = ingest.Generation;
             SetPresentationPath(PresentationPath.GpuActive);
-            // Present runs only on new frames; log a heartbeat every 120 presents.
+            // Present runs only on new frames; log a heartbeat every 120 presents so the
+            // launch log shows BOTH hosts' present # advancing when they share a handle.
             if (++_presentCount % 120 == 0)
             {
                 LaunchLog.Write($"d3d: present #{_presentCount} 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}");
@@ -201,17 +250,151 @@ public sealed class Direct3D11InteropService : IDisposable
         catch (Exception ex)
         {
             LaunchLog.Write($"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: {ex.Message}");
-            _cachedAcquireSync = null;
-            _cachedKeyedMutex?.Dispose();
-            _cachedKeyedMutex = null;
-            _cachedSharedTexture?.Dispose();
-            _cachedSharedTexture = null;
-            _cachedSharedHandle = 0;
+            ReleaseIngestRef(_ingestHandle);
+            _ingestHandle = 0;
+            _lastPresentedGeneration = -1;
+            DisposeIngest(handle.NtHandle);
             InvalidateSharedHandle(handle.NtHandle);
             ResetSwapChain();
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
+    }
+
+    // Look up or create the per-handle ingest, taking a ref for this instance. The shared
+    // texture is opened once per handle (not once per host) so the keyed mutex has a single
+    // consumer. Returns null on failure (caller falls back to CPU).
+    private HandleIngest? AcquireIngest(SharedTextureHandle handle)
+    {
+        lock (CreationGate)
+        {
+            if (_disposed || s_sharedDevice is null)
+            {
+                return null;
+            }
+
+            if (!s_ingests.TryGetValue(handle.NtHandle, out var ingest))
+            {
+                ID3D11Texture2D? shared = null;
+                IDXGIKeyedMutex? mutex = null;
+                try
+                {
+                    shared = s_sharedDevice.OpenSharedResource<ID3D11Texture2D>((IntPtr)handle.NtHandle);
+                    mutex = shared.QueryInterface<IDXGIKeyedMutex>();
+                    ingest = new HandleIngest
+                    {
+                        Shared = shared,
+                        Mutex = mutex,
+                        Acquire = BuildAcquireSyncThunk(mutex),
+                        Width = handle.Width,
+                        Height = handle.Height,
+                        Generation = 0
+                    };
+                    s_ingests[handle.NtHandle] = ingest;
+                }
+                catch (Exception ex)
+                {
+                    LaunchLog.Write($"d3d: ingest open FAILED 0x{handle.NtHandle:X}: {ex.GetType().Name}: {ex.Message}");
+                    try { mutex?.Dispose(); } catch { }
+                    try { shared?.Dispose(); } catch { }
+                    return null;
+                }
+            }
+
+            // Take a ref only on the transition to owning this handle (the caller releases the
+            // prior handle's ref before calling), so steady-state per-vsync presents don't
+            // inflate the count.
+            if (_ingestHandle != handle.NtHandle)
+            {
+                ingest.RefCount++;
+            }
+            return ingest;
+        }
+    }
+
+    // Acquire the producer's keyed mutex non-blocking; if a new frame is available, copy it
+    // into the ingest's private latest-frame texture and bump the generation, then release
+    // key 0 so the producer can write the next frame. No-op when no new frame is ready.
+    private void PumpIngest(HandleIngest ingest)
+    {
+        if (ingest.Acquire is null || s_sharedContext is null || s_sharedDevice is null)
+        {
+            return;
+        }
+
+        // hr != S_OK => the producer hasn't released a new frame (or another host already
+        // ingested it this vsync): keep the current private copy.
+        if (ingest.Acquire(ingest.Mutex.NativePointer, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            ingest.Private ??= s_sharedDevice.CreateTexture2D(new Texture2DDescription
+            {
+                Width = (uint)Math.Max(1, ingest.Width),
+                Height = (uint)Math.Max(1, ingest.Height),
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Format.B8G8R8A8_UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource,
+                CPUAccessFlags = CpuAccessFlags.None,
+                MiscFlags = ResourceOptionFlags.None
+            });
+
+            s_sharedContext.CopyResource(ingest.Private, ingest.Shared);
+            ingest.Generation++;
+        }
+        finally
+        {
+            // Release key 0 immediately (matches the producer's AcquireSync(0)) so the key
+            // round-trips in ~1ms, never held across a vsync Present.
+            try { ingest.Mutex.ReleaseSync(0); } catch { }
+        }
+    }
+
+    private static void ReleaseIngestRef(ulong ntHandle)
+    {
+        if (ntHandle == 0)
+        {
+            return;
+        }
+
+        lock (CreationGate)
+        {
+            if (s_ingests.TryGetValue(ntHandle, out var ingest))
+            {
+                if (--ingest.RefCount <= 0)
+                {
+                    s_ingests.Remove(ntHandle);
+                    DisposeIngestInstance(ingest);
+                }
+            }
+        }
+    }
+
+    private static void DisposeIngest(ulong ntHandle)
+    {
+        lock (CreationGate)
+        {
+            if (s_ingests.TryGetValue(ntHandle, out var ingest))
+            {
+                s_ingests.Remove(ntHandle);
+                DisposeIngestInstance(ingest);
+            }
+        }
+    }
+
+    private static void DisposeIngestInstance(HandleIngest ingest)
+    {
+        ingest.Acquire = null;
+        try { ingest.Private?.Dispose(); } catch { }
+        try { ingest.Mutex?.Dispose(); } catch { }
+        try { ingest.Shared?.Dispose(); } catch { }
+        ingest.Private = null;
     }
 
     public void InvalidateSharedHandle(ulong ntHandle)
@@ -237,21 +420,14 @@ public sealed class Direct3D11InteropService : IDisposable
 
         _disposed = true;
         DetachPanelHandlers();
+        ReleaseIngestRef(_ingestHandle);
+        _ingestHandle = 0;
         ResetSwapChain();
-        // The WinRT IDirect3DDevice RCW throws InvalidCastException (E_NOINTERFACE on
-        // the IDisposable QI) on teardown, which fail-fasts the app when a
-        // VideoSurfaceHost unloads — e.g. leaving the meeting unloads the Zoom
-        // participant tiles, and multiview tiles come and go as participants join/leave.
-        // Teardown must never throw.
-        try { _context?.Dispose(); } catch { }
-        try { _device?.Dispose(); } catch { }
-        try { _winrtDevice?.Dispose(); } catch { }
-        _context = null;
-        _device = null;
-        _winrtDevice = null;
-        _cachedDevicePointer = 0;
+        // NOTE: the shared device is intentionally NOT torn down here — it is process-wide
+        // and outlives individual hosts (device churn on host unload fail-fasts WinUI).
         _invalidHandles.Clear();
         _lastPresentedHandle = 0;
+        _lastPresentedGeneration = -1;
         SetPresentationPath(PresentationPath.Uninitialized);
     }
 
@@ -338,7 +514,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private bool EnsureDevice()
     {
-        if (_device is not null && _context is not null)
+        if (s_sharedDevice is not null && s_sharedContext is not null)
         {
             return true;
         }
@@ -346,7 +522,7 @@ public sealed class Direct3D11InteropService : IDisposable
         try
         {
             // Serialize device creation across instances (see CreationGate) so a
-            // multi-host attach burst doesn't create N devices simultaneously.
+            // multi-host attach burst doesn't race to create the shared device.
             lock (CreationGate)
             {
                 if (_disposed)
@@ -354,34 +530,33 @@ public sealed class Direct3D11InteropService : IDisposable
                     return false;
                 }
 
-                if (_device is not null && _context is not null)
+                if (s_sharedDevice is not null && s_sharedContext is not null)
                 {
                     return true;
                 }
 
-                _device = D3D11.D3D11CreateDevice(
+                var device = D3D11.D3D11CreateDevice(
                     DriverType.Hardware,
                     DeviceCreationFlags.BgraSupport);
-                _context = _device.ImmediateContext;
+                var context = device.ImmediateContext;
 
-                using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+                using var dxgiDevice = device.QueryInterface<IDXGIDevice>();
                 var hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out var winrtDevicePtr);
-                if (hr < 0 || winrtDevicePtr == IntPtr.Zero)
+                if (hr >= 0 && winrtDevicePtr != IntPtr.Zero)
                 {
-                    SetPresentationPath(PresentationPath.DeviceReady);
-                    return true;
+                    s_sharedWinrtDevice = (IDirect3DDevice)Marshal.GetObjectForIUnknown(winrtDevicePtr);
+                    s_sharedDevicePointer = winrtDevicePtr;
+                    Marshal.Release(winrtDevicePtr);
                 }
 
-                _winrtDevice = (IDirect3DDevice)Marshal.GetObjectForIUnknown(winrtDevicePtr);
-                _cachedDevicePointer = winrtDevicePtr;
-                Marshal.Release(winrtDevicePtr);
+                s_sharedDevice = device;
+                s_sharedContext = context;
                 SetPresentationPath(PresentationPath.DeviceReady);
                 return true;
             }
         }
         catch
         {
-            ResetDevice();
             SetPresentationPath(PresentationPath.CpuFallback);
             return false;
         }
@@ -389,7 +564,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private bool EnsureSwapChain(int width = 0, int height = 0)
     {
-        if (_disposed || _panel is null || _device is null)
+        if (_disposed || _panel is null || s_sharedDevice is null)
         {
             return false;
         }
@@ -430,7 +605,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
                 ResetSwapChain();
 
-                using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+                using var dxgiDevice = s_sharedDevice.QueryInterface<IDXGIDevice>();
                 using var adapter = dxgiDevice.GetAdapter();
                 using var factory = adapter.GetParent<IDXGIFactory2>();
 
@@ -449,7 +624,7 @@ public sealed class Direct3D11InteropService : IDisposable
                     Flags = SwapChainFlags.None
                 };
 
-                _swapChain = factory.CreateSwapChainForComposition(_device, swapChainDesc);
+                _swapChain = factory.CreateSwapChainForComposition(s_sharedDevice, swapChainDesc);
                 if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
                 {
                     LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
@@ -479,31 +654,15 @@ public sealed class Direct3D11InteropService : IDisposable
     private void ResetSwapChain()
     {
         // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
-        // escape (it fail-fasts the app when a tile/host unloads).
-        _cachedAcquireSync = null;
-        try { _cachedKeyedMutex?.Dispose(); } catch { }
-        _cachedKeyedMutex = null;
-        try { _cachedSharedTexture?.Dispose(); } catch { }
-        _cachedSharedTexture = null;
-        _cachedSharedHandle = 0;
+        // escape (it fail-fasts the app when a tile/host unloads). The shared device,
+        // shared context and per-handle ingests are process-wide and NOT touched here.
         try { _backBuffer?.Dispose(); } catch { }
         try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;
         _swapChain = null;
         _surfaceWidth = 0;
         _surfaceHeight = 0;
-    }
-
-    private void ResetDevice()
-    {
-        ResetSwapChain();
-        try { _context?.Dispose(); } catch { }
-        try { _device?.Dispose(); } catch { }
-        try { _winrtDevice?.Dispose(); } catch { }
-        _context = null;
-        _device = null;
-        _winrtDevice = null;
-        _cachedDevicePointer = 0;
+        _lastPresentedGeneration = -1;
     }
 
     private void SetPresentationPath(PresentationPath path)
