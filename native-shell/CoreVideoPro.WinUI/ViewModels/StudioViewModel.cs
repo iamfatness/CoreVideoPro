@@ -8508,8 +8508,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // paths (~10/s); rebuilding the ComboBox ItemsSource every tick resets the
         // operator's in-progress selection (can't pick a participant) and fires a
         // SelectionChanged storm. Skip when nothing changed.
+        //
+        // The picker membership depends only on WHO is in the room (participant ids) +
+        // devices + assets — NOT on participant Health. Health (talking/active-speaker/
+        // camera on-off) churns constantly during a live meeting; including it here
+        // rebuilt every slot's ItemsSource on every health tick, which blanked the
+        // selected Source/name in the picker and flooded the dispatcher (a churn/crash
+        // vector). Key the signature on id-set only so options rebuild on join/leave.
         var signature =
-            string.Join("|", RoomParticipantsForInputs.Select(p => $"{p.Id}:{p.Health}")) + "#" +
+            string.Join("|", RoomParticipantsForInputs.Select(p => p.Id)) + "#" +
             string.Join(",", CaptureDevices.Select(d => d.Id)) + "#" +
             AudioCaptureDevices.Count + "#" + mediaAssets.Count;
         if (!force && signature == _showInputEditorsSignature)
