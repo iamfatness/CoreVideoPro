@@ -8079,7 +8079,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ProgramSurface = _surfaces.ProgramSurface;
-        PreviewSurface = _surfaces.PreviewSurface;
+        // PreviewSurface is NOT taken from the coordinator here — it is the preview BUS
+        // (the previewed scene's primary source), driven by PublishPreviewCompositionState
+        // via the SchedulePreviewRoutingRefresh below. Overwriting it with the coordinator's
+        // slate every frame is what pinned the preview monitor on "waiting for media engine".
         MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
@@ -9312,6 +9315,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         PreviewSceneRoutes = workingRoutes;
         PreviewSceneTiles = BuildSceneTiles(scene, workingRoutes, isProgramScene: false);
+        // Drive the PREVIEW monitor (a single VideoSurfaceHost) from the preview bus:
+        // the primary previewed source's surface, which carries its GPU shared-texture
+        // handle (live Zoom) or base64 pixels (capture). This is what makes preview a real
+        // preview/program bus rather than "waiting for media engine". One-up shows the
+        // primary source; multi-source preview composites need the core to composite the
+        // preview scene (program already is core-composited).
+        PreviewSurface = PreviewSceneTiles.Count > 0
+            ? PreviewSceneTiles[0].Surface with
+            {
+                SurfaceKey = "preview",
+                Kind = VideoSurfaceKind.Preview,
+                Title = "Preview"
+            }
+            : VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
         OnPropertyChanged(nameof(PreviewRouteWarnings));
         OnPropertyChanged(nameof(HasPreviewRouteWarnings));
         OnPropertyChanged(nameof(PreviewSceneTiles));
