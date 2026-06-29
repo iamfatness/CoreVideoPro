@@ -286,7 +286,12 @@ MediaCore::MediaCore(modules::ModuleSet modules)
 
 rpc::Json MediaCore::profile() const {
   const auto renderer = modules_.compositor->rendererName();
-  const auto encoderSession = modules_.encoder->session();
+  // encoder->session() is mutated by the audio/output worker; guard the read.
+  modules::OutputSession encoderSession;
+  {
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    encoderSession = modules_.encoder->session();
+  }
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
@@ -300,7 +305,12 @@ rpc::Json MediaCore::profile() const {
 }
 
 rpc::Json MediaCore::health() const {
-  const auto session = modules_.encoder->session();
+  // encoder->session() is mutated by the audio/output worker; guard the read.
+  modules::OutputSession session;
+  {
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    session = modules_.encoder->session();
+  }
   rpc::Json::Array messages;
 #if COREVIDEO_STUB
   messages.emplace_back("COREVIDEO_STUB synthetic media path active");
@@ -442,7 +452,15 @@ rpc::Json MediaCore::zoomSnapshot() const {
 }
 
 rpc::Json MediaCore::sessionState() const {
-  const auto session = modules_.encoder->session();
+  // encoder->session() is mutated by the audio/output worker; guard the read. The
+  // other module reads in this snapshot (profile/health/audioMixSessionState/
+  // outputSenderSessionState/captureAudioSourcesState) each take audioOutputMutex_
+  // independently (never nested), so no single lock spans the whole build.
+  modules::OutputSession session;
+  {
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    session = modules_.encoder->session();
+  }
   rpc::Json::Object state{
       {"sceneId", sceneId_},
       {"routeCount", routeCount_},
@@ -787,6 +805,15 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
   // output path into a blocking burst that wedges the processing thread.
   additionalTicks = std::min(additionalTicks, 2);
+  // Increment 2 (depends on the audio decouple): in the live server the render thread
+  // keeps lastProgramFrame_ fresh at ~60fps and the audio/output worker keeps the
+  // audio/output snapshot fresh, so an EMPTY poll (the 250ms media-core-sync) no
+  // longer needs to drive a synthetic tick under coreMutex — return the latest
+  // published snapshot without the heavy tick. Commands still render so their effect
+  // is reflected immediately; direct/test callers (no worker) always render.
+  if (audioWorkerActive_ && commands.empty()) {
+    additionalTicks = 0;
+  }
   for (int tick = 0; tick < additionalTicks; ++tick) {
     renderSyntheticTick();
   }
@@ -1220,13 +1247,25 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
       destination.videoCodec = streamVideoCodec_;
     }
   }
-  configureEncoderRecordingRequest();
-  modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
+  {
+    // Encoder module mutation: guard against the audio/output worker's concurrent
+    // encoder->submit/session in runAudioOutputWork. coreMutex(outer)→this(inner).
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    configureEncoderRecordingRequest();
+    modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
+  }
   if (encoderLifecycleStatus_ == "idle" || encoderLifecycleStatus_ == "prepared" || encoderLifecycleStatus_ == "stopped") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Program output encoder session started.";
   }
-  renderSyntheticTick();
+  // In the live server the render thread (which now does the program-frame readback
+  // once output is active) + the audio/output worker produce the frame/encode; the
+  // command-thread render here would only repeat a blocking CPU readback under
+  // coreMutex (a [cmd] held-lock blip). Render synchronously ONLY for direct/test
+  // callers (no worker) so applyCommand still returns a frame-fresh snapshot.
+  if (!audioWorkerActive_) {
+    renderSyntheticTick();
+  }
 }
 
 void MediaCore::prepareEncoderSession(const rpc::Json& command) {
@@ -1248,10 +1287,14 @@ void MediaCore::stopEncoderSession(const rpc::Json& command) {
 }
 
 void MediaCore::failOutputSender(const rpc::Json& command) {
+  // outputSender mutation: guard against the worker's outputSender->sync.
+  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
   modules_.outputSender->fail(command.getString("destination"), command.getString("message", "Output sender failed."), command.get("failedAtMs") ? command.get("failedAtMs")->asNumber() : 0);
 }
 
 void MediaCore::recoverOutputSender(const rpc::Json& command) {
+  // outputSender mutation: guard against the worker's outputSender->sync.
+  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
   modules_.outputSender->recover(command.getString("destination"), command.get("recoveredAtMs") ? command.get("recoveredAtMs")->asNumber() : 0, command.getString("reason", ""));
 }
 
@@ -1275,7 +1318,11 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   if (command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = command.getStringArray("isoParticipantIds");
   }
-  configureEncoderRecordingRequest();
+  {
+    // encoder->configureRecording mutation: guard against the worker's encoder use.
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    configureEncoderRecordingRequest();
+  }
 }
 
 void MediaCore::startRecordingSession(const rpc::Json& command) {
@@ -1295,18 +1342,28 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   recordingWarning_.clear();
   recordingLastFailure_.clear();
   recordingLastRecovery_.clear();
-  configureEncoderRecordingRequest();
-  auto encoderSession = modules_.encoder->session();
-  auto destinations = encoderSession.destinations;
-  if (std::find(destinations.begin(), destinations.end(), "recording") == destinations.end()) {
-    destinations.push_back("recording");
+  {
+    // Encoder module mutation (configureRecording + session + start): guard against
+    // the worker's encoder use. setRecordingTargets above locked+released its own
+    // configure call (not nested); this is a fresh, non-nested acquisition.
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    configureEncoderRecordingRequest();
+    auto encoderSession = modules_.encoder->session();
+    auto destinations = encoderSession.destinations;
+    if (std::find(destinations.begin(), destinations.end(), "recording") == destinations.end()) {
+      destinations.push_back("recording");
+    }
+    modules_.encoder->start(destinations, recordingIsoParticipantIds_);
   }
-  modules_.encoder->start(destinations, recordingIsoParticipantIds_);
   if (encoderLifecycleStatus_ != "encoding") {
     encoderLifecycleStatus_ = "encoding";
     encoderLastTransition_ = "Recording session started encoder.";
   }
-  renderSyntheticTick();
+  // See startProgramOutput: skip the redundant blocking command-thread render in the
+  // live server (worker + render thread own it); keep it for direct/test callers.
+  if (!audioWorkerActive_) {
+    renderSyntheticTick();
+  }
 }
 
 void MediaCore::stopRecordingSession(const rpc::Json& command) {
@@ -1333,6 +1390,9 @@ void MediaCore::recoverRecordingSession(const rpc::Json& command) {
 }
 
 void MediaCore::configureEncoderRecordingRequest() {
+  // PRECONDITION: the caller holds audioOutputMutex_ (this mutates encoder state via
+  // modules_.encoder->configureRecording). All callers — startProgramOutput,
+  // setRecordingTargets, startRecordingSession — acquire it around the call.
   modules::RecordingSessionRequest request;
   request.sessionId = recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_;
   request.targetFolder = recordingTargetFolder_;
@@ -1376,10 +1436,20 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
       audioChannels_.push_back(std::move(input));
     }
   }
-  renderSyntheticTick();
+  // Audio-only command: in the live server the audio/output worker re-mixes on its
+  // own cadence, so the command thread must not run a blocking render+readback here.
+  // Direct/test callers (no worker) render synchronously so the returned snapshot
+  // reflects the new mix immediately.
+  if (!audioWorkerActive_) {
+    renderSyntheticTick();
+  }
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
+  // monitorOutput->start/stop + mixer reads mutate/read audio/output module state the
+  // worker also touches (monitorOutput->render, mixer->monitorBus*); guard the whole
+  // body. coreMutex(outer, held by the command loop) → audioOutputMutex_(inner).
+  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
   audioMonitorEnabled_ = command.get("enabled") && command.get("enabled")->asBool();
   audioMonitorDeviceId_ = command.getString("deviceId");
   audioMonitorDeviceName_ = command.getString("deviceName");
@@ -1882,6 +1952,11 @@ std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics&
 }  // namespace
 
 rpc::Json MediaCore::audioMixSessionState() const {
+  // Reads mixer->session() (mutated by the worker's mixer->mix) and, via
+  // masterMeterState(), the BS.1770 loudness members (mutated by the worker's
+  // updateProgramLoudnessMeter). Hold audioOutputMutex_ across the whole body;
+  // masterMeterState() therefore does NOT lock (only called from here).
+  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
   if (audioChannels_.empty()) {
     const auto nativeMix = modules_.mixer->session();
     if (!nativeMix.participants.empty()) {
@@ -2144,6 +2219,8 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
 }
 
 rpc::Json MediaCore::masterMeterState() const {
+  // PRECONDITION: caller holds audioOutputMutex_ (reads the BS.1770 loudness members
+  // the worker mutates). Only called from audioMixSessionState(), which holds it.
   const int windowMs = programMeterL_.empty() ? 0 : static_cast<int>((programMeterL_.size() * 1000) / 48000);
   return rpc::Json::Object{
       {"momentaryLufs", programLufsMomentary_},
@@ -2296,10 +2373,13 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
   const int routedStreamFrames = static_cast<int>(audioBusTapPcm("stream").size() / 2);
   const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
-  const int fallbackMonitorFrames = routedMonitorFrames > 0 || !modules_.mixer
-                                        ? 0
-                                        : static_cast<int>(modules_.mixer->monitorBusPcm().size() /
-                                                           static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
+  // mixer->monitorBus* is mutated by the worker's mixer->mix; guard the read.
+  int fallbackMonitorFrames = 0;
+  if (routedMonitorFrames == 0 && modules_.mixer) {
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
+                                             static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
+  }
   std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
   auto addWarning = [&](const std::string& warning) {
     if (!warning.empty() && warningSet.insert(warning).second) {
@@ -2661,7 +2741,12 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
 }
 
 rpc::Json MediaCore::outputSenderSessionState() const {
-  const auto senderSession = modules_.outputSender->session();
+  // outputSender->session() is mutated by the worker's outputSender->sync; guard it.
+  modules::OutputSenderSession senderSession;
+  {
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    senderSession = modules_.outputSender->session();
+  }
   rpc::Json::Array senders;
   for (const auto& sender : senderSession.senders) {
     rpc::Json::Object senderJson{
@@ -3129,20 +3214,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
-  std::vector<modules::AudioFrame> audioFrames;
-  if (!videoOnly) {
-    audioFrames = modules_.zoom->pollAudioFrames();
-    if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-      const auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
-      if (!engineAudioFrames.empty()) {
-        audioFrames = engineAudioFrames;
-      }
-    }
-    if (modules_.audioCapture) {
-      auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
-      audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
-    }
-  }
+  // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
+  // here: the audio mix / routing / monitor / loudness / encoder / output / recording
+  // work has moved off the render+command thread onto renderAudioOutputTick (Phase 2).
 
   // Advance the overlay animation clock before building the render plan so the
   // compositor reflects this tick's keyPhase progress. The same render plan
@@ -3154,126 +3228,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
   // readbacks (base64 preview + pixel signature) — only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
-  renderPlan.skipCpuReadback = videoOnly;
-  // Audio mix, routing matrix, monitor output, and loudness metering involve real
-  // device/PCM work and (for outputs) blocking I/O. Skip them on the light
-  // display-only tick; they run on the full host-sync tick.
-  if (!videoOnly) {
-  const auto tAudioBlock0 = std::chrono::steady_clock::now();
-  if (modules_.mediaFrames) {
-    auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(renderPlan.layers, frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
-  }
-
-  const auto tMix0 = std::chrono::steady_clock::now();
-  mixedAudioFrameCount_ = modules_.mixer->mix(audioFrames);
-  const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
-  if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), audioFrames.size());
-  // Mix the routing-matrix crosspoints over real PCM into program/ISO/aux bus
-  // taps. Each polled audio frame is a source; its channel strip (gain/pan/
-  // mute/solo) comes from the synced participant mix and the synced routing
-  // sends are the crosspoints. Outputs read these taps via programAudioTapPcm()
-  // and audioBusTapPcm().
-  {
-    std::vector<modules::RoutedAudioSource> routedSources;
-    routedSources.reserve(audioFrames.size());
-    for (const auto& frame : audioFrames) {
-      if (frame.pcm.empty() || frame.channels <= 0) {
-        continue;
-      }
-      modules::RoutedAudioSource source;
-      source.sourceId = frame.participantId;
-      source.pcm = &frame.pcm;
-      source.channels = frame.channels;
-      for (const auto& channel : audioChannels_) {
-        if (channel.participantId == frame.participantId) {
-          source.muted = channel.muted;
-          source.solo = channel.solo;
-          source.pan = channel.pan;
-          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
-          break;
-        }
-      }
-      routedSources.push_back(source);
-    }
-    std::vector<modules::RoutedAudioCrosspoint> crosspoints;
-    crosspoints.reserve(audioRoutingSends_.size());
-    for (const auto& send : audioRoutingSends_) {
-      crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
-    }
-    const auto tMrb0 = std::chrono::steady_clock::now();
-    routedBusPcm_ = modules::mixRoutedBuses(routedSources, crosspoints);
-    const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
-    if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), audioRoutingSends_.size());
-    // Apply each bus's insert chain to its summed PCM so inserts act on samples,
-    // not just routing state. The per-bus insert list is taken from the routing
-    // sends, matching the routing-matrix snapshot's busProcessing view.
-    if (!routedBusPcm_.empty()) {
-      std::map<std::string, std::vector<std::string>> busInserts;
-      for (const auto& send : audioRoutingSends_) {
-        if (!send.busPluginInserts.empty()) {
-          busInserts[send.busId] = send.busPluginInserts;
-        }
-      }
-      const auto tBic0 = std::chrono::steady_clock::now();
-      for (auto& [busId, pcm] : routedBusPcm_) {
-        const auto found = busInserts.find(busId);
-        if (found != busInserts.end() && !pcm.empty()) {
-          modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
-        }
-      }
-      const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count();
-      if (bicMs >= 20) std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
-    }
-  }
-
-  if (audioMonitorEnabled_) {
-    if (audioMonitorVolume_ <= 0.0) {
-      // Enabled and armed, but the operator pulled the monitor fader to zero.
-      audioMonitorStatus_ = "volume-zero";
-    } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
-      audioMonitorStatus_ = "unavailable";
-      if (audioMonitorWarning_.empty()) {
-        audioMonitorWarning_ = "Native audio monitor output device is not open.";
-      }
-    } else {
-      const auto& routedMonitorBus = audioBusTapPcm("mon");
-      const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
-      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
-      const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
-      const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
-      if (frameCount <= 0) {
-        // Device is open but neither the routed MON bus nor fallback mix carried real PCM this tick.
-        audioMonitorStatus_ = "armed";
-        audioMonitorWarning_ = "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix.";
-      } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, audioMonitorVolume_)) {
-        audioMonitorStatus_ = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
-        audioMonitorWarning_.clear();
-        audioMonitorFramesPlayed_ += frameCount;
-      } else {
-        audioMonitorStatus_ = "dropping";
-        const auto outputWarnings = modules_.monitorOutput->warnings();
-        audioMonitorWarning_ = outputWarnings.empty()
-                                   ? "Native audio monitor accepted no frames this tick; endpoint buffer may be full."
-                                   : outputWarnings.back();
-      }
-    }
-  }
-
-  // Measure BS.1770 master loudness + true peak on the program audio (routed
-  // master bus, else the default program mix) so the master meter reflects the
-  // real signal rather than a level lookup.
-  {
-    const std::vector<float>& programAudio =
-        !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
-    const int meterChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
-    updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
-  }
-  {
-    const auto audioMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tAudioBlock0).count();
-    if (audioMs >= 30) std::fprintf(stderr, "[audio] full audio block %lldms\n", static_cast<long long>(audioMs));
-  }
-  }  // end if (!videoOnly): audio mix / routing / monitor / loudness
+  // EXCEPTION: when an output/encoder/recording session is active, the encoder
+  // submit (on the audio/output worker) needs the composed CPU pixels, so do the
+  // readback even on the light tick while streaming/recording. With no output
+  // active (the common case, incl. the perf soak) the light tick stays readback-free.
+  const bool outputActive = (encoderLifecycleStatus_ == "encoding") ||
+                            recordingStatus_ == "recording" || recordingStatus_ == "warning";
+  renderPlan.skipCpuReadback = videoOnly ? !outputActive : false;
 
   if (modules_.mediaFrames) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
@@ -3349,30 +3310,198 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       lastFrameEventEmit_ = nowTp;
     }
   }
-  if (videoOnly) {
-    // Display-only tick: the GPU program frame + shared-texture handle are done.
-    // Skip encoder submit, output senders (network I/O) and recording mux — those
-    // run on the full host-sync tick so they never block the 60fps display path.
-    return;
+  // The audio/output half (mixer->mix, routed-bus matrix + insert chains,
+  // monitorOutput->render, BS.1770 loudness, encoder->submit/submitAudio,
+  // outputSender->sync, recording mux) runs on the dedicated worker thread via
+  // renderAudioOutputTick when audioWorkerActive_ (the live server). It is then a
+  // no-op here so the render/command threads never run it under coreMutex. Direct
+  // callers (unit tests) keep it synchronous + single-threaded so applyCommands /
+  // applyCommand still publish audio/output results into the returned snapshot.
+  if (!videoOnly && !audioWorkerActive_) {
+    const auto work = gatherAudioOutputWork();
+    const auto results = runAudioOutputWork(work);
+    publishAudioOutputResults(results);
   }
-  modules_.encoder->submit(lastProgramFrame_);
+}
+
+void MediaCore::enableAudioOutputWorker() { audioWorkerActive_ = true; }
+
+// Gather the per-tick audio/output inputs. Caller holds coreMutex (or is the
+// single-threaded test path). Polls the audio sources (zoom/engine/capture/media),
+// copies the plain-data control state the worker reads, and snapshots the current
+// program frame for the encoder/output. Touches only coreMutex-domain state.
+MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
+  AudioOutputWorkItem work;
+  work.valid = true;
+  work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
+  const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * work.frameIntervalMs;
+
+  std::vector<modules::AudioFrame> audioFrames = modules_.zoom->pollAudioFrames();
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    const auto engineAudioFrames =
+        zoomEngineRuntime_->pollCompositorAudioFrames(static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * 20);
+    if (!engineAudioFrames.empty()) {
+      audioFrames = engineAudioFrames;
+    }
+  }
+  if (modules_.audioCapture) {
+    auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
+  }
+  if (modules_.mediaFrames) {
+    // Media-layer audio needs the active scene layers; rebuild the plan here (it is
+    // derived from scene-route / media-playback state, not from the polled frames).
+    const auto plan = buildCompositorRenderPlan({});
+    auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(plan.layers, frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
+  }
+
+  work.audioFrames = std::move(audioFrames);
+  work.channels = audioChannels_;
+  work.routingSends = audioRoutingSends_;
+  work.audioMonitorEnabled = audioMonitorEnabled_;
+  work.audioMonitorVolume = audioMonitorVolume_;
+  work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
+  work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
+  work.outputDestinationSettings = outputDestinationSettings_;
+  work.programFrame = lastProgramFrame_;
+  work.tickId = ++audioOutputTickId_;
+  return work;
+}
+
+// Run the heavy/blocking audio + output DSP/IO. Caller holds audioOutputMutex_ (or is
+// the single-threaded test path). Touches only audioOutputMutex_-domain modules
+// (mixer / monitorOutput / encoder / outputSender) + the BS.1770 loudness members,
+// never coreMutex-domain published members — all results go into the returned struct.
+MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWorkItem& work) {
+  AudioOutputResults results;
+  if (!work.valid) {
+    return results;
+  }
+  results.valid = true;
+  results.recordingActive = work.recordingActive;
+
+  const auto tMix0 = std::chrono::steady_clock::now();
+  results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);
+  const auto mixMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMix0).count();
+  if (mixMs >= 30) std::fprintf(stderr, "[audio] mixer->mix %lldms (%zu frames)\n", static_cast<long long>(mixMs), work.audioFrames.size());
+
+  // Routed-bus matrix mix over the real PCM into a LOCAL bus map (published later).
+  {
+    std::vector<modules::RoutedAudioSource> routedSources;
+    routedSources.reserve(work.audioFrames.size());
+    for (const auto& frame : work.audioFrames) {
+      if (frame.pcm.empty() || frame.channels <= 0) {
+        continue;
+      }
+      modules::RoutedAudioSource source;
+      source.sourceId = frame.participantId;
+      source.pcm = &frame.pcm;
+      source.channels = frame.channels;
+      for (const auto& channel : work.channels) {
+        if (channel.participantId == frame.participantId) {
+          source.muted = channel.muted;
+          source.solo = channel.solo;
+          source.pan = channel.pan;
+          source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+          break;
+        }
+      }
+      routedSources.push_back(source);
+    }
+    std::vector<modules::RoutedAudioCrosspoint> crosspoints;
+    crosspoints.reserve(work.routingSends.size());
+    for (const auto& send : work.routingSends) {
+      crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
+    }
+    const auto tMrb0 = std::chrono::steady_clock::now();
+    results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints);
+    const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
+    if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
+    if (!results.routedBusPcm.empty()) {
+      std::map<std::string, std::vector<std::string>> busInserts;
+      for (const auto& send : work.routingSends) {
+        if (!send.busPluginInserts.empty()) {
+          busInserts[send.busId] = send.busPluginInserts;
+        }
+      }
+      const auto tBic0 = std::chrono::steady_clock::now();
+      for (auto& [busId, pcm] : results.routedBusPcm) {
+        const auto found = busInserts.find(busId);
+        if (found != busInserts.end() && !pcm.empty()) {
+          modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
+        }
+      }
+      const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count();
+      if (bicMs >= 20) std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
+    }
+  }
+
+  // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
+  static const std::vector<float> kEmptyTap;
+  const auto localBusTap = [&](const std::string& busId) -> const std::vector<float>& {
+    const auto found = results.routedBusPcm.find(busId);
+    return found == results.routedBusPcm.end() ? kEmptyTap : found->second;
+  };
+  const auto& localProgramTap = localBusTap("master");
+
+  if (work.audioMonitorEnabled) {
+    results.monitorTouched = true;
+    if (work.audioMonitorVolume <= 0.0) {
+      results.monitorStatus = "volume-zero";
+    } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
+      results.monitorStatus = "unavailable";
+      results.monitorWarning = "Native audio monitor output device is not open.";
+    } else {
+      const auto& routedMonitorBus = localBusTap("mon");
+      const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
+      const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
+      const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());
+      const int frameCount = static_cast<int>(monitorBus.size() / static_cast<size_t>(channels));
+      if (frameCount <= 0) {
+        results.monitorStatus = "armed";
+        results.monitorWarning = "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix.";
+      } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, work.audioMonitorVolume)) {
+        results.monitorStatus = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
+        results.monitorFramesPlayedDelta += frameCount;
+      } else {
+        results.monitorStatus = "dropping";
+        const auto outputWarnings = modules_.monitorOutput->warnings();
+        results.monitorWarning = outputWarnings.empty()
+                                     ? "Native audio monitor accepted no frames this tick; endpoint buffer may be full."
+                                     : outputWarnings.back();
+      }
+    }
+  }
+
+  // BS.1770 master loudness over the program audio (routed master bus, else the
+  // mixer's default program mix). Mutates the loudness members in place under
+  // audioOutputMutex_; masterMeterState reads them under the same lock.
+  {
+    const std::vector<float>& programAudio =
+        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+    const int meterChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
+    updateProgramLoudnessMeter(programAudio, meterChannels, modules_.mixer->monitorBusSampleRate());
+  }
+
+  // Encoder submit (uses the program-frame snapshot), output-sender network sync,
+  // recording mux. encoder->submit early-returns when the frame carries no CPU
+  // pixels, so when no output is active (readback skipped) this is harmless.
+  modules_.encoder->submit(work.programFrame);
   const auto session = modules_.encoder->session();
-  // Hand real routed audio to the output senders so RTMP carries a real AAC
-  // track instead of silence. Prefer the stream bus, then the routed master bus,
-  // then the mixer's fallback monitor/program mix when no matrix tap exists.
-  const std::vector<float>& streamBusAudio = audioBusTapPcm("stream");
+  const std::vector<float>& streamBusAudio = localBusTap("stream");
   const std::vector<float>& outputProgramAudio =
       !streamBusAudio.empty() ? streamBusAudio
-                              : !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
+                              : !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
   const int outputAudioChannels =
-      !streamBusAudio.empty() || !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
+      !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
   const auto failOutputSenderSync = [&](const std::string& message) {
     const auto destination =
         std::find(session.destinations.begin(), session.destinations.end(), "rtmp") != session.destinations.end()
             ? "rtmp"
             : !session.destinations.empty() ? session.destinations.front() : std::string("stream");
     try {
-      modules_.outputSender->fail(destination, message, static_cast<double>(lastProgramFrame_.frameNumber * 33));
+      modules_.outputSender->fail(destination, message, static_cast<double>(work.programFrame.frameNumber * 33));
     } catch (...) {
     }
   };
@@ -3380,9 +3509,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   try {
     modules_.outputSender->sync(
         session.destinations,
-        &lastProgramFrame_,
-        static_cast<double>(lastProgramFrame_.frameNumber * 33),
-        outputDestinationSettings_,
+        &work.programFrame,
+        static_cast<double>(work.programFrame.frameNumber * 33),
+        work.outputDestinationSettings,
         outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
         outputAudioChannels,
         modules_.mixer->monitorBusSampleRate());
@@ -3398,23 +3527,62 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   } catch (...) {
     failOutputSenderSync("Output sender failed during sync.");
   }
-  if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
-    ++recordingProgramFramesWritten_;
-    const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
-    recordingIsoFramesWritten_ += static_cast<int64_t>(isoIds.size());
-    // Mux the real program audio so the recording carries actual PCM, not a
-    // synthetic frame counter. Prefer the routed master bus; fall back to the
-    // mixer's default program mix when audio is not routed through the matrix.
+  if (work.recordingActive) {
+    ++results.recordingProgramFramesDelta;
+    const auto isoIds = work.recordingIsoParticipantIds.empty() ? session.isoParticipantIds : work.recordingIsoParticipantIds;
+    results.recordingIsoFramesDelta += static_cast<int64_t>(isoIds.size());
     const std::vector<float>& programAudio =
-        !programAudioTapPcm().empty() ? programAudioTapPcm() : modules_.mixer->monitorBusPcm();
-    const int audioChannels = !programAudioTapPcm().empty() ? 2 : modules_.mixer->monitorBusChannels();
+        !localProgramTap.empty() ? localProgramTap : modules_.mixer->monitorBusPcm();
+    const int audioChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
     if (!programAudio.empty() && audioChannels > 0) {
       modules_.encoder->submitAudio(programAudio.data(),
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
     }
-    recordingAudioPacketsObserved_ = modules_.encoder->session().recordingAudioPacketCount;
-    recordingElapsedMs_ += static_cast<double>(frameIntervalMs);
+    results.recordingAudioPacketsObserved = modules_.encoder->session().recordingAudioPacketCount;
+    results.recordingElapsedMsDelta += static_cast<double>(work.frameIntervalMs);
+  }
+  return results;
+}
+
+// Publish the worker results back into the coreMutex-domain members that
+// sessionState() reads. Caller holds coreMutex (or is the single-threaded test path).
+void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
+  if (!results.valid) {
+    return;
+  }
+  routedBusPcm_ = results.routedBusPcm;
+  mixedAudioFrameCount_ = results.mixedFrameCount;
+  if (results.monitorTouched) {
+    audioMonitorStatus_ = results.monitorStatus;
+    audioMonitorWarning_ = results.monitorWarning;
+    audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+  }
+  if (results.recordingActive) {
+    recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
+    recordingIsoFramesWritten_ += results.recordingIsoFramesDelta;
+    recordingAudioPacketsObserved_ = results.recordingAudioPacketsObserved;
+    recordingElapsedMs_ += results.recordingElapsedMsDelta;
+  }
+}
+
+// Worker entry point: gather (brief coreMutex) → work (audioOutputMutex_ only) →
+// publish (brief coreMutex). The render thread takes ONLY coreMutex and so is never
+// blocked by the long DSP/IO span; the worker never holds both locks at once.
+void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
+  AudioOutputWorkItem work;
+  {
+    std::lock_guard<std::mutex> lock(coreMutex);
+    work = gatherAudioOutputWork();
+  }
+  AudioOutputResults results;
+  {
+    std::lock_guard<std::mutex> lock(audioOutputMutex_);
+    results = runAudioOutputWork(work);
+  }
+  {
+    std::lock_guard<std::mutex> lock(coreMutex);
+    publishAudioOutputResults(results);
   }
 }
 

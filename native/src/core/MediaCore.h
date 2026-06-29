@@ -9,6 +9,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -47,6 +48,23 @@ class MediaCore {
   // without starving RPC command handling. The full renderSyntheticTick (encoder/
   // recording/streaming/audio) still runs on the host-sync cadence.
   void renderDisplayTick();
+
+  // Phase 2 audio/output decouple. The audio mix, routed-bus matrix, monitor
+  // device render, BS.1770 loudness, encoder submit, output-sender network sync
+  // and recording mux are heavy / blocking and previously ran on the command
+  // thread inside the full renderSyntheticTick(videoOnly=false). renderAudioOutputTick
+  // runs that work on a dedicated worker thread instead, using a gather→work→publish
+  // handoff so the render thread (which holds only `coreMutex`) is never blocked by
+  // it: the worker takes `coreMutex` only briefly to gather inputs / publish results,
+  // and `audioOutputMutex_` (NEVER both at once) for the long DSP/IO span. The passed
+  // `coreMutex` is the JsonRpcServer's single big lock; lock order is
+  // coreMutex(outer) → audioOutputMutex_(inner). Call WITHOUT either lock held.
+  void renderAudioOutputTick(std::mutex& coreMutex);
+  // Marks that a dedicated audio/output worker thread now drives renderAudioOutputTick,
+  // so the synchronous command-thread path (renderSyntheticTick(videoOnly=false) and
+  // the empty-poll tick in applyCommands) stops doing the audio/output work itself.
+  // Direct/unit-test callers leave this false so applyCommands stays synchronous.
+  void enableAudioOutputWorker();
 
   // Deterministic on-device AI director: derives the richer signal bundle from
   // the core's current state (participant feeds, audio metrics, screen share,
@@ -300,6 +318,57 @@ class MediaCore {
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
+
+  // ---- Phase 2 audio/output decouple (gather → work → publish) ----
+  // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
+  // audio frames + a copy of the current program frame for the encoder/output).
+  struct AudioOutputWorkItem {
+    bool valid = false;
+    int64_t frameIntervalMs = 16;
+    std::vector<modules::AudioFrame> audioFrames;
+    std::vector<ParticipantAudioChannelInput> channels;
+    std::vector<AudioRoutingSendInput> routingSends;
+    bool audioMonitorEnabled = false;
+    double audioMonitorVolume = 0.0;
+    bool recordingActive = false;
+    std::vector<std::string> recordingIsoParticipantIds;
+    std::vector<modules::OutputDestinationSettings> outputDestinationSettings;
+    modules::ProgramFrame programFrame;
+    int64_t tickId = 0;
+  };
+  // Results produced under `audioOutputMutex_` and published back under `coreMutex`.
+  struct AudioOutputResults {
+    bool valid = false;
+    std::map<std::string, std::vector<float>> routedBusPcm;
+    int64_t mixedFrameCount = 0;
+    bool monitorTouched = false;  // only overwrite monitor status when the monitor ran
+    std::string monitorStatus;
+    std::string monitorWarning;
+    int64_t monitorFramesPlayedDelta = 0;
+    bool recordingActive = false;
+    int64_t recordingProgramFramesDelta = 0;
+    int64_t recordingIsoFramesDelta = 0;
+    int64_t recordingAudioPacketsObserved = 0;
+    double recordingElapsedMsDelta = 0.0;
+  };
+  // Gather reads `coreMutex`-domain state (members + zoom/capture/media modules);
+  // run touches ONLY `audioOutputMutex_`-domain modules (mixer/monitorOutput/encoder/
+  // outputSender) + the BS.1770 loudness members; publish writes `coreMutex`-domain
+  // published members. The caller owns the locking (so the same trio serves both the
+  // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
+  [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork();
+  [[nodiscard]] AudioOutputResults runAudioOutputWork(const AudioOutputWorkItem& work);
+  void publishAudioOutputResults(const AudioOutputResults& results);
+  // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
+  // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
+  mutable std::mutex audioOutputMutex_;
+  // Set once (before threads start) when a dedicated worker drives the audio/output
+  // tick; flips the command-thread path to video-only. Plain bool: written before the
+  // worker/render/command threads exist, then only read.
+  bool audioWorkerActive_ = false;
+  // Monotonic worker tick id (diagnostics; the single worker runs phases sequentially
+  // so results can never reorder — they are dropped, never reordered, on overrun).
+  int64_t audioOutputTickId_ = 0;
   struct CaptureAudioSourceInput {
     std::string captureDeviceId;
     std::string audioDeviceId;

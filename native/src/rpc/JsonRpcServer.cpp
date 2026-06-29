@@ -327,10 +327,17 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   };
 
-  // The render thread and this command loop are the only two threads that touch
-  // MediaCore. Serialize ALL core access with one mutex held briefly in each — no
-  // per-method locking inside MediaCore is needed.
+  // The render thread, this command loop, and the audio/output worker (below) touch
+  // MediaCore. coreMutex serializes fast in-memory state + the GPU/video path; the
+  // worker additionally uses MediaCore's own audioOutputMutex_ for the long DSP/IO
+  // span (held NEVER together with coreMutex), so the render thread — which takes
+  // ONLY coreMutex — is never blocked by audio mix / monitor / encoder / output I/O.
   std::mutex coreMutex;
+
+  // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
+  // command thread inside renderSyntheticTick — the audioOutputThread below drives it.
+  // (Set before any thread starts so the bool is published before concurrent reads.)
+  mediaCore_.enableAudioOutputWorker();
 
   // Dedicated render thread: drives the light, video-only display render (GPU
   // compositor + tiny shared-texture handle, no audio/encoder/output I/O) at
@@ -414,6 +421,39 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         enqueueFrame(event.stringify());
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+  });
+
+  // Dedicated audio/output worker (Phase 2 decouple): drives the audio mix, routed-bus
+  // matrix, monitor device render, BS.1770 loudness, encoder submit, output-sender
+  // network sync and recording mux on a steady ~20ms cadence — finer & steadier than
+  // the old bursty 250ms poll (better for the monitor device, not a new glitch source:
+  // it reuses the source-drain model, no new PCM ring buffer). renderAudioOutputTick
+  // takes coreMutex only briefly (gather/publish) and audioOutputMutex_ for the long
+  // DSP/IO span, NEVER both at once, so the render thread is never blocked by it.
+  std::thread audioOutputThread([&] {
+    constexpr long long kAudioBudgetUs = 20000;  // ~50Hz
+    long long ticks = 0;
+    long long workUs = 0;
+    auto rateStamp = std::chrono::steady_clock::now();
+    while (!stopping.load()) {
+      const auto t0 = std::chrono::steady_clock::now();
+      mediaCore_.renderAudioOutputTick(coreMutex);
+      const long long iterUs =
+          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+      workUs += iterUs;
+      if (++ticks >= 120) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(now - rateStamp).count();
+        std::fprintf(stderr, "[audioOut] %.1f ticks/s  work=%.1fms  (avg over %lld)\n",
+                     sec > 0 ? ticks / sec : 0.0, workUs / (ticks * 1000.0), ticks);
+        ticks = 0;
+        workUs = 0;
+        rateStamp = now;
+      }
+      if (iterUs < kAudioBudgetUs) {
+        std::this_thread::sleep_for(std::chrono::microseconds(kAudioBudgetUs - iterUs));
+      }
     }
   });
 
@@ -525,6 +565,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   }
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
+  }
+  if (audioOutputThread.joinable()) {
+    audioOutputThread.join();
   }
   if (reader.joinable()) {
     reader.join();
