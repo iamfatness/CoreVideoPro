@@ -484,17 +484,14 @@
                             <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
                                 <cvcontrols:AspectRatioHost.Child>
                                     <Grid>
-                                        <!-- Preview monitor = a single VideoSurfaceHost on the previewed
-                                             participant's surface. For a GPU-backed (Zoom) participant it
-                                             presents the keyed-mutex shared texture (live, self-refreshing,
-                                             one swap chain); for a capture/no-handle source it falls back to
-                                             the base64 Image path. The core only composites the PROGRAM scene,
-                                             so preview is single-source (one-up) rather than a multi-layer
-                                             composite — matches the operator one-up workflow. -->
-                                        <cvcontrols:VideoSurfaceHost
+                                        <cvcontrols:ScenePreviewControl
                                             HorizontalAlignment="Stretch"
                                             VerticalAlignment="Stretch"
-                                            SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
+                                            Scene="{x:Bind ViewModel.PreviewScene, Mode=OneWay}"
+                                            SceneBackgroundAsset="{x:Bind ViewModel.PreviewSceneBackgroundAsset, Mode=OneWay}"
+                                            Tiles="{x:Bind ViewModel.PreviewSceneTiles, Mode=OneWay}"
+                                            Routes="{x:Bind ViewModel.PreviewSceneRoutes, Mode=OneWay}"
+                                            IsPreview="True" />
                                     </Grid>
                                 </cvcontrols:AspectRatioHost.Child>
                             </cvcontrols:AspectRatioHost>
