@@ -292,9 +292,25 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       } catch (...) {
         continue;
       }
-      command.sourceUuid = request.getString("kind") + "-" + participantId + "-" + request.getString("purpose");
-      command.mode = request.getString("kind") == "screen-share" ? "screenshare" : "";
-      if (request.getString("kind") == "participant-audio") {
+      const auto kind = request.getString("kind");
+      const auto purpose = request.getString("purpose");
+      command.sourceUuid = kind + "-" + participantId + "-" + purpose;
+      command.mode = kind == "screen-share" ? "screenshare" : "";
+      // Resolution by purpose (0=360P, 1=720P, 2=1080P). The default was 2 (1080P) for
+      // EVERY participant — six concurrent 1080P raw subscriptions overloaded the Zoom SDK
+      // (corevideo-zoom-engine crashed in ntdll 0xc000000d) and the per-participant CPU
+      // I420->BGRA. Only the screen share and the active-speaker (program/feature
+      // candidate) need full res; the rest are small multiview thumbnails -> 360P (1/9th
+      // the pixels of 1080P). This is the latency/scale path toward 8x participants; the
+      // engine downgrades further if a given resolution fails.
+      if (kind == "screen-share") {
+        command.resolution = 2;  // 1080P
+      } else if (purpose == "active-speaker") {
+        command.resolution = 1;  // 720P
+      } else {
+        command.resolution = 0;  // 360P multiview thumbnail
+      }
+      if (kind == "participant-audio") {
         (void)process_->sendLine(buildZoomEngineSubscribeAudioCommand(command));
       } else {
         (void)process_->sendLine(buildZoomEngineSubscribeCommand(command));
