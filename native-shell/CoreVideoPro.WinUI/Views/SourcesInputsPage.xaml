@@ -384,7 +384,7 @@
                                                   IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
                                         <ComboBox Grid.Column="2" x:Name="KindCombo"
                                                   Tag="{x:Bind}"
-                                                  ItemsSource="{x:Bind KindOptions}"
+                                                  ItemsSource="{x:Bind KindOptions, Mode=OneWay}"
                                                   SelectedValue="{x:Bind Kind, Mode=OneWay}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
