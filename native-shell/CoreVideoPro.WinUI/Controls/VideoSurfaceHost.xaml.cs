@@ -49,6 +49,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private bool _refreshingPathBindings;
     private bool _sourceFramingRefreshScheduled;
     private bool _renderingHooked;
+    // Set true at the very start of OnUnloaded (before the interop is torn down) and
+    // reset false in OnLoaded. The per-vsync CompositionTarget.Rendering present can
+    // be invoked/queued around unload; presenting onto a disposing/disposed D3D
+    // interop is a native fail-fast (CoreMessagingXP stowed exception 0xc000027b),
+    // so every present entry point early-returns while disposed.
+    private bool _disposed;
     private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
@@ -218,7 +224,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool PresentSharedHandle(SharedTextureHandle handle)
     {
-        if (!handle.IsValid)
+        if (_disposed || !handle.IsValid)
         {
             return false;
         }
@@ -273,6 +279,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _disposed = false;
         RefreshSourceFraming();
 
         if (!IsProgramSurface)
@@ -301,6 +308,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        // Mark disposed FIRST so any in-flight/queued Rendering callback that races
+        // teardown bails out before touching the interop being disposed.
+        _disposed = true;
         if (_renderingHooked)
         {
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnCompositionRendering;
@@ -310,7 +320,15 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         _direct3DDevicePointer = 0;
     }
 
-    private void OnCompositionRendering(object? sender, object e) => TryPresentPendingSharedHandle();
+    private void OnCompositionRendering(object? sender, object e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TryPresentPendingSharedHandle();
+    }
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -322,7 +340,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void TryPresentPendingSharedHandle()
     {
-        if (!IsProgramSurface || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
+        if (_disposed || !IsProgramSurface || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
         {
             return;
         }
