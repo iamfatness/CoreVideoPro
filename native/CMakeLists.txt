@@ -89,6 +89,12 @@ if(COREVIDEO_WITH_D3D11)
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler)
 endif()
 
+# winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
+# render loop's sub-frame sleep is accurate (default ~15.6ms granularity caps fps ~40).
+if(WIN32)
+  target_link_libraries(corevideo_native PUBLIC winmm)
+endif()
+
 if(COREVIDEO_WITH_MF_ENCODER)
   if(NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")

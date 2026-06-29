@@ -10,6 +10,17 @@
 #include <string>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <timeapi.h>
+#endif
+
 namespace corevideo::rpc {
 namespace {
 
@@ -299,6 +310,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     long long lockWaitUs = 0;
     long long renderUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
+#ifdef _WIN32
+    // Raise the system timer resolution to 1ms so sub-frame sleeps in this loop are
+    // accurate. The Windows default (~15.6ms) rounds any sleep up to a full tick, which
+    // capped the 60fps-budget pace at ~33-45fps regardless of how cheap the render was.
+    timeBeginPeriod(1);
+#endif
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
       {
@@ -327,10 +344,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         renderUs = 0;
         rateStamp = now;
       }
-      // Pace ~ a frame interval. The core lock is essentially free now (render
-      // 0.4ms, lockWait ~5ms), so a sub-frame sleep lets the loop publish at the
-      // consumer's vsync rate without busy-spinning.
-      std::this_thread::sleep_for(std::chrono::milliseconds(8));
+      // Pace to a 60fps budget: sleep only the REMAINDER of the ~16.6ms frame after the
+      // work this iteration, instead of a flat 8ms (which capped the loop near ~45fps even
+      // when the render was cheap). On heavy iterations (elapsed >= budget) we don't sleep
+      // at all and run as fast as the work allows. Low latency is the product north-star.
+      constexpr long long kFrameBudgetUs = 16666;  // 60fps
+      const long long iterUs =
+          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+      if (iterUs < kFrameBudgetUs) {
+        std::this_thread::sleep_for(std::chrono::microseconds(kFrameBudgetUs - iterUs));
+      }
     }
   });
 
