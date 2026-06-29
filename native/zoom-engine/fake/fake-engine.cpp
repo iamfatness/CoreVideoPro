@@ -419,7 +419,14 @@ static void churn_loop() {
                 if (g_active_speaker == mv4.id && !g_roster.empty())
                     g_active_speaker = g_roster.front().id;
                 fourth_present = false;
-                EngineIpc::write(R"({"cmd":"left"})");  // mirror engine left signal
+                // NOTE: do NOT emit {"cmd":"left"} here. In the real engine
+                // protocol `left` means the LOCAL user left the whole meeting —
+                // the core's ZoomEngineState maps it to reset() (meetingState ->
+                // idle, roster cleared), which flips the WinUI to "Zoom Offline /
+                // Video in room (0)" and tears down the meeting ~20s after join.
+                // A REMOTE participant leaving is conveyed purely by the updated
+                // {"cmd":"participants"} roster sent below — that drives the
+                // multiview tile add/remove churn while staying in-meeting.
                 diag("roster -> 3 (mv4 left)");
             } else {
                 // Re-join: add mv4 back.
