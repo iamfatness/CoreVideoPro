@@ -76,10 +76,10 @@ TEST(ShmFrameReader, ReportsMalformedForUndersizedBuffer) {
 }
 
 TEST(I420Convert, ConvertsSolidBlackToOpaqueRgba) {
-  // I420 black is Y=16, U=V=128.
+  // Zoom frames are treated as full-range I420; black is Y=0, U=V=128.
   const uint32_t w = 2, h = 2;
   std::vector<uint8_t> i420(w * h + (w * h) / 2u);
-  std::fill(i420.begin(), i420.begin() + w * h, uint8_t{16});
+  std::fill(i420.begin(), i420.begin() + w * h, uint8_t{0});
   std::fill(i420.begin() + w * h, i420.end(), uint8_t{128});
 
   auto rgba = i420ToRgbaThumbnail(i420.data(), w, h, w, h);
@@ -93,7 +93,7 @@ TEST(I420Convert, ConvertsSolidBlackToOpaqueRgba) {
 TEST(I420Convert, ConvertsSolidWhiteToOpaqueRgba) {
   const uint32_t w = 2, h = 2;
   std::vector<uint8_t> i420(w * h + (w * h) / 2u);
-  std::fill(i420.begin(), i420.begin() + w * h, uint8_t{235});  // Y white
+  std::fill(i420.begin(), i420.begin() + w * h, uint8_t{255});  // full-range Y white
   std::fill(i420.begin() + w * h, i420.end(), uint8_t{128});
 
   auto rgba = i420ToRgbaThumbnail(i420.data(), w, h, w, h);

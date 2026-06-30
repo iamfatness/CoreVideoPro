@@ -712,6 +712,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 snapshot.Recording)
             : "Audio proof waiting for media core.";
 
+    public string AudioValidationSummary =>
+        _bridge.LastSnapshot is { } snapshot
+            ? AudioValidationChecklistBuilder.SummarizeAcceptance(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                snapshot.OutputSenderSession,
+                snapshot.Recording)
+            : "Audio validation waiting for media core.";
+
+    public string AudioValidationChecklist =>
+        _bridge.LastSnapshot is { } snapshot
+            ? AudioValidationChecklistBuilder.Format(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                snapshot.OutputSenderSession,
+                snapshot.Recording)
+            : "CAPTURE idle | PGM wait PCM | MON off | STREAM idle | RECORD idle";
+
+    public string AudioValidationFirstIssue =>
+        _bridge.LastSnapshot is { } snapshot
+            ? AudioValidationChecklistBuilder.FindFirstBlockingStage(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                snapshot.OutputSenderSession,
+                snapshot.Recording)
+            : "First audio block: waiting for media core.";
+
+    public string AudioFullChainValidationSummary =>
+        _bridge.LastSnapshot is { } snapshot
+            ? AudioValidationChecklistBuilder.SummarizeFullChain(
+                snapshot.AudioMixSession,
+                snapshot.CaptureAudioSources,
+                snapshot.OutputSenderSession,
+                snapshot.Recording)
+            : "Full audio chain incomplete: media core not yet proven.";
+
     public string AudioMeterSourceSummary =>
         _bridge.LastSnapshot is { } snapshot
             ? BuildAudioMeterSourceSummary(snapshot.AudioMixSession, snapshot.CaptureAudioSources)
@@ -758,6 +794,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LocalAudioSourceEnabled
             ? ResolveLocalAudioSourceStatus()
             : "Local machine audio source disabled";
+
+    public string LocalAudioSourceRecommendation =>
+        LocalAudioSourceEnabled
+            ? FormatLocalAudioSourceRecommendation(
+                SelectedLocalAudioCaptureDeviceId,
+                SelectedLocalAudioCaptureDeviceName,
+                AudioCaptureDevices,
+                _bridge.LastSnapshot?.CaptureAudioSources)
+            : "Enable Source to capture local machine audio.";
 
     public string FfmpegRuntimeStatus
     {
@@ -1049,14 +1094,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string StreamNdiSummary =>
         StreamNdiEnabled
-            ? IsNdiConfigured()
+            ? _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "ndi-output")
+                ? "NDI unavailable in this native core build"
+                : IsNdiConfigured()
                 ? $"NDI ready - {NormalizeOutputText(StreamNdiProgramName, string.Empty)}"
                 : "NDI needs a program name"
             : "NDI disabled";
 
     public string StreamSrtSummary =>
         StreamSrtEnabled
-            ? ValidateSrtSettings() is null
+            ? _bridge.Profile is not null && !HasNativeOutputCapability(_bridge.Profile, "srt-output")
+                ? "SRT unavailable in this native core build"
+                : ValidateSrtSettings() is null
                 ? $"SRT ready - {StudioStreamOutputValidation.NormalizeSrtMode(StreamSrtMode)} {NormalizeOutputText(StreamSrtHost, string.Empty)}:{NormalizeOutputText(StreamSrtPort, string.Empty)} - {NormalizeOutputText(StreamSrtLatencyMs, "120")} ms ({BuildSrtEncryptionSummary()})"
                 : "SRT needs mode, host, port, latency, and valid encryption settings"
             : "SRT disabled";
@@ -2471,9 +2520,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _streamToggleInFlight = true;
         ToggleStreamingCommand.NotifyCanExecuteChanged();
         var starting = !Streaming;
+        var requestedDestinations = BuildSelectedStreamDestinations(validatedOnly: true);
         LaunchLog.Write(
             $"stream: toggle requested action={(starting ? "start" : "stop")} " +
             $"rtmp={StreamRtmpEnabled} ndi={StreamNdiEnabled} srt={StreamSrtEnabled} " +
+            $"destinations={FormatStreamDestinationTelemetry(requestedDestinations)} " +
             $"bitrate={NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0}Mbps " +
             $"codec={StreamVideoCodec} encoder={StreamEncoderMode}");
         try
@@ -2494,9 +2545,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             try
             {
                 await EnsureMediaCoreRunningAsync(starting ? "Starting media core for stream..." : "Updating media core...").ConfigureAwait(false);
-                var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
+                if (starting && ValidateStreamDestinations() is { Length: > 0 } runtimeValidationError)
+                {
+                    var failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(runtimeValidationError));
+                    LaunchLog.Write($"stream: start blocked after media-core profile ({runtimeValidationError})");
+                    RunOnUiThread(() =>
+                    {
+                        Streaming = previousStreaming;
+                        RefreshOutputStatus();
+                        OutputStatus = failureStatus;
+                        OutputSessionStatus = OutputStatus;
+                    });
+                    return;
+                }
+
+                var snapshot = await SyncActiveSceneAsync(starting ? "stream-start" : "stream-stop").ConfigureAwait(false);
                 if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
                 {
+                    LaunchLog.Write($"stream: start failed health proof {healthFailureStatus}");
                     RunOnUiThread(() =>
                     {
                         Streaming = previousStreaming;
@@ -2506,6 +2572,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     });
                     _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
                     return;
+                }
+
+                if (starting)
+                {
+                    var proof = await WaitForStreamingStartProofAsync(requestedDestinations, snapshot).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(proof.FailureStatus))
+                    {
+                        LaunchLog.Write($"stream: start failed sender proof {proof.FailureStatus}");
+                        RunOnUiThread(() =>
+                        {
+                            Streaming = previousStreaming;
+                            RefreshOutputStatus();
+                            OutputStatus = proof.FailureStatus;
+                            OutputSessionStatus = OutputStatus;
+                        });
+                        _ = SyncFailedStreamStartRollbackAsync(proof.FailureStatus);
+                        return;
+                    }
                 }
 
                 RunOnUiThread(() =>
@@ -2559,6 +2643,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task SyncFailedStreamStartRollbackAsync(string failureStatus)
     {
+        LaunchLog.Write($"stream: rollback after failed start {failureStatus}");
         for (var attempt = 0; attempt < 4; attempt++)
         {
             await Task.Delay(150).ConfigureAwait(false);
@@ -2604,6 +2689,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 var snapshot = await SyncActiveSceneAsync().ConfigureAwait(false);
                 if (starting && TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
                 {
+                    LaunchLog.Write($"stream: retry start failed health proof {healthFailureStatus}");
                     RunOnUiThread(() =>
                     {
                         Streaming = ResolveStreamingStateAfterFailedRetry(starting);
@@ -2613,6 +2699,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     });
                     _ = SyncFailedStreamStartRollbackAsync(healthFailureStatus);
                     return;
+                }
+
+                if (starting)
+                {
+                    var requestedDestinations = BuildSelectedStreamDestinations(validatedOnly: true);
+                    var proof = await WaitForStreamingStartProofAsync(requestedDestinations, snapshot).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(proof.FailureStatus))
+                    {
+                        LaunchLog.Write($"stream: retry start failed sender proof {proof.FailureStatus}");
+                        RunOnUiThread(() =>
+                        {
+                            Streaming = ResolveStreamingStateAfterFailedRetry(starting);
+                            RefreshOutputStatus();
+                            OutputStatus = proof.FailureStatus;
+                            OutputSessionStatus = OutputStatus;
+                        });
+                        _ = SyncFailedStreamStartRollbackAsync(proof.FailureStatus);
+                        return;
+                    }
                 }
 
                 RunOnUiThread(() =>
@@ -2668,6 +2773,109 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "Streaming start failed: Media core is busy applying changes. Wait a moment and try Stream again."
             : "Streaming stop failed: Media core is busy applying changes. Wait a moment and try Stream again.";
 
+    private async Task<(NativeMediaCoreStateSnapshot Snapshot, string? FailureStatus)> WaitForStreamingStartProofAsync(
+        IReadOnlyList<string> requestedDestinations,
+        NativeMediaCoreStateSnapshot initialSnapshot)
+    {
+        var snapshot = initialSnapshot;
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            if (TryFormatStreamingStartHealthFailure(snapshot, out var healthFailureStatus))
+            {
+                return (snapshot, healthFailureStatus);
+            }
+
+            if (IsStreamingStartProven(snapshot, requestedDestinations))
+            {
+                return (snapshot, null);
+            }
+
+            await Task.Delay(200).ConfigureAwait(false);
+            snapshot = await _bridge.PollSnapshotAsync().ConfigureAwait(false);
+        }
+
+        return TryFormatStreamingStartNoSenderFailure(snapshot, requestedDestinations, out var failureStatus)
+            ? (snapshot, failureStatus)
+            : (snapshot, null);
+    }
+
+    private static bool IsStreamingStartProven(
+        NativeMediaCoreStateSnapshot snapshot,
+        IReadOnlyList<string> requestedDestinations)
+    {
+        if (requestedDestinations.Count == 0)
+        {
+            return false;
+        }
+
+        return requestedDestinations.Any(destination =>
+            snapshot.OutputSenderSession.Senders.Any(sender =>
+                sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
+                sender.Status is "starting" or "live") ||
+            snapshot.OutputHealth.Any(item =>
+                item.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase) &&
+                item.Status == "live"));
+    }
+
+    public static bool TryFormatStreamingStartNoSenderFailure(
+        NativeMediaCoreStateSnapshot snapshot,
+        IReadOnlyList<string> requestedDestinations,
+        out string failureStatus)
+    {
+        failureStatus = string.Empty;
+        if (requestedDestinations.Count == 0)
+        {
+            return false;
+        }
+
+        if (IsStreamingStartProven(snapshot, requestedDestinations))
+        {
+            return false;
+        }
+
+        var unavailableSender = snapshot.OutputSenderSession.Senders.FirstOrDefault(sender =>
+            requestedDestinations.Any(destination => sender.Destination.Equals(destination, StringComparison.OrdinalIgnoreCase)) &&
+            IsUnavailableOutputSenderWarning(sender));
+        if (unavailableSender is not null)
+        {
+            var unavailableDetail = BuildOutputSenderFailureDetail(unavailableSender);
+            failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(unavailableDetail));
+            return true;
+        }
+
+        var destinations = string.Join(", ", requestedDestinations.Select(destination => destination.ToUpperInvariant()));
+        var senderState = $"{snapshot.OutputSenderSession.Status}:{snapshot.OutputSenderSession.ActiveSenderCount}";
+        var detail = $"Selected stream destinations ({destinations}) did not arm a native output sender. Sender state {senderState}.";
+        failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
+        return true;
+    }
+
+    private static bool IsUnavailableOutputSenderWarning(NativeMediaCoreOutputSender sender)
+    {
+        var detail = string.Join(
+            " ",
+            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
+                .Where(static part => !string.IsNullOrWhiteSpace(part)))
+            .ToLowerInvariant();
+        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
+               detail.Contains("not available in this build", StringComparison.Ordinal) ||
+               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
+               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
+               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
+               detail.Contains("no srt sender module", StringComparison.Ordinal);
+    }
+
+    private static bool IsUnavailableOutputHealthWarning(NativeMediaCoreOutputHealth item)
+    {
+        var detail = item.Message?.ToLowerInvariant() ?? string.Empty;
+        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
+               detail.Contains("not available in this build", StringComparison.Ordinal) ||
+               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
+               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
+               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
+               detail.Contains("no srt sender module", StringComparison.Ordinal);
+    }
+
     public static bool ResolveRecordingStateAfterFailedRetry(bool requestedStarting) => !requestedStarting;
 
     public static string FormatRecordingSyncRetryExhaustedStatus(bool requestedStarting) =>
@@ -2700,16 +2908,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public static bool TryFormatStreamingStartHealthFailure(NativeMediaCoreStateSnapshot snapshot, out string failureStatus)
     {
-        var detail = snapshot.OutputHealth
+        var detail = snapshot.OutputSenderSession.Senders
+            .Where(static sender => sender.Status is "failed" or "warning")
+            .Select(BuildOutputSenderFailureDetail)
+            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+
+        detail ??= snapshot.OutputHealth
             .Where(item =>
                 item.Status is "failed" or "warning" &&
                 !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
             .Select(item => item.Message)
-            .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
-
-        detail ??= snapshot.OutputSenderSession.Senders
-            .Where(static sender => sender.Status is "failed" or "warning")
-            .Select(static sender => sender.Warning ?? sender.LastError)
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
 
         detail ??= snapshot.OutputSenderSession.Warnings
@@ -2724,6 +2932,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         failureStatus = FormatStreamingFailureStatus("start", new InvalidOperationException(detail));
         return true;
     }
+
+    private static string BuildOutputSenderFailureDetail(NativeMediaCoreOutputSender sender) =>
+        string.Join(
+            " ",
+            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
+                .Where(static part => !string.IsNullOrWhiteSpace(part)));
 
     [RelayCommand]
     private void SetViewMode(string mode)
@@ -4142,6 +4356,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private bool _applyingProductionPatch;
+    private int _productionSyncRetryQueued;
 
     private async Task TrySyncMediaCoreAsync()
     {
@@ -4162,10 +4377,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
             await SyncActiveSceneAsync().ConfigureAwait(false);
         }
+        catch (MediaCoreSyncInFlightException)
+        {
+            QueueProductionSyncRetry("sync-in-flight");
+        }
         catch (Exception ex)
         {
             CommandStatus = ex.Message;
         }
+    }
+
+    private void QueueProductionSyncRetry(string reason)
+    {
+        if (Interlocked.Exchange(ref _productionSyncRetryQueued, 1) == 1)
+        {
+            return;
+        }
+
+        LaunchLog.Write($"media-core sync deferred reason={reason}; retry queued");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(350).ConfigureAwait(false);
+                if (_bridge.Running)
+                {
+                    await TrySyncMediaCoreAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _productionSyncRetryQueued, 0);
+            }
+        });
     }
 
     private async Task StartMediaCoreOnLaunchAsync()
@@ -4278,8 +4522,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var audioById = AudioCaptureDevices.ToDictionary(device => device.Id, StringComparer.Ordinal);
         foreach (var captureDevice in CaptureDevices)
         {
-            if (string.IsNullOrWhiteSpace(captureDevice.AssignedAudioDeviceId) ||
-                !audioById.TryGetValue(captureDevice.AssignedAudioDeviceId, out var audioDevice))
+            var audioDevice = ResolveCaptureAudioAssignment(captureDevice, audioById, AudioCaptureDevices);
+            if (audioDevice is null)
             {
                 captureDevice.AssignedAudioDeviceId = null;
                 captureDevice.AssignedAudioDeviceName = null;
@@ -4291,6 +4535,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             captureDevice.NotifyAudioAssignmentChanged();
         }
+    }
+
+    public static AudioCaptureDevice? ResolveCaptureAudioAssignment(
+        CaptureDevice captureDevice,
+        IReadOnlyDictionary<string, AudioCaptureDevice> audioById,
+        IEnumerable<AudioCaptureDevice> audioDevices)
+    {
+        if (!string.IsNullOrWhiteSpace(captureDevice.AssignedAudioDeviceId) &&
+            audioById.TryGetValue(captureDevice.AssignedAudioDeviceId, out var assignedAudio))
+        {
+            return assignedAudio;
+        }
+
+        return audioDevices.FirstOrDefault(device =>
+            device.IsAvailable &&
+            device.IsEmbeddedCaptureAudio &&
+            string.Equals(device.LinkedCaptureDeviceId, captureDevice.Id, StringComparison.Ordinal));
     }
 
     private async Task RefreshAudioRenderDevicesAsync()
@@ -4892,6 +5153,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorStatus));
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
         OnPropertyChanged(nameof(AudioProofSummary));
+        OnPropertyChanged(nameof(AudioValidationSummary));
+        OnPropertyChanged(nameof(AudioValidationChecklist));
+        OnPropertyChanged(nameof(AudioValidationFirstIssue));
+        OnPropertyChanged(nameof(AudioFullChainValidationSummary));
         OnPropertyChanged(nameof(AudioMeterSourceSummary));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
         OnPropertyChanged(nameof(AudioBusTapSummary));
@@ -4905,12 +5170,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var audio = snapshot.AudioMixSession;
         var capture = snapshot.CaptureAudioSources;
         var matrix = snapshot.AudioRoutingMatrix;
+        var fullChainValidation = AudioValidationChecklistBuilder.SummarizeFullChain(
+            audio,
+            capture,
+            snapshot.OutputSenderSession,
+            snapshot.Recording);
         var now = DateTimeOffset.UtcNow;
         var signature =
             $"{LocalAudioSourceEnabled}|{SelectedLocalAudioCaptureDeviceId}|{SelectedAudioMonitorDeviceId}|{AudioMonitoringEnabled}|" +
             $"{audio.Status}|{audio.MixedFrameCount}|{audio.MonitorStatus}|{audio.MonitorFramesPlayed}|" +
             $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|{capture.CaptureFramesReceived}|{capture.RoutedMasterFrames}|{capture.RoutedMonitorFrames}|{capture.FallbackMonitorFrames}|" +
             $"{matrix.Status}|{matrix.RoutedSendCount}|{matrix.ProgramTapFrames}|{matrix.BusTaps.Count}|" +
+            $"{snapshot.OutputSenderSession.Status}|{snapshot.OutputSenderSession.ActiveSenderCount}|{BuildOutputSenderTelemetry(snapshot.OutputSenderSession)}|" +
+            $"{fullChainValidation}|" +
             $"{FirstOrEmpty(audio.Warnings)}|{FirstOrEmpty(capture.Warnings)}|{FirstOrEmpty(matrix.Warnings)}|" +
             $"{BuildCaptureAudioSourceTelemetry(capture)}";
 
@@ -4944,6 +5216,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             $"routeStatus={TelemetryValue(matrix.Status)} " +
             $"routedSends={matrix.RoutedSendCount} " +
             $"programTapFrames={matrix.ProgramTapFrames} " +
+            $"fullChain={TelemetryValue(fullChainValidation, 192)} " +
+            $"senders={TelemetryValue(BuildOutputSenderTelemetry(snapshot.OutputSenderSession), 512)} " +
             $"busTaps={TelemetryValue(BuildAudioBusTapTelemetry(matrix), 256)} " +
             $"sources={TelemetryValue(BuildCaptureAudioSourceTelemetry(capture), 512)} " +
             $"warnings={TelemetryValue(BuildAudioWarningTelemetry(audio, capture, matrix), 384)}");
@@ -5035,6 +5309,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     $"paired={source.Paired}:" +
                     $"streaming={source.CaptureStreaming}:" +
                     $"frames={source.CaptureFramesReceived}:" +
+                    $"rendered={source.CaptureFramesRendered}:" +
+                    $"queued={source.CaptureQueuedFrames}:" +
+                    $"underruns={source.CaptureUnderrunCount}:" +
+                    $"ageMs={source.CaptureLastFrameAgeMs:0}:" +
                     $"emptyPolls={source.EmptyPacketPolls}:" +
                     $"signal={source.SignalPresent}:" +
                     $"peak={source.PeakDbfs:0.0}dB:" +
@@ -5059,6 +5337,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .Take(6)
                 .Select(tap =>
                     $"{TelemetryValue(tap.BusId)}:{tap.Frames}f:{tap.PeakDbfs:0.0}dB"));
+    }
+
+    private static string BuildOutputSenderTelemetry(NativeMediaCoreOutputSenderSession session)
+    {
+        if (session.Senders.Count == 0)
+        {
+            return $"{TelemetryValue(session.Status)}:{session.ActiveSenderCount}:none";
+        }
+
+        return string.Join(
+            ",",
+            session.Senders
+                .OrderByDescending(sender => sender.FramesSent)
+                .ThenBy(sender => sender.Destination, StringComparer.Ordinal)
+                .Take(6)
+                .Select(sender =>
+                    $"{TelemetryValue(sender.Destination)}:" +
+                    $"{TelemetryValue(sender.Status)}:" +
+                    $"frames={sender.FramesSent}:" +
+                    $"audio={sender.AudioFramesSent}f:" +
+                    $"result={TelemetryValue(sender.LastResultCode ?? "none")}:" +
+                    $"warning={TelemetryValue(sender.Warning ?? sender.LastError ?? "none", 128)}:" +
+                    $"runtime={TelemetryValue(sender.RuntimeDetail ?? "none", 128)}"));
     }
 
     private static string FirstOrEmpty(IReadOnlyList<string> values) =>
@@ -5148,6 +5449,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : lowered.Contains("program frame", StringComparison.Ordinal) ||
                      lowered.Contains("program pixels", StringComparison.Ordinal)
             ? "Program video is not ready. Put a valid source on Program before streaming."
+            : lowered.Contains("did not arm a native output sender", StringComparison.Ordinal) ||
+              lowered.Contains("sender state idle", StringComparison.Ordinal)
+                ? "Native output sender did not start. Check Stream settings and open Health for sender diagnostics."
             : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
                 ? "No stream destination is selected. Enable RTMP, NDI, or SRT before streaming."
             : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
@@ -5156,11 +5460,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ? "RTMP settings are incomplete. Configure the server URL and stream key before streaming."
             : lowered.Contains("configure an ndi program name", StringComparison.Ordinal)
                 ? "NDI settings are incomplete. Set the NDI program name before streaming."
+            : lowered.Contains("ndi", StringComparison.Ordinal) &&
+              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
+               lowered.Contains("no ndi sender module", StringComparison.Ordinal) ||
+               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
+               lowered.Contains("libndi runtime", StringComparison.Ordinal) ||
+               lowered.Contains("runtime-missing", StringComparison.Ordinal) ||
+               lowered.Contains("missing ndi-output", StringComparison.Ordinal))
+                ? "NDI output is not available. Install the NDI runtime or use a build with NDI output enabled."
             : lowered.Contains("srt", StringComparison.Ordinal) &&
               (lowered.Contains("configure", StringComparison.Ordinal) ||
                lowered.Contains("must", StringComparison.Ordinal) ||
                lowered.Contains("passphrase", StringComparison.Ordinal))
                 ? "SRT settings are incomplete. Check host, port, latency, and passphrase before streaming."
+            : lowered.Contains("srt", StringComparison.Ordinal) &&
+              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
+               lowered.Contains("no srt sender module", StringComparison.Ordinal) ||
+               lowered.Contains("not available in this build", StringComparison.Ordinal) ||
+               lowered.Contains("missing srt-output", StringComparison.Ordinal))
+                ? "SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled."
             : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
                 ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
                 : rtmpContext ||
@@ -5303,6 +5621,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return "Program video not ready";
         }
 
+        if (normalized.Contains("Native output sender did not start", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Stream sender not armed";
+        }
+
         if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
         {
             return "RTMP output failed";
@@ -5323,9 +5646,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return "NDI settings missing";
         }
 
+        if (normalized.Contains("NDI output is not available", StringComparison.OrdinalIgnoreCase))
+        {
+            return "NDI unavailable";
+        }
+
         if (normalized.Contains("SRT settings are incomplete", StringComparison.OrdinalIgnoreCase))
         {
             return "SRT settings missing";
+        }
+
+        if (normalized.Contains("SRT output is not available", StringComparison.OrdinalIgnoreCase))
+        {
+            return "SRT unavailable";
         }
 
         if (normalized.Contains("FFmpeg is not ready", StringComparison.OrdinalIgnoreCase))
@@ -5633,8 +5966,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (capture.RoutedMasterFrames > 0 &&
             recording is { Active: true } &&
-            (recording.Proof?.AudioSampleCount ?? 0) <= 0 &&
-            (recording.Proof?.AudioPacketsObserved ?? 0) <= 0)
+            recording.Proof is null)
+        {
+            faults.Add("check recording proof");
+        }
+        else if (capture.RoutedMasterFrames > 0 &&
+                 recording is { Active: true } &&
+                 (recording.Proof?.AudioSampleCount ?? 0) <= 0 &&
+                 (recording.Proof?.AudioPacketsObserved ?? 0) <= 0)
         {
             faults.Add("check recording audio");
         }
@@ -5676,6 +6015,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (recording is not { Active: true })
         {
             return string.Empty;
+        }
+
+        if (recording.Proof is null)
+        {
+            return " | record proof missing";
         }
 
         if (recording.Proof is { AudioSampleCount: > 0 } proof)
@@ -5855,6 +6199,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : $"Local source {FormatCaptureAudioSourceStatus(source)}";
     }
 
+    public static string FormatLocalAudioSourceRecommendation(
+        string? selectedDeviceId,
+        string selectedDeviceName,
+        IEnumerable<AudioCaptureDevice> devices,
+        NativeMediaCoreCaptureAudioSources? capture)
+    {
+        var source = capture?.Sources.FirstOrDefault(source =>
+            string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceId, selectedDeviceId, StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceName, selectedDeviceName, StringComparison.Ordinal));
+        var alternate = devices
+            .Where(device => device.IsAvailable)
+            .Where(device => !string.Equals(device.Id, selectedDeviceId, StringComparison.Ordinal))
+            .OrderBy(device => AudioCaptureDeviceDiscoveryService.SourceKindPriority(device.SourceKind))
+            .ThenBy(device => device.IsDefault ? 0 : 1)
+            .ThenBy(device => device.DriverName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        var alternateText = alternate is null
+            ? "No alternate local audio device is currently available."
+            : $"Try {alternate.DisplayLabel}.";
+
+        if (source is null)
+        {
+            return $"Waiting for native PCM from {selectedDeviceName}. {alternateText}";
+        }
+
+        var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
+            ? source.EndpointName
+            : selectedDeviceName;
+
+        if (source.SignalPresent)
+        {
+            return $"Local audio is receiving signal from {sourceLabel} at {source.PeakDbfs:0.0} dBFS.";
+        }
+
+        if (source.CaptureStreaming && source.CaptureFramesReceived <= 0 && IsLoopbackAudioSourceKind(source.AudioSourceKind))
+        {
+            return $"No loopback packets from {sourceLabel}. Play audio through that Windows output or choose a different input/loopback. {alternateText}";
+        }
+
+        if (source.CaptureFramesReceived > 0 && !source.SignalPresent)
+        {
+            return $"Selected source is producing silent PCM from {sourceLabel} ({source.PeakDbfs:0.0} dBFS). Confirm Windows is playing to that endpoint or choose another source. {alternateText}";
+        }
+
+        if (!source.CaptureStreaming)
+        {
+            return $"Local source is paired but not streaming yet. Reselect {selectedDeviceName} or restart the audio engine. {alternateText}";
+        }
+
+        return $"Local audio is waiting for signal from {sourceLabel}. {alternateText}";
+    }
+
     public static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
     {
         var label = !string.IsNullOrWhiteSpace(source.AudioDeviceName)
@@ -5890,6 +6288,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var underrunEvidence = source.CaptureUnderrunCount > 0
             ? $", underruns {source.CaptureUnderrunCount}"
             : string.Empty;
+        var timingEvidence = FormatCaptureAudioTimingEvidence(source);
         var lastError = !string.IsNullOrWhiteSpace(source.LastError)
             ? $", {source.LastError}"
             : string.Empty;
@@ -5903,7 +6302,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var warningText = !string.IsNullOrWhiteSpace(warning)
             ? $", issue: {warning}"
             : string.Empty;
-        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{renderEvidence}{queueEvidence}{underrunEvidence}{emptyPolls}{level}{format}{endpoint}{lastError}{warningText}";
+        return $"{label}{kind}{sourceId}: {state}, {source.CaptureFramesReceived} frames{renderEvidence}{queueEvidence}{underrunEvidence}{timingEvidence}{emptyPolls}{level}{format}{endpoint}{lastError}{warningText}";
+    }
+
+    private static string FormatCaptureAudioTimingEvidence(NativeMediaCoreCaptureAudioSource source)
+    {
+        var parts = new List<string>();
+        if (source.CaptureStartedAtMs > 0)
+        {
+            parts.Add($"started {source.CaptureStartedAtMs:0}ms");
+        }
+
+        if (source.CaptureLastFrameAtMs > 0)
+        {
+            parts.Add($"last PCM {source.CaptureLastFrameAtMs:0}ms");
+        }
+
+        if (source.CaptureLastFrameAgeMs > 0)
+        {
+            parts.Add($"age {source.CaptureLastFrameAgeMs:0}ms");
+        }
+
+        if (source.CaptureStoppedAtMs > 0)
+        {
+            parts.Add($"stopped {source.CaptureStoppedAtMs:0}ms");
+        }
+
+        return parts.Count > 0
+            ? $", {string.Join(", ", parts)}"
+            : string.Empty;
     }
 
     public static string FormatCaptureAudioSourceWarningForOperator(string? warning)
@@ -6030,6 +6457,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
+        OnPropertyChanged(nameof(LocalAudioSourceRecommendation));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
         OnPropertyChanged(nameof(CaptureAudioSourceSummary));
     }
@@ -6173,10 +6601,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
     }
 
-    private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync()
+    private async Task<NativeMediaCoreStateSnapshot> SyncActiveSceneAsync(string? reason = null)
     {
         var scene = Scenes.First(s => s.Id == ActiveSceneId);
-        var commands = MediaCoreCommandBuilder.BuildSyncCommands(BuildProductionSyncContext());
+        var syncContext = BuildProductionSyncContext();
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(syncContext);
+        if (!string.IsNullOrWhiteSpace(reason))
+        {
+            LaunchLog.Write(
+                $"media-core sync batch reason={reason} " +
+                $"recording={syncContext.Recording} streaming={syncContext.Streaming} " +
+                $"destinations={FormatStreamDestinationTelemetry(syncContext.StreamDestinations)} " +
+                $"commands={string.Join(",", commands.Select(command => command.Type))}");
+        }
         // ConfigureAwait(true): resume on the CALLER'S context. UI callers (Engine On/Off,
         // command handlers) then run ApplyLiveProductionPatch on the real binding thread,
         // which is more reliable than the captured _dispatcher (the recurring off-thread
@@ -6228,8 +6665,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Where(IsConfiguredCaptureAudioSource)
             .ToList();
         if (LocalAudioSourceEnabled &&
-            AudioCaptureDevices.FirstOrDefault(device =>
-                string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)) is { } localAudio)
+            ResolveSelectedLocalAudioCaptureDevice(
+                SelectedLocalAudioCaptureDeviceId,
+                AudioCaptureDevices) is { } localAudio)
         {
             captureAudioSources.Add(new MediaCoreCaptureAudioSourceWire(
                 "local-machine-audio",
@@ -6242,11 +6680,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 localAudio.IsEmbeddedCaptureAudio));
         }
 
-        audioRoutingSends = EnsureDefaultLocalAudioRoutingSends(
+        audioRoutingSends = EnsureDefaultCaptureAudioRoutingSends(
             audioRoutingSends,
-            captureAudioSources.Any(source => string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)),
-            AudioRoutingMatrix.Rows.Any(row =>
-                string.Equals(ResolveAudioRoutingMatrixSourceId(row.SourceId), "local-machine-audio", StringComparison.Ordinal)))
+            captureAudioSources)
             .ToList();
         audioRoutingSends = EnsureDefaultMediaAudioRoutingSends(
             audioRoutingSends,
@@ -6541,6 +6977,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return completed;
     }
 
+    public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultCaptureAudioRoutingSends(
+        IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
+        IReadOnlyList<MediaCoreCaptureAudioSourceWire> captureAudioSources)
+    {
+        var completed = sends.ToList();
+        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        var sourceIds = captureAudioSources
+            .Where(IsConfiguredCaptureAudioSource)
+            .Select(ResolveCaptureAudioChannelId)
+            .Where(sourceId => !string.IsNullOrWhiteSpace(sourceId))
+            .Distinct(StringComparer.Ordinal);
+
+        foreach (var sourceId in sourceIds)
+        {
+            foreach (var busId in requiredBusIds)
+            {
+                if (!completed.Any(send =>
+                        string.Equals(send.SourceId, sourceId, StringComparison.Ordinal) &&
+                        string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    completed.Add(new MediaCoreAudioRoutingSendWire(sourceId, busId, 0));
+                }
+            }
+        }
+
+        return completed;
+    }
+
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultMediaAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
         bool mediaAudioConfigured)
@@ -6597,8 +7061,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         IEnumerable<AudioCaptureDevice> audioCaptureDevices) =>
         localAudioSourceEnabled &&
         !string.IsNullOrWhiteSpace(selectedLocalAudioCaptureDeviceId) &&
-        audioCaptureDevices.Any(device =>
+        (IsDefaultRenderLoopbackSelection(selectedLocalAudioCaptureDeviceId) ||
+            audioCaptureDevices.Any(device =>
+                string.Equals(device.Id, selectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)));
+
+    private static AudioCaptureDevice? ResolveSelectedLocalAudioCaptureDevice(
+        string? selectedLocalAudioCaptureDeviceId,
+        IEnumerable<AudioCaptureDevice> audioCaptureDevices)
+    {
+        if (string.IsNullOrWhiteSpace(selectedLocalAudioCaptureDeviceId))
+        {
+            return null;
+        }
+
+        var matchedDevice = audioCaptureDevices.FirstOrDefault(device =>
             string.Equals(device.Id, selectedLocalAudioCaptureDeviceId, StringComparison.Ordinal));
+        return matchedDevice ?? (IsDefaultRenderLoopbackSelection(selectedLocalAudioCaptureDeviceId)
+            ? AudioCaptureDeviceDiscoveryService.CreateDefaultLoopbackFallbackDevice()
+            : null);
+    }
+
+    private static bool IsDefaultRenderLoopbackSelection(string? selectedLocalAudioCaptureDeviceId) =>
+        string.Equals(
+            selectedLocalAudioCaptureDeviceId,
+            "default-render-loopback",
+            StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveCaptureAudioChannelId(MediaCoreCaptureAudioSourceWire source) =>
         string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal)
@@ -6734,6 +7221,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
+    private static string FormatStreamDestinationTelemetry(IReadOnlyList<string> destinations) =>
+        destinations.Count == 0 ? "none" : string.Join(",", destinations);
+
     private IReadOnlyList<string> BuildConfiguredStreamDestinationLabels()
     {
         var destinations = new List<string>(3);
@@ -6755,8 +7245,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
-    private string? ValidateStreamDestinations() =>
-        StudioStreamOutputValidation.ValidateSelectedDestinations(
+    private string? ValidateStreamDestinations()
+    {
+        var settingsError = StudioStreamOutputValidation.ValidateSelectedDestinations(
             StreamRtmpEnabled,
             StreamNdiEnabled,
             StreamSrtEnabled,
@@ -6772,6 +7263,44 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtKeyLength,
             StreamSrtPassphrase,
             FfmpegBinDirectory);
+        return settingsError ?? ValidateStreamDestinationCapabilities(
+            StreamRtmpEnabled,
+            StreamNdiEnabled,
+            StreamSrtEnabled,
+            _bridge.Profile);
+    }
+
+    public static string? ValidateStreamDestinationCapabilities(
+        bool streamRtmpEnabled,
+        bool streamNdiEnabled,
+        bool streamSrtEnabled,
+        NativeMediaCoreProfile? profile)
+    {
+        if (profile is null)
+        {
+            return null;
+        }
+
+        if (streamRtmpEnabled && !HasNativeOutputCapability(profile, "rtmp-output"))
+        {
+            return "RTMP output is selected, but the native media core profile is missing rtmp-output.";
+        }
+
+        if (streamNdiEnabled && !HasNativeOutputCapability(profile, "ndi-output"))
+        {
+            return "NDI output is selected, but the native media core profile is missing ndi-output.";
+        }
+
+        if (streamSrtEnabled && !HasNativeOutputCapability(profile, "srt-output"))
+        {
+            return "SRT output is selected, but the native media core profile is missing srt-output.";
+        }
+
+        return null;
+    }
+
+    private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
+        profile.Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase);
 
     private bool IsRtmpConfigured()
         => ValidateRtmpSettings() is null;
@@ -7342,6 +7871,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             ActiveSceneLayout = ProgramScene.Layout,
             CurrentBreakoutRoomId = _currentRoomId,
+            RecordingRequested = Recording,
+            StreamingRequested = Streaming,
             Participants = RoomVideoParticipants
                 .Select(participant => new LiveProductionSync.LiveProductionParticipantContext
                 {

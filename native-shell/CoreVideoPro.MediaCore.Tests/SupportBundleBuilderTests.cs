@@ -151,6 +151,16 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal(0, bundle.MediaCore.Audio.MonitorFramesPlayed);
         Assert.Equal("playing", bundle.MediaCore.Audio.MonitorStatus);
         Assert.Equal("Speaker Out", bundle.MediaCore.Audio.MonitorDeviceName);
+        Assert.Equal(
+            ["CAPTURE ok 48000f", "PGM ok 48000f", "MON wait route", "STREAM idle", "RECORD idle"],
+            bundle.MediaCore.Audio.ValidationChecklist);
+        Assert.Equal(
+            "Audio validation incomplete: route source audio to MON or turn monitor off.",
+            bundle.MediaCore.Audio.ValidationSummary);
+        Assert.Equal("First audio block: MON wait route.", bundle.MediaCore.Audio.ValidationFirstIssue);
+        Assert.Equal(
+            "Full audio chain incomplete: MON, stream, recording not yet proven.",
+            bundle.MediaCore.Audio.FullChainValidationSummary);
         Assert.Equal(2, bundle.MediaCore.Audio.Routing.RoutedSendCount);
         Assert.Equal(48000, Assert.Single(bundle.MediaCore.Audio.Routing.BusTaps).Frames);
         var captureSource = Assert.Single(bundle.MediaCore.Audio.Capture.Sources);
@@ -163,6 +173,10 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal(47952, captureSource.CaptureFramesRendered);
         Assert.Equal(48, captureSource.CaptureQueuedFrames);
         Assert.Equal(2, captureSource.CaptureUnderrunCount);
+        Assert.Equal(1000, captureSource.CaptureStartedAtMs);
+        Assert.Equal(2400, captureSource.CaptureLastFrameAtMs);
+        Assert.Equal(36, captureSource.CaptureLastFrameAgeMs);
+        Assert.Equal(0, captureSource.CaptureStoppedAtMs);
         Assert.Equal(-12.5, captureSource.PeakDbfs);
         Assert.Equal(-24.2, captureSource.RmsDbfs);
         Assert.Equal("{speaker-out}", captureSource.EndpointId);
@@ -181,6 +195,9 @@ public sealed class SupportBundleBuilderTests
         Assert.Contains(bundle.TriageLines, line => line.Contains("Media core restarts: 2", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Latest crash: exit 9", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio capture: 1/1 streaming; PCM 48000; master 48000; stream 0; MON 0; monitor played 0", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Audio validation checklist: CAPTURE ok 48000f | PGM ok 48000f | MON wait route | STREAM idle | RECORD idle", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("First audio block: MON wait route.", StringComparison.Ordinal));
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Full audio chain incomplete: MON, stream, recording not yet proven.", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio stream fault: source PCM is present but not reaching the stream bus.", StringComparison.Ordinal));
         Assert.Contains(bundle.TriageLines, line => line.Contains("Audio monitor fault: program/master PCM is present but the MON bus has no routed PCM.", StringComparison.Ordinal));
     }
@@ -216,6 +233,35 @@ public sealed class SupportBundleBuilderTests
     }
 
     [Fact]
+    public void Build_TriageIncludesAudioValidationWhenSessionIsLiveWithoutWarnings()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            AudioMixSession = new NativeMediaCoreAudioMixSession
+            {
+                Status = "live",
+                Summary = "Program audio routed",
+                MonitorEnabled = true,
+                MonitorStatus = "playing",
+                MonitorDeviceName = "Speaker Out",
+                Warnings = []
+            }
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Audio validation checklist: CAPTURE ok 48000f | PGM ok 48000f | MON wait route | STREAM idle | RECORD idle", StringComparison.Ordinal));
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("First audio block: MON wait route.", StringComparison.Ordinal));
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Full audio chain incomplete: MON, stream, recording not yet proven.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Build_MapsRecordingAudioProof()
     {
         var snapshot = BuildSampleSnapshot() with
@@ -229,7 +275,9 @@ public sealed class SupportBundleBuilderTests
                 AudioSampleRate = 48000,
                 MetadataValid = true,
                 ContainerFormat = "mp4",
-                AudioCodec = "aac"
+                AudioCodec = "aac",
+                AudioBitrateKbps = 192,
+                TargetBitrateMbps = 18
             })
         };
 
@@ -240,6 +288,8 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal(1440, bundle.MediaCore.Recording.Proof.AudioSampleCount);
         Assert.Equal(2, bundle.MediaCore.Recording.Proof.AudioChannels);
         Assert.Equal(48000, bundle.MediaCore.Recording.Proof.AudioSampleRate);
+        Assert.Equal(192, bundle.MediaCore.Recording.Proof.AudioBitrateKbps);
+        Assert.Equal(18, bundle.MediaCore.Recording.Proof.TargetBitrateMbps);
         Assert.Contains(
             bundle.TriageLines,
             line => line.Contains("Recording audio proof: packets 3; samples 1440; 2 ch @ 48000 Hz", StringComparison.Ordinal));
@@ -265,6 +315,21 @@ public sealed class SupportBundleBuilderTests
         Assert.Contains(
             bundle.TriageLines,
             line => line.Contains("Recording audio fault: program/master PCM is present but the active recording has no audio samples.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Build_FlagsActiveRecordingWithoutAudioProofTelemetry()
+    {
+        var snapshot = BuildSampleSnapshot() with
+        {
+            Recording = BuildRecordingSession(null)
+        };
+
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+
+        Assert.Contains(
+            bundle.TriageLines,
+            line => line.Contains("Recording audio fault: active recording has no audio proof telemetry from the native writer.", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -402,6 +467,10 @@ public sealed class SupportBundleBuilderTests
                     CaptureFramesRendered = 47952,
                     CaptureQueuedFrames = 48,
                     CaptureUnderrunCount = 2,
+                    CaptureStartedAtMs = 1000,
+                    CaptureLastFrameAtMs = 2400,
+                    CaptureLastFrameAgeMs = 36,
+                    CaptureStoppedAtMs = 0,
                     CaptureSampleRate = 48000,
                     CaptureChannels = 2,
                     PeakDbfs = -12.5,
@@ -438,7 +507,7 @@ public sealed class SupportBundleBuilderTests
         Warnings = ["compositor degraded"]
     };
 
-    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof proof) =>
+    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof? proof) =>
         new()
         {
             SessionId = "recording",

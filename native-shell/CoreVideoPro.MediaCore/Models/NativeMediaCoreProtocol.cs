@@ -296,6 +296,8 @@ public sealed class NativeMediaCoreOutputSender
     public int AudioSampleRate { get; init; }
     public string? Warning { get; init; }
     public string? LastError { get; init; }
+    public string? LastResultCode { get; init; }
+    public string? RuntimeDetail { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession
@@ -357,6 +359,7 @@ public sealed class NativeMediaCoreRecordingProof
     public string? ContainerFormat { get; init; }
     public string? VideoCodec { get; init; }
     public string? AudioCodec { get; init; }
+    public int AudioBitrateKbps { get; init; }
     public double TargetBitrateMbps { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }

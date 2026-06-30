@@ -116,13 +116,14 @@ public sealed class AudioCaptureDeviceDiscoveryService : IDisposable
 
     public static IReadOnlyList<AudioCaptureDevice> EnsureDefaultLoopbackFallback(IReadOnlyList<AudioCaptureDevice> devices)
     {
-        if (devices.Any(IsLoopbackSource))
+        if (devices.Any(device =>
+                string.Equals(device.Id, "default-render-loopback", StringComparison.OrdinalIgnoreCase)))
         {
             return devices;
         }
 
         return devices
-            .Concat([CreateDefaultLoopbackFallbackDevice()])
+            .Prepend(CreateDefaultLoopbackFallbackDevice())
             .ToList();
     }
 

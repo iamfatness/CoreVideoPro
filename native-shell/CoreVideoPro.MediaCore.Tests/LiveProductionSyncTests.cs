@@ -56,6 +56,21 @@ public sealed class LiveProductionSyncTests
     }
 
     [Fact]
+    public void PreservesRequestedOutputsBeforeNativeProofCatchesUp()
+    {
+        var context = Context with
+        {
+            RecordingRequested = true,
+            StreamingRequested = true
+        };
+
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(BuildSnapshot(), context);
+
+        Assert.True(patch.Recording);
+        Assert.True(patch.Streaming);
+    }
+
+    [Fact]
     public void ResolvesLowerThirdFromActiveSpeakerRoute()
     {
         var snapshot = WithRenderRoutes(BuildSnapshot(),
@@ -356,6 +371,38 @@ public sealed class LiveProductionSyncTests
         };
 
         Assert.True(LiveProductionSync.IsStreamingLive(snapshot));
+    }
+
+    [Fact]
+    public void IsStreamingLiveRejectsUnavailableSenderWarning()
+    {
+        var snapshot = BuildSnapshot() with
+        {
+            OutputHealth = [],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "warning",
+                        LastResultCode = "ndi-output-unavailable",
+                        Warning = "NDI output is selected, but no NDI sender module is available in this build.",
+                        RuntimeDetail = "NDI output sender is not available in this build."
+                    }
+                ]
+            }
+        };
+
+        Assert.False(LiveProductionSync.IsStreamingLive(snapshot));
+
+        var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, Context);
+
+        Assert.False(patch.Streaming);
     }
 
     [Fact]

@@ -161,6 +161,10 @@ public sealed class NativeMediaCoreCaptureAudioSource
     public long CaptureQueuedFrames { get; init; }
     public long CaptureUnderrunCount { get; init; }
     public long EmptyPacketPolls { get; init; }
+    public double CaptureStartedAtMs { get; init; }
+    public double CaptureLastFrameAtMs { get; init; }
+    public double CaptureLastFrameAgeMs { get; init; }
+    public double CaptureStoppedAtMs { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }
     public double PeakDbfs { get; init; } = -120;

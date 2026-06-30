@@ -583,6 +583,125 @@ class SyntheticOutputSender final : public IOutputSender {
   std::map<std::string, OutputSender> senders_;
 };
 
+class CompositeOutputSender final : public IOutputSender {
+ public:
+  explicit CompositeOutputSender(std::vector<std::unique_ptr<IOutputSender>> senders)
+      : senders_(std::move(senders)) {}
+
+  OutputSenderSession sync(
+      const std::vector<std::string>& destinations,
+      const ProgramFrame* frame,
+      double elapsedMs,
+      const std::vector<OutputDestinationSettings>& destinationSettings = {},
+      const std::vector<float>* programAudioPcm = nullptr,
+      int audioChannels = 0,
+      int audioSampleRate = 0) override {
+    OutputSenderSession combined;
+    for (const auto& sender : senders_) {
+      mergeInto(combined, sender->sync(destinations, frame, elapsedMs, destinationSettings, programAudioPcm, audioChannels, audioSampleRate));
+    }
+    addMissingDestinationWarnings(combined, destinations, elapsedMs);
+    finalize(combined);
+    lastSession_ = combined;
+    return combined;
+  }
+
+  OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override {
+    OutputSenderSession combined;
+    for (const auto& sender : senders_) {
+      mergeInto(combined, sender->fail(destination, message, elapsedMs));
+    }
+    finalize(combined);
+    lastSession_ = combined;
+    return combined;
+  }
+
+  OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
+    OutputSenderSession combined;
+    for (const auto& sender : senders_) {
+      mergeInto(combined, sender->recover(destination, elapsedMs, reason));
+    }
+    finalize(combined);
+    lastSession_ = combined;
+    return combined;
+  }
+
+  OutputSenderSession session() const override {
+    OutputSenderSession combined;
+    for (const auto& sender : senders_) {
+      mergeInto(combined, sender->session());
+    }
+    if (combined.senders.empty() && !lastSession_.senders.empty()) {
+      return lastSession_;
+    }
+    for (const auto& sender : lastSession_.senders) {
+      if (!hasSenderFor(combined, sender.destination)) {
+        combined.senders.push_back(sender);
+      }
+    }
+    combined.warnings.insert(combined.warnings.end(), lastSession_.warnings.begin(), lastSession_.warnings.end());
+    finalize(combined);
+    return combined;
+  }
+
+ private:
+  static void mergeInto(OutputSenderSession& combined, const OutputSenderSession& next) {
+    combined.senders.insert(combined.senders.end(), next.senders.begin(), next.senders.end());
+    combined.warnings.insert(combined.warnings.end(), next.warnings.begin(), next.warnings.end());
+  }
+
+  static bool hasSenderFor(const OutputSenderSession& session, const std::string& destination) {
+    return std::any_of(session.senders.begin(), session.senders.end(), [&](const OutputSender& sender) {
+      return sender.destination == destination;
+    });
+  }
+
+  static std::string uppercase(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return value;
+  }
+
+  static void addMissingDestinationWarnings(
+      OutputSenderSession& session,
+      const std::vector<std::string>& destinations,
+      double elapsedMs) {
+    for (const auto& destination : destinations) {
+      if (!isNetworkDestination(destination) || hasSenderFor(session, destination)) {
+        continue;
+      }
+      OutputSender sender;
+      sender.senderId = destination + ":program";
+      sender.destination = destination;
+      sender.status = "warning";
+      sender.startedAtMs = elapsedMs;
+      sender.destinationHealth = "warning";
+      sender.lastResultCode = destination + "-output-unavailable";
+      sender.runtimeDetail = uppercase(destination) + " output sender is not available in this build.";
+      sender.warning = uppercase(destination) + " output is selected, but no " + uppercase(destination) +
+                       " sender module is available in this build.";
+      session.senders.push_back(sender);
+      session.warnings.push_back(sender.warning);
+    }
+  }
+
+  static void finalize(OutputSenderSession& session) {
+    bool hasFailure = false;
+    bool hasWarning = false;
+    session.activeSenderCount = 0;
+    for (const auto& sender : session.senders) {
+      if (sender.status == "live" || sender.status == "warning" || sender.status == "starting") {
+        ++session.activeSenderCount;
+      }
+      hasFailure = hasFailure || sender.status == "failed";
+      hasWarning = hasWarning || sender.status == "warning" || !sender.warning.empty();
+    }
+    session.status = hasFailure ? "failed" : hasWarning ? "warning" : session.activeSenderCount > 0 ? "live" : "idle";
+  }
+
+  std::vector<std::unique_ptr<IOutputSender>> senders_;
+  OutputSenderSession lastSession_;
+};
+
 // Deterministic 7-bar SMPTE-style BGRA test pattern, shared (immutable) so each
 // poll hands out a cheap reference rather than reallocating the buffer.
 std::shared_ptr<const std::vector<uint8_t>> makeTestPatternBgra(int width, int height) {
@@ -815,22 +934,18 @@ ModuleSet createDefaultModules() {
   if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);
   }
-  // The module set carries a single outputSender. RTMP keeps precedence (it is
-  // the most complete real sender today); the NDI sender only claims the slot
-  // when RTMP is not built/available, so a dev build with only
-  // COREVIDEO_WITH_NDI_OUTPUT publishes to NDI. When NDI and RTMP could coexist
-  // they should be composed into a fan-out sender during integration; for now
-  // this preserves RTMP precedence and falls back to the synthetic sender when
-  // neither real sender is present.
-  bool outputSenderClaimed = false;
+  std::vector<std::unique_ptr<IOutputSender>> outputSenders;
   if (auto outputSender = createRtmpOutputSender()) {
-    modules.outputSender = std::move(outputSender);
-    outputSenderClaimed = true;
+    outputSenders.push_back(std::move(outputSender));
   }
-  if (!outputSenderClaimed) {
-    if (auto ndiSender = createNdiOutputSender()) {
-      modules.outputSender = std::move(ndiSender);
-    }
+  if (auto srtSender = createSrtOutputSender()) {
+    outputSenders.push_back(std::move(srtSender));
+  }
+  if (auto ndiSender = createNdiOutputSender()) {
+    outputSenders.push_back(std::move(ndiSender));
+  }
+  if (!outputSenders.empty()) {
+    modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders));
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
   hardwareCaptureDevices.push_back(std::move(modules.captureDevice));

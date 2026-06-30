@@ -177,6 +177,134 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatStreamingFailureStatus_MapsUnavailableNdiOutput()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("NDI output is selected, but no NDI sender module is available in this build."));
+
+        Assert.StartsWith(
+            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            status);
+        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_MapsMissingNdiProfileCapability()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("NDI output is selected, but the native media core profile is missing ndi-output."));
+
+        Assert.StartsWith(
+            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            status);
+        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_MapsUnavailableSrtOutput()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("srt-output-unavailable: SRT output sender is not available in this build."));
+
+        Assert.StartsWith(
+            "Streaming start failed: SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled.",
+            status);
+        Assert.Equal("SRT unavailable", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void ValidateStreamDestinationCapabilities_BlocksSelectedUnsupportedOutputs()
+    {
+        var profile = new NativeMediaCoreProfile
+        {
+            Name = "CoreVideo Pro Native Media Core",
+            Renderer = "d3d11",
+            MaxProgramResolution = "1920x1080",
+            MaxProgramFps = 60,
+            MaxParticipantFeeds = 8,
+            MaxIsoRecordings = 8,
+            Capabilities = ["rtmp-output"]
+        };
+
+        Assert.Null(StudioViewModel.ValidateStreamDestinationCapabilities(true, false, false, profile));
+        Assert.Equal(
+            "NDI output is selected, but the native media core profile is missing ndi-output.",
+            StudioViewModel.ValidateStreamDestinationCapabilities(false, true, false, profile));
+        Assert.Equal(
+            "SRT output is selected, but the native media core profile is missing srt-output.",
+            StudioViewModel.ValidateStreamDestinationCapabilities(false, false, true, profile));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_MapsSenderNotArmed()
+    {
+        var status = StudioViewModel.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("Selected stream destinations (NDI) did not arm a native output sender. Sender state idle:0."));
+
+        Assert.StartsWith(
+            "Streaming start failed: Native output sender did not start. Check Stream settings and open Health for sender diagnostics.",
+            status);
+        Assert.Equal("Stream sender not armed", StudioViewModel.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartNoSenderFailure_ReportsIdleNativeSenderForRequestedDestination()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "idle",
+                ActiveSenderCount = 0
+            },
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "ndi",
+                    Status = "idle",
+                    Message = "NDI sender idle."
+                }
+            ]
+        };
+
+        Assert.True(StudioViewModel.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
+        Assert.Contains("Selected stream destinations (NDI) did not arm a native output sender.", failureStatus, StringComparison.Ordinal);
+        Assert.Equal("Stream sender not armed", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartNoSenderFailure_ReportsUnavailableWarningSender()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "warning",
+                        LastResultCode = "ndi-output-unavailable",
+                        Warning = "NDI output is selected, but no NDI sender module is available in this build."
+                    }
+                ]
+            }
+        };
+
+        Assert.True(StudioViewModel.TryFormatStreamingStartNoSenderFailure(snapshot, ["ndi"], out var failureStatus));
+        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
     public void FormatStreamingFailureStatus_RemovesRtmpSenderWrappers()
     {
         var status = StudioViewModel.FormatStreamingFailureStatus(
@@ -448,6 +576,78 @@ public sealed class StudioViewModelAudioStatusTests
             "Streaming start failed: FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg.",
             failureStatus);
         Assert.Equal("FFmpeg not ready", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartHealthFailure_UsesSenderResultAndRuntimeDetail()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "warning",
+                        LastResultCode = "ndi-output-unavailable",
+                        RuntimeDetail = "LibNDI runtime-missing on this machine."
+                    }
+                ]
+            }
+        };
+
+        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.StartsWith(
+            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            failureStatus);
+        Assert.Contains("ndi-output-unavailable", failureStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("runtime-missing", failureStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("NDI unavailable", StudioViewModel.FormatOutputStatusBrief(failureStatus));
+    }
+
+    [Fact]
+    public void TryFormatStreamingStartHealthFailure_PrefersSenderDetailOverGenericOutputHealth()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "ndi",
+                    Status = "warning",
+                    Message = "NDI sender warning."
+                }
+            ],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "warning",
+                        LastResultCode = "ndi-output-unavailable",
+                        RuntimeDetail = "LibNDI runtime-missing on this machine."
+                    }
+                ]
+            }
+        };
+
+        Assert.True(StudioViewModel.TryFormatStreamingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.StartsWith(
+            "Streaming start failed: NDI output is not available. Install the NDI runtime or use a build with NDI output enabled.",
+            failureStatus);
+        Assert.DoesNotContain("NDI sender warning.", failureStatus, StringComparison.Ordinal);
+        Assert.Contains("runtime-missing", failureStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -951,6 +1151,85 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatCaptureAudioSourceStatus_ShowsCaptureTimingEvidence()
+    {
+        var status = StudioViewModel.FormatCaptureAudioSourceStatus(new NativeMediaCoreCaptureAudioSource
+        {
+            CaptureDeviceId = "local-machine-audio",
+            SourceId = "local-machine-audio",
+            AudioDeviceName = "Desk Mix",
+            AudioSourceKind = "wasapi-loopback",
+            Paired = true,
+            CaptureStreaming = true,
+            CaptureFramesReceived = 960,
+            CaptureStartedAtMs = 1000,
+            CaptureLastFrameAtMs = 2450,
+            CaptureLastFrameAgeMs = 38,
+            CaptureStoppedAtMs = 3200,
+            CaptureSampleRate = 48000,
+            CaptureChannels = 2,
+            PeakDbfs = -12,
+            RmsDbfs = -18,
+            SignalPresent = true,
+            EndpointName = "Speakers"
+        });
+
+        Assert.Equal(
+            "Desk Mix (wasapi-loopback) -> local-machine-audio: streaming, 960 frames, started 1000ms, last PCM 2450ms, age 38ms, stopped 3200ms, peak -12.0 dBFS, rms -18.0 dBFS 48000 Hz/2 ch via Speakers",
+            status);
+    }
+
+    [Fact]
+    public void BuildCaptureAudioSourceTelemetry_IncludesFreshnessAndQueueEvidence()
+    {
+        var method = typeof(StudioViewModel).GetMethod(
+            "BuildCaptureAudioSourceTelemetry",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var telemetry = Assert.IsType<string>(method.Invoke(null,
+        [
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                Summary = "capture stale",
+                SourceCount = 1,
+                StreamingCount = 1,
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        SourceId = "local-machine-audio",
+                        AudioSourceKind = "wasapi-loopback",
+                        Paired = true,
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 960,
+                        CaptureFramesRendered = 480,
+                        CaptureQueuedFrames = 240,
+                        CaptureUnderrunCount = 2,
+                        CaptureLastFrameAgeMs = 1500,
+                        EmptyPacketPolls = 4,
+                        SignalPresent = true,
+                        PeakDbfs = -12,
+                        RmsDbfs = -18,
+                        CaptureSampleRate = 48000,
+                        CaptureChannels = 2,
+                        EndpointName = "Speakers",
+                        Warning = "Audio capture PCM is stale"
+                    }
+                ]
+            }
+        ]));
+
+        Assert.Contains("rendered=480", telemetry, StringComparison.Ordinal);
+        Assert.Contains("queued=240", telemetry, StringComparison.Ordinal);
+        Assert.Contains("underruns=2", telemetry, StringComparison.Ordinal);
+        Assert.Contains("ageMs=1500", telemetry, StringComparison.Ordinal);
+        Assert.Contains("warning=Audio capture PCM is stale", telemetry, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatAudioProofSummary_ShowsMonitorPlaybackWorking()
     {
         var audio = new NativeMediaCoreAudioMixSession
@@ -1079,6 +1358,35 @@ public sealed class StudioViewModelAudioStatusTests
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture, senders, recording);
 
         Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | stream audio none | record audio none | check stream audio; check recording audio", status);
+    }
+
+    [Fact]
+    public void FormatAudioProofSummary_FlagsMissingRecordingProofTelemetry()
+    {
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Program audio routed",
+            MixedFrameCount = 960,
+            MonitorEnabled = true,
+            MonitorStatus = "playing",
+            MonitorFramesPlayed = 480
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Capture audio routed",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 960,
+            RoutedMasterFrames = 960,
+            RoutedMonitorFrames = 480
+        };
+        var recording = BuildRecordingSession(null);
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture, recording: recording);
+
+        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | record proof missing | check recording proof", status);
     }
 
     [Fact]
@@ -1320,6 +1628,17 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void IsLocalAudioSourceConfigured_AcceptsSavedDefaultRenderLoopbackBeforeDiscovery()
+    {
+        var configured = StudioViewModel.IsLocalAudioSourceConfigured(
+            localAudioSourceEnabled: true,
+            selectedLocalAudioCaptureDeviceId: "default-render-loopback",
+            audioCaptureDevices: []);
+
+        Assert.True(configured);
+    }
+
+    [Fact]
     public void ResolveLocalAudioSourceDeviceId_PrefersDefaultLoopbackWhenSelectionIsEmpty()
     {
         var selected = StudioViewModel.ResolveLocalAudioSourceDeviceId(
@@ -1477,6 +1796,109 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatLocalAudioSourceRecommendation_NamesAlternateWhenLoopbackHasNoPackets()
+    {
+        var recommendation = StudioViewModel.FormatLocalAudioSourceRecommendation(
+            "loopback-game",
+            "Game audio loopback",
+            [
+                AudioDevice("loopback-game", "wasapi-loopback", "Game output"),
+                AudioDevice("mic-1", "wasapi-input", "Studio Mic")
+            ],
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                Summary = "1 source streaming, 0 PCM frames.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "loopback-game",
+                        AudioDeviceName = "Game audio loopback",
+                        AudioSourceKind = "wasapi-loopback",
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 0,
+                        EndpointName = "Game output"
+                    }
+                ]
+            });
+
+        Assert.Contains("No loopback packets from Game output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Play audio through that Windows output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Try Studio Mic", recommendation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatLocalAudioSourceRecommendation_ShowsSilentPcmAndAlternateSource()
+    {
+        var recommendation = StudioViewModel.FormatLocalAudioSourceRecommendation(
+            "loopback-game",
+            "Game audio loopback",
+            [
+                AudioDevice("loopback-game", "wasapi-loopback", "Game output"),
+                AudioDevice("loopback-chat", "wasapi-loopback", "Chat output", isDefault: true)
+            ],
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "warning",
+                Summary = "1 source streaming, silent PCM.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "loopback-game",
+                        AudioDeviceName = "Game audio loopback",
+                        AudioSourceKind = "wasapi-loopback",
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 960,
+                        PeakDbfs = -120,
+                        RmsDbfs = -120,
+                        SignalPresent = false,
+                        EndpointName = "Game output"
+                    }
+                ]
+            });
+
+        Assert.Contains("Selected source is producing silent PCM from Game output (-120.0 dBFS)", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Confirm Windows is playing to that endpoint", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Try Chat output", recommendation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatLocalAudioSourceRecommendation_ConfirmsLiveSignal()
+    {
+        var recommendation = StudioViewModel.FormatLocalAudioSourceRecommendation(
+            "loopback-game",
+            "Game audio loopback",
+            [AudioDevice("loopback-game", "wasapi-loopback", "Game output")],
+            new NativeMediaCoreCaptureAudioSources
+            {
+                Status = "ready",
+                Summary = "1 source streaming, signal present.",
+                Sources =
+                [
+                    new NativeMediaCoreCaptureAudioSource
+                    {
+                        CaptureDeviceId = "local-machine-audio",
+                        AudioDeviceId = "loopback-game",
+                        AudioDeviceName = "Game audio loopback",
+                        AudioSourceKind = "wasapi-loopback",
+                        CaptureStreaming = true,
+                        CaptureFramesReceived = 960,
+                        PeakDbfs = -18.2,
+                        RmsDbfs = -24,
+                        SignalPresent = true,
+                        EndpointName = "Game output"
+                    }
+                ]
+            });
+
+        Assert.Equal("Local audio is receiving signal from Game output at -18.2 dBFS.", recommendation);
+    }
+
+    [Fact]
     public void EnsureDefaultLocalAudioRoutingSends_AddsProgramAndMonitorBeforeMatrixRowExists()
     {
         var sends = StudioViewModel.EnsureDefaultLocalAudioRoutingSends(
@@ -1551,6 +1973,69 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void EnsureDefaultCaptureAudioRoutingSends_AddsProgramStreamAndMonitorRoutesForCaptureSources()
+    {
+        var sends = StudioViewModel.EnsureDefaultCaptureAudioRoutingSends(
+            [],
+            [
+                new MediaCoreCaptureAudioSourceWire(
+                    "uvc-01",
+                    "mic-01",
+                    "USB Mic",
+                    0,
+                    "wasapi-input",
+                    @"\\\\?\\SWD#MMDEVAPI#mic-01",
+                    "WASAPI",
+                    false)
+            ]);
+
+        Assert.Collection(
+            sends,
+            send => Assert.Equal(("capture:uvc-01", "master", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("capture:uvc-01", "pgm-l", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("capture:uvc-01", "pgm-r", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("capture:uvc-01", "stream", 0), (send.SourceId, send.BusId, send.GainDb)),
+            send => Assert.Equal(("capture:uvc-01", "mon", 0), (send.SourceId, send.BusId, send.GainDb)));
+    }
+
+    [Fact]
+    public void EnsureDefaultCaptureAudioRoutingSends_PreservesExistingCaptureRoutesAndAddsMissingBuses()
+    {
+        var sends = StudioViewModel.EnsureDefaultCaptureAudioRoutingSends(
+            [
+                new MediaCoreAudioRoutingSendWire("capture:uvc-01", "master", -3),
+                new MediaCoreAudioRoutingSendWire("local-machine-audio", "mon", -6)
+            ],
+            [
+                new MediaCoreCaptureAudioSourceWire(
+                    "uvc-01",
+                    "mic-01",
+                    "USB Mic",
+                    0,
+                    "wasapi-input",
+                    @"\\\\?\\SWD#MMDEVAPI#mic-01",
+                    "WASAPI",
+                    false),
+                new MediaCoreCaptureAudioSourceWire(
+                    "local-machine-audio",
+                    "loopback",
+                    "System audio",
+                    0,
+                    "wasapi-loopback",
+                    "default-render",
+                    "WASAPI",
+                    false)
+            ]);
+
+        Assert.Contains(sends, send => send.SourceId == "capture:uvc-01" && send.BusId == "master" && send.GainDb == -3);
+        Assert.Contains(sends, send => send.SourceId == "capture:uvc-01" && send.BusId == "stream" && send.GainDb == 0);
+        Assert.Contains(sends, send => send.SourceId == "capture:uvc-01" && send.BusId == "mon" && send.GainDb == 0);
+        Assert.Contains(sends, send => send.SourceId == "local-machine-audio" && send.BusId == "mon" && send.GainDb == -6);
+        Assert.Contains(sends, send => send.SourceId == "local-machine-audio" && send.BusId == "master" && send.GainDb == 0);
+        Assert.Equal(10, sends.Count);
+    }
+
+    [Fact]
     public void EnsureDefaultMediaAudioRoutingSends_AddsProgramStreamAndMonitorRoutes()
     {
         var sends = StudioViewModel.EnsureDefaultMediaAudioRoutingSends(
@@ -1620,6 +2105,72 @@ public sealed class StudioViewModelAudioStatusTests
             Embedded: embedded);
 
         Assert.True(StudioViewModel.IsConfiguredCaptureAudioSource(source));
+    }
+
+    [Fact]
+    public void ResolveCaptureAudioAssignment_PreservesExistingValidAssignment()
+    {
+        var capture = BuildCaptureDevice("uvc-01", "Elgato HD60", "uvc");
+        var assigned = new AudioCaptureDevice
+        {
+            Id = "mic-01",
+            NativeDeviceId = @"\\?\SWD#MMDEVAPI#mic-01",
+            Name = "USB Mic"
+        };
+        capture.AssignedAudioDeviceId = assigned.Id;
+
+        var resolved = StudioViewModel.ResolveCaptureAudioAssignment(
+            capture,
+            new Dictionary<string, AudioCaptureDevice>(StringComparer.Ordinal) { [assigned.Id] = assigned },
+            [assigned]);
+
+        Assert.Same(assigned, resolved);
+    }
+
+    [Fact]
+    public void ResolveCaptureAudioAssignment_AutoSelectsAvailableEmbeddedCaptureAudio()
+    {
+        var capture = BuildCaptureDevice("decklink-1", "DeckLink Mini Recorder", "blackmagic");
+        var embedded = new AudioCaptureDevice
+        {
+            Id = "embedded-decklink-1",
+            NativeDeviceId = "decklink-native",
+            Name = "DeckLink Mini Recorder embedded audio",
+            SourceKind = "embedded-capture-audio",
+            DriverName = "Blackmagic DeckLink",
+            LinkedCaptureDeviceId = capture.Id,
+            IsAvailable = true
+        };
+
+        var resolved = StudioViewModel.ResolveCaptureAudioAssignment(
+            capture,
+            new Dictionary<string, AudioCaptureDevice>(StringComparer.Ordinal),
+            [embedded]);
+
+        Assert.Same(embedded, resolved);
+    }
+
+    [Fact]
+    public void ResolveCaptureAudioAssignment_IgnoresUnavailableEmbeddedCaptureAudio()
+    {
+        var capture = BuildCaptureDevice("decklink-1", "DeckLink Mini Recorder", "blackmagic");
+        var embedded = new AudioCaptureDevice
+        {
+            Id = "embedded-decklink-1",
+            NativeDeviceId = "decklink-native",
+            Name = "DeckLink Mini Recorder embedded audio",
+            SourceKind = "embedded-capture-audio",
+            DriverName = "Blackmagic DeckLink",
+            LinkedCaptureDeviceId = capture.Id,
+            IsAvailable = false
+        };
+
+        var resolved = StudioViewModel.ResolveCaptureAudioAssignment(
+            capture,
+            new Dictionary<string, AudioCaptureDevice>(StringComparer.Ordinal),
+            [embedded]);
+
+        Assert.Null(resolved);
     }
 
     [Theory]
@@ -1866,7 +2417,7 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(expected, StudioViewModel.FormatTransportRecordingConfigLabel(format, value));
     }
 
-    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof proof) =>
+    private static NativeMediaCoreRecordingSession BuildRecordingSession(NativeMediaCoreRecordingProof? proof) =>
         new()
         {
             SessionId = "recording",
@@ -1882,6 +2433,17 @@ public sealed class StudioViewModelAudioStatusTests
             EstimatedDiskRateMBps = 4.99,
             ProgramPath = "Recordings/show-program-0.mp4",
             Proof = proof
+        };
+
+    private static CaptureDevice BuildCaptureDevice(string id, string name, string vendor) =>
+        new()
+        {
+            Id = id,
+            NativeDeviceId = $"native-{id}",
+            Vendor = vendor,
+            Name = name,
+            Inputs = [new CaptureDeviceInput { Id = "default", Label = "Default" }],
+            SelectedInputId = "default"
         };
 
     private static AudioCaptureDevice AudioDevice(

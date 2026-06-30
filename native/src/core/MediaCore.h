@@ -318,6 +318,7 @@ class MediaCore {
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
+  std::vector<std::string> outputDestinations_;
 
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
@@ -332,6 +333,7 @@ class MediaCore {
     double audioMonitorVolume = 0.0;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
+    std::vector<std::string> outputDestinations;
     std::vector<modules::OutputDestinationSettings> outputDestinationSettings;
     modules::ProgramFrame programFrame;
     int64_t tickId = 0;

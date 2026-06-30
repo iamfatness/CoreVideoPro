@@ -467,6 +467,9 @@
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceRecommendation, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}"
+                                       Foreground="{StaticResource StudioWarningBrush}" />
                         </StackPanel>
                     </Border>
 

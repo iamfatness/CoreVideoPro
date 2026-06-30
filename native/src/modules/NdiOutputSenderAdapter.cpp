@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -122,7 +124,7 @@ struct NdiApi {
 
 #if defined(_WIN32)
 using LibraryHandle = HMODULE;
-LibraryHandle loadLibrary(const char* name) { return LoadLibraryA(name); }
+LibraryHandle loadLibrary(const std::string& name) { return LoadLibraryA(name.c_str()); }
 void* resolveSymbol(LibraryHandle handle, const char* symbol) {
   return reinterpret_cast<void*>(GetProcAddress(handle, symbol));
 }
@@ -134,7 +136,7 @@ void unloadLibrary(LibraryHandle handle) {
 std::string lastLoadError() { return "Win32 error " + std::to_string(GetLastError()); }
 #else
 using LibraryHandle = void*;
-LibraryHandle loadLibrary(const char* name) { return dlopen(name, RTLD_LAZY | RTLD_LOCAL); }
+LibraryHandle loadLibrary(const std::string& name) { return dlopen(name.c_str(), RTLD_LAZY | RTLD_LOCAL); }
 void* resolveSymbol(LibraryHandle handle, const char* symbol) { return dlsym(handle, symbol); }
 void unloadLibrary(LibraryHandle handle) {
   if (handle) {
@@ -147,27 +149,45 @@ std::string lastLoadError() {
 }
 #endif
 
-const char* const* ndiLibraryCandidates(size_t& count) {
+std::vector<std::string> ndiLibraryCandidates() {
 #if defined(_WIN32)
-  static const char* kCandidates[] = {"Processing.NDI.Lib.x64.dll", "Processing.NDI.Lib.x86.dll"};
+  std::vector<std::string> candidates = {"Processing.NDI.Lib.x64.dll"};
+  const auto addCandidate = [&](const std::filesystem::path& path) {
+    if (!path.empty()) {
+      candidates.push_back(path.string());
+    }
+  };
+  const auto addRuntimeRoot = [&](const char* root) {
+    if (!root || root[0] == '\0') {
+      return;
+    }
+    const std::filesystem::path base(root);
+    addCandidate(base / "NDI" / "NDI 6 Runtime" / "v6" / "Bin" / "x64" / "Processing.NDI.Lib.x64.dll");
+    addCandidate(base / "NDI" / "NDI 5 Runtime" / "v5" / "Bin" / "x64" / "Processing.NDI.Lib.x64.dll");
+    addCandidate(base / "NewTek" / "NDI 4 Runtime" / "Bin" / "x64" / "Processing.NDI.Lib.x64.dll");
+  };
+  addRuntimeRoot(std::getenv("PROGRAMFILES"));
+  addRuntimeRoot(std::getenv("PROGRAMFILES(X86)"));
+  if (const char* ndiRuntimeDir = std::getenv("NDI_RUNTIME_DIR"); ndiRuntimeDir && ndiRuntimeDir[0] != '\0') {
+    addCandidate(std::filesystem::path(ndiRuntimeDir) / "Processing.NDI.Lib.x64.dll");
+  }
+  candidates.push_back("Processing.NDI.Lib.x86.dll");
+  return candidates;
 #else
-  static const char* kCandidates[] = {"libndi.so.5", "libndi.so.4", "libndi.so", "libndi.dylib"};
+  return {"libndi.so.5", "libndi.so.4", "libndi.so", "libndi.dylib"};
 #endif
-  count = sizeof(kCandidates) / sizeof(kCandidates[0]);
-  return kCandidates;
 }
 
 LibraryHandle openNdiLibrary(RuntimeProbe& probe) {
-  size_t count = 0;
-  const char* const* candidates = ndiLibraryCandidates(count);
-  for (size_t index = 0; index < count; ++index) {
-    if (LibraryHandle handle = loadLibrary(candidates[index])) {
-      probe.candidates.push_back({candidates[index], "available", "library loaded"});
+  const auto candidates = ndiLibraryCandidates();
+  for (const auto& candidate : candidates) {
+    if (LibraryHandle handle = loadLibrary(candidate)) {
+      probe.candidates.push_back({candidate, "available", "library loaded"});
       probe.available = true;
-      probe.detail = std::string("available:") + candidates[index];
+      probe.detail = std::string("available:") + candidate;
       return handle;
     }
-    probe.candidates.push_back({candidates[index], "unavailable", lastLoadError()});
+    probe.candidates.push_back({candidate, "unavailable", lastLoadError()});
   }
   probe.available = false;
   probe.detail = "missing:libNDI runtime";
@@ -576,15 +596,10 @@ std::unique_ptr<IOutputSender> createNdiOutputSender() {
   // runtime-probe the shared library (mirrors the RTMP FFmpeg-probe approach);
   // when it is absent we return a sender that reports a clear runtime-missing
   // warning rather than nullptr, so the operator sees why NDI is unavailable.
-  // When the runtime is missing entirely we fall back to nullptr so module
-  // composition keeps the synthetic sender (and RTMP precedence) unchanged.
   RuntimeProbe probe;
   LibraryHandle library = openNdiLibrary(probe);
-  if (!library) {
-    return nullptr;
-  }
   NdiApi api;
-  if (!resolveNdiApi(library, api)) {
+  if (library && !resolveNdiApi(library, api)) {
     probe.available = false;
     probe.detail = "incomplete:libNDI symbol set";
     probe.candidates.push_back({"NDIlib_send_*", "unavailable", "required v5 send entrypoints not resolved"});
