@@ -69,13 +69,9 @@ TEST(NdiSourceName, ConventionalPreviewNameHasNoShortNameWarning) {
 TEST(NdiOutputSenderFactory, ReturnsNullptrWhenRuntimeAbsentInStubBuild) {
   auto sender = createNdiOutputSender();
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_OUTPUT
-  // In a dev build the factory still returns nullptr when no libNDI runtime is
-  // installed on the machine running the tests.
-  if (sender) {
-    SUCCEED() << "libNDI runtime detected on this dev machine.";
-  } else {
-    SUCCEED() << "libNDI runtime absent; factory returned nullptr as expected.";
-  }
+  // In a dev build the factory returns a real/diagnostic NDI sender. If libNDI
+  // is absent, the sender reports runtime-missing through output health.
+  EXPECT_NE(sender, nullptr);
 #else
   EXPECT_EQ(sender, nullptr);
 #endif

@@ -204,6 +204,40 @@ public sealed class NativeMediaCoreStateMapperTests
     }
 
     [Fact]
+    public void MapsOutputSenderResultAndRuntimeDetailIntoOutputHealthWhenWarningIsMissing()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            Outputs = ["ndi"],
+            OutputSenderSession = new NativeMediaCoreOutputSenderSession
+            {
+                Status = "warning",
+                ActiveSenderCount = 1,
+                Senders =
+                [
+                    new NativeMediaCoreOutputSender
+                    {
+                        SenderId = "ndi:program",
+                        Destination = "ndi",
+                        Status = "warning",
+                        FramesSent = 0,
+                        RetryCount = 0,
+                        LatencyMs = 0,
+                        BitrateMbps = 0,
+                        LastResultCode = "ndi-output-unavailable",
+                        RuntimeDetail = "LibNDI runtime-missing on this machine."
+                    }
+                ]
+            }
+        });
+
+        var ndi = Assert.Single(snapshot.OutputHealth, item => item.Destination == "ndi");
+        Assert.Equal("warning", ndi.Status);
+        Assert.Contains("ndi-output-unavailable", ndi.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("runtime-missing", ndi.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void MergesNativeAudioMixAndCaptionTrackStateFromWirePayload()
     {
         var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState

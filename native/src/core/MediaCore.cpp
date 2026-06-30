@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -30,12 +31,21 @@
 namespace corevideo::core {
 namespace {
 
+constexpr int64_t kStaleCaptureAudioAgeMs = 1000;
+
 rpc::Json::Array stringArray(const std::vector<std::string>& values) {
   rpc::Json::Array result;
   for (const auto& value : values) {
     result.emplace_back(value);
   }
   return result;
+}
+
+int64_t monotonicMs() {
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
 }
 
 float clampColorGradeAxis(double value) {
@@ -129,6 +139,14 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
 
 #if COREVIDEO_WITH_RTMP_OUTPUT
   result.emplace_back("rtmp-output");
+#endif
+
+#if COREVIDEO_WITH_NDI_OUTPUT
+  result.emplace_back("ndi-output");
+#endif
+
+#if COREVIDEO_WITH_SRT_OUTPUT
+  result.emplace_back("srt-output");
 #endif
 
 #if COREVIDEO_WITH_SRT_INGEST
@@ -804,7 +822,9 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   // never render a synchronous storm of frames. A live program only needs the
   // current frame; rendering dozens back-to-back drives the real D3D11/encoder/
   // output path into a blocking burst that wedges the processing thread.
-  additionalTicks = std::min(additionalTicks, 2);
+  if (audioWorkerActive_) {
+    additionalTicks = std::min(additionalTicks, 2);
+  }
   // Increment 2 (depends on the audio decouple): in the live server the render thread
   // keeps lastProgramFrame_ fresh at ~60fps and the audio/output worker keeps the
   // audio/output snapshot fresh, so an EMPTY poll (the 250ms media-core-sync) no
@@ -1239,6 +1259,7 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
         recordingTargetBitrateMbps_,
         recordingVideoCodec_);
   }
+  outputDestinations_ = command.getStringArray("destinations");
   outputDestinationSettings_ = readOutputDestinationSettings(command);
   for (auto& destination : outputDestinationSettings_) {
     if (destination.id == "rtmp" || destination.protocol == "rtmp" || destination.protocol == "rtmps") {
@@ -1284,6 +1305,8 @@ void MediaCore::stopEncoderSession(const rpc::Json& command) {
   encoderLifecycleStatus_ = "stopped";
   encoderStoppedAtMs_ = command.get("stoppedAtMs") ? command.get("stoppedAtMs")->asNumber() : encoderStoppedAtMs_;
   encoderLastTransition_ = command.getString("reason", "Program output encoder session stopped.");
+  outputDestinations_.clear();
+  outputDestinationSettings_.clear();
 }
 
 void MediaCore::failOutputSender(const rpc::Json& command) {
@@ -2421,6 +2444,12 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
     const int64_t queuedFrames = metric == metricsByCaptureId.end() ? 0 : metric->second.queuedFrames;
     const int64_t underrunCount = metric == metricsByCaptureId.end() ? 0 : metric->second.underrunCount;
     const int64_t emptyPacketPolls = metric == metricsByCaptureId.end() ? 0 : metric->second.emptyPacketPolls;
+    const int64_t startedAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.startedAtMs;
+    const int64_t lastFrameAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.lastFrameAtMs;
+    const int64_t stoppedAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.stoppedAtMs;
+    const int64_t lastFrameAgeMs = streaming && lastFrameAtMs > 0
+                                       ? std::max<int64_t>(0, monotonicMs() - lastFrameAtMs)
+                                       : 0;
     const double peakDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.peakDbfs;
     const double rmsDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.rmsDbfs;
     const bool signalPresent = metric != metricsByCaptureId.end() && metric->second.signalPresent;
@@ -2434,6 +2463,9 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       addWarning(source.captureDeviceId + ": " + sourceWarning);
     } else if (streaming && framesReceived <= 0 && sourceWarning.empty()) {
       sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
+      addWarning(source.captureDeviceId + ": " + sourceWarning);
+    } else if (streaming && framesReceived > 0 && lastFrameAgeMs > kStaleCaptureAudioAgeMs && sourceWarning.empty()) {
+      sourceWarning = "Audio capture PCM is stale; no new frames have arrived for " + std::to_string(lastFrameAgeMs) + " ms.";
       addWarning(source.captureDeviceId + ": " + sourceWarning);
     } else if (streaming && framesReceived > 0 && !signalPresent && sourceWarning.empty()) {
       sourceWarning = "Audio capture is receiving silent PCM frames; check the selected endpoint or play audio through it.";
@@ -2466,6 +2498,10 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
         {"captureQueuedFrames", static_cast<double>(queuedFrames)},
         {"captureUnderrunCount", static_cast<double>(underrunCount)},
         {"emptyPacketPolls", static_cast<double>(emptyPacketPolls)},
+        {"captureStartedAtMs", static_cast<double>(startedAtMs)},
+        {"captureLastFrameAtMs", static_cast<double>(lastFrameAtMs)},
+        {"captureLastFrameAgeMs", static_cast<double>(lastFrameAgeMs)},
+        {"captureStoppedAtMs", static_cast<double>(stoppedAtMs)},
         {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
         {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
         {"peakDbfs", peakDbfs},
@@ -3363,6 +3399,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   work.audioMonitorVolume = audioMonitorVolume_;
   work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
+  work.outputDestinations = outputDestinations_;
   work.outputDestinationSettings = outputDestinationSettings_;
   work.programFrame = lastProgramFrame_;
   work.tickId = ++audioOutputTickId_;
@@ -3489,6 +3526,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
   // pixels, so when no output is active (readback skipped) this is harmless.
   modules_.encoder->submit(work.programFrame);
   const auto session = modules_.encoder->session();
+  auto outputDestinations = work.outputDestinations;
+  outputDestinations.erase(
+      std::remove(outputDestinations.begin(), outputDestinations.end(), std::string("recording")),
+      outputDestinations.end());
   const std::vector<float>& streamBusAudio = localBusTap("stream");
   const std::vector<float>& outputProgramAudio =
       !streamBusAudio.empty() ? streamBusAudio
@@ -3497,9 +3538,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
       !streamBusAudio.empty() || !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
   const auto failOutputSenderSync = [&](const std::string& message) {
     const auto destination =
-        std::find(session.destinations.begin(), session.destinations.end(), "rtmp") != session.destinations.end()
+        std::find(outputDestinations.begin(), outputDestinations.end(), "rtmp") != outputDestinations.end()
             ? "rtmp"
-            : !session.destinations.empty() ? session.destinations.front() : std::string("stream");
+            : !outputDestinations.empty() ? outputDestinations.front() : std::string("stream");
     try {
       modules_.outputSender->fail(destination, message, static_cast<double>(work.programFrame.frameNumber * 33));
     } catch (...) {
@@ -3508,7 +3549,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
   const auto tOut0 = std::chrono::steady_clock::now();
   try {
     modules_.outputSender->sync(
-        session.destinations,
+        outputDestinations,
         &work.programFrame,
         static_cast<double>(work.programFrame.frameNumber * 33),
         work.outputDestinationSettings,
@@ -3520,7 +3561,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
                            .count();
     if (outMs >= 20) {
       std::fprintf(stderr, "[outputSender] sync %lldms dests=%zu\n",
-                   static_cast<long long>(outMs), session.destinations.size());
+                   static_cast<long long>(outMs), outputDestinations.size());
     }
   } catch (const std::exception& ex) {
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());

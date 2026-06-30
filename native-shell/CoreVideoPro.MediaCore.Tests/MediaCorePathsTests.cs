@@ -45,29 +45,29 @@ public sealed class MediaCorePathsTests : IDisposable
     }
 
     [Fact]
-    public void BuildNativeCoreExecutableCandidates_PrefersDevAdapterBuildBeforeStaleAppCopy()
+    public void BuildNativeCoreExecutableCandidates_PrefersPackagedAppCopyBeforeDevBuild()
     {
         var appBase = Path.Combine(_repoRoot, "app");
 
         var candidates = MediaCorePaths.BuildNativeCoreExecutableCandidates(_repoRoot, appBase);
 
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-native.exe"), candidates[0]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-native.exe"), candidates[1]);
-        Assert.Equal(Path.Combine(appBase, "corevideo-native.exe"), candidates[2]);
+        Assert.Equal(Path.Combine(appBase, "corevideo-native.exe"), candidates[0]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-native.exe"), candidates[1]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-native.exe"), candidates[2]);
         Assert.Equal(Path.Combine(_repoRoot, "native", "build", "corevideo-native.exe"), candidates[3]);
         Assert.Equal(Path.Combine(_repoRoot, "native", "build", "Release", "corevideo-native.exe"), candidates[4]);
     }
 
     [Fact]
-    public void BuildZoomEngineExecutableCandidates_PrefersDevAdapterBuildBeforeStubBuild()
+    public void BuildZoomEngineExecutableCandidates_PrefersPackagedAppCopyBeforeDevBuild()
     {
         var appBase = Path.Combine(_repoRoot, "app");
 
         var candidates = MediaCorePaths.BuildZoomEngineExecutableCandidates(_repoRoot, appBase);
 
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"), candidates[0]);
-        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"), candidates[1]);
-        Assert.Equal(Path.Combine(appBase, "corevideo-zoom-engine.exe"), candidates[2]);
+        Assert.Equal(Path.Combine(appBase, "corevideo-zoom-engine.exe"), candidates[0]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "corevideo-zoom-engine.exe"), candidates[1]);
+        Assert.Equal(Path.Combine(_repoRoot, "native", "build-dev", "Release", "corevideo-zoom-engine.exe"), candidates[2]);
         Assert.Equal(Path.Combine(_repoRoot, "native", "build", "corevideo-zoom-engine.exe"), candidates[3]);
         Assert.Equal(Path.Combine(_repoRoot, "native", "build", "Release", "corevideo-zoom-engine.exe"), candidates[4]);
     }

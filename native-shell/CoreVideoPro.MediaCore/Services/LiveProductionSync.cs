@@ -28,6 +28,8 @@ public static class LiveProductionSync
         public required string ActiveSceneId { get; init; }
         public required string ActiveSceneLayout { get; init; }
         public required string CurrentBreakoutRoomId { get; init; }
+        public bool RecordingRequested { get; init; }
+        public bool StreamingRequested { get; init; }
         public IReadOnlyList<LiveProductionParticipantContext> Participants { get; init; } = [];
     }
 
@@ -63,8 +65,8 @@ public static class LiveProductionSync
     {
         var captionCue = snapshot.CaptionTrack.CurrentCue;
         var lowerThird = ResolveProgramLowerThird(snapshot, context);
-        var recording = snapshot.Recording?.Active == true;
-        var streaming = IsStreamingLive(snapshot);
+        var recording = snapshot.Recording?.Active == true || context.RecordingRequested;
+        var streaming = IsStreamingLive(snapshot) || context.StreamingRequested;
         var outputStatus = MediaCoreBridgeService.SummarizeOutputs(snapshot);
         var outputSessionStatus = SummarizeOutputSession(snapshot);
         var meetingStateLabel = ResolveMeetingStateLabel(snapshot);
@@ -245,14 +247,39 @@ public static class LiveProductionSync
 
     public static bool IsStreamingLive(NativeMediaCoreStateSnapshot snapshot)
     {
-        if (snapshot.OutputSenderSession.Status is "live" or "warning")
+        if (snapshot.OutputSenderSession.Status is "live" or "warning" &&
+            snapshot.OutputSenderSession.Senders.Any(sender =>
+                sender.Status is "live" or "starting" ||
+                sender.Status == "warning" && !IsUnavailableOutputSenderWarning(sender)))
         {
             return snapshot.OutputSenderSession.ActiveSenderCount > 0;
         }
 
         return snapshot.OutputHealth.Any(item =>
             item.Destination is not "recording" &&
-            item.Status is "live" or "warning");
+            (item.Status == "live" ||
+             item.Status == "warning" && !IsUnavailableOutputHealthWarning(item.Message)));
+    }
+
+    private static bool IsUnavailableOutputSenderWarning(NativeMediaCoreOutputSender sender)
+    {
+        var detail = string.Join(
+            " ",
+            new[] { sender.LastResultCode, sender.Warning, sender.RuntimeDetail, sender.LastError }
+                .Where(static part => !string.IsNullOrWhiteSpace(part)))
+            .ToLowerInvariant();
+        return IsUnavailableOutputHealthWarning(detail);
+    }
+
+    private static bool IsUnavailableOutputHealthWarning(string? message)
+    {
+        var detail = message?.ToLowerInvariant() ?? string.Empty;
+        return detail.Contains("output-unavailable", StringComparison.Ordinal) ||
+               detail.Contains("not available in this build", StringComparison.Ordinal) ||
+               detail.Contains("runtime-missing", StringComparison.Ordinal) ||
+               detail.Contains("libndi runtime", StringComparison.Ordinal) ||
+               detail.Contains("no ndi sender module", StringComparison.Ordinal) ||
+               detail.Contains("no srt sender module", StringComparison.Ordinal);
     }
 
     public sealed record TransportReadoutLabels

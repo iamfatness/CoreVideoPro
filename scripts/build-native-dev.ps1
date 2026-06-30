@@ -141,6 +141,7 @@ $cmakeArgs = @(
   "-DCOREVIDEO_WITH_WASAPI_MONITOR=ON",
   "-DCOREVIDEO_WITH_WASAPI_CAPTURE=ON",
   "-DCOREVIDEO_WITH_RTMP_OUTPUT=ON",
+  "-DCOREVIDEO_WITH_NDI_OUTPUT=ON",
   "-DCOREVIDEO_BUILD_ZOOM_ENGINE=ON",
   "-DBUILD_TESTING=ON",
   "-DZOOM_SDK_DIR=$ZoomSdkDir"
@@ -179,7 +180,7 @@ Write-Host "  $BuildDir\corevideo-native.exe"
 Write-Host "  $BuildDir\corevideo-zoom-engine.exe"
 Write-Host "  $BuildDir\corevideo-native-tests.exe"
 Write-Host ""
-Write-Host "Output adapters: D3D11 compositor, Media Foundation MP4, RTMP send-proof"
+Write-Host "Output adapters: D3D11 compositor, Media Foundation MP4, RTMP send-proof, NDI runtime-probe"
 if ($WithDeckLink) { Write-Host "Capture adapters: Blackmagic DeckLink enumeration enabled" }
 if ($WithAja) { Write-Host "Capture adapters: AJA NTV2 runtime probe enabled" }
 Write-Host "Verify: ctest -C $Config --test-dir `"$BuildDir`" --output-on-failure"

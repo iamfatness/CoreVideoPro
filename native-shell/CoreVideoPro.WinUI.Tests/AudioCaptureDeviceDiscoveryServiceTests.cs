@@ -88,7 +88,7 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
     }
 
     [Fact]
-    public void EnsureDefaultLoopbackFallback_DoesNotAddFallbackWhenRenderLoopbackWasDiscovered()
+    public void EnsureDefaultLoopbackFallback_KeepsNativeDefaultEndpointAvailableWhenRenderLoopbackWasDiscovered()
     {
         var devices = AudioCaptureDeviceDiscoveryService.EnsureDefaultLoopbackFallback(
             [
@@ -96,7 +96,22 @@ public sealed class AudioCaptureDeviceDiscoveryServiceTests
                 Device("system", "wasapi-loopback", "System", isDefault: true)
             ]);
 
-        Assert.DoesNotContain(devices, device => device.Id == "default-render-loopback");
+        var fallback = Assert.Single(devices, device => device.Id == "default-render-loopback");
+        Assert.Equal("default-render", fallback.NativeDeviceId);
+        Assert.True(fallback.IsDefault);
+        Assert.Contains(devices, device => device.Id == "system");
+    }
+
+    [Fact]
+    public void EnsureDefaultLoopbackFallback_DoesNotDuplicateNativeDefaultEndpoint()
+    {
+        var devices = AudioCaptureDeviceDiscoveryService.EnsureDefaultLoopbackFallback(
+            [
+                Device("default-render-loopback", "wasapi-loopback", "Default system output", isDefault: true),
+                Device("system", "wasapi-loopback", "System", isDefault: true)
+            ]);
+
+        Assert.Single(devices, device => device.Id == "default-render-loopback");
         Assert.Contains(devices, device => device.Id == "system");
     }
 

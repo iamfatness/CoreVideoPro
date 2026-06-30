@@ -235,7 +235,7 @@ public static class SupportBundleBuilder
                 Lifecycle = encoder.Lifecycle.Status,
                 TargetCount = encoder.Targets.Count
             },
-            Audio = SummarizeAudio(audio, routing, capture),
+            Audio = SummarizeAudio(audio, routing, capture, senders, snapshot.Recording),
             Senders = new SupportBundleMediaCoreSenders
             {
                 Status = senders.Status,
@@ -279,7 +279,9 @@ public static class SupportBundleBuilder
                             AudioSampleRate = proof.AudioSampleRate,
                             MetadataValid = proof.MetadataValid,
                             ContainerFormat = proof.ContainerFormat,
-                            AudioCodec = proof.AudioCodec
+                            AudioCodec = proof.AudioCodec,
+                            AudioBitrateKbps = proof.AudioBitrateKbps,
+                            TargetBitrateMbps = proof.TargetBitrateMbps
                         }
                         : null,
                     Streams = recording.Streams
@@ -328,11 +330,14 @@ public static class SupportBundleBuilder
     private static SupportBundleMediaCoreAudio SummarizeAudio(
         NativeMediaCoreAudioMixSession session,
         NativeMediaCoreAudioRoutingMatrix routing,
-        NativeMediaCoreCaptureAudioSources capture)
+        NativeMediaCoreCaptureAudioSources capture,
+        NativeMediaCoreOutputSenderSession? senders,
+        NativeMediaCoreRecordingSession? recording)
     {
         var warnings = session.Warnings.ToArray();
         var participants = session.Participants;
         var peakOutput = participants.Count > 0 ? participants.Max(p => p.OutputLevel) : 0;
+        var validationChecklist = AudioValidationChecklistBuilder.Build(session, capture, senders, recording);
 
         return new SupportBundleMediaCoreAudio
         {
@@ -355,6 +360,10 @@ public static class SupportBundleBuilder
             WarningCount = warnings.Length,
             WarningCategories = CategorizeAudioWarnings(session),
             Warnings = warnings,
+            ValidationChecklist = validationChecklist,
+            ValidationSummary = AudioValidationChecklistBuilder.SummarizeAcceptance(validationChecklist),
+            ValidationFirstIssue = AudioValidationChecklistBuilder.FindFirstBlockingStage(validationChecklist),
+            FullChainValidationSummary = AudioValidationChecklistBuilder.SummarizeFullChain(validationChecklist),
             Routing = new SupportBundleMediaCoreAudioRouting
             {
                 Status = routing.Status,
@@ -404,6 +413,10 @@ public static class SupportBundleBuilder
                         CaptureQueuedFrames = source.CaptureQueuedFrames,
                         CaptureUnderrunCount = source.CaptureUnderrunCount,
                         EmptyPacketPolls = source.EmptyPacketPolls,
+                        CaptureStartedAtMs = source.CaptureStartedAtMs,
+                        CaptureLastFrameAtMs = source.CaptureLastFrameAtMs,
+                        CaptureLastFrameAgeMs = source.CaptureLastFrameAgeMs,
+                        CaptureStoppedAtMs = source.CaptureStoppedAtMs,
                         CaptureSampleRate = source.CaptureSampleRate,
                         CaptureChannels = source.CaptureChannels,
                         PeakDbfs = source.PeakDbfs,
@@ -497,12 +510,34 @@ public static class SupportBundleBuilder
             if (mediaCore is not null)
             {
                 var audio = mediaCore.Audio;
-                if (audio.Status == "warning" || audio.WarningCount > 0 || audio.LimiterActive)
+                var includeAudioValidation =
+                    !string.IsNullOrWhiteSpace(audio.FullChainValidationSummary) &&
+                    !audio.FullChainValidationSummary.StartsWith("Full audio chain validated", StringComparison.OrdinalIgnoreCase);
+                if (audio.Status == "warning" || audio.WarningCount > 0 || audio.LimiterActive || includeAudioValidation)
                 {
                     var categories = audio.WarningCategories.Count > 0
                         ? string.Join(", ", audio.WarningCategories)
                         : "none";
                     lines.Add($"Audio diagnostics: {audio.Status}; categories: {categories}; warnings: {audio.WarningCount}");
+                    if (!string.IsNullOrWhiteSpace(audio.ValidationSummary))
+                    {
+                        lines.Add(audio.ValidationSummary);
+                    }
+
+                    if (audio.ValidationChecklist.Count > 0)
+                    {
+                        lines.Add($"Audio validation checklist: {string.Join(" | ", audio.ValidationChecklist)}");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(audio.ValidationFirstIssue))
+                    {
+                        lines.Add(audio.ValidationFirstIssue);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(audio.FullChainValidationSummary))
+                    {
+                        lines.Add(audio.FullChainValidationSummary);
+                    }
                 }
 
                 if (audio.Capture.SourceCount > 0)
@@ -554,9 +589,13 @@ public static class SupportBundleBuilder
                             $"Recording audio proof: packets {proof.AudioPacketsObserved}; samples {proof.AudioSampleCount}; {proof.AudioChannels} ch @ {proof.AudioSampleRate} Hz");
                     }
 
-                    if (audio.Capture.RoutedMasterFrames > 0 &&
-                        (proof?.AudioSampleCount ?? 0) <= 0 &&
-                        (proof?.AudioPacketsObserved ?? 0) <= 0)
+                    if (audio.Capture.RoutedMasterFrames > 0 && proof is null)
+                    {
+                        lines.Add("Recording audio fault: active recording has no audio proof telemetry from the native writer.");
+                    }
+                    else if (audio.Capture.RoutedMasterFrames > 0 &&
+                             (proof?.AudioSampleCount ?? 0) <= 0 &&
+                             (proof?.AudioPacketsObserved ?? 0) <= 0)
                     {
                         lines.Add("Recording audio fault: program/master PCM is present but the active recording has no audio samples.");
                     }

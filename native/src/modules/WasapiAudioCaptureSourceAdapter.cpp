@@ -29,10 +29,15 @@ namespace corevideo::modules {
 #include <propidl.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 namespace corevideo::modules {
 namespace {
@@ -106,57 +111,62 @@ bool isWasapiCaptureSource(const CaptureAudioSourceConfig& source) {
          source.audioSourceKind == "virtual-device";
 }
 
+int64_t monotonicCaptureMs() {
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
 class WasapiAudioCaptureSource final : public IAudioCaptureSource {
  public:
   ~WasapiAudioCaptureSource() override {
     stopAll();
-    if (comInitialized_) {
-      ::CoUninitialize();
-      comInitialized_ = false;
-    }
   }
 
   void configure(const std::vector<CaptureAudioSourceConfig>& sources) override {
     stopAll();
-    warnings_.clear();
-    if (!ensureCom()) {
-      return;
-    }
-
-    IMMDeviceEnumerator* enumerator = nullptr;
-    HRESULT hr = ::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                    __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
-    if (FAILED(hr) || enumerator == nullptr) {
-      warn("Could not create WASAPI device enumerator (hr=" + hexHrCapture(hr) + ").");
-      return;
-    }
-
-    for (const auto& source : sources) {
-      if (source.captureDeviceId.empty() || source.audioSourceKind == "none") {
-        continue;
+    std::vector<CaptureAudioSourceConfig> captureThreadSources;
+    {
+      std::lock_guard<std::mutex> lock(sourcesMutex_);
+      warnings_.clear();
+      for (const auto& source : sources) {
+        if (source.captureDeviceId.empty() || source.audioSourceKind == "none") {
+          continue;
+        }
+        if (!isWasapiCaptureSource(source)) {
+          warn("Audio source " + participantIdForSource(source) + " uses " + source.audioSourceKind +
+               "; WASAPI capture does not own that source type yet.");
+          continue;
+        }
+        captureThreadSources.push_back(source);
       }
-      if (!isWasapiCaptureSource(source)) {
-        warn("Audio source " + participantIdForSource(source) + " uses " + source.audioSourceKind +
-             "; WASAPI capture does not own that source type yet.");
-        continue;
-      }
-      openSource(enumerator, source);
     }
 
-    safeReleaseCapture(enumerator);
+    startCaptureThread(std::move(captureThreadSources));
   }
 
   std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+    (void)timestampMs;
     std::vector<AudioFrame> frames;
+    std::lock_guard<std::mutex> lock(sourcesMutex_);
     for (auto& source : sources_) {
-      pollSource(source, timestampMs, frames);
+      while (!source.pendingFrames.empty()) {
+        frames.push_back(std::move(source.pendingFrames.front()));
+        source.pendingFrames.pop_front();
+      }
+      source.queuedFrames = 0;
     }
     return frames;
   }
 
-  std::vector<std::string> warnings() const override { return warnings_; }
+  std::vector<std::string> warnings() const override {
+    std::lock_guard<std::mutex> lock(sourcesMutex_);
+    return warnings_;
+  }
 
   std::vector<CaptureAudioSourceMetrics> metrics() const override {
+    std::lock_guard<std::mutex> lock(sourcesMutex_);
     std::vector<CaptureAudioSourceMetrics> metrics;
     metrics.reserve(sources_.size());
     for (const auto& source : sources_) {
@@ -178,7 +188,10 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
           source.signalPresent,
           source.framesRendered,
           source.queuedFrames,
-          source.underrunCount});
+          source.underrunCount,
+          source.startedAtMs,
+          source.lastFrameAtMs,
+          source.stoppedAtMs});
     }
     return metrics;
   }
@@ -201,6 +214,10 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     int64_t queuedFrames = 0;
     int64_t underrunCount = 0;
     int64_t emptyPacketPolls = 0;
+    int64_t startedAtMs = 0;
+    int64_t lastFrameAtMs = 0;
+    int64_t stoppedAtMs = 0;
+    std::deque<AudioFrame> pendingFrames;
     double lastPeakDbfs = -120.0;
     double lastRmsDbfs = -120.0;
     bool signalPresent = false;
@@ -209,22 +226,6 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     std::string lastError;
     std::string warning;
   };
-
-  bool ensureCom() {
-    if (comInitialized_) {
-      return true;
-    }
-    const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (hr == RPC_E_CHANGED_MODE) {
-      return true;
-    }
-    if (FAILED(hr)) {
-      warn("Could not initialize COM for WASAPI capture (hr=" + hexHrCapture(hr) + ").");
-      return false;
-    }
-    comInitialized_ = true;
-    return true;
-  }
 
   void openSource(IMMDeviceEnumerator* enumerator, const CaptureAudioSourceConfig& config) {
     SourceState state;
@@ -279,6 +280,8 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
     }
 
     state.started = true;
+    state.startedAtMs = monotonicCaptureMs();
+    state.stoppedAtMs = 0;
     sources_.push_back(std::move(state));
   }
 
@@ -426,6 +429,7 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
         source.signalPresent = source.lastPeakDbfs > -60.0;
         source.framesReceived += frameCount;
         source.framesRendered += frameCount;
+        source.lastFrameAtMs = timestampMs;
         source.queuedFrames = 0;
         source.lastError.clear();
         source.warning.clear();
@@ -485,9 +489,12 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
   }
 
   void stopAll() {
-    for (auto& source : sources_) {
-      cleanup(source);
+    stopping_.store(true);
+    if (captureThread_.joinable()) {
+      captureThread_.join();
     }
+    stopping_.store(false);
+    std::lock_guard<std::mutex> lock(sourcesMutex_);
     sources_.clear();
   }
 
@@ -496,6 +503,9 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       source.client->Stop();
     }
     source.started = false;
+    if (source.startedAtMs > 0) {
+      source.stoppedAtMs = monotonicCaptureMs();
+    }
     safeReleaseCapture(source.captureClient);
     if (source.mixFormat != nullptr) {
       ::CoTaskMemFree(source.mixFormat);
@@ -506,7 +516,85 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
 
   void warn(std::string warning) { warnings_.push_back(std::move(warning)); }
 
-  bool comInitialized_ = false;
+  void startCaptureThread(std::vector<CaptureAudioSourceConfig> sources) {
+    if (sources.empty()) {
+      return;
+    }
+    stopping_.store(false);
+    captureThread_ = std::thread([this, sources = std::move(sources)]() mutable { captureLoop(std::move(sources)); });
+  }
+
+  void captureLoop(std::vector<CaptureAudioSourceConfig> configs) {
+    const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool didInitializeCom = SUCCEEDED(hr);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+      std::lock_guard<std::mutex> lock(sourcesMutex_);
+      warn("Could not initialize COM on WASAPI capture thread (hr=" + hexHrCapture(hr) + ").");
+      return;
+    }
+
+    IMMDeviceEnumerator* enumerator = nullptr;
+    const HRESULT enumeratorHr = ::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                                    __uuidof(IMMDeviceEnumerator),
+                                                    reinterpret_cast<void**>(&enumerator));
+    if (FAILED(enumeratorHr) || enumerator == nullptr) {
+      std::lock_guard<std::mutex> lock(sourcesMutex_);
+      warn("Could not create WASAPI device enumerator on capture thread (hr=" + hexHrCapture(enumeratorHr) + ").");
+      if (didInitializeCom) {
+        ::CoUninitialize();
+      }
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(sourcesMutex_);
+      for (const auto& config : configs) {
+        openSource(enumerator, config);
+      }
+    }
+    safeReleaseCapture(enumerator);
+
+    while (!stopping_.load()) {
+      {
+        std::lock_guard<std::mutex> lock(sourcesMutex_);
+        const auto timestampMs = monotonicCaptureMs();
+        for (auto& source : sources_) {
+          std::vector<AudioFrame> frames;
+          pollSource(source, timestampMs, frames);
+          for (auto& frame : frames) {
+            source.pendingFrames.push_back(std::move(frame));
+          }
+          constexpr int64_t kMaxQueuedFramesPerSource = 48000;
+          int64_t queued = 0;
+          for (const auto& frame : source.pendingFrames) {
+            queued += frame.sampleCount;
+          }
+          while (queued > kMaxQueuedFramesPerSource && !source.pendingFrames.empty()) {
+            queued -= source.pendingFrames.front().sampleCount;
+            source.pendingFrames.pop_front();
+            ++source.underrunCount;
+          }
+          source.queuedFrames = queued;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(sourcesMutex_);
+      for (auto& source : sources_) {
+        cleanup(source);
+      }
+    }
+
+    if (didInitializeCom) {
+      ::CoUninitialize();
+    }
+  }
+
+  std::atomic<bool> stopping_{false};
+  mutable std::mutex sourcesMutex_;
+  std::thread captureThread_;
   std::vector<SourceState> sources_;
   std::vector<std::string> warnings_;
 };

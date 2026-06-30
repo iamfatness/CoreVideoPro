@@ -402,7 +402,7 @@ public static class SyntheticMediaCore
                     "live" or "starting" => "live",
                     _ => "idle"
                 },
-                Message = sender?.Warning ?? $"{destination.ToUpperInvariant()} sender {sender?.Status ?? "idle"}.",
+                Message = FormatOutputSenderHealthMessage(destination, sender),
                 DroppedFrames = 0
             });
         }
@@ -419,6 +419,22 @@ public static class SyntheticMediaCore
         }
 
         return health;
+    }
+
+    private static string FormatOutputSenderHealthMessage(string destination, NativeMediaCoreOutputSender? sender)
+    {
+        if (sender is null)
+        {
+            return $"{destination.ToUpperInvariant()} sender idle.";
+        }
+
+        var parts = new[] { sender.Warning, sender.LastError, sender.LastResultCode, sender.RuntimeDetail }
+            .Where(static part => !string.IsNullOrWhiteSpace(part))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return parts.Count > 0
+            ? string.Join(" ", parts)
+            : $"{destination.ToUpperInvariant()} sender {sender.Status}.";
     }
 
     private static int TryGetRouteCount(NativeMediaCoreCommand? sceneGraph)

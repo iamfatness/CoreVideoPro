@@ -142,6 +142,10 @@ public sealed record SupportBundleMediaCoreAudio
     public int WarningCount { get; init; }
     public IReadOnlyList<string> WarningCategories { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
+    public IReadOnlyList<string> ValidationChecklist { get; init; } = [];
+    public string? ValidationSummary { get; init; }
+    public string? ValidationFirstIssue { get; init; }
+    public string? FullChainValidationSummary { get; init; }
     public SupportBundleMediaCoreAudioRouting Routing { get; init; } = new();
     public SupportBundleMediaCoreCaptureAudio Capture { get; init; } = new();
 }
@@ -199,6 +203,10 @@ public sealed record SupportBundleMediaCoreCaptureAudioSource
     public long CaptureQueuedFrames { get; init; }
     public long CaptureUnderrunCount { get; init; }
     public long EmptyPacketPolls { get; init; }
+    public double CaptureStartedAtMs { get; init; }
+    public double CaptureLastFrameAtMs { get; init; }
+    public double CaptureLastFrameAgeMs { get; init; }
+    public double CaptureStoppedAtMs { get; init; }
     public int CaptureSampleRate { get; init; }
     public int CaptureChannels { get; init; }
     public double PeakDbfs { get; init; } = -120;
@@ -256,6 +264,8 @@ public sealed record SupportBundleMediaCoreRecordingProof
     public bool MetadataValid { get; init; }
     public string? ContainerFormat { get; init; }
     public string? AudioCodec { get; init; }
+    public int AudioBitrateKbps { get; init; }
+    public double TargetBitrateMbps { get; init; }
 }
 
 public sealed record SupportBundleMediaCoreRecordingStream

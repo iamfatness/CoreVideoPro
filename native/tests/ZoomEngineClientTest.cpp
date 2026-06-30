@@ -183,7 +183,7 @@ TEST(ZoomEngineClient, MirrorsSharedMemoryNamesAndSizes) {
 }
 
 TEST(ZoomEngineClient, ReadsI420SharedMemoryIntoRgbaThumbnail) {
-  auto memory = makeI420SharedMemory(4, 2, 235, 128, 128);
+  auto memory = makeI420SharedMemory(4, 2, 255, 128, 128);
   const auto frame = corevideo::modules::readZoomEngineI420FrameSnapshot(
       memory.data(),
       memory.size(),

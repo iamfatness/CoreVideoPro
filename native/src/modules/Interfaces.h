@@ -428,6 +428,9 @@ struct CaptureAudioSourceMetrics {
   int64_t framesRendered = 0;
   int64_t queuedFrames = 0;
   int64_t underrunCount = 0;
+  int64_t startedAtMs = 0;
+  int64_t lastFrameAtMs = 0;
+  int64_t stoppedAtMs = 0;
 };
 
 struct SrtIngestSourceConfig {

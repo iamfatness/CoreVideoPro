@@ -7,6 +7,7 @@
     <SolidColorBrush x:Key="StudioSurfaceBrush" Color="#141C24" />
     <SolidColorBrush x:Key="StudioSurfaceRaisedBrush" Color="#1A242E" />
     <SolidColorBrush x:Key="StudioFieldBrush" Color="#0C1118" />
+    <SolidColorBrush x:Key="StudioWarningBrush" Color="#F3A64B" />
 
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{StaticResource StudioTextBrush}" />

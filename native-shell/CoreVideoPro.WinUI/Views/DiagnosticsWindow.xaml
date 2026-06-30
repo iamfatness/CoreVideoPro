@@ -104,6 +104,16 @@
                                        TextWrapping="WrapWholeWords" />
                             <TextBlock Text="{x:Bind ViewModel.AudioBusTapSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioValidationSummary, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioAccentBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioValidationChecklist, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioValidationFirstIssue, Mode=OneWay}"
+                                       Foreground="{StaticResource StudioWarningBrush}"
+                                       TextWrapping="WrapWholeWords" />
+                            <TextBlock Text="{x:Bind ViewModel.AudioFullChainValidationSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
 

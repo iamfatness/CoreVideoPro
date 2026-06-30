@@ -46,6 +46,22 @@
                                 <TextBlock Text="{x:Bind ViewModel.AudioMeterSourceSummary, Mode=OneWay}"
                                            FontSize="12"
                                            TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioValidationSummary, Mode=OneWay}"
+                                           FontSize="12"
+                                           Foreground="{StaticResource StudioAccentBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioValidationChecklist, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioValidationFirstIssue, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioWarningBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                                <TextBlock Text="{x:Bind ViewModel.AudioFullChainValidationSummary, Mode=OneWay}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
                                 <TextBlock Text="{x:Bind ViewModel.CaptureAudioSignalSummary, Mode=OneWay}"
                                            FontSize="11"
                                            Foreground="{StaticResource StudioMutedBrush}"
@@ -154,6 +170,10 @@
                                     <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceRecommendation, Mode=OneWay}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource StudioWarningBrush}"
                                                TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                                 <ComboBox Grid.Column="1"

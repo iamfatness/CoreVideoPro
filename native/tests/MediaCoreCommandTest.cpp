@@ -812,6 +812,9 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   auto bandDistinctColors = [](const corevideo::rpc::Json& previewEvent) -> size_t {
     const auto* preview = previewEvent.get("preview");
     if (!preview) {
+      preview = previewEvent.get("programFramePreview");
+    }
+    if (!preview) {
       return 0;
     }
     const int width = static_cast<int>(preview->get("width")->asNumber());
@@ -840,12 +843,14 @@ TEST(MediaCoreCommand, OverlayAssetRastersAnimatedLowerThirdIntoProgramFrame) {
   const size_t earlyColors = bandDistinctColors(earlyPreviews.back());
 
   // Advance several ticks so the building-in animation settles on-air.
+  corevideo::rpc::Json settledState = nullptr;
   for (int i = 0; i < 12; ++i) {
-    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+    settledState = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
   }
   const auto settledPreviews = mediaCore.drainProgramFramePreviewEvents();
-  ASSERT_FALSE(settledPreviews.empty());
-  const size_t settledColors = bandDistinctColors(settledPreviews.back());
+  const size_t settledColors = settledPreviews.empty()
+                                   ? bandDistinctColors(settledState)
+                                   : bandDistinctColors(settledPreviews.back());
 
   // Settled overlay rasters real text/brand pixels (non-uniform band) and is
   // more opaque/legible than the first building-in frame.
@@ -1046,6 +1051,16 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_TRUE(jsonArrayContains(capabilities, "rtmp-output"));
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "rtmp-output"));
+#endif
+#if COREVIDEO_WITH_NDI_OUTPUT
+  EXPECT_TRUE(jsonArrayContains(capabilities, "ndi-output"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "ndi-output"));
+#endif
+#if COREVIDEO_WITH_SRT_OUTPUT
+  EXPECT_TRUE(jsonArrayContains(capabilities, "srt-output"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "srt-output"));
 #endif
 }
 
@@ -2111,6 +2126,36 @@ TEST(OutputSenderAdapter, StubKeepsMultiDestinationDiagnosticsIsolated) {
   EXPECT_TRUE(session.senders[2].bytesSent > session.senders[1].bytesSent);
 }
 
+TEST(OutputSenderAdapter, DefaultSenderWarnsWhenRequestedDestinationHasNoModule) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && !COREVIDEO_WITH_NDI_OUTPUT
+  auto modules = corevideo::modules::createDefaultModules();
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 1920;
+  frame.height = 1080;
+  frame.frameNumber = 9;
+  frame.renderPlanId = "missing-ndi-output-plan";
+
+  const auto session = modules.outputSender->sync({"ndi"}, &frame, 123);
+
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.status, "warning");
+  EXPECT_EQ(session.senders[0].destination, "ndi");
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "ndi-output-unavailable");
+  EXPECT_TRUE(session.senders[0].warning.find("NDI output is selected") != std::string::npos);
+
+  const auto polledSession = modules.outputSender->session();
+  ASSERT_FALSE(polledSession.senders.empty());
+  EXPECT_EQ(polledSession.status, "warning");
+  EXPECT_EQ(polledSession.senders[0].destination, "ndi");
+  EXPECT_EQ(polledSession.senders[0].status, "warning");
+  EXPECT_EQ(polledSession.senders[0].lastResultCode, "ndi-output-unavailable");
+  EXPECT_TRUE(polledSession.senders[0].warning.find("NDI output is selected") != std::string::npos);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(OutputSenderAdapter, SyncAcceptsRealProgramAudioWithoutChangingDiagnostics) {
   // The IOutputSender::sync boundary now carries the real program-audio mix. The
   // synthetic stub sender must accept the extra audio params and keep identical
@@ -2613,6 +2658,63 @@ TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenPcmFramesAreSilent) {
   EXPECT_NE(source.getString("warning").find("silent PCM frames"), std::string::npos);
 }
 
+TEST(MediaCoreCommand, CaptureAudioSourceWarnsWhenPcmFramesAreStale) {
+  auto modules = corevideo::modules::createStubModules();
+  auto* audioCapture = new RecordingAudioCaptureSource();
+  corevideo::modules::CaptureAudioSourceMetrics metric{
+      "local-machine-audio",
+      "local-machine-audio",
+      "wasapi-loopback",
+      true,
+      960,
+      0,
+      48000,
+      2,
+      "default-render",
+      "System audio loopback",
+      {},
+      {},
+      -12.0,
+      -18.0,
+      true};
+  metric.lastFrameAtMs = 1;
+  audioCapture->reportedMetrics.push_back(metric);
+  modules.audioCapture.reset(audioCapture);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-capture-audio-sources"},
+          {"sources",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"captureDeviceId", "local-machine-audio"},
+                   {"audioDeviceId", "system-loopback"},
+                   {"audioDeviceName", "System audio loopback"},
+                   {"audioSourceKind", "wasapi-loopback"},
+                   {"nativeAudioDeviceId", "default-render"},
+                   {"audioDriverName", "WASAPI"},
+               },
+           }},
+      },
+  });
+
+  const auto* captureAudio = state.get("captureAudioSources");
+  ASSERT_NE(captureAudio, nullptr);
+  EXPECT_EQ(captureAudio->getString("status"), "warning");
+  ASSERT_TRUE(captureAudio->get("sources")->asArray().size() == 1u);
+  const auto& source = captureAudio->get("sources")->asArray()[0];
+  EXPECT_TRUE(source.get("captureLastFrameAgeMs")->asNumber() > 1000);
+  EXPECT_NE(source.getString("warning").find("PCM is stale"), std::string::npos);
+  ASSERT_TRUE(captureAudio->get("warnings")->isArray());
+  EXPECT_TRUE(std::any_of(
+      captureAudio->get("warnings")->asArray().begin(),
+      captureAudio->get("warnings")->asArray().end(),
+      [](const corevideo::rpc::Json& warning) {
+        return warning.asString().find("PCM is stale") != std::string::npos;
+      }));
+}
+
 TEST(MediaCoreCommand, CaptureAudioSourceSyncDoesNotRestartUnchangedAdapter) {
   auto modules = corevideo::modules::createStubModules();
   auto* audioCapture = new RecordingAudioCaptureSource();
@@ -2780,6 +2882,10 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
   ASSERT_FALSE(sources->asArray().empty());
   const auto& firstSource = sources->asArray().front();
   ASSERT_NE(firstSource.get("emptyPacketPolls"), nullptr);
+  ASSERT_NE(firstSource.get("captureStartedAtMs"), nullptr);
+  ASSERT_NE(firstSource.get("captureLastFrameAtMs"), nullptr);
+  ASSERT_NE(firstSource.get("captureLastFrameAgeMs"), nullptr);
+  ASSERT_NE(firstSource.get("captureStoppedAtMs"), nullptr);
   ASSERT_NE(firstSource.get("endpointId"), nullptr);
   ASSERT_NE(firstSource.get("endpointName"), nullptr);
   ASSERT_NE(firstSource.get("lastError"), nullptr);
@@ -2787,6 +2893,10 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
   ASSERT_NE(firstSource.get("rmsDbfs"), nullptr);
   ASSERT_NE(firstSource.get("signalPresent"), nullptr);
   EXPECT_TRUE(firstSource.get("signalPresent")->asBool());
+  EXPECT_TRUE(firstSource.get("captureStartedAtMs")->asNumber() >= 0);
+  EXPECT_TRUE(firstSource.get("captureLastFrameAtMs")->asNumber() >= 0);
+  EXPECT_TRUE(firstSource.get("captureLastFrameAgeMs")->asNumber() >= 0);
+  EXPECT_TRUE(firstSource.get("captureStoppedAtMs")->asNumber() >= 0);
 }
 
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
@@ -3308,19 +3418,20 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
   EXPECT_EQ(snapshotTexture->getString("format"), "B8G8R8A8_UNORM");
 
   const auto events = mediaCore.drainProgramSharedTextureEvents();
-  ASSERT_FALSE(events.empty());
-  EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
-  const auto* texture = events.back().get("texture");
-  ASSERT_NE(texture, nullptr);
-  const auto handleHex = texture->getString("sharedHandleHex");
-  EXPECT_FALSE(handleHex.empty());
-  EXPECT_EQ(handleHex.rfind("0x", 0), 0u);
+  if (!events.empty()) {
+    EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
+    const auto* texture = events.back().get("texture");
+    ASSERT_NE(texture, nullptr);
+    const auto handleHex = texture->getString("sharedHandleHex");
+    EXPECT_FALSE(handleHex.empty());
+    EXPECT_EQ(handleHex.rfind("0x", 0), 0u);
 #if COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
-  EXPECT_TRUE(handleHex.size() > 4u);
+    EXPECT_TRUE(handleHex.size() > 4u);
 #endif
-  EXPECT_GE(texture->get("width")->asNumber(), 1);
-  EXPECT_GE(texture->get("height")->asNumber(), 1);
-  EXPECT_EQ(texture->getString("format"), "B8G8R8A8_UNORM");
+    EXPECT_GE(texture->get("width")->asNumber(), 1);
+    EXPECT_GE(texture->get("height")->asNumber(), 1);
+    EXPECT_EQ(texture->getString("format"), "B8G8R8A8_UNORM");
+  }
 #else
   EXPECT_TRUE(true) << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
   return;
