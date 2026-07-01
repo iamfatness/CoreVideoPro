@@ -1552,8 +1552,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(MultiviewerConfigSummary));
         SaveProductionOutputPreferences();
+        ScheduleMultiviewerConfigResend();
+    }
 
-        // Debounce rapid toggling (e.g. dragging the tile-count spinner) into a single send.
+    // Debounce rapid toggling (e.g. dragging the tile-count spinner) into a single send. Also
+    // the backpressure-retry hook: ConfigureMultiviewerAsync re-arms this when a send is dropped
+    // because a production sync was in flight, so the operator's saved layout eventually reaches
+    // the core instead of being silently lost.
+    private void ScheduleMultiviewerConfigResend()
+    {
         if (_multiviewerConfigTimer is null)
         {
             _multiviewerConfigTimer = _dispatcher.CreateTimer();
@@ -1601,9 +1608,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // production-sync path.
             await _bridge.SyncAsync([command]).ConfigureAwait(false);
         }
+        catch (MediaCoreSyncInFlightException)
+        {
+            // A production sync was already in flight (common during the startup burst), so this
+            // command was dropped for backpressure. Re-arm the debounce to retry once the in-flight
+            // sync clears — otherwise the operator's saved multiviewer layout silently never reaches
+            // the core (observed: layout stayed "grid" despite a persisted pgmPvw choice).
+            RunOnUiThread(ScheduleMultiviewerConfigResend);
+        }
         catch
         {
-            // Transient/backpressure — the next change (or startup re-apply) retries.
+            // Other transient errors: the next change / startup re-apply retries.
         }
     }
 
