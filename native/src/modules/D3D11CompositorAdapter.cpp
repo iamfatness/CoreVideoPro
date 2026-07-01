@@ -230,6 +230,14 @@ bool frameHasContent(const VideoFrame& frame) {
   return frame.hasPixels() || frame.hasI420();
 }
 
+// True when a color grade is a no-op (every axis neutral). The per-participant
+// export path uses this to keep its fast copy for the common ungraded source and
+// only pay the extra shader pass when a grade actually needs to be baked in.
+bool gradeIsIdentity(const CompositorColorGrade& grade) {
+  return grade.exposure == 0.f && grade.contrast == 0.f &&
+         grade.saturation == 0.f && grade.temperature == 0.f;
+}
+
 uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
   return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
 }
@@ -301,7 +309,7 @@ class D3D11Compositor final : public ICompositor {
       frame.preview = readProgramFramePreview();
     }
     exportSharedTexture(frame);
-    exportParticipantTextures(frames, frame);
+    exportParticipantTextures(deterministicPlan, frames, frame);
     context_->Flush();
     return frame;
   }
@@ -378,7 +386,15 @@ class D3D11Compositor final : public ICompositor {
     int width = 0;
     int height = 0;
     int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
+    // Grade last baked into this export; re-upload if it changes even when the
+    // frame is held (color-grade slider drag on a static source).
+    CompositorColorGrade lastGrade;
   };
+
+  static bool gradesEqual(const CompositorColorGrade& a, const CompositorColorGrade& b) {
+    return a.exposure == b.exposure && a.contrast == b.contrast &&
+           a.saturation == b.saturation && a.temperature == b.temperature;
+  }
 
   void initializePipeline() {
     std::string error;
@@ -1014,14 +1030,21 @@ class D3D11Compositor final : public ICompositor {
   // Writes neutral/identity layer constants (white opaque, no color grade,
   // identity UV) — used when rendering an I420 frame to a per-participant export
   // texture, where no framing or grade applies.
-  bool writeIdentityConstants() {
+  // Writes white-opaque, identity-UV layer constants carrying `grade` — used by
+  // the per-participant export passes. The *0.1 axis scaling MUST match
+  // writeLayerConstants so a source graded in the program composite gets the
+  // identical grade in its export texture (preview/multiview match program).
+  bool writeGradeConstants(const CompositorColorGrade& grade) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
     }
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
     constants->color[0] = constants->color[1] = constants->color[2] = constants->color[3] = 1.f;
-    constants->exposure = constants->contrast = constants->saturation = constants->temperature = 0.f;
+    constants->exposure = grade.exposure * 0.1f;
+    constants->contrast = grade.contrast * 0.1f;
+    constants->saturation = grade.saturation * 0.1f;
+    constants->temperature = grade.temperature * 0.1f;
     constants->uvScale[0] = constants->uvScale[1] = 1.f;
     constants->uvOffset[0] = constants->uvOffset[1] = 0.f;
     context_->Unmap(constantBuffer_.get(), 0);
@@ -1149,7 +1172,26 @@ class D3D11Compositor final : public ICompositor {
   // converted to BGRA on the GPU with the YUV shader (render into the texture's
   // render-target view). Producer acquires key 0 / writes / releases key 1;
   // non-blocking so a busy consumer just keeps the last frame.
-  void exportParticipantTextures(const std::vector<VideoFrame>& frames, ProgramFrame& outFrame) {
+  // Resolves the color grade the PROGRAM composite would apply to this source:
+  // the source's own per-route grade if it carries one, otherwise the scene-global
+  // grade. Sources that are not a current program layer fall back to the global
+  // grade — what the program would apply to them if shown. Baking this into the
+  // per-participant export makes the PREVIEW / multiview tiles (which present the
+  // export texture) match the graded PROGRAM look for the very same source instead
+  // of showing an ungraded, brighter/warmer copy.
+  CompositorColorGrade effectiveParticipantGrade(const CompositorRenderPlan& plan, const VideoFrame& frame) const {
+    for (const auto& layer : plan.layers) {
+      const bool matches =
+          (!layer.participantId.empty() && layer.participantId == frame.participantId) ||
+          (!layer.sourceId.empty() && layer.sourceId == frame.participantId);
+      if (matches) {
+        return layer.hasColorGrade ? layer.colorGrade : plan.colorGrade;
+      }
+    }
+    return plan.colorGrade;
+  }
+
+  void exportParticipantTextures(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames, ProgramFrame& outFrame) {
     if (!device_ || !context_) {
       return;
     }
@@ -1157,6 +1199,7 @@ class D3D11Compositor final : public ICompositor {
       if (f.participantId.empty() || !frameHasContent(f)) {
         continue;
       }
+      const CompositorColorGrade grade = effectiveParticipantGrade(renderPlan, f);
       const bool useI420 = f.hasI420();
       const int width = useI420 ? f.i420Width : f.pixelWidth;
       const int height = useI420 ? f.i420Height : f.pixelHeight;
@@ -1190,12 +1233,16 @@ class D3D11Compositor final : public ICompositor {
         pt.width = width;
         pt.height = height;
       }
-      // Only re-upload when the frame actually changed. Capture frames are now HELD and
-      // re-emitted every render tick (so the program composite never starves -> no pink),
-      // but re-uploading an unchanged frame to the per-participant export texture every
-      // tick cost ~15ms/tick (3+ capture + Zoom at 1080p) and collapsed the render to
-      // ~11fps. The texture already holds these pixels; just keep emitting the handle.
-      const bool frameChanged = (f.frameId != pt.lastFrameId);
+      // Only re-upload when the frame OR the effective grade changed. Capture frames
+      // are now HELD and re-emitted every render tick (so the program composite never
+      // starves -> no pink), but re-uploading an unchanged frame to the per-participant
+      // export texture every tick cost ~15ms/tick (3+ capture + Zoom at 1080p) and
+      // collapsed the render to ~11fps. The texture already holds these pixels; just
+      // keep emitting the handle. The grade check additionally re-bakes when the
+      // operator drags the color-grade sliders on a held/static source, so preview
+      // keeps matching the graded program look.
+      const bool gradeChanged = !gradesEqual(grade, pt.lastGrade);
+      const bool frameChanged = (f.frameId != pt.lastFrameId) || gradeChanged;
       if (frameChanged && pt.mutex) {
         // The per-participant export texture is a single-consumer keyed-mutex texture, but its
         // consumer (the preview host, when it shows this source) is INTERMITTENT: the preview
@@ -1221,15 +1268,22 @@ class D3D11Compositor final : public ICompositor {
         if (acquire == S_OK) {
           bool uploaded = false;
           if (useI420) {
-            uploaded = renderI420ToParticipantTexture(f, pt, width, height);
-          } else {
+            uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
+          } else if (gradeIsIdentity(grade)) {
+            // Fast path for the common ungraded source: a straight BGRA copy, no
+            // shader pass (preserves the perf note above — no per-tick convert cost).
             context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
                                         static_cast<UINT>(f.pixelStride), 0);
             uploaded = true;
+          } else {
+            // Graded BGRA source: render through the textured grade shader so the
+            // export carries the same look the program applies to this source.
+            uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
           }
           pt.mutex->ReleaseSync(1);
           if (uploaded) {
             pt.lastFrameId = f.frameId;
+            pt.lastGrade = grade;
           }
         }
       }
@@ -1260,10 +1314,59 @@ class D3D11Compositor final : public ICompositor {
   // true when the convert was issued. Clobbers render state (render target,
   // viewport, shaders) — only called from exportParticipantTextures, which runs
   // after the program composite + share, so the next render() re-binds its state.
-  bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height) {
+  bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
+                                      const CompositorColorGrade& grade) {
     if (!pt.rtv || !uploadLayerI420Texture(frame)) {
       return false;
     }
+    if (!beginParticipantExportPass(pt, width, height, grade)) {
+      return false;
+    }
+    context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
+    context_->PSSetShaderResources(0, 3, views);
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetSamplers(0, 1, samplers);
+    context_->Draw(3, 0);
+
+    ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
+    context_->PSSetShaderResources(0, 3, nullViews);
+    endParticipantExportPass();
+    return true;
+  }
+
+  // Grade-baking variant of the BGRA export: instead of a raw UpdateSubresource
+  // copy, render the decoded frame through the textured grade shader so a graded
+  // capture/media source's export matches the program look (the raw-copy fast path
+  // in exportParticipantTextures still handles the common ungraded case). Same
+  // effective color pipeline the program's drawLayer BGRA path uses.
+  bool renderBgraToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
+                                      const CompositorColorGrade& grade) {
+    if (!pt.rtv || !uploadLayerTexture(frame)) {
+      return false;
+    }
+    if (!beginParticipantExportPass(pt, width, height, grade)) {
+      return false;
+    }
+    context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
+    context_->PSSetShaderResources(0, 1, views);
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetSamplers(0, 1, samplers);
+    context_->Draw(3, 0);
+
+    ID3D11ShaderResourceView* nullViews[] = {nullptr};
+    context_->PSSetShaderResources(0, 1, nullViews);
+    endParticipantExportPass();
+    return true;
+  }
+
+  // Shared render-state setup for the per-participant export convert passes:
+  // targets the export RTV, sets a full-texture viewport, binds the vertex shader,
+  // opaque-overwrite blend (the export is a 1:1 copy) and identity-UV constants
+  // carrying the source's effective color grade. Returns false (and unbinds the
+  // target) if the constant upload fails.
+  bool beginParticipantExportPass(ParticipantTex& pt, int width, int height, const CompositorColorGrade& grade) {
     ID3D11RenderTargetView* renderTargets[] = {pt.rtv.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
 
@@ -1280,25 +1383,19 @@ class D3D11Compositor final : public ICompositor {
     // Opaque overwrite (no source-over blend) — the export texture is a 1:1 copy.
     context_->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
     context_->VSSetShader(vertexShader_.get(), nullptr, 0);
-    if (!writeIdentityConstants()) {
+    if (!writeGradeConstants(grade)) {
       ID3D11RenderTargetView* nullTargets[] = {nullptr};
       context_->OMSetRenderTargets(1, nullTargets, nullptr);
       return false;
     }
-    context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
-    ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
-    context_->PSSetShaderResources(0, 3, views);
-    ID3D11SamplerState* samplers[] = {samplerState_.get()};
-    context_->PSSetSamplers(0, 1, samplers);
-    context_->Draw(3, 0);
+    return true;
+  }
 
-    ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
-    context_->PSSetShaderResources(0, 3, nullViews);
+  void endParticipantExportPass() {
     ID3D11RenderTargetView* nullTargets[] = {nullptr};
     context_->OMSetRenderTargets(1, nullTargets, nullptr);
     // Restore the blend state the program composite expects for the next frame.
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
-    return true;
   }
 
   // Multiview render target: mirrors ensureRenderTarget but with NO CPU staging
