@@ -1847,8 +1847,32 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     // Aspect-aware grid cell, matching the program/preview grid math so the core
     // and the future consumer agree on rows x cols.
     const auto cell = compositor::gridCell((std::max)(1, count), index);
-    layer.rect = {cell.x, cell.y, cell.width, cell.height};
-    layer.fitMode = "fill";
+    // gridCell divides the 16:9 canvas into an EVEN rows x cols grid, so most tile
+    // counts (2-up, 6-up, 8-up, ...) yield non-16:9 cells; "fill" then center-crops the
+    // 16:9 feed to fill the cell -> the "weird center cut". Instead, place a centered
+    // 16:9 tile inside each cell (largest 16:9 rect that fits the cell in PIXELS, mapped
+    // back to normalized canvas space) and "fit" the source so the whole frame shows at
+    // the right aspect. 16:9 source in a 16:9 tile => no bars; an off-aspect source is
+    // letterboxed inside the tile rather than cropped.
+    const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
+    const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
+    const float cellPxW = cell.width * mvCanvasW;
+    const float cellPxH = cell.height * mvCanvasH;
+    constexpr float kTileAspect = 16.f / 9.f;
+    float tilePxW = cellPxW;
+    float tilePxH = cellPxW / kTileAspect;
+    if (tilePxH > cellPxH) {
+      tilePxH = cellPxH;
+      tilePxW = cellPxH * kTileAspect;
+    }
+    const float tileW = mvCanvasW > 0.f ? tilePxW / mvCanvasW : cell.width;
+    const float tileH = mvCanvasH > 0.f ? tilePxH / mvCanvasH : cell.height;
+    layer.rect = {
+        cell.x + (cell.width - tileW) * 0.5f,
+        cell.y + (cell.height - tileH) * 0.5f,
+        tileW,
+        tileH};
+    layer.fitMode = "fit";
 
     // Active-speaker border baked into the texture (no consumer churn). The rest
     // get a thin neutral accent so tiles read as distinct cells.
