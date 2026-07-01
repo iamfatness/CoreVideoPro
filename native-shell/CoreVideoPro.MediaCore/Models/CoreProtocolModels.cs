@@ -87,6 +87,11 @@ public sealed class MultiviewTile
     public string ParticipantId { get; init; } = string.Empty;
     public int Slot { get; init; }
     public string Label { get; init; } = string.Empty;
+    // Tile semantics for the user-selectable multiviewer layouts:
+    //   Role  = "pgm" | "pvw" | "source" (the cell kind).
+    //   Tally = "pgm" | "pvw" | "none"   (the source's live status).
+    public string Role { get; init; } = "source";
+    public string Tally { get; init; } = "none";
     public bool ActiveSpeaker { get; init; }
     public double X { get; init; }
     public double Y { get; init; }

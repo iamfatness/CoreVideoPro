@@ -109,6 +109,10 @@ class MediaCore {
   void setBrandKit(const rpc::Json& command);
   void setMediaPlayback(const rpc::Json& command);
   void setMultiviewLayout(const rpc::Json& command);
+  // Handles the configure-multiviewer command: stores the user-selected layout
+  // mode, tile count, and the label/tally/meters/clock toggles, which the next
+  // multiview composite reads. Unknown fields are ignored gracefully.
+  void configureMultiviewer(const rpc::Json& command);
   // Parses + applies a multiview layout node ({canvasWidth,canvasHeight,cols,rows,
   // sources:[...]}) shared by the standalone set-multiview-layout command AND the
   // frequent zoom-media-spine-sync `multiview` object. Cheap signature compare:
@@ -190,6 +194,10 @@ class MediaCore {
   // current activeSpeakerId. Reuses the same source-id conventions as the
   // program plan so resolveLayers/frameForParticipant match the same frames.
   [[nodiscard]] modules::CompositorRenderPlan buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  // Builds the per-tile rect list (geometry + role + tally + label) for the
+  // current multiview layout mode, matching the geometry buildMultiviewRenderPlan
+  // places its layers into. Includes the PGM/PVW cells for the pgmPvw modes.
+  [[nodiscard]] std::vector<modules::MultiviewTileRect> buildMultiviewTiles(const std::string& activeSpeakerId) const;
   // Advances the overlay animation clock and each overlay's keyPhase progress by
   // one render tick, retiring overlays whose building-out animation has settled.
   void advanceOverlayAnimation(double frameIntervalMs);
@@ -423,6 +431,14 @@ class MediaCore {
   std::vector<MultiviewSource> multiviewSources_;
   int multiviewCanvasWidth_ = 1920;
   int multiviewCanvasHeight_ = 1080;
+  // User-selectable multiviewer configuration (configure-multiviewer command).
+  // layoutMode: "grid" | "pgmPvwTop" | "pgmPvwLarge" | "pgmPvwSide".
+  std::string multiviewLayoutMode_ = "grid";
+  int multiviewTileCount_ = 8;
+  bool multiviewShowLabels_ = true;
+  bool multiviewShowTally_ = true;
+  bool multiviewShowMeters_ = true;
+  bool multiviewShowClock_ = true;
   // Content signature of the currently-applied multiview layout. The spine sync calls
   // applyMultiviewLayout every tick; this lets it cheaply skip the clear/rebuild +
   // structural-emit reset when the layout has not actually changed.
