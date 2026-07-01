@@ -396,15 +396,23 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         renderUs = 0;
         rateStamp = now;
       }
-      // Pace to a 60fps budget: sleep only the REMAINDER of the ~16.6ms frame after the
-      // work this iteration, instead of a flat 8ms (which capped the loop near ~45fps even
-      // when the render was cheap). On heavy iterations (elapsed >= budget) we don't sleep
-      // at all and run as fast as the work allows. Low latency is the product north-star.
+      // Precise 60fps pacer. The prior flat sleep_for(remainder) overshoots by ~1-2ms
+      // even at timeBeginPeriod(1) granularity, which capped a 12-13ms render tick at
+      // ~55fps despite having budget to spare. Sleep the bulk of the remaining frame,
+      // then spin the final ~1.5ms up to an absolute per-iteration deadline so the
+      // start-to-start cadence locks at 16.6ms (60fps). Low latency is the north-star,
+      // so trading a brief tail spin for a locked frame rate is worth it. Heavy
+      // iterations (work >= budget) blow past the deadline and run flat out.
       constexpr long long kFrameBudgetUs = 16666;  // 60fps
-      const long long iterUs =
-          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-      if (iterUs < kFrameBudgetUs) {
-        std::this_thread::sleep_for(std::chrono::microseconds(kFrameBudgetUs - iterUs));
+      const auto deadline = t0 + std::chrono::microseconds(kFrameBudgetUs);
+      constexpr auto kSpinGuardUs = std::chrono::microseconds(1500);
+      auto nowPace = std::chrono::steady_clock::now();
+      if (nowPace + kSpinGuardUs < deadline) {
+        std::this_thread::sleep_for((deadline - nowPace) - kSpinGuardUs);
+      }
+      while (std::chrono::steady_clock::now() < deadline) {
+        // Short tail spin to absorb sleep_for overshoot; yield keeps it civil.
+        std::this_thread::yield();
       }
     }
   });

@@ -3198,7 +3198,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
         // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
         realZoom->ingestI420Frame(
             frame.participantId,
-            frame.i420->data(),
+            frame.i420,  // zero-copy: share the decoded buffer, don't memcpy it
             frame.i420Width,
             frame.i420Height,
             frame.frameId,

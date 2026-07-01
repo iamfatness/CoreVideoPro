@@ -47,6 +47,18 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
                        int64_t frameId,
                        int64_t timestampMs);
 
+  // Zero-copy overload: take shared ownership of an already-decoded I420 buffer
+  // (e.g. the shared_ptr handed back by ZoomEngineRuntime::latestDecodedVideoFrames)
+  // instead of copying its bytes. On the render thread this removes a full ~3MB/1080p
+  // per-participant memcpy every tick (the dominant renderDisplayTick cost); the buffer
+  // is const + immutable (a new one is allocated per decoded frame), so sharing is safe.
+  void ingestI420Frame(const std::string& participantId,
+                       std::shared_ptr<const std::vector<uint8_t>> i420,
+                       int width,
+                       int height,
+                       int64_t frameId,
+                       int64_t timestampMs);
+
   // Ingest a batch of zoom-video-frame events as produced by
   // ZoomEngineRuntime::drainFrameEvents(). Each event carries a base64-encoded
   // BGRA buffer plus participant/width/height/frameId metadata. Events that are

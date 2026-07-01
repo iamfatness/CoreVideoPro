@@ -60,6 +60,31 @@ void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
   stored.timestampMs = timestampMs;
 }
 
+void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
+                                            std::shared_ptr<const std::vector<uint8_t>> i420,
+                                            int width,
+                                            int height,
+                                            int64_t frameId,
+                                            int64_t timestampMs) {
+  if (participantId.empty() || !i420 || width <= 0 || height <= 0) {
+    return;
+  }
+  if ((width & 1) != 0 || (height & 1) != 0) {
+    return;  // I420 requires even dimensions (2x2 chroma subsampling)
+  }
+  // Zero-copy: take shared ownership of the (immutable) decoded buffer instead of
+  // copying ~3MB/1080p per participant on the render thread every tick.
+  std::lock_guard<std::mutex> lock(mutex_);
+  StoredFrame& stored = frames_[participantId];
+  stored.i420 = std::move(i420);
+  stored.pixels = nullptr;  // latest representation wins
+  stored.width = width;
+  stored.height = height;
+  stored.stride = 0;
+  stored.frameId = frameId;
+  stored.timestampMs = timestampMs;
+}
+
 void RealZoomCaptureSource::ingestFrameEvents(const std::vector<rpc::Json>& events) {
   for (const auto& event : events) {
     if (event.getString("type") != "zoom-video-frame") {
