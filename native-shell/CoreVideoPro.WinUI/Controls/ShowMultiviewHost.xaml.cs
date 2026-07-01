@@ -7,21 +7,28 @@ using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 using Windows.UI;
 
 namespace CoreVideoPro.WinUI.Controls;
 
 /// <summary>
 /// Presents the core-composited multiview as ONE GPU shared-texture surface (a single
-/// VideoSurfaceHost / swap chain — the proven program model) plus a transparent overlay of
-/// click targets + labels. The grid layout, content, and active-speaker border are all baked
-/// into the texture by the core; the overlay only maps taps back to the source identity, so it
-/// rebuilds on a structural layout change (rare) — never per frame, and never per active-speaker
-/// change. This replaces the old per-participant CPU tiles / per-tile swap chains that fail-fast
-/// the WinUI (CoreMessagingXP 0xc000027b) under roster/active-speaker churn.
+/// VideoSurfaceHost / swap chain — the proven program model) plus transparent overlays for click
+/// targets and broadcast decorations (name labels, red/green tally borders, audio meters, and a
+/// clock). The grid layout and content are baked into the texture by the core; the overlays only
+/// map taps back to source identity and draw crisp XAML chrome, so they rebuild on a STRUCTURAL
+/// layout change (rare) or when a toggle flips — never per video frame, and never per
+/// active-speaker change. This avoids the per-tile CPU/swap-chain churn that fail-fasts the WinUI
+/// (CoreMessagingXP 0xc000027b).
 /// </summary>
 public sealed partial class ShowMultiviewHost : UserControl
 {
+    private static readonly Color TallyProgramColor = Color.FromArgb(255, 235, 64, 52);   // red
+    private static readonly Color TallyPreviewColor = Color.FromArgb(255, 46, 204, 113);  // green
+    private static readonly Color TallyNeutralColor = Color.FromArgb(120, 150, 165, 155); // subtle
+    private static readonly Color MeterFillColor = Color.FromArgb(255, 92, 214, 130);
+
     public static readonly DependencyProperty SurfaceProperty =
         DependencyProperty.Register(nameof(Surface), typeof(VideoSurfaceState), typeof(ShowMultiviewHost),
             new PropertyMetadata(null, OnSurfaceChanged));
@@ -34,6 +41,32 @@ public sealed partial class ShowMultiviewHost : UserControl
         DependencyProperty.Register(nameof(TileClickCommand), typeof(ICommand), typeof(ShowMultiviewHost),
             new PropertyMetadata(null));
 
+    public static readonly DependencyProperty ShowLabelsProperty =
+        DependencyProperty.Register(nameof(ShowLabels), typeof(bool), typeof(ShowMultiviewHost),
+            new PropertyMetadata(true, OnDecorToggleChanged));
+
+    public static readonly DependencyProperty ShowTallyProperty =
+        DependencyProperty.Register(nameof(ShowTally), typeof(bool), typeof(ShowMultiviewHost),
+            new PropertyMetadata(true, OnDecorToggleChanged));
+
+    public static readonly DependencyProperty ShowMetersProperty =
+        DependencyProperty.Register(nameof(ShowMeters), typeof(bool), typeof(ShowMultiviewHost),
+            new PropertyMetadata(true, OnDecorToggleChanged));
+
+    public static readonly DependencyProperty ShowClockProperty =
+        DependencyProperty.Register(nameof(ShowClock), typeof(bool), typeof(ShowMultiviewHost),
+            new PropertyMetadata(true, OnClockToggleChanged));
+
+    public static readonly DependencyProperty MeterLevelLeftProperty =
+        DependencyProperty.Register(nameof(MeterLevelLeft), typeof(int), typeof(ShowMultiviewHost),
+            new PropertyMetadata(0, OnMeterLevelChanged));
+
+    public static readonly DependencyProperty MeterLevelRightProperty =
+        DependencyProperty.Register(nameof(MeterLevelRight), typeof(int), typeof(ShowMultiviewHost),
+            new PropertyMetadata(0, OnMeterLevelChanged));
+
+    private readonly List<MeterChannel> _meters = new();
+    private DispatcherTimer? _clockTimer;
     private IReadOnlyList<MultiviewTile> _tiles = [];
 
     public ShowMultiviewHost()
@@ -41,6 +74,8 @@ public sealed partial class ShowMultiviewHost : UserControl
         InitializeComponent();
         // Surface starts null — keep the host collapsed so only the EmptyState shows.
         MultiviewSurfaceHost.Visibility = Visibility.Collapsed;
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     public VideoSurfaceState? Surface
@@ -61,17 +96,62 @@ public sealed partial class ShowMultiviewHost : UserControl
         set => SetValue(TileClickCommandProperty, value);
     }
 
+    public bool ShowLabels
+    {
+        get => (bool)GetValue(ShowLabelsProperty);
+        set => SetValue(ShowLabelsProperty, value);
+    }
+
+    public bool ShowTally
+    {
+        get => (bool)GetValue(ShowTallyProperty);
+        set => SetValue(ShowTallyProperty, value);
+    }
+
+    public bool ShowMeters
+    {
+        get => (bool)GetValue(ShowMetersProperty);
+        set => SetValue(ShowMetersProperty, value);
+    }
+
+    public bool ShowClock
+    {
+        get => (bool)GetValue(ShowClockProperty);
+        set => SetValue(ShowClockProperty, value);
+    }
+
+    /// <summary>Master (or PGM) audio meter level, 0-100, left channel.</summary>
+    public int MeterLevelLeft
+    {
+        get => (int)GetValue(MeterLevelLeftProperty);
+        set => SetValue(MeterLevelLeftProperty, value);
+    }
+
+    /// <summary>Master (or PGM) audio meter level, 0-100, right channel.</summary>
+    public int MeterLevelRight
+    {
+        get => (int)GetValue(MeterLevelRightProperty);
+        set => SetValue(MeterLevelRightProperty, value);
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        StartOrStopClock();
+        RebuildDecorations();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e) => StopClock();
+
     private static void OnSurfaceChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is ShowMultiviewHost host)
         {
             // Collapse the surface host until there's a multiview texture, so its internal
-            // "waiting for media engine" placeholder doesn't overlap the EmptyState message
-            // (the two were stacking on top of each other when nothing was assigned).
+            // "waiting for media engine" placeholder doesn't overlap the EmptyState message.
             host.MultiviewSurfaceHost.Visibility =
                 args.NewValue is VideoSurfaceState ? Visibility.Visible : Visibility.Collapsed;
             // The canvas size (texture dims) drives the letterbox transform, so reposition when
-            // the surface handle changes (a rebuild is cheap — only repositions existing buttons).
+            // the surface handle changes.
             host.PositionOverlay();
         }
     }
@@ -82,13 +162,39 @@ public sealed partial class ShowMultiviewHost : UserControl
         {
             host._tiles = (args.NewValue as IReadOnlyList<MultiviewTile>) ?? [];
             host.RebuildOverlay();
+            host.RebuildDecorations();
+        }
+    }
+
+    private static void OnDecorToggleChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is ShowMultiviewHost host)
+        {
+            host.RebuildDecorations();
+        }
+    }
+
+    private static void OnClockToggleChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (sender is ShowMultiviewHost host)
+        {
+            host.StartOrStopClock();
+        }
+    }
+
+    private static void OnMeterLevelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
+    {
+        // Cheap: just resize the existing fill rectangles — no rebuild, no allocation storm.
+        if (sender is ShowMultiviewHost host)
+        {
+            host.ApplyMeterLevels();
         }
     }
 
     private void OnOverlaySizeChanged(object sender, SizeChangedEventArgs e) => PositionOverlay();
 
-    // Builds ≤10 transparent click buttons (one per tile) + labels. Called only when the tile-rect
-    // LAYOUT changes (structural), so there is no per-frame / per-active-speaker UI churn.
+    // Builds ≤10 transparent click buttons (one per tile). Called only when the tile-rect LAYOUT
+    // changes (structural), so there is no per-frame / per-active-speaker UI churn.
     private void RebuildOverlay()
     {
         ClickOverlay.Children.Clear();
@@ -98,32 +204,6 @@ public sealed partial class ShowMultiviewHost : UserControl
 
         foreach (var tile in tiles)
         {
-            var label = new TextBlock
-            {
-                Text = string.IsNullOrWhiteSpace(tile.Label) ? string.Empty : tile.Label,
-                FontSize = 11,
-                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-                Margin = new Thickness(6, 4, 6, 4),
-                IsHitTestVisible = false,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-
-            var labelChrome = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
-                CornerRadius = new CornerRadius(3),
-                VerticalAlignment = VerticalAlignment.Bottom,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(4),
-                IsHitTestVisible = false,
-                Child = label
-            };
-
-            var content = new Grid();
-            content.Children.Add(labelChrome);
-
             var button = new Button
             {
                 Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
@@ -131,7 +211,6 @@ public sealed partial class ShowMultiviewHost : UserControl
                 Padding = new Thickness(0),
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 VerticalContentAlignment = VerticalAlignment.Stretch,
-                Content = content,
                 CommandParameter = ToSurfaceTile(tile),
                 Tag = tile
             };
@@ -147,14 +226,161 @@ public sealed partial class ShowMultiviewHost : UserControl
         PositionOverlay();
     }
 
+    // Builds per-tile broadcast decorations (tally border, name label bar, audio meter), each gated
+    // by its toggle. Rebuilt only on a structural tile-rect change or a toggle flip — never per
+    // frame. Meter values then update in place via ApplyMeterLevels (no rebuild).
+    private void RebuildDecorations()
+    {
+        if (DecorOverlay is null)
+        {
+            return;
+        }
+
+        DecorOverlay.Children.Clear();
+        _meters.Clear();
+
+        var tiles = _tiles.Take(10).ToList();
+        foreach (var tile in tiles)
+        {
+            var decor = new Grid { Tag = tile, IsHitTestVisible = false };
+
+            if (ShowTally)
+            {
+                decor.Children.Add(BuildTallyBorder(tile));
+            }
+
+            if (ShowLabels)
+            {
+                var labelBar = BuildLabelBar(tile);
+                if (labelBar is not null)
+                {
+                    decor.Children.Add(labelBar);
+                }
+            }
+
+            if (ShowMeters && MultiviewOverlayFormatting.ShouldShowMeter(tile))
+            {
+                decor.Children.Add(BuildMeter(tile));
+            }
+
+            DecorOverlay.Children.Add(decor);
+        }
+
+        PositionOverlay();
+        ApplyMeterLevels();
+    }
+
+    private static Border BuildTallyBorder(MultiviewTile tile)
+    {
+        var tally = MultiviewOverlayFormatting.ResolveTally(tile);
+        var (color, thickness) = tally switch
+        {
+            MultiviewOverlayFormatting.TallyProgram => (TallyProgramColor, 3.0),
+            MultiviewOverlayFormatting.TallyPreview => (TallyPreviewColor, 3.0),
+            _ => (TallyNeutralColor, 1.0)
+        };
+
+        return new Border
+        {
+            BorderBrush = new SolidColorBrush(color),
+            BorderThickness = new Thickness(thickness),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+    }
+
+    private static Border? BuildLabelBar(MultiviewTile tile)
+    {
+        var text = MultiviewOverlayFormatting.ResolveLabel(tile);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var tally = MultiviewOverlayFormatting.ResolveTally(tile);
+        var barColor = tally switch
+        {
+            MultiviewOverlayFormatting.TallyProgram => Color.FromArgb(210, 150, 30, 26),
+            MultiviewOverlayFormatting.TallyPreview => Color.FromArgb(210, 24, 120, 66),
+            _ => Color.FromArgb(160, 0, 0, 0)
+        };
+
+        var label = new TextBlock
+        {
+            Text = text,
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Margin = new Thickness(6, 2, 6, 2),
+            IsHitTestVisible = false,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+
+        return new Border
+        {
+            Background = new SolidColorBrush(barColor),
+            IsHitTestVisible = false,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Child = label
+        };
+    }
+
+    // A small two-channel (L/R) vertical meter anchored to the tile's bottom-right. The track
+    // heights are set during positioning (we know the tile's pixel size then); the fill heights are
+    // driven from the level DPs via ApplyMeterLevels.
+    private Border BuildMeter(MultiviewTile tile)
+    {
+        var leftFill = new Rectangle
+        {
+            Width = 5,
+            Fill = new SolidColorBrush(MeterFillColor),
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 1, 0)
+        };
+        var rightFill = new Rectangle
+        {
+            Width = 5,
+            Fill = new SolidColorBrush(MeterFillColor),
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(1, 0, 0, 0)
+        };
+
+        var bars = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Bottom
+        };
+        bars.Children.Add(leftFill);
+        bars.Children.Add(rightFill);
+
+        var container = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(150, 6, 10, 8)),
+            CornerRadius = new CornerRadius(2),
+            Padding = new Thickness(2),
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 6, 6),
+            Child = bars
+        };
+
+        _meters.Add(new MeterChannel(container, leftFill, rightFill));
+        return container;
+    }
+
     // Maps each normalized tile rect into overlay pixel space through the SAME uniform letterbox
-    // (scale + center) the swap chain uses (Direct3D11InteropService.ApplyPanelTransform): the
-    // displayed canvas rect = the largest canvas-aspect rect that fits the overlay, centered.
+    // (scale + center) the swap chain uses (Direct3D11InteropService.ApplyPanelTransform).
     private void PositionOverlay()
     {
-        var overlayWidth = ClickOverlay.ActualWidth;
-        var overlayHeight = ClickOverlay.ActualHeight;
-        if (overlayWidth <= 0 || overlayHeight <= 0 || ClickOverlay.Children.Count == 0)
+        var overlayWidth = ClickOverlay?.ActualWidth ?? 0;
+        var overlayHeight = ClickOverlay?.ActualHeight ?? 0;
+        if (overlayWidth <= 0 || overlayHeight <= 0)
         {
             return;
         }
@@ -171,22 +397,57 @@ public sealed partial class ShowMultiviewHost : UserControl
         var offsetX = (overlayWidth - displayedWidth) / 2.0;
         var offsetY = (overlayHeight - displayedHeight) / 2.0;
 
-        foreach (var child in ClickOverlay.Children)
+        PositionCanvasChildren(ClickOverlay, offsetX, offsetY, displayedWidth, displayedHeight);
+        PositionCanvasChildren(DecorOverlay, offsetX, offsetY, displayedWidth, displayedHeight);
+
+        // Size the meter tracks relative to the tile height now that we know pixel sizes.
+        foreach (var meter in _meters)
         {
-            if (child is not Button { Tag: MultiviewTile tile } button)
+            if (meter.Container.Parent is FrameworkElement { Tag: MultiviewTile tile })
+            {
+                var tileHeight = Math.Max(0, tile.H * displayedHeight);
+                meter.TrackHeight = Math.Clamp(tileHeight * 0.4, 12, 90);
+            }
+        }
+
+        ApplyMeterLevels();
+    }
+
+    private static void PositionCanvasChildren(Canvas? canvas, double offsetX, double offsetY, double displayedWidth, double displayedHeight)
+    {
+        if (canvas is null)
+        {
+            return;
+        }
+
+        foreach (var child in canvas.Children)
+        {
+            if (child is not FrameworkElement { Tag: MultiviewTile tile } element)
             {
                 continue;
             }
 
-            var left = offsetX + tile.X * displayedWidth;
-            var top = offsetY + tile.Y * displayedHeight;
-            var width = Math.Max(0, tile.W * displayedWidth);
-            var height = Math.Max(0, tile.H * displayedHeight);
+            element.Width = Math.Max(0, tile.W * displayedWidth);
+            element.Height = Math.Max(0, tile.H * displayedHeight);
+            Canvas.SetLeft(element, offsetX + tile.X * displayedWidth);
+            Canvas.SetTop(element, offsetY + tile.Y * displayedHeight);
+        }
+    }
 
-            button.Width = width;
-            button.Height = height;
-            Canvas.SetLeft(button, left);
-            Canvas.SetTop(button, top);
+    private void ApplyMeterLevels()
+    {
+        if (_meters.Count == 0)
+        {
+            return;
+        }
+
+        var left = Math.Clamp(MeterLevelLeft / 100.0, 0.0, 1.0);
+        var right = Math.Clamp(MeterLevelRight / 100.0, 0.0, 1.0);
+        foreach (var meter in _meters)
+        {
+            var track = meter.TrackHeight;
+            meter.LeftFill.Height = track * left;
+            meter.RightFill.Height = track * right;
         }
     }
 
@@ -208,9 +469,33 @@ public sealed partial class ShowMultiviewHost : UserControl
         return (1920.0, 1080.0);
     }
 
+    private void StartOrStopClock()
+    {
+        if (ShowClock)
+        {
+            ClockChrome.Visibility = Visibility.Visible;
+            UpdateClock();
+            if (_clockTimer is null)
+            {
+                _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+                _clockTimer.Tick += (_, _) => UpdateClock();
+            }
+
+            _clockTimer.Start();
+        }
+        else
+        {
+            StopClock();
+            ClockChrome.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void StopClock() => _clockTimer?.Stop();
+
+    private void UpdateClock() => ClockText.Text = MultiviewOverlayFormatting.FormatClock(DateTime.Now);
+
     // Resolves the source identity the tile-click command (PreviewMultiviewTile / BuildSoloRoute)
     // expects: a Participant.Id of the raw participant id for Zoom, or "capture:{id}" / "media:{id}".
-    // The core stamps sourceId as "zoom:{pid}" / "capture:{id}" / "media:{id}".
     private static ParticipantSurfaceTile ToSurfaceTile(MultiviewTile tile)
     {
         var routingId = ResolveRoutingId(tile);
@@ -242,5 +527,23 @@ public sealed partial class ShowMultiviewHost : UserControl
         }
 
         return tile.ParticipantId;
+    }
+
+    private sealed class MeterChannel
+    {
+        public MeterChannel(Border container, Rectangle leftFill, Rectangle rightFill)
+        {
+            Container = container;
+            LeftFill = leftFill;
+            RightFill = rightFill;
+        }
+
+        public Border Container { get; }
+
+        public Rectangle LeftFill { get; }
+
+        public Rectangle RightFill { get; }
+
+        public double TrackHeight { get; set; } = 40;
     }
 }
