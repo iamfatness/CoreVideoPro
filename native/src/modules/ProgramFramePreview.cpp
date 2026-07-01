@@ -932,6 +932,8 @@ rpc::Json multiviewSharedTextureJson(const ProgramFrame& frame) {
         {"participantId", tile.participantId},
         {"slot", tile.slot},
         {"label", tile.label},
+        {"role", tile.role.empty() ? "source" : tile.role},
+        {"tally", tile.tally.empty() ? "none" : tile.tally},
         {"activeSpeaker", tile.activeSpeaker},
         {"x", static_cast<double>(tile.x)},
         {"y", static_cast<double>(tile.y)},

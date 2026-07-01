@@ -610,7 +610,13 @@
                         <cvcontrols:ShowMultiviewHost Grid.Row="1"
                                                       Surface="{x:Bind ViewModel.MultiviewSurface, Mode=OneWay}"
                                                       TileRects="{x:Bind ViewModel.MultiviewTileRects, Mode=OneWay}"
-                                                      TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}" />
+                                                      TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}"
+                                                      ShowLabels="{x:Bind ViewModel.MultiviewShowLabels, Mode=OneWay}"
+                                                      ShowTally="{x:Bind ViewModel.MultiviewShowTally, Mode=OneWay}"
+                                                      ShowMeters="{x:Bind ViewModel.MultiviewShowMeters, Mode=OneWay}"
+                                                      ShowClock="{x:Bind ViewModel.MultiviewShowClock, Mode=OneWay}"
+                                                      MeterLevelLeft="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                                                      MeterLevelRight="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}" />
                     </Grid>
                 </Border>
             </Grid>

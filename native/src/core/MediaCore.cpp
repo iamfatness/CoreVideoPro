@@ -782,6 +782,10 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
     mix(tile.sourceId);
     mix(tile.participantId);
     mix(tile.label);
+    mix(tile.role);
+    // Tally is a low-frequency user action (a source taken to program/preview),
+    // not frame-rate churn, so include it so the overlay re-renders the tally.
+    mix(tile.tally);
     mixInt(tile.slot);
     mixInt(static_cast<int>(std::lround(tile.x * 10000.f)));
     mixInt(static_cast<int>(std::lround(tile.y * 10000.f)));
@@ -906,6 +910,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     setMultiviewLayout(command);
     std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources\n",
                  multiviewSources_.size());
+  } else if (type == "configure-multiviewer") {
+    configureMultiviewer(command);
   } else if (type == "configure-srt-ingest-sources") {
     configureSrtIngestSources(command);
   } else if (type == "simulate-breakout-room-change") {
@@ -1756,6 +1762,41 @@ void MediaCore::setMultiviewLayout(const rpc::Json& command) {
   applyMultiviewLayout(command);
 }
 
+void MediaCore::configureMultiviewer(const rpc::Json& command) {
+  // User-selectable multiviewer configuration. Only recognized fields are read;
+  // unknown fields are ignored gracefully. A layout-mode change is structural, so
+  // reset the structural-emit flag to force the next render to re-emit the tiles.
+  const std::string requestedMode = command.getString("layoutMode", multiviewLayoutMode_);
+  std::string mode = requestedMode;
+  if (mode != "grid" && mode != "pgmPvwTop" && mode != "pgmPvwLarge" && mode != "pgmPvwSide") {
+    mode = "grid";
+  }
+  if (mode != multiviewLayoutMode_) {
+    multiviewLayoutMode_ = mode;
+    multiviewStructureEmitted_ = false;
+  }
+  if (command.get("tileCount")) {
+    const int requested = static_cast<int>(command.getNumber("tileCount", multiviewTileCount_));
+    const int clamped = std::max(1, std::min(16, requested));
+    if (clamped != multiviewTileCount_) {
+      multiviewTileCount_ = clamped;
+      multiviewStructureEmitted_ = false;
+    }
+  }
+  if (command.get("showLabels")) {
+    multiviewShowLabels_ = command.get("showLabels")->asBool();
+  }
+  if (command.get("showTally")) {
+    multiviewShowTally_ = command.get("showTally")->asBool();
+  }
+  if (command.get("showMeters")) {
+    multiviewShowMeters_ = command.get("showMeters")->asBool();
+  }
+  if (command.get("showClock")) {
+    multiviewShowClock_ = command.get("showClock")->asBool();
+  }
+}
+
 bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   // The WinUI sends the ordered Show Input roster: each entry is one multiview
   // tile (sourceId/kind/participantId|captureDeviceId|mediaAssetId, slot, label)
@@ -1807,71 +1848,129 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   return true;
 }
 
+namespace {
+
+// The feed-resolution result for one multiview source: the same source-id
+// conventions the program plan uses so resolveLayers/frameForParticipant match
+// the same decoded frames.
+struct ResolvedMultiviewFeed {
+  std::string kind;
+  std::string sourceId;
+  std::string participantId;
+  std::string mediaAssetId;
+};
+
+ResolvedMultiviewFeed resolveMultiviewFeed(
+    const std::string& srcKind,
+    const std::string& sourceId,
+    const std::string& participantId,
+    const std::string& captureDeviceId,
+    const std::string& mediaAssetId) {
+  ResolvedMultiviewFeed feed;
+  if (srcKind == "media" && !mediaAssetId.empty()) {
+    feed.kind = "media-video";
+    feed.sourceId = "media:" + mediaAssetId;
+    feed.mediaAssetId = mediaAssetId;
+  } else if (srcKind == "capture" && !captureDeviceId.empty()) {
+    feed.kind = "participant-video";
+    feed.participantId = "capture:" + captureDeviceId;
+    feed.sourceId = feed.participantId;
+  } else if (!participantId.empty()) {
+    feed.kind = "participant-video";
+    feed.participantId = participantId;
+    feed.sourceId = "zoom:" + participantId;
+  } else {
+    feed.kind = "participant-video";
+    feed.sourceId = sourceId;
+  }
+  return feed;
+}
+
+}  // namespace
+
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
-  (void)videoFrames;
   modules::CompositorRenderPlan renderPlan;
-  renderPlan.renderPlanId = "multiview:" + std::to_string(multiviewSources_.size());
   renderPlan.sceneId = sceneId_;
   renderPlan.width = multiviewCanvasWidth_ > 0 ? multiviewCanvasWidth_ : outputWidth_;
   renderPlan.height = multiviewCanvasHeight_ > 0 ? multiviewCanvasHeight_ : outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade_;
 
+  const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
+  const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
+
   const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
-  const int count = static_cast<int>(multiviewSources_.size());
-  renderPlan.layers.reserve(multiviewSources_.size());
-  for (int index = 0; index < count; ++index) {
-    const auto& source = multiviewSources_[static_cast<size_t>(index)];
-    modules::CompositorRenderPlanLayer layer;
-    layer.layerId = "multiview:" + (source.sourceId.empty() ? std::to_string(index) : source.sourceId);
-    layer.order = index;
-    // Resolve the feed using the same source-id conventions as the program plan
-    // so resolveLayers/frameForParticipant matches the same decoded frames.
-    if (source.kind == "media" && !source.mediaAssetId.empty()) {
-      layer.kind = "media-video";
-      layer.sourceId = "media:" + source.mediaAssetId;
-      layer.mediaAssetId = source.mediaAssetId;
-    } else if (source.kind == "capture" && !source.captureDeviceId.empty()) {
-      layer.kind = "participant-video";
-      layer.participantId = "capture:" + source.captureDeviceId;
-      layer.sourceId = layer.participantId;
-    } else if (!source.participantId.empty()) {
-      layer.kind = "participant-video";
-      layer.participantId = source.participantId;
-      layer.sourceId = "zoom:" + source.participantId;
-    } else {
-      layer.kind = "participant-video";
-      layer.sourceId = source.sourceId;
+  const int totalSources = static_cast<int>(multiviewSources_.size());
+  const bool pgmPvw = multiviewLayoutMode_ != "grid";
+  // Grid shows every source; the pgmPvw modes show up to tileCount source tiles.
+  const int sourceCount = pgmPvw ? (std::min)(totalSources, (std::max)(1, multiviewTileCount_)) : totalSources;
+  const auto layout = compositor::computeMultiviewLayout(multiviewLayoutMode_, sourceCount);
+  renderPlan.renderPlanId = "multiview:" + multiviewLayoutMode_ + ":" + std::to_string(sourceCount);
+
+  int order = 0;
+
+  if (layout.hasProgramPreview) {
+    const auto pgmRect = compositor::centeredAspectRect(layout.programCell, mvCanvasW, mvCanvasH);
+    const auto pvwRect = compositor::centeredAspectRect(layout.previewCell, mvCanvasW, mvCanvasH);
+
+    // PROGRAM cell: composite the FULL current program scene by remapping every
+    // program-plan layer's rect into the PGM sub-rect. This reuses the exact
+    // program layer set (routes + overlays + captions) so the PGM cell matches
+    // what the operator sees on PROGRAM.
+    const auto programPlan = buildCompositorRenderPlan(videoFrames);
+    renderPlan.layers.reserve(programPlan.layers.size() + static_cast<size_t>(sourceCount) + 1);
+    for (const auto& src : programPlan.layers) {
+      modules::CompositorRenderPlanLayer layer = src;
+      layer.layerId = "multiview-pgm:" + src.layerId;
+      layer.rect = {
+          pgmRect.x + src.rect.x * pgmRect.width,
+          pgmRect.y + src.rect.y * pgmRect.height,
+          src.rect.width * pgmRect.width,
+          src.rect.height * pgmRect.height};
+      layer.order = order++;
+      layer.borderStyle = "none";
+      layer.borderThickness = 0.f;
+      renderPlan.layers.push_back(std::move(layer));
     }
 
-    // Aspect-aware grid cell, matching the program/preview grid math so the core
-    // and the future consumer agree on rows x cols.
-    const auto cell = compositor::gridCell((std::max)(1, count), index);
-    // gridCell divides the 16:9 canvas into an EVEN rows x cols grid, so most tile
-    // counts (2-up, 6-up, 8-up, ...) yield non-16:9 cells; "fill" then center-crops the
-    // 16:9 feed to fill the cell -> the "weird center cut". Instead, place a centered
-    // 16:9 tile inside each cell (largest 16:9 rect that fits the cell in PIXELS, mapped
-    // back to normalized canvas space) and "fit" the source so the whole frame shows at
-    // the right aspect. 16:9 source in a 16:9 tile => no bars; an off-aspect source is
-    // letterboxed inside the tile rather than cropped.
-    const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
-    const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
-    const float cellPxW = cell.width * mvCanvasW;
-    const float cellPxH = cell.height * mvCanvasH;
-    constexpr float kTileAspect = 16.f / 9.f;
-    float tilePxW = cellPxW;
-    float tilePxH = cellPxW / kTileAspect;
-    if (tilePxH > cellPxH) {
-      tilePxH = cellPxH;
-      tilePxW = cellPxH * kTileAspect;
+    // PREVIEW cell: v1 single-layer. The core has no separate preview bus yet, so
+    // show the first multiview source (the operator's likely next-up feed) fitted
+    // into the PVW cell. TODO: composite the real previewed scene once the core
+    // tracks a preview program distinct from PROGRAM.
+    if (!multiviewSources_.empty()) {
+      const auto& source = multiviewSources_.front();
+      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                             source.captureDeviceId, source.mediaAssetId);
+      modules::CompositorRenderPlanLayer layer;
+      layer.layerId = "multiview-pvw:" + (source.sourceId.empty() ? std::string("0") : source.sourceId);
+      layer.kind = feed.kind;
+      layer.sourceId = feed.sourceId;
+      layer.participantId = feed.participantId;
+      layer.mediaAssetId = feed.mediaAssetId;
+      layer.rect = {pvwRect.x, pvwRect.y, pvwRect.width, pvwRect.height};
+      layer.fitMode = "fit";
+      layer.borderStyle = "accent";
+      layer.borderColor = "#3ddc97";
+      layer.borderThickness = 2.f;
+      layer.order = order++;
+      renderPlan.layers.push_back(std::move(layer));
     }
-    const float tileW = mvCanvasW > 0.f ? tilePxW / mvCanvasW : cell.width;
-    const float tileH = mvCanvasH > 0.f ? tilePxH / mvCanvasH : cell.height;
-    layer.rect = {
-        cell.x + (cell.width - tileW) * 0.5f,
-        cell.y + (cell.height - tileH) * 0.5f,
-        tileW,
-        tileH};
+  }
+
+  // Source tiles: one centered-16:9 layer per source cell.
+  const int placed = (std::min)(sourceCount, static_cast<int>(layout.sourceCells.size()));
+  for (int index = 0; index < placed; ++index) {
+    const auto& source = multiviewSources_[static_cast<size_t>(index)];
+    const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                           source.captureDeviceId, source.mediaAssetId);
+    modules::CompositorRenderPlanLayer layer;
+    layer.layerId = "multiview:" + (source.sourceId.empty() ? std::to_string(index) : source.sourceId);
+    layer.kind = feed.kind;
+    layer.sourceId = feed.sourceId;
+    layer.participantId = feed.participantId;
+    layer.mediaAssetId = feed.mediaAssetId;
+    const auto tileRect = compositor::centeredAspectRect(layout.sourceCells[static_cast<size_t>(index)], mvCanvasW, mvCanvasH);
+    layer.rect = {tileRect.x, tileRect.y, tileRect.width, tileRect.height};
     layer.fitMode = "fit";
 
     // Active-speaker border baked into the texture (no consumer churn). The rest
@@ -1886,10 +1985,98 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       layer.borderColor = "#3ddc97";
       layer.borderThickness = 2.f;
     }
+    layer.order = order++;
     renderPlan.layers.push_back(std::move(layer));
   }
 
   return renderPlan;
+}
+
+std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std::string& activeSpeakerId) const {
+  std::vector<modules::MultiviewTileRect> tiles;
+  const int width = multiviewCanvasWidth_ > 0 ? multiviewCanvasWidth_ : outputWidth_;
+  const int height = multiviewCanvasHeight_ > 0 ? multiviewCanvasHeight_ : outputHeight_;
+  const float mvCanvasW = static_cast<float>(width > 0 ? width : 1920);
+  const float mvCanvasH = static_cast<float>(height > 0 ? height : 1080);
+
+  const int totalSources = static_cast<int>(multiviewSources_.size());
+  const bool pgmPvw = multiviewLayoutMode_ != "grid";
+  const int sourceCount = pgmPvw ? (std::min)(totalSources, (std::max)(1, multiviewTileCount_)) : totalSources;
+  const auto layout = compositor::computeMultiviewLayout(multiviewLayoutMode_, sourceCount);
+
+  // Program-route identities for source tally. A source tile whose feed matches a
+  // program route reads tally "pgm". The core has no preview bus yet, so source
+  // tiles never read "pvw" (TODO: refine once a core preview program exists).
+  std::set<std::string> programKeys;
+  for (const auto& route : sceneRoutes_) {
+    if (!route.participantId.empty()) programKeys.insert("p:" + route.participantId);
+    if (!route.captureDeviceId.empty()) programKeys.insert("c:" + route.captureDeviceId);
+    if (!route.mediaAssetId.empty()) programKeys.insert("m:" + route.mediaAssetId);
+  }
+
+  auto assignRect = [&](modules::MultiviewTileRect& tile, const compositor::LayerRect& cell) {
+    const auto r = compositor::centeredAspectRect(cell, mvCanvasW, mvCanvasH);
+    tile.x = r.x;
+    tile.y = r.y;
+    tile.w = r.width;
+    tile.h = r.height;
+  };
+
+  tiles.reserve(static_cast<size_t>(sourceCount) + 2);
+
+  if (layout.hasProgramPreview) {
+    modules::MultiviewTileRect pgm;
+    pgm.role = "pgm";
+    pgm.tally = "pgm";
+    pgm.label = "Program";
+    pgm.slot = -2;
+    assignRect(pgm, layout.programCell);
+    tiles.push_back(std::move(pgm));
+
+    modules::MultiviewTileRect pvw;
+    pvw.role = "pvw";
+    pvw.tally = "pvw";
+    pvw.label = "Preview";
+    pvw.slot = -1;
+    // Reflect the feed the PVW cell actually shows (v1: the first source).
+    if (!multiviewSources_.empty()) {
+      const auto& source = multiviewSources_.front();
+      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                             source.captureDeviceId, source.mediaAssetId);
+      pvw.sourceId = feed.sourceId.empty() ? source.sourceId : feed.sourceId;
+      pvw.participantId = source.participantId;
+    }
+    assignRect(pvw, layout.previewCell);
+    tiles.push_back(std::move(pvw));
+  }
+
+  const int placed = (std::min)(sourceCount, static_cast<int>(layout.sourceCells.size()));
+  for (int index = 0; index < placed; ++index) {
+    const auto& source = multiviewSources_[static_cast<size_t>(index)];
+    const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+                                           source.captureDeviceId, source.mediaAssetId);
+    modules::MultiviewTileRect tile;
+    tile.sourceId = feed.sourceId.empty() ? source.sourceId : feed.sourceId;
+    tile.participantId = source.participantId;
+    tile.slot = source.slot;
+    tile.label = source.label;
+    tile.role = "source";
+    tile.activeSpeaker = !source.participantId.empty() && source.participantId == activeSpeakerId;
+
+    std::string key;
+    if (source.kind == "media" && !source.mediaAssetId.empty()) {
+      key = "m:" + source.mediaAssetId;
+    } else if (source.kind == "capture" && !source.captureDeviceId.empty()) {
+      key = "c:" + source.captureDeviceId;
+    } else if (!source.participantId.empty()) {
+      key = "p:" + source.participantId;
+    }
+    tile.tally = (!key.empty() && programKeys.count(key) > 0) ? "pgm" : "none";
+    assignRect(tile, layout.sourceCells[static_cast<size_t>(index)]);
+    tiles.push_back(std::move(tile));
+  }
+
+  return tiles;
 }
 
 void MediaCore::configureSrtIngestSources(const rpc::Json& command) {
@@ -3327,27 +3514,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
                    lastProgramFrame_.multiviewSharedTexture.sharedHandleHex.c_str(),
                    multiviewPlan.width, multiviewPlan.height);
     }
-    // Per-tile rects, zipped 1:1 with the layout sources (the multiview plan adds
-    // exactly one layer per source, in order, before the compositor sorts a copy).
+    // Per-tile rects (geometry + role + tally + label) for the active layout mode.
+    // buildMultiviewTiles derives the same cell geometry buildMultiviewRenderPlan
+    // placed its layers into, plus the PGM/PVW cells for the pgmPvw modes.
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
-    std::vector<modules::MultiviewTileRect> tiles;
-    tiles.reserve(multiviewSources_.size());
-    for (size_t i = 0; i < multiviewSources_.size() && i < multiviewPlan.layers.size(); ++i) {
-      const auto& source = multiviewSources_[i];
-      const auto& planLayer = multiviewPlan.layers[i];
-      modules::MultiviewTileRect tile;
-      tile.sourceId = planLayer.sourceId.empty() ? source.sourceId : planLayer.sourceId;
-      tile.participantId = source.participantId;
-      tile.slot = source.slot;
-      tile.label = source.label;
-      tile.activeSpeaker = !source.participantId.empty() && source.participantId == activeSpeakerId;
-      tile.x = planLayer.rect.x;
-      tile.y = planLayer.rect.y;
-      tile.w = planLayer.rect.width;
-      tile.h = planLayer.rect.height;
-      tiles.push_back(std::move(tile));
-    }
-    lastProgramFrame_.multiviewTiles = std::move(tiles);
+    lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
   // UI thumbnail, but at full render rate (~60fps) the base64 BGRA payloads

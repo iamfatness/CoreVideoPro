@@ -253,6 +253,8 @@ public static class CoreProtocolParser
                         ParticipantId = ReadString(tileElement, "participantId"),
                         Slot = ReadInt(tileElement, "slot"),
                         Label = ReadString(tileElement, "label"),
+                        Role = ReadString(tileElement, "role") is { Length: > 0 } role ? role : "source",
+                        Tally = ReadString(tileElement, "tally") is { Length: > 0 } tally ? tally : "none",
                         ActiveSpeaker = tileElement.TryGetProperty("activeSpeaker", out var asElement) &&
                             (asElement.ValueKind == JsonValueKind.True ||
                              (asElement.ValueKind == JsonValueKind.Number && asElement.GetDouble() != 0)),

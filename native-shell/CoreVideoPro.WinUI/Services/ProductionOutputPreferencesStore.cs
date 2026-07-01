@@ -48,6 +48,12 @@ public sealed class ProductionOutputPreferences
     public double LowerThirdBuildOutMs { get; set; }
     public string? BrandLowerThirdStyle { get; set; }
     public string? BrandDefaultOverlayBehavior { get; set; }
+    public string? MultiviewLayoutMode { get; set; }
+    public int MultiviewTileCount { get; set; } = 8;
+    public bool MultiviewShowLabels { get; set; } = true;
+    public bool MultiviewShowTally { get; set; } = true;
+    public bool MultiviewShowMeters { get; set; } = true;
+    public bool MultiviewShowClock { get; set; }
     public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
 }
 

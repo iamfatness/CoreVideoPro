@@ -42,6 +42,12 @@ public sealed class ProductionOutputPreferencesStoreTests
             LowerThirdBuildOutMs = 300,
             BrandLowerThirdStyle = "minimal",
             BrandDefaultOverlayBehavior = "manual",
+            MultiviewLayoutMode = "pgmPvwLarge",
+            MultiviewTileCount = 5,
+            MultiviewShowLabels = false,
+            MultiviewShowTally = true,
+            MultiviewShowMeters = false,
+            MultiviewShowClock = true,
             SceneBackgroundAssetIds = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["speaker-slides"] = "media-bg-1",
@@ -73,6 +79,27 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("manual", roundTripped.BrandDefaultOverlayBehavior);
         Assert.Equal("media-bg-1", roundTripped.SceneBackgroundAssetIds["speaker-slides"]);
         Assert.Equal("media-bg-2", roundTripped.SceneBackgroundAssetIds["eight-up"]);
+        Assert.Equal("pgmPvwLarge", roundTripped.MultiviewLayoutMode);
+        Assert.Equal(5, roundTripped.MultiviewTileCount);
+        Assert.False(roundTripped.MultiviewShowLabels);
+        Assert.True(roundTripped.MultiviewShowTally);
+        Assert.False(roundTripped.MultiviewShowMeters);
+        Assert.True(roundTripped.MultiviewShowClock);
+    }
+
+    [Fact]
+    public void Defaults_MatchMultiviewerContract()
+    {
+        var preferences = new ProductionOutputPreferences();
+
+        // Defaults must match the fixed multiviewer contract (grid, 8 tiles, labels/tally/meters on,
+        // clock off) so a fresh install starts in the documented state.
+        Assert.Null(preferences.MultiviewLayoutMode);
+        Assert.Equal(8, preferences.MultiviewTileCount);
+        Assert.True(preferences.MultiviewShowLabels);
+        Assert.True(preferences.MultiviewShowTally);
+        Assert.True(preferences.MultiviewShowMeters);
+        Assert.False(preferences.MultiviewShowClock);
     }
 
     [Fact]

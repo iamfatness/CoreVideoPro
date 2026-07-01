@@ -324,6 +324,7 @@ if(BUILD_TESTING)
     tests/DirectorTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
+    tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp

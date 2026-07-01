@@ -152,6 +152,12 @@ struct MultiviewTileRect {
   float h = 0.f;
   bool activeSpeaker = false;
   std::string label;
+  // Tile semantics for the user-selectable multiviewer layouts. `role` is the
+  // cell kind ("pgm" | "pvw" | "source"); `tally` is the source's live status
+  // ("pgm" if routed to the program scene, "pvw" if in preview, else "none").
+  // The pgm/pvw cells carry role/tally "pgm"/"pvw" and label "Program"/"Preview".
+  std::string role = "source";
+  std::string tally = "none";
 };
 
 struct ProgramFrame {

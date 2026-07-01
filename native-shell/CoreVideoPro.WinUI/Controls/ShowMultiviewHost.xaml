@@ -24,6 +24,29 @@
                 Background="Transparent"
                 SizeChanged="OnOverlaySizeChanged" />
 
+        <!-- Decoration overlay: name labels, tally borders, and audio meters, positioned through
+             the SAME letterbox transform as the click overlay. Hit-test transparent so taps still
+             reach the click buttons underneath. Each element is gated by its own toggle. -->
+        <Canvas x:Name="DecorOverlay" IsHitTestVisible="False" />
+
+        <!-- Digital clock (HH:MM:SS), top-right corner of the whole multiview. Toggle-gated. -->
+        <Border x:Name="ClockChrome"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="10"
+                Padding="8,3"
+                CornerRadius="4"
+                IsHitTestVisible="False"
+                Background="#B0000000"
+                Visibility="Collapsed">
+            <TextBlock x:Name="ClockText"
+                       Text="00:00:00"
+                       FontSize="14"
+                       FontWeight="SemiBold"
+                       FontFamily="Consolas"
+                       Foreground="#F2F6F4" />
+        </Border>
+
         <Grid x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center">
             <TextBlock Text="Assign show inputs in Sources to populate multiview."
                        FontSize="12"

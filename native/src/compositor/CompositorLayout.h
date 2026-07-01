@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace corevideo::compositor {
 
@@ -72,6 +73,118 @@ inline LayerRect gridCell(int layerCount, int index, float padding = 0.01f) {
       cellW - 2.f * padding,
       cellH - 2.f * padding,
   };
+}
+
+// Insets a rect uniformly by `pad` (normalized) on every side, clamped so the
+// rect never inverts. Used to leave a thin gutter between multiview cells.
+inline LayerRect insetRect(const LayerRect& rect, float pad) {
+  const float maxPad = 0.4f * std::min(rect.width, rect.height);
+  const float p = std::clamp(pad, 0.f, maxPad);
+  return {rect.x + p, rect.y + p, rect.width - 2.f * p, rect.height - 2.f * p};
+}
+
+// Returns the largest `aspect` (default 16:9) rect that fits inside `cell`,
+// centered, computed in PIXELS against a `canvasWidth`x`canvasHeight` canvas and
+// mapped back to normalized canvas coordinates. This is the fix for the multiview
+// "center-crop" bug: an even rows x cols grid yields non-16:9 cells, so instead of
+// center-cropping a 16:9 feed to fill a non-16:9 cell we place a centered 16:9
+// tile inside the cell and letterbox off-aspect feeds within it.
+inline LayerRect centeredAspectRect(
+    const LayerRect& cell,
+    float canvasWidth,
+    float canvasHeight,
+    float aspect = 16.f / 9.f) {
+  const float cw = canvasWidth > 0.f ? canvasWidth : 1920.f;
+  const float ch = canvasHeight > 0.f ? canvasHeight : 1080.f;
+  const float cellPxW = cell.width * cw;
+  const float cellPxH = cell.height * ch;
+  if (cellPxW <= 0.f || cellPxH <= 0.f || aspect <= 0.f) {
+    return cell;
+  }
+  float tilePxW = cellPxW;
+  float tilePxH = cellPxW / aspect;
+  if (tilePxH > cellPxH) {
+    tilePxH = cellPxH;
+    tilePxW = cellPxH * aspect;
+  }
+  const float tileW = tilePxW / cw;
+  const float tileH = tilePxH / ch;
+  return {
+      cell.x + (cell.width - tileW) * 0.5f,
+      cell.y + (cell.height - tileH) * 0.5f,
+      tileW,
+      tileH};
+}
+
+// The raw (pre-aspect) cell regions for one multiview layout mode. Every consumer
+// (the render-plan layer placement and the emitted tile rects) shares this so the
+// core and the WinUI overlay agree on geometry. Cells here are already inset by a
+// small gutter; apply centeredAspectRect() to each to get the final 16:9 tile.
+struct MultiviewLayoutPlan {
+  bool hasProgramPreview = false;
+  LayerRect programCell;               // Valid only when hasProgramPreview.
+  LayerRect previewCell;               // Valid only when hasProgramPreview.
+  std::vector<LayerRect> sourceCells;  // One per source tile, in slot order.
+};
+
+// Computes the raw cell layout for `sourceCount` source tiles in `mode`.
+//   "grid"        -> aspect-aware even grid (legacy behavior).
+//   "pgmPvwTop"   -> PGM|PVW big on top half; single row of sources below.
+//   "pgmPvwLarge" -> PGM|PVW big on top half; sources wrap 1-2 rows below.
+//   "pgmPvwSide"  -> PGM over PVW on the left ~2/3; sources in a right strip.
+// Unknown modes fall back to "grid".
+inline MultiviewLayoutPlan computeMultiviewLayout(
+    const std::string& mode,
+    int sourceCount,
+    float pad = 0.006f) {
+  MultiviewLayoutPlan plan;
+  const int count = std::max(0, sourceCount);
+
+  auto pushCell = [&](const LayerRect& raw) { plan.sourceCells.push_back(insetRect(raw, pad)); };
+
+  if (mode == "pgmPvwTop" || mode == "pgmPvwLarge" || mode == "pgmPvwSide") {
+    plan.hasProgramPreview = true;
+  }
+
+  if (mode == "pgmPvwSide") {
+    const float leftW = 2.f / 3.f;
+    plan.programCell = insetRect({0.f, 0.f, leftW, 0.5f}, pad);
+    plan.previewCell = insetRect({0.f, 0.5f, leftW, 0.5f}, pad);
+    const float rightX = leftW;
+    const float rightW = 1.f - leftW;
+    const int n = std::max(1, count);
+    const float cellH = 1.f / static_cast<float>(n);
+    for (int i = 0; i < count; ++i) {
+      pushCell({rightX, static_cast<float>(i) * cellH, rightW, cellH});
+    }
+    return plan;
+  }
+
+  if (mode == "pgmPvwTop" || mode == "pgmPvwLarge") {
+    plan.programCell = insetRect({0.f, 0.f, 0.5f, 0.5f}, pad);
+    plan.previewCell = insetRect({0.5f, 0.f, 0.5f, 0.5f}, pad);
+    const float regionY = 0.5f;
+    const float regionH = 0.5f;
+    const int rows = (mode == "pgmPvwLarge" && count > 5) ? 2 : 1;
+    const int cols = std::max(1, (std::max(1, count) + rows - 1) / rows);
+    const float cellW = 1.f / static_cast<float>(cols);
+    const float cellH = regionH / static_cast<float>(rows);
+    for (int i = 0; i < count; ++i) {
+      const int row = i / cols;
+      const int col = i % cols;
+      pushCell({static_cast<float>(col) * cellW,
+                regionY + static_cast<float>(row) * cellH,
+                cellW,
+                cellH});
+    }
+    return plan;
+  }
+
+  // "grid" (and any unknown mode): aspect-aware even grid.
+  for (int i = 0; i < count; ++i) {
+    plan.sourceCells.push_back(gridCell(std::max(1, count), i));
+  }
+  return plan;
 }
 
 inline LayerRect lowerThirdOverlay() {

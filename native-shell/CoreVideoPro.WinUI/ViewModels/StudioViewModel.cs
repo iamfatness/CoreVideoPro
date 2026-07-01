@@ -208,6 +208,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _recordingQuality = MediaCoreProductionSyncContext.DefaultRecordingTargets.Quality;
 
+    // Multiviewer operator preferences. These drive the configure-multiviewer command; the overlay
+    // and core agents bind/consume these exact property names.
+    [ObservableProperty]
+    private string _multiviewLayoutMode = DefaultMultiviewLayoutMode;
+
+    [ObservableProperty]
+    private int _multiviewTileCount = DefaultMultiviewTileCount;
+
+    [ObservableProperty]
+    private bool _multiviewShowLabels = true;
+
+    [ObservableProperty]
+    private bool _multiviewShowTally = true;
+
+    [ObservableProperty]
+    private bool _multiviewShowMeters = true;
+
+    [ObservableProperty]
+    private bool _multiviewShowClock;
+
     [ObservableProperty]
     private string _outputStatus = "Outputs idle";
 
@@ -1042,6 +1062,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new() { Value = "archive", Label = "Archive" }
     ];
 
+    public IReadOnlyList<RouteSelectOption> MultiviewLayoutOptions { get; } =
+    [
+        new() { Value = "grid", Label = "Grid" },
+        new() { Value = "pgmPvwTop", Label = "Program/Preview + row" },
+        new() { Value = "pgmPvwLarge", Label = "Program/Preview + grid" },
+        new() { Value = "pgmPvwSide", Label = "Program/Preview + side strip" }
+    ];
+
     public string CanvasProfileSummary =>
         $"{CanvasResolution} - {NormalizeFpsText(CanvasFps)} fps canvas";
 
@@ -1466,6 +1494,132 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMultiviewGridTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
     {
         OnPropertyChanged(nameof(MultiviewHeader));
+    }
+
+    // Multiviewer preferences: layout mode + tile count + overlay toggles. On any change, clamp,
+    // persist, and (debounced) push a configure-multiviewer command to the core.
+    public const string DefaultMultiviewLayoutMode = "grid";
+    public const int DefaultMultiviewTileCount = 8;
+    public const int MinMultiviewTileCount = 1;
+    public const int MaxMultiviewTileCount = 8;
+
+    public static int ClampMultiviewTileCount(int value) =>
+        Math.Clamp(value, MinMultiviewTileCount, MaxMultiviewTileCount);
+
+    // Const-only body (no static-field access) so this stays callable from the headless test host
+    // without triggering the StudioViewModel type initializer (which needs the WinUI runtime).
+    public static string NormalizeMultiviewLayoutMode(string? value) => value switch
+    {
+        "grid" or "pgmPvwTop" or "pgmPvwLarge" or "pgmPvwSide" => value,
+        _ => DefaultMultiviewLayoutMode
+    };
+
+    partial void OnMultiviewLayoutModeChanged(string value)
+    {
+        var normalized = NormalizeMultiviewLayoutMode(value);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            MultiviewLayoutMode = normalized;
+            return;
+        }
+
+        OnMultiviewerConfigChanged();
+    }
+
+    partial void OnMultiviewTileCountChanged(int value)
+    {
+        var clamped = ClampMultiviewTileCount(value);
+        if (clamped != value)
+        {
+            MultiviewTileCount = clamped;
+            return;
+        }
+
+        OnMultiviewerConfigChanged();
+    }
+
+    partial void OnMultiviewShowLabelsChanged(bool value) => OnMultiviewerConfigChanged();
+
+    partial void OnMultiviewShowTallyChanged(bool value) => OnMultiviewerConfigChanged();
+
+    partial void OnMultiviewShowMetersChanged(bool value) => OnMultiviewerConfigChanged();
+
+    partial void OnMultiviewShowClockChanged(bool value) => OnMultiviewerConfigChanged();
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _multiviewerConfigTimer;
+
+    private void OnMultiviewerConfigChanged()
+    {
+        OnPropertyChanged(nameof(MultiviewerConfigSummary));
+        SaveProductionOutputPreferences();
+        ScheduleMultiviewerConfigResend();
+    }
+
+    // Debounce rapid toggling (e.g. dragging the tile-count spinner) into a single send. Also
+    // the backpressure-retry hook: ConfigureMultiviewerAsync re-arms this when a send is dropped
+    // because a production sync was in flight, so the operator's saved layout eventually reaches
+    // the core instead of being silently lost.
+    private void ScheduleMultiviewerConfigResend()
+    {
+        if (_multiviewerConfigTimer is null)
+        {
+            _multiviewerConfigTimer = _dispatcher.CreateTimer();
+            _multiviewerConfigTimer.IsRepeating = false;
+            _multiviewerConfigTimer.Tick += (_, _) => _ = ConfigureMultiviewerAsync();
+        }
+
+        _multiviewerConfigTimer.Interval = TimeSpan.FromMilliseconds(150);
+        _multiviewerConfigTimer.Start();
+    }
+
+    public string MultiviewerConfigSummary
+    {
+        get
+        {
+            var layoutLabel = MultiviewLayoutMode switch
+            {
+                "pgmPvwTop" => "Program/Preview + row",
+                "pgmPvwLarge" => "Program/Preview + grid",
+                "pgmPvwSide" => "Program/Preview + side strip",
+                _ => "Grid"
+            };
+            return $"{layoutLabel} - {MultiviewTileCount} tiles";
+        }
+    }
+
+    private async Task ConfigureMultiviewerAsync()
+    {
+        if (!_bridge.Running)
+        {
+            return;
+        }
+
+        var command = MediaCoreCommandBuilder.BuildConfigureMultiviewerCommand(
+            NormalizeMultiviewLayoutMode(MultiviewLayoutMode),
+            ClampMultiviewTileCount(MultiviewTileCount),
+            MultiviewShowLabels,
+            MultiviewShowTally,
+            MultiviewShowMeters,
+            MultiviewShowClock);
+
+        try
+        {
+            // Standalone sync — does not apply the response snapshot, so it cannot re-trigger the
+            // production-sync path.
+            await _bridge.SyncAsync([command]).ConfigureAwait(false);
+        }
+        catch (MediaCoreSyncInFlightException)
+        {
+            // A production sync was already in flight (common during the startup burst), so this
+            // command was dropped for backpressure. Re-arm the debounce to retry once the in-flight
+            // sync clears — otherwise the operator's saved multiviewer layout silently never reaches
+            // the core (observed: layout stayed "grid" despite a persisted pgmPvw choice).
+            RunOnUiThread(ScheduleMultiviewerConfigResend);
+        }
+        catch
+        {
+            // Other transient errors: the next change / startup re-apply retries.
+        }
     }
 
     partial void OnPrimaryCaptureDeviceIdChanged(string? value) => ApplyDualCaptureSelection();
@@ -4418,6 +4572,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
             await SyncActiveSceneAsync().ConfigureAwait(false);
+            // Re-apply the saved multiviewer preferences so the core matches the operator's choice.
+            await ConfigureMultiviewerAsync().ConfigureAwait(false);
             RunOnUiThread(() =>
             {
                 EngineStatus = $"Media core ready - {_bridge.ProfileSummary}";
@@ -8948,6 +9104,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
+            MultiviewLayoutMode = NormalizeMultiviewLayoutMode(MultiviewLayoutMode),
+            MultiviewTileCount = ClampMultiviewTileCount(MultiviewTileCount),
+            MultiviewShowLabels = MultiviewShowLabels,
+            MultiviewShowTally = MultiviewShowTally,
+            MultiviewShowMeters = MultiviewShowMeters,
+            MultiviewShowClock = MultiviewShowClock,
             SceneBackgroundAssetIds = _sceneBackgroundAssetIds.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
@@ -9038,6 +9200,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
             Overlays.NotifyBrandKitChanged();
         }
+
+        MultiviewLayoutMode = NormalizeMultiviewLayoutMode(preferences.MultiviewLayoutMode);
+        MultiviewTileCount = ClampMultiviewTileCount(preferences.MultiviewTileCount);
+        MultiviewShowLabels = preferences.MultiviewShowLabels;
+        MultiviewShowTally = preferences.MultiviewShowTally;
+        MultiviewShowMeters = preferences.MultiviewShowMeters;
+        MultiviewShowClock = preferences.MultiviewShowClock;
 
         _sceneBackgroundAssetIds.Clear();
         foreach (var pair in preferences.SceneBackgroundAssetIds)
