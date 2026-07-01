@@ -171,6 +171,28 @@ public static class MediaCoreCommandBuilder
             }).ToList()
         });
 
+    /// <summary>
+    /// Builds <c>configure-multiviewer</c> from the operator's multiviewer preferences. This carries
+    /// the user-chosen layout mode, tile count, and overlay toggles (labels/tally/meters/clock) to
+    /// the core, independent of the source roster carried by <c>set-multiview-layout</c>.
+    /// </summary>
+    public static NativeMediaCoreCommand BuildConfigureMultiviewerCommand(
+        string layoutMode,
+        int tileCount,
+        bool showLabels,
+        bool showTally,
+        bool showMeters,
+        bool showClock) =>
+        Command("configure-multiviewer", new Dictionary<string, object?>
+        {
+            ["layoutMode"] = layoutMode,
+            ["tileCount"] = tileCount,
+            ["showLabels"] = showLabels,
+            ["showTally"] = showTally,
+            ["showMeters"] = showMeters,
+            ["showClock"] = showClock
+        });
+
     private static NativeMediaCoreCommand BuildZoomSourceRosterCommand(IReadOnlyList<MediaCoreParticipantWire> participants) =>
         Command("set-zoom-source-roster", new Dictionary<string, object?>
         {

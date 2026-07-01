@@ -76,6 +76,10 @@
                             Content="Recording"
                             Style="{StaticResource SettingsMenuButton}"
                             Click="OnRecordingClicked" />
+                    <Button x:Name="MultiviewerMenuButton"
+                            Content="Multiviewer"
+                            Style="{StaticResource SettingsMenuButton}"
+                            Click="OnMultiviewerClicked" />
                     <Button x:Name="LicenseMenuButton"
                             Content="License &amp; Plan"
                             Style="{StaticResource SettingsMenuButton}"
@@ -673,6 +677,67 @@
                                        Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="Package scripts read COREVIDEO_FFMPEG_BIN_DIR or FFMPEG_BIN_DIR. This field also feeds the running media engine so RTMP/RTMPS can launch FFmpeg without restarting the app."
                                        Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="MultiviewerPanel"
+                          Visibility="Collapsed"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="Multiviewer" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="Choose how the multiviewer monitor arranges sources and which overlays it draws. Changes apply live and are saved for next launch."
+                               Style="{StaticResource OperatorSummary}" />
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="14">
+                            <TextBlock Text="Layout" Style="{StaticResource SettingsLabel}" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="160" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox Header="Layout mode"
+                                          ItemsSource="{x:Bind ViewModel.MultiviewLayoutOptions}"
+                                          SelectedValue="{x:Bind ViewModel.MultiviewLayoutMode, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Column="1"
+                                           Header="Tile count"
+                                           Value="{x:Bind ViewModel.MultiviewTileCount, Mode=TwoWay}"
+                                           Minimum="1"
+                                           Maximum="8"
+                                           SmallChange="1"
+                                           LargeChange="1"
+                                           SpinButtonPlacementMode="Inline" />
+                            </Grid>
+                            <TextBlock Text="{x:Bind ViewModel.MultiviewerConfigSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Overlays" Style="{StaticResource SettingsLabel}" />
+                            <ToggleSwitch Header="Source labels"
+                                          OnContent="On"
+                                          OffContent="Off"
+                                          IsOn="{x:Bind ViewModel.MultiviewShowLabels, Mode=TwoWay}" />
+                            <ToggleSwitch Header="Tally borders"
+                                          OnContent="On"
+                                          OffContent="Off"
+                                          IsOn="{x:Bind ViewModel.MultiviewShowTally, Mode=TwoWay}" />
+                            <ToggleSwitch Header="Audio meters"
+                                          OnContent="On"
+                                          OffContent="Off"
+                                          IsOn="{x:Bind ViewModel.MultiviewShowMeters, Mode=TwoWay}" />
+                            <ToggleSwitch Header="Clock"
+                                          OnContent="On"
+                                          OffContent="Off"
+                                          IsOn="{x:Bind ViewModel.MultiviewShowClock, Mode=TwoWay}" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
