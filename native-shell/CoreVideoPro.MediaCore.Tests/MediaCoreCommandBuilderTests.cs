@@ -783,6 +783,27 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("srt-ingest-01", route.GetProperty("captureDeviceId").GetString());
     }
 
+    [Fact]
+    public void BuildConfigureMultiviewerCommand_SerializesLayoutAndToggles()
+    {
+        var command = MediaCoreCommandBuilder.BuildConfigureMultiviewerCommand(
+            layoutMode: "pgmPvwSide",
+            tileCount: 6,
+            showLabels: true,
+            showTally: false,
+            showMeters: true,
+            showClock: false);
+
+        Assert.Equal("configure-multiviewer", command.Type);
+        Assert.NotNull(command.ExtensionData);
+        Assert.Equal("pgmPvwSide", command.ExtensionData!["layoutMode"].GetString());
+        Assert.Equal(6, command.ExtensionData!["tileCount"].GetInt32());
+        Assert.True(command.ExtensionData!["showLabels"].GetBoolean());
+        Assert.False(command.ExtensionData!["showTally"].GetBoolean());
+        Assert.True(command.ExtensionData!["showMeters"].GetBoolean());
+        Assert.False(command.ExtensionData!["showClock"].GetBoolean());
+    }
+
     private static string? GetString(NativeMediaCoreCommand command, string propertyName)
     {
         if (command.ExtensionData is null ||
