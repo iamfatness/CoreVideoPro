@@ -1,6 +1,9 @@
 # Phase 2 — Core Request / Render / Audio Threading Plan
 
-_Status: 2026-06-29. Design pass (not yet implemented). Origin: under Zoom-joined +
+_Status: 2026-07-02. **Largely implemented** — increments 1, 2, 4, and 5 are shipped
+(see §6 implementation log); increment 3 (engine send off the lock) and increment 6
+(guardrails/TSan) remain open, and the ≥10-min audio-glitch soak gate has not been
+executed. Original design pass 2026-06-29. Origin: under Zoom-joined +
 Capture-On, command round-trips time out (`[bridge] TIMEOUT type=media-core-sync after
 4000ms` + `zoom-media-spine-sync`), blocking GPU multiview layout delivery and degrading
 scene/routing/audio syncs — while the render is healthy (56fps, lockWait 0ms, 2.3ms) and
@@ -109,7 +112,33 @@ contention. Production syncs were already coalesced (`_syncInFlight` /
 builds clean (0/0); MediaCore.Tests 203/203; native tests 233 pass / 6 known
 pre-existing fails (ZoomEngineClient I420 thumbnail set).
 
-### Increments 2 + 5 — DEFERRED (with implementation-ready design below)
+### Increments 2 + 4 + 5 — SHIPPED (2026-06-29, commit `243f605`)
+
+The dedicated-lock design below was implemented as specified, superseding the
+deferral note that follows (kept for the rationale/design record):
+
+- `MediaCore::renderAudioOutputTick(coreMutex)` (`MediaCore.cpp:4095`) runs on a
+  dedicated ~50Hz `audioOutputThread` in `JsonRpcServer::run` (`JsonRpcServer.cpp:447`)
+  with the exact gather (brief `coreMutex`) → work (`audioOutputMutex_` only) →
+  publish (brief `coreMutex`) split. The work span carries `mixRoutedBuses`, insert
+  chains, `monitorOutput->render`, BS.1770 loudness, `encoder->submit`,
+  `outputSender->sync`, and recording `submitAudio` — so **increment 4** (output/
+  encoder off the command thread) landed inside the same worker.
+- The render thread is video-only (`renderDisplayTick` → `renderSyntheticTick(
+  videoOnly=true)`); `enableAudioOutputWorker()` flips the core off the legacy
+  in-tick audio path.
+- **Increment 2** landed in `MediaCore::applyCommands` (`MediaCore.cpp:906-914`):
+  when the worker is active, an EMPTY `media-core-sync` poll renders zero synthetic
+  ticks and returns the published snapshot; command-carrying syncs still render
+  (capped catch-up) so effects are reflected immediately.
+
+**Still open:** increment 3 (`ZoomEngineRuntime` `sendLine` still blocks under
+`coreMutex` — no outbound queue/sender thread yet), increment 6 (assert sub-ms
+`coreMutex` holds; TSan not wired into CI), and the §6 validation gate — the ≥10-min
+audio-routed + recording soak with ears on the monitor output has NOT been executed.
+Run it as part of the alpha validation pass (`docs/alpha-plan.md`).
+
+### Increments 2 + 5 — original deferral note (2026-06-29, superseded same day)
 **Why deferred:** the headline goal (locked 60fps under load) provably requires
 Increment 5 — any design that keeps the audio mix / routed-bus matrix / monitor
 render / BS.1770 / `encoder->submit` / `outputSender->sync` under `coreMutex` at

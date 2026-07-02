@@ -8,6 +8,21 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **GPU core-composited multiview**: the C++ core composites the whole multiview grid
+  into ONE keyed-mutex DXGI shared texture (replacing per-tile swap chains and CPU
+  tiles), presented by a single WinUI surface with overlay labels, red/green tally,
+  audio meters, and a clock; four operator-selectable layout modes (grid,
+  pgm/pvw top, pgm/pvw large, pgm/pvw side) with aspect-correct 16:9 tiles.
+- True multi-layer **PREVIEW composite bus** (core + WinUI + multiviewer).
+- **Phase 2 threading decouple**: audio mix/route, monitor render, BS.1770 loudness,
+  encoder submit, and output-sender sync moved off the render/command threads onto a
+  dedicated ~50Hz worker with a two-lock (`coreMutex`/`audioOutputMutex_`) discipline;
+  empty `media-core-sync` polls no longer run a heavy tick. Render thread is
+  video-only, targeting locked 60fps.
+- **60fps pipeline**: zero-copy Zoom I420 ingest and a precise render-loop pacer.
+- Preview/program parity fixes: per-participant color grade applied to source exports
+  (brightness parity) and preview-freeze fixes when a source is in both preview and
+  program.
 - Native Studio **Routing tab** with an audio crosspoint gain matrix: assigned
   Inputs (1–10) plus the Zoom program mix and media as rows, program/ISO/monitor/
   stream buses as columns, and per-crosspoint on/off + gain (dB) editing, wired to
@@ -26,6 +41,10 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 - Overlay / lower-third / caption **text and image rasterization** (DirectWrite/WIC)
   is unfinished; SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames
   do not yet reach the core. See `docs/native-production-completion-plan.md`.
+- The **alpha validation pass** (`docs/alpha-plan.md` Tracks A–F) has not been
+  executed: no live-Zoom proof, record/stream soak, or clean-machine packaging
+  evidence yet — including the ≥10-minute audio-glitch-freedom soak for the Phase 2
+  threading decouple.
 - No production code signing / notarization or auto-update channel yet.
 
 ## [0.1.0] - 2026-06-15

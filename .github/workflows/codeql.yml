@@ -47,6 +47,14 @@ jobs:
           build-mode: none
         - language: javascript-typescript
           build-mode: none
+        # The C++ media core is the real-time product path — scan the portable stub
+        # build (same configuration as the native-stub CI job).
+        - language: c-cpp
+          build-mode: manual
+        # The .NET shell/bridge is scanned buildless (WinUI needs a Windows rig to
+        # compile; buildless extraction still covers the C# sources).
+        - language: csharp
+          build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
@@ -84,16 +92,13 @@ jobs:
     # to build your code.
     # ℹ️ Command-line programs to run using the OS shell.
     # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
-    - name: Run manual build steps
+    - name: Build C++ media core (stub configuration)
       if: matrix.build-mode == 'manual'
       shell: bash
       run: |
-        echo 'If you are using a "manual" build mode for one or more of the' \
-          'languages you are analyzing, replace this with the commands to build' \
-          'your code, for example:'
-        echo '  make bootstrap'
-        echo '  make release'
-        exit 1
+        sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
+        cmake -S native -B native/build-codeql -DCOREVIDEO_STUB=ON -G Ninja
+        cmake --build native/build-codeql
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
