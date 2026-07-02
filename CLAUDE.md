@@ -122,8 +122,11 @@ routing honored by Sources + multiview; compact Sources routing table.
 
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
-audio-glitch-freedom soak that Phase 2 shipped without; (2) **overlay / lower-third /
-caption rasterization** (DirectWrite/WIC — still colored rects); (3) **real device
-capture** (UVC first, then DeckLink/AJA); (4) Phase 2 leftovers: engine `sendLine`
+audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
+capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers: engine `sendLine`
 still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
-(increment 6).
+(increment 6). DONE 2026-07-02: **overlay/lower-third/caption text rasterization** —
+`D3D11CompositorAdapter::rasterOverlayTexture` renders real DirectWrite text (+ WIC
+images) via a D2D DXGI-surface render target into a cached GPU texture (content-signature
+LRU); premultiplied alpha needs the dedicated blend state + overlay shader, and the
+raster snapshots/restores the immediate-context state around EndDraw.

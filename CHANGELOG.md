@@ -38,9 +38,12 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Known gaps
 
-- Overlay / lower-third / caption **text and image rasterization** (DirectWrite/WIC)
-  is unfinished; SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames
+- SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames
   do not yet reach the core. See `docs/native-production-completion-plan.md`.
+  (Overlay / lower-third / caption **text rasterization** shipped 2026-07-02: the
+  D3D11 compositor rasters real DirectWrite text + WIC images via a D2D
+  DXGI-surface render target, cached by content signature; validated on-GPU by
+  pixel tests and live in the app at 60fps.)
 - The **alpha validation pass** (`docs/alpha-plan.md` Tracks A–F) has not been
   executed: no live-Zoom proof, record/stream soak, or clean-machine packaging
   evidence yet — including the ≥10-minute audio-glitch-freedom soak for the Phase 2
