@@ -122,8 +122,11 @@ routing honored by Sources + multiview; compact Sources routing table.
 
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
-audio-glitch-freedom soak that Phase 2 shipped without; (2) **overlay / lower-third /
-caption rasterization** (DirectWrite/WIC — still colored rects); (3) **real device
-capture** (UVC first, then DeckLink/AJA); (4) Phase 2 leftovers: engine `sendLine`
-still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
-(increment 6).
+audio-glitch-freedom soak that Phase 2 shipped without, plus a smoke of the new
+DirectWrite/WIC overlay raster (code-complete, dev-gated, never run on Windows);
+(2) **real device capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers:
+engine `sendLine` still blocks under `coreMutex` (increment 3) and the sub-ms-hold
+guardrails (increment 6; TSan now runs in CI). Overlay/lower-third/caption
+rasterization shipped: shared content tile (`OverlayTileRaster`, full-ASCII font,
+signature-cached) blitted by the CPU preview and uploaded by the D3D11 compositor,
+DirectWrite/D2D + WIC upgrade behind the D3D11 gate.

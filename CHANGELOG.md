@@ -8,6 +8,18 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Overlay / lower-third / caption rasterization (Item 9)**: overlays now render
+  real content instead of colored rects. A shared content-tile rasterizer
+  (`OverlayTileRaster`) draws the brand band, accent bar, full-ASCII 5x7 bitmap
+  text, and a deterministic image placeholder; the CPU preview blits the same
+  tile the D3D11 compositor uploads, so preview and program agree by
+  construction. On the Windows dev rig the tile upgrades to DirectWrite/D2D
+  antialiased text (brand font family) plus a real WIC `imageUri` decode, with
+  graceful fallback to the CPU tile. Tiles are cached per overlay layer and
+  re-raster only when content changes — keyPhase animation stays a
+  composite-time transform. Caption speaker attribution now uses the secondary
+  brand accent so it reads distinctly from the accent bar.
+
 - **GPU core-composited multiview**: the C++ core composites the whole multiview grid
   into ONE keyed-mutex DXGI shared texture (replacing per-tile swap chains and CPU
   tiles), presented by a single WinUI surface with overlay labels, red/green tally,
@@ -38,9 +50,10 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Known gaps
 
-- Overlay / lower-third / caption **text and image rasterization** (DirectWrite/WIC)
-  is unfinished; SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames
-  do not yet reach the core. See `docs/native-production-completion-plan.md`.
+- The DirectWrite/WIC overlay raster is code-complete but dev-gated and has not
+  run on a Windows rig yet (the portable CPU tile is the proven path); SRT
+  **output** is not yet implemented; live UVC/DeckLink/AJA frames do not yet
+  reach the core. See `docs/native-production-completion-plan.md`.
 - The **alpha validation pass** (`docs/alpha-plan.md` Tracks A–F) has not been
   executed: no live-Zoom proof, record/stream soak, or clean-machine packaging
   evidence yet — including the ≥10-minute audio-glitch-freedom soak for the Phase 2

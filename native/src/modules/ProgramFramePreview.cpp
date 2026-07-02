@@ -1,6 +1,7 @@
 #include "modules/ProgramFramePreview.h"
 
 #include "compositor/CompositorLayout.h"
+#include "modules/OverlayTileRaster.h"
 
 #include <algorithm>
 #include <cctype>
@@ -126,126 +127,12 @@ void drawBorderBgra(
   fillRectBgra(pixels, width, height, rect.x + rect.width - strokeX, rect.y, strokeX, rect.height, color, opacity);
 }
 
-// A deterministic 5x7 bitmap font subset sufficient to raster real, legible-ish
-// glyphs for overlay/caption text into the preview buffer headlessly (no
-// DirectWrite in-container). Unknown glyphs fall back to a filled block so the
-// rastered region is always non-uniform when text is present. Each glyph is 7
-// rows of 5 bits (MSB = leftmost column).
-const uint8_t* glyphRows5x7(char ch) {
-  static const uint8_t kBlock[7] = {0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f};
-  static const uint8_t kSpace[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-  static const uint8_t kA[7] = {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11};
-  static const uint8_t kE[7] = {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f};
-  static const uint8_t kI[7] = {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f};
-  static const uint8_t kO[7] = {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e};
-  static const uint8_t kT[7] = {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
-  static const uint8_t kDot[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04};
-  if (ch == ' ') return kSpace;
-  switch (std::toupper(static_cast<unsigned char>(ch))) {
-    case 'A': return kA;
-    case 'E': return kE;
-    case 'I': return kI;
-    case 'O': return kO;
-    case 'T': return kT;
-    case '.': return kDot;
-    default: return kBlock;
-  }
-}
-
-// Rasters a single line of text left-aligned into the given normalized rect,
-// vertically centered, scaling the glyph cell to fit the rect height. Produces
-// non-uniform pixels (the glyph shapes) and returns the number of glyphs drawn.
-int drawTextLineBgra(
-    std::vector<uint8_t>& pixels,
-    int width,
-    int height,
-    const compositor::LayerRect& rect,
-    const std::string& text,
-    uint32_t rgba,
-    float opacity) {
-  if (text.empty() || opacity <= 0.f || width <= 0 || height <= 0) {
-    return 0;
-  }
-  const float cellPxX = rect.width * static_cast<float>(width);
-  const float cellPxY = rect.height * static_cast<float>(height);
-  if (cellPxX <= 0.f || cellPxY <= 0.f) {
-    return 0;
-  }
-  // Glyph cell: 6 columns (5 + 1 spacing) by 8 rows (7 + 1 spacing).
-  const int maxGlyphsByWidth = std::max(1, static_cast<int>(cellPxX / 6.f));
-  const int glyphCount = std::min(static_cast<int>(text.size()), maxGlyphsByWidth);
-  if (glyphCount <= 0) {
-    return 0;
-  }
-  const float glyphW = cellPxX / static_cast<float>(glyphCount);
-  const float pixelW = glyphW / 6.f;
-  const float pixelH = cellPxY / 8.f;
-  const float originX = rect.x * static_cast<float>(width);
-  const float originY = rect.y * static_cast<float>(height);
-  int drawn = 0;
-  for (int g = 0; g < glyphCount; ++g) {
-    const uint8_t* rows = glyphRows5x7(text[static_cast<size_t>(g)]);
-    const float glyphOriginX = originX + static_cast<float>(g) * glyphW;
-    for (int row = 0; row < 7; ++row) {
-      const uint8_t bits = rows[row];
-      for (int col = 0; col < 5; ++col) {
-        if ((bits & (0x10u >> col)) == 0) {
-          continue;
-        }
-        const int px0 = static_cast<int>(glyphOriginX + static_cast<float>(col) * pixelW);
-        const int px1 = static_cast<int>(glyphOriginX + static_cast<float>(col + 1) * pixelW);
-        const int py0 = static_cast<int>(originY + static_cast<float>(row) * pixelH);
-        const int py1 = static_cast<int>(originY + static_cast<float>(row + 1) * pixelH);
-        for (int py = py0; py < std::max(py0 + 1, py1); ++py) {
-          for (int px = px0; px < std::max(px0 + 1, px1); ++px) {
-            blendPixelBgra(pixels, width, px, py, rgba, opacity);
-          }
-        }
-      }
-    }
-    ++drawn;
-  }
-  return drawn;
-}
-
-// Rasters an aspect-correct image-overlay placeholder. Without WIC decode
-// in-container, this paints a deterministic two-tone checker derived from the
-// imageUri so the region is non-uniform and varies by source. On Windows the
-// D3D11 path decodes the real image via WIC.
-void drawImagePlaceholderBgra(
-    std::vector<uint8_t>& pixels,
-    int width,
-    int height,
-    const compositor::LayerRect& rect,
-    const std::string& imageUri,
-    uint32_t tintRgba,
-    float opacity) {
-  if (opacity <= 0.f || width <= 0 || height <= 0) {
-    return;
-  }
-  uint32_t hash = 2166136261u;
-  for (const unsigned char ch : imageUri) {
-    hash ^= ch;
-    hash *= 16777619u;
-  }
-  const uint32_t altColor = 0xff000000u | (hash & 0x00ffffffu);
-  const int left = std::max(0, static_cast<int>(std::floor(rect.x * static_cast<float>(width))));
-  const int top = std::max(0, static_cast<int>(std::floor(rect.y * static_cast<float>(height))));
-  const int right = std::min(width, static_cast<int>(std::ceil((rect.x + rect.width) * static_cast<float>(width))));
-  const int bottom = std::min(height, static_cast<int>(std::ceil((rect.y + rect.height) * static_cast<float>(height))));
-  const int cell = std::max(1, (right - left) / 6);
-  for (int py = top; py < bottom; ++py) {
-    for (int px = left; px < right; ++px) {
-      const bool alt = (((px - left) / cell) + ((py - top) / cell)) % 2 == 0;
-      blendPixelBgra(pixels, width, px, py, alt ? tintRgba : altColor, opacity);
-    }
-  }
-}
-
-// Rasters an overlay/lower-third/caption layer's real content: a brand-styled
-// background band, an accent bar, text (title/org or caption + speaker) and/or
-// an image, with the animated keyPhase transform (alpha + slide) applied. The
-// math mirrors the D3D11 overlay raster stage so preview and program agree.
+// Rasters an overlay/lower-third/caption layer's real content by producing the
+// shared content tile (OverlayTileRaster: brand band, accent bar, 5x7 bitmap
+// text, image placeholder) at the animated rect's pixel size and alpha-blending
+// it into the preview with the animated keyPhase transform (alpha + slide)
+// applied. The D3D11 raster stage consumes the SAME tile (or its DirectWrite
+// upgrade), so preview and program agree by construction.
 void drawOverlayContentBgra(
     std::vector<uint8_t>& pixels,
     int width,
@@ -259,7 +146,7 @@ void drawOverlayContentBgra(
     return;
   }
   const float opacity = std::clamp(layerOpacity * key.alpha, 0.f, 1.f);
-  if (opacity <= 0.f) {
+  if (opacity <= 0.f || width <= 0 || height <= 0) {
     return;
   }
 
@@ -274,62 +161,26 @@ void drawOverlayContentBgra(
   animated.x = centerX - animated.width * 0.5f;
   animated.y = centerY - animated.height * 0.5f;
 
-  const uint32_t background = compositor::parseHexColorRgba(overlay.brandBackgroundColor, 0xff0c1118u);
-  const uint32_t accent = compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u);
-  const uint32_t accentSecondary = compositor::parseHexColorRgba(overlay.brandAccentColor, 0xfff0a85cu);
-  constexpr uint32_t kTextColor = 0xfff4f7fau;
-
-  // Background band (brand background).
-  fillRectBgra(pixels, width, height, animated.x, animated.y, animated.width, animated.height, background, opacity);
-  // Accent bar down the left edge (brand color), or full top bar for captions.
-  if (overlay.isCaption) {
-    const float barH = std::min(animated.height * 0.10f, 0.01f);
-    fillRectBgra(pixels, width, height, animated.x, animated.y, animated.width, barH, accent, opacity);
-  } else {
-    const float barW = std::min(animated.width * 0.04f, 0.01f);
-    fillRectBgra(pixels, width, height, animated.x, animated.y, barW, animated.height, accent, opacity);
-  }
-
-  // Image overlay (aspect-correct placeholder) occupies the left portion when
-  // present alongside text; otherwise the full band.
-  float textLeft = animated.x + animated.width * 0.06f;
-  const float textWidth = animated.width * 0.88f;
-  if (!overlay.imageUri.empty()) {
-    const float imageW = animated.width * 0.22f;
-    const float imageH = animated.height * 0.8f;
-    const compositor::LayerRect imageRect{
-        animated.x + animated.width * 0.04f,
-        centerY - imageH * 0.5f,
-        imageW,
-        imageH};
-    drawImagePlaceholderBgra(pixels, width, height, imageRect, overlay.imageUri, accentSecondary, opacity);
-    textLeft = imageRect.x + imageRect.width + animated.width * 0.03f;
-  }
-  const float availableTextWidth = std::max(0.f, animated.x + textWidth - textLeft);
-
-  if (overlay.isCaption) {
-    // Caption: speaker attribution (accent) above the caption body.
-    if (!overlay.speaker.empty()) {
-      const compositor::LayerRect speakerRect{textLeft, animated.y + animated.height * 0.12f, availableTextWidth, animated.height * 0.32f};
-      drawTextLineBgra(pixels, width, height, speakerRect, overlay.speaker, accent, opacity);
-    }
-    const compositor::LayerRect bodyRect{textLeft, animated.y + animated.height * 0.50f, availableTextWidth, animated.height * 0.40f};
-    drawTextLineBgra(pixels, width, height, bodyRect, overlay.text, kTextColor, opacity);
+  // Resolve the destination rect in preview pixels and raster the tile 1:1.
+  const int destLeft = static_cast<int>(std::floor(animated.x * static_cast<float>(width)));
+  const int destTop = static_cast<int>(std::floor(animated.y * static_cast<float>(height)));
+  const int destRight = static_cast<int>(std::ceil((animated.x + animated.width) * static_cast<float>(width)));
+  const int destBottom = static_cast<int>(std::ceil((animated.y + animated.height) * static_cast<float>(height)));
+  const int tileWidth = destRight - destLeft;
+  const int tileHeight = destBottom - destTop;
+  std::vector<uint8_t> tile;
+  if (!rasterizeOverlayTileBgra(overlay, tileWidth, tileHeight, tile)) {
     return;
   }
-
-  // Lower-third: title line (bright text) above the org/text line (accent).
-  // The title uses the bright text color and the org line the brand accent so
-  // the two lines and the accent bar are visually distinct.
-  const std::string& primary = !overlay.title.empty() ? overlay.title : overlay.text;
-  const std::string& secondary = overlay.org;
-  if (!primary.empty()) {
-    const compositor::LayerRect titleRect{textLeft, animated.y + animated.height * 0.18f, availableTextWidth, animated.height * 0.34f};
-    drawTextLineBgra(pixels, width, height, titleRect, primary, kTextColor, opacity);
-  }
-  if (!secondary.empty()) {
-    const compositor::LayerRect orgRect{textLeft, animated.y + animated.height * 0.56f, availableTextWidth, animated.height * 0.28f};
-    drawTextLineBgra(pixels, width, height, orgRect, secondary, accent, opacity);
+  for (int ty = 0; ty < tileHeight; ++ty) {
+    for (int tx = 0; tx < tileWidth; ++tx) {
+      const size_t offset = (static_cast<size_t>(ty) * static_cast<size_t>(tileWidth) + static_cast<size_t>(tx)) * 4u;
+      const uint32_t argb = static_cast<uint32_t>(tile[offset + 3]) << 24 |
+                            static_cast<uint32_t>(tile[offset + 2]) << 16 |
+                            static_cast<uint32_t>(tile[offset + 1]) << 8 |
+                            static_cast<uint32_t>(tile[offset + 0]);
+      blendPixelBgra(pixels, width, destLeft + tx, destTop + ty, argb, opacity);
+    }
   }
 }
 

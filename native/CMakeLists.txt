@@ -30,10 +30,12 @@ endforeach()
 add_library(corevideo_native
   src/core/MediaCore.cpp
   src/modules/D3D11CompositorAdapter.cpp
+  src/modules/DirectWriteOverlayRaster.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
+  src/modules/OverlayTileRaster.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
@@ -86,7 +88,9 @@ if(COREVIDEO_WITH_D3D11)
     message(FATAL_ERROR "COREVIDEO_WITH_D3D11 currently supports the Windows D3D11 adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler)
+  # d2d1/dwrite/windowscodecs feed the DirectWrite/WIC overlay tile raster
+  # (DirectWriteOverlayRaster.cpp), which is gated with the D3D11 compositor.
+  target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler d2d1 dwrite windowscodecs ole32)
 endif()
 
 # winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
@@ -326,6 +330,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/OverlayTileRasterTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp

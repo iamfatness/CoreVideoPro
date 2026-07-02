@@ -17,6 +17,8 @@
 #include <dxgi.h>
 
 #include "compositor/CompositorLayout.h"
+#include "modules/DirectWriteOverlayRaster.h"
+#include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
@@ -867,14 +869,13 @@ class D3D11Compositor final : public ICompositor {
   }
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---
-  // Rasters the overlay's real content (DirectWrite text + WIC image on Windows)
-  // into a texture, then composites it with the animated keyPhase transform.
-  // NEEDS WINDOWS SMOKE: the DirectWrite/D2D/WIC text+image raster is currently
-  // a deterministic GPU-side band + accent draw (so the build stays portable and
-  // the math matches the CPU stub); wiring the real DirectWrite/WIC rasterizer
-  // into `overlayTexture_` is the remaining Windows-only step (see
-  // rasterOverlayTexture()). The animated transform/alpha and brand styling are
-  // applied here and are validated headless against the CPU mirror.
+  // Rasters the overlay's real content into a cached per-layer texture —
+  // DirectWrite/D2D text + WIC image decode when available, the shared
+  // deterministic CPU tile (OverlayTileRaster) otherwise — and composites it
+  // with the animated keyPhase transform. Both rasters share
+  // computeOverlayTileLayout, and the CPU preview blits the same tile, so
+  // preview and program agree. Tiles re-raster only when the content signature
+  // changes (never per frame; animation is transform-only).
   void drawOverlayLayer(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
@@ -908,14 +909,18 @@ class D3D11Compositor final : public ICompositor {
     // Brand-styled band background.
     drawSolidQuad(layer, renderPlan, animated, background, alpha);
 
-    // If a DirectWrite/WIC raster is available, composite it over the band; the
-    // texture carries the real text/image pixels. Otherwise fall back to the
-    // accent bar so the overlay region is still non-uniform/brand-styled.
-    if (rasterOverlayTexture(overlay, animated)) {
+    // Composite the rastered content tile over the band; the texture carries
+    // the real text/image pixels. Only if the raster itself fails (texture
+    // creation/upload error) fall back to the accent bar so the overlay region
+    // is still non-uniform/brand-styled.
+    // The tile is rastered at the UN-animated rect's size (stable across a
+    // build-in/out sweep) and stretched to the animated rect by the sampler.
+    ID3D11ShaderResourceView* overlayView = rasterOverlayTexture(layer.plan.layerId, overlay, rect);
+    if (overlayView != nullptr) {
       setViewportFromRect(animated);
       if (writeLayerConstants(layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f)) {
         context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {overlayTextureView_.get()};
+        ID3D11ShaderResourceView* views[] = {overlayView};
         ID3D11SamplerState* samplers[] = {samplerState_.get()};
         context_->PSSetShaderResources(0, 1, views);
         context_->PSSetSamplers(0, 1, samplers);
@@ -934,13 +939,81 @@ class D3D11Compositor final : public ICompositor {
     }
   }
 
-  // Rasters overlay text/image into `overlayTexture_` using DirectWrite/D2D +
-  // WIC. Returns true when a texture was produced. Currently returns false
-  // (portable build): the real Windows rasterizer is the remaining smoke-pass
-  // step. Kept as a seam so drawOverlayLayer() composites it transparently once
-  // implemented.
-  bool rasterOverlayTexture(const CompositorOverlayContent& /*overlay*/, const compositor::LayerRect& /*rect*/) {
-    return false;
+  // Rasters overlay text/image into a cached per-layer texture: DirectWrite/
+  // D2D + WIC when the platform raster succeeds, the shared CPU tile
+  // otherwise. Returns the texture's SRV, or nullptr when no texture could be
+  // produced. Cached by layer id + content signature so a tile uploads only
+  // when its content (text/image/brand/tile size) changes — the animated
+  // keyPhase transform never invalidates it.
+  ID3D11ShaderResourceView* rasterOverlayTexture(
+      const std::string& layerId,
+      const CompositorOverlayContent& overlay,
+      const compositor::LayerRect& rect) {
+    const int tileWidth = std::clamp(
+        static_cast<int>(std::lround(rect.width * static_cast<float>(targetWidth_))), 8, 4096);
+    const int tileHeight = std::clamp(
+        static_cast<int>(std::lround(rect.height * static_cast<float>(targetHeight_))), 8, 4096);
+    const uint64_t signature = overlayContentSignature(overlay, tileWidth, tileHeight);
+    const std::string key = layerId.empty() ? std::string("overlay") : layerId;
+
+    auto existing = overlayTextureCache_.find(key);
+    if (existing != overlayTextureCache_.end() &&
+        existing->second.signature == signature && existing->second.view) {
+      return existing->second.view.get();
+    }
+
+    std::vector<uint8_t> tile;
+    if (!rasterizeOverlayTileDirectWrite(overlay, tileWidth, tileHeight, tile) &&
+        !rasterizeOverlayTileBgra(overlay, tileWidth, tileHeight, tile)) {
+      return nullptr;
+    }
+
+    // Bound the cache: overlay ids are operator-driven and small in practice,
+    // but a runaway id set must not leak GPU textures.
+    if (existing == overlayTextureCache_.end() && overlayTextureCache_.size() >= 16) {
+      overlayTextureCache_.clear();
+    }
+    auto& entry = overlayTextureCache_[key];
+    if (!entry.texture || entry.width != tileWidth || entry.height != tileHeight) {
+      entry.texture = {};
+      entry.view = {};
+      entry.width = tileWidth;
+      entry.height = tileHeight;
+
+      D3D11_TEXTURE2D_DESC textureDesc{};
+      textureDesc.Width = static_cast<UINT>(tileWidth);
+      textureDesc.Height = static_cast<UINT>(tileHeight);
+      textureDesc.MipLevels = 1;
+      textureDesc.ArraySize = 1;
+      textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+      textureDesc.SampleDesc.Count = 1;
+      textureDesc.Usage = D3D11_USAGE_DYNAMIC;
+      textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+      if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, entry.texture.put()))) {
+        overlayTextureCache_.erase(key);
+        return nullptr;
+      }
+      if (FAILED(device_->CreateShaderResourceView(entry.texture.get(), nullptr, entry.view.put()))) {
+        overlayTextureCache_.erase(key);
+        return nullptr;
+      }
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(entry.texture.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      overlayTextureCache_.erase(key);
+      return nullptr;
+    }
+    const size_t rowBytes = static_cast<size_t>(tileWidth) * 4u;
+    auto* destination = static_cast<uint8_t*>(mapped.pData);
+    for (int y = 0; y < tileHeight; ++y) {
+      std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch,
+                  tile.data() + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    context_->Unmap(entry.texture.get(), 0);
+    entry.signature = signature;
+    return entry.view.get();
   }
 
   bool uploadLayerTexture(const VideoFrame& frame) {
@@ -1740,8 +1813,16 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11ShaderResourceView> vTextureView_;
   int yuvTextureWidth_ = 0;
   int yuvTextureHeight_ = 0;
-  ComPtrLite<ID3D11Texture2D> overlayTexture_;
-  ComPtrLite<ID3D11ShaderResourceView> overlayTextureView_;
+  // Per-overlay-layer content textures, keyed by render-plan layer id and
+  // invalidated by content signature (see rasterOverlayTexture).
+  struct OverlayTextureCacheEntry {
+    ComPtrLite<ID3D11Texture2D> texture;
+    ComPtrLite<ID3D11ShaderResourceView> view;
+    uint64_t signature = 0;
+    int width = 0;
+    int height = 0;
+  };
+  std::map<std::string, OverlayTextureCacheEntry> overlayTextureCache_;
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;

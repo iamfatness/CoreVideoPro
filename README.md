@@ -56,7 +56,7 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | | Live UVC camera & DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress |
 | **Compositor** | Route resolver, render-plan layers, program/preview parity math | Real |
 | | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
-| | Overlay / lower-third / caption **text & image rasterization** (DirectWrite/WIC) | In progress |
+| | Overlay / lower-third / caption **text & image rasterization** — shared content-tile raster (full-ASCII bitmap font, brand styling, signature-cached textures) | Real (CPU tile) · Dev-gated (DirectWrite/D2D text + WIC image decode with CPU fallback) |
 | | D3D11 GPU compositor | Dev-gated (`COREVIDEO_WITH_D3D11`) |
 | | Core-composited GPU multiview (single shared texture, 4 layout modes, WinUI overlay labels/tally/meters/clock) | Real (layout/tiles) · Dev-gated (D3D11 render) |
 | **Audio** | PCM routing matrix, program/ISO taps, BS.1770 master meter, bus-insert dynamics, limiter | Real |
