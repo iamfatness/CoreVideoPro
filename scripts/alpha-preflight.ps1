@@ -52,8 +52,20 @@ function Invoke-AlphaStep {
   Write-Host "[alpha-preflight] $Name" -ForegroundColor Cyan
   Push-Location $repoRoot
   try {
-    $output = & powershell -NoProfile -ExecutionPolicy Bypass -Command $Command 2>&1
-    $exitCode = $LASTEXITCODE
+    # PS 5.1: `2>&1` on a native command wraps each child stderr line in an
+    # ErrorRecord; with the script-level $ErrorActionPreference = "Stop" the FIRST
+    # stderr line (e.g. VsDevCmd's harmless vswhere probe, or the native core's
+    # [cmd] timing logs) would terminate the step as "failed" even when the child
+    # exits 0. The child's exit code is the authoritative pass/fail signal here.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $output = & powershell -NoProfile -ExecutionPolicy Bypass -Command $Command 2>&1
+      $exitCode = $LASTEXITCODE
+    }
+    finally {
+      $ErrorActionPreference = $previousEap
+    }
     $ended = Get-Date
     @(
       "Command: $Command"
