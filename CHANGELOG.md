@@ -9,14 +9,14 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 ### Added
 
 - **Overlay / lower-third / caption rasterization (Item 9)**: overlays now render
-  real content instead of colored rects. A shared content-tile rasterizer
-  (`OverlayTileRaster`) draws the brand band, accent bar, full-ASCII 5x7 bitmap
-  text, and a deterministic image placeholder; the CPU preview blits the same
-  tile the D3D11 compositor uploads, so preview and program agree by
-  construction. On the Windows dev rig the tile upgrades to DirectWrite/D2D
-  antialiased text (brand font family) plus a real WIC `imageUri` decode, with
-  graceful fallback to the CPU tile. Tiles are cached per overlay layer and
-  re-raster only when content changes — keyPhase animation stays a
+  real content instead of colored rects. A shared layout resolver
+  (`OverlayTileRaster::computeOverlayTileLayout`) defines the band, accent bar,
+  image slot, and text-line geometry once; the portable CPU preview rasters it
+  with a full-ASCII 5x7 bitmap-font tile, and the Windows D3D11 compositor
+  rasters the same geometry with DirectWrite/D2D antialiased text (brand font
+  family) plus a real WIC `imageUri` decode, rendered zero-copy into a GPU
+  texture via a D2D DXGI-surface render target. Rasters are cached by content
+  signature and re-run only when content changes — keyPhase animation stays a
   composite-time transform. Caption speaker attribution now uses the secondary
   brand accent so it reads distinctly from the accent bar.
 
@@ -50,10 +50,14 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Known gaps
 
-- The DirectWrite/WIC overlay raster is code-complete but dev-gated and has not
-  run on a Windows rig yet (the portable CPU tile is the proven path); SRT
-  **output** is not yet implemented; live UVC/DeckLink/AJA frames do not yet
-  reach the core. See `docs/native-production-completion-plan.md`.
+- SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames
+  do not yet reach the core. See `docs/native-production-completion-plan.md`.
+  (Overlay / lower-third / caption **text rasterization** shipped 2026-07-02: the
+  D3D11 compositor rasters real DirectWrite text + WIC images via a D2D
+  DXGI-surface render target, cached by content signature; validated on-GPU by
+  pixel tests and live in the app at 60fps. The portable CPU/preview path
+  rasters the same `computeOverlayTileLayout` geometry with the full-ASCII
+  bitmap-font tile, so preview and program agree by construction.)
 - The **alpha validation pass** (`docs/alpha-plan.md` Tracks A–F) has not been
   executed: no live-Zoom proof, record/stream soak, or clean-machine packaging
   evidence yet — including the ≥10-minute audio-glitch-freedom soak for the Phase 2

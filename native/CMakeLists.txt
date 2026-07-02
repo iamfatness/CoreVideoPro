@@ -30,7 +30,6 @@ endforeach()
 add_library(corevideo_native
   src/core/MediaCore.cpp
   src/modules/D3D11CompositorAdapter.cpp
-  src/modules/DirectWriteOverlayRaster.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
@@ -88,8 +87,8 @@ if(COREVIDEO_WITH_D3D11)
     message(FATAL_ERROR "COREVIDEO_WITH_D3D11 currently supports the Windows D3D11 adapter only.")
   endif()
 
-  # d2d1/dwrite/windowscodecs feed the DirectWrite/WIC overlay tile raster
-  # (DirectWriteOverlayRaster.cpp), which is gated with the D3D11 compositor.
+  # d2d1/dwrite raster real overlay text into a GPU texture; windowscodecs (WIC)
+  # decodes overlay images; ole32 provides CoInitializeEx for the WIC factory.
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler d2d1 dwrite windowscodecs ole32)
 endif()
 

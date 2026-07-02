@@ -122,11 +122,14 @@ routing honored by Sources + multiview; compact Sources routing table.
 
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
-audio-glitch-freedom soak that Phase 2 shipped without, plus a smoke of the new
-DirectWrite/WIC overlay raster (code-complete, dev-gated, never run on Windows);
-(2) **real device capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers:
-engine `sendLine` still blocks under `coreMutex` (increment 3) and the sub-ms-hold
-guardrails (increment 6; TSan now runs in CI). Overlay/lower-third/caption
-rasterization shipped: shared content tile (`OverlayTileRaster`, full-ASCII font,
-signature-cached) blitted by the CPU preview and uploaded by the D3D11 compositor,
-DirectWrite/D2D + WIC upgrade behind the D3D11 gate.
+audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
+capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers: engine `sendLine`
+still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
+(increment 6). DONE 2026-07-02: **overlay/lower-third/caption text rasterization** —
+`OverlayTileRaster::computeOverlayTileLayout` is the single source of overlay geometry;
+the CPU preview rasters it with a full-ASCII 5x7 bitmap-font tile
+(`rasterizeOverlayTileBgra`), and `D3D11CompositorAdapter::rasterOverlayTexture` renders
+the same layout with real DirectWrite text (+ WIC images) via a D2D DXGI-surface render
+target into a cached GPU texture (content-signature cache, rig-validated at 60fps);
+premultiplied alpha needs the dedicated blend state + overlay shader, and the raster
+snapshots/restores the immediate-context state around EndDraw.

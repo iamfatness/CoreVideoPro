@@ -10,15 +10,15 @@ namespace corevideo::modules {
 
 // Shared overlay/lower-third/caption tile rasterization (Item 9).
 //
-// Both compositor paths raster an overlay's *content* into a straight-alpha
-// BGRA tile whose geometry comes from computeOverlayTileLayout(), so the CPU
-// preview, the D3D11 fallback upload, and the DirectWrite/WIC raster all agree
-// on placement and brand styling:
+// Both compositor paths raster an overlay's *content* from the geometry
+// resolved by computeOverlayTileLayout(), so the CPU preview and the D3D11
+// program raster agree on placement and brand styling by construction:
 //   - the portable CPU path (ProgramFramePreview + rasterizeOverlayTileBgra)
-//     uses a deterministic 5x7 bitmap font and an imageUri-derived checker;
-//   - the Windows D3D11 path uploads a tile produced by DirectWrite/D2D + WIC
-//     (DirectWriteOverlayRaster.h), falling back to this CPU tile when the
-//     platform raster is unavailable or fails.
+//     rasters a straight-alpha BGRA tile with a deterministic 5x7 bitmap font
+//     and an imageUri-derived checker;
+//   - the Windows D3D11 path (D3D11CompositorAdapter::rasterOverlayTexture)
+//     renders the same layout with real DirectWrite text + a WIC image decode
+//     directly into a GPU texture via a D2D DXGI-surface render target.
 // The animated keyPhase transform (slide/scale/alpha) is applied by the
 // compositor when the tile is composited, NOT baked into the tile, so tiles
 // only re-raster when their content changes (see overlayContentSignature).
