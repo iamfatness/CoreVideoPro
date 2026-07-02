@@ -367,6 +367,55 @@ class D3D11Compositor final : public ICompositor {
     return out;
   }
 
+  // Third compositor pass: render the whole PREVIEW scene into its own keyed-mutex
+  // DXGI shared texture, reusing the exact program pipeline + resolveLayers/drawLayer
+  // path (identical to renderMultiview, just a different target). Runs after render()
+  // each tick when a preview scene is set; saves/restores targetWidth_/Height_ so the
+  // program pass is never affected.
+  ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    ProgramFrameSharedTexture out;
+    if (!pipelineReady_ || !device_ || !context_) {
+      return out;
+    }
+    const auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
+    const int width = deterministicPlan.width;
+    const int height = deterministicPlan.height;
+    if (width <= 0 || height <= 0) {
+      return out;
+    }
+    if (!ensurePreviewRenderTarget(width, height)) {
+      return out;
+    }
+
+    const int savedWidth = targetWidth_;
+    const int savedHeight = targetHeight_;
+    targetWidth_ = width;
+    targetHeight_ = height;
+
+    const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
+    ID3D11RenderTargetView* renderTargets[] = {previewRenderTargetView_.get()};
+    context_->OMSetRenderTargets(1, renderTargets, nullptr);
+    context_->ClearRenderTargetView(previewRenderTargetView_.get(), background);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
+
+    const auto layers = resolveLayers(deterministicPlan, frames);
+    for (const auto& layer : layers) {
+      drawLayer(layer, deterministicPlan);
+    }
+
+    exportPreviewSharedTexture(out);
+
+    targetWidth_ = savedWidth;
+    targetHeight_ = savedHeight;
+    context_->Flush();
+    return out;
+  }
+
  private:
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
@@ -1514,6 +1563,118 @@ class D3D11Compositor final : public ICompositor {
     out.frameNumber = frameNumber_;
   }
 
+  // Preview render target: mirrors ensureMultiviewRenderTarget (no CPU staging —
+  // the preview path never reads back; only the GPU shared texture is presented).
+  bool ensurePreviewRenderTarget(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (previewRenderTarget_ && previewWidth_ == width && previewHeight_ == height) {
+      return true;
+    }
+
+    previewRenderTarget_ = {};
+    previewRenderTargetView_ = {};
+    previewWidth_ = width;
+    previewHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, previewRenderTarget_.put()))) {
+      return false;
+    }
+    return SUCCEEDED(device_->CreateRenderTargetView(previewRenderTarget_.get(), nullptr, previewRenderTargetView_.put()));
+  }
+
+  // Preview keyed-mutex shared texture: an exact copy of ensureMultiviewSharedTexture
+  // so the WinUI consumer presents it the same proven way it presents program.
+  bool ensurePreviewSharedTexture(int width, int height) {
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    if (previewSharedTexture_ && previewSharedWidth_ == width && previewSharedHeight_ == height) {
+      return true;
+    }
+
+    previewSharedTexture_ = {};
+    previewKeyedMutex_ = {};
+    previewSharedHandle_ = nullptr;
+    previewSharedWidth_ = width;
+    previewSharedHeight_ = height;
+
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, previewSharedTexture_.put()))) {
+      return false;
+    }
+
+    ComPtrLite<IDXGIResource> dxgiResource;
+    if (FAILED(previewSharedTexture_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put())))) {
+      previewSharedTexture_ = {};
+      return false;
+    }
+
+    HANDLE handle = nullptr;
+    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
+      previewSharedTexture_ = {};
+      return false;
+    }
+
+    if (FAILED(previewSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(previewKeyedMutex_.put())))) {
+      previewSharedTexture_ = {};
+      return false;
+    }
+
+    previewSharedHandle_ = handle;
+    return true;
+  }
+
+  // Mirrors exportMultiviewSharedTexture for the preview texture: acquire key 0,
+  // copy the preview render target, release key 1. Non-blocking.
+  void exportPreviewSharedTexture(ProgramFrameSharedTexture& out) {
+    if (!previewRenderTarget_ || !context_ || previewWidth_ <= 0 || previewHeight_ <= 0) {
+      return;
+    }
+    if (!ensurePreviewSharedTexture(previewWidth_, previewHeight_)) {
+      return;
+    }
+
+    if (previewKeyedMutex_) {
+      if (previewKeyedMutex_->AcquireSync(0, 0) != S_OK) {
+        out.sharedHandleHex = handleToHex(previewSharedHandle_);
+        out.width = previewWidth_;
+        out.height = previewHeight_;
+        out.format = "B8G8R8A8_UNORM";
+        out.frameNumber = frameNumber_;
+        return;
+      }
+    }
+    context_->CopyResource(previewSharedTexture_.get(), previewRenderTarget_.get());
+    if (previewKeyedMutex_) {
+      previewKeyedMutex_->ReleaseSync(1);
+    }
+    out.sharedHandleHex = handleToHex(previewSharedHandle_);
+    out.width = previewWidth_;
+    out.height = previewHeight_;
+    out.format = "B8G8R8A8_UNORM";
+    out.frameNumber = frameNumber_;
+  }
+
   ProgramFramePreviewPixels readProgramFramePreview() const {
     ProgramFramePreviewPixels preview;
     if (!renderTarget_ || !stagingTexture_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
@@ -1561,6 +1722,12 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11RenderTargetView> multiviewRenderTargetView_;
   ComPtrLite<ID3D11Texture2D> multiviewSharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> multiviewKeyedMutex_;
+  // Preview pass: a third render target + keyed-mutex shared texture mirroring the
+  // program/multiview members (no CPU staging — preview never reads back).
+  ComPtrLite<ID3D11Texture2D> previewRenderTarget_;
+  ComPtrLite<ID3D11RenderTargetView> previewRenderTargetView_;
+  ComPtrLite<ID3D11Texture2D> previewSharedTexture_;
+  ComPtrLite<IDXGIKeyedMutex> previewKeyedMutex_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   // I420 plane textures (R8_UNORM) shared by the program-composite draw and the
@@ -1585,6 +1752,11 @@ class D3D11Compositor final : public ICompositor {
   int multiviewHeight_ = 0;
   int multiviewSharedWidth_ = 0;
   int multiviewSharedHeight_ = 0;
+  HANDLE previewSharedHandle_ = nullptr;
+  int previewWidth_ = 0;
+  int previewHeight_ = 0;
+  int previewSharedWidth_ = 0;
+  int previewSharedHeight_ = 0;
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;

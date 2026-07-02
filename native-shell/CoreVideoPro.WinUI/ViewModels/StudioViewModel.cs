@@ -940,6 +940,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived += OnProgramSharedTextureReceived;
+        _bridge.PreviewSharedTextureReceived += OnPreviewSharedTextureReceived;
         _bridge.ParticipantSharedTextureReceived += OnParticipantSharedTextureReceived;
         _bridge.MultiviewSharedTextureReceived += OnMultiviewSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived += OnCaptureDeviceFrameReceived;
@@ -1988,6 +1989,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(CanTake));
         TakeCommand.NotifyCanExecuteChanged();
         SchedulePreviewRoutingRefresh();
+        // Push the newly-selected PREVIEW scene graph to the core so it composites the
+        // multi-layer preview bus (mirrors how program scene changes sync). Discrete user
+        // action, so a single sync — no flood. Backpressure is transient (the periodic sync
+        // reapplies), so swallow the in-flight signal.
+        if (_bridge.Running)
+        {
+            _ = SyncPreviewSceneChangeAsync();
+        }
+    }
+
+    private async Task SyncPreviewSceneChangeAsync()
+    {
+        try
+        {
+            await SyncActiveSceneAsync("preview-scene-change").ConfigureAwait(false);
+        }
+        catch (MediaCoreSyncInFlightException)
+        {
+            // Another sync was already running; the preview scene will be applied by the
+            // next sync (or the continuous periodic sync). Not a failure.
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"preview-scene sync failed: {ex.Message}");
+        }
     }
 
     partial void OnSelectedParticipantIdChanged(string? value)
@@ -6791,6 +6817,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes))
             .ToList();
 
+        // PREVIEW scene graph (same wire shape as the program scene), so the core composites
+        // the full previewed scene into its own preview shared texture. Resolved the same way
+        // as the program routes; the core skips the extra composite for single-source previews.
+        var resolvedPreviewRoutes = GetMutableRoutes(PreviewSceneId)
+            .Select(ResolveRouteFromShowInput)
+            .ToList();
+        var previewSceneRoutes = resolvedPreviewRoutes
+            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes))
+            .ToList();
+
         var participants = RoomVideoParticipants
             .Select(participant => new MediaCoreParticipantWire(
                 participant.Id,
@@ -6885,6 +6921,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ActiveSceneId = ActiveSceneId,
             SceneRoutes = sceneRoutes,
             SceneBackground = BuildSceneBackgroundWire(ActiveSceneId),
+            PreviewSceneId = PreviewSceneId,
+            PreviewSceneRoutes = previewSceneRoutes,
+            PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
+            PreviewColorGrade = new MediaCoreColorGradeWire(
+                ColorGrade.Lut,
+                ColorGrade.Exposure,
+                ColorGrade.Contrast,
+                ColorGrade.Saturation,
+                ColorGrade.Temperature),
             MultiviewSources = multiviewSources,
             MultiviewCanvasWidth = canvasProfile.Width,
             MultiviewCanvasHeight = canvasProfile.Height,
@@ -8890,7 +8935,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // resolves against the freshly-built live surfaces. RefreshSurfaceBindings is the
         // single UI-thread path that mutates VideoSurfaceHost-bound properties (Program,
         // Preview, Multiview), so this is safe (no off-thread VideoSurfaceHost writes).
-        PreviewSurface = ResolvePreviewPrimarySurface();
+        // Prefer the core-composited PREVIEW bus (a real multi-layer preview) when present;
+        // fall back to the single-source resolution only when no preview composite is set.
+        PreviewSurface = _surfaces.HasPreviewComposite
+            ? _surfaces.PreviewCompositeSurface
+            : ResolvePreviewPrimarySurface();
         RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
         sw.Stop();
@@ -10627,6 +10676,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.ZoomVideoFrameReceived -= OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived -= OnProgramFramePreviewReceived;
         _bridge.ProgramSharedTextureReceived -= OnProgramSharedTextureReceived;
+        _bridge.PreviewSharedTextureReceived -= OnPreviewSharedTextureReceived;
         _bridge.ParticipantSharedTextureReceived -= OnParticipantSharedTextureReceived;
         _bridge.MultiviewSharedTextureReceived -= OnMultiviewSharedTextureReceived;
         CaptureDeviceFrameRouter.FrameReceived -= OnCaptureDeviceFrameReceived;
@@ -10733,6 +10783,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             _sharedTextureRateStampMs = nowMs;
         }
         RunOnUiThread(() => _surfaces.OnProgramSharedTexture(texture));
+    }
+
+    // The core-composited PREVIEW bus shared texture. Marshal to the UI thread before
+    // touching the preview VideoSurfaceHost surface state (off-thread sets on the bound
+    // PreviewSurface are a known CoreMessagingXP fail-fast). The coordinator dedups
+    // structurally, and RefreshSurfaceBindings picks the composite over the single-source
+    // path — so bind PreviewSurface here too once the composite state settles.
+    private int _previewSharedTextureReceiveCount;
+    private void OnPreviewSharedTextureReceived(ProgramSharedTexture texture)
+    {
+        if (++_previewSharedTextureReceiveCount % 120 == 0)
+        {
+            LaunchLog.Write($"preview-sharedtex: received #{_previewSharedTextureReceiveCount} (core preview composite)");
+        }
+        RunOnUiThread(() =>
+        {
+            _surfaces.OnPreviewSharedTexture(texture);
+            // Bind the preview monitor to the composite (or revert to single-source when retired).
+            PreviewSurface = _surfaces.HasPreviewComposite
+                ? _surfaces.PreviewCompositeSurface
+                : ResolvePreviewPrimarySurface();
+        });
     }
 
     // Per-participant GPU texture handle for the multiview tiles. Marshal to the UI

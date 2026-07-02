@@ -967,6 +967,33 @@ rpc::Json multiviewSharedTextureEvent(const ProgramFrame& frame) {
   return event;
 }
 
+rpc::Json previewSharedTextureJson(const ProgramFrame& frame) {
+  const auto& texture = frame.previewSharedTexture;
+  if (texture.sharedHandleHex.empty() || texture.width <= 0 || texture.height <= 0) {
+    return nullptr;
+  }
+
+  return rpc::Json::Object{
+      {"sharedHandleHex", texture.sharedHandleHex},
+      {"width", texture.width},
+      {"height", texture.height},
+      {"format", texture.format.empty() ? "B8G8R8A8_UNORM" : texture.format},
+      {"frameNumber", static_cast<double>(texture.frameNumber > 0 ? texture.frameNumber : frame.frameNumber)},
+  };
+}
+
+rpc::Json previewSharedTextureEvent(const ProgramFrame& frame) {
+  const auto texture = previewSharedTextureJson(frame);
+  if (texture.isNull()) {
+    return nullptr;
+  }
+
+  return rpc::Json::Object{
+      {"type", "preview-shared-texture"},
+      {"texture", texture},
+  };
+}
+
 rpc::Json programFramePreviewJson(const ProgramFrame& frame) {
   if (frame.preview.width <= 0 || frame.preview.height <= 0 || frame.preview.bgra.empty()) {
     return nullptr;

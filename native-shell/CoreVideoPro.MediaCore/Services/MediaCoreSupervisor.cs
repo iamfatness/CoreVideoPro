@@ -73,6 +73,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
+    public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
     public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
@@ -678,6 +679,17 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 // and the program would never present the GPU surface.
                 var texture = sharedTextureEvent.Texture;
                 try { ProgramSharedTextureReceived?.Invoke(texture); } catch { }
+                continue;
+            }
+
+            var previewTextureEvent = CoreProtocolParser.TryParsePreviewSharedTextureEvent(line);
+            if (previewTextureEvent is not null)
+            {
+                // The core-composited PREVIEW shared-texture handle — low-rate (emitted
+                // on structural change only) and the handler is light (update handle +
+                // notify), so invoke directly like the program texture.
+                var previewTexture = previewTextureEvent.Texture;
+                try { PreviewSharedTextureReceived?.Invoke(previewTexture); } catch { }
                 continue;
             }
 

@@ -17,6 +17,11 @@ public static class MediaCoreCommandBuilder
             BuildActiveSpeakerCommand(context.Participants),
             BuildScreenShareCommand(context.Participants),
             BuildSceneGraphCommand(context.ActiveSceneId, context.SceneRoutes, context.SceneBackground),
+            BuildPreviewSceneCommand(
+                context.PreviewSceneId ?? context.ActiveSceneId,
+                context.PreviewSceneRoutes,
+                context.PreviewSceneBackground,
+                context.PreviewColorGrade),
             BuildMultiviewLayoutCommand(
                 context.MultiviewSources,
                 context.MultiviewCanvasWidth,
@@ -71,76 +76,109 @@ public static class MediaCoreCommandBuilder
         Command("load-scene-graph", new Dictionary<string, object?>
         {
             ["sceneId"] = sceneId,
-            ["background"] = background is null
+            ["background"] = SerializeSceneBackground(background),
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
+        });
+
+    /// <summary>
+    /// Builds <c>set-preview-scene</c> — the PREVIEW composite bus. Mirrors load-scene-graph
+    /// (same route/background shape) plus a scene-level colorGrade, so the core composites the
+    /// full previewed scene into its own shared texture. The core signature-dedups repeated
+    /// sends and skips the extra composite for single-passthrough previews.
+    /// </summary>
+    public static NativeMediaCoreCommand BuildPreviewSceneCommand(
+        string sceneId,
+        IReadOnlyList<MediaCoreSceneRouteWire> routes,
+        MediaCoreSceneBackgroundWire? background = null,
+        MediaCoreColorGradeWire? colorGrade = null) =>
+        Command("set-preview-scene", new Dictionary<string, object?>
+        {
+            ["sceneId"] = sceneId,
+            ["background"] = SerializeSceneBackground(background),
+            ["colorGrade"] = colorGrade is null
                 ? null
                 : new Dictionary<string, object?>
                 {
-                    ["mediaAssetId"] = background.MediaAssetId,
-                    ["mediaAssetName"] = background.MediaAssetName,
-                    ["mediaAssetKind"] = background.MediaAssetKind,
-                    ["mediaAssetPath"] = background.MediaAssetPath,
-                    ["playing"] = background.Playing
+                    ["lut"] = colorGrade.Lut,
+                    ["exposure"] = colorGrade.Exposure,
+                    ["contrast"] = colorGrade.Contrast,
+                    ["saturation"] = colorGrade.Saturation,
+                    ["temperature"] = colorGrade.Temperature
                 },
-            ["routes"] = routes.Select(route =>
-            {
-                var payload = new Dictionary<string, object?>
-                {
-                    ["routeId"] = route.RouteId,
-                    ["mode"] = route.Mode,
-                    ["audioRole"] = route.AudioRole,
-                    ["participantId"] = route.ParticipantId,
-                    ["captureDeviceId"] = route.CaptureDeviceId,
-                    ["fitMode"] = route.FitMode,
-                    ["borderStyle"] = route.BorderStyle,
-                    ["borderColor"] = route.BorderColor,
-                    ["borderThickness"] = route.BorderThickness,
-                    ["sourceScale"] = route.SourceScale,
-                    ["sourceOffsetX"] = route.SourceOffsetX,
-                    ["sourceOffsetY"] = route.SourceOffsetY,
-                    ["ptz"] = new Dictionary<string, object?>
-                    {
-                        ["zoom"] = route.SourceScale,
-                        ["pan"] = route.SourceOffsetX,
-                        ["tilt"] = route.SourceOffsetY
-                    },
-                    ["mediaAssetId"] = route.MediaAssetId,
-                    ["mediaAssetName"] = route.MediaAssetName,
-                    ["mediaAssetKind"] = route.MediaAssetKind,
-                    ["mediaAssetPath"] = route.MediaAssetPath,
-                    ["mediaPlaybackKey"] = route.MediaPlaybackKey,
-                    ["mediaAssetPlaying"] = route.MediaAssetPlaying,
-                    ["colorGrade"] = route.ColorGrade is null
-                        ? null
-                        : new Dictionary<string, object?>
-                        {
-                            ["lut"] = route.ColorGrade.Lut,
-                            ["exposure"] = route.ColorGrade.Exposure,
-                            ["contrast"] = route.ColorGrade.Contrast,
-                            ["saturation"] = route.ColorGrade.Saturation,
-                            ["temperature"] = route.ColorGrade.Temperature
-                        }
-                };
-
-                if (route.RectX is not null && route.RectY is not null &&
-                    route.RectWidth is not null && route.RectHeight is not null)
-                {
-                    payload["rect"] = new Dictionary<string, object?>
-                    {
-                        ["x"] = route.RectX,
-                        ["y"] = route.RectY,
-                        ["width"] = route.RectWidth,
-                        ["height"] = route.RectHeight
-                    };
-                }
-
-                if (route.ZIndex is not null)
-                {
-                    payload["zIndex"] = route.ZIndex;
-                }
-
-                return payload;
-            }).ToList()
+            ["routes"] = routes.Select(SerializeSceneRoute).ToList()
         });
+
+    private static Dictionary<string, object?>? SerializeSceneBackground(MediaCoreSceneBackgroundWire? background) =>
+        background is null
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["mediaAssetId"] = background.MediaAssetId,
+                ["mediaAssetName"] = background.MediaAssetName,
+                ["mediaAssetKind"] = background.MediaAssetKind,
+                ["mediaAssetPath"] = background.MediaAssetPath,
+                ["playing"] = background.Playing
+            };
+
+    private static Dictionary<string, object?> SerializeSceneRoute(MediaCoreSceneRouteWire route)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["routeId"] = route.RouteId,
+            ["mode"] = route.Mode,
+            ["audioRole"] = route.AudioRole,
+            ["participantId"] = route.ParticipantId,
+            ["captureDeviceId"] = route.CaptureDeviceId,
+            ["fitMode"] = route.FitMode,
+            ["borderStyle"] = route.BorderStyle,
+            ["borderColor"] = route.BorderColor,
+            ["borderThickness"] = route.BorderThickness,
+            ["sourceScale"] = route.SourceScale,
+            ["sourceOffsetX"] = route.SourceOffsetX,
+            ["sourceOffsetY"] = route.SourceOffsetY,
+            ["ptz"] = new Dictionary<string, object?>
+            {
+                ["zoom"] = route.SourceScale,
+                ["pan"] = route.SourceOffsetX,
+                ["tilt"] = route.SourceOffsetY
+            },
+            ["mediaAssetId"] = route.MediaAssetId,
+            ["mediaAssetName"] = route.MediaAssetName,
+            ["mediaAssetKind"] = route.MediaAssetKind,
+            ["mediaAssetPath"] = route.MediaAssetPath,
+            ["mediaPlaybackKey"] = route.MediaPlaybackKey,
+            ["mediaAssetPlaying"] = route.MediaAssetPlaying,
+            ["colorGrade"] = route.ColorGrade is null
+                ? null
+                : new Dictionary<string, object?>
+                {
+                    ["lut"] = route.ColorGrade.Lut,
+                    ["exposure"] = route.ColorGrade.Exposure,
+                    ["contrast"] = route.ColorGrade.Contrast,
+                    ["saturation"] = route.ColorGrade.Saturation,
+                    ["temperature"] = route.ColorGrade.Temperature
+                }
+        };
+
+        if (route.RectX is not null && route.RectY is not null &&
+            route.RectWidth is not null && route.RectHeight is not null)
+        {
+            payload["rect"] = new Dictionary<string, object?>
+            {
+                ["x"] = route.RectX,
+                ["y"] = route.RectY,
+                ["width"] = route.RectWidth,
+                ["height"] = route.RectHeight
+            };
+        }
+
+        if (route.ZIndex is not null)
+        {
+            payload["zIndex"] = route.ZIndex;
+        }
+
+        return payload;
+    }
 
     /// <summary>
     /// Builds <c>set-multiview-layout</c> from the ordered Show Input roster. The core composites

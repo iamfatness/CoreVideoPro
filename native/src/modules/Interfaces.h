@@ -183,6 +183,13 @@ struct ProgramFrame {
   std::vector<MultiviewTileRect> multiviewTiles;
   int multiviewWidth = 0;
   int multiviewHeight = 0;
+  // Core-composited PREVIEW bus: the full previewed scene (routes + overlays +
+  // background + grade) composited into its OWN keyed-mutex DXGI shared texture,
+  // mirroring `sharedTexture` (program). Empty handle when no preview scene is set,
+  // in which case the WinUI falls back to the single-source preview path.
+  ProgramFrameSharedTexture previewSharedTexture;
+  int previewWidth = 0;
+  int previewHeight = 0;
 };
 
 struct CompositorLayerRect {
@@ -477,6 +484,15 @@ class ICompositor {
   // returns its handle/dimensions. Defaulted to an empty texture so the
   // software/stub compositor stays valid; only the GPU adapter implements it.
   virtual ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
+    (void)renderPlan;
+    (void)frames;
+    return {};
+  }
+  // Composites the PREVIEW scene into a third keyed-mutex DXGI shared texture
+  // (its own render target, mirroring renderMultiview) and returns its handle/
+  // dimensions. Defaulted to an empty texture so the software/stub compositor
+  // stays valid; only the GPU adapter implements it.
+  virtual ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) {
     (void)renderPlan;
     (void)frames;
     return {};
