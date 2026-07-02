@@ -678,4 +678,146 @@ TEST(D3D11Compositor, ComposesMultiLayerSceneGraphOnGpu) {
   EXPECT_NE(frame.programPixelSignature, 0u);
   EXPECT_EQ(frame.health, "live");
 }
+
+namespace {
+
+// GPU-gated mirrors of the stub-section helpers (that section is compiled only
+// under COREVIDEO_STUB; the dev build compiles this one instead).
+size_t gpuDistinctColorsInRegion(
+    const corevideo::modules::ProgramFramePreviewPixels& preview,
+    float x,
+    float y,
+    float w,
+    float h) {
+  std::set<uint32_t> colors;
+  const int left = std::max(0, static_cast<int>(x * preview.width));
+  const int top = std::max(0, static_cast<int>(y * preview.height));
+  const int right = std::min(preview.width, static_cast<int>((x + w) * preview.width));
+  const int bottom = std::min(preview.height, static_cast<int>((y + h) * preview.height));
+  for (int py = top; py < bottom; ++py) {
+    for (int px = left; px < right; ++px) {
+      colors.insert(previewPixelRgba(preview, px, py));
+    }
+  }
+  return colors.size();
+}
+
+corevideo::modules::CompositorRenderPlanLayer makeGpuOverlayLayer(
+    const std::string& layerId,
+    float rx,
+    float ry,
+    float rw,
+    float rh) {
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.layerId = layerId;
+  layer.kind = "overlay";
+  layer.order = 10;
+  layer.rect = {rx, ry, rw, rh};
+  layer.opacity = 0.95f;
+  layer.hasOverlayContent = true;
+  return layer;
+}
+
+}  // namespace
+
+// The DirectWrite/D2D overlay raster: a lower-third must produce real glyph
+// pixels (many distinct colors), not the solid band + accent fallback.
+TEST(D3D11Compositor, LowerThirdOverlayRastersDirectWriteTextOnGpu) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "dwrite-lower-third";
+  renderPlan.width = 1280;
+  renderPlan.height = 720;
+  auto overlay = makeGpuOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+  overlay.overlay.title = "ADA OTIENO";
+  overlay.overlay.org = "AETHELRED BROADCASTING";
+  overlay.overlay.keyPhase = "on-air";
+  overlay.overlay.keyProgress = 1.f;
+  overlay.overlay.brandColor = "#44c1a1";
+  renderPlan.layers.push_back(overlay);
+
+  const auto frame = compositor->render(renderPlan, {});
+  EXPECT_TRUE(frame.gpuComposed);
+  const size_t distinct = gpuDistinctColorsInRegion(frame.preview, 0.05f, 0.78f, 0.9f, 0.16f);
+  EXPECT_TRUE(distinct > 3u) << "distinct overlay colors = " << distinct;
+}
+
+// Different overlay text must change the rendered pixels — this fails if the
+// raster silently fell back to the (text-blind) band + accent draw, so it is
+// the assertion that DirectWrite glyphs actually landed in the frame.
+TEST(D3D11Compositor, OverlayTextContentChangesPixelsOnGpu) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  auto buildPlan = [](const std::string& title) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.renderPlanId = "dwrite-text-vary";
+    plan.width = 1280;
+    plan.height = 720;
+    auto overlay = makeGpuOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+    overlay.overlay.title = title;
+    overlay.overlay.keyPhase = "on-air";
+    overlay.overlay.keyProgress = 1.f;
+    plan.layers.push_back(overlay);
+    return plan;
+  };
+
+  const auto frameA = compositor->render(buildPlan("AAAA TITLE"), {});
+  const auto frameB = compositor->render(buildPlan("OOOO OTHER"), {});
+  ASSERT_FALSE(frameA.preview.bgra.empty());
+  EXPECT_NE(frameA.preview.bgra, frameB.preview.bgra);
+}
+
+// Captions ride the same raster stage (isCaption selects the speaker/body
+// layout and the top accent strip).
+TEST(D3D11Compositor, CaptionRastersSpeakerAndBodyOnGpu) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "dwrite-caption";
+  renderPlan.width = 1280;
+  renderPlan.height = 720;
+  auto overlay = makeGpuOverlayLayer("overlay:caption", 0.08f, 0.86f, 0.84f, 0.10f);
+  overlay.overlay.isCaption = true;
+  overlay.overlay.speaker = "ADA";
+  overlay.overlay.text = "THE OVERLAY TEXT NOW RENDERS ON THE GPU.";
+  overlay.overlay.keyPhase = "on-air";
+  overlay.overlay.keyProgress = 1.f;
+  renderPlan.layers.push_back(overlay);
+
+  const auto frame = compositor->render(renderPlan, {});
+  EXPECT_TRUE(frame.gpuComposed);
+  const size_t distinct = gpuDistinctColorsInRegion(frame.preview, 0.08f, 0.86f, 0.84f, 0.10f);
+  EXPECT_TRUE(distinct > 3u) << "distinct caption colors = " << distinct;
+}
+
+// The raster cache: rendering the same overlay twice must reuse the texture
+// (same pixels out), and a brand-color change must invalidate it.
+TEST(D3D11Compositor, OverlayRasterCacheReusesAndInvalidates) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  auto buildPlan = [](const std::string& brandColor) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.renderPlanId = "dwrite-cache";
+    plan.width = 1280;
+    plan.height = 720;
+    auto overlay = makeGpuOverlayLayer("overlay:lt:lower-third", 0.05f, 0.78f, 0.9f, 0.16f);
+    overlay.overlay.title = "CACHE CHECK";
+    overlay.overlay.keyPhase = "on-air";
+    overlay.overlay.keyProgress = 1.f;
+    overlay.overlay.brandColor = brandColor;
+    plan.layers.push_back(overlay);
+    return plan;
+  };
+
+  const auto first = compositor->render(buildPlan("#44c1a1"), {});
+  const auto second = compositor->render(buildPlan("#44c1a1"), {});
+  const auto recolored = compositor->render(buildPlan("#d04040"), {});
+  EXPECT_EQ(first.preview.bgra, second.preview.bgra);
+  EXPECT_NE(first.preview.bgra, recolored.preview.bgra);
+}
 #endif

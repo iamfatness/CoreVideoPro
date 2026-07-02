@@ -12,9 +12,12 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <d2d1.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dwrite.h>
 #include <dxgi.h>
+#include <wincodec.h>
 
 #include "compositor/CompositorLayout.h"
 #include "modules/ProgramFramePreview.h"
@@ -69,6 +72,30 @@ class ComPtrLite {
 
   T* value_ = nullptr;
 };
+
+// UTF-8 -> UTF-16 for DirectWrite (overlay text arrives as UTF-8 JSON strings,
+// including non-ASCII — the core's \uXXXX parser decodes to UTF-8).
+std::wstring widenUtf8(const std::string& text) {
+  if (text.empty()) {
+    return {};
+  }
+  const int needed = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (needed <= 0) {
+    return {};
+  }
+  std::wstring wide(static_cast<size_t>(needed), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), needed);
+  return wide;
+}
+
+// Brand colors are 0xAARRGGBB (same packing writeLayerConstants consumes).
+D2D1_COLOR_F d2dColorFromArgb(uint32_t argb) {
+  return D2D1::ColorF(
+      static_cast<float>((argb >> 16) & 0xff) / 255.f,
+      static_cast<float>((argb >> 8) & 0xff) / 255.f,
+      static_cast<float>(argb & 0xff) / 255.f,
+      static_cast<float>((argb >> 24) & 0xff) / 255.f);
+}
 
 struct LayerShaderConstants {
   float color[4];
@@ -150,6 +177,32 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
   return float4(saturate(rgb), sampled.a * color.a);
+}
+)";
+
+// Overlay variant: samples the DirectWrite/D2D overlay raster texture, whose
+// content is PREMULTIPLIED alpha (D2D's native output). Fading premultiplied
+// content means scaling ALL FOUR channels by the layer alpha; it must be drawn
+// with the premultiplied blend state (SrcBlend = ONE), not the straight-alpha
+// one, or the glyph edges fringe. No color grade: brand styling is baked into
+// the raster.
+constexpr char kCompositorOverlayPixelShader[] = R"(
+cbuffer LayerConstants : register(b0) {
+  float4 color;
+  float exposure;
+  float contrast;
+  float saturation;
+  float temperature;
+  float2 uvScale;
+  float2 uvOffset;
+};
+
+Texture2D layerTexture : register(t0);
+SamplerState layerSampler : register(s0);
+
+float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+  float4 sampled = layerTexture.Sample(layerSampler, uvOffset + uv * uvScale);
+  return sampled * color.a;
 }
 )";
 
@@ -484,6 +537,15 @@ class D3D11Compositor final : public ICompositor {
       initError_ = "CreatePixelShader (yuv) failed.";
       return;
     }
+    const auto overlayPixelBlob = compileShader(kCompositorOverlayPixelShader, "main", "ps_5_0", error);
+    if (!overlayPixelBlob) {
+      initError_ = "overlay pixel shader: " + error;
+      return;
+    }
+    if (FAILED(device_->CreatePixelShader(overlayPixelBlob->GetBufferPointer(), overlayPixelBlob->GetBufferSize(), nullptr, overlayPixelShader_.put()))) {
+      initError_ = "CreatePixelShader (overlay) failed.";
+      return;
+    }
 
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -519,6 +581,14 @@ class D3D11Compositor final : public ICompositor {
     blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     if (FAILED(device_->CreateBlendState(&blendDesc, blendState_.put()))) {
       initError_ = "CreateBlendState failed.";
+      return;
+    }
+    // Premultiplied-alpha variant for the D2D overlay raster texture (D2D emits
+    // premultiplied BGRA; blending it with SRC_ALPHA would double-multiply and
+    // fringe the glyph edges).
+    blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    if (FAILED(device_->CreateBlendState(&blendDesc, premultipliedBlendState_.put()))) {
+      initError_ = "CreateBlendState (premultiplied) failed.";
       return;
     }
 
@@ -867,14 +937,12 @@ class D3D11Compositor final : public ICompositor {
   }
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---
-  // Rasters the overlay's real content (DirectWrite text + WIC image on Windows)
-  // into a texture, then composites it with the animated keyPhase transform.
-  // NEEDS WINDOWS SMOKE: the DirectWrite/D2D/WIC text+image raster is currently
-  // a deterministic GPU-side band + accent draw (so the build stays portable and
-  // the math matches the CPU stub); wiring the real DirectWrite/WIC rasterizer
-  // into `overlayTexture_` is the remaining Windows-only step (see
-  // rasterOverlayTexture()). The animated transform/alpha and brand styling are
-  // applied here and are validated headless against the CPU mirror.
+  // Rasters the overlay's real content (DirectWrite text + WIC image) into a
+  // GPU texture via a D2D DXGI-surface render target, then composites it with
+  // the animated keyPhase transform. The texture is cached by content signature
+  // (see rasterOverlayTexture) so the raster cost is paid only when the text,
+  // brand styling, or target size changes — never per frame. Falls back to the
+  // deterministic band + accent draw if D2D/DirectWrite is unavailable.
   void drawOverlayLayer(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
@@ -911,11 +979,15 @@ class D3D11Compositor final : public ICompositor {
     // If a DirectWrite/WIC raster is available, composite it over the band; the
     // texture carries the real text/image pixels. Otherwise fall back to the
     // accent bar so the overlay region is still non-uniform/brand-styled.
-    if (rasterOverlayTexture(overlay, animated)) {
+    // Sizing/caching uses the un-animated rect so a build-in/out animation
+    // scales the SAME cached texture (via the viewport) instead of re-rastering
+    // every frame of the key transition.
+    if (ID3D11ShaderResourceView* overlayView = rasterOverlayTexture(overlay, rect)) {
       setViewportFromRect(animated);
       if (writeLayerConstants(layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f)) {
-        context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {overlayTextureView_.get()};
+        context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
+        context_->PSSetShader(overlayPixelShader_.get(), nullptr, 0);
+        ID3D11ShaderResourceView* views[] = {overlayView};
         ID3D11SamplerState* samplers[] = {samplerState_.get()};
         context_->PSSetShaderResources(0, 1, views);
         context_->PSSetSamplers(0, 1, samplers);
@@ -923,6 +995,7 @@ class D3D11Compositor final : public ICompositor {
         ID3D11ShaderResourceView* nullViews[] = {nullptr};
         context_->PSSetShaderResources(0, 1, nullViews);
         context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+        context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
       }
     } else {
       // Accent bar: left edge for lower-thirds, top edge for captions.
@@ -934,13 +1007,305 @@ class D3D11Compositor final : public ICompositor {
     }
   }
 
-  // Rasters overlay text/image into `overlayTexture_` using DirectWrite/D2D +
-  // WIC. Returns true when a texture was produced. Currently returns false
-  // (portable build): the real Windows rasterizer is the remaining smoke-pass
-  // step. Kept as a seam so drawOverlayLayer() composites it transparently once
-  // implemented.
-  bool rasterOverlayTexture(const CompositorOverlayContent& /*overlay*/, const compositor::LayerRect& /*rect*/) {
-    return false;
+  // Lazily creates the D2D/DirectWrite (and best-effort WIC) factories used by
+  // the overlay raster. A failure latches so we don't retry per frame; the
+  // caller then keeps the band+accent fallback.
+  bool ensureOverlayRasterFactories() {
+    if (d2dFactory_ && dwriteFactory_) {
+      return true;
+    }
+    if (overlayRasterUnavailable_) {
+      return false;
+    }
+    if (!d2dFactory_ &&
+        FAILED(D2D1CreateFactory(
+            D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory), nullptr,
+            reinterpret_cast<void**>(d2dFactory_.put())))) {
+      overlayRasterUnavailable_ = true;
+      return false;
+    }
+    if (!dwriteFactory_ &&
+        FAILED(DWriteCreateFactory(
+            DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(dwriteFactory_.put())))) {
+      overlayRasterUnavailable_ = true;
+      return false;
+    }
+    // WIC is optional (image overlays only). CoInitializeEx may return S_FALSE
+    // (already initialized) or RPC_E_CHANGED_MODE (STA thread) — CoCreateInstance
+    // still works in both cases, so only the factory failure disables images.
+    if (!wicFactory_) {
+      CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+      CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                       IID_PPV_ARGS(wicFactory_.put()));
+    }
+    return true;
+  }
+
+  // Decodes `imageUri` (a local path or file:/// URI) via WIC into a D2D bitmap
+  // for the given render target. Returns an empty ComPtrLite on any failure —
+  // the raster then simply omits the image.
+  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, const std::string& imageUri) {
+    ComPtrLite<ID2D1Bitmap> bitmap;
+    if (!wicFactory_ || !target || imageUri.empty()) {
+      return bitmap;
+    }
+    std::string path = imageUri;
+    if (path.rfind("file:///", 0) == 0) {
+      path = path.substr(8);
+    } else if (path.rfind("file://", 0) == 0) {
+      path = path.substr(7);
+    }
+    const std::wstring widePath = widenUtf8(path);
+    if (widePath.empty()) {
+      return bitmap;
+    }
+    ComPtrLite<IWICBitmapDecoder> decoder;
+    if (FAILED(wicFactory_->CreateDecoderFromFilename(
+            widePath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, decoder.put()))) {
+      return bitmap;
+    }
+    ComPtrLite<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, frame.put()))) {
+      return bitmap;
+    }
+    ComPtrLite<IWICFormatConverter> converter;
+    if (FAILED(wicFactory_->CreateFormatConverter(converter.put()))) {
+      return bitmap;
+    }
+    // 32bppPBGRA = premultiplied BGRA, D2D's native interchange format.
+    if (FAILED(converter->Initialize(
+            frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+            nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+      return bitmap;
+    }
+    if (FAILED(target->CreateBitmapFromWicBitmap(converter.get(), nullptr, bitmap.put()))) {
+      bitmap = {};
+    }
+    return bitmap;
+  }
+
+  // Draws one line of text into `box`, vertically centered, trimmed with an
+  // ellipsis when it overflows. Returns false only on factory/format failure.
+  bool drawOverlayTextLine(
+      ID2D1RenderTarget* target,
+      const std::string& text,
+      const std::string& fontFamily,
+      DWRITE_FONT_WEIGHT weight,
+      const D2D1_RECT_F& box,
+      const D2D1_COLOR_F& color) {
+    if (text.empty() || box.right <= box.left || box.bottom <= box.top) {
+      return true;
+    }
+    const std::wstring wideText = widenUtf8(text);
+    if (wideText.empty()) {
+      return true;
+    }
+    const std::wstring wideFamily = widenUtf8(fontFamily.empty() ? "Segoe UI" : fontFamily);
+    // Em size ~72% of the line box: leaves room for ascenders/descenders so the
+    // layout's vertical centering doesn't clip.
+    const float fontSize = (std::max)(4.f, (box.bottom - box.top) * 0.72f);
+    ComPtrLite<IDWriteTextFormat> format;
+    if (FAILED(dwriteFactory_->CreateTextFormat(
+            wideFamily.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, fontSize, L"en-us", format.put()))) {
+      return false;
+    }
+    format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    ComPtrLite<IDWriteInlineObject> ellipsis;
+    if (SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format.get(), ellipsis.put()))) {
+      DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+      format->SetTrimming(&trimming, ellipsis.get());
+    }
+    ComPtrLite<ID2D1SolidColorBrush> brush;
+    if (FAILED(target->CreateSolidColorBrush(color, brush.put()))) {
+      return false;
+    }
+    target->DrawText(
+        wideText.c_str(), static_cast<UINT32>(wideText.size()), format.get(), box, brush.get());
+    return true;
+  }
+
+  // Rasters the overlay's accent bar + text (+ optional WIC image) into a GPU
+  // texture using DirectWrite/D2D and returns its SRV, or nullptr to fall back
+  // to the accent-bar draw. The texture holds PREMULTIPLIED alpha over a
+  // transparent background (the brand band is drawn separately as a quad so its
+  // alpha animation matches the CPU mirror exactly). Cached by content
+  // signature: re-rastered only when text/brand/size changes. Layout mirrors
+  // drawOverlayContentBgra in ProgramFramePreview.cpp.
+  ID3D11ShaderResourceView* rasterOverlayTexture(const CompositorOverlayContent& overlay, const compositor::LayerRect& rect) {
+    const bool hasText = !overlay.title.empty() || !overlay.org.empty() ||
+                         !overlay.text.empty() || !overlay.speaker.empty();
+    if (!hasText && overlay.imageUri.empty()) {
+      return nullptr;
+    }
+    const int widthPx = std::clamp(
+        static_cast<int>(std::lround(rect.width * static_cast<float>(targetWidth_))), 0, 4096);
+    const int heightPx = std::clamp(
+        static_cast<int>(std::lround(rect.height * static_cast<float>(targetHeight_))), 0, 4096);
+    if (widthPx < 8 || heightPx < 8) {
+      return nullptr;
+    }
+    if (!ensureOverlayRasterFactories()) {
+      return nullptr;
+    }
+
+    std::ostringstream signatureStream;
+    signatureStream << widthPx << 'x' << heightPx << '\x1f' << (overlay.isCaption ? 'c' : 'l')
+                    << '\x1f' << overlay.title << '\x1f' << overlay.org << '\x1f' << overlay.text
+                    << '\x1f' << overlay.speaker << '\x1f' << overlay.imageUri << '\x1f'
+                    << overlay.brandColor << '\x1f' << overlay.brandAccentColor << '\x1f'
+                    << overlay.brandBackgroundColor << '\x1f' << overlay.fontFamily;
+    const std::string signature = signatureStream.str();
+
+    ++overlayRasterClock_;
+    if (auto existing = overlayTextTextures_.find(signature); existing != overlayTextTextures_.end()) {
+      existing->second.lastUsed = overlayRasterClock_;
+      return existing->second.view.get();
+    }
+
+    OverlayRasterTex entry;
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(widthPx);
+    textureDesc.Height = static_cast<UINT>(heightPx);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, entry.texture.put()))) {
+      return nullptr;
+    }
+    ComPtrLite<IDXGISurface> surface;
+    if (FAILED(entry.texture->QueryInterface(__uuidof(IDXGISurface), reinterpret_cast<void**>(surface.put())))) {
+      return nullptr;
+    }
+    const auto targetProperties = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.f, 96.f);
+    ComPtrLite<ID2D1RenderTarget> d2dTarget;
+    if (FAILED(d2dFactory_->CreateDxgiSurfaceRenderTarget(surface.get(), &targetProperties, d2dTarget.put()))) {
+      return nullptr;
+    }
+
+    // D2D's EndDraw flushes through the shared device and can clobber the
+    // immediate context's bound state mid-pass. Rasters only happen on content
+    // change, so snapshot + restore the pipeline state we depend on.
+    ComPtrLite<ID3D11RenderTargetView> savedRtv;
+    context_->OMGetRenderTargets(1, savedRtv.put(), nullptr);
+    ComPtrLite<ID3D11BlendState> savedBlend;
+    FLOAT savedBlendFactor[4] = {0.f, 0.f, 0.f, 0.f};
+    UINT savedSampleMask = 0xffffffffu;
+    context_->OMGetBlendState(savedBlend.put(), savedBlendFactor, &savedSampleMask);
+    ComPtrLite<ID3D11RasterizerState> savedRasterizer;
+    context_->RSGetState(savedRasterizer.put());
+    D3D11_VIEWPORT savedViewport{};
+    UINT viewportCount = 1;
+    context_->RSGetViewports(&viewportCount, &savedViewport);
+    D3D11_PRIMITIVE_TOPOLOGY savedTopology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    context_->IAGetPrimitiveTopology(&savedTopology);
+    ComPtrLite<ID3D11VertexShader> savedVs;
+    context_->VSGetShader(savedVs.put(), nullptr, nullptr);
+    const auto restorePipelineState = [&]() {
+      ID3D11RenderTargetView* rtvs[] = {savedRtv.get()};
+      context_->OMSetRenderTargets(1, rtvs, nullptr);
+      context_->OMSetBlendState(savedBlend.get(), savedBlendFactor, savedSampleMask);
+      context_->RSSetState(savedRasterizer.get());
+      if (viewportCount > 0) {
+        context_->RSSetViewports(1, &savedViewport);
+      }
+      context_->IASetPrimitiveTopology(savedTopology);
+      context_->VSSetShader(savedVs.get(), nullptr, 0);
+    };
+
+    const float width = static_cast<float>(widthPx);
+    const float height = static_cast<float>(heightPx);
+    const auto accent = d2dColorFromArgb(compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u));
+    const auto textColor = d2dColorFromArgb(0xfff4f7fau);
+
+    d2dTarget->BeginDraw();
+    d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
+
+    // Accent bar: top strip for captions, left strip for lower-thirds (same
+    // proportions as the fallback quads and the CPU mirror).
+    ComPtrLite<ID2D1SolidColorBrush> accentBrush;
+    if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(accent, accentBrush.put()))) {
+      const auto accentRect = overlay.isCaption
+          ? D2D1::RectF(0.f, 0.f, width, height * 0.10f)
+          : D2D1::RectF(0.f, 0.f, width * 0.04f, height);
+      d2dTarget->FillRectangle(accentRect, accentBrush.get());
+    }
+
+    // Optional image on the left; text starts after it (mirror of the CPU
+    // layout: image at 4% left, 22% wide, 80% tall, aspect-fit).
+    float textLeft = width * 0.06f;
+    const float textRight = width * 0.94f;
+    if (!overlay.imageUri.empty()) {
+      if (auto image = decodeOverlayImage(d2dTarget.get(), overlay.imageUri)) {
+        const float boxLeft = width * 0.04f;
+        const float boxWidth = width * 0.22f;
+        const float boxHeight = height * 0.8f;
+        const auto imageSize = image->GetSize();
+        float drawWidth = boxWidth;
+        float drawHeight = boxHeight;
+        if (imageSize.width > 0.f && imageSize.height > 0.f) {
+          const float scale = (std::min)(boxWidth / imageSize.width, boxHeight / imageSize.height);
+          drawWidth = imageSize.width * scale;
+          drawHeight = imageSize.height * scale;
+        }
+        const float imageTop = (height - drawHeight) * 0.5f;
+        d2dTarget->DrawBitmap(
+            image.get(), D2D1::RectF(boxLeft, imageTop, boxLeft + drawWidth, imageTop + drawHeight));
+        textLeft = boxLeft + drawWidth + width * 0.03f;
+      }
+    }
+
+    if (overlay.isCaption) {
+      // Caption: speaker attribution (accent) above the caption body.
+      drawOverlayTextLine(
+          d2dTarget.get(), overlay.speaker, overlay.fontFamily, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+          D2D1::RectF(textLeft, height * 0.12f, textRight, height * 0.44f), accent);
+      drawOverlayTextLine(
+          d2dTarget.get(), overlay.text, overlay.fontFamily, DWRITE_FONT_WEIGHT_NORMAL,
+          D2D1::RectF(textLeft, height * 0.50f, textRight, height * 0.90f), textColor);
+    } else {
+      // Lower-third: title line (bright, semibold) above the org line (accent).
+      const std::string& primary = !overlay.title.empty() ? overlay.title : overlay.text;
+      drawOverlayTextLine(
+          d2dTarget.get(), primary, overlay.fontFamily, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+          D2D1::RectF(textLeft, height * 0.18f, textRight, height * 0.52f), textColor);
+      drawOverlayTextLine(
+          d2dTarget.get(), overlay.org, overlay.fontFamily, DWRITE_FONT_WEIGHT_NORMAL,
+          D2D1::RectF(textLeft, height * 0.56f, textRight, height * 0.84f), accent);
+    }
+
+    const HRESULT endDrawResult = d2dTarget->EndDraw();
+    restorePipelineState();
+    if (FAILED(endDrawResult)) {
+      return nullptr;
+    }
+    if (FAILED(device_->CreateShaderResourceView(entry.texture.get(), nullptr, entry.view.put()))) {
+      return nullptr;
+    }
+    entry.lastUsed = overlayRasterClock_;
+
+    // Bounded cache: evict the least-recently-used raster beyond 8 entries
+    // (program + preview + multiview lower-third/caption variants all fit).
+    while (overlayTextTextures_.size() >= 8) {
+      auto oldest = overlayTextTextures_.begin();
+      for (auto it = overlayTextTextures_.begin(); it != overlayTextTextures_.end(); ++it) {
+        if (it->second.lastUsed < oldest->second.lastUsed) {
+          oldest = it;
+        }
+      }
+      overlayTextTextures_.erase(oldest);
+    }
+    const auto inserted = overlayTextTextures_.emplace(signature, std::move(entry));
+    return inserted.first->second.view.get();
   }
 
   bool uploadLayerTexture(const VideoFrame& frame) {
@@ -1703,9 +2068,11 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11PixelShader> pixelShader_;
   ComPtrLite<ID3D11PixelShader> texturedPixelShader_;
   ComPtrLite<ID3D11PixelShader> yuvPixelShader_;
+  ComPtrLite<ID3D11PixelShader> overlayPixelShader_;
   ComPtrLite<ID3D11SamplerState> samplerState_;
   ComPtrLite<ID3D11Buffer> constantBuffer_;
   ComPtrLite<ID3D11BlendState> blendState_;
+  ComPtrLite<ID3D11BlendState> premultipliedBlendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;
   ComPtrLite<ID3D11RasterizerState> scissorRasterizerState_;
   ComPtrLite<ID3D11Texture2D> renderTarget_;
@@ -1740,8 +2107,19 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11ShaderResourceView> vTextureView_;
   int yuvTextureWidth_ = 0;
   int yuvTextureHeight_ = 0;
-  ComPtrLite<ID3D11Texture2D> overlayTexture_;
-  ComPtrLite<ID3D11ShaderResourceView> overlayTextureView_;
+  // DirectWrite/D2D overlay raster cache: content signature -> rendered text
+  // texture. Rasters happen only on content/size change; frames reuse the SRV.
+  struct OverlayRasterTex {
+    ComPtrLite<ID3D11Texture2D> texture;
+    ComPtrLite<ID3D11ShaderResourceView> view;
+    uint64_t lastUsed = 0;
+  };
+  std::map<std::string, OverlayRasterTex> overlayTextTextures_;
+  uint64_t overlayRasterClock_ = 0;
+  ComPtrLite<ID2D1Factory> d2dFactory_;
+  ComPtrLite<IDWriteFactory> dwriteFactory_;
+  ComPtrLite<IWICImagingFactory> wicFactory_;
+  bool overlayRasterUnavailable_ = false;
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;
