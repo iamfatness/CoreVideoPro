@@ -133,10 +133,13 @@ deferral note that follows (kept for the rationale/design record):
   (capped catch-up) so effects are reflected immediately.
 
 **Still open:** increment 3 (`ZoomEngineRuntime` `sendLine` still blocks under
-`coreMutex` — no outbound queue/sender thread yet), increment 6 (assert sub-ms
-`coreMutex` holds; TSan not wired into CI), and the §6 validation gate — the ≥10-min
-audio-routed + recording soak with ears on the monitor output has NOT been executed.
-Run it as part of the alpha validation pass (`docs/alpha-plan.md`).
+`coreMutex` — no outbound queue/sender thread yet), the increment 6 sub-ms
+`coreMutex`-hold asserts, and the §6 validation gate — the ≥10-min audio-routed +
+recording soak with ears on the monitor output has NOT been executed. Run it as part
+of the alpha validation pass (`docs/alpha-plan.md`). The increment 6 TSan gate IS now
+wired: CI runs the native stub tests under ThreadSanitizer (`native-stub-tsan` job),
+clean as of 2026-07-02 — it exercises the worker's gather/work/publish handoff via
+the JsonRpcServer/MediaCore suites, though not a live-hardware soak.
 
 ### Increments 2 + 5 — original deferral note (2026-06-29, superseded same day)
 **Why deferred:** the headline goal (locked 60fps under load) provably requires
