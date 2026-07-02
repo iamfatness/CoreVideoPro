@@ -6,7 +6,14 @@ WinUI presents it in ONE VideoSurfaceHost + transparent click-overlay; the per-f
 churn is retired. Build green; survived 4.5 min fake-engine churn with zero
 `CoreMessagingXP 0xc000027b`. NEEDS a human GUI pass: assign 2–3 Show Inputs and confirm
 the grid presents smoothly + tapping a tile cues it to preview. The plan below is the
-as-built design (kept for reference)._
+as-built design (kept for reference).
+
+Step 7 cleanup (2026-07-02): the dead per-tile controls `MultiviewGridHost` and
+`BroadcastMultiviewTile` are deleted (they had no remaining references). Still to
+remove, on a Windows machine that can compile the WinUI project: the now-unconsumed
+`MultiviewGridTiles` / `RefreshMultiviewGridTiles` plumbing inside `StudioViewModel.cs`
+(no XAML or test binds it) and the stale architecture TODO above
+`VideoSurfaceHost.xaml.cs` `UsesGpuSharedTexture`._
 
 _Supersedes the earlier per-tile-shared-texture approach, which FAILED: giving each
 participant tile its own DXGI swap chain fail-fasts the WinUI (`CoreMessagingXP

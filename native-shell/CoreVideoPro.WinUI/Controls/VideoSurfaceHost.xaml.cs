@@ -277,22 +277,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         string.Equals(SurfaceKey, "program", StringComparison.Ordinal) ||
         SurfaceState?.Kind == VideoSurfaceKind.Program;
 
-    // Surfaces that present a GPU shared texture directly through the SwapChainPanel: the
-    // program, the per-participant multiview tiles, AND the preview bus. When a surface
-    // only carries CPU BGRA pixels (no valid shared handle — the current Zoom preview
-    // path), the GPU present is a no-op and the CPU BGRA preview (PreviewImage, above the
+    // Surfaces that present a GPU shared texture directly through the SwapChainPanel:
+    // PROGRAM, PREVIEW, and MULTIVIEW each present the core's single composite texture
+    // through one stable swap chain. The multiview grid is core-composited into ONE
+    // keyed-mutex texture (the proven program model) — never N per-tile swap chains,
+    // which fail-fast the WinUI under roster/active-speaker churn (CoreMessagingXP
+    // 0xc000027b). When a surface only carries CPU BGRA pixels (no valid shared handle),
+    // the GPU present is a no-op and the CPU BGRA preview (PreviewImage, above the
     // SwapChainPanel in the visual tree) renders instead — safe with or without a handle.
-    // Only the PROGRAM and PREVIEW monitors present a GPU shared texture (one stable swap
-    // chain each, fed by the core's single composite texture). The MULTIVIEW tiles render
-    // on the CPU (base64 Image) — giving each of N participant tiles its own GPU swap chain
-    // and reloading them on every roster/active-speaker change fail-fasts the WinUI under a
-    // live multi-participant meeting (CoreMessagingXP 0xc000027b). Smooth GPU multiview at
-    // scale needs the core to composite the multiview into ONE texture (architecture TODO);
-    // until then, CPU multiview tiles are the stable path.
-    // The MULTIVIEW monitor is now ALSO a single GPU shared texture: the core composites the
-    // whole grid into ONE keyed-mutex texture (the proven program model), so SurfaceKey=="multiview"
-    // is one stable swap chain — NOT the old N-per-tile swap chains that fail-fast the WinUI under
-    // roster/active-speaker churn. (Per-tile multiview hosts are gone; this is the single host.)
     private bool UsesGpuSharedTexture =>
         IsProgramSurface ||
         string.Equals(SurfaceKey, "preview", StringComparison.Ordinal) ||
