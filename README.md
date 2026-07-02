@@ -14,15 +14,18 @@ new Electron work.
 ## Architecture
 
 ```text
-WinUI 3 shell (.NET 9)              native-shell/CoreVideoPro.WinUI
-  └─ embedded React + Vite UI       src/  (operator console, immutable production state)
-       └─ typed command/snapshot    src/engine/contracts.ts, engineBundle.ts
-            protocol (JSON-line)
-            └─ C++ media core        native/   (real-time pixels/PCM/transport)
-               (Node mirror for CI)  native-core/  (protocol + runtime parity, in-container)
-                  └─ Zoom ingest · D3D11 compositor · audio mixer/DSP ·
-                     Media Foundation recorder · RTMP/NDI/SRT/WebRTC senders ·
-                     diagnostics / support bundles
+WinUI 3 shell (.NET 9, native XAML)  native-shell/CoreVideoPro.WinUI  ← the shipping UI
+  └─ typed command/snapshot          JSON-line over named pipes; keyed-mutex DXGI
+       protocol (JSON-line)          shared textures for program/preview/multiview
+       └─ C++ media core             native/   (real-time pixels/PCM/transport)
+          └─ Zoom engine subprocess  native/zoom-engine/  (Zoom SDK → I420 shared memory)
+             └─ Zoom ingest · D3D11 compositor · audio mixer/DSP ·
+                Media Foundation recorder · RTMP/NDI/SRT senders ·
+                diagnostics / support bundles
+
+React + Vite dev/contract UI         src/         (protocol source of truth + mock-first
+Node media-core mirror               native-core/  dev UI and the in-container CI parity
+                                                   surface — NOT embedded in the WinUI app)
 ```
 
 The renderer never owns the real-time media pipeline. It serializes production state
@@ -55,6 +58,7 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
 | | Overlay / lower-third / caption **text & image rasterization** (DirectWrite/WIC) | In progress |
 | | D3D11 GPU compositor | Dev-gated (`COREVIDEO_WITH_D3D11`) |
+| | Core-composited GPU multiview (single shared texture, 4 layout modes, WinUI overlay labels/tally/meters/clock) | Real (layout/tiles) · Dev-gated (D3D11 render) |
 | **Audio** | PCM routing matrix, program/ISO taps, BS.1770 master meter, bus-insert dynamics, limiter | Real |
 | | WASAPI monitor output · ASIO capture · VST3 insert host | Dev-gated / In progress |
 | **Recording** | Program + ISO mux with real program audio, profile-driven resolution/fps | Real path (MF encoder is Windows) |
@@ -71,13 +75,16 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 > [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md)
 > for the exit bar and the remaining real-implementation work.
 
-> **Current focus (2026-06-29).** Real Zoom multi-participant is now stable on the Windows
-> rig (program-zoom renders on the GPU I420 path; input routing honored by Sources +
-> multiview; compact Sources routing table). Active work: the **GPU core-composited
-> multiview** ([`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md)), a
-> window-resize crash, and decoupling audio from the render lock for locked 60fps. Build,
-> run, the multi-participant test harness, and the `CoreMessagingXP 0xc000027b` crash
-> class are documented in [`CLAUDE.md`](CLAUDE.md).
+> **Current focus (2026-07-02).** The GPU core-composited multiview
+> ([`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md)), the Phase 2 audio/output
+> worker decouple ([`docs/phase2-threading-plan.md`](docs/phase2-threading-plan.md)),
+> zero-copy Zoom I420 ingest with a 60fps pacer, and a multi-layer PREVIEW composite bus
+> have all landed. The window-resize crash is mitigated by design (source-sized swap
+> chain, no `ResizeBuffers` on resize). Active work: the **alpha validation pass** on the
+> Windows rig ([`docs/alpha-plan.md`](docs/alpha-plan.md) Tracks A–F, all still
+> unchecked), **overlay/lower-third/caption rasterization**, and **real device capture**
+> (UVC → DeckLink/AJA). Build, run, the multi-participant test harness, and the
+> `CoreMessagingXP 0xc000027b` crash class are documented in [`CLAUDE.md`](CLAUDE.md).
 
 ## Repository layout
 

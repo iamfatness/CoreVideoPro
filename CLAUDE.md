@@ -70,18 +70,24 @@ off-thread guards never fired). Confirmed and suspected triggers:
   coalesce did not cap the *rate*, so `RefreshSurfaceBindings` ran ~98/s rebuilding
   `MultiviewTiles` wholesale. FIXED by throttling to ~12.5/s (`RsbMinIntervalMs`).
 - **Per-tile GPU swap chains.** One DXGI swap chain per multiview participant tile,
-  created/reloaded on roster/active-speaker churn, fail-fasts. The multiview tiles were
-  moved to CPU as a stopgap; the real fix is the **core-composited single-texture
-  multiview** (see `docs/gpu-multiview-plan.md`).
+  created/reloaded on roster/active-speaker churn, fail-fasts. FIXED by the
+  **core-composited single-texture multiview** (`docs/gpu-multiview-plan.md`): the core
+  renders the whole grid into ONE keyed-mutex shared texture
+  (`D3D11CompositorAdapter::renderMultiview`), presented by a single
+  `ShowMultiviewHost` surface with XAML overlays (labels/tally/meters/clock) that
+  rebuild only on structural change. The old per-tile CPU grid has been deleted.
 - **ComboBox ItemsSource churn.** The Sources editors were keyed on participant `Health`
   (toggles constantly), rebuilding 10 source dropdowns per tick → blank flicker + churn.
   FIXED by keying the signature on the participant id-set only.
-- **Window resize (OPEN).** A crash reproduces right after a programmatic window resize —
-  the SwapChainPanel/swap-chain resize appears to race the present loop. Under
-  investigation in `Direct3D11InteropService`.
+- **Window resize (mitigated by design, not soak-verified).** A crash reproduced right
+  after a programmatic window resize. `Direct3D11InteropService` now creates the swap
+  chain at the **source** size and never calls `ResizeBuffers` on panel resize — it only
+  re-applies a matrix scale (`ApplyPanelTransform`), so the resize-vs-present race cannot
+  occur by construction. No dedicated regression soak has confirmed it closed; treat any
+  resize-adjacent fail-fast as this until the alpha soak passes.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
-keep one stable swap chain per surface (program, preview, and eventually one multiview);
+keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
 ~31s in.
 
@@ -96,18 +102,28 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   (`kCompositorYuvPixelShader`, BT.709 full-range). Zoom frames carry I420
   (`hasI420()`), NOT BGRA — any frame merge/match must check `hasI420()` too or Zoom
   renders blank (see the `renderSyntheticTick` engine-roster merge).
-- Audio currently rides the render lock (lockWait ~9-30ms caps multi-participant fps);
-  decoupling it onto its own thread is the open "Phase 2".
+- Audio/output no longer rides the render lock — **Phase 2 shipped**: a dedicated
+  ~50Hz worker (`JsonRpcServer` `audioOutputThread`) runs
+  `MediaCore::renderAudioOutputTick` with a strict two-lock discipline: `coreMutex`
+  briefly for gather/publish, `audioOutputMutex_` for the long DSP/device/network span,
+  NEVER both nested on the worker. The render thread is video-only
+  (`renderDisplayTick`), and an empty `media-core-sync` poll returns the published
+  snapshot without a tick. When touching audio/output control-plane commands, keep the
+  `coreMutex` → `audioOutputMutex_` lock ORDER (see `docs/phase2-threading-plan.md`);
+  a single missed `audioOutputMutex_` guard is a data race.
 
-## Current state (2026-06-29)
+## Current state (2026-07-02)
 
-Working: Zoom video stable under multi-participant churn (was crashing/freezing);
-program-zoom renders on the GPU I420 path; routing honored by both Sources + multiview
-(resolve from the full in-room roster); aspect-aware multiview grid; compact Sources
-**routing table** (single-line rows, fits 1080p).
+Working: Zoom video stable under multi-participant churn; program-zoom on the GPU I420
+path (zero-copy ingest + 60fps pacer); **GPU core-composited multiview** live (single
+shared texture, 4 layout modes, overlay labels/tally/meters/clock, multi-layer PREVIEW
+composite bus); **Phase 2 audio/output worker decouple** live (increments 1, 2, 4, 5);
+routing honored by Sources + multiview; compact Sources routing table.
 
-In progress / next: (1) **GPU core-composited multiview** — the big one, replaces CPU
-tiles and per-tile swap chains, scales to 10 sources (`docs/gpu-multiview-plan.md`);
-(2) the **window-resize crash**; (3) **Phase 2** audio thread decouple for locked 60fps.
-
-Active branch: `claude/gpu-multiview-tiles` (not pushed).
+In progress / next: (1) the **alpha validation pass** on the Windows rig — every
+checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
+audio-glitch-freedom soak that Phase 2 shipped without; (2) **overlay / lower-third /
+caption rasterization** (DirectWrite/WIC — still colored rects); (3) **real device
+capture** (UVC first, then DeckLink/AJA); (4) Phase 2 leftovers: engine `sendLine`
+still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
+(increment 6).
