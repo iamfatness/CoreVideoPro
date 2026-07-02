@@ -126,7 +126,10 @@ audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
 capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers: engine `sendLine`
 still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
 (increment 6). DONE 2026-07-02: **overlay/lower-third/caption text rasterization** —
-`D3D11CompositorAdapter::rasterOverlayTexture` renders real DirectWrite text (+ WIC
-images) via a D2D DXGI-surface render target into a cached GPU texture (content-signature
-LRU); premultiplied alpha needs the dedicated blend state + overlay shader, and the
-raster snapshots/restores the immediate-context state around EndDraw.
+`OverlayTileRaster::computeOverlayTileLayout` is the single source of overlay geometry;
+the CPU preview rasters it with a full-ASCII 5x7 bitmap-font tile
+(`rasterizeOverlayTileBgra`), and `D3D11CompositorAdapter::rasterOverlayTexture` renders
+the same layout with real DirectWrite text (+ WIC images) via a D2D DXGI-surface render
+target into a cached GPU texture (content-signature cache, rig-validated at 60fps);
+premultiplied alpha needs the dedicated blend state + overlay shader, and the raster
+snapshots/restores the immediate-context state around EndDraw.

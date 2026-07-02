@@ -4,7 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
 #include <sstream>
+#include <string>
+#include <utility>
 
 // Regression: the host (System.Text.Json default encoder) escapes non-ASCII and
 // HTML-sensitive characters as \uXXXX. These appear in the larger media-core-sync
@@ -187,10 +190,19 @@ TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {
 
   std::istringstream lines(output.str());
   std::string handshakeLine;
-  std::string responseLine;
   ASSERT_TRUE(std::getline(lines, handshakeLine));
-  ASSERT_TRUE(std::getline(lines, responseLine));
-  auto response = corevideo::rpc::Json::parse(responseLine);
+  // The threaded server's render thread may interleave frame events between
+  // the handshake and the command response, so scan for the line that echoes
+  // our request id instead of assuming it is the next line.
+  std::optional<corevideo::rpc::Json> response;
+  std::string line;
+  while (std::getline(lines, line)) {
+    auto parsed = corevideo::rpc::Json::parse(line);
+    if (parsed.has_value() && parsed->getString("id") == "one") {
+      response = std::move(parsed);
+      break;
+    }
+  }
   ASSERT_TRUE(response.has_value());
   EXPECT_EQ(response->getString("id"), "one");
   EXPECT_TRUE(response->get("ok")->asBool());

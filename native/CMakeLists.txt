@@ -34,6 +34,7 @@ add_library(corevideo_native
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
+  src/modules/OverlayTileRaster.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
@@ -328,6 +329,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
+    tests/OverlayTileRasterTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp

@@ -8,6 +8,18 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Overlay / lower-third / caption rasterization (Item 9)**: overlays now render
+  real content instead of colored rects. A shared layout resolver
+  (`OverlayTileRaster::computeOverlayTileLayout`) defines the band, accent bar,
+  image slot, and text-line geometry once; the portable CPU preview rasters it
+  with a full-ASCII 5x7 bitmap-font tile, and the Windows D3D11 compositor
+  rasters the same geometry with DirectWrite/D2D antialiased text (brand font
+  family) plus a real WIC `imageUri` decode, rendered zero-copy into a GPU
+  texture via a D2D DXGI-surface render target. Rasters are cached by content
+  signature and re-run only when content changes — keyPhase animation stays a
+  composite-time transform. Caption speaker attribution now uses the secondary
+  brand accent so it reads distinctly from the accent bar.
+
 - **GPU core-composited multiview**: the C++ core composites the whole multiview grid
   into ONE keyed-mutex DXGI shared texture (replacing per-tile swap chains and CPU
   tiles), presented by a single WinUI surface with overlay labels, red/green tally,
@@ -43,7 +55,9 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   (Overlay / lower-third / caption **text rasterization** shipped 2026-07-02: the
   D3D11 compositor rasters real DirectWrite text + WIC images via a D2D
   DXGI-surface render target, cached by content signature; validated on-GPU by
-  pixel tests and live in the app at 60fps.)
+  pixel tests and live in the app at 60fps. The portable CPU/preview path
+  rasters the same `computeOverlayTileLayout` geometry with the full-ASCII
+  bitmap-font tile, so preview and program agree by construction.)
 - The **alpha validation pass** (`docs/alpha-plan.md` Tracks A–F) has not been
   executed: no live-Zoom proof, record/stream soak, or clean-machine packaging
   evidence yet — including the ≥10-minute audio-glitch-freedom soak for the Phase 2

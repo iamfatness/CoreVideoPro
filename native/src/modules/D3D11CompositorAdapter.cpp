@@ -20,6 +20,7 @@
 #include <wincodec.h>
 
 #include "compositor/CompositorLayout.h"
+#include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 
 #include <algorithm>
@@ -1132,9 +1133,11 @@ class D3D11Compositor final : public ICompositor {
   // texture using DirectWrite/D2D and returns its SRV, or nullptr to fall back
   // to the accent-bar draw. The texture holds PREMULTIPLIED alpha over a
   // transparent background (the brand band is drawn separately as a quad so its
-  // alpha animation matches the CPU mirror exactly). Cached by content
-  // signature: re-rastered only when text/brand/size changes. Layout mirrors
-  // drawOverlayContentBgra in ProgramFramePreview.cpp.
+  // alpha animation matches the CPU mirror exactly). Cached by
+  // overlayContentSignature: re-rastered only when text/brand/size changes.
+  // Geometry comes from computeOverlayTileLayout (OverlayTileRaster.h) — the
+  // same resolver the portable CPU tile rasters — so preview and program agree
+  // on placement by construction.
   ID3D11ShaderResourceView* rasterOverlayTexture(const CompositorOverlayContent& overlay, const compositor::LayerRect& rect) {
     const bool hasText = !overlay.title.empty() || !overlay.org.empty() ||
                          !overlay.text.empty() || !overlay.speaker.empty();
@@ -1152,13 +1155,7 @@ class D3D11Compositor final : public ICompositor {
       return nullptr;
     }
 
-    std::ostringstream signatureStream;
-    signatureStream << widthPx << 'x' << heightPx << '\x1f' << (overlay.isCaption ? 'c' : 'l')
-                    << '\x1f' << overlay.title << '\x1f' << overlay.org << '\x1f' << overlay.text
-                    << '\x1f' << overlay.speaker << '\x1f' << overlay.imageUri << '\x1f'
-                    << overlay.brandColor << '\x1f' << overlay.brandAccentColor << '\x1f'
-                    << overlay.brandBackgroundColor << '\x1f' << overlay.fontFamily;
-    const std::string signature = signatureStream.str();
+    const uint64_t signature = overlayContentSignature(overlay, widthPx, heightPx);
 
     ++overlayRasterClock_;
     if (auto existing = overlayTextTextures_.find(signature); existing != overlayTextTextures_.end()) {
@@ -1222,65 +1219,57 @@ class D3D11Compositor final : public ICompositor {
       context_->VSSetShader(savedVs.get(), nullptr, 0);
     };
 
-    const float width = static_cast<float>(widthPx);
-    const float height = static_cast<float>(heightPx);
-    const auto accent = d2dColorFromArgb(compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u));
-    const auto textColor = d2dColorFromArgb(0xfff4f7fau);
+    // Geometry + per-line colors come from the shared layout resolver, so this
+    // DirectWrite raster and the portable CPU bitmap-font tile
+    // (rasterizeOverlayTileBgra) place identical content — preview and program
+    // agree by construction. The band background is NOT painted here (it stays
+    // a separate quad so its alpha animation matches the CPU mirror).
+    const auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
 
     d2dTarget->BeginDraw();
     d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
 
-    // Accent bar: top strip for captions, left strip for lower-thirds (same
-    // proportions as the fallback quads and the CPU mirror).
     ComPtrLite<ID2D1SolidColorBrush> accentBrush;
-    if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(accent, accentBrush.put()))) {
-      const auto accentRect = overlay.isCaption
-          ? D2D1::RectF(0.f, 0.f, width, height * 0.10f)
-          : D2D1::RectF(0.f, 0.f, width * 0.04f, height);
-      d2dTarget->FillRectangle(accentRect, accentBrush.get());
+    if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(d2dColorFromArgb(layout.accentArgb), accentBrush.put()))) {
+      d2dTarget->FillRectangle(
+          D2D1::RectF(layout.accentBar.x, layout.accentBar.y,
+                      layout.accentBar.x + layout.accentBar.width,
+                      layout.accentBar.y + layout.accentBar.height),
+          accentBrush.get());
     }
 
-    // Optional image on the left; text starts after it (mirror of the CPU
-    // layout: image at 4% left, 22% wide, 80% tall, aspect-fit).
-    float textLeft = width * 0.06f;
-    const float textRight = width * 0.94f;
-    if (!overlay.imageUri.empty()) {
+    // Real WIC decode aspect-fitted inside the layout's image slot (the CPU
+    // tile draws its deterministic checker in the same slot).
+    if (layout.hasImage) {
       if (auto image = decodeOverlayImage(d2dTarget.get(), overlay.imageUri)) {
-        const float boxLeft = width * 0.04f;
-        const float boxWidth = width * 0.22f;
-        const float boxHeight = height * 0.8f;
         const auto imageSize = image->GetSize();
-        float drawWidth = boxWidth;
-        float drawHeight = boxHeight;
+        float drawWidth = layout.imageRect.width;
+        float drawHeight = layout.imageRect.height;
         if (imageSize.width > 0.f && imageSize.height > 0.f) {
-          const float scale = (std::min)(boxWidth / imageSize.width, boxHeight / imageSize.height);
+          const float scale = (std::min)(
+              layout.imageRect.width / imageSize.width, layout.imageRect.height / imageSize.height);
           drawWidth = imageSize.width * scale;
           drawHeight = imageSize.height * scale;
         }
-        const float imageTop = (height - drawHeight) * 0.5f;
+        const float imageLeft = layout.imageRect.x + (layout.imageRect.width - drawWidth) * 0.5f;
+        const float imageTop = layout.imageRect.y + (layout.imageRect.height - drawHeight) * 0.5f;
         d2dTarget->DrawBitmap(
-            image.get(), D2D1::RectF(boxLeft, imageTop, boxLeft + drawWidth, imageTop + drawHeight));
-        textLeft = boxLeft + drawWidth + width * 0.03f;
+            image.get(), D2D1::RectF(imageLeft, imageTop, imageLeft + drawWidth, imageTop + drawHeight));
       }
     }
 
-    if (overlay.isCaption) {
-      // Caption: speaker attribution (accent) above the caption body.
+    // First line is the emphasis line (lower-third title, or caption speaker
+    // attribution when present) — semibold; the rest render normal weight.
+    for (size_t lineIndex = 0; lineIndex < layout.textLines.size(); ++lineIndex) {
+      const auto& line = layout.textLines[lineIndex];
+      const bool emphasis =
+          lineIndex == 0 && (!overlay.isCaption || !overlay.speaker.empty());
       drawOverlayTextLine(
-          d2dTarget.get(), overlay.speaker, overlay.fontFamily, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-          D2D1::RectF(textLeft, height * 0.12f, textRight, height * 0.44f), accent);
-      drawOverlayTextLine(
-          d2dTarget.get(), overlay.text, overlay.fontFamily, DWRITE_FONT_WEIGHT_NORMAL,
-          D2D1::RectF(textLeft, height * 0.50f, textRight, height * 0.90f), textColor);
-    } else {
-      // Lower-third: title line (bright, semibold) above the org line (accent).
-      const std::string& primary = !overlay.title.empty() ? overlay.title : overlay.text;
-      drawOverlayTextLine(
-          d2dTarget.get(), primary, overlay.fontFamily, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-          D2D1::RectF(textLeft, height * 0.18f, textRight, height * 0.52f), textColor);
-      drawOverlayTextLine(
-          d2dTarget.get(), overlay.org, overlay.fontFamily, DWRITE_FONT_WEIGHT_NORMAL,
-          D2D1::RectF(textLeft, height * 0.56f, textRight, height * 0.84f), accent);
+          d2dTarget.get(), line.text, layout.fontFamily,
+          emphasis ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+          D2D1::RectF(line.rect.x, line.rect.y,
+                      line.rect.x + line.rect.width, line.rect.y + line.rect.height),
+          d2dColorFromArgb(line.colorArgb));
     }
 
     const HRESULT endDrawResult = d2dTarget->EndDraw();
@@ -2107,14 +2096,16 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11ShaderResourceView> vTextureView_;
   int yuvTextureWidth_ = 0;
   int yuvTextureHeight_ = 0;
-  // DirectWrite/D2D overlay raster cache: content signature -> rendered text
-  // texture. Rasters happen only on content/size change; frames reuse the SRV.
+  // DirectWrite/D2D overlay raster cache: overlayContentSignature (FNV-1a over
+  // text/brand/font/size, deliberately excluding animation state) -> rendered
+  // text texture. Rasters happen only on content/size change; frames reuse the
+  // SRV.
   struct OverlayRasterTex {
     ComPtrLite<ID3D11Texture2D> texture;
     ComPtrLite<ID3D11ShaderResourceView> view;
     uint64_t lastUsed = 0;
   };
-  std::map<std::string, OverlayRasterTex> overlayTextTextures_;
+  std::map<uint64_t, OverlayRasterTex> overlayTextTextures_;
   uint64_t overlayRasterClock_ = 0;
   ComPtrLite<ID2D1Factory> d2dFactory_;
   ComPtrLite<IDWriteFactory> dwriteFactory_;

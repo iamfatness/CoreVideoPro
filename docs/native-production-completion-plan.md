@@ -452,7 +452,24 @@ Each item lists: **Current**, **Spec (done = )**, **Plan**, **Gate/tests**, **Fl
 
 ### Item 9 — Overlays / lower thirds / captions (F3, raster)
 
-- **Current.** Overlays are tracked as a count of IDs (`setOverlayAsset` ignores
+- **Status (2026-07-02): SHIPPED and rig-validated.** Overlays, lower-thirds,
+  and captions render real content from a shared layout resolver
+  (`native/src/modules/OverlayTileRaster.{h,cpp}`
+  `computeOverlayTileLayout`): brand band + accent bar + image slot + text-line
+  geometry defined once. The CPU preview (`ProgramFramePreview.cpp`
+  `drawOverlayContentBgra`) rasters it as a full-ASCII 5x7 bitmap-font tile with
+  a deterministic image placeholder; the Windows D3D11 compositor
+  (`D3D11CompositorAdapter.cpp` `rasterOverlayTexture`, gated with
+  `COREVIDEO_WITH_D3D11`) renders the same layout with DirectWrite/D2D
+  antialiased text + a real WIC `imageUri` decode, zero-copy into a GPU texture
+  via a D2D DXGI-surface render target (premultiplied blend state; pipeline
+  state snapshot/restore around EndDraw), signature-cached
+  (`overlayContentSignature`). Validated on the dev rig: GPU pixel tests in
+  `D3D11CompositorTest.cpp` + live app smoke at 60fps. keyPhase animation stays
+  a composite-time transform (rasters cache across a build-in/out sweep).
+  Tests: `OverlayTileRasterTest.cpp` + the `StubCompositor` overlay pixel tests
+  + the `D3D11Compositor` DirectWrite tests.
+- **Original current-state (2026-06-20, superseded).** Overlays are tracked as a count of IDs (`setOverlayAsset` ignores
   text/image/keyer/keyPhase, `MediaCore.cpp:885`) and placed as fixed-position
   `0.92`-alpha **solid colored rects** (`D3D11CompositorAdapter.cpp:365`–`383`);
   captions update `captionText_`/`captionSpeaker_` but are **never rendered**
