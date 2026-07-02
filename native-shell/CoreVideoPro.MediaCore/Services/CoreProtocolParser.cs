@@ -148,6 +148,41 @@ public static class CoreProtocolParser
         }
     }
 
+    public static CorePreviewSharedTextureEvent? TryParsePreviewSharedTextureEvent(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var root = document.RootElement;
+            if (root.TryGetProperty("id", out _))
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("type", out var typeElement) ||
+                typeElement.GetString() != "preview-shared-texture" ||
+                !root.TryGetProperty("texture", out var textureElement))
+            {
+                return null;
+            }
+
+            var texture = TryParseProgramSharedTexture(textureElement);
+            return texture is null
+                ? null
+                : new CorePreviewSharedTextureEvent { Texture = texture };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public static CoreParticipantSharedTextureEvent? TryParseParticipantSharedTextureEvent(string line)
     {
         var trimmed = line.Trim();

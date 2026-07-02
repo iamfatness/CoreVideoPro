@@ -54,6 +54,17 @@ public sealed class CoreProgramSharedTextureEvent
     public required ProgramSharedTexture Texture { get; init; }
 }
 
+/// <summary>
+/// The single GPU shared texture carrying the whole core-composited PREVIEW scene
+/// (routes + overlays + background + grade). Mirrors <c>program-shared-texture</c>;
+/// presented on the dedicated preview monitor and the multiviewer PVW cell.
+/// </summary>
+public sealed class CorePreviewSharedTextureEvent
+{
+    public string Type => "preview-shared-texture";
+    public required ProgramSharedTexture Texture { get; init; }
+}
+
 public sealed class ParticipantSharedTexture
 {
     public string ParticipantId { get; init; } = string.Empty;

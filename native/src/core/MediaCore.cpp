@@ -549,6 +549,26 @@ rpc::Json MediaCore::sessionState() const {
   if (!multiviewSharedTexture.isNull()) {
     state.emplace("multiviewSharedTexture", multiviewSharedTexture);
   }
+  // Cold-start snapshot: a newly connected consumer gets the current preview
+  // composite shared texture without waiting for the next structural change.
+  const auto previewSharedTexture = modules::previewSharedTextureJson(lastProgramFrame_);
+  if (!previewSharedTexture.isNull()) {
+    state.emplace("previewSharedTexture", previewSharedTexture);
+  }
+  // Preview-bus telemetry (present only once a preview scene is set): lets the WinUI
+  // and tests see the composited preview scene structure without a GPU texture. `composite`
+  // is whether the core runs the dedicated third composite (multi-layer) vs. leaving the
+  // operator preview on the single-source fallback.
+  if (previewSceneActive_) {
+    const auto previewPlanLayers = static_cast<int>(buildPreviewCompositorRenderPlan({}).layers.size());
+    state.emplace("previewScene", rpc::Json::Object{
+                                      {"sceneId", previewSceneId_},
+                                      {"routeCount", previewRouteCount_},
+                                      {"overlayCount", previewOverlayCount_},
+                                      {"layerCount", previewPlanLayers},
+                                      {"composite", hasPreviewScene()},
+                                  });
+  }
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -567,6 +587,17 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
     if (applyMultiviewLayout(*multiview)) {
       std::fprintf(stderr, "[multiview] set-multiview-layout received: %zu sources (spine)\n",
                    multiviewSources_.size());
+    }
+  }
+
+  // Deliver the PREVIEW scene on the same frequent, reliable channel (the production
+  // sync's set-preview-scene fires only on user actions). applyPreviewScene dedups by
+  // content signature, so re-applying every spine tick does NOT churn preview state
+  // unless the scene actually changed. Done BEFORE the runtime delegate so it works on
+  // both the stub and the real-engine paths (the preview bus lives in MediaCore).
+  if (const rpc::Json* previewScene = payload.get("previewScene"); previewScene && previewScene->isObject()) {
+    if (applyPreviewScene(*previewScene)) {
+      std::fprintf(stderr, "[preview] set-preview-scene received: %d routes (spine)\n", previewRouteCount_);
     }
   }
 
@@ -730,6 +761,12 @@ std::vector<rpc::Json> MediaCore::drainMultiviewSharedTextureEvents() {
   return events;
 }
 
+std::vector<rpc::Json> MediaCore::drainPreviewSharedTextureEvents() {
+  auto events = std::move(pendingPreviewSharedTextureEvents_);
+  pendingPreviewSharedTextureEvents_.clear();
+  return events;
+}
+
 void MediaCore::enqueueProgramFramePreviewEvent() {
   const auto event = modules::programFramePreviewEvent(lastProgramFrame_);
   if (!event.isNull()) {
@@ -803,6 +840,43 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
   pendingMultiviewSharedTextureEvents_.emplace_back(event);
 }
 
+void MediaCore::enqueuePreviewSharedTextureEvent() {
+  const auto event = modules::previewSharedTextureEvent(lastProgramFrame_);
+  if (event.isNull()) {
+    return;
+  }
+  // Emit only on structural change (handle/dims) or cold start — the live pixels
+  // flow through the stable keyed-mutex texture, presented continuously by the
+  // host, so a per-frame event would only flood the pipe (see the program event).
+  uint32_t signature = 2166136261u;
+  auto mix = [&signature](const std::string& value) {
+    for (const unsigned char ch : value) {
+      signature ^= ch;
+      signature *= 16777619u;
+    }
+    signature ^= 0xffu;
+    signature *= 16777619u;
+  };
+  auto mixInt = [&signature](int value) {
+    for (int shift = 0; shift < 32; shift += 8) {
+      signature ^= static_cast<uint8_t>((static_cast<uint32_t>(value) >> shift) & 0xffu);
+      signature *= 16777619u;
+    }
+  };
+  mix(lastProgramFrame_.previewSharedTexture.sharedHandleHex);
+  mixInt(lastProgramFrame_.previewWidth);
+  mixInt(lastProgramFrame_.previewHeight);
+  if (signature == 0u) {
+    signature = 1u;
+  }
+  if (previewStructureEmitted_ && signature == lastPreviewStructureSignature_) {
+    return;
+  }
+  lastPreviewStructureSignature_ = signature;
+  previewStructureEmitted_ = true;
+  pendingPreviewSharedTextureEvents_.emplace_back(event);
+}
+
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   const auto tCmd0 = std::chrono::steady_clock::now();
@@ -860,6 +934,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   const std::string type = command.getString("type");
   if (type == "load-scene-graph") {
     loadSceneGraph(command);
+  } else if (type == "set-preview-scene") {
+    applyPreviewScene(command);
   } else if (type == "set-participant-transform") {
     setParticipantTransform(command);
   } else if (type == "set-overlay-asset") {
@@ -1848,6 +1924,129 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   return true;
 }
 
+bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
+  // The WinUI sends the PREVIEW scene node — the same shape as load-scene-graph
+  // ({sceneId, background, routes[], colorGrade, overlays[]}) — carried either by
+  // the set-preview-scene command or the frequent spine `previewScene` object.
+  // Parse into temps + build a cheap content signature so a re-send of an unchanged
+  // scene is a no-op (mirrors applyMultiviewLayout — never churns state on repeats).
+  const std::string sceneId = previewScene.getString("sceneId", "unloaded");
+  std::string signature = "s:" + sceneId + ";";
+
+  SceneBackgroundState background;
+  if (const rpc::Json* bg = previewScene.get("background"); bg && bg->isObject()) {
+    background.mediaAssetId = bg->getString("mediaAssetId");
+    background.mediaAssetName = bg->getString("mediaAssetName");
+    background.mediaAssetKind = bg->getString("mediaAssetKind");
+    background.mediaAssetPath = bg->getString("mediaAssetPath");
+    background.playing = !bg->get("playing") || bg->get("playing")->asBool();
+    background.enabled = !background.mediaAssetId.empty() && !background.mediaAssetPath.empty();
+  }
+  signature += "bg:" + background.mediaAssetId + ":" + background.mediaAssetPath + ";";
+
+  modules::CompositorColorGrade colorGrade;
+  if (const rpc::Json* grade = previewScene.get("colorGrade"); grade && grade->isObject()) {
+    colorGrade = readColorGrade(*grade);
+  }
+  signature += "cg:" + std::to_string(colorGrade.exposure) + "," + std::to_string(colorGrade.contrast) + "," +
+               std::to_string(colorGrade.saturation) + "," + std::to_string(colorGrade.temperature) + ";";
+
+  std::vector<SceneRouteState> routes;
+  if (const rpc::Json* routesNode = previewScene.get("routes"); routesNode && routesNode->isArray()) {
+    int routeIndex = 0;
+    for (const auto& route : routesNode->asArray()) {
+      SceneRouteState state;
+      state.routeId = route.getString("routeId");
+      state.mode = route.getString("mode", "fixed");
+      state.participantId = route.getString("participantId");
+      state.captureDeviceId = route.getString("captureDeviceId");
+      state.audioRole = route.getString("audioRole");
+      state.mediaAssetId = route.getString("mediaAssetId");
+      state.mediaAssetName = route.getString("mediaAssetName");
+      state.mediaAssetKind = route.getString("mediaAssetKind");
+      state.mediaAssetPath = route.getString("mediaAssetPath");
+      state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
+      state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
+      if (const rpc::Json* rect = route.get("rect"); rect && rect->isObject()) {
+        state.rectX = static_cast<float>(rect->getNumber("x", 0.0));
+        state.rectY = static_cast<float>(rect->getNumber("y", 0.0));
+        state.rectWidth = static_cast<float>(rect->getNumber("width", 1.0));
+        state.rectHeight = static_cast<float>(rect->getNumber("height", 1.0));
+        state.hasRect = state.rectWidth > 0.f && state.rectHeight > 0.f;
+      }
+      state.fitMode = route.getString("fitMode", "fill");
+      if (state.fitMode != "fit" && state.fitMode != "fill" && state.fitMode != "stretch") {
+        state.fitMode = "fill";
+      }
+      state.borderStyle = route.getString("borderStyle", "accent");
+      state.borderColor = route.getString("borderColor", "#44C1A1");
+      state.borderThickness = static_cast<float>((std::max)(0.0, (std::min)(12.0, route.getNumber("borderThickness", 2.0))));
+      state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));
+      state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
+      state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
+      if (const rpc::Json* cg = route.get("colorGrade"); cg && cg->isObject()) {
+        state.hasColorGrade = true;
+        state.colorGrade = readColorGrade(*cg);
+      }
+      if (state.routeId.empty()) {
+        state.routeId = "preview-route-" + std::to_string(routeIndex);
+      }
+      signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
+                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.fitMode + ":" +
+                   std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
+                   std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "|";
+      routes.push_back(std::move(state));
+      ++routeIndex;
+    }
+  }
+
+  // Preview overlays (optional): rendered statically at the on-air phase (no
+  // independent animation clock — the preview bus mirrors structure, not motion).
+  std::map<std::string, OverlayAssetState> overlays;
+  if (const rpc::Json* overlaysNode = previewScene.get("overlays"); overlaysNode && overlaysNode->isArray()) {
+    int overlayOrder = 0;
+    for (const auto& ov : overlaysNode->asArray()) {
+      if (!ov.isObject() || (ov.get("enabled") && !ov.get("enabled")->asBool())) {
+        continue;
+      }
+      OverlayAssetState asset;
+      asset.overlayId = ov.getString("overlayId", "preview-overlay:" + std::to_string(overlayOrder));
+      asset.text = ov.getString("text");
+      asset.imageUri = ov.getString("imageUri");
+      asset.sourceId = ov.getString("sourceId");
+      asset.sourceName = ov.getString("sourceName");
+      asset.position = ov.getString("position", "lower-third");
+      asset.title = ov.getString("title");
+      asset.org = ov.getString("org");
+      asset.keyPosition = ov.getString("keyPosition", "lower-left");
+      asset.keyer = ov.getString("keyer", "downstream");
+      asset.keyPhase = "on-air";
+      asset.keyProgress = 1.f;
+      asset.insertionOrder = overlayOrder++;
+      signature += "o:" + asset.overlayId + ":" + asset.position + ":" + asset.title + ":" + asset.text + "|";
+      overlays.emplace(asset.overlayId, std::move(asset));
+    }
+  }
+
+  if (previewSceneActive_ && signature == previewSceneSignature_) {
+    return false;  // Unchanged — do not churn preview state.
+  }
+
+  previewSceneSignature_ = std::move(signature);
+  previewSceneId_ = sceneId;
+  previewSceneRoutes_ = std::move(routes);
+  previewSceneBackground_ = std::move(background);
+  previewColorGrade_ = colorGrade;
+  previewOverlayAssets_ = std::move(overlays);
+  previewRouteCount_ = static_cast<int>(previewSceneRoutes_.size());
+  previewOverlayCount_ = static_cast<int>(previewOverlayAssets_.size());
+  previewSceneActive_ = true;
+  // A preview-scene change is structural; force the next render's event re-emit.
+  previewStructureEmitted_ = false;
+  return true;
+}
+
 namespace {
 
 // The feed-resolution result for one multiview source: the same source-id
@@ -1933,11 +2132,26 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       renderPlan.layers.push_back(std::move(layer));
     }
 
-    // PREVIEW cell: v1 single-layer. The core has no separate preview bus yet, so
-    // show the first multiview source (the operator's likely next-up feed) fitted
-    // into the PVW cell. TODO: composite the real previewed scene once the core
-    // tracks a preview program distinct from PROGRAM.
-    if (!multiviewSources_.empty()) {
+    // PREVIEW cell: composite the FULL previewed scene by remapping every
+    // preview-plan layer's rect into the PVW sub-rect — mirroring the PGM cell
+    // above — so the PVW cell matches the dedicated PREVIEW monitor. Falls back to
+    // the single first-source feed only when no multi-layer preview scene is set.
+    if (hasPreviewScene()) {
+      const auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      for (const auto& src : previewPlan.layers) {
+        modules::CompositorRenderPlanLayer layer = src;
+        layer.layerId = "multiview-pvw:" + src.layerId;
+        layer.rect = {
+            pvwRect.x + src.rect.x * pvwRect.width,
+            pvwRect.y + src.rect.y * pvwRect.height,
+            src.rect.width * pvwRect.width,
+            src.rect.height * pvwRect.height};
+        layer.order = order++;
+        layer.borderStyle = "none";
+        layer.borderThickness = 0.f;
+        renderPlan.layers.push_back(std::move(layer));
+      }
+    } else if (!multiviewSources_.empty()) {
       const auto& source = multiviewSources_.front();
       const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
                                              source.captureDeviceId, source.mediaAssetId);
@@ -3198,27 +3412,70 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
 }
 
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  auto plan = buildRenderPlanForScene(sceneId_, routeCount_, overlayCount_, sceneBackground_, sceneRoutes_,
+                                      colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
+                                      videoFrames);
+  plan.warnings = sceneValidationWarnings_;
+  return plan;
+}
+
+modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
+  // The preview scene composites its own routes/background/overlays/grade. Captions
+  // are a program broadcast element, so the preview bus renders no caption band.
+  return buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
+                                 previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
+                                 previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
+                                 videoFrames);
+}
+
+bool MediaCore::hasPreviewScene() const {
+  // Composite the preview bus whenever a preview scene has been synced with at least one
+  // layer. Compositing single-source previews too (not just multi-layer) keeps the WinUI
+  // logic simple and CORRECT: the composite is stable/always-on once a scene is set, so a
+  // multi-layer→single-source preview switch never strands the consumer on a stale texture
+  // (the preview-shared-texture event is structural-change-gated and never re-emits an
+  // "off" state). Live video still requires a per-frame recomposite regardless, so gating
+  // out the single-source case would not save the per-frame GPU pass anyway.
+  if (!previewSceneActive_) {
+    return false;
+  }
+  const int layerCount = previewRouteCount_ + (previewSceneBackground_.enabled ? 1 : 0) +
+                         static_cast<int>(previewOverlayAssets_.size());
+  return layerCount >= 1;
+}
+
+modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
+    const std::string& sceneId,
+    int routeCount,
+    int overlayCount,
+    const SceneBackgroundState& sceneBackground,
+    const std::vector<SceneRouteState>& sceneRoutes,
+    const modules::CompositorColorGrade& colorGrade,
+    const std::map<std::string, OverlayAssetState>& overlayAssets,
+    bool captionEnabled,
+    const std::string& captionText,
+    const std::string& captionSpeaker,
+    const std::vector<modules::VideoFrame>& videoFrames) const {
   modules::CompositorRenderPlan renderPlan;
-  renderPlan.renderPlanId = sceneId_ + ":" + std::to_string(routeCount_) + ":" + std::to_string(overlayCount_);
-  renderPlan.sceneId = sceneId_;
+  renderPlan.renderPlanId = sceneId + ":" + std::to_string(routeCount) + ":" + std::to_string(overlayCount);
+  renderPlan.sceneId = sceneId;
   renderPlan.width = outputWidth_;
   renderPlan.height = outputHeight_;
   renderPlan.fps = outputFps_;
-  renderPlan.colorGrade = colorGrade_;
-  renderPlan.warnings = sceneValidationWarnings_;
+  renderPlan.colorGrade = colorGrade;
 
   int videoLayerIndex = 0;
-  const int videoLayerCount = routeCount_ > 0 ? routeCount_ : static_cast<int>(videoFrames.size());
-  if (sceneBackground_.enabled) {
+  const int videoLayerCount = routeCount > 0 ? routeCount : static_cast<int>(videoFrames.size());
+  if (sceneBackground.enabled) {
     modules::CompositorRenderPlanLayer layer;
-    layer.layerId = "background:" + sceneBackground_.mediaAssetId;
+    layer.layerId = "background:" + sceneBackground.mediaAssetId;
     layer.kind = "media-background";
     layer.sourceId = layer.layerId;
-    layer.mediaAssetId = sceneBackground_.mediaAssetId;
-    layer.mediaAssetName = sceneBackground_.mediaAssetName;
-    layer.mediaAssetKind = sceneBackground_.mediaAssetKind;
-    layer.mediaAssetPath = sceneBackground_.mediaAssetPath;
-    layer.mediaAssetPlaying = sceneBackground_.playing;
+    layer.mediaAssetId = sceneBackground.mediaAssetId;
+    layer.mediaAssetName = sceneBackground.mediaAssetName;
+    layer.mediaAssetKind = sceneBackground.mediaAssetKind;
+    layer.mediaAssetPath = sceneBackground.mediaAssetPath;
+    layer.mediaAssetPlaying = sceneBackground.playing;
     layer.order = -100;
     layer.rect = {0.f, 0.f, 1.f, 1.f};
     layer.fitMode = "fill";
@@ -3229,9 +3486,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
     layer.borderThickness = 0.f;
     renderPlan.layers.push_back(std::move(layer));
   }
-  if (!sceneRoutes_.empty()) {
-    renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes_.size() + overlayCount_));
-    for (const auto& route : sceneRoutes_) {
+  if (!sceneRoutes.empty()) {
+    renderPlan.layers.reserve(static_cast<size_t>(sceneRoutes.size() + overlayCount));
+    for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
       layer.kind = route.mode == "screen-share" ? "screen-share" : "participant-video";
@@ -3295,8 +3552,8 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   // the compositor can raster them. Overlays with no captured asset (legacy
   // count-only state) fall back to a placeholder lower-third / brand bug.
   std::vector<const OverlayAssetState*> orderedOverlays;
-  orderedOverlays.reserve(overlayAssets_.size());
-  for (const auto& [overlayId, asset] : overlayAssets_) {
+  orderedOverlays.reserve(overlayAssets.size());
+  for (const auto& [overlayId, asset] : overlayAssets) {
     orderedOverlays.push_back(&asset);
   }
   std::stable_sort(
@@ -3343,7 +3600,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   // Legacy fallback: if overlays were tracked as a bare count without captured
   // asset payloads, keep the prior placeholder placement so existing callers
   // and tests still see overlay layers.
-  for (int legacyIndex = overlayLayerIndex; legacyIndex < overlayCount_; ++legacyIndex) {
+  for (int legacyIndex = overlayLayerIndex; legacyIndex < overlayCount; ++legacyIndex) {
     modules::CompositorRenderPlanLayer layer;
     layer.layerId = legacyIndex == 0 ? "overlay:lower-third" : "overlay:brand-bug";
     layer.kind = "overlay";
@@ -3356,7 +3613,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 
   // Caption band: a styled lower band carrying the active caption text + speaker
   // attribution when captions are enabled and a cue is present.
-  if (captionEnabled_ && !captionText_.empty()) {
+  if (captionEnabled && !captionText.empty()) {
     modules::CompositorRenderPlanLayer layer;
     layer.layerId = "overlay:caption";
     layer.kind = "overlay";
@@ -3365,8 +3622,8 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
     layer.opacity = 0.95f;
     layer.hasOverlayContent = true;
     layer.overlay.isCaption = true;
-    layer.overlay.text = captionText_;
-    layer.overlay.speaker = captionSpeaker_;
+    layer.overlay.text = captionText;
+    layer.overlay.speaker = captionSpeaker;
     layer.overlay.keyPosition = "lower-left";
     layer.overlay.keyPhase = "on-air";
     layer.overlay.keyProgress = 1.f;
@@ -3520,6 +3777,33 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
     lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
   }
+  // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
+  // (mirrors the program shared texture). Opt-in — only for a genuinely multi-layer
+  // preview scene (a single passthrough source stays on the cheap WinUI single-source
+  // path). Reuses the same videoFrames, stays on the light videoOnly tick (no CPU
+  // readback), and never touches the audio/output lock.
+  if (hasPreviewScene()) {
+    auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+    previewPlan.skipCpuReadback = true;
+    lastProgramFrame_.previewSharedTexture = modules_.compositor->renderPreview(previewPlan, videoFrames);
+    lastProgramFrame_.previewWidth = previewPlan.width;
+    lastProgramFrame_.previewHeight = previewPlan.height;
+    static bool loggedPreview = false;
+    if (!loggedPreview) {
+      loggedPreview = true;
+      std::fprintf(stderr, "[preview] composite: routes=%d layers=%zu handle='%s' %dx%d\n",
+                   previewRouteCount_, previewPlan.layers.size(),
+                   lastProgramFrame_.previewSharedTexture.sharedHandleHex.c_str(),
+                   previewPlan.width, previewPlan.height);
+    }
+  } else if (lastProgramFrame_.previewSharedTexture.width != 0) {
+    // Preview scene retired / became single-source: clear the handle so the WinUI
+    // falls back to the single-source preview path and the event re-emits on return.
+    lastProgramFrame_.previewSharedTexture = {};
+    lastProgramFrame_.previewWidth = 0;
+    lastProgramFrame_.previewHeight = 0;
+    previewStructureEmitted_ = false;
+  }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
   // UI thumbnail, but at full render rate (~60fps) the base64 BGRA payloads
   // saturate stdout and starve RPC command responses (host then times out and
@@ -3534,6 +3818,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // The multiview shared-texture event is emitted only on structural change
     // (and once at cold start), so this is safe to call every render.
     enqueueMultiviewSharedTextureEvent();
+    // The preview shared-texture event is likewise emitted only on structural
+    // change (handle/dims) — the live pixels flow through the keyed-mutex texture.
+    enqueuePreviewSharedTextureEvent();
     // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
     // never emit it on the light display tick (it has no fresh readback).
     if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {

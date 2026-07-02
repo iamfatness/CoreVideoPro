@@ -24,6 +24,12 @@ public sealed class VideoSurfaceCoordinator : IDisposable
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
     private string _lastProgramSharedSignature = "";
     private VideoSurfaceState _previewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
+    // The core-composited PREVIEW bus surface (its own single swap chain), fed by the
+    // preview-shared-texture event — separate from _previewSurface (the single-source
+    // fallback slate) so retiring the composite reverts cleanly to that path.
+    private VideoSurfaceState _previewCompositeSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
+    private string _lastPreviewSharedSignature = "";
+    private bool _hasPreviewComposite;
     private VideoSurfaceState _multiviewSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Multiview, "multiview", "Multiview");
     private IReadOnlyList<MultiviewTile> _multiviewTileRects = [];
     private string _lastMultiviewSharedSignature = "";
@@ -60,6 +66,37 @@ public sealed class VideoSurfaceCoordinator : IDisposable
             lock (_gate)
             {
                 return _previewSurface;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The ONE core-composited PREVIEW shared-texture surface (single swap chain), mirroring
+    /// the program path. Valid only while <see cref="HasPreviewComposite"/> is true; otherwise
+    /// the operator preview falls back to the single-source <see cref="PreviewSurface"/> path.
+    /// </summary>
+    public VideoSurfaceState PreviewCompositeSurface
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _previewCompositeSurface;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True once the core has composited a multi-layer PREVIEW scene into its own shared
+    /// texture. The single-source preview resolution is used only while this is false.
+    /// </summary>
+    public bool HasPreviewComposite
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _hasPreviewComposite;
             }
         }
     }
@@ -301,6 +338,63 @@ public sealed class VideoSurfaceCoordinator : IDisposable
         }
 
         ApplyProgramSharedTexture(texture);
+    }
+
+    /// <summary>
+    /// Handles the preview-shared-texture event: binds the ONE preview composite surface to the
+    /// core's preview keyed-mutex texture, mirroring <see cref="ApplyProgramSharedTexture"/>.
+    /// An empty/invalid handle retires the composite so the operator preview reverts to the
+    /// single-source path. Only fires SurfacesChanged on a structural change (never per frame).
+    /// </summary>
+    public void OnPreviewSharedTexture(ProgramSharedTexture texture)
+    {
+        var presentable = SharedTextureInteropRules.IsPresentable(texture);
+        var frameNumber = texture.FrameNumber > 0 ? texture.FrameNumber : 0;
+        var measuredFps = presentable && frameNumber > 0 ? TrackFps("preview", frameNumber) : 0;
+        var metadata = new VideoFrameMetadata
+        {
+            Width = texture.Width,
+            Height = texture.Height,
+            FrameId = frameNumber,
+            Fps = measuredFps,
+            Renderer = "d3d11",
+            Health = "live",
+            TimestampMs = Environment.TickCount64
+        };
+
+        var handle = ToSharedTextureHandle(texture);
+        bool structuralChange;
+        lock (_gate)
+        {
+            var previouslyHad = _hasPreviewComposite;
+            _hasPreviewComposite = presentable && handle.IsValid;
+
+            if (_hasPreviewComposite)
+            {
+                var next = _previewCompositeSurface
+                    .WithFrame(metadata, "Preview GPU surface live", $"Frame {frameNumber} · {metadata.ResolutionLabel} · d3d11")
+                    .WithSharedHandle(handle);
+                _previewCompositeSurface = next;
+            }
+            else
+            {
+                _previewCompositeSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Preview, "preview", "Preview");
+            }
+
+            // The compositor reuses the same shared texture across frames (stable handle),
+            // presented every vsync off that handle. Only fire the heavy surface-binding
+            // refresh on a structural change (handle value/size, or composite on/off).
+            var signature = _hasPreviewComposite
+                ? $"{handle.NtHandle:X}:{texture.Width}x{texture.Height}"
+                : "none";
+            structuralChange = signature != _lastPreviewSharedSignature || previouslyHad != _hasPreviewComposite;
+            _lastPreviewSharedSignature = signature;
+        }
+
+        if (structuralChange)
+        {
+            NotifyChanged();
+        }
     }
 
     public void OnMediaCoreSnapshot(NativeMediaCoreStateSnapshot snapshot)

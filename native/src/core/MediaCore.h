@@ -38,6 +38,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainPreviewSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
   [[nodiscard]] rpc::Json applyCommands(const rpc::Json::Array& commands, double elapsedMs = 0.0);
 
@@ -119,6 +120,13 @@ class MediaCore {
   // only rebuilds multiviewSources_/dims and resets the structural-emit flag when
   // the layout content actually changed. Returns true when it applied a change.
   bool applyMultiviewLayout(const rpc::Json& layout);
+  // Applies a preview-scene node ({sceneId, routes:[...], background, colorGrade,
+  // overlays:[...]}) carried by the set-preview-scene command AND the frequent
+  // zoom-media-spine-sync `previewScene` object. Cheap signature compare (mirrors
+  // applyMultiviewLayout): only rebuilds the preview scene state and forces the
+  // next preview composite when the content actually changed. Returns true when it
+  // applied a change.
+  bool applyPreviewScene(const rpc::Json& previewScene);
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false);
@@ -131,6 +139,10 @@ class MediaCore {
   // baked into the texture in-core, so a speaker change alone does not re-emit
   // (avoids the WinUI churn that the per-tile path crashed on).
   void enqueueMultiviewSharedTextureEvent();
+  // Enqueues a preview-shared-texture event whenever a fresh preview handle is
+  // present. The handle is tiny (like the program one) so it is emitted every
+  // render to drive the preview GPU present at the full render rate.
+  void enqueuePreviewSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json audioMixSessionState() const;
   void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
@@ -234,6 +246,29 @@ class MediaCore {
   };
   std::map<std::string, OverlayAssetState> overlayAssets_;
   int overlayInsertionCounter_ = 0;
+  // Shared render-plan builder parameterized on the scene state, so the PROGRAM
+  // (active-scene members) and PREVIEW (preview-scene members) paths produce the
+  // identical layer layout from their own state. Declared here (not with the other
+  // build* methods) so OverlayAssetState/SceneRouteState are already in scope.
+  // Brand-kit styling is global and still read from members inside.
+  [[nodiscard]] modules::CompositorRenderPlan buildRenderPlanForScene(
+      const std::string& sceneId,
+      int routeCount,
+      int overlayCount,
+      const SceneBackgroundState& background,
+      const std::vector<SceneRouteState>& routes,
+      const modules::CompositorColorGrade& colorGrade,
+      const std::map<std::string, OverlayAssetState>& overlays,
+      bool captionEnabled,
+      const std::string& captionText,
+      const std::string& captionSpeaker,
+      const std::vector<modules::VideoFrame>& videoFrames) const;
+  // Builds the render plan for the PREVIEW scene from the preview-scene members,
+  // mirroring buildCompositorRenderPlan for the program scene.
+  [[nodiscard]] modules::CompositorRenderPlan buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  // True when a preview scene with at least one route/overlay/background is set, so
+  // the render tick knows to run the (opt-in) third preview composite.
+  [[nodiscard]] bool hasPreviewScene() const;
   // Monotonic compositor animation clock (ms), advanced each render tick, that
   // drives overlay keyPhase progress deterministically.
   double overlayAnimationClockMs_ = 0.0;
@@ -253,6 +288,27 @@ class MediaCore {
   std::vector<modules::OutputDestinationSettings> outputDestinationSettings_;
   modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
+  // ---- PREVIEW scene (the preview composite bus) ----
+  // Parallel to the active/program scene members above. Synced via set-preview-scene
+  // (and the spine `previewScene` object), composited into previewSharedTexture on
+  // the light render tick. previewSceneActive_ flips true once a scene is set;
+  // previewSceneSignature_ dedups the sync (mirrors multiviewLayoutSignature_).
+  bool previewSceneActive_ = false;
+  std::string previewSceneId_ = "unloaded";
+  std::vector<SceneRouteState> previewSceneRoutes_;
+  SceneBackgroundState previewSceneBackground_;
+  int previewRouteCount_ = 0;
+  int previewOverlayCount_ = 0;
+  modules::CompositorColorGrade previewColorGrade_;
+  std::map<std::string, OverlayAssetState> previewOverlayAssets_;
+  std::string previewSceneSignature_;
+  // Structural signature (handle + dims) of the last emitted preview-shared-texture
+  // event, so it is emitted only on structural change (and once at cold start) —
+  // the live pixels flow through the stable keyed-mutex texture, presented
+  // continuously by the host (mirrors the multiview event gating).
+  uint32_t lastPreviewStructureSignature_ = 0;
+  bool previewStructureEmitted_ = false;
+  std::vector<rpc::Json> pendingPreviewSharedTextureEvents_;
   int64_t mixedAudioFrameCount_ = 0;
   std::map<std::string, std::vector<float>> routedBusPcm_;
   // Rolling deinterleaved program audio (<= 3 s) feeding the BS.1770 master

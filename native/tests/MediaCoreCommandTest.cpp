@@ -3702,3 +3702,70 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   ASSERT_NE(snapshotMultiview, nullptr);
   EXPECT_FALSE(snapshotMultiview->get("texture")->getString("sharedHandleHex").empty());
 }
+
+TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
+  corevideo::core::MediaCore mediaCore;
+
+  // A multi-layer preview scene (two routes + a caption-free overlay) must build a
+  // preview render plan with a layer per route/overlay and flag the dedicated composite.
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-preview-scene"},
+          {"sceneId", "preview-multi"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "pa"}, {"mode", "fixed"}, {"participantId", "spk-1"}},
+                         corevideo::rpc::Json::Object{{"routeId", "pb"}, {"mode", "fixed"}, {"participantId", "spk-2"}},
+                     }},
+          {"overlays", corevideo::rpc::Json::Array{
+                           corevideo::rpc::Json::Object{{"overlayId", "lt"}, {"text", "Preview LT"}, {"position", "lower-third"}},
+                       }},
+          {"colorGrade", corevideo::rpc::Json::Object{{"exposure", 0.2}}},
+      },
+  });
+
+  const auto* preview = state.get("previewScene");
+  ASSERT_NE(preview, nullptr) << "sessionState must surface previewScene telemetry once set";
+  EXPECT_EQ(preview->getString("sceneId"), "preview-multi");
+  EXPECT_EQ(preview->get("routeCount")->asNumber(), 2);
+  EXPECT_EQ(preview->get("overlayCount")->asNumber(), 1);
+  // 2 routes + 1 overlay == 3 composited layers.
+  EXPECT_EQ(preview->get("layerCount")->asNumber(), 3);
+  // Multi-layer preview runs the dedicated third composite (not the single-source path).
+  EXPECT_TRUE(preview->get("composite")->asBool());
+}
+
+TEST(MediaCoreCommand, PreviewSceneSingleSourceStillCompositesAndDedups) {
+  corevideo::core::MediaCore mediaCore;
+
+  // A single-source preview scene still composites (the composite is always-on once a scene
+  // is set, so a later multi->single switch never strands the consumer on a stale texture).
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-preview-scene"},
+          {"sceneId", "preview-solo"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "solo"}, {"mode", "fixed"}, {"participantId", "spk-1"}},
+                     }},
+      },
+  });
+
+  const auto* preview = state.get("previewScene");
+  ASSERT_NE(preview, nullptr);
+  EXPECT_EQ(preview->get("routeCount")->asNumber(), 1);
+  EXPECT_EQ(preview->get("layerCount")->asNumber(), 1);
+  EXPECT_TRUE(preview->get("composite")->asBool());
+
+  // Re-applying the identical preview scene must be a no-op (signature dedup), so the
+  // preview telemetry stays stable rather than churning core state every sync tick.
+  const auto second = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-preview-scene"},
+          {"sceneId", "preview-solo"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{{"routeId", "solo"}, {"mode", "fixed"}, {"participantId", "spk-1"}},
+                     }},
+      },
+  });
+  ASSERT_NE(second.get("previewScene"), nullptr);
+  EXPECT_EQ(second.get("previewScene")->getString("sceneId"), "preview-solo");
+}

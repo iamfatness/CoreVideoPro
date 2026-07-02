@@ -372,6 +372,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         for (const auto& event : mediaCore_.drainMultiviewSharedTextureEvents()) {
           enqueueFrame(event.stringify());
         }
+        // The preview shared-texture event is likewise tiny + structural-change-
+        // gated, so it is cheap to drain here alongside program/multiview.
+        for (const auto& event : mediaCore_.drainPreviewSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
         const auto t2 = std::chrono::steady_clock::now();
         lockWaitUs += std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         renderUs += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
@@ -599,6 +604,9 @@ void JsonRpcServer::flushFrameEvents(std::ostream& output) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainMultiviewSharedTextureEvents()) {
+    output << event.stringify() << '\n';
+  }
+  for (const auto& event : mediaCore_.drainPreviewSharedTextureEvents()) {
     output << event.stringify() << '\n';
   }
 }

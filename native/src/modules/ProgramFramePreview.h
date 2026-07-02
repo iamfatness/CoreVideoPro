@@ -95,6 +95,12 @@ bool blitVideoFrameLayerClipped(
 
 [[nodiscard]] rpc::Json multiviewSharedTextureEvent(const ProgramFrame& frame);
 
+// Serializes the core-composited PREVIEW shared texture (handle + dimensions),
+// mirroring programSharedTextureJson. Returns null when no preview handle exists.
+[[nodiscard]] rpc::Json previewSharedTextureJson(const ProgramFrame& frame);
+
+[[nodiscard]] rpc::Json previewSharedTextureEvent(const ProgramFrame& frame);
+
 [[nodiscard]] rpc::Json programFramePreviewJson(const ProgramFrame& frame);
 
 [[nodiscard]] rpc::Json programFramePreviewEvent(const ProgramFrame& frame);

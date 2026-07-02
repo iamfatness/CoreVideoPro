@@ -204,6 +204,16 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreSceneBackgroundWire? SceneBackground { get; init; }
 
     /// <summary>
+    /// The PREVIEW scene graph (routes + background + grade), synced via set-preview-scene so the
+    /// core composites it into its own preview shared texture. Null/single-route previews leave
+    /// the operator preview on the cheap single-source path (the core skips the extra composite).
+    /// </summary>
+    public string? PreviewSceneId { get; init; }
+    public IReadOnlyList<MediaCoreSceneRouteWire> PreviewSceneRoutes { get; init; } = [];
+    public MediaCoreSceneBackgroundWire? PreviewSceneBackground { get; init; }
+    public MediaCoreColorGradeWire? PreviewColorGrade { get; init; }
+
+    /// <summary>
     /// Ordered Show Input roster that drives the core-composited GPU multiview (set-multiview-layout).
     /// Empty clears the layout (turns the second composite pass off).
     /// </summary>
