@@ -234,6 +234,12 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
     {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
       state->snapshot = fresh;
+      // Keep `active` sticky once start() has run: the wrapped session's active flag
+      // lags the queue, so a snapshot refresh triggered by an earlier item (e.g. the
+      // queued Configure) must not report the session as inactive after start().
+      if (state->active.load()) {
+        state->snapshot.active = true;
+      }
     }
 
     {
