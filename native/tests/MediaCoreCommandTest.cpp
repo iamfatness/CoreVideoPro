@@ -1047,6 +1047,11 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
+#if COREVIDEO_WITH_UVC
+  EXPECT_TRUE(jsonArrayContains(capabilities, "uvc-capture"));
+#else
+  EXPECT_FALSE(jsonArrayContains(capabilities, "uvc-capture"));
+#endif
 #if COREVIDEO_WITH_RTMP_OUTPUT
   EXPECT_TRUE(jsonArrayContains(capabilities, "rtmp-output"));
 #else
@@ -2369,6 +2374,10 @@ TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
   ASSERT_TRUE(devices.asArray().size() >= 2);
   EXPECT_EQ(devices.asArray()[0].getString("vendor"), "blackmagic");
   EXPECT_EQ(devices.asArray()[0].get("inputs")->asArray().size(), 2);
+  // OS-level identity travels over the wire when the device carries one (the
+  // native UVC adapter's symbolic link; the stub DeckLink mirrors it), and is
+  // omitted when it doesn't.
+  EXPECT_EQ(devices.asArray()[0].getString("nativeDeviceId"), "\\\\?\\stub#decklink-1");
   const auto deckLinkId = devices.asArray()[0].getString("id");
   const auto ajaDevice = std::find_if(devices.asArray().begin(), devices.asArray().end(), [](const corevideo::rpc::Json& device) {
     return device.getString("vendor") == "aja";

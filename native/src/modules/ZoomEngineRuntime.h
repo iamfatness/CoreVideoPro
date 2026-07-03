@@ -4,7 +4,11 @@
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -36,6 +40,17 @@ class ZoomEngineRuntime {
   [[nodiscard]] std::vector<VideoFrame> pollCompositorVideoFrames(int64_t timestampMs);
   [[nodiscard]] std::vector<AudioFrame> pollCompositorAudioFrames(int64_t timestampMs);
 
+  // TEST SEAM (phase 2 increment 3): installs a (fake) engine process client and
+  // starts the outbound sender thread WITHOUT launching a real subprocess or the
+  // reader thread. Mirrors ensureStartedLocked's restart semantics: bumps the
+  // process generation, purges lines queued for the previous process, and clears
+  // the subscription dedup so the new process is subscribed from scratch.
+  void installEngineProcessForTest(std::shared_ptr<ZoomEngineProcessClient> process);
+  // TEST SEAM: lines queued but not yet handed to the sender thread.
+  [[nodiscard]] std::size_t pendingEngineSendCountForTest();
+  // TEST SEAM: cumulative lines dropped (dead/replaced process, purge, shutdown).
+  [[nodiscard]] std::uint64_t droppedEngineSendCountForTest() const;
+
  private:
   struct Config {
     std::string executablePath;
@@ -49,12 +64,36 @@ class ZoomEngineRuntime {
     int joinWaitMs = 7000;
   };
 
+  // One JSON line bound for the engine subprocess stdin, queued for the dedicated
+  // sender thread (phase 2 increment 3: engine pipe I/O must never run under
+  // coreMutex/mutex_ — a slow or wedged pipe previously stalled the whole command
+  // path). `generation` pins the line to the process instance it was built for so
+  // a restart drops stale lines instead of replaying them into the new process.
+  struct PendingEngineSend {
+    std::string line;
+    std::string context;  // error-report stage: "init", "join", "subscribe", ...
+    std::uint64_t generation = 0;
+  };
+
   [[nodiscard]] static Config loadConfig();
   [[nodiscard]] bool ensureStartedLocked();
   void startReaderLocked();
   void readerLoop();
   void applyEvent(const ZoomEngineEvent& event);
   void stopReader();
+  void startSenderLocked();
+  void senderLoop();
+  // Signals the sender thread to stop and drops (with a log) anything still
+  // queued. Join happens in the destructor AFTER stopReader() has terminated the
+  // engine process — process death breaks the pipe and unblocks an in-flight send.
+  void signalSenderStopAndDropQueue();
+  // Requires mutex_ held. Queues one line for the sender thread (lock order:
+  // mutex_ OUTER → sendMutex_ INNER; the reverse nesting never happens).
+  void enqueueEngineSendLocked(std::string context, std::string line);
+  // Requires mutex_ held. Drops queued lines that target a previous process
+  // generation (engine restart / test process swap).
+  void purgeQueuedEngineSendsLocked(const char* reason);
+  void noteDroppedEngineSends(std::size_t count, const char* reason);
   [[nodiscard]] rpc::Json rawCaptureSnapshotLocked();
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
@@ -63,13 +102,32 @@ class ZoomEngineRuntime {
   [[nodiscard]] double runtimeElapsedMs() const;
 
   Config config_;
-  std::unique_ptr<ZoomEngineProcessClient> process_;
+  // shared_ptr so the sender thread can hold the client alive across a blocking
+  // sendLine while ensureStartedLocked replaces process_ after a crash — the old
+  // client is destroyed only when the last reference drops.
+  std::shared_ptr<ZoomEngineProcessClient> process_;
   ZoomEngineRuntimeState state_;
   mutable std::mutex mutex_;
   std::thread reader_;
   bool readerRunning_ = false;
   bool initialized_ = false;
   bool mediaStarted_ = false;
+  // Monotonic engine-process instance counter (guarded by mutex_). Bumped every
+  // time a new process client is installed; queued sends carry the generation
+  // they were built for and are dropped if the process has been replaced.
+  std::uint64_t processGeneration_ = 0;
+
+  // Outbound engine-command queue + dedicated sender thread (increment 3). All
+  // engine stdin writes happen ONLY on sender_, so no caller ever blocks on the
+  // engine pipe while holding coreMutex or mutex_. FIFO drain by a single thread
+  // preserves command ordering. Lock order: mutex_ → sendMutex_ (enqueue/purge);
+  // the sender takes them strictly sequentially, never nested the other way.
+  mutable std::mutex sendMutex_;
+  std::condition_variable sendCv_;
+  std::deque<PendingEngineSend> sendQueue_;
+  std::thread sender_;
+  bool senderRunning_ = false;  // guarded by sendMutex_
+  std::atomic<std::uint64_t> droppedEngineSends_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer
   // fires automatically on meeting join.
@@ -77,9 +135,13 @@ class ZoomEngineRuntime {
   // Last subscription set sent to the engine (sourceUuid -> resolution), so the
   // per-tick spine sync only sends a subscribe/unsubscribe command when the set
   // actually CHANGES. Previously it re-sent every subscription on every spine
-  // tick, flooding the engine command pipe (process_->sendLine blocks once the
-  // pipe buffer fills) and timing out the 4s spine round-trip — which jammed the
-  // whole bridge (roster + multiview layout couldn't get through).
+  // tick, flooding the engine command pipe and timing out the 4s spine round-trip
+  // — which jammed the whole bridge (roster + multiview layout couldn't get
+  // through). Dedup is keyed at ENQUEUE time (guarded by mutex_): the sender
+  // thread delivers asynchronously but strictly in FIFO order, so "marked sent"
+  // means "queued exactly once, will reach the engine in order". Cleared on
+  // leave/rejoin AND whenever a new engine process is installed
+  // (ensureStartedLocked), so a restarted engine is re-subscribed from scratch.
   std::map<std::string, int> sentSubscriptions_;
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;

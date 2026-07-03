@@ -1,9 +1,11 @@
 # Phase 2 — Core Request / Render / Audio Threading Plan
 
-_Status: 2026-07-02. **Largely implemented** — increments 1, 2, 4, and 5 are shipped
-(see §6 implementation log); increment 3 (engine send off the lock) and increment 6
-(guardrails/TSan) remain open, and the ≥10-min audio-glitch soak gate has not been
-executed. Original design pass 2026-06-29. Origin: under Zoom-joined +
+_Status: 2026-07-02. **Fully implemented** — increments 1, 2, 4, 5 shipped earlier;
+increments 3 (engine send off the lock) and 6 (sub-ms hold guardrails; the TSan CI
+gate was already wired) shipped on `agent/phase2-increments-3-6` (see §6
+implementation log). The one remaining gate is validation, not code: the ≥10-min
+audio-routed + recording soak is being executed separately by the alpha validation
+pass (`docs/alpha-plan.md`). Original design pass 2026-06-29. Origin: under Zoom-joined +
 Capture-On, command round-trips time out (`[bridge] TIMEOUT type=media-core-sync after
 4000ms` + `zoom-media-spine-sync`), blocking GPU multiview layout delivery and degrading
 scene/routing/audio syncs — while the render is healthy (56fps, lockWait 0ms, 2.3ms) and
@@ -132,14 +134,88 @@ deferral note that follows (kept for the rationale/design record):
   ticks and returns the published snapshot; command-carrying syncs still render
   (capped catch-up) so effects are reflected immediately.
 
-**Still open:** increment 3 (`ZoomEngineRuntime` `sendLine` still blocks under
-`coreMutex` — no outbound queue/sender thread yet), the increment 6 sub-ms
-`coreMutex`-hold asserts, and the §6 validation gate — the ≥10-min audio-routed +
-recording soak with ears on the monitor output has NOT been executed. Run it as part
-of the alpha validation pass (`docs/alpha-plan.md`). The increment 6 TSan gate IS now
+**Still open:** validation only. The ≥10-min audio-routed + recording soak with ears
+on the monitor output has NOT been executed — it is being run separately by the alpha
+validation pass (`docs/alpha-plan.md`), not by the increment 3+6 implementation
+session (which was code/build/tests only, no devices). The increment 6 TSan gate IS
 wired: CI runs the native stub tests under ThreadSanitizer (`native-stub-tsan` job),
-clean as of 2026-07-02 — it exercises the worker's gather/work/publish handoff via
-the JsonRpcServer/MediaCore suites, though not a live-hardware soak.
+clean as of 2026-07-02 — it exercises the audio worker's gather/work/publish handoff
+AND (as of the increments 3+6 landing below) the engine sender-thread handoff:
+enqueue-from-caller-thread while the sender drains, wedged-pipe non-blocking, restart
+purge, shutdown-join races (`ZoomEngineRuntimeTest`), plus the guardrail registry
+under the full multi-threaded server (`JsonRpcServerTest`).
+
+### Increments 3 + 6 — SHIPPED (2026-07-02, branch `agent/phase2-increments-3-6`)
+
+**Increment 3 — engine send off the lock (`ZoomEngineRuntime`).** No engine pipe
+I/O ever happens under `coreMutex` (or the runtime's own `mutex_`) anymore:
+
+- All `process_->sendLine(...)` call sites (init/join/leave/start_media/subscribe/
+  subscribe_audio/unsubscribe) now go through `enqueueEngineSendLocked` → a bounded
+  FIFO `sendQueue_` drained by ONE dedicated sender thread (`senderLoop`), the only
+  place engine stdin is written. Single-thread FIFO drain preserves ordering to the
+  engine exactly as the old synchronous path did.
+- `sentSubscriptions_` dedup is keyed at ENQUEUE time (under `mutex_`, which
+  serializes `syncSpine` calls): "marked sent" now means "queued exactly once, will
+  reach the engine in order" — semantics unchanged for the engine.
+- Each queued line carries the `processGeneration_` it was built for. On engine
+  restart (`ensureStartedLocked` creating a new process) the generation bumps, lines
+  queued for the dead process are purged (dropped + logged, never replayed into the
+  new pipe), and `sentSubscriptions_`/`mediaStarted_` reset so the new engine is
+  re-initialized/re-subscribed from scratch. Same on shutdown: queued lines are
+  dropped + logged. A 1024-line cap (drop-oldest + log) is a safety valve for a
+  wedged pipe; dedup keeps the steady-state queue tiny.
+- Send failures are applied by the sender (under `mutex_`, generation-checked) as
+  Error events carrying the original stage ("init"/"join"/...), which the join/auth
+  wait loops already observe — so `join()` still returns an error snapshot, just via
+  the event path instead of a synchronous return.
+- Lifecycle: one sender for the runtime's lifetime (survives engine restarts).
+  Destructor order: signal sender stop + drop queue → `stopReader()` (terminates the
+  process, breaking the pipe and unblocking any in-flight write) → join sender.
+  `process_` became `shared_ptr` so the sender's in-flight reference outlives a
+  concurrent replace; the sender's unlocked write racing teardown's `stop()` is the
+  same benign class as the reader thread's long-standing unlocked `readEvent()`.
+- `ZoomEngineProcessClient` I/O entry points are now virtual, and
+  `ZoomEngineRuntime::installEngineProcessForTest` exists, so the sender path is
+  unit-testable with a fake client (blocking/dead-process control). New tests:
+  ordering+dedup, wedged-pipe non-blocking (syncSpine/snapshot return while a send
+  is blocked), restart purge + resubscribe, destructor join-without-hang, and a
+  concurrent churn/snapshot/drain test that TSan exercises in CI.
+
+**LOCK ORDER (final, after increment 3)** — documented also at the `coreMutex`
+declaration in `JsonRpcServer.cpp`:
+
+```
+coreMutex  →  audioOutputMutex_                                  (audio/output plane)
+coreMutex  →  ZoomEngineRuntime::mutex_  →  ZoomEngineRuntime::sendMutex_
+```
+
+- `audioOutputMutex_` and the ZoomEngineRuntime locks are never held together.
+- The audio worker holds `coreMutex` only for gather/publish and NEVER nested with
+  `audioOutputMutex_`; the engine sender thread holds `mutex_`/`sendMutex_` only
+  briefly and strictly sequentially (never nested in the reverse order), and holds
+  NO lock across the blocking pipe write; the reader thread takes only `mutex_`.
+- The increment 6 guardrail registry mutex is a leaf: taken under `coreMutex`,
+  takes nothing.
+
+**Increment 6 — sub-ms `coreMutex`-hold guardrails (`core/LockHoldGuardrail`).**
+Every instrumented `coreMutex` hold is timed (RAII `ScopedLockHoldTimer`) against a
+per-site budget. Semantics: telemetry counters per site (holds / over-budget /
+worst) + a rate-capped `[lock-guardrail]` stderr warning on over-budget holds
+(first occurrence, then ≤1/s per site with the suppressed count) in ALL builds;
+never a hard failure by default — timing asserts are too flaky, especially under
+TSan's 5-20x slowdown. Opt-in strict mode (`COREVIDEO_LOCK_GUARDRAIL_STRICT=1`)
+aborts on any over-budget hold as a debugging tool. Budgets: sub-ms default
+(1ms) for the audio worker's `audio.gather`/`audio.publish` spans; sanctioned
+long-hold sites declare their own — `cmd.handle` 50ms (command-carrying syncs
+render a capped catch-up under the lock, per increment 2), `render.display-tick`
+8ms (typ 1-2ms), `cmd.frame-pump` 8ms. Unit-tested (`LockHoldGuardrailTest`) and
+wired-into-the-live-server tested (`JsonRpcServerTest`).
+
+Validated (this landing): native stub suite 285/285 (incl. 11 new sender/guardrail
+tests), MediaCore C# 221/221, WinUI 427/427; the `native-stub-tsan` CI job runs the
+new concurrency tests under ThreadSanitizer. The ≥10-min audio soak gate runs in
+the alpha validation pass, as noted above.
 
 ### Increments 2 + 5 — original deferral note (2026-06-29, superseded same day)
 **Why deferred:** the headline goal (locked 60fps under load) provably requires

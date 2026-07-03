@@ -4823,6 +4823,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Native-first UVC path (opt-in via COREVIDEO_NATIVE_UVC=1): let the
+        // core open the camera with its Media Foundation adapter — frames enter
+        // the compositor directly, skipping the MediaCapture -> shared-memory
+        // hop. Any decline (stub core, unknown device, open failure) falls
+        // through to the existing WinUI MediaCapture bridge below.
+        if (NativeUvcCapturePolicy.ShouldPreferNativeCapture(
+                Environment.GetEnvironmentVariable(NativeUvcCapturePolicy.EnvironmentVariableName),
+                device.Vendor))
+        {
+            if (await TryConnectNativeUvcCaptureAsync(device).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            LaunchLog.Write($"capture: native uvc declined {device.Id}; falling back to WinUI MediaCapture bridge");
+        }
+
         try
         {
             var format = await _captureFrameReader.StartAsync(device).ConfigureAwait(false);
@@ -4853,6 +4870,54 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RefreshMultiviewGridTiles();
                 CommandStatus = $"{device.Name} failed to open: {ex.Message}";
             });
+        }
+    }
+
+    // Attempts the native core (Media Foundation UVC) capture path for a camera.
+    // Success = the core's connect-capture-device response reports this device
+    // connected (matched by stable id, or by the OS symbolic link when the
+    // hashed ids disagree over symbolic-link casing). Never throws.
+    private async Task<bool> TryConnectNativeUvcCaptureAsync(CaptureDevice device)
+    {
+        try
+        {
+            var devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+            var match = NativeUvcCapturePolicy.FindConnectedDevice(devices, device.Id, device.NativeDeviceId);
+            if (match is null && !string.IsNullOrWhiteSpace(device.NativeDeviceId))
+            {
+                // Stable-id mismatch (WinRT vs MF symbolic-link casing): retry
+                // addressing the device by its OS identity, which the core
+                // matches case-insensitively.
+                devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.NativeDeviceId).ConfigureAwait(false);
+                match = NativeUvcCapturePolicy.FindConnectedDevice(devices, device.Id, device.NativeDeviceId);
+            }
+
+            if (match is null)
+            {
+                return false;
+            }
+
+            LaunchLog.Write(
+                $"capture: native uvc connected {device.Id} ({match.Width}x{match.Height}@{match.FrameRate}, core id {match.Id})");
+            RunOnUiThread(() =>
+            {
+                device.ConnectionState = CaptureConnectionState.Connected;
+                device.ApplyFormatTelemetry(match.Width, match.Height, match.FrameRate);
+                device.SignalPresent = match.SignalPresent;
+                AssignConnectedCaptureDeviceToShowInput(device);
+                RefreshDualCaptureSourceOptions();
+                RefreshCaptureFleetSummary();
+                RefreshShowInputEditors();
+                RefreshPreviewRoutingState();
+                RefreshMultiviewGridTiles();
+                CommandStatus = $"{device.Name} brought online via native core capture";
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"capture: native uvc connect failed {device.Id}: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
     }
 

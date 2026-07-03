@@ -281,6 +281,35 @@ Each item lists: **Current**, **Spec (done = )**, **Plan**, **Gate/tests**, **Fl
   pixels showing the pattern (not the synthetic slate). **Remaining item 1
   (dev-gated):** the real `UvcCaptureDevice`/WinUI bridge delivering live camera
   frames + embedded UVC audio.
+- **Status (2026-07-02) — native Media Foundation UVC capture shipped (path A),
+  awaiting rig validation.** `UvcCaptureDeviceAdapter.cpp` (behind
+  `COREVIDEO_WITH_UVC`, ON in `build-native-dev.ps1`) enumerates VIDCAP devices
+  via `MFEnumDeviceSources` (throttled, list-only — never opens a camera),
+  negotiates the best native format for the 1080p60 target
+  (`pickBestUvcFormat`: resolution > frame rate > NV12/YUY2/MJPG subtype), sets
+  NV12 output with `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` (MF
+  decodes MJPG / converts YUY2 on the capture thread), and repacks each sample
+  into I420 (`nv12ToI420` — byte reshuffle only, no CPU color math) so frames
+  ride the existing GPU I420 HLSL convert. The shader is now parametrized for
+  limited/full range + BT.709/BT.601 per frame (`VideoFrame.i420FullRange` /
+  `i420Bt601`; defaults keep Zoom bit-identical). Device ids are the same
+  SHA-256(symbolic link) stable ids the WinUI shell derives
+  (`stableCaptureDeviceIdFromSymbolicLink`, parity-tested against
+  `CaptureDeviceDiscoveryMapper.CreateStableDeviceId`), so `capture:<id>` route
+  keys match either ingest path; `nativeDeviceId` (the symbolic link) now
+  travels in the capture-devices JSON for case-insensitive correlation.
+  Hot-unplug downgrades the device to `connectionState "error"` + warning and
+  stops the session thread — never a crash. The shell prefers the native path
+  behind opt-in env `COREVIDEO_NATIVE_UVC=1`
+  (`NativeUvcCapturePolicy` + `StudioViewModel.TryConnectNativeUvcCaptureAsync`)
+  and falls back to the WinUI MediaCapture→shared-memory bridge on any decline;
+  the shm bridge also still supersedes native frames for the same device id in
+  `WinUiCaptureDeviceAdapter`. Tests: `UvcCaptureSupportTest.*` (negotiation,
+  NV12/YUY2 repack, stable-id vectors, color hints, factory gating),
+  `NativeUvcCapturePolicyTests` + parser tests (C#), capability
+  `uvc-capture` asserted in `MediaCoreCommand.ProfileMirrorsNativeMediaCoreShape`.
+  **Remaining:** live-camera validation on the rig (see runtime checklist in the
+  branch report) + embedded UVC audio into the F2 mixer.
 
 ### Item 2 — AJA / Blackmagic (DeckLink)
 

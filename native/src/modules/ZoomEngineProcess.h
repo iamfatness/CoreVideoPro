@@ -12,10 +12,14 @@ struct ZoomEngineProcessOptions {
   int connectTimeoutMs = 30000;
 };
 
+// The pipe/subprocess client for the Zoom engine helper. The I/O entry points are
+// virtual so ZoomEngineRuntime's outbound sender thread (phase 2 increment 3) can be
+// exercised in unit tests with a fake client — no real subprocess, controllable
+// blocking/failing sendLine.
 class ZoomEngineProcessClient {
  public:
   ZoomEngineProcessClient() = default;
-  ~ZoomEngineProcessClient();
+  virtual ~ZoomEngineProcessClient();
 
   ZoomEngineProcessClient(const ZoomEngineProcessClient&) = delete;
   ZoomEngineProcessClient& operator=(const ZoomEngineProcessClient&) = delete;
@@ -23,13 +27,13 @@ class ZoomEngineProcessClient {
   // REQUIRES DEV MACHINE: launches the vendored Zoom Meeting SDK helper and
   // connects to its pipe/socket IPC. This is not used by the default stub path.
   bool start(const ZoomEngineProcessOptions& options);
-  void stop();
-  [[nodiscard]] bool running() const;
-  [[nodiscard]] const std::string& lastError() const;
+  virtual void stop();
+  [[nodiscard]] virtual bool running() const;
+  [[nodiscard]] virtual std::string lastError() const;
 
-  bool sendLine(const std::string& line);
+  virtual bool sendLine(const std::string& line);
   [[nodiscard]] std::optional<std::string> readLine();
-  [[nodiscard]] std::optional<ZoomEngineEvent> readEvent();
+  [[nodiscard]] virtual std::optional<ZoomEngineEvent> readEvent();
 
  private:
   bool connectIpc(int timeoutMs);

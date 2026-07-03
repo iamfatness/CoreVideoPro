@@ -53,7 +53,8 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | **Capture** | Zoom roster, active speaker, captions, feed health, breakout filters, producer roles | Real (simulated session) |
 | | Real Zoom Meeting SDK ingest via the vendored `corevideo-zoom-engine` (raw I420 over shared memory) | Dev-gated (`COREVIDEO_WITH_ZOOM`) |
 | | Test-pattern / local-camera source delivering real pixels into the core | Real |
-| | Live UVC camera & DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress |
+| | Native UVC camera capture inside the core (Media Foundation source reader, 1080p60-targeted NV12/YUY2/MJPG negotiation, I420 → GPU shader convert with per-frame range/matrix, hot-unplug safe; WinUI shm bridge stays the fallback via `COREVIDEO_NATIVE_UVC=1` opt-in) | Dev-gated (`COREVIDEO_WITH_UVC`), awaiting rig validation |
+| | Live DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress |
 | **Compositor** | Route resolver, render-plan layers, program/preview parity math | Real |
 | | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
 | | Overlay / lower-third / caption **text & image rasterization** — shared layout (`computeOverlayTileLayout`), signature-cached | Real (CPU full-ASCII bitmap-font tile) · Dev-gated (DirectWrite/D2D + WIC, zero-copy GPU raster) |

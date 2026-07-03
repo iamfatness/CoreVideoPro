@@ -110,7 +110,12 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   (`renderDisplayTick`), and an empty `media-core-sync` poll returns the published
   snapshot without a tick. When touching audio/output control-plane commands, keep the
   `coreMutex` → `audioOutputMutex_` lock ORDER (see `docs/phase2-threading-plan.md`);
-  a single missed `audioOutputMutex_` guard is a data race.
+  a single missed `audioOutputMutex_` guard is a data race. Engine pipe writes go
+  through `ZoomEngineRuntime`'s outbound queue + dedicated sender thread (increment 3)
+  — never call `process_->sendLine` directly. Full lock order:
+  `coreMutex` → `audioOutputMutex_`, and `coreMutex` → `ZoomEngineRuntime::mutex_` →
+  `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
+  sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
 
 ## Current state (2026-07-02)
 
@@ -123,9 +128,19 @@ routing honored by Sources + multiview; compact Sources routing table.
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
 audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
-capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers: engine `sendLine`
-still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
-(increment 6). DONE 2026-07-02: **overlay/lower-third/caption text rasterization** —
+capture** — native Media Foundation UVC capture is CODE-COMPLETE behind
+`COREVIDEO_WITH_UVC` (ON in `build-native-dev.ps1`; shell opt-in
+`COREVIDEO_NATIVE_UVC=1`, WinUI shm bridge remains fallback) but **not yet
+rig-validated with a live camera**; DeckLink/AJA frame delivery still to do
+(see `docs/native-production-completion-plan.md` Items 1–2).
+DONE 2026-07-02: **Phase 2 increments 3+6**
+— engine sends now go through `ZoomEngineRuntime`'s outbound queue + dedicated sender
+thread (no engine pipe I/O under `coreMutex`; ordering preserved; restart/shutdown
+drop+log; dedup at enqueue time) and `core/LockHoldGuardrail` enforces the sub-ms
+`coreMutex`-hold contract with rate-capped warnings + per-site telemetry (strict
+abort opt-in via `COREVIDEO_LOCK_GUARDRAIL_STRICT=1`); the `native-stub-tsan` CI job
+exercises the new sender handoff. DONE 2026-07-02: **overlay/lower-third/caption text
+rasterization** —
 `OverlayTileRaster::computeOverlayTileLayout` is the single source of overlay geometry;
 the CPU preview rasters it with a full-ASCII 5x7 bitmap-font tile
 (`rasterizeOverlayTileBgra`), and `D3D11CompositorAdapter::rasterOverlayTexture` renders

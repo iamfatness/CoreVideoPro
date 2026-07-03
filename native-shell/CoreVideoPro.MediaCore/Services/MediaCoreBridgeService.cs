@@ -115,6 +115,21 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         _supervisor.RegisterCaptureShmAsync(deviceId, shmName, width, height, cancellationToken);
 
+    /// <summary>
+    /// Asks the core to open a capture device with its native (Media Foundation
+    /// UVC) adapter. Returns the core's device states after the attempt; the
+    /// caller decides success via NativeUvcCapturePolicy.FindConnectedDevice and
+    /// falls back to the WinUI MediaCapture shared-memory bridge otherwise.
+    /// </summary>
+    public Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectNativeCaptureDeviceAsync(
+        string deviceId,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.ConnectCaptureDeviceAsync(deviceId, cancellationToken);
+
+    public Task<IReadOnlyList<NativeCaptureDeviceStatus>> ListNativeCaptureDevicesAsync(
+        CancellationToken cancellationToken = default) =>
+        _supervisor.ListCaptureDevicesAsync(cancellationToken);
+
     public async Task<RawCaptureSnapshot> JoinZoomAsync(
         string meetingUrl,
         string displayName,

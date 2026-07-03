@@ -63,7 +63,16 @@ constexpr double kFrameStaleAfterMs = 1000.0;
 ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
+  // Order matters: (1) stop the sender and drop anything still queued (the
+  // process is going away — plan semantics: drop + log, never replay), but do
+  // NOT join yet; (2) stopReader() terminates the engine process, which breaks
+  // the pipe and unblocks a send that is mid-write on a wedged pipe; (3) only
+  // then can the sender thread be joined without risking a hang.
+  signalSenderStopAndDropQueue();
   stopReader();
+  if (sender_.joinable()) {
+    sender_.join();
+  }
 }
 
 ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
@@ -100,8 +109,9 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     config_.userZak = payloadZak;
   }
   if (!payloadJwt.empty() && initialized_) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (process_ && process_->running()) {
-      (void)process_->sendLine(buildZoomEngineLeaveCommand());
+      enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
     }
     state_.reset();
     initialized_ = false;
@@ -143,12 +153,11 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
       } else if (!config_.publicAppKey.empty()) {
         initCommand.publicAppKey = config_.publicAppKey;
       }
-      const bool sent = process_->sendLine(buildZoomEngineInitCommand(initCommand));
-      initialized_ = sent;
-      if (!sent) {
-        state_.apply({ZoomEngineEventKind::Error, "error", "", "init", process_->lastError()});
-        return rawCaptureSnapshotLocked();
-      }
+      // Async send (increment 3): the sender thread owns the pipe write. A send
+      // failure is applied by the sender as an Error event with stage "init",
+      // which the auth wait loop below observes (meetingState == "error").
+      enqueueEngineSendLocked("init", buildZoomEngineInitCommand(initCommand));
+      initialized_ = true;
       waitForAuth = true;
     }
   }
@@ -186,10 +195,9 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     const auto payloadZak = payload.getString("userZak");
     command.userZak = !payloadZak.empty() ? payloadZak : config_.userZak;
     command.appPrivilegeToken = config_.appPrivilegeToken;
-    if (!process_->sendLine(buildZoomEngineJoinCommand(command))) {
-      state_.apply({ZoomEngineEventKind::Error, "error", "", "join", process_->lastError()});
-      return rawCaptureSnapshotLocked();
-    }
+    // Async send: a failed pipe write surfaces as an Error event (stage "join")
+    // from the sender thread; the wait loop below returns on meetingState "error".
+    enqueueEngineSendLocked("join", buildZoomEngineJoinCommand(command));
   }
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.joinWaitMs);
@@ -216,7 +224,7 @@ rpc::Json ZoomEngineRuntime::leave() {
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (process_ && process_->running()) {
-    (void)process_->sendLine(buildZoomEngineLeaveCommand());
+    enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
   state_.reset();
   mediaStarted_ = false;
@@ -292,10 +300,15 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       if (existing != sentSubscriptions_.end() && existing->second == subscriptionKey) {
         continue;  // already subscribed at this resolution — don't re-send
       }
+      // Increment 3: ENQUEUE for the dedicated sender thread instead of writing
+      // the pipe here — syncSpine runs under coreMutex (via MediaCore), and a
+      // slow/wedged engine pipe must never extend that hold. The dedup map is
+      // updated at enqueue time; the single FIFO sender preserves order, so
+      // "marked sent" still means "delivered exactly once, in order".
       if (kind == "participant-audio") {
-        (void)process_->sendLine(buildZoomEngineSubscribeAudioCommand(command));
+        enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeAudioCommand(command));
       } else {
-        (void)process_->sendLine(buildZoomEngineSubscribeCommand(command));
+        enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeCommand(command));
       }
       sentSubscriptions_[command.sourceUuid] = subscriptionKey;
     }
@@ -304,7 +317,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     // left / dropped from the show), then forget them.
     for (auto it = sentSubscriptions_.begin(); it != sentSubscriptions_.end();) {
       if (desired.find(it->first) == desired.end()) {
-        (void)process_->sendLine(buildZoomEngineUnsubscribeCommand(it->first));
+        enqueueEngineSendLocked("unsubscribe", buildZoomEngineUnsubscribeCommand(it->first));
         it = sentSubscriptions_.erase(it);
       } else {
         ++it;
@@ -361,13 +374,23 @@ bool ZoomEngineRuntime::ensureStartedLocked() {
     return true;
   }
 
-  process_ = std::make_unique<ZoomEngineProcessClient>();
+  // New engine process: retire lines queued for the previous (dead) process —
+  // drop + log, never replay them into the new pipe — and forget per-process
+  // session state so the new engine is re-initialized, re-media-started, and
+  // re-subscribed from scratch.
+  ++processGeneration_;
+  purgeQueuedEngineSendsLocked("engine restart");
+  sentSubscriptions_.clear();
+  mediaStarted_ = false;
+
+  process_ = std::make_shared<ZoomEngineProcessClient>();
   if (!process_->start({config_.executablePath, config_.connectTimeoutMs})) {
     state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", process_->lastError()});
     return false;
   }
   initialized_ = false;
   startReaderLocked();
+  startSenderLocked();
   return true;
 }
 
@@ -426,6 +449,153 @@ void ZoomEngineRuntime::stopReader() {
   if (reader_.joinable()) {
     reader_.join();
   }
+}
+
+void ZoomEngineRuntime::startSenderLocked() {
+  std::lock_guard<std::mutex> sendLock(sendMutex_);
+  if (senderRunning_) {
+    return;
+  }
+  senderRunning_ = true;
+  // One sender for the runtime's lifetime: it does not depend on any particular
+  // process instance (each queued line carries its own generation + the process
+  // is re-resolved per line), so it survives engine restarts.
+  sender_ = std::thread([this]() { senderLoop(); });
+}
+
+// Dedicated sender thread (phase 2 increment 3): the ONLY place engine stdin is
+// written. Pops one line at a time (FIFO — ordering to the engine is preserved)
+// and performs the potentially blocking pipe write with NO locks held, so a
+// slow/wedged engine pipe blocks only this thread — never coreMutex, never
+// mutex_, never the spine/command path.
+void ZoomEngineRuntime::senderLoop() {
+  for (;;) {
+    PendingEngineSend item;
+    {
+      std::unique_lock<std::mutex> sendLock(sendMutex_);
+      sendCv_.wait(sendLock, [&] { return !senderRunning_ || !sendQueue_.empty(); });
+      if (!senderRunning_) {
+        // Shutdown: drop whatever is still queued (the process is going away).
+        if (!sendQueue_.empty()) {
+          noteDroppedEngineSends(sendQueue_.size(), "shutdown");
+          sendQueue_.clear();
+        }
+        return;
+      }
+      item = std::move(sendQueue_.front());
+      sendQueue_.pop_front();
+    }
+
+    // Resolve the target process under mutex_ (brief; no I/O). The shared_ptr
+    // copy keeps the client alive across the unlocked write even if the process
+    // is replaced concurrently by a restart.
+    std::shared_ptr<ZoomEngineProcessClient> process;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (item.generation == processGeneration_ && process_) {
+        process = process_;
+      }
+    }
+    if (!process || !process->running()) {
+      // The process this line was built for died or was replaced: drop + log
+      // (plan increment 3 semantics — never replay into a different process).
+      noteDroppedEngineSends(1, "dead or replaced engine process");
+      continue;
+    }
+
+    // Blocking pipe I/O — deliberately outside every lock. Concurrent
+    // process_->stop() during shutdown is the same benign teardown race the
+    // reader thread has always had with its unlocked readEvent(): the client
+    // object is kept alive by the shared_ptr, and process termination makes the
+    // in-flight write fail rather than hang.
+    const bool sent = process->sendLine(item.line);
+    if (!sent) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (item.generation == processGeneration_) {
+        state_.apply({ZoomEngineEventKind::Error, "error", "", item.context, process->lastError()});
+      }
+    }
+  }
+}
+
+void ZoomEngineRuntime::signalSenderStopAndDropQueue() {
+  {
+    std::lock_guard<std::mutex> sendLock(sendMutex_);
+    senderRunning_ = false;
+    if (!sendQueue_.empty()) {
+      noteDroppedEngineSends(sendQueue_.size(), "shutdown");
+      sendQueue_.clear();
+    }
+  }
+  sendCv_.notify_all();
+}
+
+void ZoomEngineRuntime::enqueueEngineSendLocked(std::string context, std::string line) {
+  if (!process_) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> sendLock(sendMutex_);
+    if (!senderRunning_) {
+      noteDroppedEngineSends(1, "sender not running");
+      return;
+    }
+    // Safety valve: with subscription dedup the steady-state queue is tiny; it
+    // only grows without bound if the engine pipe is wedged, and then the whole
+    // engine session is already broken — drop the OLDEST line (and log) rather
+    // than grow forever. A restart clears the queue and re-subscribes anyway.
+    constexpr std::size_t kMaxQueuedEngineSends = 1024;
+    if (sendQueue_.size() >= kMaxQueuedEngineSends) {
+      noteDroppedEngineSends(1, "queue overflow (wedged engine pipe?)");
+      sendQueue_.pop_front();
+    }
+    sendQueue_.push_back({std::move(line), std::move(context), processGeneration_});
+  }
+  sendCv_.notify_one();
+}
+
+void ZoomEngineRuntime::purgeQueuedEngineSendsLocked(const char* reason) {
+  std::size_t purged = 0;
+  {
+    std::lock_guard<std::mutex> sendLock(sendMutex_);
+    for (auto it = sendQueue_.begin(); it != sendQueue_.end();) {
+      if (it->generation != processGeneration_) {
+        it = sendQueue_.erase(it);
+        ++purged;
+      } else {
+        ++it;
+      }
+    }
+  }
+  if (purged > 0) {
+    noteDroppedEngineSends(purged, reason);
+  }
+}
+
+void ZoomEngineRuntime::noteDroppedEngineSends(std::size_t count, const char* reason) {
+  const auto total = droppedEngineSends_.fetch_add(count) + count;
+  std::fprintf(stderr, "[zoom-engine] dropped %zu queued engine send(s): %s (total dropped %llu)\n",
+               count, reason, static_cast<unsigned long long>(total));
+}
+
+void ZoomEngineRuntime::installEngineProcessForTest(std::shared_ptr<ZoomEngineProcessClient> process) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++processGeneration_;
+  purgeQueuedEngineSendsLocked("engine restart");
+  sentSubscriptions_.clear();
+  mediaStarted_ = false;
+  process_ = std::move(process);
+  initialized_ = true;
+  startSenderLocked();
+}
+
+std::size_t ZoomEngineRuntime::pendingEngineSendCountForTest() {
+  std::lock_guard<std::mutex> sendLock(sendMutex_);
+  return sendQueue_.size();
+}
+
+std::uint64_t ZoomEngineRuntime::droppedEngineSendCountForTest() const {
+  return droppedEngineSends_.load();
 }
 
 rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
@@ -526,10 +696,10 @@ bool ZoomEngineRuntime::ensureMediaStartedLocked() {
   if (state_.snapshot().meetingState != "in-meeting") {
     return false;
   }
-  if (!process_->sendLine(buildZoomEngineStartMediaCommand())) {
-    state_.apply({ZoomEngineEventKind::Error, "error", "", "start_media", process_->lastError()});
-    return false;
-  }
+  // Async send; optimistic. If the pipe write later fails, the sender applies an
+  // Error event (stage "start_media"), and a process restart resets mediaStarted_
+  // in ensureStartedLocked.
+  enqueueEngineSendLocked("start_media", buildZoomEngineStartMediaCommand());
   mediaStarted_ = true;
   return true;
 }

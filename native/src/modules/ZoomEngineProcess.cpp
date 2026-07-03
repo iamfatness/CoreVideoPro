@@ -179,7 +179,7 @@ bool ZoomEngineProcessClient::running() const {
 #endif
 }
 
-const std::string& ZoomEngineProcessClient::lastError() const {
+std::string ZoomEngineProcessClient::lastError() const {
   return lastError_;
 }
 
