@@ -8,6 +8,19 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Remote control HTTP + WebSocket transport (Phase 2a).** Alongside OSC, an
+  `HttpControlServer` (HttpListener) exposes the same control surface over HTTP:
+  `GET /manifest` (the action/feedback contract), `GET /state` (current state,
+  camelCase JSON), `POST /invoke` (`{ "action": "...", "args": [...] }`), and a
+  `/ws` WebSocket that pushes a fresh state snapshot on connect and on every change.
+  Optional bearer-token auth. Wired into `MainWindow` (127.0.0.1:8011 by default;
+  `COREVIDEO_HTTP_PORT` / `COREVIDEO_CONTROL_TOKEN` / `COREVIDEO_OSC_LAN=1`). OSC and
+  HTTP feedback field names are now identical (both the camelCased `ControlState`
+  property names), so a client sees one consistent feedback contract. Fixed a WS
+  close-handshake bug (the server now acks a client-initiated close) and serialized
+  WS sends (concurrent broadcasts can't reset a connection). Unit-tested (router
+  manifest/state/invoke/errors, HttpListener loopback GET/POST, WS initial + push,
+  bearer auth).
 - **Bitfocus Companion module (Phase 2b).** New `companion-module-corevideopro/`
   (Node/TS) that remote-controls CoreVideo Pro over its HTTP/WebSocket control API.
   Actions are generated **live from `GET /manifest`** (so the button set always

@@ -1,3 +1,4 @@
+using CoreVideoPro.Control.Http;
 using CoreVideoPro.Control.Osc;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
@@ -22,6 +23,7 @@ public sealed partial class MainWindow : Window
     private DispatcherQueueTimer? _resourceMonitorTimer;
     private StudioControlSurface? _controlSurface;
     private OscControlServer? _controlServer;
+    private HttpControlServer? _httpControlServer;
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
@@ -72,6 +74,7 @@ public sealed partial class MainWindow : Window
             var lan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
 
             _controlSurface = new StudioControlSurface(ViewModel, _dispatcher);
+
             _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
             {
                 ListenPort = port,
@@ -79,6 +82,32 @@ public sealed partial class MainWindow : Window
             });
             _controlServer.Start();
             LaunchLog.Write($"control: OSC server listening on {(lan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
+
+            // HTTP + WebSocket API sharing the same surface. Loopback needs no privileges;
+            // LAN ("+") may require a Windows urlacl. Optional bearer token for LAN safety.
+            var httpPort = 8011;
+            if (int.TryParse(Environment.GetEnvironmentVariable("COREVIDEO_HTTP_PORT"), out var httpConfigured) &&
+                httpConfigured is > 0 and < 65536)
+            {
+                httpPort = httpConfigured;
+            }
+
+            try
+            {
+                _httpControlServer = new HttpControlServer(_controlSurface, new HttpControlServerOptions
+                {
+                    ListenPort = httpPort,
+                    Host = lan ? "+" : "127.0.0.1",
+                    AuthToken = Environment.GetEnvironmentVariable("COREVIDEO_CONTROL_TOKEN")
+                });
+                _httpControlServer.Start();
+                LaunchLog.Write($"control: HTTP/WS API listening on http://{(lan ? "+" : "127.0.0.1")}:{httpPort}/ (GET /manifest, /state, /ws; POST /invoke)");
+            }
+            catch (Exception ex)
+            {
+                LaunchLog.Write($"control: HTTP/WS API failed to start ({ex.Message}) — OSC still active");
+                _httpControlServer = null;
+            }
         }
         catch (Exception ex)
         {
@@ -88,6 +117,20 @@ public sealed partial class MainWindow : Window
 
     private async Task StopControlServerAsync()
     {
+        if (_httpControlServer is not null)
+        {
+            try
+            {
+                await _httpControlServer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // best effort
+            }
+
+            _httpControlServer = null;
+        }
+
         if (_controlServer is not null)
         {
             try
