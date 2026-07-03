@@ -108,6 +108,82 @@ TEST(EncoderRecordingSession, StubIgnoresAudioWhenRecordingNotSelected) {
   EXPECT_EQ(session.recordingAudioSampleCount, 0);
 }
 
+TEST(EncoderRecordingSession, StubStopRecordingFreezesRecordingAccumulation) {
+  auto encoder = corevideo::modules::createStubRecordingEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "stop-show";
+  request.targetFolder = "Recordings/CoreVideo Pro/tests";
+  request.filenamePrefix = "stop-cut";
+  request.format = "mp4";
+  request.width = 1280;
+  request.height = 720;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  encoder->configureRecording(request);
+  encoder->start({"recording", "rtmp"}, {});
+
+  std::vector<float> pcm(1024 * 2, 0.25f);
+  encoder->submit({1280, 720, 3, 1, "plan-a", "software"});
+  encoder->submitAudio(pcm.data(), 1024, 2, 48000);
+
+  encoder->stopRecording();
+  const auto stopped = encoder->session();
+  EXPECT_EQ(stopped.recordingStatus, "stopped");
+  // The encoder session survives a recording stop — streaming destinations
+  // continue; only the recording container is finalized.
+  EXPECT_TRUE(stopped.active);
+
+  encoder->submit({1280, 720, 3, 2, "plan-a", "software"});
+  encoder->submitAudio(pcm.data(), 1024, 2, 48000);
+
+  const auto after = encoder->session();
+  EXPECT_EQ(after.recordingVideoFrameCount, stopped.recordingVideoFrameCount);
+  EXPECT_EQ(after.recordingAudioPacketCount, stopped.recordingAudioPacketCount);
+  EXPECT_EQ(after.recordingBytesWritten, stopped.recordingBytesWritten);
+  EXPECT_EQ(after.encodedFrameCount, stopped.encodedFrameCount + 1);
+}
+
+TEST(EncoderRecordingSession, MediaCoreStopRecordingSessionFinalizesEncoderRecording) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-recording-targets"},
+          {"targetFolder", "Recordings/CoreVideo Pro/tests"},
+          {"filenamePrefix", "finalize-cut"},
+          {"format", "mp4"},
+          {"quality", "medium"},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "start-recording-session"},
+          {"sessionId", "session-finalize"},
+          {"startedAtMs", 100},
+      },
+  });
+
+  const auto stoppedState = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "stop-recording-session"},
+          {"reason", "Operator stopped recording."},
+      },
+  });
+
+  const auto* encoderSession = stoppedState.get("encoderSession");
+  ASSERT_NE(encoderSession, nullptr);
+  const double frozenFrameCount = encoderSession->get("recordingFrameCount")->asNumber();
+
+  // Further ticks keep encoding (streaming may continue) but must NOT
+  // accumulate into the finalized recording.
+  const auto laterState = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "recommend-auto-production"}},
+  });
+  const auto* laterSession = laterState.get("encoderSession");
+  ASSERT_NE(laterSession, nullptr);
+  EXPECT_EQ(laterSession->get("recordingFrameCount")->asNumber(), frozenFrameCount);
+}
+
 TEST(EncoderRecordingSession, MediaCorePropagatesRecordingTargetsIntoEncoderSession) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{

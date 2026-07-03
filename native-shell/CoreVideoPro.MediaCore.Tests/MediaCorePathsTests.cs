@@ -75,6 +75,10 @@ public sealed class MediaCorePathsTests : IDisposable
     [Fact]
     public void ResolveZoomSdkArchitectureRoot_ReturnsStagedRuntimeWhenSdkDllPresent()
     {
+        // Hermetic guard: a dev machine exporting COREVIDEO_ZOOM_RUNTIME_DIR would
+        // outrank the staged runtime candidate and break this test.
+        using var _runtimeEnv = SetEnv(MediaCorePaths.ZoomRuntimeDirEnvVar, null);
+
         var staged = Path.Combine(_repoRoot, MediaCorePaths.StagedZoomRuntimeRelativePath);
         Directory.CreateDirectory(Path.Combine(staged, "bin"));
         Directory.CreateDirectory(Path.Combine(staged, "h"));
@@ -162,6 +166,12 @@ public sealed class MediaCorePathsTests : IDisposable
     [Fact]
     public void ResolveZoomSdkArchitectureRoot_PrefersRepoZoomSdkBeforeFlatNativeBuildDrop()
     {
+        // Hermetic guard: ZOOM_SDK_DIR / COREVIDEO_ZOOM_RUNTIME_DIR intentionally
+        // outrank the repo ZoomSDK candidates, so ambient dev-machine values (CLAUDE.md
+        // instructs exporting ZOOM_SDK_DIR) must be cleared for this preference test.
+        using var _sdkEnv = SetEnv(MediaCorePaths.ZoomSdkDirEnvVar, null);
+        using var _runtimeEnv = SetEnv(MediaCorePaths.ZoomRuntimeDirEnvVar, null);
+
         var flatDrop = Path.Combine(_repoRoot, "native", "build-dev");
         Directory.CreateDirectory(flatDrop);
         File.WriteAllText(Path.Combine(flatDrop, "sdk.dll"), "stub");

@@ -95,7 +95,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     }
 
     ++session_.encodedFrameCount;
-    if (!containsDestination(session_.destinations, "recording")) {
+    if (!containsDestination(session_.destinations, "recording") || session_.recordingStatus == "stopped") {
       return;
     }
 
@@ -114,7 +114,7 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return;
     }
-    if (!containsDestination(session_.destinations, "recording")) {
+    if (!containsDestination(session_.destinations, "recording") || session_.recordingStatus == "stopped") {
       return;
     }
     // One muxed audio packet per delivered buffer, plus the real sample total,
@@ -125,6 +125,15 @@ class StubRecordingEncoderSink final : public IEncoderSink {
     session_.recordingAudioChannels = channels;
     session_.recordingAudioSampleRate = sampleRate;
     session_.recordingBytesWritten += static_cast<int64_t>(frameCount) * channels * 2;  // 16-bit muxed PCM
+  }
+
+  void stopRecording() override {
+    // Mirror the Media Foundation sink: a stopped recording is finalized (no
+    // more frames/audio accumulate against it) but the encoder session itself
+    // stays valid for streaming destinations.
+    if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning") {
+      session_.recordingStatus = "stopped";
+    }
   }
 
   OutputSession session() const override { return session_; }

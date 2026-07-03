@@ -1,0 +1,91 @@
+﻿{
+    "generatedAt":  "2026-07-02T17:21:38.9592457-04:00",
+    "branch":  "claude/alpha-validation-evidence",
+    "commit":  "452b639",
+    "overall":  "passed",
+    "counts":  {
+                   "passed":  11,
+                   "warning":  0,
+                   "failed":  0,
+                   "skipped":  0
+               },
+    "results":  [
+                    {
+                        "name":  "npm audit",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\npm-audit.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "TypeScript typecheck",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\typescript-typecheck.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "MediaCore tests",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\mediacore-tests.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "WinUI view-model tests",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\winui-view-model-tests.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "Native media-core stub build and smoke",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\native-media-core-stub-build-and-smoke.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "WinUI build",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\winui-build.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "Dev native core artifact",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "",
+                        "notes":  "Found native/build-dev/corevideo-native.exe."
+                    },
+                    {
+                        "name":  "Zoom helper artifact",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "",
+                        "notes":  "Found native/build-dev/corevideo-zoom-engine.exe."
+                    },
+                    {
+                        "name":  "Staged Zoom runtime",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "",
+                        "notes":  "Found staged Zoom runtime at C:\\Users\\walla\\CoreVideoPro\\native-core\\zoom-runtime\\windows\\x64."
+                    },
+                    {
+                        "name":  "Native shell dev readiness",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\native-shell-dev-readiness.log",
+                        "notes":  ""
+                    },
+                    {
+                        "name":  "Record stream harness",
+                        "status":  "passed",
+                        "exitCode":  0,
+                        "logPath":  "C:\\Users\\walla\\CoreVideoPro\\artifacts\\alpha-preflight\\20260702-172118\\logs\\record-stream-harness.log",
+                        "notes":  ""
+                    }
+                ]
+}

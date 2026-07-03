@@ -1475,6 +1475,16 @@ void MediaCore::stopRecordingSession(const rpc::Json& command) {
   recordingStatus_ = "stopped";
   recordingWriterStatus_ = "stopped";
   recordingWarning_ = command.getString("reason", "");
+  {
+    // Encoder module mutation: guard against the audio/output worker's
+    // concurrent encoder->submit/submitAudio/session in runAudioOutputWork.
+    // coreMutex (outer, held by the command thread) → audioOutputMutex_ (inner),
+    // matching startRecordingSession/startProgramOutput. Finalizes the MP4
+    // container(s) so the artifact is playable immediately after stop instead
+    // of only after process exit or the next recording start.
+    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    modules_.encoder->stopRecording();
+  }
 }
 
 void MediaCore::failRecordingSession(const rpc::Json& command) {

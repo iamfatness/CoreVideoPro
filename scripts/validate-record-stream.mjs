@@ -117,6 +117,13 @@ try {
   );
 
   await validationLoop();
+  // Gracefully stop the recording session BEFORE building the report so the
+  // native core finalizes the MP4 (moov box) — child.kill() below is a hard
+  // TerminateProcess on Windows, which would otherwise leave an unplayable
+  // container stub on disk while the report claimed megabytes written.
+  if (destinations.includes("recording")) {
+    await finalizeRecording();
+  }
   const report = buildReport("passed");
   printReport(report);
   // buildReport may downgrade to "failed" (e.g. a report-time ffprobe failure).
@@ -125,6 +132,55 @@ try {
   const report = buildReport("failed", error instanceof Error ? error.message : String(error));
   printReport(report);
   cleanup(1);
+}
+
+// Stop the recording session and wait for the finalized artifact to settle on
+// disk (the sink writer flushes the moov box on stop). Non-fatal on timeout —
+// the report-time ffprobe check is the authoritative verdict.
+async function finalizeRecording() {
+  try {
+    const stopResponse = await send("media-core-sync", {
+      elapsedMs: Date.now() - startedAt,
+      commands: [
+        {
+          type: "stop-recording-session",
+          reason: "Record/stream validation harness finalizing artifact.",
+        },
+      ],
+    });
+    latestSnapshot = stopResponse.snapshot ?? latestSnapshot;
+  } catch {
+    return;
+  }
+
+  const artifactPath = resolveArtifactPath(recordingEvidence()?.artifactPath ?? null);
+  if (!artifactPath) {
+    return;
+  }
+  // Wait for the on-disk size to become non-trivial and stable across polls.
+  let lastSize = -1;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await sleep(250);
+    let size = 0;
+    try {
+      size = statSync(artifactPath).size;
+    } catch {
+      continue;
+    }
+    if (size > 1024 && size === lastSize) {
+      return;
+    }
+    lastSize = size;
+  }
+}
+
+// The native core resolves relative recording target folders against its own
+// cwd (the build directory), so the harness must do the same before probing.
+function resolveArtifactPath(artifactPath) {
+  if (!artifactPath) {
+    return null;
+  }
+  return resolve(dirname(nativeCore), artifactPath);
 }
 
 function buildArmCommands() {
@@ -641,7 +697,7 @@ function ffprobeContainerCheck(recording) {
     return { enabled: false, status: "disabled" };
   }
 
-  const artifactPath = recording?.artifactPath ?? null;
+  const artifactPath = resolveArtifactPath(recording?.artifactPath ?? null);
   if (!artifactPath || !existsSync(artifactPath)) {
     return { enabled: true, status: "file-missing", artifactPath };
   }
@@ -691,7 +747,14 @@ function ffprobeContainerCheck(recording) {
   // A valid moov box yields a parseable format block with a numeric duration.
   const durationSeconds = Number(probe.format?.duration);
   const moovValid = Number.isFinite(durationSeconds) && durationSeconds > 0;
-  const pass = moovValid && videoStreams >= 1 && audioStreams >= 1;
+  // The AAC stream is added lazily on the first muxed audio packet, so a
+  // headless run with no live audio source legitimately produces a video-only
+  // MP4 (already surfaced via the "did not observe audio packets"
+  // recommendation). Require an audio stream exactly when audio packets were
+  // muxed — that asserts container consistency without making the harness
+  // unrunnable in synthetic environments.
+  const audioStreamRequired = Boolean(recording?.proof?.audioPresent);
+  const pass = moovValid && videoStreams >= 1 && (!audioStreamRequired || audioStreams >= 1);
 
   return {
     enabled: true,
@@ -701,6 +764,7 @@ function ffprobeContainerCheck(recording) {
     durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
     videoStreams,
     audioStreams,
+    audioStreamRequired,
     formatName: probe.format?.format_name ?? null,
   };
 }

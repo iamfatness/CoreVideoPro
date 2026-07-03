@@ -1,0 +1,296 @@
+{
+  "id": "support-20260703020446",
+  "createdAt": "2026-07-03T02:04:46.1362387Z",
+  "app": {
+    "name": "CoreVideo Pro",
+    "version": "0.1.0",
+    "platform": "winui-desktop"
+  },
+  "summaryText": "Runtime: Native media core (running)\nProgram scene: panel; render plan: idle:0:1492\nVideo source: native-frame; subscribed 0; delivered 0; stale 0\nOutput warnings: 10\nAudio diagnostics: warning; categories: low-level; warnings: 6\nAudio validation incomplete: master bus has PCM but the recording writer has not accepted audio yet.\nAudio validation checklist: CAPTURE ok 36468480f | PGM ok 480f | MON ok 4965120f | STREAM idle | RECORD wait writer\nFirst audio block: RECORD wait writer.\nFull audio chain incomplete: stream, recording not yet proven.\nAudio capture: 1/1 streaming; PCM 36468480; master 480; stream 480; MON 480; monitor played 4965120\nRecording audio proof: packets 0; samples 0; 0 ch @ 0 Hz\nRecording audio fault: program/master PCM is present but the active recording has no audio samples.",
+  "triageLines": [
+    "Runtime: Native media core (running)",
+    "Program scene: panel; render plan: idle:0:1492",
+    "Video source: native-frame; subscribed 0; delivered 0; stale 0",
+    "Output warnings: 10",
+    "Audio diagnostics: warning; categories: low-level; warnings: 6",
+    "Audio validation incomplete: master bus has PCM but the recording writer has not accepted audio yet.",
+    "Audio validation checklist: CAPTURE ok 36468480f | PGM ok 480f | MON ok 4965120f | STREAM idle | RECORD wait writer",
+    "First audio block: RECORD wait writer.",
+    "Full audio chain incomplete: stream, recording not yet proven.",
+    "Audio capture: 1/1 streaming; PCM 36468480; master 480; stream 480; MON 480; monitor played 4965120",
+    "Recording audio proof: packets 0; samples 0; 0 ch @ 0 Hz",
+    "Recording audio fault: program/master PCM is present but the active recording has no audio samples."
+  ],
+  "outputs": [
+    {
+      "id": "ndi",
+      "name": "NDI",
+      "protocol": "ndi",
+      "enabled": true,
+      "active": false,
+      "resolution": "1920x1080",
+      "fps": "60",
+      "codec": "h264",
+      "encoderMode": "auto",
+      "targetBitrateMbps": 8.2,
+      "endpoint": "CoreVideo Pro Program",
+      "streamKey": "absent"
+    },
+    {
+      "id": "recording",
+      "name": "Recording",
+      "protocol": "file",
+      "enabled": true,
+      "active": true,
+      "resolution": "1920x1080",
+      "fps": "60",
+      "codec": "h264",
+      "targetBitrateMbps": 8.2,
+      "format": "mp4",
+      "quality": "high",
+      "endpoint": "Recordings/CoreVideo Pro",
+      "streamKey": "absent"
+    }
+  ],
+  "mediaCore": {
+    "sceneId": "panel",
+    "renderPlanId": "idle:0:1492",
+    "source": {
+      "adapterId": "synthetic-core",
+      "kind": "zoom-sdk",
+      "status": "idle",
+      "subscribedSourceCount": 0,
+      "deliveredFrameCount": 0,
+      "liveFrameCount": 0,
+      "staleFrameCount": 0,
+      "backing": "native-frame",
+      "droppedFrameCount": 0,
+      "lowResolutionFrameCount": 0
+    },
+    "compositor": {
+      "status": "live",
+      "programFrameCount": 35455,
+      "droppedFrameCount": 0,
+      "degradedFrameCount": 0
+    },
+    "transport": {
+      "status": "publishing",
+      "frameNumber": 35455,
+      "latencyMs": 0
+    },
+    "encoder": {
+      "status": "warning",
+      "lifecycle": "encoding",
+      "targetCount": 1
+    },
+    "audio": {
+      "status": "warning",
+      "masterLevel": 35,
+      "loudnessLufs": -16,
+      "limiterActive": false,
+      "mixedFrameCount": 61403,
+      "monitorEnabled": true,
+      "monitorStatus": "playing",
+      "monitorDeviceName": "Game (TC-HELICON GoXLR)",
+      "monitorFramesPlayed": 4965120,
+      "participantCount": 6,
+      "mutedParticipantCount": 0,
+      "boostedParticipantCount": 0,
+      "duckedParticipantCount": 0,
+      "limitedParticipantCount": 0,
+      "lowLevelParticipantCount": 1,
+      "peakOutputLevel": 27,
+      "warningCount": 6,
+      "warningCategories": [
+        "low-level"
+      ],
+      "warnings": [
+        "VST inserts are configured but live third-party plugin processing requires the dev VST bridge.",
+        "No native PCM has been mixed for 101; meters are held at silence for that channel.",
+        "No native PCM has been mixed for 102; meters are held at silence for that channel.",
+        "No native PCM has been mixed for 103; meters are held at silence for that channel.",
+        "No native PCM has been mixed for 104; meters are held at silence for that channel.",
+        "No native PCM has been mixed for media; meters are held at silence for that channel."
+      ],
+      "validationChecklist": [
+        "CAPTURE ok 36468480f",
+        "PGM ok 480f",
+        "MON ok 4965120f",
+        "STREAM idle",
+        "RECORD wait writer"
+      ],
+      "validationSummary": "Audio validation incomplete: master bus has PCM but the recording writer has not accepted audio yet.",
+      "validationFirstIssue": "First audio block: RECORD wait writer.",
+      "fullChainValidationSummary": "Full audio chain incomplete: stream, recording not yet proven.",
+      "routing": {
+        "status": "live",
+        "routedSendCount": 13,
+        "routedSourceCount": 3,
+        "programTapFrames": 480,
+        "busTaps": [
+          {
+            "busId": "master",
+            "channels": 2,
+            "frames": 480,
+            "peakDbfs": -19.1736,
+            "rmsDbfs": -29.7147
+          },
+          {
+            "busId": "mon",
+            "channels": 2,
+            "frames": 480,
+            "peakDbfs": -19.1736,
+            "rmsDbfs": -29.7147
+          },
+          {
+            "busId": "pgm-l",
+            "channels": 2,
+            "frames": 480,
+            "peakDbfs": -19.1736,
+            "rmsDbfs": -29.7147
+          },
+          {
+            "busId": "pgm-r",
+            "channels": 2,
+            "frames": 480,
+            "peakDbfs": -19.1736,
+            "rmsDbfs": -29.7147
+          },
+          {
+            "busId": "stream",
+            "channels": 2,
+            "frames": 480,
+            "peakDbfs": -19.1736,
+            "rmsDbfs": -29.7147
+          }
+        ],
+        "warnings": []
+      },
+      "capture": {
+        "status": "ready",
+        "sourceCount": 1,
+        "pairedCount": 1,
+        "streamingCount": 1,
+        "captureFramesReceived": 36468480,
+        "routedMasterFrames": 480,
+        "routedStreamFrames": 480,
+        "routedMonitorFrames": 480,
+        "fallbackMonitorFrames": 0,
+        "monitorFramesPlayed": 4965120,
+        "sources": [
+          {
+            "captureDeviceId": "local-machine-audio",
+            "sourceId": "local-machine-audio",
+            "audioDeviceId": "default-render-loopback",
+            "audioDeviceName": "Default system output - System loopback - WASAPI loopback - Default",
+            "audioSourceKind": "wasapi-loopback",
+            "nativeAudioDeviceId": "default-render",
+            "audioDriverName": "WASAPI loopback",
+            "embedded": false,
+            "audioSyncOffsetMs": 0,
+            "paired": true,
+            "captureStreaming": true,
+            "captureFramesReceived": 36468480,
+            "captureFramesRendered": 36468480,
+            "captureQueuedFrames": 48000,
+            "captureUnderrunCount": 14473,
+            "emptyPacketPolls": 1,
+            "captureStartedAtMs": 18859146,
+            "captureLastFrameAtMs": 19618889,
+            "captureLastFrameAgeMs": 6,
+            "captureStoppedAtMs": 0,
+            "captureSampleRate": 48000,
+            "captureChannels": 2,
+            "peakDbfs": -24.7504,
+            "rmsDbfs": -35.0899,
+            "signalPresent": true,
+            "endpointId": "{0.0.0.00000000}.{e05ed7eb-60cc-4d05-82f9-341ed8b4e6b4}",
+            "endpointName": "Game (TC-HELICON GoXLR)",
+            "lastError": "",
+            "warning": ""
+          }
+        ],
+        "warnings": []
+      }
+    },
+    "senders": {
+      "status": "idle",
+      "activeSenderCount": 0,
+      "destinations": []
+    },
+    "recording": {
+      "status": "recording",
+      "writerStatus": "writing",
+      "totalFramesWritten": 186,
+      "totalDroppedFrames": 0,
+      "estimatedDiskRateMBps": 4.99,
+      "proof": {
+        "audioPacketsObserved": 0,
+        "audioPresent": false,
+        "audioSampleCount": 0,
+        "audioChannels": 0,
+        "audioSampleRate": 0,
+        "metadataValid": true,
+        "containerFormat": "mp4",
+        "audioCodec": "aac",
+        "audioBitrateKbps": 192,
+        "targetBitrateMbps": 8
+      },
+      "streams": [
+        {
+          "kind": "program",
+          "status": "writing",
+          "framesWritten": 186,
+          "droppedFrames": 0,
+          "bytesWritten": 48360000
+        }
+      ]
+    },
+    "operatorActions": [],
+    "eventLog": [],
+    "warnings": [
+      "Recording artifact: Recordings/CoreVideo Pro\\corevideo-recording-program-1783043129614.mp4",
+      "COREVIDEO dev adapter media path active",
+      "GPU compositor active: d3d11",
+      "Hardware encoder active: media-foundation",
+      "VST inserts are configured but live third-party plugin processing requires the dev VST bridge.",
+      "No native PCM has been mixed for 101; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 102; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 103; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 104; meters are held at silence for that channel.",
+      "No native PCM has been mixed for media; meters are held at silence for that channel."
+    ]
+  },
+  "runtime": {
+    "status": "running",
+    "label": "Native media core",
+    "host": "JOHN4090",
+    "platform": "winui-desktop",
+    "restartCount": 0,
+    "recovering": false,
+    "warnings": [
+      "Recording artifact: Recordings/CoreVideo Pro\\corevideo-recording-program-1783043129614.mp4",
+      "COREVIDEO dev adapter media path active",
+      "GPU compositor active: d3d11",
+      "Hardware encoder active: media-foundation",
+      "VST inserts are configured but live third-party plugin processing requires the dev VST bridge.",
+      "No native PCM has been mixed for 101; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 102; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 103; meters are held at silence for that channel.",
+      "No native PCM has been mixed for 104; meters are held at silence for that channel.",
+      "No native PCM has been mixed for media; meters are held at silence for that channel."
+    ]
+  },
+  "warnings": [
+    "Recording artifact: Recordings/CoreVideo Pro\\corevideo-recording-program-1783043129614.mp4",
+    "COREVIDEO dev adapter media path active",
+    "GPU compositor active: d3d11",
+    "Hardware encoder active: media-foundation",
+    "VST inserts are configured but live third-party plugin processing requires the dev VST bridge.",
+    "No native PCM has been mixed for 101; meters are held at silence for that channel.",
+    "No native PCM has been mixed for 102; meters are held at silence for that channel.",
+    "No native PCM has been mixed for 103; meters are held at silence for that channel.",
+    "No native PCM has been mixed for 104; meters are held at silence for that channel.",
+    "No native PCM has been mixed for media; meters are held at silence for that channel."
+  ]
+}

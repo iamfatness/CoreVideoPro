@@ -501,22 +501,22 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     }
     std::string error;
     if (!program_.audioConfigured()) {
-      if (!program_.ensureAudioStream(channels, sampleRate, request_.audioBitrateKbps, error)) {
-        setRecordingFailure("Media Foundation could not add program AAC stream", error);
-        return;
+      // The audio stream is configured up front in openRecordingWriters (it
+      // cannot be added after BeginWriting); if it is missing here the open
+      // already failed and surfaced a recording failure.
+      return;
+    }
+    if (channels != program_.audioChannels() || sampleRate != program_.audioSampleRate()) {
+      // Defensive: the program tap is canonically 48kHz stereo. Drop mismatched
+      // buffers (with a visible warning) rather than mux garbage or kill the
+      // whole recording session.
+      if (session_.recordingWarning.empty()) {
+        session_.recordingWarning =
+            "Program audio format " + std::to_string(sampleRate) + "Hz/" + std::to_string(channels) +
+            "ch does not match the recording AAC stream (" + std::to_string(program_.audioSampleRate()) +
+            "Hz/" + std::to_string(program_.audioChannels()) + "ch); dropping audio buffers.";
       }
-      for (auto& iso : isoWriters_) {
-        iso.ensureAudioStream(channels, sampleRate, request_.audioBitrateKbps, error);
-      }
-      // Both video and audio streams are now configured; (re)begin writing.
-      if (!program_.beginWriting(error)) {
-        setRecordingFailure("Media Foundation could not begin writing", error);
-        return;
-      }
-      for (auto& iso : isoWriters_) {
-        iso.beginWriting(error);
-      }
-      session_.recordingAudioCodec = "aac";
+      return;
     }
 
     // Down/area-mix to the program writer's channel count is handled by MF's PCM
@@ -528,11 +528,28 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingAudioChannels = program_.audioChannels();
       session_.recordingAudioSampleRate = program_.audioSampleRate();
       session_.recordingAudioBitrateKbps = program_.audioBitrateKbps();
+    } else if (session_.recordingWarning.empty() && !error.empty()) {
+      // A failed audio WriteSample used to vanish silently (video kept muxing,
+      // the finalized MP4 just had no AAC track and nothing was surfaced).
+      // Keep the recording alive but make the drop visible.
+      session_.recordingWarning = "Media Foundation dropped program audio: " + error + ".";
     }
     for (auto& iso : isoWriters_) {
       iso.writeAudio(interleaved, frameCount, error);
     }
     updateBytesWritten();
+  }
+
+  void stopRecording() override {
+    // Finalize the program + ISO writers so the MP4s gain their moov box and
+    // are playable immediately. closeWriters() also refreshes
+    // recordingBytesWritten from the finalized on-disk size. Subsequent
+    // submit/submitAudio calls fall through safely (program_.writing() is
+    // false), and the next start() reopens fresh writers.
+    closeWriters();
+    if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning") {
+      session_.recordingStatus = "stopped";
+    }
   }
 
   OutputSession session() const override { return session_; }
@@ -578,8 +595,24 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       }
     }
 
-    // Begin writing now so program video flows even before the first audio tick;
-    // the audio stream is added lazily and BeginWriting re-runs are guarded.
+    // Configure the AAC audio stream UP FRONT. The MF sink writer rejects
+    // AddStream after BeginWriting with MF_E_INVALIDREQUEST (0xC00D36B2), so the
+    // previous "add the audio stream lazily on first audio" flow killed every
+    // recording ~1 second in as soon as real program audio arrived (found by the
+    // 2026-07-02 alpha soak: 10-min recording produced a 1-frame MP4 with
+    // "could not add program AAC stream: 0xC00D36B2"). The program audio tap is
+    // canonically 48kHz stereo; submitAudio drops mismatched formats with a
+    // warning instead of failing the session.
+    if (!program_.ensureAudioStream(2, 48000, request_.audioBitrateKbps, error)) {
+      setRecordingFailure("Media Foundation could not add program AAC stream", error);
+      return;
+    }
+    for (auto& iso : isoWriters_) {
+      std::string isoError;
+      iso.ensureAudioStream(2, 48000, request_.audioBitrateKbps, isoError);
+    }
+
+    // Begin writing only after BOTH streams are configured.
     if (!program_.beginWriting(error)) {
       setRecordingFailure("Media Foundation could not begin program writing", error);
       return;
