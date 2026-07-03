@@ -535,6 +535,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     updateBytesWritten();
   }
 
+  void stopRecording() override {
+    // Finalize the program + ISO writers so the MP4s gain their moov box and
+    // are playable immediately. closeWriters() also refreshes
+    // recordingBytesWritten from the finalized on-disk size. Subsequent
+    // submit/submitAudio calls fall through safely (program_.writing() is
+    // false), and the next start() reopens fresh writers.
+    closeWriters();
+    if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning") {
+      session_.recordingStatus = "stopped";
+    }
+  }
+
   OutputSession session() const override { return session_; }
 
  private:

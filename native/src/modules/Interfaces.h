@@ -570,6 +570,14 @@ class IEncoderSink {
     (void)channels;
     (void)sampleRate;
   }
+  // Finalize any open recording container(s) — moov write + writer close — so
+  // the artifact on disk is playable the moment the operator stops recording,
+  // WITHOUT tearing down the encoder session (streaming destinations keep
+  // running). Before this seam existed the MP4 was only finalized by the sink
+  // destructor (process exit) or the next start(), leaving a stopped recording
+  // unplayable while the app kept running. Default no-op keeps sinks without
+  // recording writers valid.
+  virtual void stopRecording() {}
   virtual OutputSession session() const = 0;
 };
 
