@@ -93,7 +93,7 @@ public sealed class OscControlRoutingTests
         var byAddress = messages.ToDictionary(m => m.Address, m => m.Args);
 
         Assert.Equal(1, byAddress["/cvp/state/recording"][0]);
-        Assert.Equal("interview", byAddress["/cvp/state/activeScene"][0]);
+        Assert.Equal("interview", byAddress["/cvp/state/activeSceneId"][0]);
         Assert.Equal(6, byAddress["/cvp/state/multiviewTileCount"][0]);
         Assert.Equal(0.5f, byAddress["/cvp/state/audioMonitorVolume"][0]);
         Assert.Equal(1, byAddress["/cvp/state/input/1/inShow"][0]);
