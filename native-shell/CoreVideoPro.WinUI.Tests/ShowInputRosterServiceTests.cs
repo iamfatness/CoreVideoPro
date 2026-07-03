@@ -7,6 +7,74 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputRosterServiceTests
 {
     [Fact]
+    public void SwapSlotAssignments_SwapsFullContentAcrossKinds()
+    {
+        // Zoom participant <-> UVC capture: Kind's clearing setter must not eat the ids.
+        var zoomSlot = new ShowInputSlot { SlotNumber = 1 };
+        zoomSlot.Kind = ShowInputKind.ZoomParticipant;
+        zoomSlot.ParticipantId = "guest-42";
+        zoomSlot.InShow = true;
+
+        var uvcSlot = new ShowInputSlot { SlotNumber = 2 };
+        uvcSlot.Kind = ShowInputKind.UvcWebcam;
+        uvcSlot.CaptureDeviceId = "cam-hd60";
+        uvcSlot.AudioDeviceId = "mic-1";
+        uvcSlot.InShow = false;
+
+        ShowInputRosterService.SwapSlotAssignments(zoomSlot, uvcSlot);
+
+        Assert.Equal(1, zoomSlot.SlotNumber); // slot numbers never move — content does
+        Assert.Equal(ShowInputKind.UvcWebcam, zoomSlot.Kind);
+        Assert.Equal("cam-hd60", zoomSlot.CaptureDeviceId);
+        Assert.Equal("mic-1", zoomSlot.AudioDeviceId);
+        Assert.Null(zoomSlot.ParticipantId);
+        Assert.False(zoomSlot.InShow);
+
+        Assert.Equal(2, uvcSlot.SlotNumber);
+        Assert.Equal(ShowInputKind.ZoomParticipant, uvcSlot.Kind);
+        Assert.Equal("guest-42", uvcSlot.ParticipantId);
+        Assert.Null(uvcSlot.CaptureDeviceId);
+        Assert.Null(uvcSlot.AudioDeviceId);
+        Assert.True(uvcSlot.InShow);
+    }
+
+    [Fact]
+    public void SwapSlotAssignments_AssignedWithUnassignedMovesTheAssignment()
+    {
+        var assigned = new ShowInputSlot { SlotNumber = 3 };
+        assigned.Kind = ShowInputKind.ZoomParticipant;
+        assigned.ParticipantId = "guest-7";
+        assigned.InShow = true;
+
+        var empty = new ShowInputSlot { SlotNumber = 4 };
+
+        ShowInputRosterService.SwapSlotAssignments(assigned, empty);
+
+        Assert.Equal(ShowInputKind.Unassigned, assigned.Kind);
+        Assert.Null(assigned.ParticipantId);
+        Assert.False(assigned.InShow);
+
+        Assert.Equal(ShowInputKind.ZoomParticipant, empty.Kind);
+        Assert.Equal("guest-7", empty.ParticipantId);
+        Assert.True(empty.InShow);
+    }
+
+    [Fact]
+    public void SwapSlotAssignments_SameSlotIsANoOp()
+    {
+        var slot = new ShowInputSlot { SlotNumber = 5 };
+        slot.Kind = ShowInputKind.UvcWebcam;
+        slot.CaptureDeviceId = "cam-a";
+        slot.InShow = true;
+
+        ShowInputRosterService.SwapSlotAssignments(slot, slot);
+
+        Assert.Equal(ShowInputKind.UvcWebcam, slot.Kind);
+        Assert.Equal("cam-a", slot.CaptureDeviceId);
+        Assert.True(slot.InShow);
+    }
+
+    [Fact]
     public void CaptureDeviceFormatLabel_StaysPendingUntilRealFramesArrive()
     {
         var device = Device("cam-uvc", "USB Capture", "uvc", 0, 0, 0);

@@ -422,11 +422,11 @@
                 </Grid>
             </Border>
 
-            <!-- Unified multiviewer: ONE core-composited surface (large PGM + PVW cells plus the
-                 source-feed tiles, tally, meters and clock) — the ATEM/Riedel-style single
-                 multiviewer, not separate big monitors + a duplicate source strip. The pgmPvw
-                 layout mode makes the core draw the PGM/PVW cells; the ShowMultiviewHost is the
-                 proven single-swap-chain surface, so this also removes two per-monitor swap chains. -->
+            <!-- Studio center: the unified MULTIVIEWER — ONE core-composited surface that ALWAYS
+                 shows the PROGRAM + PREVIEW cells (top, red/green tally) and every enabled Show Input
+                 source tile (below), pgmPvwTop layout. No overlapping dedicated surfaces (which caused
+                 SwapChainPanel opacity bleed-through). Poppable to its own window for a second display;
+                 a dedicated Program/Preview view is also available as its own pop-out. -->
             <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -441,7 +441,10 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
+
                         <TextBlock Text="MULTIVIEWER" FontWeight="Bold" FontSize="12"
                                    VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioTextBrush}" />
@@ -452,7 +455,25 @@
                         <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
                                    FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"
                                    Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
-                        <Button Grid.Column="3" Style="{StaticResource SceneBuilderCalloutButton}"
+                        <Button Grid.Column="3" Style="{StaticResource GhostButton}"
+                                Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                Command="{x:Bind ViewModel.PopOutProgramPreviewCommand}"
+                                ToolTipService.ToolTip="Pop a dedicated Program/Preview view out to its own window">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE7F4;" FontSize="11" />
+                                <TextBlock Text="P/P out" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="4" Style="{StaticResource GhostButton}"
+                                Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                Command="{x:Bind ViewModel.PopOutMultiviewCommand}"
+                                ToolTipService.ToolTip="Pop the multiviewer out to its own window (drag to a second display)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8A7;" FontSize="11" />
+                                <TextBlock Text="Pop out" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="5" Style="{StaticResource SceneBuilderCalloutButton}"
                                 Padding="10,4" FontSize="10" VerticalAlignment="Center"
                                 Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
@@ -460,7 +481,7 @@
                                 <TextBlock Text="Scene builder" />
                             </StackPanel>
                         </Button>
-                        <Button Grid.Column="4" Style="{StaticResource GhostButton}"
+                        <Button Grid.Column="6" Style="{StaticResource GhostButton}"
                                 MinWidth="74"
                                 Padding="8,4"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
@@ -479,16 +500,35 @@
                 </Border>
 
                 <Border Grid.Row="1" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
-                    <cvcontrols:ShowMultiviewHost
-                        Surface="{x:Bind ViewModel.MultiviewSurface, Mode=OneWay}"
-                        TileRects="{x:Bind ViewModel.MultiviewTileRects, Mode=OneWay}"
-                        TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}"
-                        ShowLabels="{x:Bind ViewModel.MultiviewShowLabels, Mode=OneWay}"
-                        ShowTally="{x:Bind ViewModel.MultiviewShowTally, Mode=OneWay}"
-                        ShowMeters="{x:Bind ViewModel.MultiviewShowMeters, Mode=OneWay}"
-                        ShowClock="{x:Bind ViewModel.MultiviewShowClock, Mode=OneWay}"
-                        MeterLevelLeft="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
-                        MeterLevelRight="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}" />
+                    <Grid>
+                        <!-- Surface is null while popped out (single-consumer keyed-mutex texture),
+                             so only the pop-out window presents it. -->
+                        <cvcontrols:ShowMultiviewHost
+                            Surface="{x:Bind ViewModel.StudioMultiviewSurface, Mode=OneWay}"
+                            TileRects="{x:Bind ViewModel.MultiviewTileRects, Mode=OneWay}"
+                            TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}"
+                            TileSwapCommand="{x:Bind ViewModel.SwapMultiviewTilesCommand}"
+                            ShowLabels="{x:Bind ViewModel.MultiviewShowLabels, Mode=OneWay}"
+                            ShowTally="{x:Bind ViewModel.MultiviewShowTally, Mode=OneWay}"
+                            ShowMeters="{x:Bind ViewModel.MultiviewShowMeters, Mode=OneWay}"
+                            ShowClock="{x:Bind ViewModel.MultiviewShowClock, Mode=OneWay}"
+                            MeterLevelLeft="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                            MeterLevelRight="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}" />
+
+                        <!-- Placeholder shown while the multiviewer is popped out to its own window. -->
+                        <Border Background="#0C1118" CornerRadius="6"
+                                Visibility="{x:Bind ViewModel.MultiviewPoppedOutVisibility, Mode=OneWay}">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12">
+                                <FontIcon Glyph="&#xE8A7;" FontSize="28" Foreground="{StaticResource StudioMutedBrush}" />
+                                <TextBlock Text="Multiviewer popped out to its own window"
+                                           FontSize="13" HorizontalAlignment="Center"
+                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                <Button Content="Pop in" Padding="14,6" HorizontalAlignment="Center"
+                                        Style="{StaticResource GhostButton}"
+                                        Command="{x:Bind ViewModel.PopInMultiviewCommand}" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                 </Border>
             </Grid>
 

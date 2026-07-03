@@ -29,6 +29,10 @@
              reach the click buttons underneath. Each element is gated by its own toggle. -->
         <Canvas x:Name="DecorOverlay" IsHitTestVisible="False" />
 
+        <!-- Transient drag-drop visuals (reorder ghost + drop-target highlight). Hit-test
+             transparent; populated only during an active tile drag. -->
+        <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
+
         <!-- Digital clock (HH:MM:SS), top-right corner of the whole multiview. Toggle-gated. -->
         <Border x:Name="ClockChrome"
                 HorizontalAlignment="Right"

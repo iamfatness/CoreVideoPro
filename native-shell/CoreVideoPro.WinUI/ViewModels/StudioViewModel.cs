@@ -41,6 +41,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly string _currentRoomId;
     private readonly string _currentRoomName;
     private AudioMixerWindow? _audioMixerWindow;
+    private MultiviewPopoutWindow? _multiviewPopoutWindow;
+    private ProgramPreviewPopoutWindow? _programPreviewPopoutWindow;
     private ProductionSettingsWindow? _productionSettingsWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
@@ -284,6 +286,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private IReadOnlyList<CoreVideoPro.MediaCore.Models.MultiviewTile> _multiviewTileRects = [];
+
+    // Pop-out: the multiviewer is a SINGLE-consumer keyed-mutex GPU texture, so when it is
+    // popped out to its own window the main view must UNBIND it (present null) — only the pop-out
+    // window may present it, or the texture wedges (the old preview-freeze/CoreMessagingXP class).
+    [ObservableProperty]
+    private bool _multiviewPoppedOut;
+
+    // The surface the MAIN Studio multiviewer presents: null while popped out.
+    public VideoSurfaceState? StudioMultiviewSurface => MultiviewPoppedOut ? null : MultiviewSurface;
+
+    public Microsoft.UI.Xaml.Visibility MultiviewPoppedOutVisibility =>
+        MultiviewPoppedOut ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+
+    partial void OnMultiviewSurfaceChanged(VideoSurfaceState value) =>
+        OnPropertyChanged(nameof(StudioMultiviewSurface));
+
+    partial void OnMultiviewPoppedOutChanged(bool value)
+    {
+        OnPropertyChanged(nameof(StudioMultiviewSurface));
+        OnPropertyChanged(nameof(MultiviewPoppedOutVisibility));
+    }
 
     public ObservableCollection<ShowInputSlot> ShowInputs { get; } =
         new(ShowInputRosterService.CreateDefaultSlots());
@@ -1509,11 +1532,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // Multiviewer preferences: layout mode + tile count + overlay toggles. On any change, clamp,
     // persist, and (debounced) push a configure-multiviewer command to the core.
     // The Studio center IS the unified multiviewer, so it defaults to a Program/Preview
-    // layout (large PGM + PVW cells over the source-feed tiles) rather than a bare source grid.
-    public const string DefaultMultiviewLayoutMode = "pgmPvwLarge";
-    public const int DefaultMultiviewTileCount = 8;
+    // layout (PGM + PVW cells on top over the source-feed tiles) rather than a bare source grid,
+    // so it ALWAYS shows Preview/Program plus the enabled sources.
+    public const string DefaultMultiviewLayoutMode = "pgmPvwTop";
+    // Tile capacity matches the 10 Show Input slots (ShowInputRosterService.MaxMultiviewBoxes),
+    // so every enabled input can be on the wall at once.
+    public const int DefaultMultiviewTileCount = 10;
     public const int MinMultiviewTileCount = 1;
-    public const int MaxMultiviewTileCount = 8;
+    public const int MaxMultiviewTileCount = 10;
 
     public static int ClampMultiviewTileCount(int value) =>
         Math.Clamp(value, MinMultiviewTileCount, MaxMultiviewTileCount);
@@ -2282,11 +2308,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         routes.Clear();
         routes.Add(BuildSoloRoute(scene.Id, tile));
 
+        var previousPreviewSceneId = PreviewSceneId;
         PreviewSceneId = scene.Id;
+        if (string.Equals(previousPreviewSceneId, scene.Id, StringComparison.Ordinal) && _bridge.Running)
+        {
+            // Re-cue into the SAME solo scene (program isn't on a solo scene, so every click
+            // reuses one id): only the ROUTES changed, the PreviewSceneId setter no-oped, and
+            // the core sync fires only on a scene-id change — so push the route change
+            // explicitly or the PREVIEW bus keeps compositing the previous source.
+            _ = SyncPreviewSceneChangeAsync();
+        }
+
         OnPropertyChanged(nameof(PreviewSceneSummary));
         OnPropertyChanged(nameof(SceneRailDisplaySummary));
         CommandStatus = $"{tile.Participant.Name} queued as manual one-up preview";
         SchedulePreviewRoutingRefresh();
+    }
+
+    // Multiviewer drag-drop reorder: dragging one source tile onto another swaps the two Show
+    // Input SLOT ASSIGNMENTS (the wall order IS the slot order), then the normal show-input
+    // change path re-syncs the core layout, persistence, and the overlay tile rects.
+    [RelayCommand]
+    private void SwapMultiviewTiles(MultiviewTileSwapRequest? request)
+    {
+        if (request is null || request.FromSlot == request.ToSlot)
+        {
+            return;
+        }
+
+        var from = ShowInputs.FirstOrDefault(slot => slot.SlotNumber == request.FromSlot);
+        var to = ShowInputs.FirstOrDefault(slot => slot.SlotNumber == request.ToSlot);
+        if (from is null || to is null)
+        {
+            return;
+        }
+
+        ShowInputRosterService.SwapSlotAssignments(from, to);
+        // One line per operator gesture — cheap, and invaluable when reconstructing a show.
+        LaunchLog.Write($"mv-drag: swapped slot{request.FromSlot}<->slot{request.ToSlot} " +
+            $"now slot{from.SlotNumber}={from.Kind}/{from.CaptureDeviceId}{from.ParticipantId} slot{to.SlotNumber}={to.Kind}/{to.CaptureDeviceId}{to.ParticipantId}");
+        CommandStatus = $"Inputs {request.FromSlot} and {request.ToSlot} swapped on the multiviewer.";
     }
 
     public bool CanTake => PreviewSceneId != ActiveSceneId;
@@ -3377,6 +3438,111 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             _audioMixerWindow.WindowClosed -= OnAudioMixerWindowClosed;
             _audioMixerWindow = null;
+        }
+    }
+
+    // Pop the multiviewer out to its own window (drag it to a second display). The MAIN view
+    // unbinds the shared texture (StudioMultiviewSurface → null) so only the pop-out presents it.
+    [RelayCommand]
+    private void PopOutMultiview()
+    {
+        try
+        {
+            if (_multiviewPopoutWindow is not null)
+            {
+                _multiviewPopoutWindow.Activate();
+                return;
+            }
+
+            MultiviewPoppedOut = true;  // release the texture from the main view FIRST
+            _multiviewPopoutWindow = new MultiviewPopoutWindow(this);
+            _multiviewPopoutWindow.WindowClosed += OnMultiviewPopoutWindowClosed;
+            _multiviewPopoutWindow.Activate();
+            CommandStatus = "Multiviewer popped out.";
+        }
+        catch (Exception ex)
+        {
+            MultiviewPoppedOut = false;
+            if (_multiviewPopoutWindow is not null)
+            {
+                _multiviewPopoutWindow.WindowClosed -= OnMultiviewPopoutWindowClosed;
+                _multiviewPopoutWindow = null;
+            }
+
+            CommandStatus = $"Could not pop out the multiviewer: {ex.Message}";
+        }
+    }
+
+    // Bring the multiviewer back into the main window (also invoked when the pop-out is closed).
+    [RelayCommand]
+    private void PopInMultiview()
+    {
+        if (_multiviewPopoutWindow is not null)
+        {
+            var window = _multiviewPopoutWindow;
+            _multiviewPopoutWindow = null;
+            window.WindowClosed -= OnMultiviewPopoutWindowClosed;
+            try
+            {
+                window.Close();
+            }
+            catch
+            {
+                // best effort
+            }
+        }
+
+        MultiviewPoppedOut = false;  // re-bind the texture to the main view LAST
+    }
+
+    private void OnMultiviewPopoutWindowClosed(object? sender, EventArgs e)
+    {
+        if (_multiviewPopoutWindow is not null)
+        {
+            _multiviewPopoutWindow.WindowClosed -= OnMultiviewPopoutWindowClosed;
+            _multiviewPopoutWindow = null;
+        }
+
+        MultiviewPoppedOut = false;
+    }
+
+    // Pop out a dedicated large PROGRAM + PREVIEW view to its own window. It presents the core's
+    // dedicated program/preview shared textures (ProgramSurface/PreviewSurface) — SEPARATE textures
+    // from the multiview wall, so both can present at once (no unbind needed, unlike the multiview).
+    [RelayCommand]
+    private void PopOutProgramPreview()
+    {
+        try
+        {
+            if (_programPreviewPopoutWindow is not null)
+            {
+                _programPreviewPopoutWindow.Activate();
+                return;
+            }
+
+            _programPreviewPopoutWindow = new ProgramPreviewPopoutWindow(this);
+            _programPreviewPopoutWindow.WindowClosed += OnProgramPreviewPopoutWindowClosed;
+            _programPreviewPopoutWindow.Activate();
+            CommandStatus = "Program/Preview popped out.";
+        }
+        catch (Exception ex)
+        {
+            if (_programPreviewPopoutWindow is not null)
+            {
+                _programPreviewPopoutWindow.WindowClosed -= OnProgramPreviewPopoutWindowClosed;
+                _programPreviewPopoutWindow = null;
+            }
+
+            CommandStatus = $"Could not pop out Program/Preview: {ex.Message}";
+        }
+    }
+
+    private void OnProgramPreviewPopoutWindowClosed(object? sender, EventArgs e)
+    {
+        if (_programPreviewPopoutWindow is not null)
+        {
+            _programPreviewPopoutWindow.WindowClosed -= OnProgramPreviewPopoutWindowClosed;
+            _programPreviewPopoutWindow = null;
         }
     }
 
