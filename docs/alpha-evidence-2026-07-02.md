@@ -102,7 +102,64 @@ worst-case ambient-load soak; CPU samples in
 `artifacts/alpha-evidence/soak-cpu-samples.csv`. The app window is occluded the
 whole time (screenshots via PrintWindow; UIA driven without stealing focus).
 
-_(results appended after the window closes)_
+**Result: RAN FULL WINDOW, NO CRASH — but the audio-glitch-freedom gate FAILS
+under adversarial GPU load.** Window: 21:45:29 (`start-recording-session`) →
+21:56:04 (10m35s). During the window the operator was playing **Overwatch**
+fullscreen (GPU saturated) — treat this as a worst-case co-load run, not a
+clean-rig gate.
+
+- **Render thread (video): healthy and decoupled.** 133 `[render]` samples over
+  the window: fps min/avg/max **30.1 / 39.2 / 44.2**, lockWait min/avg/max
+  **0 / 0.65 / 10.7 ms**, render-ms min/avg/max **21.2 / 24.9 / 28.2**. The fps
+  ceiling is pure GPU contention with the game (render span ~25ms); the near-zero
+  lockWait proves the Phase 2 render/audio lock decoupling behaves as designed.
+- **Zero crash events.** `Get-WinEvent` Application Id 1000 from 21:20 onward:
+  none for CoreVideoPro/corevideo-native (or anything else). No CoreMessagingXP
+  0xc000027b fail-fast despite 10+ min of roster 3↔4 churn + active-speaker
+  rotation + occluded-window operation.
+- **Audio/output worker collapse (gate FAIL):** `[audioOut]` cadence degraded
+  from 47.3 ticks/s @ 3.0ms work (idle, 21:26) → 9.3/104.6ms (21:43, capture+zoom
+  audio) → 3.7/271ms (21:45, recording armed) → **0.7/1411.6ms (21:48)** →
+  **0.6/1666.3ms (21:51)**. Monitor underruns reached **14,473** (launch.log
+  audio telemetry). At 0.6 ticks/s the monitor device is fed every ~1.6s —
+  continuous audible glitching is certain; "ears on the monitor" is moot at this
+  load. The long work span lives in the worker's DSP/device/encoder/output span
+  (`renderAudioOutputTick` work phase), i.e. `encoder->submit` + monitor render
+  under total-system CPU/GPU starvation.
+- **Bridge TIMEOUT storm (gate FAIL):** from 21:49:28 every request type
+  (`ping`, `media-core-sync`, `zoom-media-spine-sync`) timed out at 4000ms
+  continuously; `[req]` telemetry shows **queueWait growing to ~174,000ms**
+  (~3min of queued commands) with small lockWait (≤1s) and small handle times —
+  the single command thread's drain rate collapsed below the ~7 req/s arrival
+  rate under CPU starvation. Empty-poll de-serialization (Phase 2 increment 2)
+  can't help because ALL requests serialize through the one `inQ` behind
+  lock-taking pings.
+- **OPERATIONAL P0: the operator could not stop the recording.** The Record
+  toggle was clicked at 21:56:05; the `stop-recording-session` command was still
+  stuck behind the queue 3+ minutes later. Compounding it,
+  `MediaCoreSupervisor.TeardownChild` closes stdin then immediately
+  `Kill(entireProcessTree)` — so quitting the app would hard-kill the core with
+  no finalize grace, orphaning the (already-starved) recording. Under overload
+  there is NO path for the operator to cleanly land a recording.
+- **Recording artifact starved:** the active MP4 stayed at 12,161 bytes on disk
+  for the whole window (encoder submits ~0.6fps on the collapsed worker; MF sink
+  writes buffered). ffprobe results appended below once the stop lands.
+- **CPU samples** (`soak-cpu-samples.csv`): total CPU 30–45% across the window —
+  total CPU was NOT saturated; the collapse is GPU contention (encode + game) +
+  scheduling starvation of the core's worker/command threads, not raw CPU
+  exhaustion.
+
+**Verdict for `docs/phase2-threading-plan.md` §6:** the soak executed end-to-end
+with zero fail-fast/crash (churn-crash class stays closed), but the gate's
+"audio meters live + glitch-free, 0 TIMEOUTs" criteria FAIL under a fullscreen
+game co-load. Bottleneck ranking for the fix: (1) `encoder->submit`/monitor span
+must be budgeted/shed (drop-to-latest already exists for output; encode needs
+it too), (2) command-loop drain needs priority/fairness independent of system
+load (Phase 2 increments 3+6 remain open), (3) recording stop must be a
+priority-lane control command, and app quit needs a bounded finalize grace
+instead of stdin-close-then-kill. A clean-rig re-run is required for the formal
+gate PASS — logged under Needs Human (game session was outside the agent's
+control).
 
 ## Track C — Operator Workflow Polish
 
@@ -137,7 +194,76 @@ _(results appended after the window closes)_
 
 ## Track D — Record And Stream Proof
 
-_(pending)_
+- [x] **`npm run validate:record-stream -- --destinations recording`** — PASS
+  (both inside preflight and standalone with `--ffprobe`:
+  `artifacts/alpha-evidence/trackD-record-stream-harness*.txt`). Running it
+  surfaced and fixed THREE harness/product bugs:
+  1. **BUG (product, fixed on this branch): recordings were never finalized on
+     stop.** `IEncoderSink` had no stop seam; the MF sink only wrote the moov box
+     in its destructor (process exit) or on the next `start()`, so a stopped
+     recording stayed unplayable while the app ran. Fixed:
+     `IEncoderSink::stopRecording()` + `MediaFoundationEncoderSink::stopRecording()`
+     (closeWriters → Finalize) called from `MediaCore::stopRecordingSession`
+     under `audioOutputMutex_`; stub sink mirrors the semantics; 2 new native
+     tests (7/7 EncoderRecordingSession pass).
+  2. **BUG (harness, fixed): `child.kill()` without stop** left a 79-byte stub
+     on disk while the report claimed 16.5MB "written" (`bytesWritten` counts
+     submitted raw bytes, not disk bytes). The harness now stops the session,
+     waits for the artifact to settle, and resolves the relative artifact path
+     against the native-core cwd (its `--ffprobe` previously always reported
+     `file-missing`).
+  3. **Harness ffprobe audio criterion made honest:** it now requires an AAC
+     stream exactly when audio packets were muxed (headless runs have no audio
+     source; that gap stays surfaced via the existing recommendation).
+- [x] **Record a short manual MP4 (in-app)** — **FAILED as shipped; root cause
+  found and FIXED on this branch; re-proof below.**
+  **BUG (P0, alpha exit-bar blocker): every in-app recording with real program
+  audio died ~1 second in.** `Mp4Writer` adds the AAC stream lazily on the first
+  `submitAudio`, but `openRecordingWriters` calls `BeginWriting()` up front —
+  and the MF sink writer rejects `AddStream` after `BeginWriting` with
+  **`MF_E_INVALIDREQUEST` (0xC00D36B2)** → `setRecordingFailure` finalizes after
+  ~1 video frame. Evidence: the 10-min soak "recording" is a valid 1-frame
+  0.017s MP4 (`corevideo-recording-program-1783043129614.mp4`, 12,161 bytes) and
+  the diagnostics window showed "Media Foundation could not add program AAC
+  stream: add AAC stream: 0xC00D36B2." The offline harness never caught it
+  because headless runs mux no audio. **Fix:** configure the 48kHz-stereo AAC
+  stream before `BeginWriting`; `submitAudio` drops format-mismatched buffers
+  with a warning instead of killing the session
+  (`native/src/modules/MediaFoundationEncoderAdapter.cpp`).
+- [ ] 30-minute recording soak — NOT RUN (blocked first by the AAC bug, then by
+  rig conditions; run after the short proof is green on a quiet rig).
+- [ ] RTMP push with real program audio — **Needs Human** (no live RTMP ingest
+  endpoint/credentials available to the agent; FFmpeg runtime IS staged —
+  diagnostics shows `FFmpeg runtime found: C:\ffmpeg\bin\ffmpeg.exe`).
+- [x] NDI treated as optional — not promoted into the Alpha promise.
+
+## Track E — Diagnostics And Recovery
+
+- [x] **Support bundle after a normal run** — PASS.
+  Diagnostics window → "Export support bundle" →
+  `%LOCALAPPDATA%\CoreVideoPro\support-bundles\support-20260703020446.json`
+  (copy: `artifacts/alpha-evidence/trackE-support-bundle-normal-run.json`).
+  Contains app/summary/triage/outputs/mediaCore/runtime/warnings sections.
+- [x] **Simulated native-core crash → crash event, recovery, warnings** — PASS.
+  Killed `corevideo-native` (pid 37068's predecessor) at 22:05:37; the
+  supervisor restarted it within the same second; UI showed
+  **"Media core recovering (restart 1)"**; audio chain re-established (capture
+  frame counters resumed). Post-failure bundle exported
+  (`trackE-support-bundle-after-crash.json`) records `restartCount: 1`,
+  `recovering: false`, full warning set, and triage lines ("Media core
+  restarts: 1"). Note: `Stop-Process -Force` kills do not write Application
+  Event 1000 (that class is reserved for real faults; none occurred all night —
+  see soak). **Wrinkle worth a decision:** after the restart the shell re-armed
+  the (operator-stopped-but-stuck) recording automatically — resilience for a
+  crash mid-show, but it resurrected a session the operator had tried to stop.
+- [x] **Failures remain visible until recovered** — PASS: "Recording stop
+  failed: Media core failed while starting recording… request core-3783 timed
+  out" stayed pinned in the diagnostics Output/encoder panel until the core
+  restart cleared it.
+- [x] **Secrets redaction** — PASS for the exercised config: both `streamKey`
+  fields in the bundle render as `"absent"`; no tokens/passphrases present.
+  (No real stream key was configured on this rig, so redaction-of-a-value is
+  unproven — noted under Needs Human.)
 
 ## Track E — Diagnostics And Recovery
 
