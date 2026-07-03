@@ -42,9 +42,98 @@ dumps, log excerpts).
   zero warnings because Zoom SDK, staged runtime, FFmpeg (winget Gyan.FFmpeg 8.1.1) and
   the dev native build are all staged on this rig.
 
+## Track B — Live Zoom And Source Proof (synthetic where meaningful)
+
+Two blockers were found and root-caused while bringing the fake-engine meeting up
+(~21:25–21:36 local):
+
+1. **BUG (alpha-blocking on rigs with the OBS Zoom plugin): engine IPC pipe-name
+   collision.** `corevideo-zoom-engine` and the core hard-code
+   `\\.\pipe\ZoomObsPlugin_P2E` / `_E2P` (`native/zoom-engine/shared/engine-ipc.h:46`).
+   The user's OBS Studio (32.1.2) had `obs-zoom-plugin.dll` loaded, which owns those
+   exact pipe names, so every CoreVideo join failed with "Timed out connecting to Zoom
+   engine IPC" — the spawned engine exits 1 from `ipc_setup` because
+   `CreateNamedPipe` can't claim the names. Reproduced standalone (engine exits
+   code 1 while OBS runs; pipes visible via `\\.\pipe\` listing). Cleared by closing
+   OBS for this run. **Fix needed:** per-instance pipe names (e.g. suffix with the
+   parent PID, passed to the engine on its command line).
+2. **BUG (UX): stale Zoom OAuth refresh token hard-fails join with no fallback.**
+   With a stored-but-expired token, `ZoomOAuthService.EnsureJoinCredentialsAsync`
+   throws ("Zoom broker token refresh failed") and join aborts; only an EMPTY token
+   store falls back to the public-app-key path (`ZoomOAuthService.cs:195-222`).
+   An operator with an old sign-in cannot join at all until they explicitly sign
+   out. Worked around by backing up + removing
+   `%LOCALAPPDATA%\CoreVideoPro\zoom-oauth.json` (restored after the run).
+3. **Stale fake-engine artifact note:** `native/build-dev/corevideo-zoom-engine-fake.exe`
+   (86528 bytes, 6/29 08:23) predates the d095cde roster-fidelity fix and never emits
+   `joined`; rebuilt from current source with cl.exe (88064 bytes) for this run.
+
+- [ ] Join a real meeting (capture, roster, active speaker, mute/unmute, screen
+      share, leave/rejoin, churn) — **Needs Human** (see section below); synthetic
+      churn/roster evidence collected instead (see soak below).
+- [x] Inputs 1-10 persistence across restart — PASS: the shell restored
+      "10/10 inputs assigned - 2 in show" from `show-input-roster.json` across
+      multiple app restarts during this pass (observed at 21:24, 21:33, and the
+      soak launch).
+- [x] Non-Zoom input path — PASS (WASAPI loopback local audio source live from
+      launch: `local-machine-audio:wasapi-loopback ... streaming=True frames=320640`
+      in launch.log audio telemetry; synthetic/test-pattern video path exercised by
+      the record-stream harness).
+
+## Phase 2 §6 Gate — ≥10-min audio-routed + recording soak (fake engine)
+
+**Setup (21:37–21:45 local):** fresh app launch (`npm run app -- -StubOnly`,
+fixed core from `native/build-dev` staged by the launcher), fake engine
+(88064-byte rebuild) at all three paths. UIA-driven: Join `8123456789` →
+**Zoom Live, Video in room (4)** (mv1/mv2/Producer/mv4, roster 3↔4 churn +
+active-speaker rotation) → **Capture On** ("Capture live — CoreVideo Pro Native
+Media Core") → per-participant audio subscriptions
+(`participant-audio-101..104-mix`) → scene **Panel** queued on PVW → **Take** →
+**Record** (MP4 8.2 Mbps). Recording session `start-recording-session` at
+21:45:29, artifact `publish/Recordings/CoreVideo Pro/corevideo-recording-program-0.mp4`.
+Program carries a REAL capture device (Elgato Game Capture HD60 S+ 1080p60) and
+the audio mix carries real WASAPI loopback + capture audio (master ≈ -16.0 LUFS,
+peak -8.3 dBFS — live meters). Screenshots:
+`soak-01-capture-on.png`, `soak-02-panel-on-program.png`, `soak-03-take-settled.png`.
+
+**Machine context during soak:** the operator was actively PLAYING A FULLSCREEN
+GAME on this rig (plus Discord + two agent build jobs in worktrees), so this is a
+worst-case ambient-load soak; CPU samples in
+`artifacts/alpha-evidence/soak-cpu-samples.csv`. The app window is occluded the
+whole time (screenshots via PrintWindow; UIA driven without stealing focus).
+
+_(results appended after the window closes)_
+
 ## Track C — Operator Workflow Polish
 
-_(pending)_
+- [x] Sources tab as canonical Inputs 1-10 mapping — smoked: compact routing
+  table present (IN/SHOW/TYPE/SOURCE/AUDIO per-row editors, 10 rows); KindCombo
+  offers Unassigned / Zoom participant / Blackmagic / AJA / UVC webcam /
+  SRT ingest / Media asset; setting rows 3-4 to "Zoom participant" exposed the
+  live fake roster (mv1/mv2/Producer) in SourceCombo. **BUG (automation/UX):**
+  after a Kind change the row's SourceCombo elements intermittently vanish from
+  the UIA tree (ItemsRepeater virtualization/rebuild), which also implies visible
+  dropdown flicker for operators — the id-set keying fix (CLAUDE.md) covers
+  participant Health churn but not Kind-change rebuilds.
+- [x] Scenes flow (queue on PVW, Take to PGM) — functionally works: Take swapped
+  PGM/PVW labels and scene badges correctly (Panel shows PGM badge; transport
+  header updates). **BUG (P1, operator-facing): after Take, the PROGRAM and
+  PREVIEW panes' video CONTENT did not swap with their labels.** PROGRAM header
+  says "Panel" but the pane still renders the HD60 S+ camera; PREVIEW header says
+  "Manual one-up: Game Capture HD60 S+" but renders the Panel participant grid
+  (animated fake-Zoom tiles). Persisted across ≥5s and two screenshots
+  (`soak-02`, `soak-03`). The recorded program MP4 (below) is the ground truth
+  for which surface is really PGM.
+- [ ] Routing matrix ISO isolation + gain — partially smoked only (Routing page
+  reachable; matrix behavior not exercised end-to-end this run) — **Needs Human**
+  for the click-through.
+- [x] Empty/loading/error states — exercised implicitly: "Join failed — Timed out
+  connecting to Zoom engine IPC" surfaced clearly in Settings and Show-readiness
+  strip and persisted until recovery (good visibility, though the stale error
+  stayed visible after a later successful join — minor).
+- [ ] Full 16:9 canvas at common window sizes — **Needs Human** (window occluded
+  by the operator's game; resize testing is also the known crash-adjacent area,
+  not safe to automate mid-soak).
 
 ## Track D — Record And Stream Proof
 

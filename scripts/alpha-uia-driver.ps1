@@ -33,6 +33,7 @@ public static class AlphaUser32 {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
   public struct RECT { public int Left, Top, Right, Bottom; }
 }
 '@
@@ -113,6 +114,22 @@ switch ($Action) {
     }
     Write-Output "toggled:$Name"
   }
+  "invoketext" {
+    # Invoke the first Button whose own Name OR a descendant Text element's
+    # Name equals -Name (WinUI buttons with StackPanel content often expose an
+    # empty UIA Name while the label lives on a child TextBlock).
+    $target = Find-ByName $root ([System.Windows.Automation.ControlType]::Button) $Name
+    if (-not $target) {
+      foreach ($b in (Find-All $root ([System.Windows.Automation.ControlType]::Button))) {
+        if ($b.Current.IsOffscreen) { continue }
+        $label = Find-ByName $b ([System.Windows.Automation.ControlType]::Text) $Name
+        if ($label) { $target = $b; break }
+      }
+    }
+    if (-not $target) { throw "Button with text '$Name' not found." }
+    $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    Write-Output "invoked-text:$Name"
+  }
   "setvalue" {
     $el = Find-ByName $root ([System.Windows.Automation.ControlType]::Edit) $Name
     if (-not $el) { throw "Edit '$Name' not found." }
@@ -122,7 +139,15 @@ switch ($Action) {
   "select" {
     $combos = Find-All $root ([System.Windows.Automation.ControlType]::ComboBox)
     $visible = @()
-    foreach ($c in $combos) { if (-not $c.Current.IsOffscreen) { $visible += $c } }
+    foreach ($c in $combos) {
+      if ($Name) {
+        # -Name filters by AutomationId (e.g. SourceCombo). AutomationId-targeted
+        # selection is programmatic (ExpandCollapse/SelectionItem), so do NOT
+        # drop offscreen rows — scrolled/virtualized rows still respond.
+        if ($c.Current.AutomationId -eq $Name) { $visible += $c }
+      }
+      elseif (-not $c.Current.IsOffscreen) { $visible += $c }
+    }
     if ($ComboIndex -lt 0 -or $ComboIndex -ge $visible.Count) { throw "ComboIndex $ComboIndex out of range (0..$($visible.Count - 1))." }
     $combo = $visible[$ComboIndex]
     $exp = $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
@@ -154,9 +179,15 @@ switch ($Action) {
     [AlphaUser32]::GetWindowRect($hwnd, [ref]$r) | Out-Null
     $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
     if ($w -le 0 -or $h -le 0) { throw "window rect empty ($($r.Left),$($r.Top),$($r.Right),$($r.Bottom))" }
+    # PrintWindow with PW_RENDERFULLCONTENT (0x2): captures the window's own
+    # content (incl. DirectComposition/SwapChainPanel) even when it is occluded
+    # by another app (e.g. a fullscreen game) — never grabs other windows and
+    # never needs to steal foreground/focus from the user.
     $bmp = New-Object System.Drawing.Bitmap($w, $h)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($r.Left, $r.Top, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+    $hdc = $g.GetHdc()
+    [AlphaUser32]::PrintWindow($hwnd, $hdc, 0x2) | Out-Null
+    $g.ReleaseHdc($hdc)
     $g.Dispose()
     $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()
