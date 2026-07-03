@@ -55,6 +55,15 @@ public sealed class ProductionOutputPreferences
     public bool MultiviewShowMeters { get; set; } = true;
     public bool MultiviewShowClock { get; set; }
     public Dictionary<string, string> SceneBackgroundAssetIds { get; set; } = new(StringComparer.Ordinal);
+
+    // Operator-overridden display names, keyed by canonical source id
+    // (zoom:&lt;pid&gt; / capture:&lt;deviceId&gt; / media:&lt;assetId&gt;). When present, the
+    // override replaces the derived Zoom/UVC/asset name everywhere the source is
+    // labelled — most importantly the auto lower-thirds. Absent keys fall back to
+    // the derived name. capture:/media: keys are stable across sessions; zoom:
+    // keys are per-meeting (the SDK participant id changes), so those entries are
+    // effectively session-scoped.
+    public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
 }
 
 public interface IProductionOutputPreferencesStore

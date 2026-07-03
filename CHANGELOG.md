@@ -8,6 +8,16 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Nameable sources + auto-assigned Show Inputs.** Each Show Input now has an
+  editable display name (the new NAME column in the Inputs tab) that defaults to
+  the Zoom participant / UVC device / media asset name but can be overridden; the
+  override feeds the **auto lower-thirds** and the multiview labels, and persists in
+  `production-output-preferences.json` keyed by canonical source id
+  (`zoom:`/`capture:`/`media:`). Separately, an **Auto-assign inputs** automation
+  toggle (default on) fills FREE Show Input slots with newly-joined Zoom
+  participants without disturbing operator- or capture-assigned slots, keeping each
+  participant in a stable slot and freeing slots when participants leave.
+
 - **Overlay / lower-third / caption rasterization (Item 9)**: overlays now render
   real content instead of colored rects. A shared layout resolver
   (`OverlayTileRaster::computeOverlayTileLayout`) defines the band, accent bar,

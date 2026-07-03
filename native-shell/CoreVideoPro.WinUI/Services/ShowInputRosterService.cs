@@ -37,6 +37,100 @@ public static class ShowInputRosterService
         return false;
     }
 
+    /// <summary>Canonical source-id prefixes — the same scheme fed to the core as
+    /// multiview source ids and used as the key for per-source display-name overrides.</summary>
+    public const string ZoomSourcePrefix = "zoom:";
+
+    public const string CaptureSourcePrefix = "capture:";
+
+    public static string ZoomSourceId(string participantId) => $"{ZoomSourcePrefix}{participantId}";
+
+    public static string CaptureSourceId(string deviceId) => $"{CaptureSourcePrefix}{deviceId}";
+
+    /// <summary>The canonical source id an assigned slot resolves to (zoom:/capture:/media:),
+    /// or null when the slot is unassigned/unresolvable. This is the key for display-name overrides.</summary>
+    public static string? SlotSourceId(ShowInputSlot slot) => slot.Kind switch
+    {
+        ShowInputKind.ZoomParticipant when slot.ParticipantId is { Length: > 0 } pid => ZoomSourceId(pid),
+        // A Media slot stores its "media:<assetId>" id directly in ParticipantId.
+        ShowInputKind.Media when slot.ParticipantId is { Length: > 0 } media => media,
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+            when slot.CaptureDeviceId is { Length: > 0 } cap => CaptureSourceId(cap),
+        _ => null
+    };
+
+    /// <summary>Returns the operator override for <paramref name="sourceId"/> when present and
+    /// non-blank, otherwise the derived Zoom/UVC/asset name. Single source of truth so the auto
+    /// lower-thirds, multiview labels, and the Inputs editor all agree.</summary>
+    public static string ResolveDisplayName(
+        IReadOnlyDictionary<string, string>? overrides,
+        string? sourceId,
+        string derivedName)
+    {
+        if (overrides is not null && sourceId is { Length: > 0 } &&
+            overrides.TryGetValue(sourceId, out var name) && !string.IsNullOrWhiteSpace(name))
+        {
+            return name.Trim();
+        }
+
+        return derivedName;
+    }
+
+    /// <summary>Reconciles the Zoom-participant Show Input slots against the live roster:
+    /// frees slots whose participant left, and — when <paramref name="autoAssign"/> is on — fills
+    /// FREE (Unassigned) slots with roster participants not yet shown, in roster order, up to the
+    /// slot cap. Never disturbs operator- or capture/media-assigned slots, and keeps each already
+    /// shown participant in its current slot (no reshuffle when others leave).</summary>
+    public static void SyncZoomParticipantSlots(
+        IList<ShowInputSlot> slots,
+        IReadOnlyList<string> participantIdsInRosterOrder,
+        bool autoAssign)
+    {
+        var validIds = new HashSet<string>(participantIdsInRosterOrder, StringComparer.Ordinal);
+
+        // Free slots whose Zoom participant is no longer in the meeting.
+        foreach (var slot in slots)
+        {
+            if (slot.Kind == ShowInputKind.ZoomParticipant &&
+                !string.IsNullOrWhiteSpace(slot.ParticipantId) &&
+                !validIds.Contains(slot.ParticipantId))
+            {
+                slot.Kind = ShowInputKind.Unassigned;
+                slot.ParticipantId = null;
+                slot.InShow = false;
+            }
+        }
+
+        if (!autoAssign)
+        {
+            return;
+        }
+
+        var alreadyShown = new HashSet<string>(
+            slots.Where(s => s.Kind == ShowInputKind.ZoomParticipant && !string.IsNullOrWhiteSpace(s.ParticipantId))
+                 .Select(s => s.ParticipantId!),
+            StringComparer.Ordinal);
+
+        foreach (var participantId in participantIdsInRosterOrder)
+        {
+            if (string.IsNullOrWhiteSpace(participantId) || alreadyShown.Contains(participantId))
+            {
+                continue;  // already in a slot — keep it stable
+            }
+
+            var freeSlot = slots.FirstOrDefault(s => s.Kind == ShowInputKind.Unassigned);
+            if (freeSlot is null)
+            {
+                break;  // every slot is taken
+            }
+
+            freeSlot.Kind = ShowInputKind.ZoomParticipant;
+            freeSlot.ParticipantId = participantId;
+            freeSlot.InShow = true;
+            alreadyShown.Add(participantId);
+        }
+    }
+
     public static IReadOnlyList<ShowInputSlot> CreateDefaultSlots()
     {
         var slots = new List<ShowInputSlot>(MaxShowInputs);
@@ -224,7 +318,8 @@ public static class ShowInputRosterService
         IReadOnlyList<ShowInputSlot> slots,
         IReadOnlyList<Participant> participants,
         IReadOnlyList<CaptureDevice> captureDevices,
-        IReadOnlyList<MediaAsset>? mediaAssets = null)
+        IReadOnlyList<MediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? displayNameOverrides = null)
     {
         var devicesById = captureDevices.ToDictionary(device => device.Id, device => device);
         var participantsById = participants.ToDictionary(participant => participant.Id, participant => participant);
@@ -249,7 +344,7 @@ public static class ShowInputRosterService
             .Where(slot => slot.InShow && slot.IsAssigned &&
                 HasResolvedSource(slot, participantsById, devicesById, mediaAssetsById))
             .Take(MaxMultiviewBoxes)
-            .Select(slot => ToMultiviewSourceWire(slot, participantsById, devicesById, mediaAssetsById))
+            .Select(slot => ToMultiviewSourceWire(slot, participantsById, devicesById, mediaAssetsById, displayNameOverrides))
             .Where(source => source is not null)
             .Select(source => source!)
             .ToList();
@@ -259,17 +354,19 @@ public static class ShowInputRosterService
         ShowInputSlot slot,
         IReadOnlyDictionary<string, Participant> participantsById,
         IReadOnlyDictionary<string, CaptureDevice> devicesById,
-        IReadOnlyDictionary<string, MediaAsset> mediaAssetsById)
+        IReadOnlyDictionary<string, MediaAsset> mediaAssetsById,
+        IReadOnlyDictionary<string, string>? displayNameOverrides = null)
     {
         if (slot.Kind == ShowInputKind.ZoomParticipant &&
             slot.ParticipantId is { Length: > 0 } pid &&
             participantsById.TryGetValue(pid, out var participant))
         {
+            var sourceId = ZoomSourceId(pid);
             return new MediaCoreMultiviewSourceWire(
-                SourceId: $"zoom:{pid}",
+                SourceId: sourceId,
                 Kind: "zoom",
                 Slot: slot.SlotNumber - 1,
-                Label: participant.Name,
+                Label: ResolveDisplayName(displayNameOverrides, sourceId, participant.Name),
                 ParticipantId: pid);
         }
 
@@ -277,11 +374,12 @@ public static class ShowInputRosterService
             slot.CaptureDeviceId is { Length: > 0 } deviceId &&
             devicesById.TryGetValue(deviceId, out var device))
         {
+            var sourceId = CaptureSourceId(deviceId);
             return new MediaCoreMultiviewSourceWire(
-                SourceId: $"capture:{deviceId}",
+                SourceId: sourceId,
                 Kind: "capture",
                 Slot: slot.SlotNumber - 1,
-                Label: device.Name,
+                Label: ResolveDisplayName(displayNameOverrides, sourceId, device.Name),
                 CaptureDeviceId: deviceId);
         }
 
@@ -289,11 +387,12 @@ public static class ShowInputRosterService
             TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) &&
             mediaAssetsById.TryGetValue(mediaAssetId, out var asset))
         {
+            var sourceId = ToMediaSourceId(mediaAssetId);
             return new MediaCoreMultiviewSourceWire(
-                SourceId: ToMediaSourceId(mediaAssetId),
+                SourceId: sourceId,
                 Kind: "media",
                 Slot: slot.SlotNumber - 1,
-                Label: asset.Name,
+                Label: ResolveDisplayName(displayNameOverrides, sourceId, asset.Name),
                 MediaAssetId: mediaAssetId);
         }
 

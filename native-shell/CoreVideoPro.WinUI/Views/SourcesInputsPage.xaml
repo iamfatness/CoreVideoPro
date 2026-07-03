@@ -348,7 +348,8 @@
                             <ColumnDefinition Width="30" />
                             <ColumnDefinition Width="40" />
                             <ColumnDefinition Width="1.1*" />
-                            <ColumnDefinition Width="1.7*" />
+                            <ColumnDefinition Width="1.5*" />
+                            <ColumnDefinition Width="1.3*" />
                             <ColumnDefinition Width="1.2*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
@@ -356,7 +357,8 @@
                         <TextBlock Grid.Column="1" Text="SHOW" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioMutedBrush}" />
                         <TextBlock Grid.Column="2" Text="TYPE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
                         <TextBlock Grid.Column="3" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="4" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="4" Text="NAME" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="5" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
                     </Grid>
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
@@ -372,7 +374,8 @@
                                             <ColumnDefinition Width="30" />
                                             <ColumnDefinition Width="40" />
                                             <ColumnDefinition Width="1.1*" />
-                                            <ColumnDefinition Width="1.7*" />
+                                            <ColumnDefinition Width="1.5*" />
+                                            <ColumnDefinition Width="1.3*" />
                                             <ColumnDefinition Width="1.2*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
@@ -398,7 +401,15 @@
                                                   DisplayMemberPath="Label"
                                                   IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
                                                   HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="4" x:Name="InputMicCombo"
+                                        <!-- Editable display name for the assigned source; defaults to
+                                             the Zoom/UVC/asset name, feeds the auto lower-thirds. -->
+                                        <TextBox Grid.Column="4"
+                                                 Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 IsEnabled="{x:Bind IsDisplayNameEditable, Mode=OneWay}"
+                                                 PlaceholderText="Name"
+                                                 ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
+                                                 HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                        <ComboBox Grid.Column="5" x:Name="InputMicCombo"
                                                   Tag="{x:Bind}"
                                                   ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
                                                   SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
@@ -406,7 +417,7 @@
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                   HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <Button Grid.Column="5"
+                                        <Button Grid.Column="6"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
