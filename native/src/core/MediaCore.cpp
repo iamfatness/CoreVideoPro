@@ -2154,8 +2154,12 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
 
     // PREVIEW cell: composite the FULL previewed scene by remapping every
     // preview-plan layer's rect into the PVW sub-rect — mirroring the PGM cell
-    // above — so the PVW cell matches the dedicated PREVIEW monitor. Falls back to
-    // the single first-source feed only when no multi-layer preview scene is set.
+    // above — so the PVW cell always matches the dedicated PREVIEW monitor and
+    // follows a Take (Preview→Program swaps previewSceneRoutes_). When nothing is
+    // cued in preview (no preview layers) the cell stays empty — an ATEM PVW bus
+    // shows what is cued or black, never an arbitrary roster source. (The old
+    // fallback drew multiviewSources_.front(), a fixed first-source feed that
+    // never reflected the preview and never swapped on Take.)
     if (hasPreviewScene()) {
       const auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
       for (const auto& src : previewPlan.layers) {
@@ -2171,23 +2175,6 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
         layer.borderThickness = 0.f;
         renderPlan.layers.push_back(std::move(layer));
       }
-    } else if (!multiviewSources_.empty()) {
-      const auto& source = multiviewSources_.front();
-      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
-                                             source.captureDeviceId, source.mediaAssetId);
-      modules::CompositorRenderPlanLayer layer;
-      layer.layerId = "multiview-pvw:" + (source.sourceId.empty() ? std::string("0") : source.sourceId);
-      layer.kind = feed.kind;
-      layer.sourceId = feed.sourceId;
-      layer.participantId = feed.participantId;
-      layer.mediaAssetId = feed.mediaAssetId;
-      layer.rect = {pvwRect.x, pvwRect.y, pvwRect.width, pvwRect.height};
-      layer.fitMode = "fit";
-      layer.borderStyle = "accent";
-      layer.borderColor = "#3ddc97";
-      layer.borderThickness = 2.f;
-      layer.order = order++;
-      renderPlan.layers.push_back(std::move(layer));
     }
   }
 
@@ -2272,14 +2259,10 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     pvw.tally = "pvw";
     pvw.label = "Preview";
     pvw.slot = -1;
-    // Reflect the feed the PVW cell actually shows (v1: the first source).
-    if (!multiviewSources_.empty()) {
-      const auto& source = multiviewSources_.front();
-      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
-                                             source.captureDeviceId, source.mediaAssetId);
-      pvw.sourceId = feed.sourceId.empty() ? source.sourceId : feed.sourceId;
-      pvw.participantId = source.participantId;
-    }
+    // The PVW cell renders the live preview composite (buildMultiviewRenderPlan),
+    // not a specific roster source, so it carries no pinned sourceId/participantId
+    // — clicking it is a no-op rather than cueing an arbitrary source. (It used to
+    // pin multiviewSources_.front(), a fixed first-source feed that never swapped.)
     assignRect(pvw, layout.previewCell);
     tiles.push_back(std::move(pvw));
   }
