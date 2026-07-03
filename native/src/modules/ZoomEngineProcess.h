@@ -10,7 +10,17 @@ namespace corevideo::modules {
 struct ZoomEngineProcessOptions {
   std::string executablePath;
   int connectTimeoutMs = 30000;
+  // Per-instance IPC token. Spliced into the engine's pipe/socket/SHM names and
+  // passed to the engine on its command line so this app instance never collides
+  // with another process on the shared "ZoomObsPlugin_" base name (chiefly the
+  // OBS zoom plugin). Empty => the client generates one in start().
+  std::string instanceToken;
 };
+
+// Builds a process-unique IPC token (host pid + a monotonic spawn counter) so
+// repeated engine spawns within one app, separate app instances, and the OBS
+// zoom plugin all get distinct pipe/socket/SHM names.
+std::string makeZoomEngineInstanceToken();
 
 // The pipe/subprocess client for the Zoom engine helper. The I/O entry points are
 // virtual so ZoomEngineRuntime's outbound sender thread (phase 2 increment 3) can be
@@ -35,6 +45,11 @@ class ZoomEngineProcessClient {
   [[nodiscard]] std::optional<std::string> readLine();
   [[nodiscard]] virtual std::optional<ZoomEngineEvent> readEvent();
 
+  // The instance token this client launched the engine with (see
+  // ZoomEngineProcessOptions::instanceToken). Read back by ZoomEngineRuntime to
+  // derive matching SHM region names. Empty until start() succeeds.
+  [[nodiscard]] const std::string& instanceToken() const { return instanceToken_; }
+
  private:
   bool connectIpc(int timeoutMs);
   void closeIpc();
@@ -50,6 +65,7 @@ class ZoomEngineProcessClient {
   int parentToEngine_ = -1;
   int engineToParent_ = -1;
 #endif
+  std::string instanceToken_;
   std::string lastError_;
 };
 

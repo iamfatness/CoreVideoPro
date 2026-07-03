@@ -388,6 +388,9 @@ bool ZoomEngineRuntime::ensureStartedLocked() {
     state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", process_->lastError()});
     return false;
   }
+  // Record the token the client generated so frame SHM reads target the same
+  // per-instance region names the engine writes.
+  instanceToken_ = process_->instanceToken();
   initialized_ = false;
   startReaderLocked();
   startSenderLocked();
@@ -712,7 +715,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
 
   ShmRegion region;
   const auto size = zoomEngineI420FrameByteSize(event.width, event.height);
-  if (!shm_region_open_read(region, zoomEngineVideoSharedMemoryName(event.sourceUuid), size)) {
+  if (!shm_region_open_read(region, zoomEngineVideoSharedMemoryName(event.sourceUuid, instanceToken_), size)) {
     state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory region could not be opened");
     return;
   }

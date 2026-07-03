@@ -133,7 +133,14 @@ capture** — native Media Foundation UVC capture is CODE-COMPLETE behind
 `COREVIDEO_NATIVE_UVC=1`, WinUI shm bridge remains fallback) but **not yet
 rig-validated with a live camera**; DeckLink/AJA frame delivery still to do
 (see `docs/native-production-completion-plan.md` Items 1–2).
-DONE 2026-07-02: **Phase 2 increments 3+6**
+DONE 2026-07-03: **per-instance engine IPC names (OBS collision fix)** — the engine's
+pipes/sockets/SHM regions were fixed names on the shared `ZoomObsPlugin_` base, so a
+running OBS zoom plugin made every join time out ("Timed out connecting to Zoom engine
+IPC"). `ZoomEngineProcessClient` now mints a `<pid>-<spawn#>` token, passes it via
+`--ipc-token`, and both sides splice it into every name (`ipc_pipe_p2e`/`ipc_sock_p2e`/
+`ipc_shm_prefix` in `engine-ipc.h`; engine reads it via `ipc_token_from_args` +
+`EngineIpc::set_shm_prefix`). Also unblocks two app instances side by side. DONE
+2026-07-02: **Phase 2 increments 3+6**
 — engine sends now go through `ZoomEngineRuntime`'s outbound queue + dedicated sender
 thread (no engine pipe I/O under `coreMutex`; ordering preserved; restart/shutdown
 drop+log; dedup at enqueue time) and `core/LockHoldGuardrail` enforces the sub-ms

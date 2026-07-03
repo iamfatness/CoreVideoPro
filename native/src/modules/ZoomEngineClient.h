@@ -106,8 +106,13 @@ std::string buildZoomEngineUnsubscribeCommand(const std::string& sourceUuid);
 
 std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line);
 
-std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid);
-std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid);
+// SHM region names for a source. instanceToken must match the token the engine
+// was launched with (ZoomEngineProcessClient::instanceToken); empty reproduces
+// the legacy fixed names.
+std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid,
+                                            const std::string& instanceToken = {});
+std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid,
+                                            const std::string& instanceToken = {});
 std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t height);
 std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength);
 std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
