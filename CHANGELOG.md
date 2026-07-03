@@ -8,6 +8,17 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Bitfocus Companion module (Phase 2b).** New `companion-module-corevideopro/`
+  (Node/TS) that remote-controls CoreVideo Pro over its HTTP/WebSocket control API.
+  Actions are generated **live from `GET /manifest`** (so the button set always
+  matches the running app); feedbacks (recording/streaming/engine/lower-third/
+  automation flags) and variables (program/preview scene, statuses, multiview layout,
+  …) stream over the `/ws` WebSocket; ready-made presets for Take, Record, Stream,
+  Engine, Lower-third, and Auto-assign are included. Configurable host/port/bearer
+  token; typechecks against `@companion-module/base`. See its README for build +
+  sideload steps. (Needs an `npm install && npm run build` + a Companion sideload to
+  validate end-to-end.)
+
 - **Remote control foundation + OSC (Phase 1a).** New transport-agnostic
   `CoreVideoPro.Control` library that defines the whole remote-control contract:
   a stable, dot-namespaced **action registry** (`transport.take`,
