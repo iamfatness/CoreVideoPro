@@ -1,3 +1,4 @@
+#include "modules/AsyncEncoderSink.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -980,6 +981,20 @@ ModuleSet createDefaultModules() {
   // "capture:<deviceId>" now reach the compositor (and thus recording/streaming).
   if (modules.captureDevice) {
     modules.captureDevice = std::make_unique<WinUiCaptureDeviceAdapter>(std::move(modules.captureDevice));
+  }
+  return modules;
+}
+
+ModuleSet createLiveServerModules() {
+  auto modules = createDefaultModules();
+  if (modules.encoder) {
+    // Live-only: the audio/output worker submits a program frame + audio every tick,
+    // so a blocking WriteSample (disk stall under load) would collapse the worker and
+    // block the operator's stop-recording. AsyncEncoderSink drains the encoder onto a
+    // dedicated writer thread (non-blocking submit + drop-to-latest backlog, bounded
+    // finalize at teardown). Unit tests use createDefaultModules directly and keep the
+    // synchronous encoder so their post-command assertions stay deterministic.
+    modules.encoder = std::make_unique<AsyncEncoderSink>(std::move(modules.encoder));
   }
   return modules;
 }

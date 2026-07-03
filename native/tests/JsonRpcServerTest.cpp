@@ -386,3 +386,87 @@ TEST(JsonRpcServer, RecordsCoreLockHoldGuardrailStatsForHandledCommands) {
   // No hard assertion on overBudget: the budget is telemetry (rate-capped
   // warnings), never a test failure — especially under TSan's slowdown.
 }
+
+// Under a command backlog the loop coalesces stale media-core-sync batches
+// (skips the expensive apply for a sync that already has a newer one queued) so
+// it reaches level-triggered control commands like stop-recording promptly. The
+// non-negotiable invariant coalescing must never break: EVERY request still gets
+// exactly one response echoing its id (a dropped response = a bridge timeout).
+TEST(JsonRpcServer, CoalescedSyncBacklogStillAnswersEveryRequest) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  // A burst of syncs (distinct ids) so several are queued at once — that is when
+  // coalescing may fire. Whether or not it does, all must be answered.
+  std::string in;
+  const int kSyncs = 24;
+  for (int i = 0; i < kSyncs; ++i) {
+    in += "{\"id\":\"sync-" + std::to_string(i) +
+          "\",\"type\":\"media-core-sync\",\"elapsedMs\":33}\n";
+  }
+  std::istringstream input(in);
+  std::ostringstream output;
+
+  server.run(input, output);
+
+  // Every sync-<i> id must appear at least once in the responses.
+  const std::string out = output.str();
+  for (int i = 0; i < kSyncs; ++i) {
+    const std::string needle = "\"sync-" + std::to_string(i) + "\"";
+    EXPECT_NE(out.find(needle), std::string::npos)
+        << "no response for sync-" << i << " (coalescing dropped a request)";
+  }
+}
+
+// Last-writer-wins after coalescing: the NEWEST sync is never coalesced (nothing
+// is queued behind it), so its control command is fully applied even when every
+// earlier sync in the burst was skipped. Here a burst of "not recording" syncs is
+// followed by a final "start recording" sync; its response must show recording
+// active — proving the newest control state takes effect through the backlog.
+TEST(JsonRpcServer, CoalescedSyncAppliesNewestControlState) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+
+  auto stopSync = [](const std::string& id) {
+    return "{\"id\":\"" + id +
+           "\",\"type\":\"media-core-sync\",\"elapsedMs\":33,\"commands\":["
+           "{\"type\":\"stop-recording-session\",\"reason\":\"idle\"}]}\n";
+  };
+  const std::string startSync =
+      "{\"id\":\"s-start\",\"type\":\"media-core-sync\",\"elapsedMs\":33,\"commands\":["
+      "{\"type\":\"set-recording-targets\",\"targetFolder\":\"rec\",\"filenamePrefix\":\"show\","
+      "\"format\":\"mp4\",\"quality\":\"medium\"},"
+      "{\"type\":\"start-recording-session\",\"sessionId\":\"show-program\",\"targetFolder\":\"rec\","
+      "\"filenamePrefix\":\"show\",\"format\":\"mp4\",\"quality\":\"medium\"}]}\n";
+
+  std::string in;
+  for (int i = 0; i < 12; ++i) {
+    in += stopSync("s" + std::to_string(i));
+  }
+  in += startSync;  // newest sync: never coalesced, must take effect
+  std::istringstream input(in);
+  std::ostringstream output;
+
+  server.run(input, output);
+
+  // Read the final start sync's OWN response and confirm recording is active.
+  const std::string out = output.str();
+  const auto pos = out.rfind("\"s-start\"");
+  ASSERT_NE(pos, std::string::npos);
+  const auto lineStart = out.rfind('\n', pos);
+  const auto lineEnd = out.find('\n', pos);
+  const std::string line = out.substr(
+      lineStart == std::string::npos ? 0 : lineStart + 1,
+      (lineEnd == std::string::npos ? out.size() : lineEnd) -
+          (lineStart == std::string::npos ? 0 : lineStart + 1));
+  std::string error;
+  auto response = corevideo::rpc::Json::parse(line, &error);
+  ASSERT_TRUE(response.has_value()) << error << " line=" << line;
+  const auto* snapshot = response->get("snapshot");
+  ASSERT_NE(snapshot, nullptr);
+  const auto* recording = snapshot->get("recording");
+  ASSERT_NE(recording, nullptr) << "newest start-recording sync was not applied";
+  const auto* active = recording->get("active");
+  ASSERT_NE(active, nullptr);
+  EXPECT_TRUE(active->asBool());
+}

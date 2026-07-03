@@ -642,6 +642,12 @@ struct ModuleSet {
 
 ModuleSet createDefaultModules();
 ModuleSet createStubModules();
+// createDefaultModules(), but with the encoder wrapped in AsyncEncoderSink so its
+// blocking disk I/O runs on a dedicated writer thread. This is for the LIVE process
+// (main.cpp): the audio/output worker submits frames every tick, so a WriteSample
+// stall must never collapse the worker or block stop-recording. Tests use
+// createDefaultModules directly and keep the synchronous encoder.
+ModuleSet createLiveServerModules();
 std::unique_ptr<ICompositor> createD3D11Compositor();
 std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();

@@ -305,12 +305,30 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   std::deque<std::pair<std::string, Stamp>> inQ;
   std::atomic<bool> inputClosed{false};
 
+  // Priority relief for control commands under a command backlog. The C# bridge
+  // re-emits the FULL, level-triggered production state every media-core-sync
+  // (scene routes, overlays, audio mix AND control commands like start/stop-
+  // recording), so when the command loop falls behind (soak: gaming + agent
+  // builds -> ~174s backlog, stop-recording queued >3min), every queued sync
+  // except the newest is stale. `pendingSyncs` counts syncs waiting in inQ so the
+  // loop can skip the expensive applyCommands/render pass for a sync that already
+  // has a newer one behind it — the newest sync carries the current intent — and
+  // reach stop-recording promptly instead of replaying minutes of stale state.
+  std::atomic<long long> pendingSyncs{0};
+  const auto isSyncLine = [](const std::string& line) {
+    return line.find("media-core-sync") != std::string::npos;
+  };
+
   std::thread reader([&] {
     std::string line;
     while (std::getline(input, line)) {
+      const bool sync = isSyncLine(line);
       {
         std::lock_guard<std::mutex> lock(inMx);
         inQ.emplace_back(std::move(line), std::chrono::steady_clock::now());
+      }
+      if (sync) {
+        pendingSyncs.fetch_add(1, std::memory_order_relaxed);
       }
       inCv.notify_one();
     }
@@ -485,6 +503,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   });
 
   auto lastPump = std::chrono::steady_clock::now();
+  long long coalescedSyncs = 0;
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(inMx);
@@ -511,6 +530,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (line.empty()) {
         continue;
       }
+      // Balance the pendingSyncs counter using the SAME cheap classification the
+      // reader used to increment it. `syncsQueuedAfter` is how many newer syncs
+      // are still waiting behind this one.
+      const bool wasSync = isSyncLine(line);
+      const long long syncsQueuedAfter =
+          wasSync ? (pendingSyncs.fetch_sub(1, std::memory_order_relaxed) - 1) : 0;
       // Queue-wait: how long this request sat in inQ before the command loop got to
       // it (i.e. the loop was busy handling earlier commands or pumping frames).
       const auto dequeuedAt = std::chrono::steady_clock::now();
@@ -527,6 +552,32 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         enqueueResponse(failure(Json("unknown"), "protocol-error", error).stringify());
       } else {
         const std::string reqType = request->getString("type");
+        const bool syncRequest = reqType == "media-core-sync" || reqType == "native-media-core-sync" ||
+                                 request->get("commands") != nullptr;
+        if (wasSync && syncRequest && syncsQueuedAfter > 0) {
+          // Coalesce: a newer full-state sync is already queued, so this batch is
+          // superseded. Answer with the current snapshot (so the bridge's waiter
+          // still resolves — never a timeout) but skip the expensive apply/render
+          // pass. This is the backlog-relief "priority lane": the newest sync,
+          // which carries level-triggered control commands (stop-recording), is
+          // reached immediately instead of behind minutes of stale syncs.
+          Json snapshot;
+          {
+            std::lock_guard<std::mutex> lock(coreMutex);
+            core::ScopedLockHoldTimer holdGuard("cmd.coalesced-sync",
+                                                core::LockHoldGuardrail::kCommandHandleBudgetUs);
+            snapshot = mediaCore_.sessionState();
+          }
+          const std::string syncType =
+              reqType == "native-media-core-sync" ? "native-media-core-sync" : "media-core-sync";
+          enqueueResponse(
+              success(requestId(*request), Json::Object{{"type", syncType}, {"snapshot", snapshot}}).stringify());
+          if (++coalescedSyncs % 64 == 1) {
+            std::fprintf(stderr, "[cmd] coalesced %lld stale media-core-sync batch(es) (backlog relief)\n",
+                         static_cast<long long>(coalescedSyncs));
+          }
+          continue;
+        }
         std::string responseStr;
         std::chrono::steady_clock::time_point h0, h1;
         {

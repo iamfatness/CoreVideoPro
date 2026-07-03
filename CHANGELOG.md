@@ -60,6 +60,24 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Fixed
 
+- **Recording/encoder overload resilience: the audio worker no longer collapses
+  and stop-recording can't be starved under load.** Under a worst-case soak the
+  audio/output worker fell from 47 to 0.6 ticks/s and the operator couldn't stop
+  recording for minutes. Root cause: the worker called `encoder->submit`/
+  `submitAudio` synchronously while holding `audioOutputMutex_`, so a blocking
+  Media Foundation `WriteSample` (disk stall) wedged the worker — and stop-recording
+  needs that same lock to finalize the container. The new `AsyncEncoderSink`
+  decorator (wired in for the live server only, via `createLiveServerModules`)
+  drains the encoder onto a dedicated writer thread: `submit`/`submitAudio` are
+  non-blocking enqueues with a **drop-to-latest** backlog cap (recording degrades to
+  a lower fps instead of collapsing), `stopRecording` returns instantly (finalize
+  runs async), and teardown finalizes within a **bounded grace** (then detaches so
+  shutdown never hangs). Separately, the `JsonRpcServer` command loop now
+  **coalesces stale `media-core-sync` batches** — a sync that already has a newer one
+  queued behind it is answered from the current snapshot without the expensive
+  apply/render pass, so a command backlog can't delay the level-triggered
+  stop-recording (in the newest sync) by minutes. Every request still gets a
+  response.
 - **Zoom engine IPC no longer collides with the OBS zoom plugin.** The engine's
   named pipes, unix sockets, and shared-memory regions previously used fixed
   names on the shared `ZoomObsPlugin_` base, so whenever OBS (with

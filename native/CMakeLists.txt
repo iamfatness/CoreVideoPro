@@ -31,6 +31,7 @@ endforeach()
 add_library(corevideo_native
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/modules/AsyncEncoderSink.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
@@ -337,6 +338,7 @@ if(BUILD_TESTING)
 
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
+    tests/AsyncEncoderSinkTest.cpp
     tests/AudioDspTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
