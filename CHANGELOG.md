@@ -8,6 +8,30 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Remote control foundation + OSC (Phase 1a).** New transport-agnostic
+  `CoreVideoPro.Control` library that defines the whole remote-control contract:
+  a stable, dot-namespaced **action registry** (`transport.take`,
+  `transport.record.set`, `scene.select`, `input.assign`, `input.name`,
+  `graphics.lowerThird.toggle`, `audio.monitor.set`, `multiview.layout.set`,
+  `automation.autoAssignInputs.set`, …) with typed param schemas; a flat
+  `ControlState` feedback model; a dependency-free **OSC 1.0 codec** and a UDP
+  `OscControlServer` that routes `/cvp/<action>` datagrams onto an
+  `IControlSurface` and pushes `/cvp/state/*` feedback on change; and a
+  machine-readable `ControlManifest` (the contract a Bitfocus Companion module is
+  generated from). Fully unit-tested (codec round-trip incl. bundles, registry
+  binding/coercion, routing, feedback, UDP loopback).
+- **Remote control WinUI adapter + OSC lifecycle (Phase 1b).** `StudioControlSurface`
+  maps every registered action onto the operator `StudioViewModel`
+  (commands + bound properties), marshaling each invocation onto the UI thread to
+  avoid the CoreMessagingXP fail-fast, and pushes debounced feedback on state change.
+  `MainWindow` starts an `OscControlServer` on launch (localhost:8010 by default;
+  `COREVIDEO_OSC_PORT` / `COREVIDEO_OSC_LAN=1` to change) and disposes it on shutdown,
+  so control surfaces / a Companion module can now drive Take, record/stream/engine,
+  scene select, input assign/name/in-show, lower-thirds/captions, audio monitor/limiter,
+  multiview, and automation. A coverage test asserts the adapter handles every
+  registry action. (Live OSC→UI validation is a rig step.) An HTTP/WebSocket transport
+  and the `companion-module-corevideopro` package are the next increments.
+
 - **Nameable sources + auto-assigned Show Inputs.** Each Show Input now has an
   editable display name (the new NAME column in the Inputs tab) that defaults to
   the Zoom participant / UVC device / media asset name but can be overridden; the
