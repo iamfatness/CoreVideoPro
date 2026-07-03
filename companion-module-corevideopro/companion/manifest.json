@@ -1,0 +1,22 @@
+{
+  "id": "corevideopro",
+  "name": "corevideopro",
+  "shortname": "CoreVideo Pro",
+  "description": "Control CoreVideo Pro — transport (Take/record/stream/engine), scenes, Show Inputs (assign/name/in-show), lower-thirds/captions, audio monitor/limiter, multiview and automation — over its HTTP/WebSocket control API, with live feedback.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": "https://github.com/iamfatness/CoreVideoPro",
+  "bugs": "https://github.com/iamfatness/CoreVideoPro/issues",
+  "maintainers": [
+    { "name": "CoreVideo Pro", "email": "support@corevideopro.example" }
+  ],
+  "legacyIds": [],
+  "runtime": {
+    "type": "node22",
+    "api": "nodejs-ipc",
+    "apiVersion": "0.0.0",
+    "entrypoint": "../dist/main.js"
+  },
+  "products": ["CoreVideo Pro"],
+  "keywords": ["video", "production", "zoom", "vision-mixer", "osc", "http"]
+}
