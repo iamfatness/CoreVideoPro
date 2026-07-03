@@ -577,6 +577,69 @@ public static class CoreProtocolParser
         };
     }
 
+    /// <summary>
+    /// Parses a "capture-devices" response ({"ok":true,"type":"capture-devices",
+    /// "devices":[...]}) into typed device statuses. Returns null when the
+    /// response is not a successful capture-devices payload.
+    /// </summary>
+    public static IReadOnlyList<NativeCaptureDeviceStatus>? TryParseCaptureDevices(JsonDocument response)
+    {
+        var root = response.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("ok", out var okElement) ||
+            okElement.ValueKind != JsonValueKind.True ||
+            !root.TryGetProperty("type", out var typeElement) ||
+            typeElement.GetString() != "capture-devices" ||
+            !root.TryGetProperty("devices", out var devicesElement) ||
+            devicesElement.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var devices = new List<NativeCaptureDeviceStatus>();
+        foreach (var device in devicesElement.EnumerateArray())
+        {
+            if (device.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var id = ReadString(device, "id");
+            if (string.IsNullOrEmpty(id))
+            {
+                continue;
+            }
+
+            var width = 0;
+            var height = 0;
+            if (device.TryGetProperty("resolution", out var resolution) &&
+                resolution.ValueKind == JsonValueKind.Object)
+            {
+                width = ReadInt(resolution, "width");
+                height = ReadInt(resolution, "height");
+            }
+
+            var warning = ReadString(device, "warning");
+            var nativeDeviceId = ReadString(device, "nativeDeviceId");
+            devices.Add(new NativeCaptureDeviceStatus
+            {
+                Id = id,
+                Name = ReadString(device, "name"),
+                Vendor = ReadString(device, "vendor"),
+                ConnectionState = ReadString(device, "connectionState"),
+                SignalPresent = device.TryGetProperty("signalPresent", out var signal) &&
+                    signal.ValueKind == JsonValueKind.True,
+                Width = width,
+                Height = height,
+                FrameRate = ReadInt(device, "frameRate"),
+                Warning = warning.Length > 0 ? warning : null,
+                NativeDeviceId = nativeDeviceId.Length > 0 ? nativeDeviceId : null
+            });
+        }
+
+        return devices;
+    }
+
     public static string? TryParseErrorMessage(JsonDocument response)
     {
         if (response.RootElement.TryGetProperty("ok", out var okElement) &&

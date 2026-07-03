@@ -162,6 +162,10 @@ rpc::Json::Array capabilityArray(const std::string& renderer, const modules::Out
   result.emplace_back("aja-capture");
 #endif
 
+#if COREVIDEO_WITH_UVC
+  result.emplace_back("uvc-capture");
+#endif
+
   return result;
 }
 
@@ -190,6 +194,11 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
   };
   if (!device.warning.empty()) {
     result.emplace("warning", device.warning);
+  }
+  // OS-level device identity (UVC symbolic link) so the shell can correlate a
+  // core-enumerated device with its own WinRT enumeration.
+  if (!device.nativeDeviceId.empty()) {
+    result.emplace("nativeDeviceId", device.nativeDeviceId);
   }
   return result;
 }

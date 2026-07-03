@@ -426,6 +426,53 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    // Lists the capture devices the core itself enumerates (native UVC via
+    // Media Foundation, DeckLink/AJA probes, stub devices). Returns [] when the
+    // response is not a capture-devices payload.
+    public async Task<IReadOnlyList<NativeCaptureDeviceStatus>> ListCaptureDevicesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "list-capture-devices"
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            return CoreProtocolParser.TryParseCaptureDevices(response) ?? [];
+        }
+    }
+
+    // Asks the core to open a capture device with its own native adapter (the
+    // Media Foundation UVC path). The returned list reflects the core's device
+    // states after the attempt; callers decide success by finding the device
+    // connected (see NativeUvcCapturePolicy.FindConnectedDevice) and fall back
+    // to the WinUI MediaCapture bridge otherwise.
+    public async Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectCaptureDeviceAsync(
+        string deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "connect-capture-device",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            return CoreProtocolParser.TryParseCaptureDevices(response) ?? [];
+        }
+    }
+
     // Announce a WinUI capture-card shared-memory buffer to the core so it ingests
     // the real BGRA frames as a "capture:<deviceId>" source. Best-effort.
     public async Task RegisterCaptureShmAsync(
