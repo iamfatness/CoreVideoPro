@@ -815,7 +815,10 @@ class FakeCaptureDevice final : public ICaptureDevice {
        true,
        0,
        0,
-       ""},
+       "",
+       // Stub OS-level identity so the nativeDeviceId JSON contract has stub
+       // coverage (mirrors the UVC adapter's symbolic-link field).
+       "\\\\?\\stub#decklink-1"},
       {"aja-io-1",
        "AJA Io 4K Plus",
        "video",
@@ -957,6 +960,14 @@ ModuleSet createDefaultModules() {
   }
   if (auto aja = createAjaCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(aja));
+  }
+  // Native UVC (Media Foundation) capture: webcams/capture cards enumerated and
+  // streamed inside the core, no WinUI shared-memory hop (dev-gated; nullptr in
+  // stub builds). The WinUiCaptureDeviceAdapter wrap below still supersedes
+  // these frames for a device the shell bridges via shm, so the WinUI path
+  // remains the fallback arbiter for the same device id.
+  if (auto uvc = createUvcCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(uvc));
   }
   if (hardwareCaptureDevices.size() == 1) {
     modules.captureDevice = std::move(hardwareCaptureDevices.front());

@@ -144,6 +144,34 @@ public sealed class CoreResponseEnvelope
     public CoreError? Error { get; init; }
 }
 
+/// <summary>
+/// One capture device reported by the native core's "capture-devices"
+/// responses (list-capture-devices / connect-capture-device /
+/// select-capture-input). Mirrors captureDeviceJson in
+/// native/src/core/MediaCore.cpp.
+/// </summary>
+public sealed class NativeCaptureDeviceStatus
+{
+    public required string Id { get; init; }
+    public string Name { get; init; } = "";
+    public string Vendor { get; init; } = "";
+    public string ConnectionState { get; init; } = "";
+    public bool SignalPresent { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int FrameRate { get; init; }
+    public string? Warning { get; init; }
+
+    /// <summary>
+    /// OS-level device identity (the Windows device-interface symbolic link for
+    /// native UVC devices). Lets the shell correlate a core-enumerated device
+    /// with its own WinRT enumeration even when the hashed stable ids disagree
+    /// (symbolic-link casing differences). Null when the core device carries no
+    /// OS identity (stub/virtual devices).
+    /// </summary>
+    public string? NativeDeviceId { get; init; }
+}
+
 public sealed class NativeMediaCoreWireHealth
 {
     public string? Status { get; init; }

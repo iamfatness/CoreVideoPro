@@ -123,7 +123,12 @@ routing honored by Sources + multiview; compact Sources routing table.
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
 audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
-capture** (UVC first, then DeckLink/AJA); (3) Phase 2 leftovers: engine `sendLine`
+capture** — native Media Foundation UVC capture is CODE-COMPLETE behind
+`COREVIDEO_WITH_UVC` (ON in `build-native-dev.ps1`; shell opt-in
+`COREVIDEO_NATIVE_UVC=1`, WinUI shm bridge remains fallback) but **not yet
+rig-validated with a live camera**; DeckLink/AJA frame delivery still to do
+(see `docs/native-production-completion-plan.md` Items 1–2); (3) Phase 2
+leftovers: engine `sendLine`
 still blocks under `coreMutex` (increment 3) and the sub-ms-hold guardrails/TSan gate
 (increment 6). DONE 2026-07-02: **overlay/lower-third/caption text rasterization** —
 `OverlayTileRaster::computeOverlayTileLayout` is the single source of overlay geometry;

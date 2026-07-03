@@ -39,6 +39,14 @@ struct VideoFrame {
   std::shared_ptr<const std::vector<uint8_t>> i420;
   int i420Width = 0;
   int i420Height = 0;
+  // Color-space hints for the GPU YUV->RGB conversion of the I420 payload.
+  // Defaults preserve the historical Zoom behavior (full-range BT.709). The
+  // native UVC capture adapter sets these from the negotiated Media Foundation
+  // media type (cameras typically deliver limited-range/studio-swing YUV, and
+  // SD devices are BT.601) so the compositor shader expands the range and picks
+  // the matrix per frame instead of washing out camera blacks.
+  bool i420FullRange = true;
+  bool i420Bt601 = false;
   [[nodiscard]] bool hasPixels() const {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
@@ -409,6 +417,12 @@ struct CaptureDeviceInfo {
   int64_t droppedFrames = 0;
   int audioSyncOffsetMs = 0;
   std::string warning;
+  // The underlying OS device identity (Windows device-interface symbolic link
+  // for UVC devices). Lets the WinUI shell correlate a core-enumerated device
+  // with its own WinRT enumeration even when the hashed stable ids disagree
+  // (e.g. symbolic-link casing differences). Empty for devices that have no
+  // OS-level identity (stub/virtual devices).
+  std::string nativeDeviceId;
 };
 
 struct CaptureAudioSourceConfig {
@@ -634,5 +648,12 @@ std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
+// Native UVC webcam/capture-card ingest via Media Foundation (dev-gated behind
+// COREVIDEO_WITH_UVC; returns nullptr otherwise). Enumerates VIDCAP devices,
+// negotiates 1080p60-targeted formats (NV12/YUY2/MJPG), and delivers I420
+// frames keyed "capture:<stableDeviceId>" straight into the compositor — no
+// WinUI shared-memory hop. The WinUI bridge remains the fallback path and
+// supersedes these frames for the same device id.
+std::unique_ptr<ICaptureDevice> createUvcCaptureDevice();
 
 }  // namespace corevideo::modules

@@ -16,6 +16,21 @@ public sealed class CaptureDeviceDiscoveryMapperTests
     }
 
     [Theory]
+    [InlineData("test-device", "2fe90d9c33ad85a1")]
+    [InlineData(
+        @"\\?\usb#vid_046d&pid_085e&mi_00#6&158f56b0&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global",
+        "98a3916224275371")]
+    public void CreateStableDeviceId_MatchesNativeCoreSha256Convention(string symbolicLink, string expected)
+    {
+        // These vectors are mirrored in the native core's UvcCaptureSupportTest
+        // (stableCaptureDeviceIdFromSymbolicLink). The shell and the C++ UVC
+        // adapter MUST derive the identical stable id from the same symbolic
+        // link so scene routes resolve to the same "capture:<id>" source on
+        // both capture paths.
+        Assert.Equal(expected, CaptureDeviceDiscoveryMapper.CreateStableDeviceId(symbolicLink));
+    }
+
+    [Theory]
     [InlineData("DeckLink Mini Recorder 4K", "blackmagic")]
     [InlineData("Blackmagic Web Presenter HD", "blackmagic")]
     [InlineData("AJA Io 4K Plus", "aja")]
