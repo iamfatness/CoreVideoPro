@@ -65,7 +65,8 @@ class AsyncEncoderSink final : public IEncoderSink {
     std::chrono::milliseconds finalizeGrace{4000};
   };
 
-  explicit AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options options = {});
+  explicit AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner);
+  AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options options);
   ~AsyncEncoderSink() override;
 
   AsyncEncoderSink(const AsyncEncoderSink&) = delete;

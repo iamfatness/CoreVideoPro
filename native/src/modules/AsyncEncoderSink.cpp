@@ -1,9 +1,13 @@
 #include "modules/AsyncEncoderSink.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 
 namespace corevideo::modules {
+
+AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner)
+    : AsyncEncoderSink(std::move(inner), Options{}) {}
 
 AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options options)
     : options_(options), state_(std::make_shared<State>()) {
