@@ -11,12 +11,8 @@ namespace CoreVideoPro.WinUI.Views;
 public sealed partial class StudioWorkspace : UserControl
 {
     private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private readonly StudioLayoutPreferenceService _layoutPreferenceService = new();
     private StudioViewModel? _boundViewModel;
-    private StudioLayoutPreferences _layoutPreferences = new();
     private bool _participantListRefreshScheduled;
-    private bool _programPreviewSplitterDragging;
-    private bool _programMultiviewSplitterDragging;
 
     public static readonly DependencyProperty ViewModelProperty =
         DependencyProperty.Register(
@@ -45,8 +41,6 @@ public sealed partial class StudioWorkspace : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        _layoutPreferences = _layoutPreferenceService.Load();
-        ApplyStoredStudioLayout();
         ScheduleParticipantListRefresh();
     }
 
@@ -102,142 +96,4 @@ public sealed partial class StudioWorkspace : UserControl
         });
     }
 
-    private void OnProgramPreviewSplitterPointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        _programPreviewSplitterDragging = true;
-        ProgramPreviewSplitter.CapturePointer(e.Pointer);
-        e.Handled = true;
-    }
-
-    private void OnProgramPreviewSplitterPointerMoved(object sender, PointerRoutedEventArgs e)
-    {
-        if (!_programPreviewSplitterDragging)
-        {
-            return;
-        }
-
-        var pointerX = e.GetCurrentPoint(ProgramPreviewGrid).Position.X;
-        ResizeProgramPreviewColumns(pointerX);
-        e.Handled = true;
-    }
-
-    private void OnProgramPreviewSplitterPointerReleased(object sender, PointerRoutedEventArgs e)
-    {
-        if (!_programPreviewSplitterDragging)
-        {
-            return;
-        }
-
-        _programPreviewSplitterDragging = false;
-        ProgramPreviewSplitter.ReleasePointerCapture(e.Pointer);
-        SaveStudioLayoutPreferences();
-        e.Handled = true;
-    }
-
-    private void ResizeProgramPreviewColumns(double pointerX)
-    {
-        const double minMonitorWidth = 220;
-        const double columnSpacingTotal = 8;
-        var availableWidth = ProgramPreviewGrid.ActualWidth - ProgramPreviewSplitter.ActualWidth - columnSpacingTotal;
-        if (availableWidth <= minMonitorWidth * 2)
-        {
-            return;
-        }
-
-        var previewWidth = Math.Clamp(pointerX, minMonitorWidth, availableWidth - minMonitorWidth);
-        var ratio = previewWidth / availableWidth;
-
-        ApplyProgramPreviewSplitRatio(ratio);
-    }
-
-    private void OnProgramMultiviewSplitterPointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        _programMultiviewSplitterDragging = true;
-        ProgramMultiviewSplitter.CapturePointer(e.Pointer);
-        e.Handled = true;
-    }
-
-    private void OnProgramMultiviewSplitterPointerMoved(object sender, PointerRoutedEventArgs e)
-    {
-        if (!_programMultiviewSplitterDragging)
-        {
-            return;
-        }
-
-        ResizeProgramPreviewAndMultiviewRows(e.GetCurrentPoint(DirectorLayout).Position.Y);
-        e.Handled = true;
-    }
-
-    private void OnProgramMultiviewSplitterPointerReleased(object sender, PointerRoutedEventArgs e)
-    {
-        if (!_programMultiviewSplitterDragging)
-        {
-            return;
-        }
-
-        _programMultiviewSplitterDragging = false;
-        ProgramMultiviewSplitter.ReleasePointerCapture(e.Pointer);
-        SaveStudioLayoutPreferences();
-        e.Handled = true;
-    }
-
-    private void ResizeProgramPreviewAndMultiviewRows(double pointerY)
-    {
-        const double minProgramPreviewHeight = 180;
-        const double minMultiviewHeight = 120;
-        const double rowSpacingTotal = 12;
-        var availableHeight = DirectorLayout.ActualHeight -
-            DirectorHeader.ActualHeight -
-            ProgramMultiviewSplitter.ActualHeight -
-            rowSpacingTotal;
-
-        if (availableHeight <= minProgramPreviewHeight + minMultiviewHeight)
-        {
-            return;
-        }
-
-        var programPreviewHeight = Math.Clamp(
-            pointerY - DirectorHeader.ActualHeight - rowSpacingTotal / 2,
-            minProgramPreviewHeight,
-            availableHeight - minMultiviewHeight);
-        var ratio = programPreviewHeight / availableHeight;
-
-        ApplyProgramPreviewHeightRatio(ratio);
-    }
-
-    private void ApplyStoredStudioLayout()
-    {
-        ApplyProgramPreviewSplitRatio(_layoutPreferences.PreviewProgramSplitRatio);
-        ApplyProgramPreviewHeightRatio(_layoutPreferences.ProgramPreviewHeightRatio);
-    }
-
-    private void ApplyProgramPreviewSplitRatio(double ratio)
-    {
-        _layoutPreferences = _layoutPreferences with
-        {
-            PreviewProgramSplitRatio = StudioLayoutPreferenceService.Normalize(
-                _layoutPreferences with { PreviewProgramSplitRatio = ratio }).PreviewProgramSplitRatio
-        };
-
-        PreviewMonitorColumn.Width = new GridLength(_layoutPreferences.PreviewProgramSplitRatio, GridUnitType.Star);
-        ProgramMonitorColumn.Width = new GridLength(1 - _layoutPreferences.PreviewProgramSplitRatio, GridUnitType.Star);
-    }
-
-    private void ApplyProgramPreviewHeightRatio(double ratio)
-    {
-        _layoutPreferences = _layoutPreferences with
-        {
-            ProgramPreviewHeightRatio = StudioLayoutPreferenceService.Normalize(
-                _layoutPreferences with { ProgramPreviewHeightRatio = ratio }).ProgramPreviewHeightRatio
-        };
-
-        ProgramPreviewRow.Height = new GridLength(_layoutPreferences.ProgramPreviewHeightRatio, GridUnitType.Star);
-        MultiviewRow.Height = new GridLength(1 - _layoutPreferences.ProgramPreviewHeightRatio, GridUnitType.Star);
-    }
-
-    private void SaveStudioLayoutPreferences()
-    {
-        _layoutPreferences = StudioLayoutPreferenceService.Normalize(_layoutPreferences);
-        _layoutPreferenceService.Save(_layoutPreferences);
-    }
 }

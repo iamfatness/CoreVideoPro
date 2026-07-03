@@ -8,6 +8,14 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Unified Studio multiviewer.** The Studio center is now ONE cohesive multiviewer
+  (ATEM/Riedel-style) — large PROGRAM + PREVIEW cells with red/green tally over the
+  source-feed tiles, plus labels/meters/clock — instead of separate big PROGRAM +
+  PREVIEW monitors AND a duplicate source strip that showed the on-air sources twice.
+  It reuses the proven core-composited single-surface `ShowMultiviewHost` (so it also
+  removes two per-monitor swap chains), and the default layout is now `pgmPvwLarge`.
+  Validated live on the rig (no CoreMessagingXP crash).
+
 - **Remote control HTTP + WebSocket transport (Phase 2a).** Alongside OSC, an
   `HttpControlServer` (HttpListener) exposes the same control surface over HTTP:
   `GET /manifest` (the action/feedback contract), `GET /state` (current state,
