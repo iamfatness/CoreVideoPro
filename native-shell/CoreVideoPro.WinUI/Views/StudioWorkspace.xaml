@@ -422,27 +422,45 @@
                 </Grid>
             </Border>
 
+            <!-- Unified multiviewer: ONE core-composited surface (large PGM + PVW cells plus the
+                 source-feed tiles, tally, meters and clock) — the ATEM/Riedel-style single
+                 multiviewer, not separate big monitors + a duplicate source strip. The pgmPvw
+                 layout mode makes the core draw the PGM/PVW cells; the ShowMultiviewHost is the
+                 proven single-swap-chain surface, so this also removes two per-monitor swap chains. -->
             <Grid Grid.Column="1" x:Name="DirectorLayout" RowSpacing="4">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition x:Name="ProgramPreviewRow" Height="2*" MinHeight="180" />
-                    <RowDefinition Height="6" />
-                    <RowDefinition x:Name="MultiviewRow" Height="*" MinHeight="120" />
+                    <RowDefinition x:Name="MultiviewRow" Height="*" MinHeight="200" />
                 </Grid.RowDefinitions>
 
                 <Border x:Name="DirectorHeader" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
-                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                        <TextBlock Text="PROGRAM + PREVIEW" FontWeight="Bold" FontSize="12"
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="MULTIVIEWER" FontWeight="Bold" FontSize="12"
+                                   VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
+                        <Border Grid.Column="1" Background="#1A2229" CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
                             <TextBlock Text="{x:Bind ViewModel.ProgramResolutionLabel, Mode=OneWay}" FontSize="11"
                                        Foreground="{StaticResource StudioTextSecondaryBrush}" />
                         </Border>
-                        <Border Background="#1A2229" CornerRadius="4" Padding="6,2">
-                            <TextBlock Text="16:9 monitors" FontSize="11"
-                                       Foreground="{StaticResource StudioTextSecondaryBrush}" />
-                        </Border>
-                        <Button Style="{StaticResource GhostButton}"
+                        <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
+                                   FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"
+                                   Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
+                        <Button Grid.Column="3" Style="{StaticResource SceneBuilderCalloutButton}"
+                                Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE8F1;" FontSize="11" />
+                                <TextBlock Text="Scene builder" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="4" Style="{StaticResource GhostButton}"
                                 MinWidth="74"
                                 Padding="8,4"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
@@ -457,167 +475,20 @@
                                            Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
                         </Button>
-                    </StackPanel>
-                </Border>
-
-                <Grid x:Name="ProgramPreviewGrid" Grid.Row="1" ColumnSpacing="4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition x:Name="PreviewMonitorColumn" Width="*" MinWidth="220" />
-                        <ColumnDefinition Width="6" />
-                        <ColumnDefinition x:Name="ProgramMonitorColumn" Width="*" MinWidth="220" />
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0" Style="{StaticResource StudioPanelBorder}" BorderBrush="#473DDC97">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="0,0,0,1" Padding="10,6">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="PREVIEW" FontWeight="ExtraBold" FontSize="11"
-                                               Foreground="{StaticResource StudioAccentBrush}" CharacterSpacing="60" />
-                                    <TextBlock Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" FontSize="11"
-                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                            </Border>
-                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
-                                <cvcontrols:AspectRatioHost.Child>
-                                    <Grid>
-                                        <!-- Preview bus = a SINGLE VideoSurfaceHost bound to the queued
-                                             scene's primary source (ViewModel.PreviewSurface). This presents
-                                             the previewed source steadily (in-place WriteableBitmap updates,
-                                             GPU shared texture when available) instead of the per-frame tile
-                                             teardown/rebuild that made the Zoom preview flicker/freeze. -->
-                                        <cvcontrols:VideoSurfaceHost
-                                            HorizontalAlignment="Stretch"
-                                            VerticalAlignment="Stretch"
-                                            SurfaceState="{x:Bind ViewModel.PreviewSurface, Mode=OneWay}" />
-                                    </Grid>
-                                </cvcontrols:AspectRatioHost.Child>
-                            </cvcontrols:AspectRatioHost>
-                        </Grid>
-                    </Border>
-
-                    <Border x:Name="ProgramPreviewSplitter"
-                            Grid.Column="1"
-                            Background="#223139"
-                            BorderBrush="#3DDC97"
-                            BorderThickness="1,0"
-                            CornerRadius="3"
-                            HorizontalAlignment="Stretch"
-                            ToolTipService.ToolTip="Drag to resize Preview and Program"
-                            PointerPressed="OnProgramPreviewSplitterPointerPressed"
-                            PointerMoved="OnProgramPreviewSplitterPointerMoved"
-                            PointerReleased="OnProgramPreviewSplitterPointerReleased"
-                            PointerCanceled="OnProgramPreviewSplitterPointerReleased">
-                        <Rectangle Fill="#3DDC97"
-                                   Width="2"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Stretch"
-                                   Opacity="0.75" />
-                    </Border>
-
-                    <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <Border Background="#1F1710" BorderBrush="#F0A85C" BorderThickness="0,0,0,1" Padding="10,6">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="PROGRAM" FontWeight="ExtraBold" FontSize="11" Foreground="#F0A85C" CharacterSpacing="60" />
-                                    <TextBlock Text="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}" FontSize="11"
-                                               Foreground="{StaticResource StudioTextSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                            </Border>
-                            <cvcontrols:AspectRatioHost Grid.Row="1" AspectWidth="16" AspectHeight="9">
-                                <cvcontrols:AspectRatioHost.Child>
-                                    <Grid>
-                                        <!-- Program output = the native core's GPU program shared texture (one
-                                             stable swap chain, 1080p60, no churn). The core composites EVERYTHING
-                                             into this frame: Zoom participants AND capture cards (capture now
-                                             reaches the core via the shared-memory bridge, so the old "pink slate
-                                             for capture" problem is gone) plus overlays. Presenting it directly
-                                             gives smooth live program without the per-source WinUI composite (the
-                                             ScenePreviewControl base64 path froze for GPU-backed Zoom sources, and
-                                             a per-layer GPU host exhausted swap chains). ProgramSurface carries the
-                                             core's keyed-mutex handle via ApplyProgramSharedTexture. -->
-                                        <cvcontrols:VideoSurfaceHost
-                                            HorizontalAlignment="Stretch"
-                                            VerticalAlignment="Stretch"
-                                            SurfaceState="{x:Bind ViewModel.ProgramSurface, Mode=OneWay}" />
-                                    </Grid>
-                                </cvcontrols:AspectRatioHost.Child>
-                            </cvcontrols:AspectRatioHost>
-                        </Grid>
-                    </Border>
-                </Grid>
-
-                <Border x:Name="ProgramMultiviewSplitter"
-                        Grid.Row="2"
-                        Background="#223139"
-                        BorderBrush="#3DDC97"
-                        BorderThickness="0,1"
-                        CornerRadius="3"
-                        VerticalAlignment="Stretch"
-                        ToolTipService.ToolTip="Drag to resize Program/Preview and Multiview"
-                        PointerPressed="OnProgramMultiviewSplitterPointerPressed"
-                        PointerMoved="OnProgramMultiviewSplitterPointerMoved"
-                        PointerReleased="OnProgramMultiviewSplitterPointerReleased"
-                        PointerCanceled="OnProgramMultiviewSplitterPointerReleased">
-                    <Rectangle Fill="#3DDC97"
-                               Height="2"
-                               HorizontalAlignment="Stretch"
-                               VerticalAlignment="Center"
-                               Opacity="0.75" />
-                </Border>
-
-                <Border Grid.Row="3" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
-                    <Grid RowSpacing="6">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <Grid ColumnSpacing="6" RowSpacing="4">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <TextBlock Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
-                                       FontWeight="SemiBold" FontSize="12"
-                                       Foreground="{StaticResource StudioTextBrush}" />
-                            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.MultiviewCapLabel, Mode=OneWay}" FontSize="10" FontWeight="ExtraBold"
-                                       Foreground="#6C7A72" CharacterSpacing="80" />
-                            <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8">
-                                <TextBlock Text="{x:Bind ViewModel.MultiviewConfigureHint, Mode=OneWay}"
-                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                <Button Style="{StaticResource SceneBuilderCalloutButton}"
-                                        Padding="10,4" FontSize="10"
-                                        Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
-                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <FontIcon Glyph="&#xE8F1;" FontSize="11" />
-                                        <TextBlock Text="Scene builder" />
-                                    </StackPanel>
-                                </Button>
-                            </StackPanel>
-                        </Grid>
-                        <cvcontrols:ShowMultiviewHost Grid.Row="1"
-                                                      Surface="{x:Bind ViewModel.MultiviewSurface, Mode=OneWay}"
-                                                      TileRects="{x:Bind ViewModel.MultiviewTileRects, Mode=OneWay}"
-                                                      TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}"
-                                                      ShowLabels="{x:Bind ViewModel.MultiviewShowLabels, Mode=OneWay}"
-                                                      ShowTally="{x:Bind ViewModel.MultiviewShowTally, Mode=OneWay}"
-                                                      ShowMeters="{x:Bind ViewModel.MultiviewShowMeters, Mode=OneWay}"
-                                                      ShowClock="{x:Bind ViewModel.MultiviewShowClock, Mode=OneWay}"
-                                                      MeterLevelLeft="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
-                                                      MeterLevelRight="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}" />
                     </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Style="{StaticResource StudioPanelBorder}" Padding="8,6">
+                    <cvcontrols:ShowMultiviewHost
+                        Surface="{x:Bind ViewModel.MultiviewSurface, Mode=OneWay}"
+                        TileRects="{x:Bind ViewModel.MultiviewTileRects, Mode=OneWay}"
+                        TileClickCommand="{x:Bind ViewModel.PreviewMultiviewTileCommand}"
+                        ShowLabels="{x:Bind ViewModel.MultiviewShowLabels, Mode=OneWay}"
+                        ShowTally="{x:Bind ViewModel.MultiviewShowTally, Mode=OneWay}"
+                        ShowMeters="{x:Bind ViewModel.MultiviewShowMeters, Mode=OneWay}"
+                        ShowClock="{x:Bind ViewModel.MultiviewShowClock, Mode=OneWay}"
+                        MeterLevelLeft="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                        MeterLevelRight="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}" />
                 </Border>
             </Grid>
 

@@ -34,15 +34,17 @@ public sealed class StudioMultiviewerConfigTests
     [InlineData("   ")]
     [InlineData("bogus")]
     [InlineData("GRID")]
-    public void NormalizeMultiviewLayoutMode_FallsBackToGridForUnknown(string? input)
+    public void NormalizeMultiviewLayoutMode_FallsBackToDefaultForUnknown(string? input)
     {
-        Assert.Equal("grid", StudioViewModel.NormalizeMultiviewLayoutMode(input));
+        // Unknown/blank → the unified-multiviewer default (Program/Preview + source tiles),
+        // so a fresh install with no persisted mode opens as the multiviewer, not a bare grid.
+        Assert.Equal(StudioViewModel.DefaultMultiviewLayoutMode, StudioViewModel.NormalizeMultiviewLayoutMode(input));
     }
 
     [Fact]
     public void MultiviewerContractDefaults_MatchSpecification()
     {
-        Assert.Equal("grid", StudioViewModel.DefaultMultiviewLayoutMode);
+        Assert.Equal("pgmPvwLarge", StudioViewModel.DefaultMultiviewLayoutMode);
         Assert.Equal(8, StudioViewModel.DefaultMultiviewTileCount);
         Assert.Equal(1, StudioViewModel.MinMultiviewTileCount);
         Assert.Equal(8, StudioViewModel.MaxMultiviewTileCount);

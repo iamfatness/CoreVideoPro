@@ -1508,7 +1508,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // Multiviewer preferences: layout mode + tile count + overlay toggles. On any change, clamp,
     // persist, and (debounced) push a configure-multiviewer command to the core.
-    public const string DefaultMultiviewLayoutMode = "grid";
+    // The Studio center IS the unified multiviewer, so it defaults to a Program/Preview
+    // layout (large PGM + PVW cells over the source-feed tiles) rather than a bare source grid.
+    public const string DefaultMultiviewLayoutMode = "pgmPvwLarge";
     public const int DefaultMultiviewTileCount = 8;
     public const int MinMultiviewTileCount = 1;
     public const int MaxMultiviewTileCount = 8;
