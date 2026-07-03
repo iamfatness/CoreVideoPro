@@ -528,6 +528,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingAudioChannels = program_.audioChannels();
       session_.recordingAudioSampleRate = program_.audioSampleRate();
       session_.recordingAudioBitrateKbps = program_.audioBitrateKbps();
+    } else if (session_.recordingWarning.empty() && !error.empty()) {
+      // A failed audio WriteSample used to vanish silently (video kept muxing,
+      // the finalized MP4 just had no AAC track and nothing was surfaced).
+      // Keep the recording alive but make the drop visible.
+      session_.recordingWarning = "Media Foundation dropped program audio: " + error + ".";
     }
     for (auto& iso : isoWriters_) {
       iso.writeAudio(interleaved, frameCount, error);

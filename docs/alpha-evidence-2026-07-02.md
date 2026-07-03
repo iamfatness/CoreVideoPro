@@ -230,8 +230,29 @@ control).
   stream before `BeginWriting`; `submitAudio` drops format-mismatched buffers
   with a warning instead of killing the session
   (`native/src/modules/MediaFoundationEncoderAdapter.cpp`).
+- [x] **Post-fix recording proofs (packaged build, 22:11–22:23):**
+  - 125s recording: **53.9MB, 7501 frames @60fps 1080p H.264, valid moov,
+    finalized the same second the stop landed** (stop handled in 26ms) —
+    `trackD-short-recording-ffprobe.json`. The 1-second-death P0 is closed and
+    the stop-finalize seam works in-app.
+  - Audio track: the packaged-app runs still produced video-only MP4s. First run
+    root-caused to a SILENT source (validation chain correctly reported
+    "PGM silent source / RECORD wait source" — the user's game was quiet). Two
+    tone-injected runs (ffplay 440Hz → WASAPI loopback, PGM taps at -21.1dB)
+    still yielded `nb_streams: 1`, with a confound: an unexplained recording
+    stop toggled at +60s during one run (`recording: toggle requested
+    action=stop`, no automation active — the operator was at the machine).
+  - **Headless core-level proof (decisive): `scripts/diag-record-audio.mjs`**
+    (spawns the fixed core directly, arms `sync-capture-audio-sources`
+    wasapi-loopback + recording, tone playing):
+    **`nb_streams=2, streams=[video:h264:5.3s, audio:aac:3.2s]`** — the AAC fix
+    muxes a real audio track end-to-end at the core boundary and finalizes on
+    stop. The remaining in-app gap is now instrumented: a failed audio
+    WriteSample previously vanished silently; `submitAudio` now surfaces
+    "Media Foundation dropped program audio: <hresult>" into the recording
+    warning. Re-run the in-app tone proof with that build (Needs Human item).
 - [ ] 30-minute recording soak — NOT RUN (blocked first by the AAC bug, then by
-  rig conditions; run after the short proof is green on a quiet rig).
+  rig conditions; run after the in-app audio-track proof is green on a quiet rig).
 - [ ] RTMP push with real program audio — **Needs Human** (no live RTMP ingest
   endpoint/credentials available to the agent; FFmpeg runtime IS staged —
   diagnostics shows `FFmpeg runtime found: C:\ffmpeg\bin\ffmpeg.exe`).
@@ -271,8 +292,74 @@ _(pending)_
 
 ## Track F — Packaging
 
-_(pending)_
+- [x] **`npm run pack:native`** — PASS (second run; the first failed because it
+  publishes into the same `publish/` the running app locks — run it with the app
+  closed). Output: `artifacts/native/win-unpacked/` with `CoreVideoPro.WinUI.exe`,
+  the AAC-fixed `corevideo-native.exe` (1,065,984), the REAL
+  `corevideo-zoom-engine.exe` (201,728), staged Zoom runtime
+  (`zoom-runtime/windows/x64/bin/sdk.dll`) and FFmpeg runtime. Console log:
+  `artifacts/alpha-evidence/trackF-pack-native.txt`.
+- [ ] `npm run pack:native:msix` — NOT RUN (no signing identity staged on this
+  rig) — **Needs Human** if MSIX is in the Alpha promise.
+- [x] **Launch the packaged build** — PASS (same machine, existing profile —
+  truly clean box is Needs Human). The packaged exe launched, spawned
+  `corevideo-native.exe` FROM the package directory (verified via process
+  path), reached 59.8fps / lockWait 0.0ms / render 4.8ms, discovered the Zoom
+  runtime, spawned the (fake-swapped for validation, then restored) zoom engine
+  from the package dir, joined the synthetic meeting ("Zoom Live", 4 feeds), and
+  recorded to `<package>/Recordings/CoreVideo Pro/`. Startup note: one
+  `d3d: present skip — EnsureSwapChain failed 1920x1080` before the swap-chain
+  attached (recovered immediately; worth a startup-race look).
+- [x] Recording folder access + support bundle export paths — verified via the
+  in-app run above (`%LOCALAPPDATA%\CoreVideoPro\support-bundles`).
+- [x] Alpha release note — this document + the preflight report constitute the
+  evidence bundle for the Alpha decision (commit list in the branch log).
 
 ## Needs Human
 
-_(pending)_
+1. **Real Zoom meeting proof (Track B):** join a real meeting with ≥2 human
+   participants; verify roster, active speaker, mute/unmute, screen share,
+   leave/rejoin, and churn. All churn evidence in this pass is synthetic
+   (fake engine). Repro: stage real engine (default), Settings → Zoom → join a
+   live meeting ID, Capture On, watch multiview + Sources.
+2. **Clean-rig Phase 2 §6 gate re-run:** the ≥10-min audio soak executed but
+   FAILED its glitch-freedom/TIMEOUT criteria under a fullscreen game co-load
+   (see soak section). Re-run with no game running: launch app, fake engine, join,
+   Capture On, Record, 10+ min; require `[audioOut]` ≥ ~45 ticks/s steady,
+   0 bridge TIMEOUTs, 0 crash events, then ffprobe the MP4 for a continuous AAC
+   track. **Ears on the monitor output** (GoXLR) for audible glitch-freedom —
+   inherently human.
+3. **RTMP live push (Track D):** stage a real RTMP endpoint (Twitch/YouTube
+   key), configure a Stream destination, push ≥5 min, verify ingest health and
+   A/V sync at the platform. FFmpeg runtime is already staged.
+4. **Routing matrix click-through (Track C):** ISO A/ISO 1 isolation semantics +
+   gain changes, and the 16:9 canvas at common laptop/desktop window sizes
+   (resize is the known crash-adjacent path — watch for CoreMessagingXP).
+5. **Truly clean Windows machine (Track F):** copy `artifacts/native/win-unpacked`
+   to a box without dev tooling; launch; verify Zoom runtime discovery, recording
+   folder access, support-bundle export. MSIX signing if promised.
+6. **Secrets redaction with real values (Track E):** configure a real stream key
+   + meeting passcode, export a bundle, confirm they are redacted (this pass only
+   proves the `"absent"` case).
+7. **PGM/PVW content-vs-label swap after Take (Track C bug #2):** verify on-screen
+   which pane carries true program after a Take (the soak recording suggests the
+   CONTENT mapping, not the labels, is authoritative); file/fix accordingly.
+8. **OBS pipe collision fix decision (Track B bug #1):** until per-instance pipe
+   names ship, document "close OBS (obs-zoom-plugin) before using CoreVideo Pro".
+
+## Environment restoration log (agent hygiene)
+
+- Real `corevideo-zoom-engine.exe` restored + size-verified **201728 bytes at
+  all four locations** (`native/build-dev`, `native/build-dev/Release`, WinUI
+  `publish/`, `artifacts/native/win-unpacked`) at 22:29 local; `.realbak`
+  backups retained at the three contract paths, removed from the package.
+- `%LOCALAPPDATA%\CoreVideoPro\zoom-oauth.json` restored from `.alphasoak.bak`.
+- OBS Studio was force-closed at ~21:31 to free the collided IPC pipes (it was
+  not recording; graceful close was refused twice) and relaunched at 22:28.
+- The operator's game (Overwatch), Discord, Zoom client, and the other agents'
+  build processes were never touched.
+- **Session-wide crash check:** `Get-WinEvent` Application Id 1000 from 21:00 →
+  22:29: **zero events** — no real crashes and no kill artifacts across the
+  soak, the crash simulation, and all app/core restarts.
+- Final native rebuild (with the audio-drop warning) + stub CI gate: green at
+  22:29 (`npm run build:native-dev` + `npm run test:native-media-core` exit 0).
