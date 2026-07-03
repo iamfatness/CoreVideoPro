@@ -1,5 +1,7 @@
 #include "rpc/JsonRpcServer.h"
 
+#include "core/LockHoldGuardrail.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -332,6 +334,14 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // worker additionally uses MediaCore's own audioOutputMutex_ for the long DSP/IO
   // span (held NEVER together with coreMutex), so the render thread — which takes
   // ONLY coreMutex — is never blocked by audio mix / monitor / encoder / output I/O.
+  //
+  // LOCK ORDER (docs/phase2-threading-plan.md §6; violating it is a deadlock):
+  //   coreMutex → audioOutputMutex_                      (audio/output control plane)
+  //   coreMutex → ZoomEngineRuntime::mutex_ → ::sendMutex_ (spine sync / engine ops)
+  // audioOutputMutex_ and the ZoomEngineRuntime locks are never held together, and
+  // the audio worker / engine sender thread never hold coreMutex across blocking
+  // work. Engine pipe writes happen ONLY on the runtime's dedicated sender thread
+  // (increment 3) — no engine I/O ever runs under coreMutex.
   std::mutex coreMutex;
 
   // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
@@ -359,6 +369,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const auto t0 = std::chrono::steady_clock::now();
       {
         std::unique_lock<std::mutex> lock(coreMutex);
+        // Increment 6 guardrail: sanctioned long-hold site — the video-only GPU
+        // tick typically holds ~1-2ms; warn (rate-capped) past half a frame.
+        core::ScopedLockHoldTimer holdGuard("render.display-tick",
+                                            core::LockHoldGuardrail::kRenderTickBudgetUs);
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick();
         for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
@@ -517,6 +531,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::chrono::steady_clock::time_point h0, h1;
         {
           std::lock_guard<std::mutex> lock(coreMutex);
+          // Increment 6 guardrail: sanctioned long-hold site — command-carrying
+          // syncs legitimately render a capped catch-up of synthetic ticks under
+          // the lock; the budget is a regression backstop above the 30ms [cmd]
+          // warning below.
+          core::ScopedLockHoldTimer holdGuard("cmd.handle",
+                                              core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();
           responseStr = handle(*request).stringify();
           h1 = std::chrono::steady_clock::now();
@@ -557,6 +577,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       const auto p0 = std::chrono::steady_clock::now();
       {
         std::lock_guard<std::mutex> lock(coreMutex);
+        // Increment 6 guardrail: sanctioned long-hold site (base64 preview
+        // stringify on the throttled pump).
+        core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
+                                            core::LockHoldGuardrail::kFramePumpBudgetUs);
         pumpHeavyFrameEvents();
       }
       const auto pumpMs =

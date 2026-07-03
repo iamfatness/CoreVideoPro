@@ -28,6 +28,7 @@ foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
 endforeach()
 
 add_library(corevideo_native
+  src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
@@ -327,6 +328,7 @@ if(BUILD_TESTING)
     tests/DirectorTest.cpp
     tests/EncoderRecordingSessionTest.cpp
     tests/JsonRpcServerTest.cpp
+    tests/LockHoldGuardrailTest.cpp
     tests/MultiviewLayoutTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/OverlayTileRasterTest.cpp

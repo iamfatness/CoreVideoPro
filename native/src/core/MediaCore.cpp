@@ -1,6 +1,7 @@
 #include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
+#include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "modules/AudioDsp.h"
 #include "modules/ProgramFramePreview.h"
@@ -4096,6 +4097,11 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   AudioOutputWorkItem work;
   {
     std::lock_guard<std::mutex> lock(coreMutex);
+    // Increment 6 guardrail: gather/publish are the worker's only coreMutex
+    // holds and are budgeted sub-ms — the long DSP/IO span below runs under
+    // audioOutputMutex_ only. An over-budget hold here means blocking work
+    // crept back under the big lock.
+    ScopedLockHoldTimer holdTimer("audio.gather", LockHoldGuardrail::kDefaultBudgetUs);
     work = gatherAudioOutputWork();
   }
   AudioOutputResults results;
@@ -4105,6 +4111,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   }
   {
     std::lock_guard<std::mutex> lock(coreMutex);
+    ScopedLockHoldTimer holdTimer("audio.publish", LockHoldGuardrail::kDefaultBudgetUs);
     publishAudioOutputResults(results);
   }
 }

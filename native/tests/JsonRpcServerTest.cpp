@@ -1,3 +1,4 @@
+#include "core/LockHoldGuardrail.h"
 #include "core/MediaCore.h"
 #include "rpc/Json.h"
 #include "rpc/JsonRpcServer.h"
@@ -361,4 +362,27 @@ TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
   });
   EXPECT_TRUE(connected.get("ok")->asBool());
   EXPECT_EQ(connected.get("devices")->asArray()[1].getString("connectionState"), "connected");
+}
+
+// Phase 2 increment 6: the coreMutex hold-duration guardrail must be wired into
+// the live server loop — handling a command under coreMutex records a hold at
+// the sanctioned "cmd.handle" site (and the render thread at
+// "render.display-tick"). This also runs the whole multi-threaded server under
+// the native-stub-tsan CI job, exercising the guardrail registry concurrently
+// with the render/audio/zoom-pump threads.
+TEST(JsonRpcServer, RecordsCoreLockHoldGuardrailStatsForHandledCommands) {
+  corevideo::core::LockHoldGuardrail::resetForTest();
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  std::istringstream input(
+      "{\"id\":\"p1\",\"type\":\"ping\"}\n"
+      "{\"id\":\"s1\",\"type\":\"media-core-sync\",\"elapsedMs\":33}\n");
+  std::ostringstream output;
+
+  server.run(input, output);
+
+  const auto stats = corevideo::core::LockHoldGuardrail::statsForSite("cmd.handle");
+  EXPECT_GE(stats.holds, 2u);
+  // No hard assertion on overBudget: the budget is telemetry (rate-capped
+  // warnings), never a test failure — especially under TSan's slowdown.
 }

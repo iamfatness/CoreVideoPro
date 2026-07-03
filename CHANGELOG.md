@@ -31,6 +31,16 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   dedicated ~50Hz worker with a two-lock (`coreMutex`/`audioOutputMutex_`) discipline;
   empty `media-core-sync` polls no longer run a heavy tick. Render thread is
   video-only, targeting locked 60fps.
+- **Phase 2 increments 3 + 6 (threading leftovers)**: Zoom engine stdin writes moved
+  off `coreMutex` onto `ZoomEngineRuntime`'s outbound FIFO queue + dedicated sender
+  thread (ordering preserved; subscription dedup keyed at enqueue; engine
+  restart/shutdown drop queued lines for the dead process and log — a wedged engine
+  pipe can no longer stall the command/spine path), plus a `coreMutex` hold-duration
+  guardrail (`core/LockHoldGuardrail`) enforcing the sub-ms hold contract with
+  per-site telemetry and rate-capped warnings (opt-in strict abort via
+  `COREVIDEO_LOCK_GUARDRAIL_STRICT=1`); sanctioned long-hold sites carry their own
+  budgets. Lock order is now `coreMutex → audioOutputMutex_` and
+  `coreMutex → ZoomEngineRuntime::mutex_ → ::sendMutex_`.
 - **60fps pipeline**: zero-copy Zoom I420 ingest and a precise render-loop pacer.
 - Preview/program parity fixes: per-participant color grade applied to source exports
   (brightness parity) and preview-freeze fixes when a source is in both preview and
