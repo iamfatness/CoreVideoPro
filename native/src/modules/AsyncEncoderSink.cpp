@@ -222,7 +222,11 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       }
     }
 
-    // Refresh the published snapshot + active flag from the wrapped session.
+    // Refresh the published snapshot from the wrapped session. NOTE: do NOT touch
+    // `active` here — it is owned by start() (set true synchronously) and the
+    // wrapped session's `active` LAGS behind the queue, so refreshing it from here
+    // could clobber the flag back to false between start() and the writer applying
+    // Start, causing a racing submit() to wrongly drop a frame.
     OutputSession fresh;
     if (state->inner) {
       fresh = state->inner->session();
@@ -231,7 +235,6 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
       state->snapshot = fresh;
     }
-    state->active.store(fresh.active);
 
     {
       std::lock_guard<std::mutex> lock(state->queueMutex);
