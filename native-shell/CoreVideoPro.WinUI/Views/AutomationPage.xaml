@@ -46,6 +46,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <ToggleSwitch Header="Auto-take"
                                       IsOn="{x:Bind ViewModel.AutomationAutoTakeEnabled, Mode=TwoWay}" />
@@ -80,6 +81,15 @@
                                    Text="{x:Bind ViewModel.AutomationTakeModeLabel, Mode=OneWay}"
                                    FontSize="12"
                                    VerticalAlignment="Bottom"
+                                   TextWrapping="WrapWholeWords" />
+                        <ToggleSwitch Grid.Row="3"
+                                      Header="Auto-assign inputs"
+                                      IsOn="{x:Bind ViewModel.AutomationAutoAssignInputsEnabled, Mode=TwoWay}" />
+                        <TextBlock Grid.Row="3" Grid.Column="1"
+                                   Text="New Zoom participants fill free Input slots automatically."
+                                   FontSize="12"
+                                   Foreground="{StaticResource StudioMutedBrush}"
+                                   VerticalAlignment="Center"
                                    TextWrapping="WrapWholeWords" />
                     </Grid>
                     <TextBlock Text="Magic scene" FontSize="11" FontWeight="SemiBold"

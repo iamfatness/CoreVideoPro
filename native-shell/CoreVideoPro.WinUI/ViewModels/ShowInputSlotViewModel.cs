@@ -9,6 +9,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private readonly ShowInputSlot _slot;
     private readonly Action _onChanged;
     private readonly Action<string?, string?> _onAudioDeviceChanged;
+    // (canonical source id, derived name) -> effective display name (override or derived).
+    private readonly Func<string?, string, string> _resolveDisplayName;
+    // (canonical source id, new name | null-to-reset) -> persist the override.
+    private readonly Action<string?, string?> _setDisplayName;
     private IReadOnlyList<Participant> _participants = [];
     private IReadOnlyList<CaptureDevice> _captureDevices = [];
     private IReadOnlyList<AudioCaptureDevice> _audioDevices = [];
@@ -18,11 +22,15 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public ShowInputSlotViewModel(
         ShowInputSlot slot,
         Action onChanged,
-        Action<string?, string?>? onAudioDeviceChanged = null)
+        Action<string?, string?>? onAudioDeviceChanged = null,
+        Func<string?, string, string>? resolveDisplayName = null,
+        Action<string?, string?>? setDisplayName = null)
     {
         _slot = slot;
         _onChanged = onChanged;
         _onAudioDeviceChanged = onAudioDeviceChanged ?? ((_, _) => { });
+        _resolveDisplayName = resolveDisplayName ?? ((_, derived) => derived);
+        _setDisplayName = setDisplayName ?? ((_, _) => { });
         _slot.PropertyChanged += (_, _) =>
         {
             if (!_suppressChangedCallback)
@@ -136,6 +144,40 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>The canonical source id for this slot's assigned source (zoom:/capture:/media:),
+    /// or null when unassigned. Key for the display-name override.</summary>
+    public string? SourceId => ShowInputRosterService.SlotSourceId(_slot);
+
+    /// <summary>Editable display name for the assigned source. Defaults to the derived
+    /// Zoom/UVC/asset name; setting it stores the operator override (feeding the auto
+    /// lower-thirds and multiview labels). Setting it blank resets to the derived name.</summary>
+    public string DisplayName
+    {
+        get => _resolveDisplayName(SourceId, DerivedSourceName());
+        set
+        {
+            var derived = DerivedSourceName();
+            var trimmed = value?.Trim() ?? string.Empty;
+            // Persist blank (or "same as derived") as a reset so we never store a redundant override.
+            _setDisplayName(SourceId, string.Equals(trimmed, derived, StringComparison.Ordinal) ? null : trimmed);
+            OnPropertyChanged(nameof(DisplayName));
+        }
+    }
+
+    public bool IsDisplayNameEditable => !string.IsNullOrEmpty(SourceId);
+
+    private string DerivedSourceName() => Kind switch
+    {
+        ShowInputKind.ZoomParticipant when ParticipantId is { Length: > 0 } pid =>
+            _participants.FirstOrDefault(p => string.Equals(p.Id, pid, StringComparison.Ordinal))?.Name ?? string.Empty,
+        ShowInputKind.Media when ShowInputRosterService.TryGetMediaAssetId(ParticipantId, out var assetId) =>
+            _mediaAssets.FirstOrDefault(a => string.Equals(a.Id, assetId, StringComparison.Ordinal))?.Name ?? string.Empty,
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+            when CaptureDeviceId is { Length: > 0 } deviceId =>
+            _captureDevices.FirstOrDefault(d => string.Equals(d.Id, deviceId, StringComparison.Ordinal))?.Name ?? string.Empty,
+        _ => string.Empty
+    };
+
     public string? SourceColorGradeId =>
         Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media
             ? ParticipantId
@@ -192,6 +234,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(AudioDeviceId));
         OnPropertyChanged(nameof(ShowAudioDevicePicker));
         OnPropertyChanged(nameof(SourceColorGradeId));
+        OnPropertyChanged(nameof(SourceId));
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(IsDisplayNameEditable));
     }
 
     private void SyncAudioDeviceFromCaptureDevice()
@@ -219,6 +264,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowInShowToggle));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(SourceColorGradeId));
+        OnPropertyChanged(nameof(SourceId));
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(IsDisplayNameEditable));
     }
 
     private void OnPropertyChanged(string propertyName) =>

@@ -316,6 +316,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _automationLowerThirdsEnabled = true;
 
+    // When on, newly-joined Zoom participants auto-fill FREE Show Input slots (never
+    // disturbing operator- or capture-assigned slots). See SyncShowInputsFromMeeting.
+    [ObservableProperty]
+    private bool _automationAutoAssignInputsEnabled = true;
+
     [ObservableProperty]
     private bool _automationCaptionsEnabled = true;
 
@@ -390,6 +395,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private readonly Dictionary<string, List<SourceRoute>> _sceneRoutes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _sceneBackgroundAssetIds = new(StringComparer.Ordinal);
+    // Operator-overridden source display names keyed by canonical source id
+    // (zoom:<pid> / capture:<id> / media:<id>). Feeds the auto lower-thirds and
+    // multiview labels; absent keys fall back to the derived Zoom/UVC/asset name.
+    private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private string? _automationPendingSceneId;
@@ -2054,6 +2063,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnAutomationLowerThirdsEnabledChanged(bool value) => OnAutomationPolicyChanged();
 
+    partial void OnAutomationAutoAssignInputsEnabledChanged(bool value)
+    {
+        OnAutomationPolicyChanged();
+        // Turning it on should immediately fill free slots from the current roster.
+        ReapplyShowInputAutoAssign();
+    }
+
     partial void OnAutomationCaptionsEnabledChanged(bool value) => OnAutomationPolicyChanged();
 
     partial void OnTakeTransitionModeChanged(string value)
@@ -2132,6 +2148,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         AutomationAutoTakeEnabled = true;
         AutomationPreferScreenShare = true;
         AutomationLowerThirdsEnabled = true;
+        AutomationAutoAssignInputsEnabled = true;
         AutomationCaptionsEnabled = true;
         AutomationConfidenceThreshold = 70;
         AutomationSwitchDelaySeconds = 4;
@@ -6977,7 +6994,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ShowInputs,
                 RoomParticipantsForInputs,
                 CaptureDevices,
-                VisualMediaAssets)
+                VisualMediaAssets,
+                _sourceDisplayNames)
             : [];
         var multiviewGrid = ShowInputRosterService.ResolveGridShape(multiviewSources.Count);
 
@@ -8524,34 +8542,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void SyncShowInputsFromMeeting(
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
-        var validIds = participants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var slot in ShowInputs)
-        {
-            if (slot.Kind == ShowInputKind.ZoomParticipant &&
-                !string.IsNullOrWhiteSpace(slot.ParticipantId) &&
-                !validIds.Contains(slot.ParticipantId))
-            {
-                slot.Kind = ShowInputKind.Unassigned;
-                slot.ParticipantId = null;
-                slot.InShow = false;
-            }
-        }
+        // Free slots whose participant left, and (when auto-assign is on) fill FREE slots
+        // with newly-joined participants without disturbing operator/capture assignments.
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            ShowInputs,
+            participants.Select(participant => participant.Id).ToList(),
+            AutomationAutoAssignInputsEnabled);
 
-        if (!ShowInputs.Any(slot => slot.InShow && slot.IsAssigned))
-        {
-            foreach (var (participant, index) in participants.Take(ShowInputRosterService.MaxMultiviewBoxes).Select((item, i) => (item, i)))
-            {
-                if (index >= ShowInputs.Count)
-                {
-                    break;
-                }
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
+    }
 
-                var slot = ShowInputs[index];
-                slot.Kind = ShowInputKind.ZoomParticipant;
-                slot.ParticipantId = participant.Id;
-                slot.InShow = true;
-            }
-        }
+    // Re-run the roster→slot auto-assign from the CURRENT room roster (used when the operator
+    // flips the auto-assign toggle on). No-op stale-removal when there is no meeting.
+    private void ReapplyShowInputAutoAssign()
+    {
+        ShowInputRosterService.SyncZoomParticipantSlots(
+            ShowInputs,
+            RoomVideoParticipants
+                .Select(participant => participant.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToList(),
+            AutomationAutoAssignInputsEnabled);
 
         RefreshShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -9154,6 +9166,49 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // The operator-facing display name for a canonical source id, defaulting to the
+    // derived Zoom/UVC/asset name when there is no override.
+    public string ResolveSourceDisplayName(string? sourceId, string derivedName) =>
+        ShowInputRosterService.ResolveDisplayName(_sourceDisplayNames, sourceId, derivedName);
+
+    // Set (or, when blank, clear/reset) the operator override for a source, then persist
+    // and propagate it to the auto lower-thirds and multiview labels.
+    public void SetSourceDisplayName(string? sourceId, string? name)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var trimmed = name?.Trim();
+        bool changed;
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            changed = _sourceDisplayNames.Remove(sourceId);  // reset to the derived name
+        }
+        else if (!_sourceDisplayNames.TryGetValue(sourceId, out var existing) ||
+                 !string.Equals(existing, trimmed, StringComparison.Ordinal))
+        {
+            _sourceDisplayNames[sourceId] = trimmed;
+            changed = true;
+        }
+        else
+        {
+            changed = false;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        SaveProductionOutputPreferences();
+        // Resend the multiview layout (its labels are override-aware) and recompute the
+        // program lower-third so a rename shows immediately.
+        ScheduleShowInputRefresh();
+        RefreshProgramLowerThirdKeyPosition();
+    }
+
     private void SaveProductionOutputPreferences()
     {
         if (!_outputPreferencesLoaded)
@@ -9225,6 +9280,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewShowMeters = MultiviewShowMeters,
             MultiviewShowClock = MultiviewShowClock,
             SceneBackgroundAssetIds = _sceneBackgroundAssetIds.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal),
+            SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal)
@@ -9331,6 +9390,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        _sourceDisplayNames.Clear();
+        foreach (var pair in preferences.SourceDisplayNames)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                _sourceDisplayNames[pair.Key] = pair.Value.Trim();
+            }
+        }
+
         RefreshAudioMonitorBindings();
         RefreshSceneBackgroundSelection();
     }
@@ -9405,7 +9473,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ShowInputEditors.Clear();
         foreach (var slot in ShowInputs)
         {
-            ShowInputEditors.Add(new ShowInputSlotViewModel(slot, OnShowInputChanged, SetCaptureDeviceAudioSource));
+            ShowInputEditors.Add(new ShowInputSlotViewModel(
+                slot,
+                OnShowInputChanged,
+                SetCaptureDeviceAudioSource,
+                ResolveSourceDisplayName,
+                SetSourceDisplayName));
         }
 
         RefreshShowInputEditors(force: true);
@@ -10267,15 +10340,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             var device = CaptureDevices.FirstOrDefault(item =>
                 string.Equals(item.Id, captureDeviceId, StringComparison.Ordinal));
-            return device is null
-                ? null
-                : new LowerThirdSource(
-                    $"capture:{device.Id}",
-                    device.Name,
-                    device.Vendor,
-                    device.ResolutionLabel,
-                    IsActiveSpeaker: false,
-                    IsScreenShare: false);
+            if (device is null)
+            {
+                return null;
+            }
+
+            var captureSourceId = ShowInputRosterService.CaptureSourceId(device.Id);
+            return new LowerThirdSource(
+                captureSourceId,
+                ResolveSourceDisplayName(captureSourceId, device.Name),
+                device.Vendor,
+                device.ResolutionLabel,
+                IsActiveSpeaker: false,
+                IsScreenShare: false);
         }
 
         var participant = SceneRoutingService.ResolveRouteParticipant(route, RoomVideoParticipants);
@@ -10293,7 +10370,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         return new LowerThirdSource(
             participant.Id,
-            participant.Name,
+            ResolveSourceDisplayName(ShowInputRosterService.ZoomSourceId(participant.Id), participant.Name),
             title,
             string.IsNullOrWhiteSpace(participant.BreakoutRoomName)
                 ? participant.RoleLabel
@@ -10932,7 +11009,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var sources = ShowInputRosterService.BuildMultiviewLayoutSources(
-            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets);
+            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets, _sourceDisplayNames);
         var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
         var signature = string.Join("|", sources.Select(s => $"{s.Slot}:{s.Kind}:{s.SourceId}:{s.Label}")) +
             $"#{grid.Columns}x{grid.Rows}";

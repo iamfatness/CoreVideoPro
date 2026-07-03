@@ -572,6 +572,134 @@ public sealed class ShowInputRosterServiceTests
         Assert.Equal((5, 2), ShowInputRosterService.ResolveGridShape(10));
     }
 
+    [Fact]
+    public void SyncZoomParticipantSlots_FillsFreeSlotsWithoutDisturbingAssignedOnes()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        // Slot 1 is an operator-assigned capture card; slot 2 an operator-assigned Zoom guest.
+        slots[0].Kind = ShowInputKind.UvcWebcam;
+        slots[0].CaptureDeviceId = "cam-uvc";
+        slots[0].InShow = true;
+        slots[1].Kind = ShowInputKind.ZoomParticipant;
+        slots[1].ParticipantId = "p-host";
+        slots[1].InShow = true;
+
+        // Roster: the already-shown host plus two new guests.
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, ["p-host", "p-guest-a", "p-guest-b"], autoAssign: true);
+
+        // Capture card untouched; host stays in its slot; new guests fill the next FREE slots.
+        Assert.Equal(ShowInputKind.UvcWebcam, slots[0].Kind);
+        Assert.Equal("cam-uvc", slots[0].CaptureDeviceId);
+        Assert.Equal("p-host", slots[1].ParticipantId);
+        Assert.Equal("p-guest-a", slots[2].ParticipantId);
+        Assert.Equal(ShowInputKind.ZoomParticipant, slots[2].Kind);
+        Assert.True(slots[2].InShow);
+        Assert.Equal("p-guest-b", slots[3].ParticipantId);
+    }
+
+    [Fact]
+    public void SyncZoomParticipantSlots_FreesLeftParticipantsAndKeepsOthersStable()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-1";
+        slots[0].InShow = true;
+        slots[1].Kind = ShowInputKind.ZoomParticipant;
+        slots[1].ParticipantId = "p-2";
+        slots[1].InShow = true;
+
+        // p-1 leaves; p-2 stays; p-3 joins.
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, ["p-2", "p-3"], autoAssign: true);
+
+        // p-2 keeps ITS slot (no reshuffle); p-1's slot is freed then reused for p-3.
+        Assert.Equal("p-2", slots[1].ParticipantId);
+        Assert.Equal("p-3", slots[0].ParticipantId);
+        Assert.True(slots[0].InShow);
+    }
+
+    [Fact]
+    public void SyncZoomParticipantSlots_WhenDisabledOnlyFreesLeftParticipants()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-gone";
+        slots[0].InShow = true;
+
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, ["p-new"], autoAssign: false);
+
+        // The departed participant is freed, but with auto-assign OFF nothing is auto-filled.
+        Assert.Equal(ShowInputKind.Unassigned, slots[0].Kind);
+        Assert.DoesNotContain(slots, s => s.ParticipantId == "p-new");
+    }
+
+    [Fact]
+    public void SyncZoomParticipantSlots_StopsWhenEverySlotIsTaken()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        var roster = new List<string>();
+        for (var i = 0; i < ShowInputRosterService.MaxShowInputs + 3; i++)
+        {
+            roster.Add($"p-{i}");
+        }
+
+        ShowInputRosterService.SyncZoomParticipantSlots(slots, roster, autoAssign: true);
+
+        Assert.All(slots, slot => Assert.Equal(ShowInputKind.ZoomParticipant, slot.Kind));
+        Assert.Equal(ShowInputRosterService.MaxShowInputs, slots.Count(s => s.IsAssigned));
+    }
+
+    [Fact]
+    public void ResolveDisplayName_PrefersOverrideThenFallsBackToDerived()
+    {
+        var overrides = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["zoom:p-1"] = "  Dr. Jane Smith  ",
+            ["capture:cam-uvc"] = "",  // blank override must be ignored
+        };
+
+        Assert.Equal("Dr. Jane Smith", ShowInputRosterService.ResolveDisplayName(overrides, "zoom:p-1", "Jane"));
+        Assert.Equal("USB Capture", ShowInputRosterService.ResolveDisplayName(overrides, "capture:cam-uvc", "USB Capture"));
+        Assert.Equal("Bumper", ShowInputRosterService.ResolveDisplayName(overrides, "media:asset-7", "Bumper"));
+        Assert.Equal("Fallback", ShowInputRosterService.ResolveDisplayName(null, "zoom:p-1", "Fallback"));
+    }
+
+    [Fact]
+    public void SlotSourceId_ReturnsCanonicalKeyPerKind()
+    {
+        Assert.Equal("zoom:p-1", ShowInputRosterService.SlotSourceId(
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "p-1" }));
+        Assert.Equal("capture:cam-uvc", ShowInputRosterService.SlotSourceId(
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.UvcWebcam, CaptureDeviceId = "cam-uvc" }));
+        Assert.Equal("media:asset-7", ShowInputRosterService.SlotSourceId(
+            new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.Media, ParticipantId = ShowInputRosterService.ToMediaSourceId("asset-7") }));
+        Assert.Null(ShowInputRosterService.SlotSourceId(new ShowInputSlot { SlotNumber = 1 }));
+    }
+
+    [Fact]
+    public void BuildMultiviewLayoutSources_AppliesDisplayNameOverridesToLabels()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.ZoomParticipant;
+        slots[0].ParticipantId = "p-1";
+        slots[0].InShow = true;
+        slots[1].Kind = ShowInputKind.UvcWebcam;
+        slots[1].CaptureDeviceId = "cam-uvc";
+        slots[1].InShow = true;
+
+        var participants = new[] { new Participant { Id = "p-1", Name = "Jane", Health = FeedHealth.Live } };
+        var devices = new[] { Device("cam-uvc", "USB Capture", "uvc", 1920, 1080, 60, connected: true) };
+        var overrides = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["zoom:p-1"] = "Dr. Jane Smith",
+            ["capture:cam-uvc"] = "Main Camera",
+        };
+
+        var sources = ShowInputRosterService.BuildMultiviewLayoutSources(slots, participants, devices, null, overrides);
+
+        Assert.Equal("Dr. Jane Smith", sources.Single(s => s.SourceId == "zoom:p-1").Label);
+        Assert.Equal("Main Camera", sources.Single(s => s.SourceId == "capture:cam-uvc").Label);
+    }
+
     private static MediaAsset Media(string id, string name, string kind, bool isPlaying = false) =>
         new()
         {

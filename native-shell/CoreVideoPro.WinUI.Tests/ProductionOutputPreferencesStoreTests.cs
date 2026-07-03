@@ -52,6 +52,11 @@ public sealed class ProductionOutputPreferencesStoreTests
             {
                 ["speaker-slides"] = "media-bg-1",
                 ["eight-up"] = "media-bg-2"
+            },
+            SourceDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["capture:cam-uvc"] = "Main Camera",
+                ["zoom:p-42"] = "Dr. Jane Smith"
             }
         };
 
@@ -79,6 +84,8 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("manual", roundTripped.BrandDefaultOverlayBehavior);
         Assert.Equal("media-bg-1", roundTripped.SceneBackgroundAssetIds["speaker-slides"]);
         Assert.Equal("media-bg-2", roundTripped.SceneBackgroundAssetIds["eight-up"]);
+        Assert.Equal("Main Camera", roundTripped.SourceDisplayNames["capture:cam-uvc"]);
+        Assert.Equal("Dr. Jane Smith", roundTripped.SourceDisplayNames["zoom:p-42"]);
         Assert.Equal("pgmPvwLarge", roundTripped.MultiviewLayoutMode);
         Assert.Equal(5, roundTripped.MultiviewTileCount);
         Assert.False(roundTripped.MultiviewShowLabels);
