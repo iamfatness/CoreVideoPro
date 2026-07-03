@@ -47,6 +47,35 @@ public static class ShowInputRosterService
 
     public static string CaptureSourceId(string deviceId) => $"{CaptureSourcePrefix}{deviceId}";
 
+    /// <summary>Swaps the full source assignment (kind, source ids, audio device, in-show flag)
+    /// between two slots — the multiviewer drag-drop reorder. Slot NUMBERS stay fixed; the
+    /// CONTENT moves, so the wall order (slot order) changes. Kind is written first because its
+    /// setter clears the id fields that don't apply to the new kind; the ids follow.</summary>
+    public static void SwapSlotAssignments(ShowInputSlot a, ShowInputSlot b)
+    {
+        if (ReferenceEquals(a, b))
+        {
+            return;
+        }
+
+        var (aKind, aParticipant, aCapture, aAudio, aInShow) =
+            (a.Kind, a.ParticipantId, a.CaptureDeviceId, a.AudioDeviceId, a.InShow);
+        var (bKind, bParticipant, bCapture, bAudio, bInShow) =
+            (b.Kind, b.ParticipantId, b.CaptureDeviceId, b.AudioDeviceId, b.InShow);
+
+        a.Kind = bKind;
+        a.ParticipantId = bParticipant;
+        a.CaptureDeviceId = bCapture;
+        a.AudioDeviceId = bAudio;
+        a.InShow = bInShow;
+
+        b.Kind = aKind;
+        b.ParticipantId = aParticipant;
+        b.CaptureDeviceId = aCapture;
+        b.AudioDeviceId = aAudio;
+        b.InShow = aInShow;
+    }
+
     /// <summary>The canonical source id an assigned slot resolves to (zoom:/capture:/media:),
     /// or null when the slot is unassigned/unresolvable. This is the key for display-name overrides.</summary>
     public static string? SlotSourceId(ShowInputSlot slot) => slot.Kind switch

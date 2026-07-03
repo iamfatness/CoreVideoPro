@@ -23,6 +23,11 @@ public sealed class ShowInputSourceOption
     public required string Label { get; init; }
 }
 
+/// <summary>A multiviewer drag-drop reorder request: swap the Show Input assignments of two
+/// slots (1-based slot numbers). Raised by ShowMultiviewHost when a source tile is dropped
+/// onto another source tile.</summary>
+public sealed record MultiviewTileSwapRequest(int FromSlot, int ToSlot);
+
 public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
     public int SlotNumber { get; init; }

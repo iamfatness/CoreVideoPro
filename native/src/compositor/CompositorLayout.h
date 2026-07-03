@@ -129,8 +129,9 @@ struct MultiviewLayoutPlan {
 
 // Computes the raw cell layout for `sourceCount` source tiles in `mode`.
 //   "grid"        -> aspect-aware even grid (legacy behavior).
-//   "pgmPvwTop"   -> PGM|PVW big on top half; single row of sources below.
-//   "pgmPvwLarge" -> PGM|PVW big on top half; sources wrap 1-2 rows below.
+//   "pgmPvwTop"   -> PVW|PGM big on top half (Preview left, Program right);
+//                    sources wrap 1-2 rows below (2 rows above 5 tiles).
+//   "pgmPvwLarge" -> same top-half geometry as pgmPvwTop (kept for compat).
 //   "pgmPvwSide"  -> PGM over PVW on the left ~2/3; sources in a right strip.
 // Unknown modes fall back to "grid".
 inline MultiviewLayoutPlan computeMultiviewLayout(
@@ -161,11 +162,13 @@ inline MultiviewLayoutPlan computeMultiviewLayout(
   }
 
   if (mode == "pgmPvwTop" || mode == "pgmPvwLarge") {
-    plan.programCell = insetRect({0.f, 0.f, 0.5f, 0.5f}, pad);
-    plan.previewCell = insetRect({0.5f, 0.f, 0.5f, 0.5f}, pad);
+    // Broadcast convention (ATEM/Riedel/R&S): PREVIEW on the left, PROGRAM on the right.
+    plan.previewCell = insetRect({0.f, 0.f, 0.5f, 0.5f}, pad);
+    plan.programCell = insetRect({0.5f, 0.f, 0.5f, 0.5f}, pad);
     const float regionY = 0.5f;
     const float regionH = 0.5f;
-    const int rows = (mode == "pgmPvwLarge" && count > 5) ? 2 : 1;
+    // Wrap to two source rows above 5 tiles so a full 10-input wall stays readable.
+    const int rows = (count > 5) ? 2 : 1;
     const int cols = std::max(1, (std::max(1, count) + rows - 1) / rows);
     const float cellW = 1.f / static_cast<float>(cols);
     const float cellH = regionH / static_cast<float>(rows);

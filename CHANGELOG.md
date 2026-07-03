@@ -8,13 +8,28 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
-- **Unified Studio multiviewer.** The Studio center is now ONE cohesive multiviewer
-  (ATEM/Riedel-style) — large PROGRAM + PREVIEW cells with red/green tally over the
-  source-feed tiles, plus labels/meters/clock — instead of separate big PROGRAM +
-  PREVIEW monitors AND a duplicate source strip that showed the on-air sources twice.
-  It reuses the proven core-composited single-surface `ShowMultiviewHost` (so it also
-  removes two per-monitor swap chains), and the default layout is now `pgmPvwLarge`.
-  Validated live on the rig (no CoreMessagingXP crash).
+- **Unified Studio multiviewer + Program/Preview and Multiviewer pop-outs.** The Studio center
+  is now ONE unified multiviewer (ATEM/Riedel-style, `pgmPvwTop`) that ALWAYS shows the
+  PROGRAM + PREVIEW cells (top, red/green tally) over the enabled Show-Input source tiles
+  (below), core-composited into a single shared texture — no separate monitors + duplicate
+  strip, and no view toggle (an earlier opacity toggle was dropped because overlapping
+  `SwapChainPanel`s bleed through XAML opacity). Two pop-outs to drag onto a second display:
+  **Multiviewer** (`MultiviewPopoutWindow` — the main view unbinds the single-consumer
+  keyed-mutex texture and shows a "Pop in" placeholder so only one window presents it) and a
+  dedicated **Program/Preview** (`ProgramPreviewPopoutWindow` — presents the separate
+  program/preview shared textures, so it can run alongside the multiviewer). Default multiview
+  layout is now `pgmPvwTop`, with the broadcast-standard geometry: **PREVIEW on the left,
+  PROGRAM on the right** (core `CompositorLayout` swap, locked by a new native test), and the
+  source wall now holds **up to 10 tiles** (matching the 10 Show Input slots; wraps to two
+  rows above 5 so a full wall stays readable). Rig-validated: PVW-left/PGM-right cells
+  composite the real bus content, source tiles render live, both pop-outs work, zero
+  `CoreMessagingXP` crashes. **Drag-drop tile reordering**: dragging one source tile onto
+  another swaps the two Show Input slot assignments (the wall order IS the slot order) —
+  with a floating label ghost + drop-target highlight during the drag; a small press-release
+  still cues the source to preview. Works in the main multiviewer and the pop-out. The drag
+  steals the pointer capture from the tile button on activation so the gesture is reliable
+  and a drag never fires a stray cue click. Rig-validated end-to-end (tiles visibly reorder,
+  swap logged, zero crashes); swap logic unit-tested (cross-kind, assigned↔unassigned, no-op).
 
 - **Remote control HTTP + WebSocket transport (Phase 2a).** Alongside OSC, an
   `HttpControlServer` (HttpListener) exposes the same control surface over HTTP:

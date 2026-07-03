@@ -41,6 +41,10 @@ public sealed partial class ShowMultiviewHost : UserControl
         DependencyProperty.Register(nameof(TileClickCommand), typeof(ICommand), typeof(ShowMultiviewHost),
             new PropertyMetadata(null));
 
+    public static readonly DependencyProperty TileSwapCommandProperty =
+        DependencyProperty.Register(nameof(TileSwapCommand), typeof(ICommand), typeof(ShowMultiviewHost),
+            new PropertyMetadata(null));
+
     public static readonly DependencyProperty ShowLabelsProperty =
         DependencyProperty.Register(nameof(ShowLabels), typeof(bool), typeof(ShowMultiviewHost),
             new PropertyMetadata(true, OnDecorToggleChanged));
@@ -69,6 +73,24 @@ public sealed partial class ShowMultiviewHost : UserControl
     private DispatcherTimer? _clockTimer;
     private IReadOnlyList<MultiviewTile> _tiles = [];
 
+    // Letterbox transform of the last PositionOverlay pass — used to hit-test drag points
+    // back to normalized tile rects.
+    private double _overlayOffsetX;
+    private double _overlayOffsetY;
+    private double _overlayDisplayedWidth;
+    private double _overlayDisplayedHeight;
+
+    // Drag-to-reorder state. A press on a source tile arms a potential drag; crossing the
+    // movement threshold turns it into one (showing ghost + target highlight); releasing over a
+    // DIFFERENT source tile raises TileSwapCommand. Small press-release stays a click (cue).
+    private const double DragThresholdPixels = 10.0;
+    private MultiviewTile? _dragOriginTile;
+    private Windows.Foundation.Point _dragStartPoint;
+    private bool _dragActive;
+    private Border? _dragGhost;
+    private Border? _dragTargetHighlight;
+    private MultiviewTile? _dragTargetTile;
+
     public ShowMultiviewHost()
     {
         InitializeComponent();
@@ -76,6 +98,19 @@ public sealed partial class ShowMultiviewHost : UserControl
         MultiviewSurfaceHost.Visibility = Visibility.Collapsed;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+
+        // Drag-to-reorder listeners. The per-tile click Buttons capture the pointer and mark
+        // events handled, but captured-pointer events still BUBBLE through the ancestor chain —
+        // so listen on the overlay canvas with handledEventsToo to observe the whole gesture
+        // without disturbing the Buttons' click behavior.
+        ClickOverlay.AddHandler(PointerPressedEvent,
+            new Microsoft.UI.Xaml.Input.PointerEventHandler(OnTilePointerPressed), true);
+        ClickOverlay.AddHandler(PointerMovedEvent,
+            new Microsoft.UI.Xaml.Input.PointerEventHandler(OnTilePointerMoved), true);
+        ClickOverlay.AddHandler(PointerReleasedEvent,
+            new Microsoft.UI.Xaml.Input.PointerEventHandler(OnTilePointerReleased), true);
+        ClickOverlay.AddHandler(PointerCaptureLostEvent,
+            new Microsoft.UI.Xaml.Input.PointerEventHandler(OnTilePointerCaptureLost), true);
     }
 
     public VideoSurfaceState? Surface
@@ -94,6 +129,15 @@ public sealed partial class ShowMultiviewHost : UserControl
     {
         get => (ICommand?)GetValue(TileClickCommandProperty);
         set => SetValue(TileClickCommandProperty, value);
+    }
+
+    /// <summary>Raised with a <see cref="MultiviewTileSwapRequest"/> when one source tile is
+    /// drag-dropped onto another — the EIC's reorder gesture. Optional; when unset, tiles
+    /// simply aren't draggable.</summary>
+    public ICommand? TileSwapCommand
+    {
+        get => (ICommand?)GetValue(TileSwapCommandProperty);
+        set => SetValue(TileSwapCommandProperty, value);
     }
 
     public bool ShowLabels
@@ -397,6 +441,11 @@ public sealed partial class ShowMultiviewHost : UserControl
         var offsetX = (overlayWidth - displayedWidth) / 2.0;
         var offsetY = (overlayHeight - displayedHeight) / 2.0;
 
+        _overlayOffsetX = offsetX;
+        _overlayOffsetY = offsetY;
+        _overlayDisplayedWidth = displayedWidth;
+        _overlayDisplayedHeight = displayedHeight;
+
         PositionCanvasChildren(ClickOverlay, offsetX, offsetY, displayedWidth, displayedHeight);
         PositionCanvasChildren(DecorOverlay, offsetX, offsetY, displayedWidth, displayedHeight);
 
@@ -527,6 +576,191 @@ public sealed partial class ShowMultiviewHost : UserControl
         }
 
         return tile.ParticipantId;
+    }
+
+    // ----- Drag-to-reorder (EIC rearranges the source wall) -----
+
+    private static bool IsDraggableSource(MultiviewTile tile) =>
+        string.Equals(tile.Role, "source", StringComparison.Ordinal) && tile.Slot >= 0;
+
+    // Maps an overlay-space point back through the letterbox transform to the source tile
+    // under it (PGM/PVW cells are not reorder targets).
+    private MultiviewTile? HitTestSourceTile(Windows.Foundation.Point point)
+    {
+        if (_overlayDisplayedWidth <= 0 || _overlayDisplayedHeight <= 0)
+        {
+            return null;
+        }
+
+        var nx = (point.X - _overlayOffsetX) / _overlayDisplayedWidth;
+        var ny = (point.Y - _overlayOffsetY) / _overlayDisplayedHeight;
+        foreach (var tile in _tiles)
+        {
+            if (IsDraggableSource(tile) &&
+                nx >= tile.X && nx <= tile.X + tile.W &&
+                ny >= tile.Y && ny <= tile.Y + tile.H)
+            {
+                return tile;
+            }
+        }
+
+        return null;
+    }
+
+    private void OnTilePointerPressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (TileSwapCommand is null)
+        {
+            return;
+        }
+
+        var point = e.GetCurrentPoint(ClickOverlay).Position;
+        _dragOriginTile = HitTestSourceTile(point);
+        _dragStartPoint = point;
+        _dragActive = false;
+    }
+
+    private void OnTilePointerMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (_dragOriginTile is null)
+        {
+            return;
+        }
+
+        var point = e.GetCurrentPoint(ClickOverlay).Position;
+        if (!_dragActive)
+        {
+            var dx = point.X - _dragStartPoint.X;
+            var dy = point.Y - _dragStartPoint.Y;
+            if ((dx * dx) + (dy * dy) < DragThresholdPixels * DragThresholdPixels)
+            {
+                return;
+            }
+
+            _dragActive = true;
+            // Steal the pointer capture from the tile Button: the canvas then reliably receives
+            // the rest of the gesture (moves + release), and the Button can no longer raise a
+            // stray Click — a drag is a drag, not a cue. (The Button's own capture-lost is
+            // ignored below: only the CANVAS losing capture cancels the drag.)
+            ClickOverlay.CapturePointer(e.Pointer);
+            BuildDragVisuals(_dragOriginTile);
+        }
+
+        UpdateDragVisuals(point);
+    }
+
+    private void OnTilePointerReleased(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        var origin = _dragOriginTile;
+        var wasDragging = _dragActive;
+        var point = e.GetCurrentPoint(ClickOverlay).Position;
+        if (wasDragging)
+        {
+            ClickOverlay.ReleasePointerCapture(e.Pointer);
+        }
+
+        ClearDragState();
+
+        if (!wasDragging || origin is null)
+        {
+            return;
+        }
+
+        var target = HitTestSourceTile(point);
+        if (target is null || target.Slot == origin.Slot)
+        {
+            return;
+        }
+
+        // Tile Slot is 0-based (ShowInput SlotNumber - 1).
+        TileSwapCommand?.Execute(new MultiviewTileSwapRequest(origin.Slot + 1, target.Slot + 1));
+    }
+
+    private void OnTilePointerCaptureLost(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        // The tile Button losing capture is EXPECTED mid-drag (we steal it on activation).
+        // Only the canvas itself losing capture (window deactivation, etc.) cancels the drag.
+        if (ReferenceEquals(e.OriginalSource, ClickOverlay))
+        {
+            ClearDragState();
+        }
+    }
+
+    private void BuildDragVisuals(MultiviewTile origin)
+    {
+        DragOverlay.Children.Clear();
+
+        // Drop-target highlight: a thick accent border snapped to the hovered tile.
+        _dragTargetHighlight = new Border
+        {
+            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 61, 220, 151)),
+            BorderThickness = new Thickness(3),
+            Background = new SolidColorBrush(Color.FromArgb(50, 61, 220, 151)),
+            CornerRadius = new CornerRadius(2),
+            Visibility = Visibility.Collapsed
+        };
+        DragOverlay.Children.Add(_dragTargetHighlight);
+
+        // Ghost: a compact floating chip with the dragged source's label.
+        var ghostLabel = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(origin.Label) ? $"Input {origin.Slot + 1}" : origin.Label,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Margin = new Thickness(10, 5, 10, 5)
+        };
+        _dragGhost = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(225, 16, 42, 32)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(255, 61, 220, 151)),
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(4),
+            Child = ghostLabel
+        };
+        DragOverlay.Children.Add(_dragGhost);
+    }
+
+    private void UpdateDragVisuals(Windows.Foundation.Point point)
+    {
+        if (_dragGhost is not null)
+        {
+            Canvas.SetLeft(_dragGhost, point.X + 14);
+            Canvas.SetTop(_dragGhost, point.Y + 10);
+        }
+
+        var target = HitTestSourceTile(point);
+        if (!ReferenceEquals(target, _dragTargetTile))
+        {
+            _dragTargetTile = target;
+        }
+
+        if (_dragTargetHighlight is null)
+        {
+            return;
+        }
+
+        if (target is null || _dragOriginTile is null || target.Slot == _dragOriginTile.Slot)
+        {
+            _dragTargetHighlight.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _dragTargetHighlight.Width = Math.Max(0, target.W * _overlayDisplayedWidth);
+        _dragTargetHighlight.Height = Math.Max(0, target.H * _overlayDisplayedHeight);
+        Canvas.SetLeft(_dragTargetHighlight, _overlayOffsetX + target.X * _overlayDisplayedWidth);
+        Canvas.SetTop(_dragTargetHighlight, _overlayOffsetY + target.Y * _overlayDisplayedHeight);
+        _dragTargetHighlight.Visibility = Visibility.Visible;
+    }
+
+    private void ClearDragState()
+    {
+        _dragOriginTile = null;
+        _dragActive = false;
+        _dragGhost = null;
+        _dragTargetHighlight = null;
+        _dragTargetTile = null;
+        DragOverlay.Children.Clear();
     }
 
     private sealed class MeterChannel

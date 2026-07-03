@@ -125,6 +125,30 @@ TEST(MultiviewLayout, PgmPvwModesExposeProgramAndPreview) {
   }
 }
 
+// Broadcast convention (ATEM/Riedel): PREVIEW on the left, PROGRAM on the right,
+// side by side on the top half, for the pgmPvw top modes.
+TEST(MultiviewLayout, TopModesPutPreviewLeftOfProgram) {
+  for (const std::string mode : {"pgmPvwTop", "pgmPvwLarge"}) {
+    for (const int count : kCounts) {
+      const auto plan = computeMultiviewLayout(mode, count);
+      const std::string ctx = "mode=" + mode + " count=" + std::to_string(count);
+      EXPECT_LT(plan.previewCell.x, plan.programCell.x) << ctx;
+      EXPECT_TRUE(nearly(plan.previewCell.y, plan.programCell.y, 1e-6f)) << ctx;
+    }
+  }
+}
+
+// Ten sources (the full Show Input capacity) wrap into two readable rows in the
+// pgmPvw top modes rather than one sliver-thin strip.
+TEST(MultiviewLayout, TenSourcesWrapToTwoRows) {
+  for (const std::string mode : {"pgmPvwTop", "pgmPvwLarge"}) {
+    const auto plan = computeMultiviewLayout(mode, 10);
+    ASSERT_EQ(plan.sourceCells.size(), 10u) << mode;
+    EXPECT_GT(plan.sourceCells.back().y, plan.sourceCells.front().y)
+        << mode << " expected a second source row";
+  }
+}
+
 // An unknown mode falls back to grid.
 TEST(MultiviewLayout, UnknownModeFallsBackToGrid) {
   const auto plan = computeMultiviewLayout("bogus", 4);
