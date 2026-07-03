@@ -240,7 +240,7 @@ bool EngineShare::ensure_shm(ShareTarget &target,
     if (total < y_len) return false;
     if (target.shm.ptr && target.shm.size >= total) return true;
 
-    const std::string region_name = IPC_SHM_PREFIX + source_uuid;
+    const std::string region_name = EngineIpc::shm_prefix() + source_uuid;
     return shm_region_create(target.shm, region_name, total);
 }
 

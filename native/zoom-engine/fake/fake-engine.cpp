@@ -119,13 +119,13 @@ static bool ipc_connect_blocking(HANDLE pipe) {
     return ok || GetLastError() == ERROR_PIPE_CONNECTED;
 }
 
-static bool ipc_setup(IpcFd& p2e, IpcFd& e2p) {
+static bool ipc_setup(IpcFd& p2e, IpcFd& e2p, const std::string& token) {
     // Engine CREATES the pipes (server) and the core CONNECTS (client) — this is
     // the same ownership split as the real engine.
-    p2e = CreateNamedPipeA(PIPE_P2E, PIPE_ACCESS_INBOUND,
+    p2e = CreateNamedPipeA(ipc_pipe_p2e(token).c_str(), PIPE_ACCESS_INBOUND,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                            1, 65536, 65536, 0, nullptr);
-    e2p = CreateNamedPipeA(PIPE_E2P, PIPE_ACCESS_OUTBOUND,
+    e2p = CreateNamedPipeA(ipc_pipe_e2p(token).c_str(), PIPE_ACCESS_OUTBOUND,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                            1, 65536, 65536, 0, nullptr);
     if (p2e == INVALID_HANDLE_VALUE || e2p == INVALID_HANDLE_VALUE) return false;
@@ -134,7 +134,7 @@ static bool ipc_setup(IpcFd& p2e, IpcFd& e2p) {
     return true;
 }
 
-static void ipc_teardown(IpcFd p2e, IpcFd e2p) {
+static void ipc_teardown(IpcFd p2e, IpcFd e2p, const std::string& /*token*/) {
     CloseHandle(p2e);
     CloseHandle(e2p);
 }
@@ -154,17 +154,18 @@ static int unix_listen(const char* path) {
         listen(srv, 1) < 0) { close(srv); return -1; }
     return srv;
 }
-static bool ipc_setup(IpcFd& p2e, IpcFd& e2p) {
-    int sp = unix_listen(SOCK_P2E), se = unix_listen(SOCK_E2P);
+static bool ipc_setup(IpcFd& p2e, IpcFd& e2p, const std::string& token) {
+    const std::string sock_p2e = ipc_sock_p2e(token), sock_e2p = ipc_sock_e2p(token);
+    int sp = unix_listen(sock_p2e.c_str()), se = unix_listen(sock_e2p.c_str());
     if (sp < 0 || se < 0) { if (sp >= 0) close(sp); if (se >= 0) close(se); return false; }
     p2e = accept(sp, nullptr, nullptr);
     e2p = accept(se, nullptr, nullptr);
     close(sp); close(se);
     return p2e >= 0 && e2p >= 0;
 }
-static void ipc_teardown(IpcFd p2e, IpcFd e2p) {
+static void ipc_teardown(IpcFd p2e, IpcFd e2p, const std::string& token) {
     close(p2e); close(e2p);
-    unlink(SOCK_P2E); unlink(SOCK_E2P);
+    unlink(ipc_sock_p2e(token).c_str()); unlink(ipc_sock_e2p(token).c_str());
 }
 #endif
 
@@ -277,7 +278,7 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
     const size_t total = sizeof(ShmFrameHeader) + y_len + y_len / 4 + y_len / 4;
 
     if (!t.shm.ptr || t.shm.size < total) {
-        const std::string region_name = IPC_SHM_PREFIX + t.source_uuid;
+        const std::string region_name = EngineIpc::shm_prefix() + t.source_uuid;
         if (!shm_region_create(t.shm, region_name, total)) {
             if (t.frame_count == 0)
                 EngineIpc::write(
@@ -450,7 +451,11 @@ static void heartbeat_loop() {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // Per-instance IPC token from the parent — must match the pipe/socket/SHM
+    // names the core's ZoomEngineProcessClient expects (see engine main.cpp).
+    const std::string ipc_token = ipc_token_from_args(argc, argv);
+    EngineIpc::set_shm_prefix(ipc_token);
     // Env configuration.
     if (const char* a = std::getenv("COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE"))
         g_autosubscribe = !(a[0] == '0');
@@ -469,7 +474,7 @@ int main() {
          " baseline=" + std::to_string(baseline));
 
     IpcFd p2e = kIpcInvalidFd, e2p = kIpcInvalidFd;
-    if (!ipc_setup(p2e, e2p)) {
+    if (!ipc_setup(p2e, e2p, ipc_token)) {
         diag("ipc_setup failed");
         return 1;
     }
@@ -583,7 +588,7 @@ int main() {
         for (auto& [uuid, t] : g_targets) shm_region_destroy(t.shm);
         g_targets.clear();
     }
-    ipc_teardown(p2e, e2p);
+    ipc_teardown(p2e, e2p, ipc_token);
     diag("exit");
     return 0;
 }

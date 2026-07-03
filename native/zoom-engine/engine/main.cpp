@@ -135,14 +135,14 @@ static bool ipc_connect_timeout(HANDLE pipe, DWORD timeout_ms)
     return ok || GetLastError() == ERROR_PIPE_CONNECTED;
 }
 
-static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
+static bool ipc_setup(IpcFd &p2e, IpcFd &e2p, const std::string &token)
 {
     trace_engine_stage("ipc_setup:begin");
-    p2e = CreateNamedPipeA(PIPE_P2E,
+    p2e = CreateNamedPipeA(ipc_pipe_p2e(token).c_str(),
                            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                            1, 65536, 65536, 0, nullptr);
-    e2p = CreateNamedPipeA(PIPE_E2P,
+    e2p = CreateNamedPipeA(ipc_pipe_e2p(token).c_str(),
                            PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                            1, 65536, 65536, 0, nullptr);
@@ -161,7 +161,7 @@ static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
     return true;
 }
 
-static void ipc_teardown(IpcFd p2e, IpcFd e2p)
+static void ipc_teardown(IpcFd p2e, IpcFd e2p, const std::string & /*token*/)
 {
     CloseHandle(p2e);
     CloseHandle(e2p);
@@ -252,11 +252,11 @@ static int unix_accept_timeout(int srv, int timeout_ms)
     return accept(srv, nullptr, nullptr);
 }
 
-static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
+static bool ipc_setup(IpcFd &p2e, IpcFd &e2p, const std::string &token)
 {
     trace_engine_stage("ipc_setup:begin");
-    int srv_p2e = unix_listen(SOCK_P2E);
-    int srv_e2p = unix_listen(SOCK_E2P);
+    int srv_p2e = unix_listen(ipc_sock_p2e(token).c_str());
+    int srv_e2p = unix_listen(ipc_sock_e2p(token).c_str());
     if (srv_p2e < 0 || srv_e2p < 0) {
         if (srv_p2e >= 0) close(srv_p2e);
         if (srv_e2p >= 0) close(srv_e2p);
@@ -274,12 +274,12 @@ static bool ipc_setup(IpcFd &p2e, IpcFd &e2p)
     return connected;
 }
 
-static void ipc_teardown(IpcFd p2e, IpcFd e2p)
+static void ipc_teardown(IpcFd p2e, IpcFd e2p, const std::string &token)
 {
     close(p2e);
     close(e2p);
-    unlink(SOCK_P2E);
-    unlink(SOCK_E2P);
+    unlink(ipc_sock_p2e(token).c_str());
+    unlink(ipc_sock_e2p(token).c_str());
 }
 #endif // platform
 
@@ -1137,12 +1137,18 @@ private:
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-int main()
+int main(int argc, char **argv)
 {
+    // Per-instance IPC token from the parent (ZoomEngineProcessClient). Isolates
+    // this engine's pipes / sockets / SHM regions from any other process on the
+    // base "ZoomObsPlugin_" name — chiefly the OBS zoom plugin. Set the SHM
+    // prefix before any pipe or SDK callback can create a region.
+    const std::string ipc_token = ipc_token_from_args(argc, argv);
+    EngineIpc::set_shm_prefix(ipc_token);
     trace_engine_stage("main:entered");
     IpcFd p2e = kIpcInvalidFd;
     IpcFd e2p = kIpcInvalidFd;
-    if (!ipc_setup(p2e, e2p)) return 1;
+    if (!ipc_setup(p2e, e2p, ipc_token)) return 1;
     trace_engine_stage("main:ipc_ready");
     EngineIpc::init(e2p); // must be called before any SDK callbacks can fire
 
@@ -1394,6 +1400,6 @@ int main()
     share_engine.detach();
     EngineAudio::instance().shutdown();
     ZOOMSDK::CleanUPSDK();
-    ipc_teardown(p2e, e2p);
+    ipc_teardown(p2e, e2p, ipc_token);
     return 0;
 }

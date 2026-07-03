@@ -213,12 +213,14 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   return event;
 }
 
-std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid) {
-  return std::string(IPC_SHM_PREFIX) + sourceUuid;
+std::string zoomEngineVideoSharedMemoryName(const std::string& sourceUuid,
+                                            const std::string& instanceToken) {
+  return ipc_shm_prefix(instanceToken) + sourceUuid;
 }
 
-std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid) {
-  return std::string(IPC_SHM_PREFIX) + sourceUuid + "_audio";
+std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid,
+                                            const std::string& instanceToken) {
+  return ipc_shm_prefix(instanceToken) + sourceUuid + "_audio";
 }
 
 std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t height) {

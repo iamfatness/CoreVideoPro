@@ -150,7 +150,7 @@ bool EngineAudio::ensure_shm(AudioTarget &target,
     const size_t total = sizeof(ShmAudioHeader) + byte_len;
     if (target.shm.ptr && target.shm.size >= total) return true;
 
-    const std::string region_name = IPC_SHM_PREFIX + source_uuid + "_audio";
+    const std::string region_name = EngineIpc::shm_prefix() + source_uuid + "_audio";
     return shm_region_create(target.shm, region_name, total);
 }
 

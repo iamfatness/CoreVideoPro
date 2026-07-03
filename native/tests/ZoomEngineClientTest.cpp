@@ -182,6 +182,47 @@ TEST(ZoomEngineClient, MirrorsSharedMemoryNamesAndSizes) {
   EXPECT_EQ(corevideo::modules::zoomEnginePcmAudioByteSize(960), static_cast<std::size_t>(16 + 960));
 }
 
+TEST(ZoomEngineClient, InstanceTokenScopesSharedMemoryNames) {
+  // A non-empty token isolates this app instance's SHM regions; an empty token
+  // reproduces the legacy fixed names (so un-tokenised callers are unchanged).
+  EXPECT_EQ(corevideo::modules::zoomEngineVideoSharedMemoryName("source-123", "4242-0"),
+            "ZoomObsPlugin_4242-0_source-123");
+  EXPECT_EQ(corevideo::modules::zoomEngineAudioSharedMemoryName("source-123", "4242-0"),
+            "ZoomObsPlugin_4242-0_source-123_audio");
+  EXPECT_EQ(corevideo::modules::zoomEngineVideoSharedMemoryName("source-123", ""),
+            "ZoomObsPlugin_source-123");
+}
+
+TEST(EngineIpc, InstanceTokenScopesPipeSocketAndShmNames) {
+  // Empty token => legacy base names.
+  EXPECT_EQ(ipc_shm_prefix(""), "ZoomObsPlugin_");
+  // Non-empty token => "<base>_<token>_" so no two instances (and not the OBS
+  // zoom plugin on the bare base name) can rendezvous on the same object.
+  EXPECT_EQ(ipc_shm_prefix("4242-0"), "ZoomObsPlugin_4242-0_");
+#if defined(WIN32)
+  EXPECT_EQ(ipc_pipe_p2e(""), "\\\\.\\pipe\\ZoomObsPlugin_P2E");
+  EXPECT_EQ(ipc_pipe_e2p(""), "\\\\.\\pipe\\ZoomObsPlugin_E2P");
+  EXPECT_EQ(ipc_pipe_p2e("4242-0"), "\\\\.\\pipe\\ZoomObsPlugin_4242-0_P2E");
+  EXPECT_EQ(ipc_pipe_e2p("4242-0"), "\\\\.\\pipe\\ZoomObsPlugin_4242-0_E2P");
+  EXPECT_NE(ipc_pipe_p2e("4242-0"), ipc_pipe_p2e(""));
+#else
+  EXPECT_EQ(ipc_sock_p2e(""), "/tmp/ZoomObsPlugin_P2E.sock");
+  EXPECT_EQ(ipc_sock_p2e("4242-0"), "/tmp/ZoomObsPlugin_4242-0_P2E.sock");
+#endif
+}
+
+TEST(EngineIpc, ParsesIpcTokenFromArgv) {
+  const char* spaced[] = {"engine.exe", "--ipc-token", "1234-5"};
+  EXPECT_EQ(ipc_token_from_args(3, const_cast<char**>(spaced)), "1234-5");
+  const char* equals[] = {"engine.exe", "--ipc-token=9876-2"};
+  EXPECT_EQ(ipc_token_from_args(2, const_cast<char**>(equals)), "9876-2");
+  const char* none[] = {"engine.exe"};
+  EXPECT_EQ(ipc_token_from_args(1, const_cast<char**>(none)), "");
+  // A trailing flag with no value must not read out of bounds.
+  const char* dangling[] = {"engine.exe", "--ipc-token"};
+  EXPECT_EQ(ipc_token_from_args(2, const_cast<char**>(dangling)), "");
+}
+
 TEST(ZoomEngineClient, ReadsI420SharedMemoryIntoRgbaThumbnail) {
   auto memory = makeI420SharedMemory(4, 2, 255, 128, 128);
   const auto frame = corevideo::modules::readZoomEngineI420FrameSnapshot(

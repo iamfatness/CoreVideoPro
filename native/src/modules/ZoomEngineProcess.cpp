@@ -5,6 +5,7 @@
 #endif
 #include "engine-ipc.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <thread>
@@ -75,6 +76,17 @@ bool isConnected(int value) {
 
 }  // namespace
 
+std::string makeZoomEngineInstanceToken() {
+  static std::atomic<std::uint32_t> spawnCounter{0};
+  const std::uint32_t n = spawnCounter.fetch_add(1, std::memory_order_relaxed);
+#if defined(_WIN32)
+  const unsigned long pid = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+  const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+  return std::to_string(pid) + "-" + std::to_string(n);
+}
+
 ZoomEngineProcessClient::~ZoomEngineProcessClient() {
   stop();
 }
@@ -87,11 +99,19 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
     return false;
   }
 
+  // Establish the per-instance IPC token before spawning: the engine must be
+  // told it on its command line, and our own pipe/SHM names derive from it.
+  instanceToken_ = options.instanceToken.empty() ? makeZoomEngineInstanceToken()
+                                                  : options.instanceToken;
+
 #if defined(_WIN32)
   STARTUPINFOA startupInfo{};
   startupInfo.cb = sizeof(startupInfo);
   PROCESS_INFORMATION processInfo{};
   std::string commandLine = "\"" + options.executablePath + "\"";
+  if (!instanceToken_.empty()) {
+    commandLine += " --ipc-token " + instanceToken_;
+  }
   const std::string workingDirectory = std::filesystem::path(options.executablePath).parent_path().string();
   const BOOL created = CreateProcessA(
       options.executablePath.c_str(),
@@ -117,7 +137,12 @@ bool ZoomEngineProcessClient::start(const ZoomEngineProcessOptions& options) {
     return false;
   }
   if (pid == 0) {
-    execl(options.executablePath.c_str(), options.executablePath.c_str(), static_cast<char*>(nullptr));
+    if (!instanceToken_.empty()) {
+      execl(options.executablePath.c_str(), options.executablePath.c_str(), "--ipc-token",
+            instanceToken_.c_str(), static_cast<char*>(nullptr));
+    } else {
+      execl(options.executablePath.c_str(), options.executablePath.c_str(), static_cast<char*>(nullptr));
+    }
     _exit(127);
   }
   processId_ = static_cast<int>(pid);
@@ -221,20 +246,27 @@ std::optional<ZoomEngineEvent> ZoomEngineProcessClient::readEvent() {
 }
 
 bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
+#if defined(_WIN32)
+  const std::string pipeP2E = ipc_pipe_p2e(instanceToken_);
+  const std::string pipeE2P = ipc_pipe_e2p(instanceToken_);
+#else
+  const std::string sockP2E = ipc_sock_p2e(instanceToken_);
+  const std::string sockE2P = ipc_sock_e2p(instanceToken_);
+#endif
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline) {
 #if defined(_WIN32)
     if (!parentToEngine_) {
-      if (WaitNamedPipeA(PIPE_P2E, 100)) {
-        parentToEngine_ = CreateFileA(PIPE_P2E, GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (WaitNamedPipeA(pipeP2E.c_str(), 100)) {
+        parentToEngine_ = CreateFileA(pipeP2E.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (parentToEngine_ == INVALID_HANDLE_VALUE) {
           parentToEngine_ = nullptr;
         }
       }
     }
     if (!engineToParent_) {
-      if (WaitNamedPipeA(PIPE_E2P, 100)) {
-        engineToParent_ = CreateFileA(PIPE_E2P, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (WaitNamedPipeA(pipeE2P.c_str(), 100)) {
+        engineToParent_ = CreateFileA(pipeE2P.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (engineToParent_ == INVALID_HANDLE_VALUE) {
           engineToParent_ = nullptr;
         }
@@ -242,10 +274,10 @@ bool ZoomEngineProcessClient::connectIpc(int timeoutMs) {
     }
 #else
     if (parentToEngine_ < 0) {
-      parentToEngine_ = connectUnixSocket(SOCK_P2E);
+      parentToEngine_ = connectUnixSocket(sockP2E.c_str());
     }
     if (engineToParent_ < 0) {
-      engineToParent_ = connectUnixSocket(SOCK_E2P);
+      engineToParent_ = connectUnixSocket(sockE2P.c_str());
     }
 #endif
     if (isConnected(parentToEngine_) && isConnected(engineToParent_)) {

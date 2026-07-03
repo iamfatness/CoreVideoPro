@@ -58,6 +58,19 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   no PCM is available that tick) and resolves an H.264/AAC codec-compatibility
   matrix before encoding.
 
+### Fixed
+
+- **Zoom engine IPC no longer collides with the OBS zoom plugin.** The engine's
+  named pipes, unix sockets, and shared-memory regions previously used fixed
+  names on the shared `ZoomObsPlugin_` base, so whenever OBS (with
+  `obs-zoom-plugin`) was running, every join failed with "Timed out connecting to
+  Zoom engine IPC." The parent (`ZoomEngineProcessClient`) now generates a
+  per-instance token (`<pid>-<spawn#>`), passes it to the engine via
+  `--ipc-token`, and both sides splice it into every IPC name
+  (`ipc_pipe_p2e`/`ipc_sock_p2e`/`ipc_shm_prefix` in `engine-ipc.h`). This also
+  lets two CoreVideo Pro instances run side by side without corrupting each
+  other's video. Real and fake engines both honor the token.
+
 ### Known gaps
 
 - SRT **output** is not yet implemented; live UVC/DeckLink/AJA frames

@@ -116,6 +116,10 @@ class ZoomEngineRuntime {
   // time a new process client is installed; queued sends carry the generation
   // they were built for and are dropped if the process has been replaced.
   std::uint64_t processGeneration_ = 0;
+  // Per-instance IPC token of the current engine process (read back from the
+  // process client after start). Used to derive SHM region names that match what
+  // the engine creates. Guarded by mutex_.
+  std::string instanceToken_;
 
   // Outbound engine-command queue + dedicated sender thread (increment 3). All
   // engine stdin writes happen ONLY on sender_, so no caller ever blocks on the

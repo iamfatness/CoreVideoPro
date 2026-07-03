@@ -40,15 +40,63 @@ struct ShmAudioHeader {
     uint32_t byte_len;
 };
 
-// ── Platform-specific pipe / socket paths ─────────────────────────────────────
+// ── Instance-scoped IPC naming ────────────────────────────────────────────────
+// The named pipes / unix sockets / shared-memory regions all share the
+// "ZoomObsPlugin_" base name this engine inherited from the OBS Zoom plugin it
+// grew out of. A per-instance token is spliced into every name so a CoreVideo
+// Pro instance never rendezvous with — or gets starved by — another process
+// holding the bare base name. Most importantly that other process is the OBS
+// zoom plugin: without a token our parent's WaitNamedPipe/CreateFile races OBS's
+// singleton pipe server and every join fails with "Timed out connecting to Zoom
+// engine IPC" whenever OBS is running. An empty token reproduces the legacy
+// fixed names (kept so any un-tokenised caller still works).
 #if defined(WIN32)
 #  include <windows.h>
-   static constexpr const char *PIPE_P2E = "\\\\.\\pipe\\ZoomObsPlugin_P2E";
-   static constexpr const char *PIPE_E2P = "\\\\.\\pipe\\ZoomObsPlugin_E2P";
-#else
-   static constexpr const char *SOCK_P2E = "/tmp/ZoomObsPlugin_P2E.sock";
-   static constexpr const char *SOCK_E2P = "/tmp/ZoomObsPlugin_E2P.sock";
 #endif
+
+inline std::string ipc_instance_infix(const std::string &token)
+{
+    return token.empty() ? std::string() : token + "_";
+}
+
+#if defined(WIN32)
+inline std::string ipc_pipe_p2e(const std::string &token)
+{
+    return "\\\\.\\pipe\\ZoomObsPlugin_" + ipc_instance_infix(token) + "P2E";
+}
+inline std::string ipc_pipe_e2p(const std::string &token)
+{
+    return "\\\\.\\pipe\\ZoomObsPlugin_" + ipc_instance_infix(token) + "E2P";
+}
+#else
+inline std::string ipc_sock_p2e(const std::string &token)
+{
+    return "/tmp/ZoomObsPlugin_" + ipc_instance_infix(token) + "P2E.sock";
+}
+inline std::string ipc_sock_e2p(const std::string &token)
+{
+    return "/tmp/ZoomObsPlugin_" + ipc_instance_infix(token) + "E2P.sock";
+}
+#endif
+
+inline std::string ipc_shm_prefix(const std::string &token)
+{
+    return std::string(IPC_SHM_PREFIX) + ipc_instance_infix(token);
+}
+
+// Parse "--ipc-token <value>" or "--ipc-token=<value>" out of argv; returns the
+// empty string when absent. Shared by the real and fake engine entry points so
+// both agree with the parent's ZoomEngineProcessClient on the instance token.
+inline std::string ipc_token_from_args(int argc, char **argv)
+{
+    const std::string flag = "--ipc-token";
+    for (int i = 1; i < argc && argv[i]; ++i) {
+        const std::string arg = argv[i];
+        if (arg == flag && i + 1 < argc && argv[i + 1]) return argv[i + 1];
+        if (arg.rfind(flag + "=", 0) == 0) return arg.substr(flag.size() + 1);
+    }
+    return {};
+}
 
 // ── Platform-agnostic file-descriptor type ───────────────────────────────────
 #if defined(WIN32)
