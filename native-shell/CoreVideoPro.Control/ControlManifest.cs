@@ -37,8 +37,8 @@ public sealed record ControlManifest(
     public static readonly IReadOnlyList<string> StateFields = new[]
     {
         "recording", "streaming", "engineOn", "canTake", "lowerThirdOnAir",
-        "zoomStatus", "engineStatus", "commandStatus", "activeScene", "previewScene", "viewMode",
-        "multiviewLayout", "multiviewTileCount",
+        "zoomStatus", "engineStatus", "commandStatus", "activeSceneId", "previewSceneId", "viewMode",
+        "multiviewLayoutMode", "multiviewTileCount",
         "automationOn", "autoTake", "autoAssignInputs", "autoLowerThirds", "autoCaptions",
         "audioMonitorOn", "audioMonitorVolume", "masterLimiterOn",
         "input/{slot}/inShow", "input/{slot}/kind", "input/{slot}/source", "input/{slot}/name"

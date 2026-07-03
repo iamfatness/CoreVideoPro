@@ -2,8 +2,9 @@ namespace CoreVideoPro.Control.Osc;
 
 /// <summary>Encodes a <see cref="ControlState"/> into the OSC feedback messages a control surface
 /// polls/subscribes to for button lighting. Booleans are sent as int 0/1 (broadest Companion
-/// compatibility); the address space mirrors <see cref="ControlState"/> field names under
-/// <c>/cvp/state/</c>.</summary>
+/// compatibility); the field names under <c>/cvp/state/</c> are IDENTICAL to the camelCased
+/// <see cref="ControlState"/> property names used by the HTTP/WS JSON, so OSC and HTTP clients see
+/// the same feedback names.</summary>
 public static class OscFeedback
 {
     public static IReadOnlyList<OscMessage> Encode(ControlState state, OscAddressMap addressMap)
@@ -21,10 +22,10 @@ public static class OscFeedback
             Str("zoomStatus", state.ZoomStatus),
             Str("engineStatus", state.EngineStatus),
             Str("commandStatus", state.CommandStatus),
-            Str("activeScene", state.ActiveSceneId),
-            Str("previewScene", state.PreviewSceneId),
+            Str("activeSceneId", state.ActiveSceneId),
+            Str("previewSceneId", state.PreviewSceneId),
             Str("viewMode", state.ViewMode),
-            Str("multiviewLayout", state.MultiviewLayoutMode),
+            Str("multiviewLayoutMode", state.MultiviewLayoutMode),
             new(addressMap.StateAddress("multiviewTileCount"), state.MultiviewTileCount),
             Flag("automationOn", state.AutomationOn),
             Flag("autoTake", state.AutoTake),
