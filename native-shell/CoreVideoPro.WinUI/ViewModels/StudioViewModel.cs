@@ -8554,12 +8554,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     // Re-run the roster→slot auto-assign from the CURRENT room roster (used when the operator
-    // flips the auto-assign toggle on). No-op stale-removal when there is no meeting.
+    // flips the auto-assign toggle). No-op stale-removal when there is no meeting.
+    // MUST use RoomParticipantsForInputs (all in-room, video on OR off) — the SAME set the
+    // meeting-sync path passes. RoomVideoParticipants filters out camera-off participants, so
+    // using it here would make the helper's stale-removal pass free a camera-off participant's
+    // assigned slot the moment the operator flips the toggle.
     private void ReapplyShowInputAutoAssign()
     {
         ShowInputRosterService.SyncZoomParticipantSlots(
             ShowInputs,
-            RoomVideoParticipants
+            RoomParticipantsForInputs
                 .Select(participant => participant.Id)
                 .Where(id => !string.IsNullOrWhiteSpace(id))
                 .ToList(),
