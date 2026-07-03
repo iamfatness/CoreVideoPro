@@ -1,9 +1,11 @@
+using CoreVideoPro.Control.Osc;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using System.Net;
 using WinRT.Interop;
 
 namespace CoreVideoPro.WinUI;
@@ -18,6 +20,8 @@ public sealed partial class MainWindow : Window
     private readonly SystemResourceMonitorService _resourceMonitor = new();
     private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private DispatcherQueueTimer? _resourceMonitorTimer;
+    private StudioControlSurface? _controlSurface;
+    private OscControlServer? _controlServer;
     private bool _resourceMonitoringStopped;
     private bool _shutdownStarted;
     private bool _allowWindowClose;
@@ -43,6 +47,63 @@ public sealed partial class MainWindow : Window
         Closed += OnWindowClosed;
 
         StartResourceMonitoring();
+        StartControlServer();
+    }
+
+    // Remote control (OSC) so control surfaces / a Bitfocus Companion module can drive the app.
+    // Localhost + port 8010 by default; opt into LAN and a custom port via env vars. A bind
+    // failure (e.g. port in use) is logged and swallowed — it must never block the app launch.
+    private void StartControlServer()
+    {
+        if (_dispatcher is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var port = 8010;
+            if (int.TryParse(Environment.GetEnvironmentVariable("COREVIDEO_OSC_PORT"), out var configured) &&
+                configured is > 0 and < 65536)
+            {
+                port = configured;
+            }
+
+            var lan = string.Equals(Environment.GetEnvironmentVariable("COREVIDEO_OSC_LAN"), "1", StringComparison.Ordinal);
+
+            _controlSurface = new StudioControlSurface(ViewModel, _dispatcher);
+            _controlServer = new OscControlServer(_controlSurface, new OscControlServerOptions
+            {
+                ListenPort = port,
+                BindAddress = lan ? IPAddress.Any : IPAddress.Loopback
+            });
+            _controlServer.Start();
+            LaunchLog.Write($"control: OSC server listening on {(lan ? "0.0.0.0" : "127.0.0.1")}:{_controlServer.BoundPort}");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"control: OSC server failed to start ({ex.Message})");
+        }
+    }
+
+    private async Task StopControlServerAsync()
+    {
+        if (_controlServer is not null)
+        {
+            try
+            {
+                await _controlServer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // best effort
+            }
+
+            _controlServer = null;
+        }
+
+        _controlSurface?.Dispose();
+        _controlSurface = null;
     }
 
     private void OnWindowActivated(object sender, WindowActivatedEventArgs args)
@@ -139,6 +200,7 @@ public sealed partial class MainWindow : Window
         try
         {
             StopResourceMonitoring();
+            await StopControlServerAsync().ConfigureAwait(false);
             WindowChromeService.ClearScheduledReapply(this);
             RootContent.ViewModel = null;
             await Task.Run(async () =>

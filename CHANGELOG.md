@@ -19,9 +19,18 @@ All notable changes to CoreVideo Pro are documented here. The format follows
   `IControlSurface` and pushes `/cvp/state/*` feedback on change; and a
   machine-readable `ControlManifest` (the contract a Bitfocus Companion module is
   generated from). Fully unit-tested (codec round-trip incl. bundles, registry
-  binding/coercion, routing, feedback, UDP loopback). The WinUI adapter that maps
-  these actions onto `StudioViewModel` (UI-thread-marshaled) and an HTTP/WebSocket
-  transport + the Companion module are the next increments.
+  binding/coercion, routing, feedback, UDP loopback).
+- **Remote control WinUI adapter + OSC lifecycle (Phase 1b).** `StudioControlSurface`
+  maps every registered action onto the operator `StudioViewModel`
+  (commands + bound properties), marshaling each invocation onto the UI thread to
+  avoid the CoreMessagingXP fail-fast, and pushes debounced feedback on state change.
+  `MainWindow` starts an `OscControlServer` on launch (localhost:8010 by default;
+  `COREVIDEO_OSC_PORT` / `COREVIDEO_OSC_LAN=1` to change) and disposes it on shutdown,
+  so control surfaces / a Companion module can now drive Take, record/stream/engine,
+  scene select, input assign/name/in-show, lower-thirds/captions, audio monitor/limiter,
+  multiview, and automation. A coverage test asserts the adapter handles every
+  registry action. (Live OSC→UI validation is a rig step.) An HTTP/WebSocket transport
+  and the `companion-module-corevideopro` package are the next increments.
 
 - **Nameable sources + auto-assigned Show Inputs.** Each Show Input now has an
   editable display name (the new NAME column in the Inputs tab) that defaults to
