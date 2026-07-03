@@ -820,4 +820,172 @@ TEST(D3D11Compositor, OverlayRasterCacheReusesAndInvalidates) {
   EXPECT_EQ(first.preview.bgra, second.preview.bgra);
   EXPECT_NE(first.preview.bgra, recolored.preview.bgra);
 }
+
+namespace {
+
+// Solid-luma I420 frame with neutral chroma (renders as a gray of that luma
+// under the full-range conversion, whatever the matrix).
+// The local gtest subset has no EXPECT_NEAR — assert |actual-expected| <= tol.
+void expectChannelNear(int actual, int expected, int tolerance, const char* what) {
+  EXPECT_TRUE(std::abs(actual - expected) <= tolerance)
+      << what << " = " << actual << ", expected " << expected << " +/- " << tolerance;
+}
+
+corevideo::modules::VideoFrame makeI420SolidFrame(
+    const std::string& participantId, int width, int height, uint8_t luma, int64_t frameId) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
+  frame.timestampMs = 16;
+  frame.frameId = frameId;
+  const size_t yLength = static_cast<size_t>(width) * static_cast<size_t>(height);
+  auto planes = std::make_shared<std::vector<uint8_t>>(yLength + yLength / 2);
+  std::fill(planes->begin(), planes->begin() + static_cast<std::ptrdiff_t>(yLength), luma);
+  std::fill(planes->begin() + static_cast<std::ptrdiff_t>(yLength), planes->end(), static_cast<uint8_t>(128));
+  frame.i420 = std::move(planes);
+  frame.i420Width = width;
+  frame.i420Height = height;
+  return frame;
+}
+
+corevideo::modules::CompositorRenderPlan fullRectParticipantPlan(
+    const std::string& planId, const std::string& participantId, int width, int height) {
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = planId;
+  plan.width = width;
+  plan.height = height;
+  plan.layers.push_back({
+      "route:" + participantId,
+      "participant-video",
+      "zoom:" + participantId,
+      participantId,
+      0,
+      {0.f, 0.f, 1.f, 1.f},
+      1.f,
+  });
+  return plan;
+}
+
+}  // namespace
+
+// The per-source texture cache: a source drawn by every pass (program +
+// multiview + preview + the participant export inside render()) must cost ONE
+// plane upload per new frame, not one per draw — and an unchanged frame must
+// cost none at all.
+TEST(D3D11Compositor, SourceTextureCacheDedupsUploadsAcrossPasses) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  const auto plan = fullRectParticipantPlan("srctex-dedup", "cam", 320, 180);
+  const auto frame = makeI420SolidFrame("cam", 320, 180, 128, 1);
+
+  const auto first = compositor->render(plan, {frame});
+  auto stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.cachedUploads, 1u);
+  EXPECT_EQ(stats.scratchUploads, 0u);
+  EXPECT_GE(stats.cacheHits, 1u);  // the export convert samples the cache
+
+  // Neutral-chroma I420 at luma 128 must come out mid-gray — proves the draw
+  // sampled the CACHED planes, not stale or empty textures.
+  const uint32_t center = previewPixelRgba(first.preview, first.preview.width / 2, first.preview.height / 2);
+  expectChannelNear(static_cast<int>((center >> 16) & 0xff), 128, 12, "center R");
+  expectChannelNear(static_cast<int>((center >> 8) & 0xff), 128, 12, "center G");
+  expectChannelNear(static_cast<int>(center & 0xff), 128, 12, "center B");
+
+  compositor->renderMultiview(plan, {frame});
+  compositor->renderPreview(plan, {frame});
+  const auto second = compositor->render(plan, {frame});
+  stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.cachedUploads, 1u) << "extra passes of an unchanged frame must not re-upload";
+  EXPECT_EQ(first.preview.bgra, second.preview.bgra);
+
+  // New content (new frameId) re-uploads once and changes the pixels.
+  const auto brighter = makeI420SolidFrame("cam", 320, 180, 220, 2);
+  const auto third = compositor->render(plan, {brighter});
+  stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.cachedUploads, 2u);
+  EXPECT_NE(second.preview.bgra, third.preview.bgra);
+  const uint32_t brightCenter = previewPixelRgba(third.preview, third.preview.width / 2, third.preview.height / 2);
+  expectChannelNear(static_cast<int>(brightCenter & 0xff), 220, 12, "bright center B");
+}
+
+// Two sources at different resolutions drawn in the same pass must each keep
+// their own textures — no per-draw destroy/recreate churn (the old shared
+// scratch textures were keyed to the last-drawn dimensions).
+TEST(D3D11Compositor, SourceTextureCacheHandlesMixedResolutionsWithoutRecreates) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  auto plan = fullRectParticipantPlan("srctex-mixed", "large", 640, 360);
+  plan.layers[0].rect = {0.f, 0.f, 0.5f, 1.f};
+  plan.layers.push_back({
+      "route:small",
+      "participant-video",
+      "zoom:small",
+      "small",
+      1,
+      {0.5f, 0.f, 0.5f, 1.f},
+      1.f,
+  });
+  const auto large = makeI420SolidFrame("large", 1280, 720, 200, 7);
+  const auto small = makeI420SolidFrame("small", 320, 180, 60, 9);
+
+  compositor->render(plan, {large, small});
+  compositor->render(plan, {large, small});
+  compositor->render(plan, {large, small});
+  const auto stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.textureCreates, 2u) << "one texture set per source, created once";
+  EXPECT_EQ(stats.cachedUploads, 2u) << "one upload per source, held frames are free";
+}
+
+// A cached source that stops being drawn must be evicted (and re-created on
+// return) so leavers release their GPU memory.
+TEST(D3D11Compositor, SourceTextureCacheEvictsUnusedSources) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  auto planA = fullRectParticipantPlan("srctex-evict-a", "stale", 160, 90);
+  planA.skipCpuReadback = true;
+  auto planB = fullRectParticipantPlan("srctex-evict-b", "active", 160, 90);
+  planB.skipCpuReadback = true;
+  const auto frameA = makeI420SolidFrame("stale", 64, 36, 100, 1);
+  const auto frameB = makeI420SolidFrame("active", 64, 36, 150, 1);
+
+  compositor->render(planA, {frameA});
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 1u);
+  for (int i = 0; i < 301; ++i) {
+    compositor->render(planB, {frameB});
+  }
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 2u);
+  compositor->render(planA, {frameA});
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 3u)
+      << "the evicted source must re-create (proves it was dropped)";
+}
+
+// BGRA (capture-style) frames ride the same cache. Their held frames often keep
+// frameId 0, so the buffer-identity backstop must still catch new content.
+TEST(D3D11Compositor, SourceTextureCacheServesBgraFramesWithBufferIdentity) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  const auto plan = fullRectParticipantPlan("srctex-bgra", "capture-1", 320, 180);
+  const auto banded = makeLeftRightBandFrame("capture-1", 320, 180, 320, 180, 0xffff0000u, 0xff0000ffu);
+
+  const auto first = compositor->render(plan, {banded});
+  const auto second = compositor->render(plan, {banded});
+  auto stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.cachedUploads, 1u);
+  EXPECT_GE(stats.cacheHits, 1u);
+  EXPECT_EQ(first.preview.bgra, second.preview.bgra);
+
+  // Same participant, same frameId (0), NEW buffer -> must re-upload.
+  const auto recolored = makeLeftRightBandFrame("capture-1", 320, 180, 320, 180, 0xff00ff00u, 0xffff00ffu);
+  const auto third = compositor->render(plan, {recolored});
+  stats = compositor->sourceTexStats();
+  EXPECT_EQ(stats.cachedUploads, 2u);
+  EXPECT_NE(second.preview.bgra, third.preview.bgra);
+}
 #endif
