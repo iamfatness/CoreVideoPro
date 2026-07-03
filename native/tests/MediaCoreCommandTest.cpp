@@ -3712,6 +3712,69 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   EXPECT_FALSE(snapshotMultiview->get("texture")->getString("sharedHandleHex").empty());
 }
 
+// Regression: in a pgmPvw layout with sources but NO scene cued in preview, the
+// PVW cell must NOT be pinned to an arbitrary roster source (the old "v1" fallback
+// drew multiviewSources_.front(), which never reflected the preview and never
+// swapped on Take). The PVW tile carries the "pvw" role with an EMPTY sourceId —
+// it renders the live preview composite (empty here) rather than a source. Skips
+// without a D3D11 device (the multiview event needs the GPU composite).
+TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPreviewScene) {
+  auto gpuCompositor = corevideo::modules::createD3D11Compositor();
+  if (!gpuCompositor) {
+    std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
+    return;
+  }
+
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::move(gpuCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  // Program/Preview layout mode — this is the one with a dedicated PVW cell.
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "configure-multiviewer"},
+      {"layoutMode", "pgmPvwTop"},
+      {"tileCount", 4},
+  });
+
+  corevideo::rpc::Json::Array sources;
+  const std::vector<std::string> ids = {"alice", "bob", "carol"};
+  for (size_t i = 0; i < ids.size(); ++i) {
+    sources.emplace_back(corevideo::rpc::Json::Object{
+        {"sourceId", "zoom:" + ids[i]},
+        {"kind", "participant"},
+        {"participantId", ids[i]},
+        {"slot", static_cast<int>(i)},
+        {"label", "Tile " + ids[i]},
+    });
+  }
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-multiview-layout"},
+      {"canvasWidth", 1920},
+      {"canvasHeight", 1080},
+      {"sources", sources},
+  });
+  // NOTE: deliberately no set-preview-scene — nothing is cued in preview.
+
+  mediaCore.renderDisplayTick();
+
+  const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+  ASSERT_FALSE(events.empty());
+  const auto* tiles = events.back().get("tiles");
+  ASSERT_NE(tiles, nullptr);
+  ASSERT_TRUE(tiles->isArray());
+
+  bool sawPvw = false;
+  for (const auto& tile : tiles->asArray()) {
+    if (tile.getString("role") == "pvw") {
+      sawPvw = true;
+      EXPECT_TRUE(tile.getString("sourceId").empty())
+          << "PVW cell must not be pinned to a roster source; got '" << tile.getString("sourceId") << "'";
+      EXPECT_TRUE(tile.getString("participantId").empty());
+    }
+  }
+  EXPECT_TRUE(sawPvw) << "expected a pvw-role tile in a pgmPvw layout";
+}
+
 TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
   corevideo::core::MediaCore mediaCore;
 

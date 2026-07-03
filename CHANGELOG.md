@@ -60,6 +60,16 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Fixed
 
+- **Multiview PGM/PVW: the Preview cell no longer shows an arbitrary roster
+  source.** In the Program/Preview multiviewer layouts, when nothing was cued in
+  preview the PVW cell fell back to `multiviewSources_.front()` — a fixed first
+  roster source that never reflected the preview bus and never followed a Take.
+  The PVW cell now renders only the live preview composite (`previewSceneRoutes_`,
+  which swaps on Take) or stays empty when nothing is cued, mirroring an ATEM PVW
+  bus; its tile carries no pinned `sourceId`, so a click is a no-op rather than
+  cueing an unrelated source. (The broader "content doesn't swap after Take with a
+  scene cued" report is a separate production-sync round-trip question that needs a
+  rig `media-core.log` check — the composite path itself is correct.)
 - **Recording/encoder overload resilience: the audio worker no longer collapses
   and stop-recording can't be starved under load.** Under a worst-case soak the
   audio/output worker fell from 47 to 0.6 ticks/s and the operator couldn't stop
