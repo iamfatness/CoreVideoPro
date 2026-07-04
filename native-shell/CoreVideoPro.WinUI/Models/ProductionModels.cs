@@ -164,8 +164,11 @@ public sealed class AudioCaptureDevice
 public sealed class AudioRenderDevice
 {
     public required string Id { get; init; }
+    // Empty = "system default": the core's WASAPI monitor adapter resolves an
+    // empty device id to the current OS default render endpoint.
     public required string NativeDeviceId { get; init; }
     public required string Name { get; init; }
+    public bool IsDefault { get; init; }
 }
 
 public partial class CaptureDevice : ObservableObject

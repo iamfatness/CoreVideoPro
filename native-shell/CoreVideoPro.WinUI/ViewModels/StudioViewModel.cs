@@ -4998,7 +4998,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(SelectedAudioMonitorDeviceId) ||
             AudioRenderDevices.All(device => !string.Equals(device.Id, SelectedAudioMonitorDeviceId, StringComparison.Ordinal)))
         {
-            SelectedAudioMonitorDeviceId = AudioRenderDevices.FirstOrDefault()?.Id ?? string.Empty;
+            // First run, or the saved device disappeared: land on the OS default
+            // (the "System default output" pseudo-entry), never on whichever
+            // device happens to sort first alphabetically (phase B2).
+            SelectedAudioMonitorDeviceId =
+                AudioRenderDevices.FirstOrDefault(device => device.IsDefault)?.Id ??
+                AudioRenderDevices.FirstOrDefault()?.Id ?? string.Empty;
         }
 
         OnPropertyChanged(nameof(AudioRenderDevices));
@@ -6380,26 +6385,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         NativeMediaCoreOutputSenderSession? outputSenderSession = null,
         NativeMediaCoreRecordingSession? recording = null)
     {
+        // State words, not counters: this string sits in the transport bar, and
+        // an ever-incrementing frame count reads as debug noise to an operator
+        // (spec 4.4 — "replace the AUDIO PROOF counter string"). The raw
+        // counters still go to launch.log via MaybeLogAudioTelemetry.
         var sourceState = capture.SourceCount <= 0
             ? "sources none"
             : $"sources {capture.StreamingCount}/{capture.SourceCount}";
         var pcmState = capture.CaptureFramesReceived > 0
-            ? $"PCM {capture.CaptureFramesReceived}"
+            ? "PCM live"
             : "PCM none";
         var mixState = audio.MixedFrameCount > 0
-            ? $"mix {audio.MixedFrameCount}"
+            ? "mix live"
             : "mix none";
         var pgmState = capture.RoutedMasterFrames > 0
-            ? $"PGM {capture.RoutedMasterFrames}"
+            ? "PGM live"
             : "PGM none";
         var monState = capture.RoutedMonitorFrames > 0
-            ? $"MON {capture.RoutedMonitorFrames}"
+            ? "MON live"
             : capture.FallbackMonitorFrames > 0
-                ? $"MON fallback {capture.FallbackMonitorFrames}"
+                ? "MON fallback"
             : "MON none";
         var playbackState = audio.MonitorEnabled
             ? audio.MonitorFramesPlayed > 0
-                ? $"playback {audio.MonitorFramesPlayed}"
+                ? "playback live"
                 : $"playback none ({FormatMonitorStatus(audio)})"
             : "monitor off";
         var sourceDetail = capture.Sources.FirstOrDefault(source => source.CaptureStreaming || source.CaptureFramesReceived > 0) ??
@@ -6536,7 +6545,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "audio"
             : source.AudioSourceKind;
         var state = source.CaptureStreaming
-            ? source.CaptureFramesReceived > 0 ? $"{source.CaptureFramesReceived} frames" : "streaming, no frames"
+            ? source.CaptureFramesReceived > 0 ? "live" : "streaming, no frames"
             : source.Paired ? "paired idle" : "not paired";
         return $"{label} ({kind}, {state})";
     }

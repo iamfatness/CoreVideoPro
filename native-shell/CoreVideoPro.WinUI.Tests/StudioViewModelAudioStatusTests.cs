@@ -1010,6 +1010,37 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void FormatAudioProofSummary_UsesStateWordsNotCounters()
+    {
+        // Spec 4.4: the transport bar shows state words; raw frame counters
+        // live in the telemetry log line, not the operator UI.
+        var audio = new NativeMediaCoreAudioMixSession
+        {
+            Status = "live",
+            Summary = "Live",
+            MixedFrameCount = 3672480,
+            MonitorEnabled = true,
+            MonitorFramesPlayed = 48960,
+            MonitorStatus = "playing"
+        };
+        var capture = new NativeMediaCoreCaptureAudioSources
+        {
+            Status = "ready",
+            Summary = "Ready",
+            SourceCount = 1,
+            StreamingCount = 1,
+            CaptureFramesReceived = 18620640,
+            RoutedMasterFrames = 480,
+            RoutedMonitorFrames = 480
+        };
+
+        var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
+
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback live", status);
+        Assert.DoesNotContain("3672480", status);
+    }
+
+    [Fact]
     public void FormatAudioProofSummary_ShowsMonitorOffWhenMonBusHasSignal()
     {
         var audio = new NativeMediaCoreAudioMixSession
@@ -1045,7 +1076,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | monitor off - Desk Mix (wasapi-loopback, 960 frames)", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | monitor off - Desk Mix (wasapi-loopback, live)", status);
     }
 
     [Fact]
@@ -1084,7 +1115,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 960 | playback none (armed, waiting for audio) | check monitor output - Desk Mix (wasapi-loopback, 960 frames)", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback none (armed, waiting for audio) | check monitor output - Desk Mix (wasapi-loopback, live)", status);
     }
 
     [Fact]
@@ -1254,7 +1285,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback live", status);
     }
 
     [Fact]
@@ -1308,7 +1339,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture, senders, recording);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | stream audio 960 frames @ 48000 Hz | record audio 960 samples @ 48000 Hz", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback live | stream audio 960 frames @ 48000 Hz | record audio 960 samples @ 48000 Hz", status);
     }
 
     [Fact]
@@ -1357,7 +1388,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture, senders, recording);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | stream audio none | record audio none | check stream audio; check recording audio", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback live | stream audio none | record audio none | check stream audio; check recording audio", status);
     }
 
     [Fact]
@@ -1386,7 +1417,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture, recording: recording);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON 480 | playback 480 | record proof missing | check recording proof", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON live | playback live | record proof missing | check recording proof", status);
     }
 
     [Fact]
@@ -1462,7 +1493,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM none | MON none | playback none (armed, waiting for audio) | route source to PGM", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM none | MON none | playback none (armed, waiting for audio) | route source to PGM", status);
     }
 
     [Fact]
@@ -1489,7 +1520,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback none (armed, waiting for audio) | route source to MON", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON none | playback none (armed, waiting for audio) | route source to MON", status);
     }
 
     [Fact]
@@ -1517,7 +1548,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON none | playback 480", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON none | playback live", status);
     }
 
     [Fact]
@@ -1547,7 +1578,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         var status = StudioViewModel.FormatAudioProofSummary(audio, capture);
 
-        Assert.Equal("sources 1/1 | PCM 960 | mix 960 | PGM 960 | MON fallback 480 | playback 480", status);
+        Assert.Equal("sources 1/1 | PCM live | mix live | PGM live | MON fallback | playback live", status);
     }
 
     [Fact]
