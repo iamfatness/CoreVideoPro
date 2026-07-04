@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Director.h"
+#include "core/PluginHostScan.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
@@ -109,6 +110,12 @@ class MediaCore {
   void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncAudioMonitor(const rpc::Json& command);
+  // VST host P1 (docs/vst-host-spec.md): operator-initiated plugin discovery.
+  // Runs `corevideo-plugin-host --scan` on a detached thread; results live
+  // behind pluginHostMutex_ (a leaf lock — held briefly by the thread and by
+  // snapshot export, never around any other lock).
+  void startPluginHostScan();
+  [[nodiscard]] rpc::Json pluginHostState() const;
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
@@ -385,6 +392,12 @@ class MediaCore {
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
   bool audioMonitorFeedbackRisk_ = false;  // monitor endpoint == loopback endpoint (spec R6)
   std::string audioMonitorWarning_;
+  // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
+  // thread cannot take coreMutex, which the server owns).
+  mutable std::mutex pluginHostMutex_;
+  std::string pluginHostStatus_ = "absent";  // absent|scanning|ready|error
+  std::vector<PluginHostPluginInfo> pluginHostPlugins_;
+  bool pluginHostScanInFlight_ = false;
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;

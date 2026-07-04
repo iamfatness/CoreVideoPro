@@ -3879,6 +3879,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
     }
 
+    // ---- VST host P1: operator-initiated plugin discovery (spec 4.5). The
+    // scan request rides the next sync as a one-shot command; results arrive
+    // on the snapshot (audioMixSession.pluginHost).
+    private bool _vstScanRequested;
+
+    private bool ConsumeVstScanRequest()
+    {
+        var requested = _vstScanRequested;
+        _vstScanRequested = false;
+        return requested;
+    }
+
+    public void RequestVstPluginScan()
+    {
+        _vstScanRequested = true;
+        CommandStatus = "Scanning VST3 plugins…";
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public IReadOnlyList<NativeMediaCorePluginInfo> VstPlugins =>
+        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Plugins ?? [];
+
+    public string VstPluginHostSummary =>
+        (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
+        {
+            "ready" => $"{VstPlugins.Count} VST3 plugin(s) found — probe/hosting lands in P2 (docs/vst-host-spec.md)",
+            "scanning" => "Scanning VST3 directories…",
+            "error" => "Plugin scan failed — see media-core.log",
+            _ => "No scan yet — Scan finds installed VST3 plugins (discovery only, out of process)"
+        };
+
     // ---- C3: the Audio tab's SHOW/SETUP split. SHOW = the console (mix a
     // live show); SETUP = buses + routing matrix (configure between shows).
     // Monitor controls and the processing rack stay visible in both.
@@ -7498,6 +7529,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.CaptionStyle,
                 BrandKit.DefaultOverlayBehavior),
             AudioLimiterEnabled = MasterLimiterEnabled,
+            ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
                 SelectedAudioMonitorNativeDeviceId,
@@ -8577,6 +8609,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyConfiguredOutputReadouts(snapshot);
         RefreshAudioParticipantRows();
         HydrateAudioRoutingMatrixFromSnapshot(snapshot);
+        OnPropertyChanged(nameof(VstPluginHostSummary));
+        OnPropertyChanged(nameof(VstPlugins));
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));

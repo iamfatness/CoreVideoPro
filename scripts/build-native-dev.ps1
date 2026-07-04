@@ -94,7 +94,7 @@ function Stage-DevNativeArtifacts {
     if (-not (Test-Path $targetDir)) {
       New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     }
-    foreach ($name in @("corevideo-native.exe", "corevideo-native-tests.exe", "corevideo-zoom-engine.exe", "corevideo-zoom-engine-fake.exe")) {
+    foreach ($name in @("corevideo-native.exe", "corevideo-native-tests.exe", "corevideo-zoom-engine.exe", "corevideo-zoom-engine-fake.exe", "corevideo-plugin-host.exe")) {
       $source = Join-Path $SourceDir $name
       $destination = Join-Path $targetDir $name
       if (-not (Test-Path $source)) {
@@ -158,7 +158,7 @@ if ($WithAja) {
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
   "cmake $(($cmakeArgs | ForEach-Object { Quote-CmdArg $_ }) -join ' ')",
-  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-native corevideo-native-tests"
+  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests"
 ) -join " && "
 
 cmd /c $buildCmd

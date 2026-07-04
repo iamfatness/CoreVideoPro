@@ -67,6 +67,10 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // VST host P1: one-shot plugin discovery.
+    private void OnScanVstPluginsClicked(object sender, RoutedEventArgs e) =>
+        ViewModel?.RequestVstPluginScan();
+
     // C3: SHOW/SETUP mode buttons (Tag carries the mode).
     private void OnAudioModeClicked(object sender, RoutedEventArgs e)
     {
