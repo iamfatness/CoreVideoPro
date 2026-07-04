@@ -15,9 +15,11 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <chrono>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -3041,8 +3043,13 @@ TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArme
   ASSERT_FALSE(started.recordingArtifactPath.empty());
   EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
 
+  // recordingDurationMs is the WALL-CLOCK video timeline (RecordingPtsClock,
+  // spec 4.3) — frames muxed 60ms apart advance it ~120ms, however many frames
+  // that is. (The old frame-count x 1/fps model drifted recordings A/V apart.)
   encoder->submit(makeTestProgramFrame(42));
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
   encoder->submit(makeTestProgramFrame(43));
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
   encoder->submit(makeTestProgramFrame(44));
   const auto session = encoder->session();
   EXPECT_TRUE(session.recordingBytesWritten > 0);
