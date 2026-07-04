@@ -1,3 +1,5 @@
+using System.Text.Json;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using Xunit;
 
@@ -407,5 +409,27 @@ public sealed class CoreProtocolParserTests
         Assert.NotNull(previewEvent!.Preview.SharedTexture);
         Assert.Equal("0xABCD", previewEvent.Preview.SharedTexture!.SharedHandleHex);
         Assert.Equal(640, previewEvent.Preview.SharedTexture.Width);
+    }
+
+    [Fact]
+    public void AudioRoutingMatrixJsonCarriesPerSendDetail()
+    {
+        // The core has always published per-send routing detail in the snapshot;
+        // this pins the camelCase wire shape the shell now consumes (phase B1).
+        const string json =
+            """{"status":"live","routedSendCount":1,"routedSourceCount":1,"summary":"1 send.","sends":[{"sourceId":"16778240","busId":"stream","gainDb":-3}]}""";
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true
+        };
+
+        var matrix = JsonSerializer.Deserialize<NativeMediaCoreAudioRoutingMatrix>(json, options);
+
+        Assert.NotNull(matrix);
+        var send = Assert.Single(matrix!.Sends);
+        Assert.Equal("16778240", send.SourceId);
+        Assert.Equal("stream", send.BusId);
+        Assert.Equal(-3.0, send.GainDb, 1);
     }
 }
