@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/RecordingPtsClock.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -207,7 +208,8 @@ class Mp4Writer {
   // Writes one BGRA frame. `bgra` is tightly packed top-down at `srcStride`
   // bytes per row; pixels outside the configured size are letterbox/cropped to
   // fit so a resolution mismatch never corrupts the stream.
-  bool writeVideo(const uint8_t* bgra, int srcWidth, int srcHeight, int srcStride, std::string& errorOut) {
+  bool writeVideo(const uint8_t* bgra, int srcWidth, int srcHeight, int srcStride, LONGLONG pts100ns,
+                  std::string& errorOut) {
     if (!writing_ || bgra == nullptr) {
       return false;
     }
@@ -252,7 +254,12 @@ class Mp4Writer {
       return false;
     }
     sample->AddBuffer(buffer.Get());
-    sample->SetSampleTime(videoTime100ns_);
+    // Shared-epoch wall-clock PTS from RecordingPtsClock (spec 4.3): frames
+    // carry the time they were actually composed, so the video timeline stays
+    // aligned with the sample-counted audio track instead of drifting at
+    // (muxed fps / nominal fps) of real time. Nominal duration is fine — the
+    // container's frame timing comes from the PTS deltas (VFR MP4).
+    sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
     result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
@@ -260,14 +267,13 @@ class Mp4Writer {
       errorOut = "write video sample: " + hresultString(result);
       return false;
     }
-    videoTime100ns_ += frameDuration100ns_;
     ++videoFrameCount_;
     bytesWritten_ += byteCount;
     return true;
   }
 
   // Converts interleaved float PCM [-1,1] to 16-bit and writes one audio sample.
-  bool writeAudio(const float* interleaved, int frameCount, std::string& errorOut) {
+  bool writeAudio(const float* interleaved, int frameCount, LONGLONG pts100ns, std::string& errorOut) {
     if (!writing_ || !audioConfigured_ || interleaved == nullptr || frameCount <= 0) {
       return false;
     }
@@ -305,7 +311,9 @@ class Mp4Writer {
       return false;
     }
     sample->AddBuffer(buffer.Get());
-    sample->SetSampleTime(audioTime100ns_);
+    // Sample-counted PTS with a shared-epoch base offset (RecordingPtsClock):
+    // gapless within the track, aligned to the video timeline at its start.
+    sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(duration100ns);
 
     result = sinkWriter_->WriteSample(audioStreamIndex_, sample.Get());
@@ -313,7 +321,6 @@ class Mp4Writer {
       errorOut = "write audio sample: " + hresultString(result);
       return false;
     }
-    audioTime100ns_ += duration100ns;
     ++audioPacketCount_;
     audioSampleCount_ += frameCount;
     bytesWritten_ += byteCount;
@@ -361,8 +368,6 @@ class Mp4Writer {
   int height_ = kDefaultHeight;
   int fps_ = kDefaultFps;
   LONGLONG frameDuration100ns_ = 10'000'000LL / kDefaultFps;
-  LONGLONG videoTime100ns_ = 0;
-  LONGLONG audioTime100ns_ = 0;
   int audioChannels_ = 2;
   int audioSampleRate_ = 48000;
   int audioBitrateKbps_ = 192;
@@ -473,9 +478,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (preview.bgra.empty() || preview.width <= 0 || preview.height <= 0) {
       return;
     }
+    // Shared-epoch clock (spec 4.3): the audio worker re-submits the LATEST
+    // program frame every ~20ms tick; the clock dedups by frameNumber so each
+    // composed frame is muxed exactly once, timestamped at the wall time it
+    // was submitted — keeping the video timeline aligned with the
+    // sample-counted audio track instead of drifting monotonically apart.
+    const auto pts = recordingClock_.videoPts(now100ns(), frame.frameNumber);
+    if (!pts) {
+      return;  // this program frame is already in the file
+    }
     const int srcStride = preview.width * 4;
     std::string error;
-    if (!program_.writeVideo(preview.bgra.data(), preview.width, preview.height, srcStride, error)) {
+    if (!program_.writeVideo(preview.bgra.data(), preview.width, preview.height, srcStride, *pts, error)) {
       setRecordingFailure("Media Foundation could not write program video", error);
       return;
     }
@@ -484,11 +498,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // composed program frame is the per-participant proxy; each writer is a real,
     // independently playable MP4 with its routed audio.
     for (auto& iso : isoWriters_) {
-      iso.writeVideo(preview.bgra.data(), preview.width, preview.height, srcStride, error);
+      iso.writeVideo(preview.bgra.data(), preview.width, preview.height, srcStride, *pts, error);
     }
 
     ++session_.recordingVideoFrameCount;
-    session_.recordingDurationMs = (session_.recordingVideoFrameCount * 1000) / std::max(1, program_.fps());
+    session_.recordingDurationMs = recordingClock_.lastVideoPts100ns() / 10'000;
     updateBytesWritten();
   }
 
@@ -522,7 +536,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // Down/area-mix to the program writer's channel count is handled by MF's PCM
     // input type matching what we declared; we pass channels through unchanged
     // since the program tap is already stereo. Convert/write float -> 16-bit PCM.
-    if (program_.writeAudio(interleaved, frameCount, error)) {
+    const LONGLONG audioPts = recordingClock_.audioPts(now100ns(), frameCount, sampleRate);
+    if (program_.writeAudio(interleaved, frameCount, audioPts, error)) {
       session_.recordingAudioPacketCount = program_.audioPacketCount();
       session_.recordingAudioSampleCount = program_.audioSampleCount();
       session_.recordingAudioChannels = program_.audioChannels();
@@ -535,7 +550,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingWarning = "Media Foundation dropped program audio: " + error + ".";
     }
     for (auto& iso : isoWriters_) {
-      iso.writeAudio(interleaved, frameCount, error);
+      iso.writeAudio(interleaved, frameCount, audioPts, error);
     }
     updateBytesWritten();
   }
@@ -622,6 +637,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       iso.beginWriting(isoError);
     }
 
+    // Fresh shared-epoch clock per recording session: the epoch anchors to the
+    // first media submitted after this point (spec 4.3).
+    recordingClock_.reset();
+
     session_.recordingArtifactPath = programPath.string();
     session_.recordingWidth = program_.width();
     session_.recordingHeight = program_.height();
@@ -655,6 +674,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingBytesWritten = total;
   }
 
+  // 100ns ticks on the steady clock since sink construction — the time base
+  // RecordingPtsClock anchors its shared epoch to.
+  [[nodiscard]] LONGLONG now100ns() const {
+    return std::chrono::duration_cast<std::chrono::duration<LONGLONG, std::ratio<1, 10'000'000>>>(
+               std::chrono::steady_clock::now() - clockOrigin_)
+        .count();
+  }
+
   void closeWriters() {
     program_.finalize();
     for (auto& iso : isoWriters_) {
@@ -682,6 +709,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   RecordingSessionRequest request_;
   Mp4Writer program_;
   std::vector<Mp4Writer> isoWriters_;
+  // Shared-epoch A/V PTS clock (spec 4.3) + the steady-clock origin its 100ns
+  // tick count is measured from. One clock serves program + ISO writers (they
+  // mux the same frames on the same timeline).
+  RecordingPtsClock recordingClock_;
+  std::chrono::steady_clock::time_point clockOrigin_ = std::chrono::steady_clock::now();
   bool comInitialized_ = false;
 };
 

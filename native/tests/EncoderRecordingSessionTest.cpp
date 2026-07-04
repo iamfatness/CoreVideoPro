@@ -275,3 +275,67 @@ TEST(EncoderRecordingSession, MediaCorePropagatesRecordingRenderProfileFromRecor
   EXPECT_EQ(proofTargetBitrate->asNumber(), 24.0);
   EXPECT_EQ(proof->get("audioBitrateKbps")->asNumber(), 256);
 }
+
+// --- RecordingPtsClock (audio overhaul spec 4.3 / R4) ---------------------------
+
+#include "modules/RecordingPtsClock.h"
+
+namespace {
+constexpr std::int64_t kMs = 10'000;  // 100ns ticks per millisecond
+}
+
+TEST(RecordingPtsClock, VideoPtsTracksWallClockAndDedupsRepeatedFrames) {
+  corevideo::modules::RecordingPtsClock clock;
+
+  // The audio worker submits the LATEST program frame every 20ms tick; the
+  // render produces new frames at ~60fps, so frame numbers repeat.
+  const auto first = clock.videoPts(0, 100);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(*first, 0);
+
+  EXPECT_FALSE(clock.videoPts(20 * kMs, 100).has_value());  // duplicate frame
+
+  const auto second = clock.videoPts(40 * kMs, 102);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(*second, 40 * kMs);  // wall time, NOT frame-count * 1/fps
+  EXPECT_EQ(clock.lastVideoPts100ns(), 40 * kMs);
+}
+
+TEST(RecordingPtsClock, AudioAnchorsToSharedEpochAndCountsSamples) {
+  corevideo::modules::RecordingPtsClock clock;
+
+  // Video starts the epoch at t=0; the first audio buffer lands 100ms later
+  // and must carry that offset instead of pretending both tracks start at 0.
+  ASSERT_TRUE(clock.videoPts(0, 1).has_value());
+  const auto audioFirst = clock.audioPts(100 * kMs, 960, 48000);
+  EXPECT_EQ(audioFirst, 100 * kMs);
+
+  // Thereafter the track is sample-counted (gapless), regardless of when the
+  // submit call arrives: 960 samples at 48kHz = exactly 20ms after the base.
+  const auto audioSecond = clock.audioPts(137 * kMs, 960, 48000);
+  EXPECT_EQ(audioSecond, 100 * kMs + 20 * kMs);
+}
+
+TEST(RecordingPtsClock, TenSimulatedSecondsStayAligned) {
+  corevideo::modules::RecordingPtsClock clock;
+
+  // Simulate the real cadences: the audio worker ticks every 20ms, submitting
+  // the latest 60fps program frame (duplicates included) and 20ms of audio.
+  // Under the OLD per-track counters this scenario drifted ~1.7s apart in 10s
+  // (video: ~50 muxed frames/s tagged 1/60s = 0.83x real time).
+  std::int64_t lastVideo = 0;
+  std::int64_t lastAudio = 0;
+  for (int tick = 0; tick < 500; ++tick) {          // 10s of 20ms ticks
+    const std::int64_t now = tick * 20 * kMs;
+    const std::int64_t frameNumber = (now * 60) / (1000 * kMs);  // 60fps render
+    if (const auto pts = clock.videoPts(now, frameNumber)) {
+      lastVideo = *pts;
+    }
+    lastAudio = clock.audioPts(now, 960, 48000);
+  }
+  // Both timelines must end within one tick of each other (shared clock).
+  const std::int64_t divergence = lastVideo > lastAudio ? lastVideo - lastAudio : lastAudio - lastVideo;
+  EXPECT_TRUE(divergence <= 20 * kMs) << "A/V PTS divergence " << divergence / kMs << "ms";
+  // And the video timeline must track real time, not muxed-frame count.
+  EXPECT_TRUE(lastVideo >= 9'900 * kMs) << "video timeline ended at " << lastVideo / kMs << "ms";
+}
