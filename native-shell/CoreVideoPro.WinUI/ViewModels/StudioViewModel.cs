@@ -3879,6 +3879,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
     }
 
+    // ---- C3: the Audio tab's SHOW/SETUP split. SHOW = the console (mix a
+    // live show); SETUP = buses + routing matrix (configure between shows).
+    // Monitor controls and the processing rack stay visible in both.
+    private string _audioTabMode = "show";
+
+    public bool IsAudioShowMode => string.Equals(_audioTabMode, "show", StringComparison.Ordinal);
+
+    public bool IsAudioSetupMode => !IsAudioShowMode;
+
+    public void SetAudioTabMode(string mode)
+    {
+        var normalized = string.Equals(mode, "setup", StringComparison.OrdinalIgnoreCase) ? "setup" : "show";
+        if (string.Equals(_audioTabMode, normalized, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _audioTabMode = normalized;
+        OnPropertyChanged(nameof(IsAudioShowMode));
+        OnPropertyChanged(nameof(IsAudioSetupMode));
+    }
+
     public void ToggleSelectedRackInsert(string insertName)
     {
         if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(insertName))

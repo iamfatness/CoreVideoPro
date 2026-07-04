@@ -29,7 +29,19 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}" />
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <TextBlock Text="Source mixer" Style="{StaticResource OperatorSectionTitle}"
+                                           VerticalAlignment="Center" />
+                                <!-- C3: SHOW = console; SETUP = buses + routing matrix -->
+                                <ToggleButton Content="SHOW" FontSize="10" Padding="10,4"
+                                              IsChecked="{x:Bind ViewModel.IsAudioShowMode, Mode=OneWay}"
+                                              Tag="show" Click="OnAudioModeClicked"
+                                              ToolTipService.ToolTip="Console: faders, meters, monitor" />
+                                <ToggleButton Content="SETUP" FontSize="10" Padding="10,4"
+                                              IsChecked="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay}"
+                                              Tag="setup" Click="OnAudioModeClicked"
+                                              ToolTipService.ToolTip="Buses and routing matrix" />
+                            </StackPanel>
                             <Button Grid.Column="1" Content="Pop out mixer"
                                     Style="{StaticResource OperatorGhostButton}"
                                     MinWidth="132"
@@ -207,7 +219,8 @@
                              red MUTE, SOLO, pan, name chip — plus the master strip on the
                              right (L/R meters, big real LUFS, limiter state). Same command
                              paths and programmatic-echo guard as B3. -->
-                        <Grid ColumnSpacing="10">
+                        <Grid ColumnSpacing="10"
+                              Visibility="{x:Bind ViewModel.IsAudioShowMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -348,7 +361,9 @@
                     </StackPanel>
                 </Border>
 
-                <Border Style="{StaticResource OperatorSectionBorder}">
+                <!-- C3: SETUP surface — buses + the routing matrix -->
+                <Border Style="{StaticResource OperatorSectionBorder}"
+                        Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                     <StackPanel Spacing="10">
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>

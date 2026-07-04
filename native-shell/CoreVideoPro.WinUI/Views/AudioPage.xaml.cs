@@ -67,6 +67,15 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // C3: SHOW/SETUP mode buttons (Tag carries the mode).
+    private void OnAudioModeClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string mode })
+        {
+            ViewModel?.SetAudioTabMode(mode);
+        }
+    }
+
     // C2 rack: toggle a built-in processor on the SELECTED channel's insert
     // chain. Tag carries the canonical insert name the core DSP recognizes.
     private void OnRackInsertClicked(object sender, RoutedEventArgs e)
