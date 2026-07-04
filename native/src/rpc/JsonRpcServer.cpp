@@ -477,10 +477,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // takes coreMutex only briefly (gather/publish) and audioOutputMutex_ for the long
   // DSP/IO span, NEVER both at once, so the render thread is never blocked by it.
   std::thread audioOutputThread([&] {
-    constexpr long long kAudioBudgetUs = 20000;  // ~50Hz
+    constexpr long long kAudioBudgetUs = 20000;  // 50Hz
     long long ticks = 0;
     long long workUs = 0;
     auto rateStamp = std::chrono::steady_clock::now();
+    // Absolute-deadline pacer (audio overhaul spec 4.2). The prior relative
+    // sleep_for(budget - work) added the Windows sleep overshoot (~1ms even at
+    // timeBeginPeriod(1)) to EVERY period, so the cadence could only approach
+    // 50Hz from below — it measured 47.3 ticks/s, a chronic ~6% shortfall the
+    // real-time WASAPI monitor endpoint turned into silent underruns. Advance a
+    // fixed deadline grid instead: overshoot on one tick is reclaimed on the
+    // next, so the long-run cadence locks at 50.0. A tick that blows past its
+    // deadline (work overload) re-anchors the grid to now rather than sprinting
+    // through the backlog (audio sources are drained whole, so skipped grid
+    // slots carry no lost samples).
+    auto deadline = std::chrono::steady_clock::now();
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
       mediaCore_.renderAudioOutputTick(coreMutex);
@@ -496,8 +507,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         workUs = 0;
         rateStamp = now;
       }
-      if (iterUs < kAudioBudgetUs) {
-        std::this_thread::sleep_for(std::chrono::microseconds(kAudioBudgetUs - iterUs));
+      deadline += std::chrono::microseconds(kAudioBudgetUs);
+      const auto now = std::chrono::steady_clock::now();
+      if (deadline <= now) {
+        deadline = now;  // overloaded tick: re-anchor, don't sprint the backlog
+      } else {
+        std::this_thread::sleep_until(deadline);
       }
     }
   });

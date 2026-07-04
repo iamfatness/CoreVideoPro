@@ -16,6 +16,7 @@
 
 #include "modules/Interfaces.h"
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -198,6 +199,22 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       return false;
     }
 
+    // Underrun detection (spec R5): a zero padding when we have previously
+    // rendered means the endpoint drained everything and has been playing
+    // silence since the last fill — an audible glitch. Count the gap event
+    // (once per render call) and log rate-capped so a soak's glitches are
+    // visible in media-core.log instead of only in the operator's ears.
+    {
+      UINT32 startPadding = 0;
+      if (framesRendered_ > 0 && SUCCEEDED(client_->GetCurrentPadding(&startPadding)) && startPadding == 0) {
+        ++underruns_;
+        if (underruns_ == 1 || underruns_ % 50 == 0) {
+          std::fprintf(stderr, "[monitor] endpoint underrun #%lld (device '%s')\n",
+                       static_cast<long long>(underruns_), deviceName_.c_str());
+        }
+      }
+    }
+
     // Resample the source bus to the device rate (linear, mono/stereo-aware).
     const double ratio = static_cast<double>(deviceSampleRate_) / static_cast<double>(sourceSampleRate_);
     const int outFrames =
@@ -231,6 +248,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   bool hardwareOutput() const override { return true; }
   std::string deviceName() const override { return deviceName_; }
   std::vector<std::string> warnings() const override { return warnings_; }
+  std::int64_t underrunCount() const override { return underruns_; }
 
  private:
   bool ensureCom() {
@@ -409,6 +427,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   int deviceBytesPerSample_ = 4;
   bool deviceIsFloat_ = true;
   int64_t framesRendered_ = 0;
+  int64_t underruns_ = 0;
   std::string openedDeviceId_;
   std::string deviceName_;
   std::vector<std::string> warnings_;

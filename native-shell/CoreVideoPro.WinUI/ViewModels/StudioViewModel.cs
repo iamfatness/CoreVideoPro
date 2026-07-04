@@ -5608,15 +5608,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             snapshot.OutputSenderSession,
             snapshot.Recording);
         var now = DateTimeOffset.UtcNow;
+        // STATE-shaped fields only. The signature previously embedded monotonic
+        // counters (mixedFrames, monitorFrames, captureFrames, routed/tap frame
+        // counts) and live per-tick dB strings, so it changed on EVERY snapshot
+        // and the 5s throttle below never engaged — the line printed ~4x/second
+        // for any live session. Counters still appear in the logged LINE; they
+        // just no longer defeat the throttle.
         var signature =
             $"{LocalAudioSourceEnabled}|{SelectedLocalAudioCaptureDeviceId}|{SelectedAudioMonitorDeviceId}|{AudioMonitoringEnabled}|" +
-            $"{audio.Status}|{audio.MixedFrameCount}|{audio.MonitorStatus}|{audio.MonitorFramesPlayed}|" +
-            $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|{capture.CaptureFramesReceived}|{capture.RoutedMasterFrames}|{capture.RoutedMonitorFrames}|{capture.FallbackMonitorFrames}|" +
-            $"{matrix.Status}|{matrix.RoutedSendCount}|{matrix.ProgramTapFrames}|{matrix.BusTaps.Count}|" +
-            $"{snapshot.OutputSenderSession.Status}|{snapshot.OutputSenderSession.ActiveSenderCount}|{BuildOutputSenderTelemetry(snapshot.OutputSenderSession)}|" +
+            $"{audio.Status}|{audio.MonitorStatus}|" +
+            $"{capture.Status}|{capture.SourceCount}|{capture.StreamingCount}|" +
+            $"{matrix.Status}|{matrix.RoutedSendCount}|{matrix.BusTaps.Count}|" +
+            $"{snapshot.OutputSenderSession.Status}|{snapshot.OutputSenderSession.ActiveSenderCount}|" +
             $"{fullChainValidation}|" +
-            $"{FirstOrEmpty(audio.Warnings)}|{FirstOrEmpty(capture.Warnings)}|{FirstOrEmpty(matrix.Warnings)}|" +
-            $"{BuildCaptureAudioSourceTelemetry(capture)}";
+            $"{FirstOrEmpty(audio.Warnings)}|{FirstOrEmpty(capture.Warnings)}|{FirstOrEmpty(matrix.Warnings)}";
 
         if (string.Equals(signature, _lastAudioTelemetrySignature, StringComparison.Ordinal) &&
             now - _lastAudioTelemetryLoggedAt < TimeSpan.FromSeconds(5))
