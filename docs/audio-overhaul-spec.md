@@ -124,6 +124,20 @@ Mirror the video path. The engine already holds the samples (raw-audio subscript
 - Monitor default: unmuted at modest volume when a monitor device is explicitly selected; surface
   the "silent PCM" warning as a visible UI badge on the source row, not a log line.
 
+### 4.4b P1 — Audio tab overhaul (owner-reported backlog, 2026-07-03)
+Now that audio is real (4.1/4.2 landed), the Audio tab needs to catch up. Owner-reported, all
+four confirmed:
+- **Doesn't reflect reality**: controls/status shown don't match what the engine actually does
+  (pre-dates real PCM; every state readout needs re-verification against the live chain).
+- **Routing matrix unusable**: the crosspoint UI needs a usable model — sources × buses with
+  the defaults visible (Zoom participants now get auto-sends; the operator must be able to SEE
+  and override them per crosspoint).
+- **Device selection broken**: capture/monitor device pickers misbehave; must also surface the
+  silent-endpoint warning and (once 4.2's guard lands) the monitor==loopback feedback risk.
+- **Layout/UX overhaul**: redesign the tab, not spot fixes. Design pass first: what an operator
+  needs during a show (monitor control, quick mutes, routing at a glance) vs setup time
+  (devices, matrix, processing).
+
 ### 4.5 P2 — Real plugin host
 - Out-of-process VST3 (then CLAP) host — a separate `corevideo-plugin-host.exe` bridged over
   shared memory (crash isolation; a misbehaving plugin must not take down the show). Scan,

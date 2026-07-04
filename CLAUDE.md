@@ -132,7 +132,15 @@ capture** — native Media Foundation UVC capture is CODE-COMPLETE behind
 `COREVIDEO_WITH_UVC` (ON in `build-native-dev.ps1`; shell opt-in
 `COREVIDEO_NATIVE_UVC=1`, WinUI shm bridge remains fallback) but **not yet
 rig-validated with a live camera**; DeckLink/AJA frame delivery still to do
-(see `docs/native-production-completion-plan.md` Items 1–2).
+(see `docs/native-production-completion-plan.md` Items 1–2); (3) the **audio
+overhaul** (`docs/audio-overhaul-spec.md`) — 4.1/4.2 landed (Zoom audio is REAL:
+ISO PCM ingest + routing + 50Hz pacer + underrun telemetry); next 4.3 recording
+A/V clock, 4.4 mixer completion + meter ballistics, **4.4b Audio tab overhaul**
+(owner-reported: doesn't reflect reality, routing matrix unusable, device
+selection broken, full UX redesign), 4.5 plugin host; (4) **Scenes tab overhaul**
+(owner-reported 2026-07-03): scene BUILDING doesn't work well (creating/editing
+layouts — sources, positions) and the tab needs a full layout/UX redesign, not
+spot fixes.
 DONE 2026-07-03: **per-instance engine IPC names (OBS collision fix)** — the engine's
 pipes/sockets/SHM regions were fixed names on the shared `ZoomObsPlugin_` base, so a
 running OBS zoom plugin made every join time out ("Timed out connecting to Zoom engine
