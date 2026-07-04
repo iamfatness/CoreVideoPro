@@ -5,12 +5,6 @@ live shows, recordings, and streams directly from Zoom participants — Magic Sc
 auto-layout, lower-thirds, captions, smart framing, audio leveling, and
 multi-destination output, in a single operator console.
 
-This is **not** a browser-hosted SPA, and **Electron has been removed**. The active
-product paths are the WinUI native shell in `native-shell/` and the native C++ Studio
-shell in `studio/`, with capture, compositing, recording, streaming, diagnostics, and
-packaging handled by native desktop processes behind typed IPC contracts. Do not add
-new Electron work.
-
 ## Architecture
 
 ```text
