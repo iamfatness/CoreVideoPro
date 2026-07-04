@@ -2068,6 +2068,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedOutputLevel));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
         OnPropertyChanged(nameof(VstBridgeStatusLabel));
+        NotifySelectedRackChanged();  // C2 rack follows the selected channel
         RefreshAudioParticipantSelectionRows();
     }
 
@@ -3854,6 +3855,53 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = mix.Solo
             ? $"{SelectedParticipant?.Name} soloed in mix"
             : $"{SelectedParticipant?.Name} solo cleared";
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // ---- C2 rack: quick toggles for the built-in processors the channel
+    // insert chain actually runs (spec 4.4 / PR #178). Enabled = the
+    // recognized insert name is on the selected channel's chain.
+    public bool SelectedRackGateEnabled => SelectedChannelHasInsert("Noise Gate");
+    public bool SelectedRackEqEnabled => SelectedChannelHasInsert("Built-in EQ");
+    public bool SelectedRackCompressorEnabled => SelectedChannelHasInsert("Compressor");
+    public bool SelectedRackLimiterEnabled => SelectedChannelHasInsert("Limiter");
+
+    private bool SelectedChannelHasInsert(string insertName) =>
+        SelectedAudioMix?.PluginInserts.Any(insert =>
+            string.Equals(insert, insertName, StringComparison.OrdinalIgnoreCase)) == true;
+
+    private void NotifySelectedRackChanged()
+    {
+        OnPropertyChanged(nameof(SelectedRackGateEnabled));
+        OnPropertyChanged(nameof(SelectedRackEqEnabled));
+        OnPropertyChanged(nameof(SelectedRackCompressorEnabled));
+        OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
+        OnPropertyChanged(nameof(SelectedInsertChainLabel));
+    }
+
+    public void ToggleSelectedRackInsert(string insertName)
+    {
+        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(insertName))
+        {
+            return;
+        }
+
+        var existing = mix.PluginInserts.FirstOrDefault(insert =>
+            string.Equals(insert, insertName, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            mix.PluginInserts.Remove(existing);
+            CommandStatus = $"{insertName} removed from {SelectedParticipant?.Name ?? "selected channel"}";
+        }
+        else
+        {
+            mix.PluginInserts.Add(insertName);
+            CommandStatus = $"{insertName} processing {SelectedParticipant?.Name ?? "selected channel"}";
+        }
+
+        RefreshMixerValueBindings(mix.ParticipantId);
+        RefreshAudioProcessingTargets();
+        NotifySelectedRackChanged();
         _ = TrySyncMediaCoreAsync();
     }
 

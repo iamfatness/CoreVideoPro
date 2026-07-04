@@ -387,6 +387,37 @@
             <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
+                    <!-- C2 rack: one-tap built-in processors for the SELECTED channel
+                         (tap a strip's name chip to load it). Lit = the insert is on
+                         the channel's chain and the core DSP is running it (#178). -->
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay, FallbackValue='No channel selected'}"
+                                   FontSize="12" FontWeight="SemiBold" />
+                        <Grid ColumnSpacing="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ToggleButton Content="GATE" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
+                                          Tag="Noise Gate" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Noise gate (-48 dBFS, channel-linked)" />
+                            <ToggleButton Grid.Column="1" Content="EQ" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
+                                          Tag="Built-in EQ" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Voice EQ (90 Hz high-pass + presence)" />
+                            <ToggleButton Grid.Column="2" Content="COMP" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
+                                          Tag="Compressor" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Compressor (-18 dBFS, 4:1)" />
+                            <ToggleButton Grid.Column="3" Content="LIM" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackLimiterEnabled, Mode=OneWay}"
+                                          Tag="Limiter" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Channel brickwall (-1 dBFS)" />
+                        </Grid>
+                    </StackPanel>
                     <ComboBox Header="Apply inserts to"
                               ItemsSource="{x:Bind ViewModel.AudioProcessingTargetOptions, Mode=OneWay}"
                               SelectedValue="{x:Bind ViewModel.SelectedAudioProcessingTargetId, Mode=TwoWay}"

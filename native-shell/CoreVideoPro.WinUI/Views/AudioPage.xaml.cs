@@ -67,6 +67,16 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // C2 rack: toggle a built-in processor on the SELECTED channel's insert
+    // chain. Tag carries the canonical insert name the core DSP recognizes.
+    private void OnRackInsertClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string insertName })
+        {
+            ViewModel?.ToggleSelectedRackInsert(insertName);
+        }
+    }
+
     private bool IsProgrammaticMixerValue(
         string participantId,
         double value,
