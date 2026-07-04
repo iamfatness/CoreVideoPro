@@ -107,6 +107,7 @@
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="150" />
                                 <ColumnDefinition Width="120" />
                             </Grid.ColumnDefinitions>
@@ -115,14 +116,20 @@
                                        Foreground="{StaticResource StudioAccentBrush}"
                                        VerticalAlignment="Center"
                                        TextWrapping="WrapWholeWords" />
-                            <ComboBox Grid.Column="1"
+                            <!-- S2: one-step preset undo (presets keep sources but move geometry) -->
+                            <Button Grid.Column="1" Content="Undo preset"
+                                    Style="{StaticResource OperatorGhostButton}"
+                                    VerticalAlignment="Center"
+                                    Command="{x:Bind ViewModel.UndoCanvasPresetCommand}"
+                                    IsEnabled="{x:Bind ViewModel.CanUndoCanvasPreset, Mode=OneWay}" />
+                            <ComboBox Grid.Column="2"
                                       Header="Canvas"
                                       ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
                                       SelectedValue="{x:Bind ViewModel.CanvasResolution, Mode=TwoWay}"
                                       SelectedValuePath="Value"
                                       DisplayMemberPath="Label"
                                       HorizontalAlignment="Stretch" />
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="3"
                                       Header="FPS"
                                       ItemsSource="{x:Bind ViewModel.OutputFpsOptions}"
                                       SelectedValue="{x:Bind ViewModel.CanvasFps, Mode=TwoWay}"

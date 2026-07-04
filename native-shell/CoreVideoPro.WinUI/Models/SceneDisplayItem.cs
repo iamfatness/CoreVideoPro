@@ -43,6 +43,9 @@ public sealed class SceneDisplayItem
 
     public IRelayCommand<string>? RemoveCommand { get; init; }
 
+    // Scenes redesign S2: any scene can be duplicated into a new custom scene.
+    public IRelayCommand<string>? DuplicateCommand { get; init; }
+
     public string Name => Scene.Name;
 
     public string LayoutLabel => string.IsNullOrWhiteSpace(Scene.Layout) ? "Custom" : Scene.Layout.Replace('-', ' ');

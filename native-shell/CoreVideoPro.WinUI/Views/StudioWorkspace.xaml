@@ -316,6 +316,7 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                                                 Background="{x:Bind ItemBackgroundBrush, Mode=OneWay}"
@@ -356,7 +357,19 @@
                                                 </Border>
                                             </Grid>
                                         </Button>
+                                        <!-- S2: duplicate any scene into a new custom scene -->
                                         <Button Grid.Column="1"
+                                                Width="32"
+                                                Height="32"
+                                                Padding="0"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource GhostButton}"
+                                                Command="{x:Bind DuplicateCommand}"
+                                                CommandParameter="{x:Bind Id}"
+                                                ToolTipService.ToolTip="Duplicate scene">
+                                            <FontIcon Glyph="&#xE8C8;" FontSize="13" />
+                                        </Button>
+                                        <Button Grid.Column="2"
                                                 Width="32"
                                                 Height="32"
                                                 Padding="0"

@@ -54,6 +54,25 @@ public static class SceneCanvasLayoutService
     public static void ApplyPreset(string presetWire, IList<SourceRoute> routes) =>
         ApplyPreset(PresetFromWire(presetWire), routes);
 
+    /// <summary>
+    /// Geometry-only preset apply (scenes redesign S2): rects + stacking order.
+    /// Source assignments, fit mode, borders, and opacity survive; framing
+    /// (zoom/pan/tilt) resets because it is relative to boxes that just moved.
+    /// </summary>
+    public static void ApplyPresetGeometry(string presetWire, IList<SourceRoute> routes)
+    {
+        var rects = BuildPresetRects(PresetFromWire(presetWire), routes.Count);
+        for (var index = 0; index < routes.Count; index++)
+        {
+            routes[index].CanvasRect = rects[Math.Min(index, rects.Count - 1)].Clone();
+            routes[index].SourceScale = SourceRouteVisualDefaults.SourceScale;
+            routes[index].SourceOffsetX = SourceRouteVisualDefaults.SourceOffsetX;
+            routes[index].SourceOffsetY = SourceRouteVisualDefaults.SourceOffsetY;
+            routes[index].SourceFramingModified = false;
+            routes[index].ZIndex = index;
+        }
+    }
+
     public static SceneCanvasPreset ResolvePreset(string? layoutHint) => layoutHint switch
     {
         "two-up" => SceneCanvasPreset.TwoUp,

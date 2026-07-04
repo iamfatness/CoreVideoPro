@@ -2290,6 +2290,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{scene.Name} removed";
         RefreshSceneItems();
         RefreshProductionReadouts();
+        SaveProductionOutputPreferences();
     }
 
     [RelayCommand]
@@ -2432,6 +2433,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSceneId = newId;
         CommandStatus = $"{scene.Name} created and queued on preview";
         SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
+    }
+
+    [RelayCommand]
+    private void DuplicateScene(string? sceneId)
+    {
+        var source = _scenes.FirstOrDefault(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal));
+        if (source is null)
+        {
+            return;
+        }
+
+        var newId = NewCustomSceneId();
+        var scene = new Scene
+        {
+            Id = newId,
+            Name = ScenePersistenceService.MakeUniqueSceneName($"{source.Name} copy", _scenes.Select(s => s.Name)),
+            Layout = source.Layout,
+            Automation = "Custom canvas"
+        };
+
+        _scenes.Add(scene);
+        _sceneRoutes[newId] = GetMutableRoutes(source.Id)
+            .Select(route => route.Clone())
+            .ToList();
+
+        RefreshSceneItems();
+        PreviewSceneId = newId;
+        CommandStatus = $"{scene.Name} duplicated from {source.Name} and cued on preview";
+        SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
     }
 
     [RelayCommand]
@@ -2449,11 +2481,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (existing is not null)
         {
-            // A scene with this name already exists — overwrite its routes with the current canvas.
-            CopyPreviewRoutesToScene(existing.Id);
-            PreviewSceneId = existing.Id;
-            CommandStatus = $"{existing.Name} updated from canvas";
-            SchedulePreviewRoutingRefresh();
+            // No silent clobber (scenes redesign S2): Save used to overwrite a
+            // same-named scene's routes without warning. Overwriting is the
+            // explicit Update action.
+            CommandStatus = $"{existing.Name} already exists - use Update scene to overwrite it, or choose a new name";
             return;
         }
 
@@ -2476,6 +2507,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSceneId = newId;
         CommandStatus = $"{scene.Name} saved from canvas";
         SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
     }
 
     [RelayCommand]
@@ -2516,6 +2548,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshSceneItems();
         RefreshProductionReadouts();
         SchedulePreviewRoutingRefresh();
+        SaveProductionOutputPreferences();
         if (updatesProgramScene)
         {
             OutputStatus = "Program updated";
@@ -9553,7 +9586,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
-                StringComparer.Ordinal)
+                StringComparer.Ordinal),
+            CustomScenes = _scenes
+                .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
+                .Select(scene => ScenePersistenceService.ToPersisted(
+                    scene,
+                    _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
+                .ToList()
         };
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
@@ -9664,6 +9703,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 _sourceDisplayNames[pair.Key] = pair.Value.Trim();
             }
+        }
+
+        // Custom scenes survive restarts (scenes redesign S2). Restore only
+        // custom-* ids that aren't already present, so built-ins and any scene
+        // created earlier in this session win over the persisted copy.
+        var restoredScenes = 0;
+        foreach (var persisted in preferences.CustomScenes)
+        {
+            if (string.IsNullOrWhiteSpace(persisted.Id) ||
+                !persisted.Id.StartsWith("custom-", StringComparison.Ordinal) ||
+                _scenes.Any(scene => string.Equals(scene.Id, persisted.Id, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            _scenes.Add(ScenePersistenceService.SceneFromPersisted(persisted));
+            _sceneRoutes[persisted.Id] = persisted.Routes
+                .Select(ScenePersistenceService.FromPersisted)
+                .ToList();
+            restoredScenes++;
+        }
+
+        if (restoredScenes > 0)
+        {
+            RefreshSceneItems();
         }
 
         RefreshAudioMonitorBindings();
@@ -10286,7 +10350,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 IsOnPreview = scene.Id == PreviewSceneId,
                 CanRemove = CanRemoveScene(scene.Id),
                 SelectCommand = SelectSceneCommand,
-                RemoveCommand = RemoveSceneCommand
+                RemoveCommand = RemoveSceneCommand,
+                DuplicateCommand = DuplicateSceneCommand
             })
             .ToList();
         OnPropertyChanged(nameof(SceneItems));
@@ -11039,15 +11104,61 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void ApplyCanvasPreset(string presetWire)
     {
-        UpdateSceneLayout(PreviewSceneId, presetWire);
         var routes = GetMutableRoutes(PreviewSceneId);
+        // Non-destructive presets (scenes redesign S2): the old flow wiped every
+        // hand-placed rect AND re-pointed every route's source assignment
+        // (ApplyInputSlotTemplate). Now: snapshot for one-step undo, keep
+        // existing assignments (trim extras / append unassigned slots only for
+        // the count difference), and apply GEOMETRY (rects + stacking; framing
+        // resets because the boxes moved, but fit/borders/opacity survive).
+        _canvasPresetUndo = (PreviewSceneId, routes.Select(route => route.Clone()).ToList());
+        CanUndoCanvasPreset = true;
+        UpdateSceneLayout(PreviewSceneId, presetWire);
         if (SceneCanvasLayoutService.TemplateSlotCount(presetWire) is { } slotCount)
         {
-            SceneRoutingService.ApplyInputSlotTemplate(routes, PreviewSceneId, slotCount);
+            while (routes.Count > slotCount)
+            {
+                routes.RemoveAt(routes.Count - 1);
+            }
+
+            while (routes.Count < slotCount)
+            {
+                routes.Add(SceneRoutingService.BuildAddedSourceRoute(
+                    PreviewSceneId, routes.Count, $"input-{routes.Count + 1}"));
+            }
         }
 
-        SceneCanvasLayoutService.ApplyPreset(presetWire, routes);
-        CommandStatus = $"{PreviewScene.Name} canvas preset applied ({presetWire})";
+        SceneCanvasLayoutService.ApplyPresetGeometry(presetWire, routes);
+        CommandStatus = $"{PreviewScene.Name} preset applied ({presetWire}) - sources kept; Undo preset reverts";
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    [ObservableProperty]
+    private bool _canUndoCanvasPreset;
+
+    private (string SceneId, List<SourceRoute> Routes)? _canvasPresetUndo;
+
+    [RelayCommand]
+    private void UndoCanvasPreset()
+    {
+        if (_canvasPresetUndo is not { } undo ||
+            !string.Equals(undo.SceneId, PreviewSceneId, StringComparison.Ordinal))
+        {
+            CanUndoCanvasPreset = false;
+            return;
+        }
+
+        var routes = GetMutableRoutes(PreviewSceneId);
+        routes.Clear();
+        routes.AddRange(undo.Routes.Select(route => route.Clone()));
+        _canvasPresetUndo = null;
+        CanUndoCanvasPreset = false;
+        CommandStatus = $"Preset undone in {PreviewScene.Name}";
         SyncPreviewCanvasLayers(routes);
         PublishPreviewCompositionState(
             PreviewScene,
