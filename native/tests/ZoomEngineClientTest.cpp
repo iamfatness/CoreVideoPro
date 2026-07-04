@@ -258,3 +258,104 @@ TEST(ZoomEngineClient, RejectsIncompleteOrInProgressSharedMemoryFrames) {
   header->y_len = 1;
   EXPECT_FALSE(corevideo::modules::readZoomEngineI420FrameSnapshot(memory.data(), memory.size(), "source", 1, 4, 2).has_value());
 }
+
+namespace {
+
+std::vector<std::uint8_t> makePcmAudioSharedMemory(std::uint32_t sampleRate,
+                                                   std::uint16_t channels,
+                                                   const std::vector<std::int16_t>& samples,
+                                                   std::uint32_t sequence = 2) {
+  const auto byteLength = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+  std::vector<std::uint8_t> memory(corevideo::modules::zoomEnginePcmAudioByteSize(byteLength));
+  ShmAudioHeader header{};
+  header.sequence = sequence;
+  header.sample_rate = sampleRate;
+  header.channels = channels;
+  header.byte_len = byteLength;
+  std::memcpy(memory.data(), &header, sizeof(header));
+  std::memcpy(memory.data() + sizeof(ShmAudioHeader), samples.data(), byteLength);
+  return memory;
+}
+
+}  // namespace
+
+TEST(ZoomEngineClient, ReadsPcmAudioSnapshotAndConvertsToFloat) {
+  const auto memory = makePcmAudioSharedMemory(48000, 1, {0, 16384, -16384, 32767});
+  const auto chunk = corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size());
+  ASSERT_TRUE(chunk.has_value());
+  EXPECT_EQ(chunk->sampleRate, 48000);
+  EXPECT_EQ(chunk->channels, 1);
+  EXPECT_EQ(chunk->sequence, 2u);
+  ASSERT_TRUE(chunk->pcm.size() == 4u);
+  EXPECT_EQ(chunk->pcm[0], 0.0f);
+  EXPECT_EQ(chunk->pcm[1], 0.5f);
+  EXPECT_EQ(chunk->pcm[2], -0.5f);
+  EXPECT_TRUE(chunk->pcm[3] > 0.99f && chunk->pcm[3] <= 1.0f);
+}
+
+TEST(ZoomEngineClient, RejectsTornOrMalformedPcmAudioSnapshots) {
+  auto memory = makePcmAudioSharedMemory(48000, 2, {1, 2, 3, 4});
+
+  // Region shorter than header + payload.
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), sizeof(ShmAudioHeader) + 1).has_value());
+
+  auto* header = reinterpret_cast<ShmAudioHeader*>(memory.data());
+  // Odd sequence = engine mid-write; zero = never written.
+  header->sequence = 3;
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size()).has_value());
+  header->sequence = 0;
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size()).has_value());
+
+  // byte_len not a whole number of interleaved int16 frames for the channels.
+  header->sequence = 2;
+  header->byte_len = 6;  // 1.5 stereo frames
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size()).has_value());
+
+  // Implausible format metadata.
+  header->byte_len = 8;
+  header->sample_rate = 1000;
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size()).has_value());
+  header->sample_rate = 48000;
+  header->channels = 0;
+  EXPECT_FALSE(corevideo::modules::readZoomEnginePcmAudioSnapshot(memory.data(), memory.size()).has_value());
+}
+
+TEST(ZoomEngineClient, AppendPcmChunkCoalescesDedupsAndCapsPendingAudio) {
+  corevideo::modules::ZoomEnginePendingAudio pending;
+  corevideo::modules::ZoomEnginePcmAudioChunk chunk;
+  chunk.sequence = 2;
+  chunk.sampleRate = 48000;
+  chunk.channels = 1;
+  chunk.pcm = {0.1f, 0.2f};
+
+  EXPECT_TRUE(corevideo::modules::appendZoomEnginePcmChunk(pending, chunk, 48000));
+  ASSERT_TRUE(pending.pcm.size() == 2u);
+
+  // Same sequence again = the single-slot region was NOT rewritten between
+  // events; the duplicate must not double those samples.
+  EXPECT_FALSE(corevideo::modules::appendZoomEnginePcmChunk(pending, chunk, 48000));
+  EXPECT_EQ(pending.pcm.size(), 2u);
+
+  chunk.sequence = 4;
+  chunk.pcm = {0.3f, 0.4f};
+  EXPECT_TRUE(corevideo::modules::appendZoomEnginePcmChunk(pending, chunk, 48000));
+  ASSERT_TRUE(pending.pcm.size() == 4u);
+  EXPECT_EQ(pending.pcm[2], 0.3f);
+
+  // Format change restarts the buffer at the new layout.
+  chunk.sequence = 6;
+  chunk.channels = 2;
+  chunk.pcm = {0.5f, 0.6f};
+  EXPECT_TRUE(corevideo::modules::appendZoomEnginePcmChunk(pending, chunk, 48000));
+  EXPECT_EQ(pending.channels, 2);
+  EXPECT_EQ(pending.pcm.size(), 2u);
+
+  // Cap: only the newest maxSamplesPerChannel per channel survive; the oldest
+  // interleaved frames are dropped and counted.
+  chunk.sequence = 8;
+  chunk.pcm = {1.0f, 1.1f, 1.2f, 1.3f};  // two more stereo frames
+  EXPECT_TRUE(corevideo::modules::appendZoomEnginePcmChunk(pending, chunk, 2));
+  EXPECT_EQ(pending.pcm.size(), 4u);  // capped at 2 frames x 2 channels
+  EXPECT_EQ(pending.pcm[0], 1.0f);    // the 0.5/0.6 frame was dropped
+  EXPECT_EQ(pending.droppedSamples, 1);
+}

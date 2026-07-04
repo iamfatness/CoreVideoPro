@@ -328,4 +328,95 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   return frame;
 }
 
+std::optional<ZoomEnginePcmAudioChunk> readZoomEnginePcmAudioSnapshot(
+    const void* sharedMemory, std::size_t sharedMemorySize) {
+  if (!sharedMemory || sharedMemorySize < sizeof(ShmAudioHeader)) {
+    return std::nullopt;
+  }
+
+  ShmAudioHeader before{};
+  std::memcpy(&before, sharedMemory, sizeof(before));
+  // Odd sequence = engine mid-write; zero = never written. byte_len must hold
+  // whole 16-bit interleaved frames for the declared channel count.
+  if (before.sequence == 0 || (before.sequence & 1u) != 0) {
+    return std::nullopt;
+  }
+  if (before.byte_len == 0 || before.channels == 0 || before.channels > 8 ||
+      before.sample_rate < 8000 || before.sample_rate > 192000) {
+    return std::nullopt;
+  }
+  const std::size_t bytesPerFrame = sizeof(std::int16_t) * before.channels;
+  if (before.byte_len % bytesPerFrame != 0) {
+    return std::nullopt;
+  }
+  if (sharedMemorySize < zoomEnginePcmAudioByteSize(before.byte_len)) {
+    return std::nullopt;
+  }
+
+  // Copy the samples out fast, then re-validate the header (same copy-then-
+  // check tear protocol as the video snapshot).
+  std::vector<std::uint8_t> raw(before.byte_len);
+  std::memcpy(raw.data(), static_cast<const std::uint8_t*>(sharedMemory) + sizeof(ShmAudioHeader), before.byte_len);
+
+  ShmAudioHeader after{};
+  std::memcpy(&after, sharedMemory, sizeof(after));
+  if (after.sequence != before.sequence || after.byte_len != before.byte_len ||
+      after.sample_rate != before.sample_rate || after.channels != before.channels) {
+    return std::nullopt;  // torn during copy — caller retries on the next event
+  }
+
+  ZoomEnginePcmAudioChunk chunk;
+  chunk.sequence = before.sequence;
+  chunk.sampleRate = static_cast<int>(before.sample_rate);
+  chunk.channels = static_cast<int>(before.channels);
+  const std::size_t sampleValues = before.byte_len / sizeof(std::int16_t);
+  chunk.pcm.resize(sampleValues);
+  for (std::size_t index = 0; index < sampleValues; ++index) {
+    std::int16_t sample;
+    std::memcpy(&sample, raw.data() + index * sizeof(std::int16_t), sizeof(sample));
+    chunk.pcm[index] = static_cast<float>(sample) / 32768.0f;
+  }
+  return chunk;
+}
+
+bool appendZoomEnginePcmChunk(ZoomEnginePendingAudio& pending,
+                              const ZoomEnginePcmAudioChunk& chunk,
+                              std::size_t maxSamplesPerChannel) {
+  if (chunk.pcm.empty() || chunk.channels <= 0 || chunk.sampleRate <= 0) {
+    return false;
+  }
+  // The engine writes each source at one fixed format for the session; if it
+  // ever changes (device renegotiation), restart the buffer at the new format
+  // rather than interleaving mismatched sample layouts.
+  if (pending.sampleRate != chunk.sampleRate || pending.channels != chunk.channels) {
+    pending.pcm.clear();
+    pending.sampleRate = chunk.sampleRate;
+    pending.channels = chunk.channels;
+  }
+  // The single-slot SHM region overwrites in place; a repeated sequence means
+  // this event's payload was already ingested (event pipe can outrun the
+  // region under bursty scheduling). Skip the duplicate rather than doubling
+  // those samples.
+  if (chunk.sequence != 0 && chunk.sequence == pending.lastSequence) {
+    return false;
+  }
+  pending.lastSequence = chunk.sequence;
+  pending.pcm.insert(pending.pcm.end(), chunk.pcm.begin(), chunk.pcm.end());
+
+  const std::size_t maxValues = maxSamplesPerChannel * static_cast<std::size_t>(pending.channels);
+  if (maxValues > 0 && pending.pcm.size() > maxValues) {
+    const std::size_t excess = pending.pcm.size() - maxValues;
+    // Drop whole interleaved frames from the FRONT (oldest audio) so a stalled
+    // consumer hears current audio after recovery, mirroring the video path's
+    // latest-wins queues.
+    const std::size_t alignedExcess =
+        (excess + static_cast<std::size_t>(pending.channels) - 1) /
+        static_cast<std::size_t>(pending.channels) * static_cast<std::size_t>(pending.channels);
+    const std::size_t toDrop = (std::min)(alignedExcess, pending.pcm.size());
+    pending.pcm.erase(pending.pcm.begin(), pending.pcm.begin() + static_cast<std::ptrdiff_t>(toDrop));
+    pending.droppedSamples += static_cast<std::int64_t>(toDrop / static_cast<std::size_t>(pending.channels));
+  }
+  return true;
+}
+
 }  // namespace corevideo::modules
