@@ -3898,17 +3898,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    public IReadOnlyList<NativeMediaCorePluginInfo> VstPlugins =>
-        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Plugins ?? [];
+    // CACHED between snapshots: the browser's ItemsRepeater must NOT get a new
+    // ItemsSource instance per snapshot apply (bound-collection churn is the
+    // CoreMessagingXP 0xc000027b fail-fast class — see CLAUDE.md). The list
+    // reference only changes when the scan results actually change.
+    private IReadOnlyList<NativeMediaCorePluginInfo> _vstPlugins = [];
+    private string _vstPluginHostSignature = "";
+
+    public IReadOnlyList<NativeMediaCorePluginInfo> VstPlugins => _vstPlugins;
 
     public string VstPluginHostSummary =>
         (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
         {
-            "ready" => $"{VstPlugins.Count} VST3 plugin(s) found — probe/hosting lands in P2 (docs/vst-host-spec.md)",
+            "ready" => $"{_vstPlugins.Count} VST3 plugin(s) found — probe/hosting lands in P2 (docs/vst-host-spec.md)",
             "scanning" => "Scanning VST3 directories…",
             "error" => "Plugin scan failed — see media-core.log",
             _ => "No scan yet — Scan finds installed VST3 plugins (discovery only, out of process)"
         };
+
+    private void RefreshVstPluginHostFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var host = snapshot.AudioMixSession.PluginHost;
+        var signature = host.Status + "|" + host.Plugins.Count + "|" +
+                        (host.Plugins.Count > 0 ? host.Plugins[0].Id + host.Plugins[^1].Id : "");
+        if (string.Equals(signature, _vstPluginHostSignature, StringComparison.Ordinal))
+        {
+            return;  // nothing changed — no notify, no ItemsSource swap
+        }
+
+        _vstPluginHostSignature = signature;
+        _vstPlugins = host.Plugins;
+        OnPropertyChanged(nameof(VstPlugins));
+        OnPropertyChanged(nameof(VstPluginHostSummary));
+    }
 
     // ---- C3: the Audio tab's SHOW/SETUP split. SHOW = the console (mix a
     // live show); SETUP = buses + routing matrix (configure between shows).
@@ -8609,8 +8631,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyConfiguredOutputReadouts(snapshot);
         RefreshAudioParticipantRows();
         HydrateAudioRoutingMatrixFromSnapshot(snapshot);
-        OnPropertyChanged(nameof(VstPluginHostSummary));
-        OnPropertyChanged(nameof(VstPlugins));
+        RefreshVstPluginHostFromSnapshot(snapshot);
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
