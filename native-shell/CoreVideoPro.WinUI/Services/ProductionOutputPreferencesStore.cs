@@ -64,6 +64,45 @@ public sealed class ProductionOutputPreferences
     // keys are per-meeting (the SDK participant id changes), so those entries are
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
+
+    // Custom scenes (scenes redesign S2): previously scenes lived only in
+    // process memory and died with the app. Persisted on scene lifecycle ops
+    // (new/save/update/remove/duplicate) — not on every canvas drag; unsaved
+    // canvas edits are committed by "Update scene", matching the save model.
+    // Zoom participant ids inside routes are per-meeting and go stale across
+    // sessions; show-input-slot assignments (the primary path) survive.
+    public List<PersistedScene> CustomScenes { get; set; } = [];
+}
+
+public sealed class PersistedScene
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Layout { get; set; } = string.Empty;
+    public List<PersistedSceneRoute> Routes { get; set; } = [];
+}
+
+public sealed class PersistedSceneRoute
+{
+    public string Id { get; set; } = string.Empty;
+    public string Mode { get; set; } = "fixed";      // wire strings (SceneRoutingService)
+    public string AudioRole { get; set; } = "mix";
+    public string? ParticipantId { get; set; }
+    public string? CaptureDeviceId { get; set; }
+    public int? ShowInputSlotNumber { get; set; }
+    public double? RectX { get; set; }
+    public double? RectY { get; set; }
+    public double? RectWidth { get; set; }
+    public double? RectHeight { get; set; }
+    public string FitMode { get; set; } = "fill";
+    public string BorderStyle { get; set; } = "accent";
+    public string BorderColor { get; set; } = "#44C1A1";
+    public double BorderThickness { get; set; } = 2;
+    public double SourceScale { get; set; } = 1;
+    public double SourceOffsetX { get; set; }
+    public double SourceOffsetY { get; set; }
+    public double Opacity { get; set; } = 1;
+    public int ZIndex { get; set; }
 }
 
 public interface IProductionOutputPreferencesStore
