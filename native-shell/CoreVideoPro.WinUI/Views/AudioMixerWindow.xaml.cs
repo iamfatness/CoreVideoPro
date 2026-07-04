@@ -98,6 +98,14 @@ public sealed partial class AudioMixerWindow : Window
         }
     }
 
+    private void OnSoloClicked(object sender, RoutedEventArgs args)
+    {
+        if (TryResolveParticipantId(sender, out var participantId))
+        {
+            ExecuteMixerAction(() => ViewModel.ToggleMixerSolo(participantId));
+        }
+    }
+
     private void OnGainSliderValueChanged(object sender, RangeBaseValueChangedEventArgs args)
     {
         if (!_ready || !TryResolveParticipantId(sender, out var participantId))

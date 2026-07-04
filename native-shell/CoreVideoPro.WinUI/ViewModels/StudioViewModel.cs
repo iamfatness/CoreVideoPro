@@ -3750,6 +3750,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // B3: Solo has always been supported by the mix wire ("solo") and the core
+    // routed-bus DSP — no UI ever exposed it until now.
+    public void ToggleMixerSolo(string participantId)
+    {
+        var mix = _audioMixChannels.FirstOrDefault(item =>
+            string.Equals(item.ParticipantId, participantId, StringComparison.Ordinal));
+        if (mix is null)
+        {
+            return;
+        }
+
+        SelectedParticipantId = participantId;
+        mix.Solo = !mix.Solo;
+        RefreshMixerValueBindings(participantId);
+        RefreshAudioProcessingTargets();
+        CommandStatus = mix.Solo
+            ? $"{SelectedParticipant?.Name} soloed in mix"
+            : $"{SelectedParticipant?.Name} solo cleared";
+        _ = TrySyncMediaCoreAsync();
+    }
+
     [RelayCommand]
     private void AddSelectedAudioInsert(string insertName)
     {
@@ -8889,6 +8910,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Lufs = NormalizeMeterDb(mix.Lufs),
                     TruePeakDb = NormalizeMeterDb(mix.TruePeakDb),
                     Muted = mix.Muted,
+                    IsSolo = mix.Solo,
                     GainLabel = $"{(NormalizeMixerGain(mix.ManualGainDb) > 0 ? "+" : "")}{NormalizeMixerGain(mix.ManualGainDb):0.0} dB",
                     PanLabel = Math.Abs(NormalizeMixerPan(mix.Pan)) < 0.01
                         ? "C"
@@ -8967,6 +8989,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Lufs = lufs,
             TruePeakDb = truePeak,
             Muted = mix.Muted,
+            IsSolo = mix.Solo,
             GainLabel = $"{(gain > 0 ? "+" : "")}{gain:0.0} dB",
             PanLabel = Math.Abs(pan) < 0.01
                 ? "C"
@@ -9003,6 +9026,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         target.Lufs = source.Lufs;
         target.TruePeakDb = source.TruePeakDb;
         target.Muted = source.Muted;
+        target.IsSolo = source.IsSolo;
         target.GainLabel = source.GainLabel;
         target.PanLabel = source.PanLabel;
         target.LufsLabel = source.LufsLabel;

@@ -219,59 +219,85 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="2*" />
                                 <ColumnDefinition Width="70" />
-                                <ColumnDefinition Width="64" />
-                                <ColumnDefinition Width="58" />
+                                <ColumnDefinition Width="110" />
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="68" />
                                 <ColumnDefinition Width="88" />
-                                <ColumnDefinition Width="150" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="SOURCE" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
                             <TextBlock Grid.Column="1" Text="METER" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
                             <TextBlock Grid.Column="2" Text="GAIN" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
                             <TextBlock Grid.Column="3" Text="PAN" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Grid.Column="4" Text="BUS" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Grid.Column="5" Text="INSERTS" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="4" Text="M / S" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Grid.Column="5" Text="BUS" FontSize="10" FontWeight="ExtraBold" Foreground="{StaticResource StudioMutedBrush}" />
                         </Grid>
 
+                        <!-- B3: the tab's strips are EDITABLE — gain/pan sliders and Mute/Solo
+                             act here directly (previously the pop-out mixer window was the only
+                             surface with working controls; these rows were read-only labels). -->
                         <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
                             <ItemsRepeater.ItemTemplate>
                                 <DataTemplate x:DataType="models:AudioParticipantRow">
-                                    <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                            Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                            BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6"
-                                            Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
-                                            CommandParameter="{x:Bind Id}">
+                                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,0,6">
                                         <Grid ColumnSpacing="8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="2*" />
                                                 <ColumnDefinition Width="70" />
-                                                <ColumnDefinition Width="64" />
-                                                <ColumnDefinition Width="58" />
+                                                <ColumnDefinition Width="110" />
+                                                <ColumnDefinition Width="96" />
+                                                <ColumnDefinition Width="68" />
                                                 <ColumnDefinition Width="88" />
-                                                <ColumnDefinition Width="150" />
                                             </Grid.ColumnDefinitions>
-                                            <StackPanel HorizontalAlignment="Left" Spacing="1">
-                                                <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
-                                                <TextBlock Text="{x:Bind Subtitle}" FontSize="10"
-                                                           Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{x:Bind LufsLabel}" FontSize="10"
-                                                           Foreground="{StaticResource StudioAccentBrush}" />
-                                            </StackPanel>
+                                            <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                                                    Background="Transparent" BorderThickness="0" Padding="0"
+                                                    Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
+                                                    CommandParameter="{x:Bind Id}">
+                                                <StackPanel Spacing="1">
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
+                                                    <TextBlock Text="{x:Bind Subtitle}" FontSize="10"
+                                                               Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{x:Bind LufsLabel, Mode=OneWay}" FontSize="10"
+                                                               Foreground="{StaticResource StudioAccentBrush}" />
+                                                </StackPanel>
+                                            </Button>
                                             <controls:AudioLevelMeter Grid.Column="1"
                                                                       Level="{x:Bind OutputLevel, Mode=OneWay}"
                                                                       SegmentCount="14"
                                                                       Height="12"
                                                                       VerticalAlignment="Center" />
-                                            <TextBlock Grid.Column="2" Text="{x:Bind GainLabel}" FontSize="11"
-                                                       VerticalAlignment="Center" HorizontalAlignment="Center" />
-                                            <TextBlock Grid.Column="3" Text="{x:Bind PanLabel}" FontSize="11"
-                                                       VerticalAlignment="Center" HorizontalAlignment="Center" />
-                                            <TextBlock Grid.Column="4" Text="{x:Bind BusLabel}" FontSize="11"
-                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="5" Text="{x:Bind InsertLabel}" FontSize="10"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                <Slider Minimum="-24" Maximum="24" StepFrequency="0.5"
+                                                        Value="{x:Bind ManualGainDb, Mode=OneWay}"
+                                                        Tag="{x:Bind Id}"
+                                                        ValueChanged="OnRowGainChanged" />
+                                                <TextBlock Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="9"
+                                                           Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="3" VerticalAlignment="Center">
+                                                <Slider Minimum="-1" Maximum="1" StepFrequency="0.05"
+                                                        Value="{x:Bind Pan, Mode=OneWay}"
+                                                        Tag="{x:Bind Id}"
+                                                        ValueChanged="OnRowPanChanged" />
+                                                <TextBlock Text="{x:Bind PanLabel, Mode=OneWay}" FontSize="9"
+                                                           Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                <ToggleButton Content="M" FontSize="11" Padding="8,4"
+                                                              IsChecked="{x:Bind Muted, Mode=OneWay}"
+                                                              Tag="{x:Bind Id}"
+                                                              Click="OnRowMuteClicked"
+                                                              ToolTipService.ToolTip="Mute in mix" />
+                                                <ToggleButton Content="S" FontSize="11" Padding="8,4"
+                                                              IsChecked="{x:Bind IsSolo, Mode=OneWay}"
+                                                              Tag="{x:Bind Id}"
+                                                              Click="OnRowSoloClicked"
+                                                              ToolTipService.ToolTip="Solo in mix" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="5" Text="{x:Bind BusLabel, Mode=OneWay}" FontSize="11"
                                                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                         </Grid>
-                                    </Button>
+                                    </Border>
                                 </DataTemplate>
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>

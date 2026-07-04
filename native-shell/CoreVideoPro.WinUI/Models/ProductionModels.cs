@@ -537,6 +537,7 @@ public sealed class AudioParticipantRow : ObservableObject
     private double _lufs;
     private double _truePeakDb;
     private bool _muted;
+    private bool _isSolo;
     private string _gainLabel = string.Empty;
     private string _panLabel = string.Empty;
     private string _lufsLabel = string.Empty;
@@ -556,6 +557,7 @@ public sealed class AudioParticipantRow : ObservableObject
     public double Lufs { get => _lufs; set => SetProperty(ref _lufs, value); }
     public double TruePeakDb { get => _truePeakDb; set => SetProperty(ref _truePeakDb, value); }
     public bool Muted { get => _muted; set => SetProperty(ref _muted, value); }
+    public bool IsSolo { get => _isSolo; set => SetProperty(ref _isSolo, value); }
     public string GainLabel { get => _gainLabel; set => SetProperty(ref _gainLabel, value); }
     public string PanLabel { get => _panLabel; set => SetProperty(ref _panLabel, value); }
     public string LufsLabel { get => _lufsLabel; set => SetProperty(ref _lufsLabel, value); }
