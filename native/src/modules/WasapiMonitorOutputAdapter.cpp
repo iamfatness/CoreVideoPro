@@ -127,6 +127,17 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     }
 
     deviceName_ = readFriendlyName(device, deviceId);
+    // Record the RESOLVED endpoint id (an empty request resolves to the OS
+    // default) so the feedback guard can compare it against loopback capture
+    // endpoints (spec R6).
+    resolvedEndpointId_.clear();
+    {
+      LPWSTR rawId = nullptr;
+      if (SUCCEEDED(device->GetId(&rawId)) && rawId != nullptr) {
+        resolvedEndpointId_ = wideToUtf8(rawId);
+        ::CoTaskMemFree(rawId);
+      }
+    }
 
     hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&client_));
     if (FAILED(hr) || client_ == nullptr) {
@@ -191,6 +202,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     cleanup();
     active_ = false;
     openedDeviceId_.clear();
+    resolvedEndpointId_.clear();
   }
 
   bool render(const float* interleaved, int frameCount, int channels, double volume) override {
@@ -249,6 +261,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   std::string deviceName() const override { return deviceName_; }
   std::vector<std::string> warnings() const override { return warnings_; }
   std::int64_t underrunCount() const override { return underruns_; }
+  std::string resolvedEndpointId() const override { return resolvedEndpointId_; }
 
  private:
   bool ensureCom() {
@@ -428,6 +441,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   bool deviceIsFloat_ = true;
   int64_t framesRendered_ = 0;
   int64_t underruns_ = 0;
+  std::string resolvedEndpointId_;
   std::string openedDeviceId_;
   std::string deviceName_;
   std::vector<std::string> warnings_;
