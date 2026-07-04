@@ -177,6 +177,16 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _onChanged(this);
     }
 
+    // S3: the layer card's numeric X/Y/W/H fields edit the rect directly.
+    // Canvas drags go through SetCanvasRect, which sets these silently.
+    partial void OnXChanged(double value) => ApplyVisualChange();
+
+    partial void OnYChanged(double value) => ApplyVisualChange();
+
+    partial void OnWidthChanged(double value) => ApplyVisualChange();
+
+    partial void OnHeightChanged(double value) => ApplyVisualChange();
+
     partial void OnFitModeChanged(string value) => ApplyVisualChange();
 
     partial void OnBorderStyleChanged(string value) => ApplyVisualChange();
@@ -248,10 +258,22 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public void SetCanvasRect(double x, double y, double width, double height, bool notify = true)
     {
-        X = x;
-        Y = y;
-        Width = width;
-        Height = height;
+        // Set silently: the numeric rect fields (S3) hook OnX/Y/Width/HeightChanged
+        // for direct edits, and letting those fire here would apply/notify four
+        // times per drag move instead of once below.
+        _suppressChangeNotification = true;
+        try
+        {
+            X = x;
+            Y = y;
+            Width = width;
+            Height = height;
+        }
+        finally
+        {
+            _suppressChangeNotification = false;
+        }
+
         ApplyRoute();
         if (notify)
         {
@@ -261,8 +283,17 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public void SetSourceOffset(double sourceOffsetX, double sourceOffsetY, bool notify = true)
     {
-        SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(sourceOffsetX);
-        SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(sourceOffsetY);
+        _suppressChangeNotification = true;
+        try
+        {
+            SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(sourceOffsetX);
+            SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(sourceOffsetY);
+        }
+        finally
+        {
+            _suppressChangeNotification = false;
+        }
+
         ApplyRoute();
         if (notify)
         {

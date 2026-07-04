@@ -35,6 +35,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         InitializeComponent();
         BuildPresetButtons();
         SizeChanged += OnEditorSizeChanged;
+        // S3 keyboard nudge: the control takes focus when a layer is pressed so
+        // arrow keys (Shift = coarse) move the selected box.
+        IsTabStop = true;
+        KeyDown += OnEditorKeyDown;
     }
 
     public bool IsInteracting => _dragLayer is not null;
@@ -370,6 +374,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         _dragMode = ResolveDragMode(e.OriginalSource, frame);
         frame.CapturePointer(e.Pointer);
         UpdateSelectionStyles();
+        Focus(FocusState.Programmatic);  // arrow-key nudge targets this layer
         InteractionChanged?.Invoke(this, true);
         e.Handled = true;
     }
@@ -408,6 +413,15 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             var width = Math.Clamp(_dragStartRect.Width + deltaX, MinLayerSize, 1 - _dragStartRect.X);
             var height = Math.Clamp(_dragStartRect.Height + deltaY, MinLayerSize, 1 - _dragStartRect.Y);
+            // S3 snapping: the moving RIGHT/BOTTOM edges snap to canvas guides
+            // and other layers' edges.
+            var (guidesX, guidesY) = BuildSnapGuides(_dragLayer);
+            width = Math.Clamp(
+                width + SnapCorrection(_dragStartRect.X + width, guidesX),
+                MinLayerSize, 1 - _dragStartRect.X);
+            height = Math.Clamp(
+                height + SnapCorrection(_dragStartRect.Y + height, guidesY),
+                MinLayerSize, 1 - _dragStartRect.Y);
             _dragLayer.SetCanvasRect(_dragStartRect.X, _dragStartRect.Y, width, height, notify: false);
         }
         else if (_dragMode == "pan-source")
@@ -432,10 +446,117 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             var x = Math.Clamp(_dragStartRect.X + deltaX, 0, 1 - _dragStartRect.Width);
             var y = Math.Clamp(_dragStartRect.Y + deltaY, 0, 1 - _dragStartRect.Height);
+            // S3 snapping: left/right/center of the box snap to canvas guides
+            // (0, 0.5, 1) and other layers' edges/centers; smallest correction
+            // within threshold wins per axis.
+            var (guidesX, guidesY) = BuildSnapGuides(_dragLayer);
+            x = Math.Clamp(
+                x + SmallestCorrection(guidesX, x, x + _dragStartRect.Width, x + _dragStartRect.Width / 2),
+                0, 1 - _dragStartRect.Width);
+            y = Math.Clamp(
+                y + SmallestCorrection(guidesY, y, y + _dragStartRect.Height, y + _dragStartRect.Height / 2),
+                0, 1 - _dragStartRect.Height);
             _dragLayer.SetCanvasRect(x, y, _dragStartRect.Width, _dragStartRect.Height, notify: false);
         }
 
         ApplyLayerGeometry(frame, _dragLayer);
+        e.Handled = true;
+    }
+
+    // ---- S3 snapping ----------------------------------------------------------
+    private const double SnapThreshold = 0.015;
+
+    private (List<double> X, List<double> Y) BuildSnapGuides(SceneCanvasLayerViewModel dragged)
+    {
+        var guidesX = new List<double> { 0, 0.5, 1 };
+        var guidesY = new List<double> { 0, 0.5, 1 };
+        foreach (var frame in _layerFrames.Values)
+        {
+            if (frame.Tag is not SceneCanvasLayerViewModel layer || ReferenceEquals(layer, dragged))
+            {
+                continue;
+            }
+
+            guidesX.Add(layer.X);
+            guidesX.Add(layer.X + layer.Width);
+            guidesX.Add(layer.X + layer.Width / 2);
+            guidesY.Add(layer.Y);
+            guidesY.Add(layer.Y + layer.Height);
+            guidesY.Add(layer.Y + layer.Height / 2);
+        }
+
+        return (guidesX, guidesY);
+    }
+
+    // Correction that moves `target` onto the nearest guide within threshold.
+    private static double SnapCorrection(double target, List<double> guides)
+    {
+        var best = 0.0;
+        var bestDistance = SnapThreshold;
+        foreach (var guide in guides)
+        {
+            var distance = Math.Abs(target - guide);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = guide - target;
+            }
+        }
+
+        return best;
+    }
+
+    // Smallest correction among several box features (edges + center) so the
+    // closest feature is the one that snaps.
+    private static double SmallestCorrection(List<double> guides, params double[] targets)
+    {
+        var best = 0.0;
+        var bestMagnitude = SnapThreshold;
+        foreach (var target in targets)
+        {
+            var correction = SnapCorrection(target, guides);
+            if (correction != 0.0 && Math.Abs(correction) < bestMagnitude)
+            {
+                bestMagnitude = Math.Abs(correction);
+                best = correction;
+            }
+        }
+
+        return best;
+    }
+
+    // ---- S3 keyboard nudge ----------------------------------------------------
+    private void OnEditorKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (_selectedLayer is null || _dragLayer is not null)
+        {
+            return;
+        }
+
+        var step = Microsoft.UI.Input.InputKeyboardSource
+                       .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+                       .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down)
+            ? 0.02
+            : 0.005;
+        double deltaX = 0, deltaY = 0;
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Left: deltaX = -step; break;
+            case Windows.System.VirtualKey.Right: deltaX = step; break;
+            case Windows.System.VirtualKey.Up: deltaY = -step; break;
+            case Windows.System.VirtualKey.Down: deltaY = step; break;
+            default: return;
+        }
+
+        var layer = _selectedLayer;
+        var x = Math.Clamp(layer.X + deltaX, 0, 1 - layer.Width);
+        var y = Math.Clamp(layer.Y + deltaY, 0, 1 - layer.Height);
+        layer.SetCanvasRect(x, y, layer.Width, layer.Height);
+        if (_layerFrames.TryGetValue(layer.LayerIndex, out var frame))
+        {
+            ApplyLayerGeometry(frame, layer);
+        }
+
         e.Handled = true;
     }
 
