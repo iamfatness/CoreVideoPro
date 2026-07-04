@@ -140,10 +140,15 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload) {
     };
   }
 
+  if (!ensureStarted()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return rawCaptureSnapshotLocked();
+  }
+
   bool waitForAuth = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!ensureStartedLocked()) {
+    if (!process_ || !process_->running()) {
       return rawCaptureSnapshotLocked();
     }
 
@@ -403,25 +408,51 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   return frames;
 }
 
-bool ZoomEngineRuntime::ensureStartedLocked() {
-  if (process_ && process_->running()) {
-    return true;
+bool ZoomEngineRuntime::ensureStarted() {
+  std::shared_ptr<ZoomEngineProcessClient> client;
+  std::string executablePath;
+  int connectTimeoutMs = 0;
+  std::uint64_t generationAtStart = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (process_ && process_->running()) {
+      return true;
+    }
+
+    // New engine process: retire lines queued for the previous (dead) process —
+    // drop + log, never replay them into the new pipe — and forget per-process
+    // session state so the new engine is re-initialized, re-media-started, and
+    // re-subscribed from scratch.
+    ++processGeneration_;
+    generationAtStart = processGeneration_;
+    purgeQueuedEngineSendsLocked("engine restart");
+    sentSubscriptions_.clear();
+    mediaStarted_ = false;
+    client = std::make_shared<ZoomEngineProcessClient>();
+    executablePath = config_.executablePath;
+    connectTimeoutMs = config_.connectTimeoutMs;
   }
 
-  // New engine process: retire lines queued for the previous (dead) process —
-  // drop + log, never replay them into the new pipe — and forget per-process
-  // session state so the new engine is re-initialized, re-media-started, and
-  // re-subscribed from scratch.
-  ++processGeneration_;
-  purgeQueuedEngineSendsLocked("engine restart");
-  sentSubscriptions_.clear();
-  mediaStarted_ = false;
+  // BLOCKING: CreateProcess + engine IPC connect (seconds; bounded by
+  // connectTimeoutMs). Runs with NO runtime lock held so the render/audio
+  // threads' per-tick frame polls (which take mutex_) never stall behind the
+  // spawn — the studio keeps compositing while the engine boots. Together with
+  // the RPC server routing zoom-join around coreMutex, this closes the
+  // "whole studio freezes for the length of every join" P0.
+  const bool started = client->start({executablePath, connectTimeoutMs});
 
-  process_ = std::make_shared<ZoomEngineProcessClient>();
-  if (!process_->start({config_.executablePath, config_.connectTimeoutMs})) {
-    state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", process_->lastError()});
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (processGeneration_ != generationAtStart) {
+    // Superseded mid-start (test process installed / another restart): discard
+    // the freshly spawned process rather than clobbering the newer one.
+    client->stop();
+    return process_ && process_->running();
+  }
+  if (!started) {
+    state_.apply({ZoomEngineEventKind::Error, "error", "", "launch", client->lastError()});
     return false;
   }
+  process_ = std::move(client);
   // Record the token the client generated so frame SHM reads target the same
   // per-instance region names the engine writes.
   instanceToken_ = process_->instanceToken();
@@ -740,7 +771,7 @@ bool ZoomEngineRuntime::ensureMediaStartedLocked() {
   }
   // Async send; optimistic. If the pipe write later fails, the sender applies an
   // Error event (stage "start_media"), and a process restart resets mediaStarted_
-  // in ensureStartedLocked.
+  // in ensureStarted.
   enqueueEngineSendLocked("start_media", buildZoomEngineStartMediaCommand());
   mediaStarted_ = true;
   return true;

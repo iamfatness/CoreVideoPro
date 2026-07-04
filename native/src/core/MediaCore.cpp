@@ -406,6 +406,10 @@ void MediaCore::unregisterCaptureShm(const std::string& deviceId) {
   }
 }
 
+bool MediaCore::zoomEngineConfigured() const {
+  return zoomEngineRuntime_ && zoomEngineRuntime_->configured();
+}
+
 rpc::Json MediaCore::joinZoom(const rpc::Json& payload) {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->join(payload);
