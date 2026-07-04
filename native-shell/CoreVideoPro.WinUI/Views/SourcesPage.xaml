@@ -239,6 +239,30 @@
                                                               IsEnabled="{x:Bind IsParticipantPickerEnabled, Mode=OneWay}"
                                                               HorizontalAlignment="Stretch" />
                                                 </StackPanel>
+                                                <!-- S3: exact placement — normalized 0..1, drag stays in sync -->
+                                                <StackPanel Spacing="2">
+                                                    <TextBlock Text="Position (0-1)" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <Grid ColumnSpacing="4">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <NumberBox Header="X" Value="{x:Bind X, Mode=TwoWay}"
+                                                                   Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.05"
+                                                                   SpinButtonPlacementMode="Hidden" />
+                                                        <NumberBox Grid.Column="1" Header="Y" Value="{x:Bind Y, Mode=TwoWay}"
+                                                                   Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.05"
+                                                                   SpinButtonPlacementMode="Hidden" />
+                                                        <NumberBox Grid.Column="2" Header="W" Value="{x:Bind Width, Mode=TwoWay}"
+                                                                   Minimum="0.08" Maximum="1" SmallChange="0.01" LargeChange="0.05"
+                                                                   SpinButtonPlacementMode="Hidden" />
+                                                        <NumberBox Grid.Column="3" Header="H" Value="{x:Bind Height, Mode=TwoWay}"
+                                                                   Minimum="0.08" Maximum="1" SmallChange="0.01" LargeChange="0.05"
+                                                                   SpinButtonPlacementMode="Hidden" />
+                                                    </Grid>
+                                                </StackPanel>
                                                 <Grid ColumnSpacing="8">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*" />
