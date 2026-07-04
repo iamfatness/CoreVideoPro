@@ -331,6 +331,11 @@
                                 </DataTemplate>
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
+                        <!-- B4: the crosspoint matrix ON the Audio tab (shared control
+                             with the Routing tab — same view-model instance, so
+                             selection and edits stay in sync). Route where you mix. -->
+                        <controls:AudioRoutingMatrixPanel ViewModel="{x:Bind ViewModel, Mode=OneWay}"
+                                                          MaxHeight="340" />
                     </StackPanel>
                 </Border>
             </StackPanel>
