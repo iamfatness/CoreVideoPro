@@ -405,6 +405,7 @@ class MediaCore {
     std::vector<modules::AudioFrame> audioFrames;
     std::vector<ParticipantAudioChannelInput> channels;
     std::vector<AudioRoutingSendInput> routingSends;
+    bool limiterEnabled = true;  // spec 4.4: toggle now controls the bus limiter
     bool audioMonitorEnabled = false;
     double audioMonitorVolume = 0.0;
     // Resolved endpoint ids of ACTIVE loopback capture sources, gathered under

@@ -3944,6 +3944,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   work.audioFrames = modules::coalescePcmAudioFramesBySource(std::move(audioFrames));
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
+  work.limiterEnabled = audioLimiterEnabled_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
   work.audioMonitorVolume = audioMonitorVolume_;
   // Feedback-guard inputs (spec R6): the resolved endpoints of every ACTIVE
@@ -4001,6 +4002,12 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
           source.solo = channel.solo;
           source.pan = channel.pan;
           source.gainLinear = modules::dbfsToLinear(channel.hasManualGain ? channel.manualGainDb : 0.0);
+          // Spec 4.4: the strip's insert chain + noise suppression now PROCESS
+          // (previously stored/exported only). Pointer into work.channels,
+          // which outlives the mix call.
+          source.inserts = &channel.pluginInserts;
+          source.noiseSuppression = channel.noiseSuppression;
+          source.sampleRate = modules_.mixer->monitorBusSampleRate();
           break;
         }
       }
@@ -4012,7 +4019,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
     }
     const auto tMrb0 = std::chrono::steady_clock::now();
-    results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints);
+    results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled);
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
     if (!results.routedBusPcm.empty()) {
