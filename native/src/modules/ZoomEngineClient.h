@@ -149,6 +149,7 @@ struct ZoomEnginePendingAudio {
   int channels = 0;
   std::uint32_t lastSequence = 0;
   std::int64_t droppedSamples = 0;
+  std::int64_t ingestedChunks = 0;
   std::vector<float> pcm;
 };
 

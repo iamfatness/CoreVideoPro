@@ -7130,6 +7130,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             audioRoutingSends,
             ResolveSceneMediaAudioSourceIds(resolvedProgramRoutes).Count > 0)
             .ToList();
+        audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
+            audioRoutingSends,
+            RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            .ToList();
 
         RefreshAudioMixChannels();
         var audioChannels = BuildAudioMixChannelWires(captureAudioSources, audioRoutingSends);
@@ -7450,6 +7454,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                         string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
                 {
                     completed.Add(new MediaCoreAudioRoutingSendWire(sourceId, busId, 0));
+                }
+            }
+        }
+
+        return completed;
+    }
+
+    // Zoom participants deliver real ISO PCM (engine SHM ingest), but a channel
+    // with NO crosspoint sends contributes to no bus — and the routed buses
+    // shadow the fallback mixer monitor bus, so an unrouted participant is
+    // silent on master/monitor/program/stream no matter how hot their meter
+    // is. Default every in-room participant to unity sends on the same buses
+    // capture/local/media sources get; the routing matrix can still override.
+    public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
+        IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
+        IReadOnlyList<string> zoomParticipantIds)
+    {
+        if (zoomParticipantIds.Count == 0)
+        {
+            return sends;
+        }
+
+        string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
+        var completed = sends.ToList();
+        foreach (var participantId in zoomParticipantIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
+        {
+            foreach (var busId in requiredBusIds)
+            {
+                if (!completed.Any(send =>
+                        string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
+                        string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
                 }
             }
         }

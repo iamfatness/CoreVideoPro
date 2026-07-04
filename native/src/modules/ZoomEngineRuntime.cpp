@@ -833,6 +833,11 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   ShmRegion region;
   const auto size = zoomEnginePcmAudioByteSize(event.byteLength);
   if (!shm_region_open_read(region, zoomEngineAudioSharedMemoryName(event.sourceUuid, instanceToken_), size)) {
+    static int s_openFailures = 0;
+    if (++s_openFailures <= 3) {
+      std::fprintf(stderr, "[zoom-audio] could not open audio SHM '%s' (byte_len=%u)\n",
+                   zoomEngineAudioSharedMemoryName(event.sourceUuid, instanceToken_).c_str(), event.byteLength);
+    }
     return;
   }
   const auto chunk = readZoomEnginePcmAudioSnapshot(region.ptr, region.size);
@@ -846,7 +851,23 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   constexpr std::size_t kMaxPendingAudioSamplesPerChannel = 48000;
   auto& pending = pendingAudio_[std::to_string(event.participantId)];
   const auto droppedBefore = pending.droppedSamples;
-  appendZoomEnginePcmChunk(pending, *chunk, kMaxPendingAudioSamplesPerChannel);
+  if (appendZoomEnginePcmChunk(pending, *chunk, kMaxPendingAudioSamplesPerChannel)) {
+    // Ingest health line: first chunk per source, then every ~30s (per 3000
+    // 10ms packets). Peak lets a silent-but-flowing source (muted mic) be told
+    // apart from a broken ingest at a glance in media-core.log.
+    ++pending.ingestedChunks;
+    if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
+      float peak = 0.f;
+      for (const float sample : chunk->pcm) {
+        peak = (std::max)(peak, std::abs(sample));
+      }
+      std::fprintf(stderr,
+                   "[zoom-audio] participant %u chunk #%lld rate=%d ch=%d samples=%zu peak=%.3f pending=%zu\n",
+                   event.participantId, static_cast<long long>(pending.ingestedChunks), chunk->sampleRate,
+                   chunk->channels, chunk->pcm.size() / static_cast<std::size_t>(chunk->channels),
+                   static_cast<double>(peak), pending.pcm.size());
+    }
+  }
   if (pending.droppedSamples != droppedBefore && droppedBefore == 0) {
     std::fprintf(stderr, "[zoom-audio] pending PCM for participant %u overflowed; dropping oldest samples\n",
                  event.participantId);
