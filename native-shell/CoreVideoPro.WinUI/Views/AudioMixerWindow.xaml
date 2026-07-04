@@ -228,6 +228,7 @@
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <Button Content="Select"
                                                         Style="{StaticResource OperatorGhostButton}"
@@ -238,6 +239,12 @@
                                                         Style="{StaticResource OperatorGhostButton}"
                                                         Tag="{x:Bind Id}"
                                                         Click="OnMuteClicked" />
+                                                <!-- B3: Solo — supported by the wire/core all along, never surfaced -->
+                                                <ToggleButton Grid.Column="2" Content="S" Padding="10,4"
+                                                              IsChecked="{x:Bind IsSolo, Mode=OneWay}"
+                                                              Tag="{x:Bind Id}"
+                                                              Click="OnSoloClicked"
+                                                              ToolTipService.ToolTip="Solo in mix" />
                                             </Grid>
                                         </Grid>
                                     </Border>
@@ -376,6 +383,12 @@
                                                         Style="{StaticResource OperatorGhostButton}"
                                                         Tag="{x:Bind Id}"
                                                         Click="OnMuteClicked" />
+                                                <ToggleButton Content="SOLO"
+                                                              HorizontalAlignment="Stretch"
+                                                              IsChecked="{x:Bind IsSolo, Mode=OneWay}"
+                                                              Tag="{x:Bind Id}"
+                                                              Click="OnSoloClicked"
+                                                              ToolTipService.ToolTip="Solo in mix" />
                                             </StackPanel>
                                         </Grid>
                                     </Border>
