@@ -312,6 +312,10 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     public void ApplyRoute()
     {
         _route.Mode = SceneRoutingService.ModeFromWire(Mode);
+        // R1: one line handles both set AND clear — the role survives only
+        // while the picker holds a "role:" value; picking a person, input,
+        // media, or capture source converts the layer back to a normal route.
+        _route.ProductionRoleId = ProductionRoleService.RoleIdFromOption(ParticipantId);
         _route.ShowInputSlotNumber = TryParseShowInputValue(ParticipantId, out var slotNumber)
             ? slotNumber
             : null;
@@ -329,7 +333,17 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         }
         else
         {
-            if (TryParseMediaAssetValue(ParticipantId, out var mediaAssetId))
+            if (ProductionRoleService.IsRoleOption(ParticipantId))
+            {
+                // Role route: no concrete participant is stored — the sync-time
+                // resolver maps the role to its current holder.
+                _route.Mode = SourceRouteMode.Fixed;
+                _route.ParticipantId = null;
+                _route.CaptureDeviceId = null;
+                _route.ShowInputSlotNumber = null;
+                _route.SpotlightIndex = null;
+            }
+            else if (TryParseMediaAssetValue(ParticipantId, out var mediaAssetId))
             {
                 _route.Mode = SourceRouteMode.Fixed;
                 _route.ParticipantId = ShowInputRosterService.ToMediaSourceId(mediaAssetId);
@@ -444,6 +458,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         IReadOnlyList<ShowInputSlot> showInputs,
         IReadOnlyList<MediaAsset> mediaAssets)
     {
+        // R1: role-targeted routes pick as "role:<id>" — the participant is
+        // resolved from the role holder at sync time, never stored here.
+        if (!string.IsNullOrWhiteSpace(route.ProductionRoleId))
+        {
+            return ProductionRoleService.ToOptionValue(route.ProductionRoleId);
+        }
+
         if (route.ShowInputSlotNumber is { } slotNumber &&
             showInputs.Any(slot => slot.SlotNumber == slotNumber))
         {
@@ -499,7 +520,17 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
                 Label = $"Media - {asset.Name}"
             });
 
+        // R1: role targets — valid for fixed-style routes; picking one converts
+        // the layer to a role route, picking a person converts it back.
+        var roleOptions = ProductionRoleService.Roles
+            .Select(role => new RouteSelectOption
+            {
+                Value = ProductionRoleService.ToOptionValue(role.Value),
+                Label = $"Role: {role.Label}"
+            });
+
         return showInputOptions
+            .Concat(roleOptions)
             .Concat(captureOptions)
             .Concat(mediaOptions)
             .Concat(participantOptions)

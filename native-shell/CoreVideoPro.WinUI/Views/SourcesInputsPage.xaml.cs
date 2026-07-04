@@ -129,6 +129,21 @@ public sealed partial class SourcesInputsPage : UserControl
         LaunchLog.Write($"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> ParticipantId={editor.ParticipantId}");
     }
 
+    private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Tag (x:Bind), not DataContext (null inside the ItemsRepeater). The
+        // view-model no-ops when the value matches, which also swallows the
+        // initial programmatic selection at row realization.
+        if (sender is not ComboBox combo ||
+            combo.Tag is not string participantId ||
+            combo.SelectedValue is not string roleId)
+        {
+            return;
+        }
+
+        ViewModel?.SetParticipantProductionRole(participantId, roleId);
+    }
+
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)
     {
         // Use Tag (x:Bind to the slot view-model), not DataContext, which is null for

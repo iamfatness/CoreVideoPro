@@ -3788,6 +3788,56 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // B3: Solo has always been supported by the mix wire ("solo") and the core
     // routed-bus DSP — no UI ever exposed it until now.
+    // ---- Production roles (scenes redesign R1) ------------------------------
+    // Session-only by design: rosters change every show, so roles are assigned
+    // fresh each session. Scene routes persist ROLE targets; people don't.
+    private readonly Dictionary<string, string> _participantProductionRoles = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<RouteSelectOption> ProductionRoleAssignmentOptions { get; } =
+        ProductionRoleService.AssignmentOptions;
+
+    public void SetParticipantProductionRole(string participantId, string? roleId)
+    {
+        var participant = RoomVideoParticipants.FirstOrDefault(item =>
+            string.Equals(item.Id, participantId, StringComparison.Ordinal));
+        if (participant is null)
+        {
+            return;
+        }
+
+        var normalized = string.IsNullOrWhiteSpace(roleId) ? null : roleId.Trim();
+        _participantProductionRoles.TryGetValue(participantId, out var current);
+        if (string.Equals(current, normalized, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (normalized is null)
+        {
+            _participantProductionRoles.Remove(participantId);
+            CommandStatus = $"{participant.Name} role cleared";
+        }
+        else
+        {
+            // One holder per role: assigning Host to B strips it from A.
+            var previousHolder = _participantProductionRoles
+                .FirstOrDefault(pair => string.Equals(pair.Value, normalized, StringComparison.OrdinalIgnoreCase))
+                .Key;
+            if (previousHolder is not null)
+            {
+                _participantProductionRoles.Remove(previousHolder);
+            }
+
+            _participantProductionRoles[participantId] = normalized;
+            CommandStatus = $"{participant.Name} is now {ProductionRoleService.RoleLabel(normalized)}";
+        }
+
+        // Role holders changed -> role-targeted routes resolve differently.
+        RefreshProductionReadouts();
+        SchedulePreviewRoutingRefresh();
+        _ = TrySyncMediaCoreAsync();
+    }
+
     public void ToggleMixerSolo(string participantId)
     {
         var mix = _audioMixChannels.FirstOrDefault(item =>
@@ -5651,7 +5701,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Scenes,
             AutomationPreferScreenShare,
             (int)Math.Round(AutomationPanelParticipantThreshold));
-        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants);
+        FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(RoomVideoParticipants, _participantProductionRoles);
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomVideoParticipants);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
@@ -7203,7 +7253,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Select(participant => new MediaCoreParticipantWire(
                 participant.Id,
                 participant.Name,
-                participant.Role.ToString().ToLowerInvariant(),
+                // R1: an operator-assigned production role outranks the
+                // Zoom-derived one on the wire, so the core director/automation
+                // reasons in show roles ("reader speaking"), not Zoom flags.
+                _participantProductionRoles.TryGetValue(participant.Id, out var productionRole)
+                    ? productionRole
+                    : participant.Role.ToString().ToLowerInvariant(),
                 participant.BreakoutRoomId,
                 participant.BreakoutRoomName,
                 participant.IsActiveSpeaker,
@@ -10980,6 +11035,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private SourceRoute ResolveRouteFromShowInput(SourceRoute route)
     {
         var resolved = route.Clone();
+
+        // R1: role-targeted route — resolve to whichever participant currently
+        // holds the production role. No holder (or holder left) -> ParticipantId
+        // stays null and the layer renders the placeholder slate, exactly like
+        // a fixed route to an absent participant.
+        if (!string.IsNullOrWhiteSpace(resolved.ProductionRoleId))
+        {
+            resolved.ParticipantId = _participantProductionRoles
+                .FirstOrDefault(pair => string.Equals(pair.Value, resolved.ProductionRoleId, StringComparison.OrdinalIgnoreCase))
+                .Key;
+            ApplyKnownColorGradeToRoute(resolved);
+            return resolved;
+        }
+
         if (route.ShowInputSlotNumber is not { } slotNumber ||
             ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } slot ||
             !slot.IsAssigned)
