@@ -479,6 +479,10 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
 // contribute nothing. Each bus is brickwall-limited to -1 dBFS so summed
 // crosspoints never clip. Pure and deterministic: same inputs -> same buses.
 // ---------------------------------------------------------------------------
+// Defined below (spec 4.4): per-channel insert processing over panned stereo.
+inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
+                                   const std::vector<std::string>& inserts, bool noiseSuppression);
+
 struct RoutedAudioSource {
   std::string sourceId;
   const std::vector<float>* pcm = nullptr;  // interleaved, not owned
@@ -487,6 +491,11 @@ struct RoutedAudioSource {
   double pan = 0.0;         // -1 hard left .. 0 center .. +1 hard right
   bool muted = false;
   bool solo = false;
+  // Spec 4.4: channel strip processing, applied to the panned stereo BEFORE
+  // the crosspoint sends. Not owned; may be null (no inserts).
+  const std::vector<std::string>* inserts = nullptr;
+  bool noiseSuppression = false;
+  double sampleRate = 48000.0;
 };
 
 struct RoutedAudioCrosspoint {
@@ -496,7 +505,8 @@ struct RoutedAudioCrosspoint {
 };
 
 inline std::map<std::string, std::vector<float>> mixRoutedBuses(
-    const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints) {
+    const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints,
+    bool masterLimiter = true) {
   bool soloActive = false;
   for (const auto& source : sources) {
     if (source.solo && !source.muted) {
@@ -529,6 +539,14 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
       stereo[index * 2] = static_cast<float>(left * source.gainLinear * leftWeight);
       stereo[index * 2 + 1] = static_cast<float>(right * source.gainLinear * rightWeight);
     }
+    // Spec 4.4: the channel's insert chain (gate/EQ/compressor/limiter) and the
+    // noise-suppression toggle process the strip output before any send.
+    if ((source.inserts != nullptr && !source.inserts->empty()) || source.noiseSuppression) {
+      static const std::vector<std::string> kNoInserts;
+      applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
+                              source.inserts != nullptr ? *source.inserts : kNoInserts,
+                              source.noiseSuppression);
+    }
     sourceStereo[source.sourceId] = std::move(stereo);
   }
 
@@ -550,7 +568,16 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
 
   for (auto& [busId, bus] : buses) {
     (void)busId;
-    applyPeakLimiter(bus.data(), bus.size(), -1.0);
+    if (masterLimiter) {
+      applyPeakLimiter(bus.data(), bus.size(), -1.0);
+    } else {
+      // Spec 4.4: the limiter toggle previously gated REPORTING only — buses
+      // were always limited. Off now means off, with a hard clamp as the
+      // digital-full-scale safety net.
+      for (auto& sample : bus) {
+        sample = std::max(-1.0f, std::min(1.0f, sample));
+      }
+    }
   }
   return buses;
 }
@@ -639,6 +666,150 @@ inline double applyNoiseGate(float* samples, size_t count, double thresholdDbfs,
     samples[index] = static_cast<float>(static_cast<double>(samples[index]) * gain);
   }
   return static_cast<double>(gatedSamples) / static_cast<double>(count);
+}
+
+// ---------------------------------------------------------------------------
+// Parametric EQ biquads (RBJ audio-EQ-cookbook forms) + channel insert chain
+// (spec 4.4). The BS.1770 biquads above are fixed-coefficient; these builders
+// produce arbitrary high-pass / peaking / shelf sections that the channel
+// insert chain cascades over interleaved stereo with independent per-channel
+// filter state.
+// ---------------------------------------------------------------------------
+inline AudioBiquadCoefficients eqHighpass(double sampleRate, double frequencyHz, double q = 0.7071) {
+  const double w0 = 2.0 * 3.14159265358979323846 * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * q);
+  const double a0 = 1.0 + alpha;
+  AudioBiquadCoefficients coeff;
+  coeff.b0 = ((1.0 + cosW0) / 2.0) / a0;
+  coeff.b1 = (-(1.0 + cosW0)) / a0;
+  coeff.b2 = ((1.0 + cosW0) / 2.0) / a0;
+  coeff.a1 = (-2.0 * cosW0) / a0;
+  coeff.a2 = (1.0 - alpha) / a0;
+  return coeff;
+}
+
+inline AudioBiquadCoefficients eqPeaking(double sampleRate, double frequencyHz, double gainDb, double q = 1.0) {
+  const double amplitude = std::pow(10.0, gainDb / 40.0);
+  const double w0 = 2.0 * 3.14159265358979323846 * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * q);
+  const double a0 = 1.0 + alpha / amplitude;
+  AudioBiquadCoefficients coeff;
+  coeff.b0 = (1.0 + alpha * amplitude) / a0;
+  coeff.b1 = (-2.0 * cosW0) / a0;
+  coeff.b2 = (1.0 - alpha * amplitude) / a0;
+  coeff.a1 = (-2.0 * cosW0) / a0;
+  coeff.a2 = (1.0 - alpha / amplitude) / a0;
+  return coeff;
+}
+
+// Cascade biquad sections over INTERLEAVED stereo, independent state per channel.
+inline void applyStereoEqCascade(float* stereo, size_t count, const std::vector<AudioBiquadCoefficients>& sections) {
+  if (stereo == nullptr || count < 2 || sections.empty()) {
+    return;
+  }
+  for (const auto& section : sections) {
+    AudioBiquadState left;
+    AudioBiquadState right;
+    for (size_t index = 0; index + 1 < count; index += 2) {
+      stereo[index] = static_cast<float>(biquadProcessSample(section, left, static_cast<double>(stereo[index])));
+      stereo[index + 1] = static_cast<float>(biquadProcessSample(section, right, static_cast<double>(stereo[index + 1])));
+    }
+  }
+}
+
+// Channel-linked stereo noise gate: one envelope over max(|L|,|R|) per frame,
+// the SAME smoothed gain applied to both channels (an unlinked gate would let
+// the image wander as channels open independently). Same envelope/coefficient
+// model as applyNoiseGate. Returns the gated-sample fraction [0,1].
+inline double applyStereoLinkedGate(float* stereo, size_t count, double thresholdDbfs, double attackMs,
+                                    double releaseMs, double sampleRate) {
+  if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
+    return 0.0;
+  }
+  const double threshold = dbfsToLinear(thresholdDbfs);
+  const auto timeConstantCoeff = [sampleRate](double timeMs) -> double {
+    if (timeMs <= 0.0) {
+      return 0.0;
+    }
+    const double samplesForTc = (timeMs / 1000.0) * sampleRate;
+    return samplesForTc <= 0.0 ? 0.0 : std::exp(-1.0 / samplesForTc);
+  };
+  const double attackCoeff = timeConstantCoeff(attackMs);
+  const double releaseCoeff = timeConstantCoeff(releaseMs);
+  double envelope = 0.0;
+  double gain = 0.0;
+  size_t gatedFrames = 0;
+  const size_t frames = count / 2;
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const double magnitude = std::max(std::fabs(static_cast<double>(stereo[frame * 2])),
+                                      std::fabs(static_cast<double>(stereo[frame * 2 + 1])));
+    const double envCoeff = magnitude > envelope ? attackCoeff : releaseCoeff;
+    envelope = envCoeff * envelope + (1.0 - envCoeff) * magnitude;
+    const double targetGain = envelope >= threshold ? 1.0 : 0.0;
+    const double gainCoeff = targetGain > gain ? attackCoeff : releaseCoeff;
+    gain = gainCoeff * gain + (1.0 - gainCoeff) * targetGain;
+    if (gain < 0.5) {
+      ++gatedFrames;
+    }
+    stereo[frame * 2] = static_cast<float>(static_cast<double>(stereo[frame * 2]) * gain);
+    stereo[frame * 2 + 1] = static_cast<float>(static_cast<double>(stereo[frame * 2 + 1]) * gain);
+  }
+  return static_cast<double>(gatedFrames) / static_cast<double>(frames);
+}
+
+// Per-CHANNEL insert chain over the source's panned stereo, run inside
+// mixRoutedBuses before the crosspoint sends (spec 4.4 — these were stored and
+// exported but never processed). Deterministic name matching, mirroring
+// applyBusInsertChain:
+//   gate / noise            -> channel-linked stereo gate (-48 dBFS, 5/120 ms)
+//   high-pass / low-cut/hpf -> 90 Hz high-pass
+//   eq / voice              -> broadcast voice curve (90 Hz HPF + +2 dB @ 3 kHz presence)
+//   compressor              -> existing program compressor (-18 dBFS, 4:1)
+//   limiter                 -> existing -1 dBFS brickwall
+// `noiseSuppression` (the strip toggle) gates even with no named insert.
+// Returns the number of inserts that actually processed audio.
+inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
+                                   const std::vector<std::string>& inserts, bool noiseSuppression) {
+  if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
+    return 0;
+  }
+  int applied = 0;
+  bool gated = false;
+  for (const auto& insert : inserts) {
+    std::string lowered;
+    lowered.reserve(insert.size());
+    for (const char character : insert) {
+      lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+    if (lowered.find("gate") != std::string::npos || lowered.find("noise") != std::string::npos) {
+      applyStereoLinkedGate(stereo, count, -48.0, 5.0, 120.0, sampleRate);
+      gated = true;
+      ++applied;
+    } else if (lowered.find("high-pass") != std::string::npos || lowered.find("highpass") != std::string::npos ||
+               lowered.find("low-cut") != std::string::npos || lowered.find("hpf") != std::string::npos) {
+      applyStereoEqCascade(stereo, count, {eqHighpass(sampleRate, 90.0)});
+      ++applied;
+    } else if (lowered.find("eq") != std::string::npos || lowered.find("voice") != std::string::npos) {
+      applyStereoEqCascade(stereo, count,
+                           {eqHighpass(sampleRate, 90.0), eqPeaking(sampleRate, 3000.0, 2.0, 1.0)});
+      ++applied;
+    } else if (lowered.find("compressor") != std::string::npos) {
+      applyCompressor(stereo, count, -18.0, 4.0);
+      ++applied;
+    } else if (lowered.find("limiter") != std::string::npos) {
+      applyPeakLimiter(stereo, count, -1.0);
+      ++applied;
+    }
+    // Unrecognized third-party plugin names stay pass-through until the
+    // out-of-process host (spec 4.5) lands.
+  }
+  if (noiseSuppression && !gated) {
+    applyStereoLinkedGate(stereo, count, -48.0, 5.0, 120.0, sampleRate);
+    ++applied;
+  }
+  return applied;
 }
 
 // ---------------------------------------------------------------------------

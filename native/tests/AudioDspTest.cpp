@@ -646,3 +646,111 @@ TEST(AudioDsp, CoalescePcmFramesPassesThroughMetadataAndSplitsFormatChanges) {
   EXPECT_EQ(coalesced[2].channels, 2);
   EXPECT_EQ(coalesced[2].sampleCount, 1);
 }
+
+// ---- Spec 4.4: channel insert chain actually processes -----------------------
+
+TEST(AudioDsp, ChannelGateSilencesNoiseFloorAndPassesSpeechLevels) {
+  const double sampleRate = 48000.0;
+  // 200ms of quiet hiss at ~-60 dBFS: the gate must close on it.
+  std::vector<float> hiss(19200, 0.001f);
+  const double gatedQuiet = corevideo::modules::applyStereoLinkedGate(
+      hiss.data(), hiss.size(), -48.0, 5.0, 120.0, sampleRate);
+  EXPECT_TRUE(gatedQuiet > 0.9);
+  double peakAfter = 0.0;
+  for (size_t i = hiss.size() / 2; i < hiss.size(); ++i) {
+    peakAfter = std::max(peakAfter, std::fabs(static_cast<double>(hiss[i])));
+  }
+  EXPECT_TRUE(peakAfter < 0.0005);  // tail is attenuated, not passed
+
+  // Speech-level signal (~-12 dBFS) passes essentially unchanged once open.
+  std::vector<float> speech(19200, 0.25f);
+  const double gatedLoud = corevideo::modules::applyStereoLinkedGate(
+      speech.data(), speech.size(), -48.0, 5.0, 120.0, sampleRate);
+  EXPECT_TRUE(gatedLoud < 0.05);
+  EXPECT_TRUE(std::fabs(static_cast<double>(speech[speech.size() - 2]) - 0.25) < 0.01);
+}
+
+TEST(AudioDsp, HighpassEqAttenuatesRumbleAndPassesMidband) {
+  const double sampleRate = 48000.0;
+  const auto sineEnergyAfterHpf = [sampleRate](double frequencyHz) {
+    // 0.5s interleaved-stereo sine so the filter settles.
+    const size_t frames = 24000;
+    std::vector<float> stereo(frames * 2);
+    for (size_t frame = 0; frame < frames; ++frame) {
+      const float sample = static_cast<float>(
+          0.5 * std::sin(2.0 * 3.14159265358979323846 * frequencyHz * static_cast<double>(frame) / sampleRate));
+      stereo[frame * 2] = sample;
+      stereo[frame * 2 + 1] = sample;
+    }
+    corevideo::modules::applyStereoEqCascade(
+        stereo.data(), stereo.size(), {corevideo::modules::eqHighpass(sampleRate, 90.0)});
+    double peak = 0.0;
+    for (size_t i = stereo.size() / 2; i < stereo.size(); ++i) {
+      peak = std::max(peak, std::fabs(static_cast<double>(stereo[i])));
+    }
+    return peak;
+  };
+
+  const double rumble = sineEnergyAfterHpf(30.0);    // well below 90 Hz cutoff
+  const double midband = sineEnergyAfterHpf(1000.0);  // voice band
+  EXPECT_TRUE(rumble < 0.1);    // >14 dB down
+  EXPECT_TRUE(midband > 0.45);  // essentially unity
+}
+
+TEST(AudioDsp, ChannelInsertChainRunsInsideTheRoutedBusMix) {
+  // A source with a "Noise Gate" insert carrying only hiss must arrive at its
+  // bus gated to (near) silence; the same source without the insert passes.
+  std::vector<float> hiss(9600, 0.001f);  // mono, ~200ms at 48k
+  corevideo::modules::RoutedAudioSource gatedSource;
+  gatedSource.sourceId = "s1";
+  gatedSource.pcm = &hiss;
+  gatedSource.channels = 1;
+  std::vector<std::string> inserts{"Noise Gate"};
+  gatedSource.inserts = &inserts;
+
+  corevideo::modules::RoutedAudioSource plainSource = gatedSource;
+  plainSource.inserts = nullptr;
+
+  const std::vector<corevideo::modules::RoutedAudioCrosspoint> sends{{"s1", "master", 1.0}};
+
+  const auto gatedBuses = corevideo::modules::mixRoutedBuses({gatedSource}, sends);
+  const auto plainBuses = corevideo::modules::mixRoutedBuses({plainSource}, sends);
+
+  const auto& gatedBus = gatedBuses.at("master");
+  const auto& plainBus = plainBuses.at("master");
+  double gatedPeakTail = 0.0;
+  double plainPeakTail = 0.0;
+  for (size_t i = gatedBus.size() / 2; i < gatedBus.size(); ++i) {
+    gatedPeakTail = std::max(gatedPeakTail, std::fabs(static_cast<double>(gatedBus[i])));
+    plainPeakTail = std::max(plainPeakTail, std::fabs(static_cast<double>(plainBus[i])));
+  }
+  EXPECT_TRUE(gatedPeakTail < 0.0005);
+  EXPECT_TRUE(plainPeakTail > 0.0009);  // ungated hiss reaches the bus
+}
+
+TEST(AudioDsp, MasterLimiterToggleOffSkipsLimiterButStillClamps) {
+  // Two full-scale sources summed at unity would hit 2.0; with the limiter the
+  // bus stays at/below -1 dBFS (~0.891); with it OFF the hard clamp holds 1.0.
+  std::vector<float> full(9600, 1.0f);
+  corevideo::modules::RoutedAudioSource a;
+  a.sourceId = "a";
+  a.pcm = &full;
+  a.channels = 1;
+  corevideo::modules::RoutedAudioSource b = a;
+  b.sourceId = "b";
+  const std::vector<corevideo::modules::RoutedAudioCrosspoint> sends{
+      {"a", "master", 1.0}, {"b", "master", 1.0}};
+
+  const auto limited = corevideo::modules::mixRoutedBuses({a, b}, sends, true);
+  const auto clamped = corevideo::modules::mixRoutedBuses({a, b}, sends, false);
+  double limitedPeak = 0.0;
+  double clampedPeak = 0.0;
+  for (const float sample : limited.at("master")) {
+    limitedPeak = std::max(limitedPeak, std::fabs(static_cast<double>(sample)));
+  }
+  for (const float sample : clamped.at("master")) {
+    clampedPeak = std::max(clampedPeak, std::fabs(static_cast<double>(sample)));
+  }
+  EXPECT_TRUE(limitedPeak < 0.95);
+  EXPECT_TRUE(std::fabs(clampedPeak - 1.0) < 1e-6);
+}
