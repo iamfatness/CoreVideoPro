@@ -1,11 +1,10 @@
 <UserControl
-    x:Class="CoreVideoPro.WinUI.Views.RoutingPage"
-    x:Name="RoutingRoot"
+    x:Class="CoreVideoPro.WinUI.Controls.AudioRoutingMatrixPanel"
+    x:Name="MatrixPanelRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:models="using:CoreVideoPro.WinUI.Models"
-    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
-    xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls">
+    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels">
 
     <UserControl.Resources>
         <ResourceDictionary>
@@ -15,56 +14,21 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
+    <!-- B4: the ONE audio crosspoint matrix, shared by the Routing tab and the
+         Audio tab so routing lives where the operator mixes. Same view-model
+         instance everywhere - selection, gain edits, and core hydration stay
+         in sync across hosts by construction. -->
     <Grid RowSpacing="8">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <StackPanel Spacing="4">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <FontIcon Glyph="&#xE9D9;" FontSize="15" Foreground="{StaticResource StudioAccentBrush}" />
-                <StackPanel Spacing="2">
-                    <TextBlock Text="Routing" FontSize="16" FontWeight="Bold"
-                               Foreground="{StaticResource StudioTextBrush}" />
-                    <TextBlock Text="Crosspoint matrices - pick Video or Audio, then click a cell to route a source."
-                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
-                </StackPanel>
-            </StackPanel>
-
-            <!-- Video / Audio selector -->
-            <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Left">
-                <Button Content="Video" Style="{StaticResource OperatorGhostButton}"
-                        HorizontalAlignment="Left" MinWidth="72" Padding="10,4"
-                        Background="{x:Bind ViewModel.VideoRoutingModeChrome.Background, Mode=OneWay}"
-                        BorderBrush="{x:Bind ViewModel.VideoRoutingModeChrome.BorderBrush, Mode=OneWay}"
-                        Foreground="{x:Bind ViewModel.VideoRoutingModeChrome.Foreground, Mode=OneWay}"
-                        Command="{x:Bind ViewModel.SetRoutingMatrixModeCommand}" CommandParameter="video"
-                        ToolTipService.ToolTip="Video routing — on/off crosspoints (ISO, multiview, aux)" />
-                <Button Content="Audio" Style="{StaticResource OperatorGhostButton}"
-                        HorizontalAlignment="Left" MinWidth="72" Padding="10,4"
-                        Background="{x:Bind ViewModel.AudioRoutingModeChrome.Background, Mode=OneWay}"
-                        BorderBrush="{x:Bind ViewModel.AudioRoutingModeChrome.BorderBrush, Mode=OneWay}"
-                        Foreground="{x:Bind ViewModel.AudioRoutingModeChrome.Foreground, Mode=OneWay}"
-                        Command="{x:Bind ViewModel.SetRoutingMatrixModeCommand}" CommandParameter="audio"
-                        ToolTipService.ToolTip="Audio routing — gain crosspoints (PGM, ISO, monitor, stream)" />
-            </StackPanel>
-        </StackPanel>
-
-        <!-- Audio matrix + gain editor (B4: shared control, also hosted on the Audio tab) -->
-        <cvcontrols:AudioRoutingMatrixPanel Grid.Row="1" Grid.RowSpan="2"
-                ViewModel="{x:Bind ViewModel, Mode=OneWay}"
-                Visibility="{x:Bind ViewModel.IsAudioRoutingMode, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-
-        <!-- Video matrix -->
-        <Border Grid.Row="1" Style="{StaticResource OperatorSectionBorder}" Padding="8" CornerRadius="4"
-                Visibility="{x:Bind ViewModel.IsVideoRoutingMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+        <Border Style="{StaticResource OperatorSectionBorder}" Padding="8" CornerRadius="4">
             <Grid>
                 <!-- Empty state -->
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" MaxWidth="420"
-                            Visibility="{x:Bind ViewModel.VideoRoutingMatrix.HasRows, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                            Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasRows, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
                     <FontIcon Glyph="&#xE9D9;" FontSize="28" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
                     <TextBlock Text="Assign inputs on the Sources tab, then route them here."
                                FontSize="12" Foreground="{StaticResource StudioMutedBrush}"
@@ -72,17 +36,17 @@
                 </StackPanel>
 
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                              Visibility="{x:Bind ViewModel.VideoRoutingMatrix.HasRows, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                              Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasRows, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                     <StackPanel>
                         <!-- Column headers -->
                         <StackPanel Orientation="Horizontal">
                             <Border Width="154" />
-                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.VideoRoutingMatrix.DestinationHeaders}">
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.BusHeaders, Mode=OneWay}">
                                 <ItemsRepeater.Layout>
                                     <StackLayout Orientation="Horizontal" />
                                 </ItemsRepeater.Layout>
                                 <ItemsRepeater.ItemTemplate>
-                                    <DataTemplate x:DataType="models:RoutingDestination">
+                                    <DataTemplate x:DataType="models:RoutingBus">
                                         <Border Width="52" Padding="0,0,0,4">
                                             <TextBlock Text="{x:Bind Label}" FontSize="9" FontWeight="ExtraBold"
                                                        Foreground="#8FDCC8"
@@ -94,12 +58,12 @@
                         </StackPanel>
 
                         <!-- Rows -->
-                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.VideoRoutingMatrix.Rows, Mode=OneWay}">
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.Rows, Mode=OneWay}">
                             <ItemsRepeater.Layout>
                                 <StackLayout Orientation="Vertical" Spacing="1" />
                             </ItemsRepeater.Layout>
                             <ItemsRepeater.ItemTemplate>
-                                <DataTemplate x:DataType="vm:VideoRoutingSourceRowViewModel">
+                                <DataTemplate x:DataType="vm:AudioRoutingSourceRowViewModel">
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="154" Height="24" Padding="4,0,8,0" VerticalAlignment="Center"
                                                 Background="#141A20" BorderBrush="#25303A" BorderThickness="0,0,1,1">
@@ -112,16 +76,16 @@
                                                 <StackLayout Orientation="Horizontal" Spacing="1" />
                                             </ItemsRepeater.Layout>
                                             <ItemsRepeater.ItemTemplate>
-                                                <DataTemplate x:DataType="vm:VideoRoutingCrosspointViewModel">
+                                                <DataTemplate x:DataType="vm:AudioRoutingCrosspointViewModel">
                                                     <Button Width="51" Height="24" Padding="0" CornerRadius="1"
                                                             BorderThickness="1"
                                                             Background="{x:Bind CellBackground, Mode=OneWay}"
                                                             BorderBrush="{x:Bind CellBorderBrush, Mode=OneWay}"
                                                             Foreground="{x:Bind CellForeground, Mode=OneWay}"
-                                                            Command="{Binding ViewModel.VideoRoutingMatrix.SelectCrosspointCommand, ElementName=RoutingRoot}"
+                                                            Command="{Binding ViewModel.AudioRoutingMatrix.SelectCrosspointCommand, ElementName=MatrixPanelRoot}"
                                                             CommandParameter="{x:Bind}"
-                                                            ToolTipService.ToolTip="{x:Bind DestinationLabel}">
-                                                        <TextBlock Text="{x:Bind RouteLabel, Mode=OneWay}" FontSize="10"
+                                                            ToolTipService.ToolTip="{x:Bind BusLabel}">
+                                                        <TextBlock Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="10"
                                                                    FontWeight="SemiBold" HorizontalAlignment="Center" />
                                                     </Button>
                                                 </DataTemplate>
@@ -136,5 +100,34 @@
             </Grid>
         </Border>
 
+        <!-- Selected-crosspoint gain editor -->
+        <Border Grid.Row="1" Style="{StaticResource OperatorSectionBorder}" Padding="10,8" CornerRadius="4">
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="Selected crosspoint" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                               CharacterSpacing="40" />
+                    <TextBlock Text="{x:Bind ViewModel.AudioRoutingMatrix.SelectionSummary, Mode=OneWay}"
+                               FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource StudioTextBrush}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"
+                            Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="Gain (dB)" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                    <NumberBox Width="112"
+                               Value="{x:Bind ViewModel.AudioRoutingMatrix.SelectedGainDb, Mode=TwoWay}"
+                               Minimum="-60" Maximum="10" SmallChange="0.5" LargeChange="3"
+                               SpinButtonPlacementMode="Inline" />
+                </StackPanel>
+                <!-- B1: removing a route is EXPLICIT — clicking a routed cell
+                     selects it (it used to delete the route). -->
+                <Button Grid.Column="2" Content="Remove route" VerticalAlignment="Bottom"
+                        Command="{x:Bind ViewModel.AudioRoutingMatrix.RemoveSelectedRouteCommand}"
+                        Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>
