@@ -383,6 +383,7 @@ class MediaCore {
   std::string audioMonitorStatus_ = "muted";
   int64_t audioMonitorFramesPlayed_ = 0;
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
+  bool audioMonitorFeedbackRisk_ = false;  // monitor endpoint == loopback endpoint (spec R6)
   std::string audioMonitorWarning_;
   struct AudioRoutingSendInput {
     std::string sourceId;
@@ -406,6 +407,10 @@ class MediaCore {
     std::vector<AudioRoutingSendInput> routingSends;
     bool audioMonitorEnabled = false;
     double audioMonitorVolume = 0.0;
+    // Resolved endpoint ids of ACTIVE loopback capture sources, gathered under
+    // coreMutex; the monitor block compares them against the monitor's own
+    // resolved endpoint to flag a feedback loop (spec R6).
+    std::vector<std::string> loopbackCaptureEndpointIds;
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
     std::vector<std::string> outputDestinations;
@@ -423,6 +428,7 @@ class MediaCore {
     std::string monitorWarning;
     int64_t monitorFramesPlayedDelta = 0;
     int64_t monitorUnderruns = 0;  // cumulative device-dry gaps (spec R5)
+    bool monitorFeedbackRisk = false;  // monitor endpoint == a loopback capture endpoint (spec R6)
     bool recordingActive = false;
     int64_t recordingProgramFramesDelta = 0;
     int64_t recordingIsoFramesDelta = 0;

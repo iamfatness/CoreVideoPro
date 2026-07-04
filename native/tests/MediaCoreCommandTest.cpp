@@ -3885,3 +3885,70 @@ TEST(MediaCoreCommand, PerRouteOpacityReachesTheCompositedPixels) {
   EXPECT_NE(fullFrame->get("programPixelSignature")->asNumber(),
             dimFrame->get("programPixelSignature")->asNumber());
 }
+
+namespace {
+
+// Monitor fake that reports a fixed resolved endpoint id (the id of the device
+// it "opened"), for the feedback-guard test below.
+class EndpointMonitorOutput final : public corevideo::modules::IAudioMonitorOutput {
+ public:
+  explicit EndpointMonitorOutput(std::string endpointId) : endpointId_(std::move(endpointId)) {}
+  bool start(const std::string&, int, int) override {
+    active_ = true;
+    return true;
+  }
+  void stop() override { active_ = false; }
+  bool render(const float* interleaved, int frameCount, int, double) override {
+    return active_ && interleaved != nullptr && frameCount > 0;
+  }
+  bool active() const override { return active_; }
+  bool hardwareOutput() const override { return true; }
+  std::string deviceName() const override { return "Endpoint Monitor"; }
+  std::vector<std::string> warnings() const override { return {}; }
+  std::string resolvedEndpointId() const override { return endpointId_; }
+
+ private:
+  std::string endpointId_;
+  bool active_ = false;
+};
+
+}  // namespace
+
+TEST(MediaCoreAudioMonitor, WarnsWhenMonitorPlaysIntoTheLoopbackCaptureEndpoint) {
+  // Spec R6: the out-of-box config loopback-captures the default render
+  // endpoint; a monitor playing into that SAME endpoint re-enters the mix.
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  modules.monitorOutput = std::make_unique<EndpointMonitorOutput>("{0.0.0.00000000}.{ABCD-1234}");
+  auto* capture = new RecordingAudioCaptureSource();
+  corevideo::modules::CaptureAudioSourceMetrics loopback;
+  loopback.captureDeviceId = "local-machine-audio";
+  loopback.sourceId = "local-machine-audio";
+  loopback.audioSourceKind = "wasapi-loopback";
+  loopback.streaming = true;
+  loopback.endpointId = "{0.0.0.00000000}.{abcd-1234}";  // case differs on purpose
+  capture->reportedMetrics.push_back(loopback);
+  modules.audioCapture.reset(capture);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-monitor"},
+          {"enabled", true},
+          {"deviceId", ""},
+          {"deviceName", ""},
+          {"volume", 0.5},
+      },
+  });
+
+  const auto* audio = state.get("audioMixSession");
+  ASSERT_NE(audio, nullptr);
+  EXPECT_TRUE(audio->get("monitorFeedbackRisk")->asBool());
+  bool foundFeedbackWarning = false;
+  for (const auto& warning : audio->get("warnings")->asArray()) {
+    if (warning.asString().find("feedback loop") != std::string::npos) {
+      foundFeedbackWarning = true;
+    }
+  }
+  EXPECT_TRUE(foundFeedbackWarning);
+}

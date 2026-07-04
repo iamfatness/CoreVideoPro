@@ -583,6 +583,11 @@ class IAudioMonitorOutput {
   // plays SILENCE into the gap — an audible glitch that was previously
   // invisible to telemetry; audio overhaul spec R5). Defaulted for the stub.
   [[nodiscard]] virtual std::int64_t underrunCount() const { return 0; }
+  // The RESOLVED endpoint id of the device actually opened (IMMDevice::GetId),
+  // which differs from the requested id when "" resolved to the OS default.
+  // Compared against loopback capture endpoints to detect the monitor feeding
+  // the very endpoint the loopback records (feedback loop — spec R6).
+  [[nodiscard]] virtual std::string resolvedEndpointId() const { return {}; }
 };
 
 class IEncoderSink {

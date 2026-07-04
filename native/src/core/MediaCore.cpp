@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -2461,6 +2462,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"monitorVolume", audioMonitorVolume_},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+          {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
           {"participants", participants},
           {"masterMeter", masterMeterState()},
           {"summary", nativeMix.summary},
@@ -2492,6 +2494,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"monitorVolume", audioMonitorVolume_},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+        {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
         {"participants", rpc::Json::Array{}},
         {"masterMeter", masterMeterState()},
         {"summary", "Audio mix idle."},
@@ -2620,6 +2623,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"monitorVolume", audioMonitorVolume_},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
       {"participants", participants},
       {"masterMeter", masterMeterState()},
       {"summary", summaryText},
@@ -2973,6 +2977,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+      {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
       {"sources", sources},
       {"warnings", warnings},
       {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
@@ -3941,6 +3946,17 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   work.routingSends = audioRoutingSends_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
   work.audioMonitorVolume = audioMonitorVolume_;
+  // Feedback-guard inputs (spec R6): the resolved endpoints of every ACTIVE
+  // loopback capture source, compared in the monitor block against the
+  // endpoint the monitor actually opened.
+  if (modules_.audioCapture) {
+    for (const auto& metric : modules_.audioCapture->metrics()) {
+      if (metric.streaming && !metric.endpointId.empty() &&
+          metric.audioSourceKind.find("loopback") != std::string::npos) {
+        work.loopbackCaptureEndpointIds.push_back(metric.endpointId);
+      }
+    }
+  }
   work.recordingActive = (recordingStatus_ == "recording" || recordingStatus_ == "warning");
   work.recordingIsoParticipantIds = recordingIsoParticipantIds_;
   work.outputDestinations = outputDestinations_;
@@ -4055,6 +4071,33 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
       // Cumulative device-dry gap count (spec R5): previously the endpoint
       // playing silence between fills was audible but invisible to telemetry.
       results.monitorUnderruns = modules_.monitorOutput->underrunCount();
+
+      // Feedback guard (spec R6): the out-of-box config loopback-captures the
+      // default render endpoint — if the monitor plays into that SAME endpoint,
+      // its output re-enters the mix. Endpoint ids are GUID paths; compare
+      // case-insensitively.
+      const auto monitorEndpoint = modules_.monitorOutput->resolvedEndpointId();
+      if (!monitorEndpoint.empty()) {
+        const auto equalsIgnoreCase = [](const std::string& a, const std::string& b) {
+          return a.size() == b.size() &&
+                 std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) ==
+                          std::tolower(static_cast<unsigned char>(y));
+                 });
+        };
+        for (const auto& loopbackEndpoint : work.loopbackCaptureEndpointIds) {
+          if (equalsIgnoreCase(loopbackEndpoint, monitorEndpoint)) {
+            results.monitorFeedbackRisk = true;
+            const std::string feedbackWarning =
+                "Monitor output plays into the same endpoint the local loopback source captures — "
+                "feedback loop. Pick a different monitor device or disable the local audio source.";
+            results.monitorWarning = results.monitorWarning.empty()
+                                         ? feedbackWarning
+                                         : results.monitorWarning + " " + feedbackWarning;
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -4146,6 +4189,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     audioMonitorWarning_ = results.monitorWarning;
     audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
     audioMonitorUnderruns_ = results.monitorUnderruns;
+    audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }
   if (results.recordingActive) {
     recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
