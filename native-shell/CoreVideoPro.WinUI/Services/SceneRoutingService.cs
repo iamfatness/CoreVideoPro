@@ -46,6 +46,17 @@ public static class SceneRoutingService
         options.Add(new RouteSelectOption { Value = "active-speaker", Label = "Active Speaker" });
         options.Add(new RouteSelectOption { Value = "screen-share", Label = "Screen Share" });
         options.Add(new RouteSelectOption { Value = "media", Label = "Media" });
+        // R1: role-targeted layers — resolve to whoever holds the role at sync
+        // time, so "Host + Reader" scenes survive any roster.
+        foreach (var role in ProductionRoleService.Roles)
+        {
+            options.Add(new RouteSelectOption
+            {
+                Value = ProductionRoleService.ToOptionValue(role.Value),
+                Label = $"Role: {role.Label}"
+            });
+        }
+
         return options;
     }
 
@@ -112,6 +123,13 @@ public static class SceneRoutingService
         {
             route.Mode = SourceRouteMode.Fixed;
             route.ShowInputSlotNumber = slotNumber;
+        }
+        else if (ProductionRoleService.RoleIdFromOption(optionValue) is { Length: > 0 } roleId)
+        {
+            // R1: fixed-mode route whose participant is resolved from the role
+            // holder at sync time (unassigned role -> placeholder slate).
+            route.Mode = SourceRouteMode.Fixed;
+            route.ProductionRoleId = roleId;
         }
         else if (string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
                  !string.IsNullOrWhiteSpace(selectedMediaAssetId))

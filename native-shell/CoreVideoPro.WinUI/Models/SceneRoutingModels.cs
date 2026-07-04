@@ -35,6 +35,10 @@ public sealed class SourceRoute
     public string? ParticipantId { get; set; }
     public string? CaptureDeviceId { get; set; }
     public int? ShowInputSlotNumber { get; set; }
+    // Role-targeted route (scenes redesign R1): resolves at sync time to
+    // whichever participant currently holds the production role, so saved
+    // scenes ("Host + Reader") stay valid no matter who joins.
+    public string? ProductionRoleId { get; set; }
     public int? SpotlightIndex { get; set; }
     public SourceAudioRole AudioRole { get; set; }
     public NormalizedCanvasRect? CanvasRect { get; set; }
@@ -60,6 +64,7 @@ public sealed class SourceRoute
             ParticipantId = ParticipantId,
             CaptureDeviceId = CaptureDeviceId,
             ShowInputSlotNumber = ShowInputSlotNumber,
+            ProductionRoleId = ProductionRoleId,
             SpotlightIndex = SpotlightIndex,
             AudioRole = AudioRole,
             CanvasRect = CanvasRect?.Clone(),

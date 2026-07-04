@@ -49,10 +49,17 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <StackPanel>
+                                    <StackPanel Spacing="2">
                                         <TextBlock Text="{x:Bind Name}" FontSize="12" FontWeight="SemiBold" />
-                                        <TextBlock Text="{x:Bind Role}" FontSize="10"
-                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <!-- R1: assign a production role (session-only). Role-targeted
+                                             scene layers and the core director follow this. -->
+                                        <ComboBox ItemsSource="{Binding ViewModel.ProductionRoleAssignmentOptions, ElementName=SourcesInputsRoot}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  SelectedValue="{x:Bind ProductionRoleId}"
+                                                  Tag="{x:Bind ParticipantId}"
+                                                  SelectionChanged="OnProductionRoleChanged"
+                                                  FontSize="10" MinWidth="110" Padding="6,2,6,2" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="2">
                                         <TextBlock Text="{x:Bind StatusLabel}" FontSize="11"

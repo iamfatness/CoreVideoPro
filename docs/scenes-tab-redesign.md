@@ -62,3 +62,26 @@ Take flow.
 - A box can be placed at exactly x=0.25 w=0.25 numerically, nudged by keyboard, and snapped to
   another box's edge.
 - Custom scenes survive an app restart (S4).
+
+## R1 — Production roles (shipped)
+
+Owner ask (2026-07-04): identify the Host / Question Reader / etc. so scenes can
+be built against ROLES and stay valid no matter who joins ("Host + Active
+Speaker", "Host + Reader"), and so automated mixing can reason in roles.
+
+Decisions (owner): fixed role set (Host, Co-host, Reader, Panelist, Guest 1-4);
+assignments are session-only by design (rosters change every show — the scene
+persists the ROLE target, never the person).
+
+Shipped shape:
+- Assign: role dropdown on each Zoom feed-health row (Inputs tab). One holder
+  per role — assigning Host to B strips it from A.
+- Target: "Role: X" entries in Add source and in every layer's source picker.
+  A role route stores ProductionRoleId (persists with saved scenes); the
+  participant is resolved at sync time by ResolveRouteFromShowInput. Unassigned
+  role -> placeholder slate, exactly like a fixed route to an absent person.
+- Automation: the assigned role REPLACES the Zoom-derived role on the
+  participant wire, so the core director/automation sees show roles.
+
+Later: role-based scene templates in the rail ("Host + Reader" one-click),
+automation rules keyed on roles ("when Reader speaks..."), custom role names.

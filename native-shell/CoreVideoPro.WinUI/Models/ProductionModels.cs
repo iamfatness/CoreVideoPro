@@ -113,6 +113,8 @@ public sealed class FeedHealthRow
     public required string ParticipantId { get; init; }
     public required string Name { get; init; }
     public required string Role { get; init; }
+    // R1: assigned production role id ("" = none) — drives the roster dropdown.
+    public string ProductionRoleId { get; init; } = string.Empty;
     public required string StatusLabel { get; init; }
     public required string BadgeColor { get; init; }
     public string? Detail { get; init; }
@@ -731,7 +733,9 @@ public static class ProductionStateHelper
             : $"{participants.Count} feeds · {attention} need attention";
     }
 
-    public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(IReadOnlyList<Participant> participants) =>
+    public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(
+        IReadOnlyList<Participant> participants,
+        IReadOnlyDictionary<string, string>? productionRoles = null) =>
         participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
@@ -743,11 +747,19 @@ public static class ProductionStateHelper
                 _ => ("Healthy", "green", null, false)
             };
 
+            // R1: the assigned production role (session-only) is what the
+            // operator thinks in — show it over the Zoom-derived role.
+            var productionRoleId = productionRoles is not null &&
+                                   productionRoles.TryGetValue(p.Id, out var assigned)
+                ? assigned
+                : null;
+
             return new FeedHealthRow
             {
                 ParticipantId = p.Id,
                 Name = p.Name,
-                Role = p.RoleLabel,
+                Role = productionRoleId is null ? p.RoleLabel : Services.ProductionRoleService.RoleLabel(productionRoleId),
+                ProductionRoleId = productionRoleId ?? string.Empty,
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,

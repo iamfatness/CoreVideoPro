@@ -27,8 +27,10 @@ public sealed class SceneCanvasIaTests
         Assert.Contains(options, option => option.Value == "screen-share");
         Assert.Contains(options, option => option.Value == "media");
 
-        // Inputs 1-10 plus the three auto roles.
-        Assert.Equal(ShowInputRosterService.MaxShowInputs + 3, options.Count);
+        // Inputs 1-10, the three auto modes, plus the production roles (R1).
+        Assert.Equal(
+            ShowInputRosterService.MaxShowInputs + 3 + ProductionRoleService.Roles.Count,
+            options.Count);
     }
 
     [Fact]

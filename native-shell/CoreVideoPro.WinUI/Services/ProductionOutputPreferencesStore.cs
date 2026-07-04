@@ -90,6 +90,7 @@ public sealed class PersistedSceneRoute
     public string? ParticipantId { get; set; }
     public string? CaptureDeviceId { get; set; }
     public int? ShowInputSlotNumber { get; set; }
+    public string? ProductionRoleId { get; set; }
     public double? RectX { get; set; }
     public double? RectY { get; set; }
     public double? RectWidth { get; set; }
