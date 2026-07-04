@@ -151,3 +151,35 @@ Root defects, each verified in code:
 - Fresh install: monitor device defaults to the OS default output; both pickers offer
   "System default".
 - Every routed bus for a source is visible on its strip.
+
+## 8. C-phases — console rework (owner-directed, 2026-07-04)
+
+Owner feedback after using B1–B4 live: **"The Audio tab needs a big rework. The
+UI really doesn't make sense."** Reference supplied: Waves eMotion LV1 — a
+CONSOLE, not a settings page. The B-phases made the tab honest and editable;
+the C-phases make it a mixing surface. Layout language to adopt from the
+reference:
+
+- The mixer IS the page: a horizontal bank of VERTICAL channel strips anchored
+  to the bottom, one strip per source. Everything else docks around it.
+- Strip anatomy (bottom-up): channel name/number chip → cue/solo → vertical
+  fader WITH the segmented meter beside it (fader grabs, meter dances — one
+  glance) → dB readout → MUTE (red when engaged) → pan/rotary.
+- Selected-channel processing rack ACROSS THE TOP: input/trim, gate, dynamics
+  (curve + GR meter), EQ (graph), sends, routing — click a strip to load it.
+- Master section pinned RIGHT: L/R fader + meters, **big BS.1770 LUFS readout**
+  (now real — PR #180), limiter state, monitor volume/device.
+- Telemetry text walls demoted: the ~10 stacked status strings move to a
+  collapsible diagnostics drawer / support bundle. A console shows state with
+  meters and lit buttons, not paragraphs.
+
+| Phase | Scope | Size |
+|---|---|---|
+| C1 | Console strip bank: vertical fader + adjacent live meter per source (reuse AudioLevelMeter ballistics), dB readout, MUTE/SOLO/pan, name chip, routed-bus badges; master strip right with L/R meters + big LUFS + limiter + monitor controls. Replaces the horizontal row list on the Audio tab; pop-out hosts the same bank (subsumes B5) | L |
+| C2 | Selected-channel rack: gate / EQ / compressor cells with enable toggles + parameters bound to the REAL 4.4 DSP (insert chain), GR/gate activity indication | M-L |
+| C3 | SHOW/SETUP split finalized: console = SHOW; matrix, devices, sync offsets = SETUP; diagnostics drawer replaces the telemetry wall | M |
+
+Acceptance (C1): an operator can mix a show from the tab alone — grab any
+fader while watching its meter, mute/solo without hunting, read program
+loudness at a glance; nothing on the surface is a static text readout of
+something a meter or lit button could show.
