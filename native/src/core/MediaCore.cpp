@@ -2612,7 +2612,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
   return rpc::Json::Object{
       {"status", warnings.empty() ? "live" : "warning"},
       {"masterLevel", masterLevel},
-      {"loudnessLufs", audibleCount > 0 ? (limiterActive ? -14 : -16) : -60},
+      // REAL BS.1770 program loudness (owner-reported: this read a hardcoded
+      // -16 whenever mixer channels were synced — i.e. always). The worker's
+      // updateProgramLoudnessMeter maintains these members under the same
+      // audioOutputMutex_ this function holds. Short-term (3s) is the live
+      // console readout; fall back to momentary until its window fills.
+      {"loudnessLufs", programLufsShortTerm_ > -119.0 ? programLufsShortTerm_ : programLufsMomentary_},
       {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
