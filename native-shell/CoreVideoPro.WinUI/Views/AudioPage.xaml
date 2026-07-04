@@ -19,7 +19,9 @@
         <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="340" />
+                <!-- C4: Auto so the SETUP-only right panel collapses to zero in
+                     SHOW mode and the console gets the full width. -->
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <StackPanel Spacing="12">
@@ -56,7 +58,8 @@
                                    Foreground="{StaticResource StudioWarningBrush}"
                                    TextWrapping="WrapWholeWords" />
                         <Expander Header="Diagnostics" IsExpanded="False" HorizontalAlignment="Stretch"
-                                  HorizontalContentAlignment="Stretch">
+                                  HorizontalContentAlignment="Stretch"
+                                  Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <Border Style="{StaticResource OperatorReadoutBorder}">
                             <StackPanel Spacing="3">
                                 <TextBlock Text="{x:Bind ViewModel.NativeAudioRuntimeStatus, Mode=OneWay}"
@@ -196,7 +199,8 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
-                        <Grid ColumnSpacing="10">
+                        <Grid ColumnSpacing="10"
+                              Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -215,150 +219,246 @@
                                           IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
                         </Grid>
 
-                        <!-- C1 console (owner-directed rework, eMotion LV1 reference): a bank
-                             of VERTICAL channel strips — fader with the live meter BESIDE it,
-                             red MUTE, SOLO, pan, name chip — plus the master strip on the
-                             right (L/R meters, big real LUFS, limiter state). Same command
-                             paths and programmatic-echo guard as B3. -->
-                        <Grid ColumnSpacing="10"
-                              Visibility="{x:Bind ViewModel.IsAudioShowMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                        <!-- C4 console (owner: "not anywhere close" to the LV1 photo — this is
+                             the structural rebuild): ONE dark console surface. Channel chip
+                             row on top, the SELECTED channel's rack strip under it, then the
+                             full-width bank of proper strips — pan, red MUTE, long-throw fader
+                             with the LED ladder beside it, dB readout, cyan scribble strip at
+                             the BOTTOM — and the master rail on the right. Same command paths
+                             and programmatic-echo guard as B3. -->
+                        <Border Background="#070B10" BorderBrush="#1C2630" BorderThickness="1" CornerRadius="6"
+                                Padding="10"
+                                Visibility="{x:Bind ViewModel.IsAudioShowMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            <Grid RowSpacing="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
 
-                            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
-                                          VerticalScrollMode="Disabled" HorizontalScrollMode="Enabled">
-                                <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
-                                    <ItemsRepeater.Layout>
-                                        <StackLayout Orientation="Horizontal" Spacing="6" />
-                                    </ItemsRepeater.Layout>
-                                    <ItemsRepeater.ItemTemplate>
-                                        <DataTemplate x:DataType="models:AudioParticipantRow">
-                                            <Border Width="96" Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                                    BorderThickness="1" CornerRadius="6" Padding="8,8,8,6">
-                                                <Grid RowSpacing="6">
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="*" />
-                                                    </Grid.RowDefinitions>
-
-                                                    <!-- Name chip: tap selects the channel for the processing panel -->
-                                                    <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                                                            Background="#141A20" BorderThickness="0" Padding="4,4"
-                                                            CornerRadius="4"
-                                                            Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
-                                                            CommandParameter="{x:Bind Id}"
-                                                            ToolTipService.ToolTip="{x:Bind Subtitle}">
-                                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="11"
-                                                                   TextTrimming="CharacterEllipsis" TextAlignment="Center" />
-                                                    </Button>
-
-                                                    <TextBlock Grid.Row="1" Text="{x:Bind BusLabel, Mode=OneWay}" FontSize="9"
-                                                               Foreground="{StaticResource StudioAccentBrush}"
-                                                               HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" />
-
-                                                    <!-- Pan -->
-                                                    <StackPanel Grid.Row="2" Spacing="0">
-                                                        <Slider Minimum="-1" Maximum="1" StepFrequency="0.05"
-                                                                Value="{x:Bind Pan, Mode=OneWay}"
-                                                                Tag="{x:Bind Id}"
-                                                                ValueChanged="OnRowPanChanged"
-                                                                Margin="0,-4,0,-8" />
-                                                        <TextBlock Text="{x:Bind PanLabel, Mode=OneWay}" FontSize="9"
-                                                                   Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                                <!-- Channel select row -->
+                                <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                              VerticalScrollMode="Disabled" HorizontalScrollMode="Enabled">
+                                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
+                                        <ItemsRepeater.Layout>
+                                            <StackLayout Orientation="Horizontal" Spacing="4" />
+                                        </ItemsRepeater.Layout>
+                                        <ItemsRepeater.ItemTemplate>
+                                            <DataTemplate x:DataType="models:AudioParticipantRow">
+                                                <Button MinWidth="88" Padding="8,4" CornerRadius="3"
+                                                        Background="#0B2F38" BorderBrush="#1B5E6B" BorderThickness="1"
+                                                        Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
+                                                        CommandParameter="{x:Bind Id}"
+                                                        ToolTipService.ToolTip="{x:Bind Subtitle}">
+                                                    <StackPanel Spacing="0">
+                                                        <TextBlock Text="{x:Bind Name}" FontSize="11" FontWeight="SemiBold"
+                                                                   Foreground="#A7E8F2" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{x:Bind BusLabel, Mode=OneWay}" FontSize="8"
+                                                                   Foreground="#5FA9B5" TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsRepeater.ItemTemplate>
+                                    </ItemsRepeater>
+                                </ScrollViewer>
 
-                                                    <!-- Mute / Solo -->
-                                                    <Grid Grid.Row="3" ColumnSpacing="4">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="*" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <ToggleButton Content="M" FontSize="11" Padding="0,4"
-                                                                      HorizontalAlignment="Stretch"
-                                                                      IsChecked="{x:Bind Muted, Mode=OneWay}"
-                                                                      Tag="{x:Bind Id}"
-                                                                      Click="OnRowMuteClicked"
-                                                                      ToolTipService.ToolTip="Mute in mix" />
-                                                        <ToggleButton Grid.Column="1" Content="S" FontSize="11" Padding="0,4"
-                                                                      HorizontalAlignment="Stretch"
-                                                                      IsChecked="{x:Bind IsSolo, Mode=OneWay}"
-                                                                      Tag="{x:Bind Id}"
-                                                                      Click="OnRowSoloClicked"
-                                                                      ToolTipService.ToolTip="Solo in mix" />
-                                                    </Grid>
-
-                                                    <TextBlock Grid.Row="4" Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="10"
-                                                               FontWeight="SemiBold" HorizontalAlignment="Center" />
-
-                                                    <!-- Fader with the live meter BESIDE it -->
-                                                    <Grid Grid.Row="5" ColumnSpacing="6" MinHeight="190">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="14" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <Slider Orientation="Vertical" Minimum="-24" Maximum="24" StepFrequency="0.5"
-                                                                Value="{x:Bind ManualGainDb, Mode=OneWay}"
-                                                                Tag="{x:Bind Id}"
-                                                                ValueChanged="OnRowGainChanged"
-                                                                HorizontalAlignment="Center"
-                                                                VerticalAlignment="Stretch" />
-                                                        <controls:AudioLevelMeter Grid.Column="1"
-                                                                                  Level="{x:Bind OutputLevel, Mode=OneWay}"
-                                                                                  IsVertical="True"
-                                                                                  SegmentCount="24"
-                                                                                  Width="14"
-                                                                                  VerticalAlignment="Stretch" />
-                                                    </Grid>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsRepeater.ItemTemplate>
-                                </ItemsRepeater>
-                            </ScrollViewer>
-
-                            <!-- Master strip: L/R meters + the real BS.1770 loudness, big -->
-                            <Border Grid.Column="1" Width="130" Background="#10161E"
-                                    BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="1"
-                                    CornerRadius="6" Padding="10,8,10,6">
-                                <Grid RowSpacing="6">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-                                    <TextBlock Text="MASTER" FontSize="11" FontWeight="ExtraBold"
-                                               Foreground="{StaticResource StudioAccentBrush}" HorizontalAlignment="Center" />
-                                    <TextBlock Grid.Row="1" Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
-                                               FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" />
-                                    <TextBlock Grid.Row="2" Text="{x:Bind ViewModel.LoudnessTargetLabel}" FontSize="9"
-                                               Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
-                                    <TextBlock Grid.Row="3" Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
-                                               FontSize="10" HorizontalAlignment="Center" TextWrapping="WrapWholeWords"
-                                               TextAlignment="Center" />
-                                    <Grid Grid.Row="4" ColumnSpacing="8" MinHeight="190" HorizontalAlignment="Center">
+                                <!-- Selected channel rack strip -->
+                                <Border Grid.Row="1" Background="#0C141B" BorderBrush="#1C2630" BorderThickness="1"
+                                        CornerRadius="4" Padding="10,6">
+                                    <Grid ColumnSpacing="12">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="14" />
-                                            <ColumnDefinition Width="14" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <controls:AudioLevelMeter Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
-                                                                  IsVertical="True" SegmentCount="24" Width="14"
-                                                                  VerticalAlignment="Stretch" />
-                                        <controls:AudioLevelMeter Grid.Column="1"
-                                                                  Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
-                                                                  IsVertical="True" SegmentCount="24" Width="14"
-                                                                  VerticalAlignment="Stretch" />
+                                        <StackPanel VerticalAlignment="Center" MinWidth="130">
+                                            <TextBlock Text="CHANNEL" FontSize="8" CharacterSpacing="80"
+                                                       Foreground="{StaticResource StudioMutedBrush}" />
+                                            <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay, FallbackValue='—'}"
+                                                       FontSize="14" FontWeight="Bold" Foreground="#A7E8F2"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                            <ToggleButton Content="GATE" FontSize="10" Padding="12,6" MinWidth="56"
+                                                          IsChecked="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
+                                                          Tag="Noise Gate" Click="OnRackInsertClicked"
+                                                          ToolTipService.ToolTip="Noise gate (-48 dBFS, channel-linked)" />
+                                            <ToggleButton Content="EQ" FontSize="10" Padding="12,6" MinWidth="56"
+                                                          IsChecked="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
+                                                          Tag="Built-in EQ" Click="OnRackInsertClicked"
+                                                          ToolTipService.ToolTip="Voice EQ (90 Hz high-pass + presence)" />
+                                            <ToggleButton Content="COMP" FontSize="10" Padding="12,6" MinWidth="56"
+                                                          IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
+                                                          Tag="Compressor" Click="OnRackInsertClicked"
+                                                          ToolTipService.ToolTip="Compressor (-18 dBFS, 4:1)" />
+                                            <ToggleButton Content="LIM" FontSize="10" Padding="12,6" MinWidth="56"
+                                                          IsChecked="{x:Bind ViewModel.SelectedRackLimiterEnabled, Mode=OneWay}"
+                                                          Tag="Limiter" Click="OnRackInsertClicked"
+                                                          ToolTipService.ToolTip="Channel brickwall (-1 dBFS)" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.SelectedInsertChainLabel, Mode=OneWay}"
+                                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                     </Grid>
+                                </Border>
+
+                                <!-- Strip bank + master rail -->
+                                <Grid Grid.Row="2" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                                  VerticalScrollMode="Disabled" HorizontalScrollMode="Enabled">
+                                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioParticipantRows, Mode=OneWay}">
+                                            <ItemsRepeater.Layout>
+                                                <StackLayout Orientation="Horizontal" Spacing="4" />
+                                            </ItemsRepeater.Layout>
+                                            <ItemsRepeater.ItemTemplate>
+                                                <DataTemplate x:DataType="models:AudioParticipantRow">
+                                                    <Border Width="86" Background="#0B1016" BorderBrush="#1C2630"
+                                                            BorderThickness="1" CornerRadius="3" Padding="6,8,6,6">
+                                                        <Grid RowSpacing="6">
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="Auto" />
+                                                                <RowDefinition Height="*" />
+                                                                <RowDefinition Height="Auto" />
+                                                            </Grid.RowDefinitions>
+
+                                                            <!-- Pan -->
+                                                            <StackPanel Spacing="0">
+                                                                <Slider Minimum="-1" Maximum="1" StepFrequency="0.05"
+                                                                        Value="{x:Bind Pan, Mode=OneWay}"
+                                                                        Tag="{x:Bind Id}"
+                                                                        ValueChanged="OnRowPanChanged"
+                                                                        Margin="0,-6,0,-10" />
+                                                                <TextBlock Text="{x:Bind PanLabel, Mode=OneWay}" FontSize="8"
+                                                                           Foreground="{StaticResource StudioMutedBrush}"
+                                                                           HorizontalAlignment="Center" />
+                                                            </StackPanel>
+
+                                                            <!-- MUTE lights RED; SOLO lights amber -->
+                                                            <Grid Grid.Row="1" ColumnSpacing="3">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <ToggleButton Content="MUTE" FontSize="9" FontWeight="Bold"
+                                                                              Padding="0,5" HorizontalAlignment="Stretch"
+                                                                              IsChecked="{x:Bind Muted, Mode=OneWay}"
+                                                                              Tag="{x:Bind Id}" Click="OnRowMuteClicked"
+                                                                              ToolTipService.ToolTip="Mute in mix">
+                                                                    <ToggleButton.Resources>
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#C7362E" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#D9483F" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#B02F28" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="White" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="White" />
+                                                                    </ToggleButton.Resources>
+                                                                </ToggleButton>
+                                                                <ToggleButton Grid.Column="1" Content="S" FontSize="9" FontWeight="Bold"
+                                                                              Padding="0,5" HorizontalAlignment="Stretch"
+                                                                              IsChecked="{x:Bind IsSolo, Mode=OneWay}"
+                                                                              Tag="{x:Bind Id}" Click="OnRowSoloClicked"
+                                                                              ToolTipService.ToolTip="Solo in mix">
+                                                                    <ToggleButton.Resources>
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#C79A2E" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#D9AC3F" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#B08A28" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="#14100A" />
+                                                                        <SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="#14100A" />
+                                                                    </ToggleButton.Resources>
+                                                                </ToggleButton>
+                                                            </Grid>
+
+                                                            <TextBlock Grid.Row="2" Text="{x:Bind GainLabel, Mode=OneWay}" FontSize="10"
+                                                                       FontWeight="SemiBold" HorizontalAlignment="Center" />
+
+                                                            <!-- Long-throw fader with the LED ladder beside it -->
+                                                            <Grid Grid.Row="3" ColumnSpacing="4" MinHeight="280">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="16" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <Slider Orientation="Vertical" Minimum="-24" Maximum="24" StepFrequency="0.5"
+                                                                        Value="{x:Bind ManualGainDb, Mode=OneWay}"
+                                                                        Tag="{x:Bind Id}"
+                                                                        ValueChanged="OnRowGainChanged"
+                                                                        HorizontalAlignment="Center"
+                                                                        VerticalAlignment="Stretch" />
+                                                                <controls:AudioLevelMeter Grid.Column="1"
+                                                                                          Level="{x:Bind OutputLevel, Mode=OneWay}"
+                                                                                          IsVertical="True"
+                                                                                          SegmentCount="36"
+                                                                                          Width="16"
+                                                                                          VerticalAlignment="Stretch" />
+                                                            </Grid>
+
+                                                            <!-- Scribble strip (bottom, cyan): tap selects the channel -->
+                                                            <Button Grid.Row="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                                                                    Background="#0E4B57" BorderBrush="#1B5E6B" BorderThickness="1"
+                                                                    Padding="2,4" CornerRadius="3"
+                                                                    Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
+                                                                    CommandParameter="{x:Bind Id}"
+                                                                    ToolTipService.ToolTip="{x:Bind Subtitle}">
+                                                                <TextBlock Text="{x:Bind Name}" FontSize="10" FontWeight="SemiBold"
+                                                                           Foreground="#D5F6FC" TextTrimming="CharacterEllipsis"
+                                                                           TextAlignment="Center" />
+                                                            </Button>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsRepeater.ItemTemplate>
+                                        </ItemsRepeater>
+                                    </ScrollViewer>
+
+                                    <!-- Master rail -->
+                                    <Border Grid.Column="1" Width="150" Background="#0D1520"
+                                            BorderBrush="#1B5E6B" BorderThickness="1" CornerRadius="3"
+                                            Padding="10,8,10,6">
+                                        <Grid RowSpacing="6">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="MASTER" FontSize="11" FontWeight="ExtraBold" CharacterSpacing="60"
+                                                       Foreground="#A7E8F2" HorizontalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
+                                                       FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Text="{x:Bind ViewModel.LoudnessTargetLabel}" FontSize="9"
+                                                       Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
+                                                       FontSize="10" HorizontalAlignment="Center" TextWrapping="WrapWholeWords"
+                                                       TextAlignment="Center" />
+                                            <Grid Grid.Row="4" ColumnSpacing="10" MinHeight="280" HorizontalAlignment="Center">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="16" />
+                                                    <ColumnDefinition Width="16" />
+                                                </Grid.ColumnDefinitions>
+                                                <controls:AudioLevelMeter Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                                                                          IsVertical="True" SegmentCount="36" Width="16"
+                                                                          VerticalAlignment="Stretch" />
+                                                <controls:AudioLevelMeter Grid.Column="1"
+                                                                          Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
+                                                                          IsVertical="True" SegmentCount="36" Width="16"
+                                                                          VerticalAlignment="Stretch" />
+                                            </Grid>
+                                            <Border Grid.Row="5" Background="#0E4B57" CornerRadius="3" Padding="2,4">
+                                                <TextBlock Text="L / R" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="#D5F6FC" HorizontalAlignment="Center" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
                                 </Grid>
-                            </Border>
-                        </Grid>
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
 
@@ -400,40 +500,12 @@
                 </Border>
             </StackPanel>
 
-            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}">
+            <!-- C4: the right panel is SETUP-only — the console rack strip carries
+                 the per-channel processors in SHOW mode. -->
+            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}" Width="340"
+                    Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
-                    <!-- C2 rack: one-tap built-in processors for the SELECTED channel
-                         (tap a strip's name chip to load it). Lit = the insert is on
-                         the channel's chain and the core DSP is running it (#178). -->
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay, FallbackValue='No channel selected'}"
-                                   FontSize="12" FontWeight="SemiBold" />
-                        <Grid ColumnSpacing="4">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <ToggleButton Content="GATE" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
-                                          IsChecked="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
-                                          Tag="Noise Gate" Click="OnRackInsertClicked"
-                                          ToolTipService.ToolTip="Noise gate (-48 dBFS, channel-linked)" />
-                            <ToggleButton Grid.Column="1" Content="EQ" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
-                                          IsChecked="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
-                                          Tag="Built-in EQ" Click="OnRackInsertClicked"
-                                          ToolTipService.ToolTip="Voice EQ (90 Hz high-pass + presence)" />
-                            <ToggleButton Grid.Column="2" Content="COMP" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
-                                          IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
-                                          Tag="Compressor" Click="OnRackInsertClicked"
-                                          ToolTipService.ToolTip="Compressor (-18 dBFS, 4:1)" />
-                            <ToggleButton Grid.Column="3" Content="LIM" FontSize="10" Padding="0,6" HorizontalAlignment="Stretch"
-                                          IsChecked="{x:Bind ViewModel.SelectedRackLimiterEnabled, Mode=OneWay}"
-                                          Tag="Limiter" Click="OnRackInsertClicked"
-                                          ToolTipService.ToolTip="Channel brickwall (-1 dBFS)" />
-                        </Grid>
-                    </StackPanel>
                     <!-- VST host P1: REAL plugin discovery (out-of-process scan).
                          Retires the old "scan-only" placeholder wording. -->
                     <StackPanel Spacing="4">
