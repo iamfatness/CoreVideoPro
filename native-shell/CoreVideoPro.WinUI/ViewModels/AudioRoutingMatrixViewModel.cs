@@ -149,15 +149,13 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
             return;
         }
 
+        // Select never destroys (audio tab redesign B1): clicking a ROUTED
+        // cell selects it for gain editing. The old behavior unrouted it, so
+        // trying to tweak a level deleted the route instead. Removing a route
+        // is the explicit RemoveSelectedRoute command.
         if (cell.IsRouted)
         {
-            cell.IsRouted = false;
-            if (ReferenceEquals(SelectedCrosspoint, cell))
-            {
-                SelectedCrosspoint = null;
-            }
-
-            RouteChanged?.Invoke(cell);
+            SelectedCrosspoint = cell;
             return;
         }
 
@@ -169,6 +167,77 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         cell.IsRouted = true;
         SelectedCrosspoint = cell;
         RouteChanged?.Invoke(cell);
+    }
+
+    [RelayCommand]
+    private void RemoveSelectedRoute()
+    {
+        if (SelectedCrosspoint is not { IsRouted: true } cell)
+        {
+            return;
+        }
+
+        cell.IsRouted = false;
+        SelectedCrosspoint = null;
+        RouteChanged?.Invoke(cell);
+    }
+
+    /// <summary>
+    /// Reconciles the grid to the CORE's actual routing state (phase B1): every
+    /// listed send becomes a routed cell at its engine gain; cells routed in the
+    /// UI but absent from the core are cleared. Sends are keyed by UI source id
+    /// (the caller translates engine ids); sends for unknown sources/buses are
+    /// ignored. Does NOT raise RouteChanged — this is inbound state, and echoing
+    /// it back to the core would ping-pong. No-op for an empty send list (an
+    /// idle core hasn't synced yet; clearing the grid then would erase the
+    /// operator's staged defaults before the first push).
+    /// </summary>
+    public bool ApplyCoreSends(IReadOnlyList<(string SourceId, string BusId, double GainDb)> sends)
+    {
+        if (sends.Count == 0)
+        {
+            return false;
+        }
+
+        var target = sends
+            .GroupBy(send => (send.SourceId, send.BusId))
+            .ToDictionary(group => group.Key, group => group.Last().GainDb);
+
+        var changed = false;
+        foreach (var cell in Rows.SelectMany(row => row.Cells))
+        {
+            if (target.TryGetValue((cell.SourceId, cell.Bus.Id), out var gainDb))
+            {
+                if (!cell.IsRouted)
+                {
+                    cell.IsRouted = true;
+                    changed = true;
+                }
+
+                if (Math.Abs(cell.GainDb - gainDb) > 0.05)
+                {
+                    // Skip the selected cell's gain: the operator may be typing
+                    // into the gain editor right now.
+                    if (!ReferenceEquals(cell, SelectedCrosspoint))
+                    {
+                        cell.GainDb = gainDb;
+                        changed = true;
+                    }
+                }
+            }
+            else if (cell.IsRouted)
+            {
+                cell.IsRouted = false;
+                if (ReferenceEquals(cell, SelectedCrosspoint))
+                {
+                    SelectedCrosspoint = null;
+                }
+
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     [RelayCommand]
@@ -216,7 +285,12 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                         cell.IsRouted = state.IsRouted;
                         cell.GainDb = state.GainDb;
                     }
-                    else if (bus.Id is "master" or "pgm-l" or "pgm-r" or "mon")
+                    // Staged defaults for brand-new sources, matching the ENGINE
+                    // defaults (EnsureDefault*AudioRoutingSends: master, program,
+                    // stream, monitor). "stream" was previously omitted here, so
+                    // the grid under-reported what was actually routed until the
+                    // core snapshot hydrate (ApplyCoreSends) corrected it.
+                    else if (bus.Id is "master" or "pgm-l" or "pgm-r" or "stream" or "mon")
                     {
                         cell.IsRouted = true;
                         cell.GainDb = 0;

@@ -70,12 +70,58 @@ public sealed class RoutingMatrixViewModelTests
         Assert.True(secondIso.IsRouted);
         Assert.Same(secondIso, viewModel.SelectedCrosspoint);
 
-        // RemoveSelectedCommand was replaced by toggle-off: re-selecting a routed
-        // crosspoint clears the route and the selection.
+        // B1: select never destroys — re-selecting a routed crosspoint keeps the
+        // route (it used to delete it). Removal is the explicit command.
         viewModel.SelectCrosspointCommand.Execute(secondIso);
+
+        Assert.True(secondIso.IsRouted);
+        Assert.Same(secondIso, viewModel.SelectedCrosspoint);
+
+        viewModel.RemoveSelectedRouteCommand.Execute(null);
 
         Assert.False(secondIso.IsRouted);
         Assert.Null(viewModel.SelectedCrosspoint);
+    }
+
+    [Fact]
+    public void AudioRouting_ApplyCoreSendsReconcilesRoutesAndGainsWithoutEvents()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1")]);
+
+        var routeChangedCount = 0;
+        viewModel.RouteChanged += _ => routeChangedCount++;
+
+        // Core says: master at -6, iso-1 at 0. Everything else (the staged
+        // defaults incl. pgm-l/pgm-r/stream/mon) must clear to match reality.
+        var changed = viewModel.ApplyCoreSends(
+            [("mic-1", "master", -6.0), ("mic-1", "iso-1", 0.0)]);
+
+        Assert.True(changed);
+        Assert.Equal(0, routeChangedCount);  // inbound state never echoes back
+        var master = FindAudioCell(viewModel, "mic-1", "master");
+        Assert.True(master.IsRouted);
+        Assert.Equal(-6.0, master.GainDb, 1);
+        Assert.True(FindAudioCell(viewModel, "mic-1", "iso-1").IsRouted);
+        Assert.False(FindAudioCell(viewModel, "mic-1", "pgm-l").IsRouted);
+        Assert.False(FindAudioCell(viewModel, "mic-1", "stream").IsRouted);
+        Assert.False(FindAudioCell(viewModel, "mic-1", "mon").IsRouted);
+
+        // Unknown sources/buses are ignored; identical state reports no change.
+        Assert.False(viewModel.ApplyCoreSends(
+            [("mic-1", "master", -6.0), ("mic-1", "iso-1", 0.0), ("ghost", "master", 0.0), ("mic-1", "no-such-bus", 0.0)]));
+    }
+
+    [Fact]
+    public void AudioRouting_ApplyCoreSendsWithEmptyListIsANoOp()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1")]);
+
+        // An idle core hasn't synced yet — an empty send list must not wipe the
+        // staged defaults before the first push.
+        Assert.False(viewModel.ApplyCoreSends([]));
+        Assert.True(FindAudioCell(viewModel, "mic-1", "master").IsRouted);
     }
 
     [Fact]
@@ -105,6 +151,9 @@ public sealed class RoutingMatrixViewModelTests
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "master").IsRouted);
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "pgm-l").IsRouted);
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "pgm-r").IsRouted);
+        // "stream" matches the engine defaults (EnsureDefault*AudioRoutingSends);
+        // it was previously omitted, so the grid under-reported real routing.
+        Assert.True(FindAudioCell(viewModel, "local-machine-audio", "stream").IsRouted);
         Assert.True(FindAudioCell(viewModel, "local-machine-audio", "mon").IsRouted);
     }
 

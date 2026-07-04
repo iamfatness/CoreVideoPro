@@ -3334,9 +3334,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnAudioRoutingMatrixChanged(AudioRoutingCrosspointViewModel cell)
     {
+        // Local-edit quiet period: while the operator's change is round-tripping
+        // to the core, an in-flight snapshot still describes the PREVIOUS state;
+        // hydrating from it would visibly revert the click. Local edits win for
+        // a couple of seconds, then the core is authoritative again.
+        _lastAudioRouteLocalEditAt = DateTimeOffset.UtcNow;
         RefreshAudioProcessingTargets();
         _ = TrySyncMediaCoreAsync();
         CommandStatus = $"{cell.SourceLabel} {(cell.IsRouted ? "routed to" : "removed from")} {cell.Bus.Label}";
+    }
+
+    private DateTimeOffset _lastAudioRouteLocalEditAt = DateTimeOffset.MinValue;
+
+    // Phase B1 (audio tab redesign): the routing grid reflects the CORE's actual
+    // send list from the snapshot instead of remaining a client-side ghost. The
+    // core publishes engine source ids; rows are keyed by UI ids, so build the
+    // reverse map through the same resolver the push path uses. Sends for
+    // sources not currently in the grid (e.g. unassigned participants routed by
+    // engine defaults) are skipped until the fuller roster lands in phase B4.
+    private void HydrateAudioRoutingMatrixFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
+    {
+        var native = snapshot.AudioRoutingMatrix;
+        if (native is null || native.Sends.Count == 0 || AudioRoutingMatrix.Rows.Count == 0)
+        {
+            return;
+        }
+
+        if (DateTimeOffset.UtcNow - _lastAudioRouteLocalEditAt < TimeSpan.FromSeconds(2))
+        {
+            return;
+        }
+
+        var uiIdByEngineId = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var row in AudioRoutingMatrix.Rows)
+        {
+            var engineId = ResolveAudioRoutingMatrixSourceId(row.SourceId);
+            if (!string.IsNullOrWhiteSpace(engineId) && !uiIdByEngineId.ContainsKey(engineId))
+            {
+                uiIdByEngineId[engineId] = row.SourceId;
+            }
+        }
+
+        var sends = new List<(string SourceId, string BusId, double GainDb)>(native.Sends.Count);
+        foreach (var send in native.Sends)
+        {
+            if (uiIdByEngineId.TryGetValue(send.SourceId, out var uiSourceId))
+            {
+                sends.Add((uiSourceId, send.BusId, send.GainDb));
+            }
+        }
+
+        if (sends.Count > 0 && AudioRoutingMatrix.ApplyCoreSends(sends))
+        {
+            RefreshAudioProcessingTargets();
+        }
     }
 
     private static string FormatInputSourceId(int slotNumber) => $"input-{slotNumber:00}";
@@ -8333,6 +8384,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MasterLimiterEnabled);
         ApplyConfiguredOutputReadouts(snapshot);
         RefreshAudioParticipantRows();
+        HydrateAudioRoutingMatrixFromSnapshot(snapshot);
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));

@@ -246,12 +246,25 @@ public sealed class NativeMediaCoreAudioBusTap
     public double RmsDbfs { get; init; }
 }
 
+// One routed crosspoint as the CORE actually applies it (engine source ids).
+// The core has always published these in the snapshot's audioRoutingMatrix
+// "sends" array; the shell previously dropped them, leaving the routing grid
+// a client-side ghost that never showed engine defaults or overrides (audio
+// tab redesign phase B1).
+public sealed class NativeMediaCoreAudioRoutingSend
+{
+    public required string SourceId { get; init; }
+    public required string BusId { get; init; }
+    public double GainDb { get; init; }
+}
+
 public sealed class NativeMediaCoreAudioRoutingMatrix
 {
     public required string Status { get; init; }
     public int RoutedSendCount { get; init; }
     public int RoutedSourceCount { get; init; }
     public int ProgramTapFrames { get; init; }
+    public IReadOnlyList<NativeMediaCoreAudioRoutingSend> Sends { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreAudioBusTap> BusTaps { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
     public required string Summary { get; init; }

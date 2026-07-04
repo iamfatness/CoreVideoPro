@@ -215,6 +215,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2" VerticalAlignment="Center">
                     <TextBlock Text="Selected crosspoint" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
@@ -230,6 +231,11 @@
                                Minimum="-60" Maximum="10" SmallChange="0.5" LargeChange="3"
                                SpinButtonPlacementMode="Inline" />
                 </StackPanel>
+                <!-- B1: removing a route is EXPLICIT — clicking a routed cell now
+                     selects it (it used to delete the route). -->
+                <Button Grid.Column="2" Content="Remove route" VerticalAlignment="Bottom"
+                        Command="{x:Bind ViewModel.AudioRoutingMatrix.RemoveSelectedRouteCommand}"
+                        Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
             </Grid>
         </Border>
     </Grid>
