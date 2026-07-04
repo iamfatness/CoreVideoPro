@@ -1234,7 +1234,10 @@ TEST(MediaCoreCommand, AudioMixSessionDoesNotFakeMetersWithoutPcm) {
   EXPECT_EQ(mix->get("masterLevel")->asNumber(), 0);
   EXPECT_EQ(mix->get("mixedFrameCount")->asNumber(), 0);
   EXPECT_FALSE(mix->get("limiterActive")->asBool());
-  EXPECT_EQ(mix->get("loudnessLufs")->asNumber(), -60);
+  // Real BS.1770 members sit at the silence floor without PCM; anything at or
+  // below -59 renders as "LUFS -" in the shell. The old expectation pinned the
+  // hardcoded -60 this path used to fake (owner-reported stuck "-16").
+  EXPECT_TRUE(mix->get("loudnessLufs")->asNumber() <= -59.0);
   EXPECT_NE(mix->getString("summary").find("waiting for PCM"), std::string::npos);
   EXPECT_EQ(mix->getString("summary").find("boosted"), std::string::npos);
   EXPECT_NE(mix->getString("summary").find("manual"), std::string::npos);
