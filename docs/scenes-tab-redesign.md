@@ -45,12 +45,14 @@ Take flow.
 
 ## 3. Implementation phases (each shippable)
 
-| Phase | Scope | Size |
-|---|---|---|
-| S1 | **Missing primitives**: per-layer Delete + Move Up/Down (real zIndex through the wire) + opacity (new field on `SourceRoute` → wire → `SceneRouteState` → render plan; slider on the card). Native + C# + tests | M |
-| S2 | **Safety**: non-destructive presets (geometry-only + keep assignments; snapshot-undo), Duplicate scene, single Save model (Save commits the working copy; Save As creates; no silent same-name overwrite), working-copy editing for live scenes, commit re-pushes preview | M |
-| S3 | **Precision**: numeric X/Y/W/H on the card, snapping (edges/centers/thirds), arrow-key nudge, aspect-lock resize, edge handles, shared canvas↔card selection + highlight | M |
-| S4 | **Consolidation/polish**: scene list moves onto the Scenes tab, preset thumbnails, border color picker, cover/contain fit options, scene persistence to disk (with the show/production profile) | M-L |
+| Phase | Scope | Size | Status |
+|---|---|---|---|
+| S1 | **Missing primitives**: per-layer Delete + Move Up/Down (real zIndex through the wire) + opacity (new field on `SourceRoute` → wire → `SceneRouteState` → render plan; slider on the card). Native + C# + tests | M | **SHIPPED** #168 |
+| S2 | **Safety**: non-destructive presets (geometry-only + keep assignments; snapshot-undo), Duplicate scene, single Save model (Save commits the working copy; Save As creates; no silent same-name overwrite), working-copy editing for live scenes, commit re-pushes preview | M | **SHIPPED** — S2a #169 (presets/undo/duplicate/no-clobber + persistence, pulled forward from S4) + S2b #171 (live-scene draft editing) |
+| S3 | **Precision**: numeric X/Y/W/H on the card, snapping (edges/centers/thirds), arrow-key nudge, aspect-lock resize, edge handles, shared canvas↔card selection + highlight | M | **PARTIAL** — S3a #173 (numeric fields, snap guides, arrow-key nudge). S3b open: aspect-lock, edge handles, canvas↔card selection sync |
+| S4 | **Consolidation/polish**: scene list moves onto the Scenes tab, preset thumbnails, border color picker, cover/contain fit options, scene persistence to disk (with the show/production profile) | M-L | open — persistence already shipped early in S2a |
+
+Also shipped beyond the original plan: **R1 production roles** #174 (section below).
 
 ## 4. Acceptance
 
