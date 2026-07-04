@@ -81,6 +81,22 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public IReadOnlyList<RouteSelectOption> ParticipantOptions { get; private set; } = [];
 
+    // S3b canvas↔card selection sync: set by the canvas editor control; the
+    // card border mirrors it. UI-only state — deliberately NOT wired into
+    // ApplyVisualChange (selection must never push a scene sync).
+    [ObservableProperty]
+    private bool _isSelected;
+
+    partial void OnIsSelectedChanged(bool value) => OnPropertyChanged(nameof(CardBorderBrush));
+
+    private static readonly Microsoft.UI.Xaml.Media.Brush SelectedCardBrush =
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 68, 193, 161));
+
+    private static readonly Microsoft.UI.Xaml.Media.Brush DefaultCardBrush =
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 37, 48, 58));
+
+    public Microsoft.UI.Xaml.Media.Brush CardBorderBrush => IsSelected ? SelectedCardBrush : DefaultCardBrush;
+
     public string SourceColorGradeId => ResolveColorGradeSourceId(_route) ?? ParticipantId;
 
     public string ColorGradeSummary => _route.ColorGrade?.Summary ?? "Neutral";

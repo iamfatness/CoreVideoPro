@@ -143,6 +143,17 @@ public sealed partial class SourcesPage : UserControl
         }
     }
 
+    // S3b: tapping a layer card selects its box on the canvas (the reverse
+    // direction — canvas press highlighting the card — flows through
+    // SceneCanvasLayerViewModel.IsSelected, set by the editor control).
+    private void OnLayerCardTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is SceneCanvasLayerViewModel layer)
+        {
+            SceneCanvasEditor.SelectLayer(layer);
+        }
+    }
+
     private void OnMoveLayerForwardClicked(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is SceneCanvasLayerViewModel layer)

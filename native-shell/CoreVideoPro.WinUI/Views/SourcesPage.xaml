@@ -207,8 +207,11 @@
                                            Visibility="{x:Bind ViewModel.HasPreviewSlotEditors, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                                 <ItemsRepeater.ItemTemplate>
                                     <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
-                                        <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                                BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,8">
+                                        <!-- S3b: card mirrors canvas selection (accent border); tapping
+                                             the card selects the box on the canvas. -->
+                                        <Border Background="#0C1118" BorderBrush="{x:Bind CardBorderBrush, Mode=OneWay}"
+                                                BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,8"
+                                                Tapped="OnLayerCardTapped">
                                             <StackPanel Spacing="6">
                                                 <!-- S1 layer primitives: reorder (real z-order) + remove — previously
                                                      a source could never be deleted and stacking was add-order only. -->

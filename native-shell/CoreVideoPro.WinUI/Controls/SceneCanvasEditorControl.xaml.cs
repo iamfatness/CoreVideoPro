@@ -193,18 +193,13 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         labelChrome.Child = label;
         content.Children.Add(labelChrome);
 
-        var grip = new Border
-        {
-            Width = 14,
-            Height = 14,
-            Background = new SolidColorBrush(Color.FromArgb(220, 240, 168, 92)),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 6, 6),
-            CornerRadius = new CornerRadius(3),
-            Tag = "resize"
-        };
-        content.Children.Add(grip);
+        // S3b: a resize grip in every corner (tags name the corner; the drag
+        // math moves that corner's two edges). Bottom-right keeps the legacy
+        // "resize" tag. Hold Shift while dragging to lock the aspect ratio.
+        content.Children.Add(CreateResizeGrip("resize", HorizontalAlignment.Right, VerticalAlignment.Bottom));
+        content.Children.Add(CreateResizeGrip("resize-sw", HorizontalAlignment.Left, VerticalAlignment.Bottom));
+        content.Children.Add(CreateResizeGrip("resize-ne", HorizontalAlignment.Right, VerticalAlignment.Top));
+        content.Children.Add(CreateResizeGrip("resize-nw", HorizontalAlignment.Left, VerticalAlignment.Top));
 
         var panHandle = new Border
         {
@@ -236,6 +231,23 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerReleased += OnLayerPointerReleased;
         frame.PointerCanceled += OnLayerPointerReleased;
         return frame;
+    }
+
+    private static Border CreateResizeGrip(string tag, HorizontalAlignment horizontal, VerticalAlignment vertical)
+    {
+        var grip = new Border
+        {
+            Width = 14,
+            Height = 14,
+            Background = new SolidColorBrush(Color.FromArgb(220, 240, 168, 92)),
+            HorizontalAlignment = horizontal,
+            VerticalAlignment = vertical,
+            Margin = new Thickness(6),
+            CornerRadius = new CornerRadius(3),
+            Tag = tag
+        };
+        ToolTipService.SetToolTip(grip, "Resize (Shift = keep aspect)");
+        return grip;
     }
 
     private static void UpdateLayerLabel(Border frame, string label)
@@ -346,9 +358,22 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             if (frame.Tag is SceneCanvasLayerViewModel layer)
             {
-                ApplySelectionStyle(frame, ReferenceEquals(layer, _selectedLayer));
+                var selected = ReferenceEquals(layer, _selectedLayer);
+                ApplySelectionStyle(frame, selected);
+                layer.IsSelected = selected;  // S3b: cards mirror canvas selection
             }
         }
+    }
+
+    // S3b: canvas↔card selection sync. Raised when a layer is selected by
+    // pointer on the canvas; SelectLayer is the inbound direction (card tap).
+    public event EventHandler<SceneCanvasLayerViewModel>? LayerSelected;
+
+    public void SelectLayer(SceneCanvasLayerViewModel layer)
+    {
+        _selectedLayer = layer;
+        UpdateSelectionStyles();
+        Focus(FocusState.Programmatic);
     }
 
     private void OnLayerPointerPressed(object sender, PointerRoutedEventArgs e)
@@ -375,6 +400,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.CapturePointer(e.Pointer);
         UpdateSelectionStyles();
         Focus(FocusState.Programmatic);  // arrow-key nudge targets this layer
+        LayerSelected?.Invoke(this, layer);
         InteractionChanged?.Invoke(this, true);
         e.Handled = true;
     }
@@ -389,7 +415,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             }
 
             if (current is FrameworkElement { Tag: string tag } &&
-                (tag == "resize" || tag == "pan-source"))
+                (tag.StartsWith("resize", StringComparison.Ordinal) || tag == "pan-source"))
             {
                 return tag;
             }
@@ -409,20 +435,63 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var deltaX = (position.X - _dragStartPointer.X) / DesignWidth;
         var deltaY = (position.Y - _dragStartPointer.Y) / DesignHeight;
 
-        if (_dragMode == "resize")
+        if (_dragMode.StartsWith("resize", StringComparison.Ordinal))
         {
-            var width = Math.Clamp(_dragStartRect.Width + deltaX, MinLayerSize, 1 - _dragStartRect.X);
-            var height = Math.Clamp(_dragStartRect.Height + deltaY, MinLayerSize, 1 - _dragStartRect.Y);
-            // S3 snapping: the moving RIGHT/BOTTOM edges snap to canvas guides
-            // and other layers' edges.
+            // S3b: generic corner resize — the dragged corner moves its two
+            // edges; the opposite corner stays anchored. Legacy "resize" = SE.
+            var movesWest = _dragMode is "resize-sw" or "resize-nw";
+            var movesNorth = _dragMode is "resize-ne" or "resize-nw";
+            var left = _dragStartRect.X;
+            var top = _dragStartRect.Y;
+            var right = left + _dragStartRect.Width;
+            var bottom = top + _dragStartRect.Height;
+
             var (guidesX, guidesY) = BuildSnapGuides(_dragLayer);
-            width = Math.Clamp(
-                width + SnapCorrection(_dragStartRect.X + width, guidesX),
-                MinLayerSize, 1 - _dragStartRect.X);
-            height = Math.Clamp(
-                height + SnapCorrection(_dragStartRect.Y + height, guidesY),
-                MinLayerSize, 1 - _dragStartRect.Y);
-            _dragLayer.SetCanvasRect(_dragStartRect.X, _dragStartRect.Y, width, height, notify: false);
+            if (movesWest)
+            {
+                left = Math.Clamp(left + deltaX, 0, right - MinLayerSize);
+                left = Math.Clamp(left + SnapCorrection(left, guidesX), 0, right - MinLayerSize);
+            }
+            else
+            {
+                right = Math.Clamp(right + deltaX, left + MinLayerSize, 1);
+                right = Math.Clamp(right + SnapCorrection(right, guidesX), left + MinLayerSize, 1);
+            }
+
+            if (movesNorth)
+            {
+                top = Math.Clamp(top + deltaY, 0, bottom - MinLayerSize);
+                top = Math.Clamp(top + SnapCorrection(top, guidesY), 0, bottom - MinLayerSize);
+            }
+            else
+            {
+                bottom = Math.Clamp(bottom + deltaY, top + MinLayerSize, 1);
+                bottom = Math.Clamp(bottom + SnapCorrection(bottom, guidesY), top + MinLayerSize, 1);
+            }
+
+            // Shift = aspect lock to the drag-start ratio: the dominant axis
+            // wins, the other follows, growing from the anchored corner.
+            if (IsShiftDown() && _dragStartRect.Width > 0 && _dragStartRect.Height > 0)
+            {
+                var aspect = _dragStartRect.Width / _dragStartRect.Height;
+                var width = right - left;
+                var height = bottom - top;
+                if (Math.Abs(width - _dragStartRect.Width) >= Math.Abs(height - _dragStartRect.Height))
+                {
+                    height = Math.Clamp(width / aspect, MinLayerSize, movesNorth ? bottom : 1 - top);
+                    width = height * aspect;
+                }
+                else
+                {
+                    width = Math.Clamp(height * aspect, MinLayerSize, movesWest ? right : 1 - left);
+                    height = width / aspect;
+                }
+
+                if (movesWest) { left = right - width; } else { right = left + width; }
+                if (movesNorth) { top = bottom - height; } else { bottom = top + height; }
+            }
+
+            _dragLayer.SetCanvasRect(left, top, right - left, bottom - top, notify: false);
         }
         else if (_dragMode == "pan-source")
         {
@@ -525,6 +594,11 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         return best;
     }
 
+    private static bool IsShiftDown() =>
+        Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
     // ---- S3 keyboard nudge ----------------------------------------------------
     private void OnEditorKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
@@ -533,11 +607,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             return;
         }
 
-        var step = Microsoft.UI.Input.InputKeyboardSource
-                       .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
-                       .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down)
-            ? 0.02
-            : 0.005;
+        var step = IsShiftDown() ? 0.02 : 0.005;
         double deltaX = 0, deltaY = 0;
         switch (e.Key)
         {
