@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "modules/ZoomEngineClient.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
 #include "rpc/Json.h"
@@ -50,6 +51,10 @@ class ZoomEngineRuntime {
   [[nodiscard]] std::size_t pendingEngineSendCountForTest();
   // TEST SEAM: cumulative lines dropped (dead/replaced process, purge, shutdown).
   [[nodiscard]] std::uint64_t droppedEngineSendCountForTest() const;
+  // TEST SEAM: feeds one parsed engine event through the exact path the reader
+  // thread uses (state apply + frame/audio shared-memory ingest), so tests can
+  // exercise the SHM audio ingest without a live engine subprocess.
+  void applyEngineEventForTest(const ZoomEngineEvent& event);
 
  private:
   struct Config {
@@ -97,6 +102,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] rpc::Json rawCaptureSnapshotLocked();
   [[nodiscard]] rpc::Json spineSnapshotLocked(const rpc::Json& payload, double elapsedMs);
   void enqueueFrameEventLocked(const ZoomEngineEvent& event);
+  void ingestAudioEventLocked(const ZoomEngineEvent& event);
   bool ensureMediaStartedLocked();
   void applyJoinCredentialsFromPayload(const rpc::Json& payload);
   [[nodiscard]] double runtimeElapsedMs() const;
@@ -163,6 +169,15 @@ class ZoomEngineRuntime {
   // event queue so the compositor can read real pixels without draining the
   // multiview event path.
   std::map<std::string, DecodedFrame> latestDecodedFrames_;
+
+  // Pending real PCM per participantId. The reader thread appends a chunk on
+  // every engine audio event (snapshot-read from the per-source audio SHM
+  // region); the audio worker drains the WHOLE buffer once per tick via
+  // pollCompositorAudioFrames as ONE coalesced AudioFrame per source, so
+  // multiple 10ms Zoom packets per ~20ms tick reach the mixer as contiguous
+  // samples instead of overlap-summing. Bounded (~1s per source, drop-oldest).
+  // Guarded by mutex_.
+  std::map<std::string, ZoomEnginePendingAudio> pendingAudio_;
 };
 
 }  // namespace corevideo::modules

@@ -2,17 +2,26 @@
 
 #include "modules/ZoomEngineProcess.h"
 
+#include "engine-ipc.h"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -350,4 +359,81 @@ TEST(ZoomEngineRuntime, ConcurrentSpineChurnSnapshotsAndSenderDrainAreRaceFree) 
     EXPECT_TRUE(fake->waitForSentLines(10, std::chrono::milliseconds(5000)));
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+// End-to-end SHM audio ingest: create the per-source audio region the way the
+// engine does, feed the matching pipe event through the reader path, and the
+// next compositor audio poll must return REAL coalesced PCM for that
+// participant (replacing the metadata-only placeholder).
+TEST(ZoomEngineRuntime, IngestsIsoAudioPcmFromSharedMemoryIntoCompositorPoll) {
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  corevideo::modules::ZoomEngineRuntime runtime;
+
+  // Unique region name per test process so parallel/leaked runs never alias.
+  const std::string sourceUuid =
+      "participant-audio-4242-mix-cvp-test-" + std::to_string(
+#if defined(_WIN32)
+          static_cast<unsigned long>(::GetCurrentProcessId())
+#else
+          static_cast<unsigned long>(::getpid())
+#endif
+      );
+
+  const std::vector<std::int16_t> samples{0, 16384, -16384, 8192};
+  const auto byteLength = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+  ShmRegion region{};
+  ASSERT_TRUE(shm_region_create(
+      region,
+      corevideo::modules::zoomEngineAudioSharedMemoryName(sourceUuid),
+      corevideo::modules::zoomEnginePcmAudioByteSize(byteLength)));
+  auto* header = static_cast<ShmAudioHeader*>(region.ptr);
+  header->sequence = 2;
+  header->sample_rate = 48000;
+  header->channels = 1;
+  header->byte_len = byteLength;
+  std::memcpy(static_cast<char*>(region.ptr) + sizeof(ShmAudioHeader), samples.data(), byteLength);
+
+  corevideo::modules::ZoomEngineEvent event;
+  event.kind = corevideo::modules::ZoomEngineEventKind::Audio;
+  event.command = "audio";
+  event.sourceUuid = sourceUuid;
+  event.participantId = 4242;
+  event.byteLength = byteLength;
+  runtime.applyEngineEventForTest(event);
+
+  auto frames = runtime.pollCompositorAudioFrames(100);
+  const auto found = std::find_if(frames.begin(), frames.end(), [](const corevideo::modules::AudioFrame& frame) {
+    return frame.participantId == "4242";
+  });
+  ASSERT_TRUE(found != frames.end());
+  EXPECT_EQ(found->sampleRate, 48000);
+  EXPECT_EQ(found->channels, 1);
+  EXPECT_EQ(found->sampleCount, 4);
+  ASSERT_TRUE(found->pcm.size() == 4u);
+  EXPECT_EQ(found->pcm[1], 0.5f);
+  EXPECT_EQ(found->pcm[2], -0.5f);
+
+  // The poll drained the pending buffer: with no new packet the next poll falls
+  // back to the metadata placeholder (no stale PCM replay).
+  auto second = runtime.pollCompositorAudioFrames(120);
+  const auto foundAgain = std::find_if(second.begin(), second.end(), [](const corevideo::modules::AudioFrame& frame) {
+    return frame.participantId == "4242";
+  });
+  ASSERT_TRUE(foundAgain != second.end());
+  EXPECT_TRUE(foundAgain->pcm.empty());
+
+  // The engine rewrote the region (new even sequence): the next event ingests
+  // the new chunk ONCE — the duplicate event for the same sequence is skipped,
+  // so the samples are not doubled.
+  header->sequence = 4;
+  runtime.applyEngineEventForTest(event);
+  runtime.applyEngineEventForTest(event);
+  auto third = runtime.pollCompositorAudioFrames(140);
+  const auto foundThird = std::find_if(third.begin(), third.end(), [](const corevideo::modules::AudioFrame& frame) {
+    return frame.participantId == "4242";
+  });
+  ASSERT_TRUE(foundThird != third.end());
+  EXPECT_EQ(foundThird->pcm.size(), 4u);
+
+  shm_region_destroy(region);
 }

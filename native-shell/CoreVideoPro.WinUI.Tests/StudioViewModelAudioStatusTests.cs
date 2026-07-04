@@ -1973,6 +1973,35 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_AddsAllBusesForEachParticipantAndPreservesOverrides()
+    {
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
+            [new MediaCoreAudioRoutingSendWire("16778240", "master", -6)],
+            ["16778240", "16785408", "16778240", ""]);
+
+        // The operator's existing master override survives; every other bus is
+        // filled in at unity for both (deduped) participants.
+        Assert.Equal(10, sends.Count);
+        Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == "master" && send.GainDb == -6);
+        foreach (var participantId in new[] { "16778240", "16785408" })
+        {
+            foreach (var busId in new[] { "pgm-l", "pgm-r", "stream", "mon" })
+            {
+                Assert.Contains(sends, send => send.SourceId == participantId && send.BusId == busId && send.GainDb == 0);
+            }
+        }
+        Assert.Contains(sends, send => send.SourceId == "16785408" && send.BusId == "master" && send.GainDb == 0);
+    }
+
+    [Fact]
+    public void EnsureDefaultZoomAudioRoutingSends_NoParticipantsLeavesSendsUntouched()
+    {
+        var existing = new List<MediaCoreAudioRoutingSendWire> { new("media", "master", 0) };
+        var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(existing, []);
+        Assert.Same(existing, sends);
+    }
+
+    [Fact]
     public void EnsureDefaultCaptureAudioRoutingSends_AddsProgramStreamAndMonitorRoutesForCaptureSources()
     {
         var sends = StudioViewModel.EnsureDefaultCaptureAudioRoutingSends(

@@ -104,6 +104,15 @@ Mirror the video path. The engine already holds the samples (raw-audio subscript
   check in `test:native-recording-proof`).
 
 ### 4.4 P1 — Mixer completion (make the UI honest)
+- **Meter ballistics** (rig-observed 2026-07-03 once audio flowed): the UI renders the core's
+  instantaneous per-tick levels raw, so meters strobe instead of dance. Apply standard console
+  ballistics — fast attack, ~300ms exponential release, optional peak-hold — in the meter
+  controls (`AudioLevelMeter`, master L/R). The variable per-tick sample quanta (480/960/1440)
+  amplify the jumpiness; 4.2's fixed-cadence pacer helps but ballistics are needed regardless.
+- **Replace the AUDIO PROOF counter string** (rig-observed): the transport bar binds
+  `AudioProofSummary` — a raw diagnostic (`sources 1/1 | PCM 3672480 | …`) with an
+  ever-incrementing frame counter. Show a clean status (e.g. "Audio: live · 1 source") and move
+  the counters to the support bundle / log line where they belong.
 - Process channel insert chains (feed per-source PCM through `applyBusInsertChain` before the
   crosspoint sends) — today they're stored, never run.
 - Wire EQ + gate kernels (they exist: biquad stages, `applyNoiseGate`) into the dispatcher.

@@ -123,4 +123,41 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     std::uint32_t maxWidth,
     std::uint32_t maxHeight);
 
+// One PCM chunk snapshot-read from an engine audio SHM region (single-slot
+// seqlock, same tear protocol as the video frames: odd sequence = mid-write).
+// The engine writes 16-bit signed little-endian interleaved PCM; the snapshot
+// converts to interleaved float in [-1, 1] so it can flow straight into an
+// AudioFrame's `pcm`.
+struct ZoomEnginePcmAudioChunk {
+  std::uint32_t sequence = 0;
+  int sampleRate = 0;
+  int channels = 0;
+  std::vector<float> pcm;
+};
+
+std::optional<ZoomEnginePcmAudioChunk> readZoomEnginePcmAudioSnapshot(
+    const void* sharedMemory, std::size_t sharedMemorySize);
+
+// Per-source pending-PCM accumulator for the runtime's audio ingest. Chunks
+// append in arrival order; the mixer drains the whole buffer once per audio
+// tick (one coalesced AudioFrame per source per poll, so multiple 10ms Zoom
+// packets per ~20ms tick never overlap-sum). Bounded: when a slow consumer
+// lets more than `maxSamples` per channel accumulate, the OLDEST samples are
+// dropped (latest-wins, mirrors the video path) and counted.
+struct ZoomEnginePendingAudio {
+  int sampleRate = 0;
+  int channels = 0;
+  std::uint32_t lastSequence = 0;
+  std::int64_t droppedSamples = 0;
+  std::int64_t ingestedChunks = 0;
+  std::vector<float> pcm;
+};
+
+// Appends `chunk` to `pending`, resetting the buffer when the format changes
+// and enforcing the per-channel `maxSamples` cap. Returns false (and leaves
+// `pending` unchanged) for chunks with no samples or an invalid format.
+bool appendZoomEnginePcmChunk(ZoomEnginePendingAudio& pending,
+                              const ZoomEnginePcmAudioChunk& chunk,
+                              std::size_t maxSamplesPerChannel);
+
 }  // namespace corevideo::modules

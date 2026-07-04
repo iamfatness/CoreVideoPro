@@ -372,6 +372,7 @@ class MediaCore {
   double audioMonitorVolume_ = 0.0;
   std::string audioMonitorStatus_ = "muted";
   int64_t audioMonitorFramesPlayed_ = 0;
+  int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
   std::string audioMonitorWarning_;
   struct AudioRoutingSendInput {
     std::string sourceId;
@@ -411,6 +412,7 @@ class MediaCore {
     std::string monitorStatus;
     std::string monitorWarning;
     int64_t monitorFramesPlayedDelta = 0;
+    int64_t monitorUnderruns = 0;  // cumulative device-dry gaps (spec R5)
     bool recordingActive = false;
     int64_t recordingProgramFramesDelta = 0;
     int64_t recordingIsoFramesDelta = 0;

@@ -595,3 +595,54 @@ TEST(AudioDsp, BusInsertChainWithNoKnownInsertsIsNoOp) {
   EXPECT_EQ(applied, 0);
   EXPECT_TRUE(std::abs(samples[0] - 0.4f) < kTightTol);
 }
+
+// --- Per-source PCM frame coalescing (audio overhaul spec R3) -------------------
+
+TEST(AudioDsp, CoalescePcmFramesConcatenatesSameSourceInArrivalOrder) {
+  AudioFrame first;
+  first.participantId = "a";
+  first.sampleRate = 48000;
+  first.channels = 1;
+  first.pcm = {0.1f, 0.2f};
+  AudioFrame other;
+  other.participantId = "b";
+  other.sampleRate = 48000;
+  other.channels = 1;
+  other.pcm = {0.9f};
+  AudioFrame second = first;
+  second.pcm = {0.3f, 0.4f};
+
+  const auto coalesced = coalescePcmAudioFramesBySource({first, other, second});
+  ASSERT_TRUE(coalesced.size() == 2u);
+  EXPECT_EQ(coalesced[0].participantId, "a");
+  ASSERT_TRUE(coalesced[0].pcm.size() == 4u);
+  EXPECT_TRUE(std::abs(coalesced[0].pcm[2] - 0.3f) < kTightTol);
+  EXPECT_EQ(coalesced[0].sampleCount, 4);
+  EXPECT_EQ(coalesced[1].participantId, "b");
+  EXPECT_EQ(coalesced[1].pcm.size(), 1u);
+}
+
+TEST(AudioDsp, CoalescePcmFramesPassesThroughMetadataAndSplitsFormatChanges) {
+  AudioFrame metadata;
+  metadata.participantId = "meta";
+  metadata.sampleRate = 48000;
+  metadata.channels = 1;  // no pcm — placeholder frame
+
+  AudioFrame mono;
+  mono.participantId = "x";
+  mono.sampleRate = 48000;
+  mono.channels = 1;
+  mono.pcm = {0.5f};
+  AudioFrame stereo = mono;
+  stereo.channels = 2;
+  stereo.pcm = {0.6f, 0.7f};
+
+  const auto coalesced = coalescePcmAudioFramesBySource({metadata, mono, stereo});
+  ASSERT_TRUE(coalesced.size() == 3u);
+  EXPECT_EQ(coalesced[0].participantId, "meta");
+  EXPECT_TRUE(coalesced[0].pcm.empty());
+  EXPECT_EQ(coalesced[1].channels, 1);
+  EXPECT_EQ(coalesced[1].pcm.size(), 1u);
+  EXPECT_EQ(coalesced[2].channels, 2);
+  EXPECT_EQ(coalesced[2].sampleCount, 1);
+}

@@ -579,6 +579,10 @@ class IAudioMonitorOutput {
   [[nodiscard]] virtual bool hardwareOutput() const { return false; }
   [[nodiscard]] virtual std::string deviceName() const = 0;
   [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
+  // Times the endpoint ran completely dry between fills (shared-mode WASAPI
+  // plays SILENCE into the gap — an audible glitch that was previously
+  // invisible to telemetry; audio overhaul spec R5). Defaulted for the stub.
+  [[nodiscard]] virtual std::int64_t underrunCount() const { return 0; }
 };
 
 class IEncoderSink {

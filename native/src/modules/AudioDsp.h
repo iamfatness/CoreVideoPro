@@ -34,6 +34,38 @@ inline constexpr double kAudioPi = 3.14159265358979323846;
 // math finite for empty/zero buffers.
 inline constexpr double kAudioDbfsFloor = -120.0;
 
+// Coalesces multiple PCM-carrying frames from the SAME source into one frame of
+// contiguous samples (arrival order preserved). The bus mixers align every
+// frame at offset 0 and size buses to the LONGEST frame, so two 10ms packets
+// from one source in one tick would otherwise overlap-sum into one packet's
+// worth of output — corrupting the waveform AND under-producing real time
+// (audio overhaul spec R3). Metadata-only frames pass through unchanged; a
+// format change mid-tick starts a fresh output frame at the new layout.
+inline std::vector<AudioFrame> coalescePcmAudioFramesBySource(std::vector<AudioFrame> frames) {
+  std::vector<AudioFrame> coalesced;
+  coalesced.reserve(frames.size());
+  std::map<std::string, std::size_t> pcmIndexBySource;
+  for (auto& frame : frames) {
+    if (frame.pcm.empty() || frame.channels <= 0) {
+      coalesced.push_back(std::move(frame));
+      continue;
+    }
+    const auto found = pcmIndexBySource.find(frame.participantId);
+    if (found != pcmIndexBySource.end()) {
+      auto& target = coalesced[found->second];
+      if (target.sampleRate == frame.sampleRate && target.channels == frame.channels) {
+        target.pcm.insert(target.pcm.end(), frame.pcm.begin(), frame.pcm.end());
+        target.sampleCount = static_cast<int>(target.pcm.size() / static_cast<std::size_t>(target.channels));
+        continue;
+      }
+    }
+    pcmIndexBySource[frame.participantId] = coalesced.size();
+    frame.sampleCount = static_cast<int>(frame.pcm.size() / static_cast<std::size_t>(frame.channels));
+    coalesced.push_back(std::move(frame));
+  }
+  return coalesced;
+}
+
 // Convert a non-negative linear amplitude ratio (relative to full scale 1.0) to
 // dBFS, clamped to the silence floor.
 inline double linearToDbfs(double linear) {

@@ -2453,6 +2453,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"monitorDeviceName", audioMonitorDeviceName_},
           {"monitorVolume", audioMonitorVolume_},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
+          {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
           {"participants", participants},
           {"masterMeter", masterMeterState()},
           {"summary", nativeMix.summary},
@@ -2483,6 +2484,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"monitorDeviceName", audioMonitorDeviceName_},
         {"monitorVolume", audioMonitorVolume_},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
+        {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
         {"participants", rpc::Json::Array{}},
         {"masterMeter", masterMeterState()},
         {"summary", "Audio mix idle."},
@@ -2610,6 +2612,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"monitorDeviceName", audioMonitorDeviceName_},
       {"monitorVolume", audioMonitorVolume_},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
+      {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
       {"participants", participants},
       {"masterMeter", masterMeterState()},
       {"summary", summaryText},
@@ -2962,6 +2965,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
       {"routedMonitorFrames", routedMonitorFrames},
       {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
+      {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
       {"sources", sources},
       {"warnings", warnings},
       {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
@@ -3922,7 +3926,9 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
     audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
   }
 
-  work.audioFrames = std::move(audioFrames);
+  // One contiguous PCM frame per source per tick: multiple 10ms packets drained
+  // in one tick must CONCATENATE, not overlap-sum in the bus mixers (spec R3).
+  work.audioFrames = modules::coalescePcmAudioFramesBySource(std::move(audioFrames));
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
@@ -4038,6 +4044,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
                                      ? "Native audio monitor accepted no frames this tick; endpoint buffer may be full."
                                      : outputWarnings.back();
       }
+      // Cumulative device-dry gap count (spec R5): previously the endpoint
+      // playing silence between fills was audible but invisible to telemetry.
+      results.monitorUnderruns = modules_.monitorOutput->underrunCount();
     }
   }
 
@@ -4128,6 +4137,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;
     audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+    audioMonitorUnderruns_ = results.monitorUnderruns;
   }
   if (results.recordingActive) {
     recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;

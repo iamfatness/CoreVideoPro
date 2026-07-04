@@ -117,6 +117,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
+    pendingAudio_.clear();
     sentSubscriptions_.clear();  // a fresh join must re-subscribe from scratch
   }
 }
@@ -229,6 +230,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   state_.reset();
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
+  pendingAudio_.clear();
   sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
@@ -306,6 +308,11 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       // updated at enqueue time; the single FIFO sender preserves order, so
       // "marked sent" still means "delivered exactly once, in order".
       if (kind == "participant-audio") {
+        // ISO audio: each participant's audio target carries THAT participant's
+        // one-way stream, so the mixer gets a real per-channel signal (faders,
+        // mutes, meters per participant). Without isolate every target receives
+        // the same meeting mix N times over.
+        command.isolateAudio = true;
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeAudioCommand(command));
       } else {
         enqueueEngineSendLocked("subscribe", buildZoomEngineSubscribeCommand(command));
@@ -335,7 +342,34 @@ std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t tim
 
 std::vector<AudioFrame> ZoomEngineRuntime::pollCompositorAudioFrames(int64_t timestampMs) {
   std::lock_guard<std::mutex> lock(mutex_);
-  return state_.pollCompositorAudioFrames(timestampMs);
+  auto frames = state_.pollCompositorAudioFrames(timestampMs);
+  // Overlay real decoded PCM: a participant with pending audio gets ONE
+  // coalesced PCM frame (all samples ingested since the last poll), replacing
+  // the metadata-only placeholder the state emits from packet counters.
+  // Participants without pending PCM keep their placeholder so the mixer
+  // roster stays complete (their meters just hold at silence).
+  for (auto& [participantId, pending] : pendingAudio_) {
+    if (pending.pcm.empty() || pending.channels <= 0 || pending.sampleRate <= 0) {
+      continue;
+    }
+    AudioFrame frame;
+    frame.participantId = participantId;
+    frame.sampleRate = pending.sampleRate;
+    frame.channels = pending.channels;
+    frame.timestampMs = timestampMs;
+    frame.sampleCount = static_cast<int>(pending.pcm.size() / static_cast<std::size_t>(pending.channels));
+    frame.pcm = std::move(pending.pcm);
+    pending.pcm.clear();  // defined-empty after the move
+    const auto existing = std::find_if(frames.begin(), frames.end(), [&](const AudioFrame& candidate) {
+      return candidate.participantId == frame.participantId;
+    });
+    if (existing != frames.end()) {
+      *existing = std::move(frame);
+    } else {
+      frames.push_back(std::move(frame));
+    }
+  }
+  return frames;
 }
 
 std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
@@ -439,7 +473,12 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event) {
   if (event.kind == ZoomEngineEventKind::Frame) {
     enqueueFrameEventLocked(event);
   }
+  if (event.kind == ZoomEngineEventKind::Audio) {
+    ingestAudioEventLocked(event);
+  }
 }
+
+void ZoomEngineRuntime::applyEngineEventForTest(const ZoomEngineEvent& event) { applyEvent(event); }
 
 void ZoomEngineRuntime::stopReader() {
   {
@@ -779,6 +818,60 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
            {"bgraBase64", base64Encode(thumb.data(), thumb.size())},
        }},
   });
+}
+
+void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
+  // Only per-participant audio subscriptions ("participant-audio-*", ours,
+  // subscribed with isolate_audio) are ingested. The engine also mirrors audio
+  // onto its video-source targets (OBS plugin heritage); ingesting those too
+  // would sum the same signal multiple times.
+  if (event.participantId == 0 || event.byteLength == 0 ||
+      event.sourceUuid.rfind("participant-audio-", 0) != 0) {
+    return;
+  }
+
+  ShmRegion region;
+  const auto size = zoomEnginePcmAudioByteSize(event.byteLength);
+  if (!shm_region_open_read(region, zoomEngineAudioSharedMemoryName(event.sourceUuid, instanceToken_), size)) {
+    static int s_openFailures = 0;
+    if (++s_openFailures <= 3) {
+      std::fprintf(stderr, "[zoom-audio] could not open audio SHM '%s' (byte_len=%u)\n",
+                   zoomEngineAudioSharedMemoryName(event.sourceUuid, instanceToken_).c_str(), event.byteLength);
+    }
+    return;
+  }
+  const auto chunk = readZoomEnginePcmAudioSnapshot(region.ptr, region.size);
+  shm_region_destroy(region);
+  if (!chunk) {
+    return;  // torn mid-write or malformed — the next 10ms packet retries
+  }
+
+  // ~1 second of pending audio per source; beyond that the consumer is stalled
+  // and the oldest samples are dropped (latest-wins, like the video queues).
+  constexpr std::size_t kMaxPendingAudioSamplesPerChannel = 48000;
+  auto& pending = pendingAudio_[std::to_string(event.participantId)];
+  const auto droppedBefore = pending.droppedSamples;
+  if (appendZoomEnginePcmChunk(pending, *chunk, kMaxPendingAudioSamplesPerChannel)) {
+    // Ingest health line: first chunk per source, then every ~30s (per 3000
+    // 10ms packets). Peak lets a silent-but-flowing source (muted mic) be told
+    // apart from a broken ingest at a glance in media-core.log.
+    ++pending.ingestedChunks;
+    if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
+      float peak = 0.f;
+      for (const float sample : chunk->pcm) {
+        peak = (std::max)(peak, std::abs(sample));
+      }
+      std::fprintf(stderr,
+                   "[zoom-audio] participant %u chunk #%lld rate=%d ch=%d samples=%zu peak=%.3f pending=%zu\n",
+                   event.participantId, static_cast<long long>(pending.ingestedChunks), chunk->sampleRate,
+                   chunk->channels, chunk->pcm.size() / static_cast<std::size_t>(chunk->channels),
+                   static_cast<double>(peak), pending.pcm.size());
+    }
+  }
+  if (pending.droppedSamples != droppedBefore && droppedBefore == 0) {
+    std::fprintf(stderr, "[zoom-audio] pending PCM for participant %u overflowed; dropping oldest samples\n",
+                 event.participantId);
+  }
 }
 
 double ZoomEngineRuntime::runtimeElapsedMs() const {
