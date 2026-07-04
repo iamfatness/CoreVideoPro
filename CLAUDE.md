@@ -117,13 +117,30 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
   sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
 
-## Current state (2026-07-02)
+## Current state (2026-07-04)
 
 Working: Zoom video stable under multi-participant churn; program-zoom on the GPU I420
 path (zero-copy ingest + 60fps pacer); **GPU core-composited multiview** live (single
 shared texture, 4 layout modes, overlay labels/tally/meters/clock, multi-layer PREVIEW
-composite bus); **Phase 2 audio/output worker decouple** live (increments 1, 2, 4, 5);
-routing honored by Sources + multiview; compact Sources routing table.
+composite bus); **Phase 2 audio/output worker decouple** live (all increments incl. the
+lock-hold guardrail + engine sender thread); routing honored by Sources + multiview.
+
+**Audio is REAL (2026-07-03/04, spec `docs/audio-overhaul-spec.md` in delivery):** Zoom ISO
+PCM ingest engine→SHM→core→mixer (rig-verified), absolute-deadline 50Hz output pacer,
+`RecordingPtsClock` shared-epoch A/V PTS, feedback-loop guard (monitor endpoint ==
+loopback endpoint → warning), monitor underrun telemetry. **Audio tab redesign B1–B4
+shipped** (`docs/audio-tab-redesign.md`): grid hydrates from the core's published sends
+(select-never-destroys), System-default device entries, editable strips + Solo on the
+tab, shared routing-matrix panel on both Audio and Routing tabs. Remaining: 4.4 channel
+inserts/EQ/gate actually processing, B5 shared strip pop-out, 4.5 VST host.
+
+**Scenes redesign S1–S3a + R1 shipped** (`docs/scenes-tab-redesign.md`): layer
+delete/reorder/opacity, non-destructive presets + undo, duplicate/no-clobber save,
+custom scenes persist across restarts, live-scene DRAFT editing (program untouched until
+Update), numeric rect fields + snap guides + arrow-key nudge, and **production roles**
+(session-only assignment on the Inputs tab; role-targeted routes resolve at sync time;
+the assigned role rides the participant wire to the core director). Remaining: S3b
+(aspect-lock, edge handles, selection sync), S4 polish, role templates/automation (R2).
 
 In progress / next: (1) the **alpha validation pass** on the Windows rig — every
 checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min

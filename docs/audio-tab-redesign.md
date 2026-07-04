@@ -133,13 +133,13 @@ Root defects, each verified in code:
 
 ## 6. Implementation phases (each shippable)
 
-| Phase | Scope | Size |
-|---|---|---|
-| B1 | Core publishes per-send routing detail; UI hydrates the EXISTING grid from it (reality fix without redesign); fix select-vs-unroute + per-cell gain flyout | S-M |
-| B2 | Device pickers: System-default entries, IsDefault, consistent labels, native-id persistence | S |
-| B3 | SHOW mode: editable strips on the tab (reuse mixer-window strip component), Solo button, meter ballistics (with 4.4), state chrome for waiting-for-PCM | M |
-| B4 | SETUP mode: matrix moves onto the Audio tab (Routing tab keeps video), bus grouping/labels, aux bus rename/delete, per-source sync offsets | M |
-| B5 | Pop-out window rehosts the shared strip panel; delete duplicated XAML | S |
+| Phase | Scope | Size | Status |
+|---|---|---|---|
+| B1 | Core publishes per-send routing detail; UI hydrates the EXISTING grid from it (reality fix without redesign); fix select-vs-unroute + per-cell gain flyout | S-M | **SHIPPED** #165 — core already published `sends`; shell hydrates with a 2s local-edit quiet period; select-never-destroys + explicit Remove |
+| B2 | Device pickers: System-default entries, IsDefault, consistent labels, native-id persistence | S | **SHIPPED** #166 — System-default pseudo-entry (empty native id → core resolves OS default); default-first sort |
+| B3 | SHOW mode: editable strips on the tab (reuse mixer-window strip component), Solo button, meter ballistics (with 4.4), state chrome for waiting-for-PCM | M | **SHIPPED** #170 — gain/pan sliders + M/S per row on the tab; Solo added everywhere (DSP supported it all along); ballistics shipped with #166 |
+| B4 | SETUP mode: matrix moves onto the Audio tab (Routing tab keeps video), bus grouping/labels, aux bus rename/delete, per-source sync offsets | M | **SHIPPED (core scope)** #176 — shared `AudioRoutingMatrixPanel` on both tabs, same VM instance. Bus rename/delete + per-source sync offsets deferred |
+| B5 | Pop-out window rehosts the shared strip panel; delete duplicated XAML | S | open |
 
 ## 7. Acceptance
 

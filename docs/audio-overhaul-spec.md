@@ -1,8 +1,16 @@
 # Audio Overhaul — Evaluation & Fix Spec
 
-**Date:** 2026-07-03 · **Status:** proposed · **Owner symptom:** "No audio from Zoom or local
+**Date:** 2026-07-03 · **Status:** IN DELIVERY (updated 2026-07-04) · **Owner symptom:** "No audio from Zoom or local
 sources, the mixer doesn't do anything, VST / home-built plugins don't work at all. All outputs,
 always, even idle." (Also raised: no virtual-camera return feed into Zoom — §8.)
+
+> **Delivery status (2026-07-04):**
+> - **4.1 Zoom PCM transport — SHIPPED** (ISO PCM ingest engine→SHM→core→mixer; rig-verified master bus tracking speech).
+> - **4.2 Clock + pacer — SHIPPED** (absolute-deadline 50Hz pacer, underrun telemetry). **Feedback guard SHIPPED** PR #172 (monitor resolved-endpoint vs loopback endpoints → `monitorFeedbackRisk` + warning).
+> - **4.3 A/V clock — SHIPPED** PR #163 (`RecordingPtsClock`, shared epoch; rig head/tail check still owed).
+> - **4.4 Mixer completion — PARTIAL**: meter ballistics ✓ (#166), AUDIO PROOF de-countered ✓ (#166), Solo everywhere ✓ (#170), editable strips on tab ✓ (#170). **Remaining:** channel insert chains actually processing, EQ+gate kernels into the dispatcher, per-channel true LUFS/dBTP (or relabel), master-limiter toggle reconcile, silent-PCM row badge.
+> - **4.4b Audio tab overhaul — B1–B4 SHIPPED** (#165, #166, #170, #176); B5 open — statuses in `audio-tab-redesign.md`.
+> - **4.5 plugin host — NOT STARTED.** §8 virtual camera — NOT STARTED.
 
 This spec is the output of a live-rig evaluation (real Zoom join, GoXLR endpoint,
 2026-07-03 session) plus a three-track code audit (pipeline/clocking, mixer-UI wiring,
