@@ -488,6 +488,17 @@ class IAudioCaptureSource {
   [[nodiscard]] virtual std::vector<CaptureAudioSourceMetrics> metrics() const { return {}; }
 };
 
+// Cumulative source-pixel upload accounting for the GPU compositor's per-source
+// texture cache. A source drawn in several passes (program + multiview + preview
+// + participant export) must cost ONE upload per new frame, not one per draw —
+// tests and rig telemetry assert that through these counters.
+struct CompositorSourceTexStats {
+  uint64_t cachedUploads = 0;   // source planes copied into a cached per-source texture
+  uint64_t cacheHits = 0;       // draws served from the cache with no upload
+  uint64_t textureCreates = 0;  // per-source GPU texture set (re)creations
+  uint64_t scratchUploads = 0;  // legacy shared-scratch uploads (frames with no stable source id)
+};
+
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
@@ -511,6 +522,9 @@ class ICompositor {
     (void)frames;
     return {};
   }
+  // Upload accounting for the per-source texture cache. Defaulted to zeros so
+  // the software/stub compositor stays valid; only the GPU adapter tracks it.
+  [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
 };
 
 class IMediaFrameSource {

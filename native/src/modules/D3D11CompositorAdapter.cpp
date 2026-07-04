@@ -419,6 +419,17 @@ class D3D11Compositor final : public ICompositor {
     }
     exportSharedTexture(frame);
     exportParticipantTextures(deterministicPlan, frames, frame);
+    // Evict cached source textures no pass has sampled recently (participant
+    // left / source unrouted). 300 program frames ≈ 5s at 60fps — long enough
+    // that a source cycling through preview keeps its cache, short enough that
+    // leavers free their GPU memory promptly. (Multiview/preview passes stamp
+    // lastUsedFrame too; they run right after this render each tick.)
+    constexpr int64_t kSourceTexEvictAfterFrames = 300;
+    for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();) {
+      it = (frameNumber_ - it->second.lastUsedFrame > kSourceTexEvictAfterFrames)
+               ? sourceTextures_.erase(it)
+               : std::next(it);
+    }
     context_->Flush();
     return frame;
   }
@@ -525,6 +536,8 @@ class D3D11Compositor final : public ICompositor {
     return out;
   }
 
+  [[nodiscard]] CompositorSourceTexStats sourceTexStats() const override { return sourceTexStats_; }
+
  private:
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
@@ -553,6 +566,35 @@ class D3D11Compositor final : public ICompositor {
     return a.exposure == b.exposure && a.contrast == b.contrast &&
            a.saturation == b.saturation && a.temperature == b.temperature;
   }
+
+  // Per-source GPU texture cache entry. Every source with a stable identity
+  // (participantId — Zoom participants AND capture sources carry one) gets its
+  // OWN Y/U/V or BGRA texture set, uploaded only when the frame content changes
+  // (frameId + buffer identity, the same held-frame dedup the participant export
+  // uses). All composite passes (program, multiview, preview) and the export
+  // converts sample the cached textures, so a source shown in several places
+  // costs ONE upload per new frame instead of one ~3MB Map+memcpy per draw —
+  // previously the dominant render-tick cost, and the shared scratch textures
+  // additionally thrashed create/destroy whenever mixed-resolution sources
+  // alternated draws.
+  struct SourceTex {
+    ComPtrLite<ID3D11Texture2D> y;
+    ComPtrLite<ID3D11ShaderResourceView> ySrv;
+    ComPtrLite<ID3D11Texture2D> u;
+    ComPtrLite<ID3D11ShaderResourceView> uSrv;
+    ComPtrLite<ID3D11Texture2D> v;
+    ComPtrLite<ID3D11ShaderResourceView> vSrv;
+    ComPtrLite<ID3D11Texture2D> bgra;
+    ComPtrLite<ID3D11ShaderResourceView> bgraSrv;
+    int width = 0;
+    int height = 0;
+    bool isI420 = false;
+    int64_t lastFrameId = -1;
+    // Identity backstop for frameId==0 sources: the zero-copy buffers are
+    // immutable, so a pointer change means new content. Never dereferenced.
+    const void* lastBuffer = nullptr;
+    int64_t lastUsedFrame = 0;  // program frameNumber_ stamp for eviction
+  };
 
   void initializePipeline() {
     std::string error;
@@ -957,21 +999,28 @@ class D3D11Compositor final : public ICompositor {
 
     // Prefer the GPU I420->RGB path for Zoom participants; fall back to the
     // BGRA textured path for capture/media frames, and to the solid-color shader
-    // when the layer has no decoded pixels at all.
+    // when the layer has no decoded pixels at all. Sources with a stable id bind
+    // their cached per-source textures (uploaded only on content change); frames
+    // without one (media layers) take the legacy shared-scratch upload.
     const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
-    const bool textured = layer.frame != nullptr &&
-        (isI420 ? uploadLayerI420Texture(*layer.frame)
-                : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame)));
+    SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
+    const bool textured = sourceTex != nullptr ||
+        (layer.frame != nullptr &&
+         (isI420 ? uploadLayerI420Texture(*layer.frame)
+                 : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame))));
     if (textured) {
       ID3D11SamplerState* samplers[] = {samplerState_.get()};
       context_->PSSetSamplers(0, 1, samplers);
       if (isI420) {
         context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
+        ID3D11ShaderResourceView* views[] = {
+            sourceTex ? sourceTex->ySrv.get() : yTextureView_.get(),
+            sourceTex ? sourceTex->uSrv.get() : uTextureView_.get(),
+            sourceTex ? sourceTex->vSrv.get() : vTextureView_.get()};
         context_->PSSetShaderResources(0, 3, views);
       } else {
         context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-        ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
+        ID3D11ShaderResourceView* views[] = {sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
         context_->PSSetShaderResources(0, 1, views);
       }
     } else {
@@ -1364,42 +1413,60 @@ class D3D11Compositor final : public ICompositor {
       layerTextureView_ = {};
       layerTextureWidth_ = width;
       layerTextureHeight_ = height;
-
-      D3D11_TEXTURE2D_DESC textureDesc{};
-      textureDesc.Width = static_cast<UINT>(width);
-      textureDesc.Height = static_cast<UINT>(height);
-      textureDesc.MipLevels = 1;
-      textureDesc.ArraySize = 1;
-      textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-      textureDesc.SampleDesc.Count = 1;
-      textureDesc.Usage = D3D11_USAGE_DYNAMIC;
-      textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-      if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, layerTexture_.put()))) {
-        layerTextureWidth_ = 0;
-        layerTextureHeight_ = 0;
-        return false;
-      }
-      if (FAILED(device_->CreateShaderResourceView(layerTexture_.get(), nullptr, layerTextureView_.put()))) {
+      if (!createBgraDynamicTexture(width, height, layerTexture_, layerTextureView_)) {
         layerTexture_ = {};
+        layerTextureView_ = {};
         layerTextureWidth_ = 0;
         layerTextureHeight_ = 0;
         return false;
       }
     }
 
+    if (!uploadBgraPixels(layerTexture_.get(), frame)) {
+      return false;
+    }
+    ++sourceTexStats_.scratchUploads;
+    return true;
+  }
+
+  // Creates a dynamic (CPU-writable) BGRA texture + SRV.
+  bool createBgraDynamicTexture(int width, int height, ComPtrLite<ID3D11Texture2D>& texture,
+                                ComPtrLite<ID3D11ShaderResourceView>& view) {
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DYNAMIC;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, texture.put()))) {
+      return false;
+    }
+    if (FAILED(device_->CreateShaderResourceView(texture.get(), nullptr, view.put()))) {
+      texture = {};
+      return false;
+    }
+    return true;
+  }
+
+  // Maps a dynamic BGRA texture and copies the frame's pixel rows (honoring both
+  // the source stride and the mapped RowPitch).
+  bool uploadBgraPixels(ID3D11Texture2D* texture, const VideoFrame& frame) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context_->Map(layerTexture_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+    if (FAILED(context_->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
     }
     const auto* source = frame.pixels->data();
     const auto sourceStride = static_cast<size_t>(frame.pixelStride);
     auto* destination = static_cast<uint8_t*>(mapped.pData);
-    const size_t rowBytes = static_cast<size_t>(width) * 4u;
-    for (int y = 0; y < height; ++y) {
+    const size_t rowBytes = static_cast<size_t>(frame.pixelWidth) * 4u;
+    for (int y = 0; y < frame.pixelHeight; ++y) {
       std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch, source + static_cast<size_t>(y) * sourceStride, rowBytes);
     }
-    context_->Unmap(layerTexture_.get(), 0);
+    context_->Unmap(texture, 0);
     return true;
   }
 
@@ -1483,7 +1550,71 @@ class D3D11Compositor final : public ICompositor {
         !uploadPlane(vTexture_.get(), vPlane, chromaWidth, chromaWidth, chromaHeight)) {
       return false;
     }
+    ++sourceTexStats_.scratchUploads;
     return true;
+  }
+
+  // Resolves the cached per-source textures for `frame`, uploading its pixels
+  // only when the content changed since the last upload. Returns nullptr when
+  // the frame has no stable source identity (or the GPU resources fail) — the
+  // caller then falls back to the shared scratch upload path.
+  SourceTex* acquireSourceTex(const VideoFrame& frame) {
+    const bool isI420 = frame.hasI420();
+    if (frame.participantId.empty() || (!isI420 && !frame.hasPixels())) {
+      return nullptr;
+    }
+    const int width = isI420 ? frame.i420Width : frame.pixelWidth;
+    const int height = isI420 ? frame.i420Height : frame.pixelHeight;
+    auto& entry = sourceTextures_[frame.participantId];
+    const bool haveTextures = isI420 ? static_cast<bool>(entry.y) : static_cast<bool>(entry.bgra);
+    if (!haveTextures || entry.width != width || entry.height != height || entry.isI420 != isI420) {
+      entry = SourceTex{};
+      bool created = false;
+      if (isI420) {
+        created = createR8Texture(width, height, entry.y, entry.ySrv) &&
+                  createR8Texture(width / 2, height / 2, entry.u, entry.uSrv) &&
+                  createR8Texture(width / 2, height / 2, entry.v, entry.vSrv);
+      } else {
+        created = createBgraDynamicTexture(width, height, entry.bgra, entry.bgraSrv);
+      }
+      if (!created) {
+        sourceTextures_.erase(frame.participantId);
+        return nullptr;
+      }
+      entry.width = width;
+      entry.height = height;
+      entry.isI420 = isI420;
+      ++sourceTexStats_.textureCreates;
+    }
+    const void* buffer = isI420 ? static_cast<const void*>(frame.i420->data())
+                                : static_cast<const void*>(frame.pixels->data());
+    if (frame.frameId != entry.lastFrameId || buffer != entry.lastBuffer) {
+      bool uploaded = false;
+      if (isI420) {
+        const auto* base = frame.i420->data();
+        const int chromaWidth = width / 2;
+        const int chromaHeight = height / 2;
+        const auto yLength = static_cast<size_t>(width) * static_cast<size_t>(height);
+        const auto* uPlane = base + yLength;
+        const auto* vPlane = uPlane + static_cast<size_t>(chromaWidth) * static_cast<size_t>(chromaHeight);
+        uploaded = uploadPlane(entry.y.get(), base, width, width, height) &&
+                   uploadPlane(entry.u.get(), uPlane, chromaWidth, chromaWidth, chromaHeight) &&
+                   uploadPlane(entry.v.get(), vPlane, chromaWidth, chromaWidth, chromaHeight);
+      } else {
+        uploaded = uploadBgraPixels(entry.bgra.get(), frame);
+      }
+      if (!uploaded) {
+        sourceTextures_.erase(frame.participantId);
+        return nullptr;
+      }
+      entry.lastFrameId = frame.frameId;
+      entry.lastBuffer = buffer;
+      ++sourceTexStats_.cachedUploads;
+    } else {
+      ++sourceTexStats_.cacheHits;
+    }
+    entry.lastUsedFrame = frameNumber_;
+    return &entry;
   }
 
   // Writes neutral/identity layer constants (white opaque, no color grade,
@@ -1776,14 +1907,23 @@ class D3D11Compositor final : public ICompositor {
   // after the program composite + share, so the next render() re-binds its state.
   bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
                                       const CompositorColorGrade& grade) {
-    if (!pt.rtv || !uploadLayerI420Texture(frame)) {
+    if (!pt.rtv) {
+      return false;
+    }
+    // Sample the per-source cache (already uploaded by this tick's composite
+    // passes when the source is on screen); fall back to the scratch upload.
+    SourceTex* sourceTex = acquireSourceTex(frame);
+    if (!sourceTex && !uploadLayerI420Texture(frame)) {
       return false;
     }
     if (!beginParticipantExportPass(pt, width, height, grade, &frame)) {
       return false;
     }
     context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
-    ID3D11ShaderResourceView* views[] = {yTextureView_.get(), uTextureView_.get(), vTextureView_.get()};
+    ID3D11ShaderResourceView* views[] = {
+        sourceTex ? sourceTex->ySrv.get() : yTextureView_.get(),
+        sourceTex ? sourceTex->uSrv.get() : uTextureView_.get(),
+        sourceTex ? sourceTex->vSrv.get() : vTextureView_.get()};
     context_->PSSetShaderResources(0, 3, views);
     ID3D11SamplerState* samplers[] = {samplerState_.get()};
     context_->PSSetSamplers(0, 1, samplers);
@@ -1802,14 +1942,18 @@ class D3D11Compositor final : public ICompositor {
   // effective color pipeline the program's drawLayer BGRA path uses.
   bool renderBgraToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
                                       const CompositorColorGrade& grade) {
-    if (!pt.rtv || !uploadLayerTexture(frame)) {
+    if (!pt.rtv) {
+      return false;
+    }
+    SourceTex* sourceTex = acquireSourceTex(frame);
+    if (!sourceTex && !uploadLayerTexture(frame)) {
       return false;
     }
     if (!beginParticipantExportPass(pt, width, height, grade)) {
       return false;
     }
     context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
-    ID3D11ShaderResourceView* views[] = {layerTextureView_.get()};
+    ID3D11ShaderResourceView* views[] = {sourceTex ? sourceTex->bgraSrv.get() : layerTextureView_.get()};
     context_->PSSetShaderResources(0, 1, views);
     ID3D11SamplerState* samplers[] = {samplerState_.get()};
     context_->PSSetSamplers(0, 1, samplers);
@@ -2130,6 +2274,12 @@ class D3D11Compositor final : public ICompositor {
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
   std::map<std::string, ParticipantTex> participantTextures_;
+  // Per-source texture cache (SourceTex is declared near the top of the class):
+  // one Y/U/V or BGRA texture set per stable source id, shared by every
+  // composite pass + the export converts; entries evicted in render() when
+  // unused. The counters feed ICompositor::sourceTexStats().
+  std::map<std::string, SourceTex> sourceTextures_;
+  CompositorSourceTexStats sourceTexStats_;
   // Multiview pass: a second render target + keyed-mutex shared texture mirroring
   // the program members above (no CPU staging — multiview never reads back).
   ComPtrLite<ID3D11Texture2D> multiviewRenderTarget_;

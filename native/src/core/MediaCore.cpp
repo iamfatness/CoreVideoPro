@@ -3657,6 +3657,26 @@ void MediaCore::renderDisplayTick() {
 void MediaCore::renderSyntheticTick(bool videoOnly) {
   const auto frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProgramFrame_.frameNumber + 1) * frameIntervalMs;
+  // Stage timing for the ~60fps display tick (videoOnly only): attributes the
+  // render-thread coreMutex hold to ingest / plan / program / multiview /
+  // preview so a long tick in the rig log says WHERE the time went. Averaged
+  // over 120 ticks (~2s) and logged alongside the compositor's source-texture
+  // upload counters (which prove the per-source cache is deduping uploads).
+  static int64_t s_stageIngestUs = 0;
+  static int64_t s_stagePlanUs = 0;
+  static int64_t s_stageProgramUs = 0;
+  static int64_t s_stageMultiviewUs = 0;
+  static int64_t s_stagePreviewUs = 0;
+  static int s_stageTicks = 0;
+  auto stageMark = std::chrono::steady_clock::now();
+  const auto markStage = [&stageMark, videoOnly](int64_t& acc) {
+    if (!videoOnly) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    acc += std::chrono::duration_cast<std::chrono::microseconds>(now - stageMark).count();
+    stageMark = now;
+  };
   // Tap the latest decoded Zoom frames (raw I420 planes) and ingest them into
   // the RealZoomCaptureSource so pollVideoFrames() returns them. Reading them
   // here does NOT drain the stdout/event queue that feeds the multiview tiles.
@@ -3721,6 +3741,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
+  markStage(s_stageIngestUs);
+
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
   // here: the audio mix / routing / monitor / loudness / encoder / output / recording
   // work has moved off the render+command thread onto renderAudioOutputTick (Phase 2).
@@ -3752,10 +3774,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       }
     }
   }
+  markStage(s_stagePlanUs);
   lastProgramFrame_ = modules_.compositor->render(renderPlan, videoFrames);
   if (!videoOnly && lastProgramFrame_.preview.bgra.empty()) {
     fillSyntheticProgramFramePreview(lastProgramFrame_.preview, renderPlan, videoFrames, lastProgramFrame_);
   }
+  markStage(s_stageProgramUs);
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in — only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -3780,6 +3804,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     const std::string activeSpeakerId = zoomSnapshot().getString("activeSpeakerId");
     lastProgramFrame_.multiviewTiles = buildMultiviewTiles(activeSpeakerId);
   }
+  markStage(s_stageMultiviewUs);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
   // (mirrors the program shared texture). Opt-in — only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
@@ -3806,6 +3831,26 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     lastProgramFrame_.previewWidth = 0;
     lastProgramFrame_.previewHeight = 0;
     previewStructureEmitted_ = false;
+  }
+  markStage(s_stagePreviewUs);
+  if (videoOnly && ++s_stageTicks >= 120) {
+    // Delta the cumulative compositor upload counters so the line reads as
+    // "uploads in the last ~2s window".
+    static modules::CompositorSourceTexStats s_lastTexStats;
+    const auto texStats = modules_.compositor->sourceTexStats();
+    std::fprintf(stderr,
+                 "[render] stages avg-ms ingest=%.2f plan=%.2f program=%.2f multiview=%.2f preview=%.2f"
+                 "  source-tex uploads=%lld hits=%lld creates=%lld scratch=%lld\n",
+                 s_stageIngestUs / (s_stageTicks * 1000.0), s_stagePlanUs / (s_stageTicks * 1000.0),
+                 s_stageProgramUs / (s_stageTicks * 1000.0), s_stageMultiviewUs / (s_stageTicks * 1000.0),
+                 s_stagePreviewUs / (s_stageTicks * 1000.0),
+                 static_cast<long long>(texStats.cachedUploads - s_lastTexStats.cachedUploads),
+                 static_cast<long long>(texStats.cacheHits - s_lastTexStats.cacheHits),
+                 static_cast<long long>(texStats.textureCreates - s_lastTexStats.textureCreates),
+                 static_cast<long long>(texStats.scratchUploads - s_lastTexStats.scratchUploads));
+    s_lastTexStats = texStats;
+    s_stageIngestUs = s_stagePlanUs = s_stageProgramUs = s_stageMultiviewUs = s_stagePreviewUs = 0;
+    s_stageTicks = 0;
   }
   // Throttle the base64 preview/shared-texture events to ~10fps. They are only a
   // UI thumbnail, but at full render rate (~60fps) the base64 BGRA payloads
