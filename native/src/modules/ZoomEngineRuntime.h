@@ -43,7 +43,7 @@ class ZoomEngineRuntime {
 
   // TEST SEAM (phase 2 increment 3): installs a (fake) engine process client and
   // starts the outbound sender thread WITHOUT launching a real subprocess or the
-  // reader thread. Mirrors ensureStartedLocked's restart semantics: bumps the
+  // reader thread. Mirrors ensureStarted's restart semantics: bumps the
   // process generation, purges lines queued for the previous process, and clears
   // the subscription dedup so the new process is subscribed from scratch.
   void installEngineProcessForTest(std::shared_ptr<ZoomEngineProcessClient> process);
@@ -81,7 +81,10 @@ class ZoomEngineRuntime {
   };
 
   [[nodiscard]] static Config loadConfig();
-  [[nodiscard]] bool ensureStartedLocked();
+  // Ensures a running engine process. Takes mutex_ ITSELF, in phases: the
+  // blocking CreateProcess + IPC connect runs UNLOCKED (a generation guard
+  // discards a superseded spawn) so per-tick frame polls never stall behind it.
+  [[nodiscard]] bool ensureStarted();
   void startReaderLocked();
   void readerLoop();
   void applyEvent(const ZoomEngineEvent& event);
@@ -109,7 +112,7 @@ class ZoomEngineRuntime {
 
   Config config_;
   // shared_ptr so the sender thread can hold the client alive across a blocking
-  // sendLine while ensureStartedLocked replaces process_ after a crash — the old
+  // sendLine while ensureStarted replaces process_ after a crash — the old
   // client is destroyed only when the last reference drops.
   std::shared_ptr<ZoomEngineProcessClient> process_;
   ZoomEngineRuntimeState state_;
@@ -151,7 +154,7 @@ class ZoomEngineRuntime {
   // thread delivers asynchronously but strictly in FIFO order, so "marked sent"
   // means "queued exactly once, will reach the engine in order". Cleared on
   // leave/rejoin AND whenever a new engine process is installed
-  // (ensureStartedLocked), so a restarted engine is re-subscribed from scratch.
+  // (ensureStarted), so a restarted engine is re-subscribed from scratch.
   std::map<std::string, int> sentSubscriptions_;
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;

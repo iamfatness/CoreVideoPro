@@ -595,7 +595,17 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         std::string responseStr;
         std::chrono::steady_clock::time_point h0, h1;
-        {
+        if (reqType == "zoom-join" && mediaCore_.zoomEngineConfigured()) {
+          // The real-engine join blocks on process spawn + SDK auth + join
+          // handshake (observed 6.4s) and MediaCore::joinZoom is a PURE
+          // passthrough to ZoomEngineRuntime (its own lock discipline, no
+          // MediaCore state) — so run it WITHOUT coreMutex. Previously this
+          // single command froze the render thread — and with it the whole
+          // studio (program/preview/multiview) — for the entire join.
+          h0 = std::chrono::steady_clock::now();
+          responseStr = handle(*request).stringify();
+          h1 = std::chrono::steady_clock::now();
+        } else {
           std::lock_guard<std::mutex> lock(coreMutex);
           // Increment 6 guardrail: sanctioned long-hold site — command-carrying
           // syncs legitimately render a capped catch-up of synthetic ticks under
@@ -610,8 +620,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
-          std::fprintf(stderr, "[cmd] '%s' held core lock %lldms (starves render)\n",
-                       reqType.c_str(), static_cast<long long>(heldMs));
+          const bool lockFree = reqType == "zoom-join" && mediaCore_.zoomEngineConfigured();
+          std::fprintf(stderr, "[cmd] '%s' %s %lldms%s\n", reqType.c_str(),
+                       lockFree ? "handled lock-free in" : "held core lock",
+                       static_cast<long long>(heldMs), lockFree ? " (render unaffected)" : " (starves render)");
         }
         // The whole in-core latency for this request: time spent waiting in inQ +
         // waiting for coreMutex + handling. If this is small but the host still

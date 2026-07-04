@@ -30,6 +30,12 @@ class MediaCore {
   void registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height);
   void unregisterCaptureShm(const std::string& deviceId);
   [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
+  // True when a real Zoom engine subprocess is configured. Lock-free (the
+  // runtime pointer and its executable path are fixed at construction). The
+  // RPC server uses this to route zoom-join AROUND coreMutex: in this mode
+  // joinZoom is a pure runtime passthrough that blocks for seconds (process
+  // spawn + SDK auth + join handshake) and must not freeze the render thread.
+  [[nodiscard]] bool zoomEngineConfigured() const;
   [[nodiscard]] rpc::Json leaveZoom();
   [[nodiscard]] rpc::Json zoomSnapshot() const;
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
