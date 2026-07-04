@@ -238,6 +238,12 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public bool AudioLimiterEnabled { get; init; } = true;
+
+    /// <summary>
+    /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller
+    /// clears its request flag after building, so the command fires once.
+    /// </summary>
+    public bool ScanVstPlugins { get; init; }
     public MediaCoreAudioMonitorWire AudioMonitor { get; init; } = new(false, null, null, 0);
     public IReadOnlyList<MediaCoreAudioMixChannelWire> AudioMixChannels { get; init; } = [];
     public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];

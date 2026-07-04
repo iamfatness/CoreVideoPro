@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+#include <thread>
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -985,6 +987,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     syncParticipantAudioMix(command);
   } else if (type == "sync-audio-monitor") {
     syncAudioMonitor(command);
+  } else if (type == "scan-vst-plugins") {
+    startPluginHostScan();
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -2452,6 +2456,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"status", nativeMix.status},
           {"masterLevel", nativeMix.masterLevel},
           {"loudnessLufs", nativeMix.loudnessLufs},
+          {"pluginHost", pluginHostState()},
           {"limiterEnabled", audioLimiterEnabled_},
           {"limiterActive", audioLimiterEnabled_ && nativeMix.limiterActive},
           {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
@@ -2498,6 +2503,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"participants", rpc::Json::Array{}},
         {"masterMeter", masterMeterState()},
         {"summary", "Audio mix idle."},
+        {"pluginHost", pluginHostState()},
         {"warnings", warnings},
     };
   }
@@ -2618,6 +2624,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       // audioOutputMutex_ this function holds. Short-term (3s) is the live
       // console readout; fall back to momentary until its window fills.
       {"loudnessLufs", programLufsShortTerm_ > -119.0 ? programLufsShortTerm_ : programLufsMomentary_},
+      {"pluginHost", pluginHostState()},
       {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
       {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
@@ -4236,5 +4243,83 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     publishAudioOutputResults(results);
   }
 }
+
+// ---- VST host P1 (docs/vst-host-spec.md) ------------------------------------
+
+namespace {
+std::string resolvePluginHostExecutablePath() {
+  if (const char* fromEnv = std::getenv("COREVIDEO_PLUGIN_HOST_PATH"); fromEnv != nullptr && fromEnv[0] != '\0') {
+    return fromEnv;
+  }
+#ifdef _WIN32
+  char modulePath[MAX_PATH] = {};
+  if (::GetModuleFileNameA(nullptr, modulePath, MAX_PATH) > 0) {
+    std::string path(modulePath);
+    const auto slash = path.find_last_of("\/");
+    if (slash != std::string::npos) {
+      const std::string sibling = path.substr(0, slash + 1) + "corevideo-plugin-host.exe";
+      if (::GetFileAttributesA(sibling.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return sibling;
+      }
+    }
+  }
+#endif
+  return {};
+}
+}  // namespace
+
+void MediaCore::startPluginHostScan() {
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    if (pluginHostScanInFlight_) {
+      return;
+    }
+    pluginHostScanInFlight_ = true;
+    pluginHostStatus_ = "scanning";
+  }
+
+  // Detached: process spawn + directory walk can take hundreds of ms — never
+  // inside cmd.handle's coreMutex budget. MediaCore lives for the process
+  // lifetime, so capturing `this` is safe.
+  std::thread([this] {
+    const auto exePath = resolvePluginHostExecutablePath();
+    std::string status;
+    std::vector<PluginHostPluginInfo> plugins;
+    if (exePath.empty()) {
+      status = "absent";
+    } else {
+      const auto output = runPluginHostScan(exePath);
+      if (output.empty()) {
+        status = "error";
+      } else {
+        plugins = parsePluginScanOutput(output);
+        status = "ready";
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostPlugins_ = std::move(plugins);
+    pluginHostStatus_ = status;
+    pluginHostScanInFlight_ = false;
+  }).detach();
+}
+
+rpc::Json MediaCore::pluginHostState() const {
+  std::lock_guard<std::mutex> lock(pluginHostMutex_);
+  rpc::Json::Array plugins;
+  for (const auto& plugin : pluginHostPlugins_) {
+    plugins.emplace_back(rpc::Json::Object{
+        {"id", plugin.id},
+        {"name", plugin.name},
+        {"vendor", plugin.vendor},
+        {"probe", plugin.probe},
+    });
+  }
+  return rpc::Json::Object{
+      {"status", pluginHostStatus_},
+      {"plugins", plugins},
+  };
+}
+
 
 }  // namespace corevideo::core

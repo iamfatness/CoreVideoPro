@@ -3955,3 +3955,33 @@ TEST(MediaCoreAudioMonitor, WarnsWhenMonitorPlaysIntoTheLoopbackCaptureEndpoint)
   }
   EXPECT_TRUE(foundFeedbackWarning);
 }
+
+TEST(PluginHostScan, ParsesPluginLinesAndIgnoresNoise) {
+  // VST host P1: the scan output parser is pure — the host exe never runs in
+  // tests. Noise lines and the scan-complete trailer must be ignored.
+  const std::string output =
+      "some tool banner\n"
+      "{\"cmd\":\"plugin\",\"id\":\"C:/VST3/TDR Nova.vst3\",\"name\":\"TDR Nova\",\"vendor\":\"Tokyo Dawn Labs\",\"probe\":\"pending\"}\n"
+      "{\"cmd\":\"plugin\",\"id\":\"C:/VST3/Span.vst3\",\"name\":\"Span\",\"vendor\":\"\",\"probe\":\"pending\"}\n"
+      "{\"cmd\":\"error\",\"msg\":\"one root unreadable\"}\n"
+      "{\"cmd\":\"scan-complete\",\"count\":2}\n";
+
+  const auto plugins = corevideo::core::parsePluginScanOutput(output);
+  ASSERT_EQ(plugins.size(), 2u);
+  EXPECT_EQ(plugins[0].name, "TDR Nova");
+  EXPECT_EQ(plugins[0].vendor, "Tokyo Dawn Labs");
+  EXPECT_EQ(plugins[0].probe, "pending");
+  EXPECT_EQ(plugins[1].name, "Span");
+  EXPECT_TRUE(plugins[1].vendor.empty());
+}
+
+TEST(PluginHostScan, SnapshotCarriesPluginHostStateInEveryShape) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  const auto* mix = state.get("audioMixSession");
+  ASSERT_NE(mix, nullptr);
+  const auto* pluginHost = mix->get("pluginHost");
+  ASSERT_NE(pluginHost, nullptr);
+  EXPECT_EQ(pluginHost->getString("status"), "absent");
+  EXPECT_TRUE(pluginHost->get("plugins")->asArray().empty());
+}

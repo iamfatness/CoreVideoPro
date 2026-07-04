@@ -41,6 +41,14 @@ public static class MediaCoreCommandBuilder
         commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey));
         commands.AddRange(BuildCaptionCommands(context.CaptionText, context.CaptionSpeaker));
 
+        if (context.ScanVstPlugins)
+        {
+            // VST host P1: one-shot plugin discovery (the core spawns
+            // corevideo-plugin-host --scan off-thread and publishes
+            // audioMixSession.pluginHost).
+            commands.Add(Command("scan-vst-plugins", new Dictionary<string, object?>()));
+        }
+
         var mediaPlaybackCommand = BuildMediaPlaybackCommand(context);
         if (mediaPlaybackCommand is not null)
         {

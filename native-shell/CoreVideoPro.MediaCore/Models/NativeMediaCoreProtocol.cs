@@ -401,11 +401,28 @@ public sealed class NativeMediaCoreAudioPluginInsert
     public bool ProcessingEnabled { get; init; }
 }
 
+// VST host P1 (docs/vst-host-spec.md): out-of-process plugin discovery state.
+// System.Text.Json camelCase auto-binds pluginHost/plugins from the snapshot.
+public sealed class NativeMediaCorePluginHost
+{
+    public string Status { get; init; } = "absent";
+    public IReadOnlyList<NativeMediaCorePluginInfo> Plugins { get; init; } = [];
+}
+
+public sealed class NativeMediaCorePluginInfo
+{
+    public string Id { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string Vendor { get; init; } = string.Empty;
+    public string Probe { get; init; } = "pending";
+}
+
 public sealed class NativeMediaCoreAudioMixSession
 {
     public required string Status { get; init; }
     public int MasterLevel { get; init; }
     public double LoudnessLufs { get; init; }
+    public NativeMediaCorePluginHost PluginHost { get; init; } = new();
     public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }
     public int MixedFrameCount { get; init; }
