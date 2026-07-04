@@ -132,4 +132,30 @@ public sealed partial class SourcesPage : UserControl
         }
     }
 
+    // S1 layer primitives: the card buttons live inside an ItemsRepeater
+    // DataTemplate, so they reach the page ViewModel's commands through the
+    // element's DataContext (the layer VM) here.
+    private void OnRemoveLayerClicked(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is SceneCanvasLayerViewModel layer)
+        {
+            ViewModel?.RemoveCanvasSourceCommand.Execute(layer);
+        }
+    }
+
+    private void OnMoveLayerForwardClicked(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is SceneCanvasLayerViewModel layer)
+        {
+            ViewModel?.MoveCanvasSourceForwardCommand.Execute(layer);
+        }
+    }
+
+    private void OnMoveLayerBackClicked(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is SceneCanvasLayerViewModel layer)
+        {
+            ViewModel?.MoveCanvasSourceBackCommand.Execute(layer);
+        }
+    }
 }

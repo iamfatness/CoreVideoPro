@@ -1261,6 +1261,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));
       state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
       state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
+      state.opacity = static_cast<float>((std::max)(0.0, (std::min)(1.0, route.getNumber("opacity", 1.0))));
       if (const rpc::Json* colorGrade = route.get("colorGrade"); colorGrade && colorGrade->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*colorGrade);
@@ -2009,6 +2010,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.sourceScale = static_cast<float>((std::max)(0.25, (std::min)(4.0, route.getNumber("sourceScale", 1.0))));
       state.sourceOffsetX = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetX", 0.0))));
       state.sourceOffsetY = static_cast<float>((std::max)(-1.0, (std::min)(1.0, route.getNumber("sourceOffsetY", 0.0))));
+      state.opacity = static_cast<float>((std::max)(0.0, (std::min)(1.0, route.getNumber("opacity", 1.0))));
       if (const rpc::Json* cg = route.get("colorGrade"); cg && cg->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*cg);
@@ -2019,7 +2021,8 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
                    state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
-                   std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "|";
+                   std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
+                   std::to_string(state.opacity) + "|";
       routes.push_back(std::move(state));
       ++routeIndex;
     }
@@ -3538,6 +3541,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.sourceScale = route.sourceScale;
       layer.sourceOffsetX = route.sourceOffsetX;
       layer.sourceOffsetY = route.sourceOffsetY;
+      layer.opacity = route.opacity;
       layer.hasColorGrade = route.hasColorGrade;
       layer.colorGrade = route.colorGrade;
       renderPlan.layers.push_back(std::move(layer));

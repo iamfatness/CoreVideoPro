@@ -7367,6 +7367,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SourceScale: route.SourceScale,
             SourceOffsetX: route.SourceOffsetX,
             SourceOffsetY: route.SourceOffsetY,
+            Opacity: route.Opacity,
             ColorGrade: BuildRouteColorGradeWire(route),
             MediaAssetId: mediaAsset?.Id,
             MediaAssetName: mediaAsset?.Name,
@@ -10962,6 +10963,71 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    // Scenes redesign S1: the missing layer primitives. Removing a source and
+    // reordering layers were previously IMPOSSIBLE — add was append-only and
+    // z-order was hardwired to add-order.
+    [RelayCommand]
+    private void RemoveCanvasSource(SceneCanvasLayerViewModel? layer)
+    {
+        var routes = GetMutableRoutes(PreviewSceneId);
+        if (layer is null || layer.LayerIndex < 0 || layer.LayerIndex >= routes.Count)
+        {
+            return;
+        }
+
+        routes.RemoveAt(layer.LayerIndex);
+        ReindexRouteZOrder(routes);
+        CommandStatus = $"{layer.LayerLabel} removed from {PreviewScene.Name}";
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    [RelayCommand]
+    private void MoveCanvasSourceForward(SceneCanvasLayerViewModel? layer) => MoveCanvasSource(layer, +1);
+
+    [RelayCommand]
+    private void MoveCanvasSourceBack(SceneCanvasLayerViewModel? layer) => MoveCanvasSource(layer, -1);
+
+    private void MoveCanvasSource(SceneCanvasLayerViewModel? layer, int delta)
+    {
+        var routes = GetMutableRoutes(PreviewSceneId);
+        if (layer is null)
+        {
+            return;
+        }
+
+        var from = layer.LayerIndex;
+        var to = from + delta;
+        if (from < 0 || from >= routes.Count || to < 0 || to >= routes.Count)
+        {
+            return;
+        }
+
+        (routes[from], routes[to]) = (routes[to], routes[from]);
+        ReindexRouteZOrder(routes);
+        CommandStatus = $"{layer.LayerLabel} moved {(delta > 0 ? "forward" : "back")} in {PreviewScene.Name}";
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    // List order IS layer order: zIndex mirrors the index (later = drawn on
+    // top), so a list swap is a real stacking change through the wire.
+    private static void ReindexRouteZOrder(List<SourceRoute> routes)
+    {
+        for (var index = 0; index < routes.Count; index++)
+        {
+            routes[index].ZIndex = index;
+        }
     }
 
     [RelayCommand]
