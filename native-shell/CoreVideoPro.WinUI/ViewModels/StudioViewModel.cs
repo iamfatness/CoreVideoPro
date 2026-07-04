@@ -2017,6 +2017,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnPreviewSceneIdChanged(string value)
     {
+        // S2b: cueing a different scene abandons any uncommitted edits to the
+        // live scene (the draft belongs to the previously cued scene).
+        DiscardLivePreviewDraft();
         SceneBuilderName = PreviewScene.Name;
         RefreshSceneItems();
         RefreshSceneBackgroundSelection();
@@ -2499,7 +2502,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         };
 
         _scenes.Add(scene);
-        _sceneRoutes[newId] = GetMutableRoutes(PreviewSceneId)
+        _sceneRoutes[newId] = GetPreviewEditableRoutes()
             .Select(route => route.Clone())
             .ToList();
 
@@ -4057,7 +4060,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ApplyColorGradeToMatchingRoutes(editorViewModel.SourceId, grade);
         CommandStatus = status;
 
-        SyncPreviewCanvasLayers(GetMutableRoutes(PreviewSceneId));
+        SyncPreviewCanvasLayers(GetPreviewEditableRoutes());
         RefreshPreviewRoutingState();
         _ = SyncColorGradeChangeAsync();
     }
@@ -4564,7 +4567,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SuperSourceBackgroundOptions));
         PruneMissingSceneBackgrounds();
         RefreshSceneBackgroundSelection();
-        SyncPreviewCanvasLayers(GetMutableRoutes(PreviewSceneId));
+        SyncPreviewCanvasLayers(GetPreviewEditableRoutes());
         RefreshMultiviewGridTiles();
         RefreshProductionReadouts();
     }
@@ -7189,7 +7192,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
         // as the program routes; the core skips the extra composite for single-source previews.
-        var resolvedPreviewRoutes = GetMutableRoutes(PreviewSceneId)
+        var resolvedPreviewRoutes = GetPreviewEditableRoutes()
             .Select(ResolveRouteFromShowInput)
             .ToList();
         var previewSceneRoutes = resolvedPreviewRoutes
@@ -10475,6 +10478,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return routes;
     }
 
+    // S2b (scenes redesign, pitfall A): when the cued PREVIEW scene is the same
+    // scene that is LIVE on program, `_sceneRoutes[id]` is one shared list —
+    // canvas edits previously mutated PROGRAM in real time. Editing paths now
+    // go through this accessor: for a live scene it hands out a DRAFT copy, so
+    // program stays untouched until "Update scene" commits it. The preview
+    // sync context reads the draft too, so the preview bus (and the canvas)
+    // show the edit as it is made while air stays stable.
+    private List<SourceRoute>? _livePreviewDraft;
+    private string? _livePreviewDraftSceneId;
+
+    private List<SourceRoute> GetPreviewEditableRoutes()
+    {
+        if (!string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
+        {
+            DiscardLivePreviewDraft();
+            return GetMutableRoutes(PreviewSceneId);
+        }
+
+        if (_livePreviewDraft is null ||
+            !string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal))
+        {
+            _livePreviewDraft = GetMutableRoutes(PreviewSceneId)
+                .Select(route => route.Clone())
+                .ToList();
+            _livePreviewDraftSceneId = PreviewSceneId;
+        }
+
+        return _livePreviewDraft;
+    }
+
+    private void DiscardLivePreviewDraft()
+    {
+        _livePreviewDraft = null;
+        _livePreviewDraftSceneId = null;
+    }
+
+    // Commits the live-scene draft into the stored scene (called by the Update
+    // path after CopyPreviewRoutesToScene lands the routes).
+    private void CommitLivePreviewDraft() => DiscardLivePreviewDraft();
+
     private void SchedulePreviewRoutingRefresh()
     {
         if (_previewRoutingRefreshScheduled)
@@ -11034,7 +11077,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         var index = routes.Count;
         var route = SceneRoutingService.BuildAddedSourceRoute(PreviewSceneId, index, optionValue, SelectedMediaAssetId);
         SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
@@ -11060,7 +11103,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RemoveCanvasSource(SceneCanvasLayerViewModel? layer)
     {
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         if (layer is null || layer.LayerIndex < 0 || layer.LayerIndex >= routes.Count)
         {
             return;
@@ -11085,7 +11128,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void MoveCanvasSource(SceneCanvasLayerViewModel? layer, int delta)
     {
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         if (layer is null)
         {
             return;
@@ -11137,7 +11180,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void ApplyCanvasPreset(string presetWire)
     {
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         // Non-destructive presets (scenes redesign S2): the old flow wiped every
         // hand-placed rect AND re-pointed every route's source assignment
         // (ApplyInputSlotTemplate). Now: snapshot for one-step undo, keep
@@ -11186,7 +11229,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         routes.Clear();
         routes.AddRange(undo.Routes.Select(route => route.Clone()));
         _canvasPresetUndo = null;
@@ -11230,7 +11273,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnPreviewCanvasLayerChanged(SceneCanvasLayerViewModel layer)
     {
-        var routes = GetMutableRoutes(PreviewSceneId);
+        var routes = GetPreviewEditableRoutes();
         if (layer.LayerIndex < 0 || layer.LayerIndex >= routes.Count)
         {
             return;
@@ -11260,11 +11303,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void CopyPreviewRoutesToScene(string sceneId)
     {
-        var previewRoutes = GetMutableRoutes(PreviewSceneId)
+        var previewRoutes = GetPreviewEditableRoutes()
             .Select(route => route.Clone())
             .ToList();
         GetMutableRoutes(sceneId).Clear();
         GetMutableRoutes(sceneId).AddRange(previewRoutes);
+        if (string.Equals(sceneId, _livePreviewDraftSceneId, StringComparison.Ordinal))
+        {
+            // Draft committed into the stored scene (Update path): retire it so
+            // the accessor re-clones from the now-identical stored routes.
+            CommitLivePreviewDraft();
+        }
     }
 
     public void HandleAppActivation(AppActivationArguments args)

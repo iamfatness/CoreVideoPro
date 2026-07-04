@@ -59,7 +59,7 @@
                                 <StackPanel Spacing="2">
                                     <TextBlock Text="Scene builder" FontSize="15" FontWeight="Bold"
                                                Foreground="{StaticResource StudioTextBrush}" />
-                                    <TextBlock Text="Freeform canvas - drag sources anywhere on the 16:9 frame. Presets are starting points."
+                                    <TextBlock Text="Freeform canvas - drag sources anywhere on the 16:9 frame. Presets are starting points. Editing the on-air scene stays OFF AIR until Update scene."
                                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </StackPanel>
