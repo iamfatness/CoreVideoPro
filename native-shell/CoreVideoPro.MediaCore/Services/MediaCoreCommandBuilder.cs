@@ -136,6 +136,7 @@ public static class MediaCoreCommandBuilder
             ["sourceScale"] = route.SourceScale,
             ["sourceOffsetX"] = route.SourceOffsetX,
             ["sourceOffsetY"] = route.SourceOffsetY,
+            ["opacity"] = route.Opacity,
             ["ptz"] = new Dictionary<string, object?>
             {
                 ["zoom"] = route.SourceScale,

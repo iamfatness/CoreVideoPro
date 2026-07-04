@@ -48,6 +48,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _sourceScale = SceneRoutingService.NormalizeSourceScale(route.SourceScale);
         _sourceOffsetX = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetX);
         _sourceOffsetY = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetY);
+        _opacityPercent = Math.Clamp(route.Opacity, 0.1, 1.0) * 100;
         ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs, mediaAssets);
     }
 
@@ -126,6 +127,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     [ObservableProperty]
     private double _sourceOffsetY;
 
+    // Per-layer opacity as a percentage (10..100). Floored at 10% in the UI so
+    // a layer can't be made invisible by accident; the wire carries 0..1.
+    [ObservableProperty]
+    private double _opacityPercent = 100;
+
+    public string OpacityLabel => $"{OpacityPercent:0}%";
+
     [ObservableProperty]
     private VideoSurfaceState _surface = VideoSurfaceState.Waiting(
         VideoSurfaceKind.Multiview,
@@ -183,6 +191,12 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     partial void OnSourceOffsetYChanged(double value) => ApplyVisualChange();
 
+    partial void OnOpacityPercentChanged(double value)
+    {
+        OnPropertyChanged(nameof(OpacityLabel));
+        ApplyVisualChange();
+    }
+
     [RelayCommand]
     private void ResetFraming()
     {
@@ -220,6 +234,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             SourceScale = SceneRoutingService.NormalizeSourceScale(_route.SourceScale);
             SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetX);
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
+            OpacityPercent = Math.Clamp(_route.Opacity, 0.1, 1.0) * 100;
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(FramingSummary));
@@ -339,6 +354,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.SourceScale = SceneRoutingService.NormalizeSourceScale(SourceScale);
         _route.SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(SourceOffsetX);
         _route.SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(SourceOffsetY);
+        _route.Opacity = Math.Clamp(OpacityPercent / 100.0, 0.1, 1.0);
         _route.SourceFramingModified = SceneRoutingService.HasModifiedSourceFraming(
             _route.FitMode,
             _route.SourceScale,

@@ -192,6 +192,10 @@ class MediaCore {
     float sourceScale = 1.f;
     float sourceOffsetX = 0.f;
     float sourceOffsetY = 0.f;
+    // Per-layer opacity (scenes redesign S1): the compositor has always
+    // supported CompositorRenderPlanLayer.opacity; this carries it through the
+    // scene graph so the UI can finally reach it.
+    float opacity = 1.f;
     bool hasColorGrade = false;
     modules::CompositorColorGrade colorGrade;
   };

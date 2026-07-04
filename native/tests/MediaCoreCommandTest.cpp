@@ -3848,3 +3848,40 @@ TEST(MediaCoreCommand, PreviewSceneSingleSourceStillCompositesAndDedups) {
   ASSERT_NE(second.get("previewScene"), nullptr);
   EXPECT_EQ(second.get("previewScene")->getString("sceneId"), "preview-solo");
 }
+
+TEST(MediaCoreCommand, PerRouteOpacityReachesTheCompositedPixels) {
+  // Scenes redesign S1: per-layer opacity flows scene route -> render plan ->
+  // composited output. The compositor always supported layer opacity; the
+  // scene graph previously never carried it.
+  const auto loadWithOpacity = [](double opacity) {
+    return corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "load-scene-graph"},
+            {"sceneId", "opacity-scene"},
+            {"routes", corevideo::rpc::Json::Array{
+                           corevideo::rpc::Json::Object{
+                               {"routeId", "a"},
+                               {"mode", "fixed"},
+                               {"audioRole", "mix"},
+                               {"participantId", "speaker-1"},
+                               {"rect", corevideo::rpc::Json::Object{
+                                            {"x", 0.0}, {"y", 0.0}, {"width", 1.0}, {"height", 1.0}}},
+                               {"opacity", opacity},
+                           },
+                       }},
+        },
+    };
+  };
+
+  corevideo::core::MediaCore fullCore(corevideo::modules::createStubModules());
+  const auto full = fullCore.applyCommands(loadWithOpacity(1.0));
+  corevideo::core::MediaCore dimCore(corevideo::modules::createStubModules());
+  const auto dim = dimCore.applyCommands(loadWithOpacity(0.4));
+
+  const auto* fullFrame = full.get("programFrame");
+  const auto* dimFrame = dim.get("programFrame");
+  ASSERT_NE(fullFrame, nullptr);
+  ASSERT_NE(dimFrame, nullptr);
+  EXPECT_NE(fullFrame->get("programPixelSignature")->asNumber(),
+            dimFrame->get("programPixelSignature")->asNumber());
+}

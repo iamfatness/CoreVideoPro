@@ -203,7 +203,26 @@
                                         <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
                                                 BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,8">
                                             <StackPanel Spacing="6">
-                                                <TextBlock Text="{x:Bind LayerLabel}" FontWeight="SemiBold" FontSize="13" />
+                                                <!-- S1 layer primitives: reorder (real z-order) + remove — previously
+                                                     a source could never be deleted and stacking was add-order only. -->
+                                                <Grid ColumnSpacing="4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{x:Bind LayerLabel}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                                                    <Button Grid.Column="1" Content="&#xE70E;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                            Padding="7,5" Click="OnMoveLayerForwardClicked"
+                                                            ToolTipService.ToolTip="Bring forward (on top)" />
+                                                    <Button Grid.Column="2" Content="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                            Padding="7,5" Click="OnMoveLayerBackClicked"
+                                                            ToolTipService.ToolTip="Send back (behind)" />
+                                                    <Button Grid.Column="3" Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                            Padding="7,5" Click="OnRemoveLayerClicked"
+                                                            ToolTipService.ToolTip="Remove from scene" />
+                                                </Grid>
                                                 <StackPanel Spacing="2">
                                                     <TextBlock Text="Source" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                                                     <ComboBox ItemsSource="{x:Bind ParticipantOptions}"
@@ -256,6 +275,15 @@
                                                                    SpinButtonPlacementMode="Inline" />
                                                     </StackPanel>
                                                 </Grid>
+                                                <StackPanel Spacing="2">
+                                                    <Grid>
+                                                        <TextBlock Text="Opacity" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                        <TextBlock Text="{x:Bind OpacityLabel, Mode=OneWay}" FontSize="10"
+                                                                   Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Right" />
+                                                    </Grid>
+                                                    <Slider Minimum="10" Maximum="100" StepFrequency="5"
+                                                            Value="{x:Bind OpacityPercent, Mode=TwoWay}" />
+                                                </StackPanel>
                                                 <Border Background="#101820" BorderBrush="#22303A"
                                                         BorderThickness="1" CornerRadius="6" Padding="8">
                                                     <StackPanel Spacing="6">

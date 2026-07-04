@@ -45,6 +45,9 @@ public sealed class SourceRoute
     public double SourceScale { get; set; } = SourceRouteVisualDefaults.SourceScale;
     public double SourceOffsetX { get; set; } = SourceRouteVisualDefaults.SourceOffsetX;
     public double SourceOffsetY { get; set; } = SourceRouteVisualDefaults.SourceOffsetY;
+    // Per-layer opacity 0..1 (scenes redesign S1). The compositor always
+    // supported it; the scene graph now carries it.
+    public double Opacity { get; set; } = 1.0;
     public bool SourceFramingModified { get; set; }
     public ColorGrade? ColorGrade { get; set; }
     public int ZIndex { get; set; }
@@ -67,6 +70,7 @@ public sealed class SourceRoute
             SourceScale = SourceScale,
             SourceOffsetX = SourceOffsetX,
             SourceOffsetY = SourceOffsetY,
+            Opacity = Opacity,
             SourceFramingModified = SourceFramingModified,
             ColorGrade = ColorGrade,
             ZIndex = ZIndex

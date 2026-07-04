@@ -18,6 +18,7 @@ public sealed record MediaCoreSceneRouteWire(
     double? SourceScale = null,
     double? SourceOffsetX = null,
     double? SourceOffsetY = null,
+    double? Opacity = null,
     MediaCoreColorGradeWire? ColorGrade = null,
     string? MediaAssetId = null,
     string? MediaAssetName = null,
