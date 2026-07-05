@@ -59,7 +59,7 @@ struct ShmAudioRingSlot {
     uint16_t reserved;
     // int16 interleaved PCM payload follows (slot_payload bytes reserved)
 };
-enum : uint32_t { kAudioRingMagic = 0x43564152u, kAudioRingSlots = 32u, kAudioRingSlotPayload = 4096u };
+enum : uint32_t { kAudioRingMagic = 0x43564152u, kAudioRingSlots = 128u, kAudioRingSlotPayload = 4096u };  // 1.28s catch-up: soak-measured pipe-stall bursts lapped 32 slots
 inline size_t audio_ring_slot_stride() { return sizeof(ShmAudioRingSlot) + kAudioRingSlotPayload; }
 inline size_t audio_ring_region_size() {
     return sizeof(ShmAudioRingHeader) + kAudioRingSlots * audio_ring_slot_stride();

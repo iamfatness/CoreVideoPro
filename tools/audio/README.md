@@ -8,9 +8,9 @@ count when the ear says warble (time-warp artifacts have no sample jumps).
 | Tool | What it does |
 |---|---|
 | `loopback-rec.cpp` | WASAPI loopback recorder: captures exactly what a render endpoint plays (what the operator hears) to raw float32. Build: `VsDevCmd -arch=amd64 && cl /EHsc /O2 loopback-rec.cpp ole32.lib`. Run: `loopback-rec <device-substring> <seconds> <out.f32>`. Prints engine discontinuity flags. |
-| `click-scan.js` | Discontinuity scan for STEREO interleaved f32: click count, positions mod 480/960 (packet/tick fingerprinting), inter-click gaps. `node click-scan.js file.f32`. NOTE: false-positives on MONO data — check channel count first (tap files from mono sources are mono). |
-| `click-zoom.js` | Waveform microscope: prints samples around a position in two files side by side. The artifact's SHAPE names the stage (zeros+attack-ramp = gate; single-sample step = splice; smooth warp = resampler). `node click-zoom.js a.f32 b.f32 <frame>`. |
-| `timeline-scan.js` | Per-10s buckets of RMS + hard/soft(floor) clicks — aligns artifacts to what the operator was doing (the limiter bug fell to this: clicks only in loud buckets). `node timeline-scan.js file.f32`. |
+| `click-scan.cjs` | Discontinuity scan for STEREO interleaved f32: click count, positions mod 480/960 (packet/tick fingerprinting), inter-click gaps. `node click-scan.cjs file.f32`. NOTE: false-positives on MONO data — check channel count first (tap files from mono sources are mono). |
+| `click-zoom.cjs` | Waveform microscope: prints samples around a position in two files side by side. The artifact's SHAPE names the stage (zeros+attack-ramp = gate; single-sample step = splice; smooth warp = resampler). `node click-zoom.cjs a.f32 b.f32 <frame>`. |
+| `timeline-scan.cjs` | Per-10s buckets of RMS + hard/soft(floor) clicks — aligns artifacts to what the operator was doing (the limiter bug fell to this: clicks only in loud buckets). `node timeline-scan.cjs file.f32`. |
 
 Also in the box (in-app, env-gated): set `COREVIDEO_AUDIO_DEBUG_DIR` before launch to get
 `tap-in-<source>.f32` (PCM entering the mix), `tap-mon.f32` (MON bus leaving it),

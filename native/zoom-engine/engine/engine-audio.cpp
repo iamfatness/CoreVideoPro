@@ -210,10 +210,15 @@ void EngineAudio::output_audio_frame(AudioTarget &target,
             std::to_string(target.participant_id) + "}");
     }
 
-    EngineIpc::write(
-        R"({"cmd":"audio","source_uuid":")" + source_uuid +
-        R"(","participant_id":)" + std::to_string(target.participant_id) +
-        R"(,"byte_len":)" + std::to_string(byte_len) + "}");
+    // Z2b: the core drains rings on its own 50Hz poll - the pipe event is a
+    // DISCOVERY beacon only. Per-packet events (100/s/stream) saturated the
+    // pipe and stalled producers; one per second keeps discovery + liveness.
+    if (target.frame_count == 1 || target.frame_count % 100 == 0) {
+        EngineIpc::write(
+            R"({"cmd":"audio","source_uuid":")" + source_uuid +
+            R"(","participant_id":)" + std::to_string(target.participant_id) +
+            R"(,"byte_len":)" + std::to_string(byte_len) + "}");
+    }
 }
 
 void EngineAudio::onMixedAudioRawDataReceived(AudioRawData *data)

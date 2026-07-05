@@ -64,6 +64,21 @@ try {
     $join = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
         (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Join Zoom")))
     if ($join) { ($join.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke() }
+    Start-Sleep -Seconds 8
+
+    # Audio subscriptions ride the raw-media path: Engine On (captureRequested)
+    # must be set or the spine never subscribes participant audio - the first
+    # soak run captured 3 minutes of structural silence learning this.
+    Write-Host "[soak] enabling Engine On via the control API (with readiness retry)" -ForegroundColor Cyan
+    $engineOn = $false
+    for ($attempt = 1; $attempt -le 10 -and -not $engineOn; $attempt++) {
+        try {
+            Invoke-RestMethod -Uri "http://127.0.0.1:8011/invoke" -Method Post -ContentType "application/json" `
+                -Body '{"action":"transport.engine.set","args":[true]}' -TimeoutSec 5 | Out-Null
+            $engineOn = $true
+        } catch { Start-Sleep -Seconds 3 }
+    }
+    if (-not $engineOn) { Write-Host "[soak] WARN: control API never became reachable - capture may be partial" -ForegroundColor Yellow }
 
     Write-Host "[soak] capturing $Minutes minute(s) of tone through the full pipeline..." -ForegroundColor Cyan
     Start-Sleep -Seconds ($Minutes * 60)
@@ -75,7 +90,7 @@ try {
         exit 1
     }
     Write-Host "[soak] scanning $((Get-Item $monTap).Length / 1MB -as [int])MB MON tap" -ForegroundColor Cyan
-    node (Join-Path $PSScriptRoot "tone-scan.js") $monTap
+    node (Join-Path $PSScriptRoot "tone-scan.cjs") $monTap
     $verdict = $LASTEXITCODE
     exit $verdict
 }

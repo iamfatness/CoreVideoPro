@@ -202,6 +202,7 @@ struct Target {
 // clicks, or autocorr echoes against a mathematically known signal.
 struct AudioToneTarget {
     uint32_t participant_id = 0;
+    double fixedFreq = 0.0;  // >0 overrides the per-participant frequency
     ShmRegion shm;
     uint64_t samplePos = 0;
     uint64_t packetsWritten = 0;
@@ -373,8 +374,17 @@ static void produce_audio_locked(const std::string& uuid, AudioToneTarget& targe
     }
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - target.startedAt).count();
-    const auto due = static_cast<uint64_t>(elapsedMs / 10);
-    const double freq = 220.0 + static_cast<double>(target.participant_id % 8u) * 110.0;
+    auto due = static_cast<uint64_t>(elapsedMs / 10);
+    // After a producer stall, SPREAD the backlog (at most 8 packets per pass)
+    // instead of bursting or SKIPPING - a skip jumps the tone phase and writes
+    // a click INTO the packets (soak run 8: 1400 entrance clicks at packet
+    // seams, all from this). The 128-slot ring absorbs 8-packet passes; the
+    // synthetic timeline simply lags briefly and catches up phase-perfect.
+    if (due > target.packetsWritten + 8) {
+        due = target.packetsWritten + 8;
+    }
+    const double freq = target.fixedFreq > 0.0 ? target.fixedFreq
+                                               : 220.0 + static_cast<double>(target.participant_id % 8u) * 110.0;
     while (target.packetsWritten < due) {
         auto* hdr = static_cast<ShmAudioRingHeader*>(target.shm.ptr);
         const uint32_t w = hdr->write_counter;
@@ -399,9 +409,12 @@ static void produce_audio_locked(const std::string& uuid, AudioToneTarget& targe
         std::atomic_thread_fence(std::memory_order_release);
         hdr->write_counter = w + 1u;
         ++target.packetsWritten;
-        EngineIpc::write(std::string("{\"cmd\":\"audio\",\"source_uuid\":\"") + uuid +
-                         "\",\"participant_id\":" + std::to_string(target.participant_id) +
-                         ",\"byte_len\":960}");
+        // Discovery beacon only (Z2b): the core drains on its poll.
+        if (target.packetsWritten == 1 || target.packetsWritten % 100 == 0) {
+            EngineIpc::write(std::string("{\"cmd\":\"audio\",\"source_uuid\":\"") + uuid +
+                             "\",\"participant_id\":" + std::to_string(target.participant_id) +
+                             ",\"byte_len\":960}");
+        }
     }
 }
 
@@ -424,8 +437,19 @@ static void producer_loop() {
                 }
                 // Z4a: tone packets for subscribed audio targets (paced by
                 // absolute elapsed time, so this ~33ms loop emits 3-4 per pass).
+                // Parity with the real engine: a MIXED meeting stream rides the
+                // active-speaker target (ingested as zoom-mix, which Z1 routes
+                // as the program default - without it no MON bus forms).
+                {
+                    auto& mixed = g_audioTargets["participant-video-1-active-speaker"];
+                    if (mixed.participant_id == 0) {
+                        mixed.participant_id = 1;
+                        mixed.fixedFreq = 330.0;
+                    }
+                    produce_audio_locked("participant-video-1-active-speaker", mixed);
+                }
                 for (auto& [auuid, atarget] : g_audioTargets) {
-                    if (roster_has(atarget.participant_id))
+                    if (atarget.fixedFreq == 0.0 && roster_has(atarget.participant_id))
                         produce_audio_locked(auuid, atarget);
                 }
             }
