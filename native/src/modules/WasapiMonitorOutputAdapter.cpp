@@ -154,6 +154,20 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       cleanup();
       return false;
     }
+    {
+      const char* kind = "pcm";
+      int validBits = mixFormat_->wBitsPerSample;
+      if (mixFormat_->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+        kind = "float";
+      } else if (mixFormat_->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+        const auto& ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE&>(*mixFormat_);
+        kind = ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ? "ext-float" : "ext-pcm";
+        validBits = ext.Samples.wValidBitsPerSample;
+      }
+      std::fprintf(stderr, "[monitor] device mix format: %luHz %dch %d-bit (%d valid) %s (source %dHz)\n",
+                   static_cast<unsigned long>(mixFormat_->nSamplesPerSec), static_cast<int>(mixFormat_->nChannels),
+                   static_cast<int>(mixFormat_->wBitsPerSample), validBits, kind, sourceSampleRate_);
+    }
     if (!describeFormat(*mixFormat_)) {
       warn("Unsupported device sample format; only float32 and 16/32-bit PCM are handled.");
       cleanup();

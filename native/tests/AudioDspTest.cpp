@@ -1004,3 +1004,46 @@ TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
     }
   }
 }
+
+TEST(AudioDsp, AdaptiveReservePrimesOnceThenAbsorbsMissingPackets) {
+  // The click = a mid-stream tick with no packet. After ONE such event the
+  // reserve arms and re-primes; from then on a packetless tick is served a
+  // FULL block from the cushion - no hole, no click. (v1 subtracted the
+  // reserve per-emission and made periodic holes - owner: "way worse".)
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "mic";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence);
+      sequence += 1.0f;
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+  const auto tick = [&](int packetSamples) -> size_t {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    if (packetSamples > 0) {
+      frames.push_back(makeFrame(packetSamples));
+    }
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    size_t emitted = 0;
+    for (const auto& frame : frames) {
+      emitted += frame.pcm.size();
+    }
+    return emitted;
+  };
+
+  EXPECT_EQ(tick(960), 960u);  // pass-through
+  EXPECT_EQ(tick(960), 960u);
+  EXPECT_EQ(tick(0), 0u);      // THE dry tick: click happens once, reserve arms
+  EXPECT_EQ(states["mic"].dryEvents, 1);
+  EXPECT_EQ(tick(960), 0u);    // re-priming: held (we are already in the gap)
+  EXPECT_EQ(tick(960), 960u);  // primed: full block, cushion = 960 floats
+  EXPECT_EQ(tick(0), 960u);    // packetless tick AFTER priming: cushion serves a FULL block - the save
+  EXPECT_EQ(tick(960), 960u);  // stream continues seamlessly
+  EXPECT_EQ(states["mic"].dryEvents, 1);  // no new dry events after arming
+}
