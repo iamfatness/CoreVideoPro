@@ -1364,6 +1364,63 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void RemoveSelectedChannelInsert(string insertName) => ToggleSelectedRackInsert(insertName);
 
+    // ---- C6 workspace: TwoWay parameter properties over the insertSettings
+    // map, one per visible slider. Getters show the core default until the
+    // operator moves something; setters ride Set…InsertParam (sync + clamp in
+    // the core). Notified by NotifySelectedRackChanged on selection/chain change.
+    public double WorkspaceGateThresholdDb
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "thresholdDb", -48);
+        set => SetSelectedChannelInsertParam("Noise Gate", "thresholdDb", value);
+    }
+
+    public double WorkspaceGateReleaseMs
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "releaseMs", 120);
+        set => SetSelectedChannelInsertParam("Noise Gate", "releaseMs", value);
+    }
+
+    public double WorkspaceEqHighpassHz
+    {
+        get => GetSelectedChannelInsertParam("Built-in EQ", "highpassHz", 90);
+        set => SetSelectedChannelInsertParam("Built-in EQ", "highpassHz", value);
+    }
+
+    public double WorkspaceEqPresenceHz
+    {
+        get => GetSelectedChannelInsertParam("Built-in EQ", "presenceHz", 3000);
+        set => SetSelectedChannelInsertParam("Built-in EQ", "presenceHz", value);
+    }
+
+    public double WorkspaceEqPresenceDb
+    {
+        get => GetSelectedChannelInsertParam("Built-in EQ", "presenceDb", 2);
+        set => SetSelectedChannelInsertParam("Built-in EQ", "presenceDb", value);
+    }
+
+    public double WorkspaceCompThresholdDb
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "thresholdDb", -18);
+        set => SetSelectedChannelInsertParam("Compressor", "thresholdDb", value);
+    }
+
+    public double WorkspaceCompRatio
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "ratio", 4);
+        set => SetSelectedChannelInsertParam("Compressor", "ratio", value);
+    }
+
+    private void NotifyWorkspaceParamsChanged()
+    {
+        OnPropertyChanged(nameof(WorkspaceGateThresholdDb));
+        OnPropertyChanged(nameof(WorkspaceGateReleaseMs));
+        OnPropertyChanged(nameof(WorkspaceEqHighpassHz));
+        OnPropertyChanged(nameof(WorkspaceEqPresenceHz));
+        OnPropertyChanged(nameof(WorkspaceEqPresenceDb));
+        OnPropertyChanged(nameof(WorkspaceCompThresholdDb));
+        OnPropertyChanged(nameof(WorkspaceCompRatio));
+    }
+
     // C5d: the rack header name must work for EVERY channel — local audio and
     // media are audio rows, not Zoom participants, so SelectedParticipant.Name
     // showed "—" while a chain was clearly loaded (owner screenshot).
@@ -3986,6 +4043,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
         OnPropertyChanged(nameof(SelectedChannelDisplayName));
+        NotifyWorkspaceParamsChanged();  // C6 sliders + curves follow the channel
         RefreshSelectedChannelInsertSlots();  // C5a rack slots follow the chain
     }
 

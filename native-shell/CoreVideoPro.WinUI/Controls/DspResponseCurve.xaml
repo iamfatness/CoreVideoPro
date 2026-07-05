@@ -1,0 +1,10 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.DspResponseCurve"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="CurveHost" Background="#060A0E" CornerRadius="3">
+        <Polyline x:Name="CurveLine" Stroke="#3FD2A8" StrokeThickness="1.5" />
+        <Polyline x:Name="ReferenceLine" Stroke="#22303A" StrokeThickness="1" />
+    </Grid>
+</UserControl>
