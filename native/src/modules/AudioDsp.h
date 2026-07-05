@@ -389,6 +389,54 @@ inline double applyPeakLimiter(float* samples, size_t count, double thresholdDbf
   return -linearToDbfs(gain);  // gain < 1 -> negative dB; report the magnitude (>0)
 }
 
+// C7d: SMOOTHED brickwall limiter for streaming blocks. The block limiter
+// above derives ONE gain from the whole block's peak — across 20ms ticks that
+// gain JUMPS at every boundary (50Hz zipper distortion on a hot mix; owner-
+// reported). This one is frame-linked with INSTANT attack (the ceiling holds
+// exactly) and release-smoothed recovery, and its gain persists across blocks
+// through `gainState` (same double per bus/channel; nullptr = stateless).
+inline double applySmoothedPeakLimiter(float* samples, size_t count, int channels,
+                                       double thresholdDbfs, double releaseMs, double sampleRate,
+                                       double* gainState = nullptr) {
+  if (samples == nullptr || count == 0 || channels <= 0 || sampleRate <= 0.0) {
+    return 0.0;
+  }
+  const double threshold = dbfsToLinear(thresholdDbfs);
+  const double releaseCoeff = releaseMs <= 0.0 ? 0.0 : std::exp(-1.0 / (releaseMs / 1000.0 * sampleRate));
+  double localGain = 1.0;
+  double& gain = gainState != nullptr ? *gainState : localGain;
+  if (!(gain > 0.0) || gain > 1.0) {
+    gain = 1.0;  // heal an uninitialized/corrupt state
+  }
+  double maxReductionDb = 0.0;
+  const size_t frames = count / static_cast<size_t>(channels);
+  for (size_t frame = 0; frame < frames; ++frame) {
+    double magnitude = 0.0;
+    for (int channel = 0; channel < channels; ++channel) {
+      magnitude = std::max(magnitude, std::fabs(static_cast<double>(samples[frame * channels + channel])));
+    }
+    const double required = magnitude > threshold ? threshold / magnitude : 1.0;
+    if (required < gain) {
+      gain = required;  // instant attack — brickwall holds
+    } else {
+      gain = releaseCoeff * gain + (1.0 - releaseCoeff);  // smooth recovery toward 1
+      if (gain > required) {
+        gain = required;
+      }
+    }
+    for (int channel = 0; channel < channels; ++channel) {
+      double value = static_cast<double>(samples[frame * channels + channel]) * gain;
+      value = std::max(-threshold, std::min(threshold, value));
+      samples[frame * channels + channel] = static_cast<float>(value);
+    }
+    const double reductionDb = -linearToDbfs(gain);
+    if (reductionDb > maxReductionDb) {
+      maxReductionDb = reductionDb;
+    }
+  }
+  return maxReductionDb;
+}
+
 // ---------------------------------------------------------------------------
 // Static downward compressor (no attack/release smoothing).
 //
@@ -499,6 +547,8 @@ struct ChannelDspState {
   size_t gateHoldRemaining = 0;
   // Compressor smoothed gain reduction (dB).
   double compGrDb = 0.0;
+  // C7d: channel limiter smoothed gain (1.0 = no reduction).
+  double limiterGain = 1.0;
 };
 
 // Defined below (spec 4.4): per-channel insert processing over panned stereo.
@@ -537,7 +587,8 @@ struct RoutedAudioCrosspoint {
 inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints,
     bool masterLimiter = true,
-    std::map<std::string, double>* outCompGainReductionDbBySource = nullptr) {
+    std::map<std::string, double>* outCompGainReductionDbBySource = nullptr,
+    std::map<std::string, double>* busLimiterGainStates = nullptr) {
   bool soloActive = false;
   for (const auto& source : sources) {
     if (source.solo && !source.muted) {
@@ -604,9 +655,14 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
   }
 
   for (auto& [busId, bus] : buses) {
-    (void)busId;
     if (masterLimiter) {
-      applyPeakLimiter(bus.data(), bus.size(), -1.0);
+      // C7d: smoothed + stateful per bus - the old block limiter jumped its
+      // gain at every 20ms boundary (zipper distortion on a hot mix).
+      double* gainState = busLimiterGainStates != nullptr ? &(*busLimiterGainStates)[busId] : nullptr;
+      if (gainState != nullptr && *gainState == 0.0) {
+        *gainState = 1.0;
+      }
+      applySmoothedPeakLimiter(bus.data(), bus.size(), 2, -1.0, 60.0, 48000.0, gainState);
     } else {
       // Spec 4.4: the limiter toggle previously gated REPORTING only — buses
       // were always limited. Off now means off, with a hard clamp as the
@@ -980,7 +1036,10 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
       }
       ++applied;
     } else if (lowered.find("limiter") != std::string::npos) {
-      applyPeakLimiter(stereo, count, std::clamp(param(insert, "ceilingDb", -1.0), -12.0, -0.1));
+      applySmoothedPeakLimiter(stereo, count, 2,
+                               std::clamp(param(insert, "ceilingDb", -1.0), -12.0, -0.1),
+                               60.0, sampleRate,
+                               state != nullptr ? &state->limiterGain : nullptr);
       ++applied;
     }
     // Unrecognized third-party plugin names stay pass-through until the

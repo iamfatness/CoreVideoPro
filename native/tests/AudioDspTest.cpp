@@ -913,3 +913,36 @@ TEST(AudioDsp, PersistentStateMakesBlockProcessingContinuous) {
   }
   EXPECT_TRUE(statelessDelta > 1e-4);
 }
+
+TEST(AudioDsp, SmoothedLimiterIsContinuousAcrossBlocks) {
+  // C7d: the block limiter jumped its gain at every 20ms boundary on hot
+  // input (zipper distortion). The smoothed limiter with carried state must
+  // produce the same output block-by-block as one continuous call.
+  const double sampleRate = 48000.0;
+  const size_t frames = 1920;
+  std::vector<float> reference(frames * 2);
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const float sample = static_cast<float>(1.4 * std::sin(2.0 * 3.14159265358979323846 * 180.0 * frame / sampleRate));
+    reference[frame * 2] = sample;
+    reference[frame * 2 + 1] = sample;
+  }
+
+  std::vector<float> oneShot = reference;
+  double gainA = 1.0;
+  corevideo::modules::applySmoothedPeakLimiter(oneShot.data(), oneShot.size(), 2, -1.0, 60.0, sampleRate, &gainA);
+
+  std::vector<float> blocks = reference;
+  double gainB = 1.0;
+  const size_t half = frames;
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data(), half, 2, -1.0, 60.0, sampleRate, &gainB);
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data() + half, half, 2, -1.0, 60.0, sampleRate, &gainB);
+
+  double maxDelta = 0.0;
+  double peak = 0.0;
+  for (size_t index = 0; index < blocks.size(); ++index) {
+    maxDelta = std::max(maxDelta, std::fabs(static_cast<double>(blocks[index] - oneShot[index])));
+    peak = std::max(peak, std::fabs(static_cast<double>(blocks[index])));
+  }
+  EXPECT_TRUE(maxDelta < 1e-6);   // continuous across the boundary
+  EXPECT_TRUE(peak <= corevideo::modules::dbfsToLinear(-1.0) + 1e-6);  // brickwall holds
+}

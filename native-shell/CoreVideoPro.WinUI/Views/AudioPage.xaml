@@ -524,8 +524,10 @@
                         </DropDownButton>
                     </Grid>
 
-                    <!-- GATE cell -->
-                    <Grid Grid.Column="1" RowSpacing="4">
+                    <!-- GATE cell (disabled until a channel is selected - C7d) -->
+                    <Grid Grid.Column="1" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -576,7 +578,9 @@
                     </Grid>
 
                     <!-- COMP cell -->
-                    <Grid Grid.Column="2" RowSpacing="4">
+                    <Grid Grid.Column="2" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -646,7 +650,9 @@
                     </Grid>
 
                     <!-- EQ cell (frequency response drawn from the real biquads) -->
-                    <Grid Grid.Column="3" RowSpacing="4">
+                    <Grid Grid.Column="3" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />

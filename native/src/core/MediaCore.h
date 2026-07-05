@@ -406,6 +406,8 @@ class MediaCore {
   // consumed only inside runAudioOutputWork). Without this, biquads/envelopes
   // restart every 20ms block = audible buzz (owner-reported mic distortion).
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
+  // C7d: per-bus limiter gain state (same block-continuity requirement).
+  std::map<std::string, double> busLimiterGains_;
   std::string audioMonitorWarning_;
   // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
   // thread cannot take coreMutex, which the server owns).

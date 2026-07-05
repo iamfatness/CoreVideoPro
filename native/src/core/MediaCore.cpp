@@ -4055,7 +4055,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
     }
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
-                                                   &results.compGainReductionDbBySource);
+                                                   &results.compGainReductionDbBySource, &busLimiterGains_);
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
     if (!results.routedBusPcm.empty()) {
