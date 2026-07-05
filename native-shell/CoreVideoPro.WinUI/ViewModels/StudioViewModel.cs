@@ -5398,8 +5398,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         NormalizeCaptureAudioAssignments();
-        if (string.IsNullOrWhiteSpace(selectedAudioId) ||
-            AudioCaptureDevices.All(device => !string.Equals(device.Id, selectedAudioId, StringComparison.Ordinal)))
+        if (string.IsNullOrWhiteSpace(selectedAudioId))
         {
             SelectedLocalAudioCaptureDeviceId = ResolveLocalAudioSourceDeviceId(selectedAudioId, AudioCaptureDevices);
         }
@@ -5407,6 +5406,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             SelectedLocalAudioCaptureDeviceId = selectedAudioId;
         }
+        // A saved id MISSING from the catalog stays selected: the first rebuild
+        // runs before WASAPI discovery returns, and resolving-to-default here
+        // overwrote the persisted mic choice on every launch (owner: Chat Mic
+        // reverted to system loopback after each restart).
 
         RefreshShowInputEditors();
         OnPropertyChanged(nameof(AudioCaptureDevices));
