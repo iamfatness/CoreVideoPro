@@ -1567,6 +1567,21 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     }
     input.solo = channel.get("solo") && channel.get("solo")->asBool();
     input.pluginInserts = channel.getStringArray("pluginInserts");
+    // C5b: per-insert parameter overrides (gate threshold, EQ freqs, comp
+    // ratio…). Unknown keys are carried and ignored by the chain.
+    if (const rpc::Json* settings = channel.get("insertSettings"); settings != nullptr && settings->isObject()) {
+      for (const auto& [insertName, params] : settings->asObject()) {
+        if (!params.isObject()) {
+          continue;
+        }
+        auto& target = input.insertSettings[insertName];
+        for (const auto& [key, value] : params.asObject()) {
+          if (value.isNumber()) {
+            target[key] = value.asNumber();
+          }
+        }
+      }
+    }
     if (!input.participantId.empty()) {
       audioChannels_.push_back(std::move(input));
     }
@@ -4018,6 +4033,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
           // (previously stored/exported only). Pointer into work.channels,
           // which outlives the mix call.
           source.inserts = &channel.pluginInserts;
+          source.insertSettings = &channel.insertSettings;  // C5b params
           source.noiseSuppression = channel.noiseSuppression;
           source.sampleRate = modules_.mixer->monitorBusSampleRate();
           break;

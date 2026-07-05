@@ -80,6 +80,90 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // ---- C5b slot editor: parameter sliders for the built-in processors.
+    // (label, key, min, max, step, default) per recognized insert kind — the
+    // same names and clamp ranges the core chain applies (AudioDsp.h).
+    private static (string Label, string Key, double Min, double Max, double Step, double Default)[] InsertParamSpecs(string insertName)
+    {
+        var lowered = insertName.ToLowerInvariant();
+        if (lowered.Contains("gate") || lowered.Contains("noise"))
+        {
+            return [("Threshold (dBFS)", "thresholdDb", -80, -12, 1, -48), ("Release (ms)", "releaseMs", 20, 500, 5, 120)];
+        }
+        if (lowered.Contains("high-pass") || lowered.Contains("highpass") || lowered.Contains("low-cut") || lowered.Contains("hpf"))
+        {
+            return [("High-pass (Hz)", "highpassHz", 20, 400, 5, 90)];
+        }
+        if (lowered.Contains("eq") || lowered.Contains("voice"))
+        {
+            return
+            [
+                ("High-pass (Hz)", "highpassHz", 20, 400, 5, 90),
+                ("Presence (Hz)", "presenceHz", 800, 8000, 100, 3000),
+                ("Presence (dB)", "presenceDb", -12, 12, 0.5, 2)
+            ];
+        }
+        if (lowered.Contains("compressor"))
+        {
+            return [("Threshold (dBFS)", "thresholdDb", -40, -6, 1, -18), ("Ratio", "ratio", 1, 20, 0.5, 4)];
+        }
+        if (lowered.Contains("limiter"))
+        {
+            return [("Ceiling (dBFS)", "ceilingDb", -12, -0.1, 0.1, -1)];
+        }
+        return [];
+    }
+
+    private void OnInsertSlotFlyoutOpening(object sender, object e)
+    {
+        if (sender is not Flyout { Content: StackPanel panel } flyout ||
+            flyout.Target is not FrameworkElement { DataContext: Models.InsertSlotItem slot } ||
+            ViewModel is not { } viewModel)
+        {
+            return;
+        }
+
+        panel.Children.Clear();
+        panel.Children.Add(new TextBlock { Text = slot.Name, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+
+        var specs = InsertParamSpecs(slot.Name);
+        if (specs.Length == 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = slot.IsBuiltIn ? "No adjustable parameters." : "Parameters arrive with the plugin host (P2).",
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7
+            });
+        }
+
+        var insertName = slot.Name;
+        foreach (var spec in specs)
+        {
+            var slider = new Slider
+            {
+                Header = spec.Label,
+                Minimum = spec.Min,
+                Maximum = spec.Max,
+                StepFrequency = spec.Step,
+                Value = viewModel.GetSelectedChannelInsertParam(insertName, spec.Key, spec.Default)
+            };
+            var key = spec.Key;
+            slider.ValueChanged += (_, args) =>
+                ViewModel?.SetSelectedChannelInsertParam(insertName, key, args.NewValue);
+            panel.Children.Add(slider);
+        }
+
+        var remove = new Button { Content = "Remove from chain", Margin = new Thickness(0, 6, 0, 0) };
+        remove.Click += (_, _) =>
+        {
+            ViewModel?.RemoveSelectedChannelInsert(insertName);
+            flyout.Hide();
+        };
+        panel.Children.Add(remove);
+    }
+
     // Populate the "+ Add" flyout on open: built-ins first, then every scanned
     // VST3 plugin (P1 browser results). Rebuilt each open so a new scan shows
     // up without any binding churn.

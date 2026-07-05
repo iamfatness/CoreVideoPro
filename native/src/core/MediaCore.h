@@ -380,6 +380,9 @@ class MediaCore {
     double pan = 0;
     bool solo = false;
     std::vector<std::string> pluginInserts;
+    // C5b: per-insert parameter overrides {insertName -> {param -> value}};
+    // missing entries mean the DSP defaults.
+    std::map<std::string, std::map<std::string, double>> insertSettings;
   };
   std::vector<ParticipantAudioChannelInput> audioChannels_;
   bool audioLimiterEnabled_ = true;

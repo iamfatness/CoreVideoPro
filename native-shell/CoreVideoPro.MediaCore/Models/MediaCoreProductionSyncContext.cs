@@ -97,7 +97,10 @@ public sealed record MediaCoreAudioMixChannelWire(
     double? ManualGainDb,
     double Pan = 0,
     bool Solo = false,
-    IReadOnlyList<string>? PluginInserts = null);
+    IReadOnlyList<string>? PluginInserts = null,
+    // C5b: per-insert parameter overrides {insertName -> {param -> value}};
+    // null/missing = core defaults.
+    IReadOnlyDictionary<string, Dictionary<string, double>>? InsertSettings = null);
 
 /// <summary>One routed crosspoint in the audio routing gain matrix.</summary>
 public sealed record MediaCoreAudioRoutingSendWire(

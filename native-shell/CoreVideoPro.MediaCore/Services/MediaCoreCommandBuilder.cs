@@ -356,7 +356,8 @@ public static class MediaCoreCommandBuilder
                 manualGainDb = channel.ManualGainDb,
                 pan = channel.Pan,
                 solo = channel.Solo,
-                pluginInserts = channel.PluginInserts ?? []
+                pluginInserts = channel.PluginInserts ?? [],
+                insertSettings = channel.InsertSettings ?? new Dictionary<string, Dictionary<string, double>>()
             }).ToList()
         });
 
