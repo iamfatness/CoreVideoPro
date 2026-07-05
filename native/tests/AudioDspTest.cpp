@@ -1082,3 +1082,47 @@ TEST(AudioDsp, IngestResamplerIsContinuousAcrossBlocksAndTimeCorrect) {
   // Time correctness: 1280 frames @32k = 40ms -> ~1920 frames @48k (±2).
   EXPECT_TRUE(oneShot.size() >= 1918u && oneShot.size() <= 1922u);
 }
+
+TEST(AudioDsp, SteadyFeedDeclicksFlowResumption) {
+  // Z2a: Zoom gates ISO streams server-side - packet flow stops between talk
+  // bursts and resumes with a step. The feed applies a ~5ms linear fade-in at
+  // every flow onset so resumptions never click.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  const auto makeFrame = [](int samples, float value) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "iso";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    frame.pcm.assign(static_cast<size_t>(samples), value);
+    frame.sampleCount = samples;
+    return frame;
+  };
+  const auto tick = [&](corevideo::modules::AudioFrame* frame) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    if (frame != nullptr) {
+      frames.push_back(*frame);
+    }
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    return frames;
+  };
+
+  // Burst 1: FIRST onsets are bit-exact (one-shot bursts and tests depend on
+  // exactness; a stream start is almost always from silence anyway).
+  auto first = makeFrame(960, 0.5f);
+  auto out = tick(&first);
+  ASSERT_TRUE(!out.empty() && out[0].pcm.size() == 960u);
+  EXPECT_EQ(out[0].pcm[0], 0.5f);
+  EXPECT_EQ(out[0].pcm[400], 0.5f);
+
+  // Gap: two packetless ticks drain and dry the source.
+  (void)tick(nullptr);
+  (void)tick(nullptr);
+
+  // Burst 2 (RESUMPTION after the gap): fades in over ~5ms.
+  auto second = makeFrame(960, 0.5f);
+  out = tick(&second);
+  ASSERT_TRUE(!out.empty() && out[0].pcm.size() == 960u);
+  EXPECT_TRUE(out[0].pcm[0] < 0.02f);
+  EXPECT_TRUE(out[0].pcm[120] > 0.2f && out[0].pcm[120] < 0.3f);  // mid-fade ~0.25
+  EXPECT_EQ(out[0].pcm[400], 0.5f);  // past the 240-frame fade: untouched
+}

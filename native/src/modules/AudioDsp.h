@@ -570,7 +570,31 @@ struct AudioFeedState {
   std::vector<float> fifo;
   int sampleRate = 0;
   int channels = 0;
+  // Z2a (Ardour: every discontinuity gets a ramp): when flow RESUMES after a
+  // silent/absent tick, a ~5ms linear fade-in declicks the onset (Zoom gates
+  // ISO streams server-side between talk bursts - resumptions were steps).
+  size_t lastEmitted = 0;
+  bool hasEverEmitted = false;  // fade RESUMPTIONS only - first onsets stay bit-exact
+  size_t fadeInRemaining = 0;   // frames left in the current fade
+  size_t fadeInTotal = 0;
 };
+
+inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t samples, size_t channels) {
+  if (state.fadeInRemaining == 0 || channels == 0 || samples == 0) {
+    return;
+  }
+  const size_t frames = samples / channels;
+  const size_t fadeFrames = frames < state.fadeInRemaining ? frames : state.fadeInRemaining;
+  const auto total = static_cast<double>(state.fadeInTotal);
+  for (size_t frame = 0; frame < fadeFrames; ++frame) {
+    const double progressed = static_cast<double>(state.fadeInTotal - state.fadeInRemaining + frame);
+    const auto gain = static_cast<float>(progressed / total);
+    for (size_t channel = 0; channel < channels; ++channel) {
+      interleaved[frame * channels + channel] *= gain;
+    }
+  }
+  state.fadeInRemaining -= fadeFrames;
+}
 
 // Block RESHAPER, zero added latency: whatever arrives is emitted immediately
 // up to ONE tick of samples; any surplus (a tick that caught two packets)
@@ -602,6 +626,15 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    if (emit > 0 && state.lastEmitted == 0 && state.hasEverEmitted) {
+      state.fadeInTotal = static_cast<size_t>(0.005 * frame.sampleRate);
+      state.fadeInRemaining = state.fadeInTotal;
+    }
+    applyResumeFadeIn(state, frame.pcm.data(), emit, static_cast<size_t>(frame.channels));
+    if (emit > 0) {
+      state.hasEverEmitted = true;
+    }
+    state.lastEmitted = emit;
 
     // Cap runaway accumulation (device clock slightly fast): keep at most
     // 6 ticks buffered by dropping the OLDEST audio. The drop MUST be frame-
@@ -620,7 +653,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
   // hole the surplus exists to fill — drain up to one tick from its FIFO as
   // a synthesized frame.
   for (auto& [sourceId, state] : states) {
-    if (state.fifo.empty() || state.channels <= 0 || state.sampleRate <= 0) {
+    if (state.channels <= 0 || state.sampleRate <= 0) {
       continue;
     }
     bool seen = false;
@@ -633,6 +666,10 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (seen) {
       continue;
     }
+    if (state.fifo.empty()) {
+      state.lastEmitted = 0;  // dry: the NEXT flow onset gets a declick fade
+      continue;
+    }
     const size_t tickSamples =
         static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
     const size_t emit = std::min(state.fifo.size(), tickSamples);
@@ -643,6 +680,15 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     fill.sampleCount = static_cast<int>(emit / static_cast<size_t>(state.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    if (emit > 0 && state.lastEmitted == 0 && state.hasEverEmitted) {
+      state.fadeInTotal = static_cast<size_t>(0.005 * state.sampleRate);
+      state.fadeInRemaining = state.fadeInTotal;
+    }
+    applyResumeFadeIn(state, fill.pcm.data(), emit, static_cast<size_t>(state.channels));
+    if (emit > 0) {
+      state.hasEverEmitted = true;
+    }
+    state.lastEmitted = emit;
     frames.push_back(std::move(fill));
   }
 }
