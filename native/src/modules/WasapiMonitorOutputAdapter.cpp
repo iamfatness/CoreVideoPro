@@ -34,6 +34,7 @@ namespace corevideo::modules {
 #include <windows.h>
 
 #include <audioclient.h>
+#include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propidl.h>
@@ -150,6 +151,13 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       cleanup();
       return false;
     }
+
+    // Endpoint-contention guard (zoom-audio-spec O4): if ANOTHER process has
+    // an active render session on this endpoint (e.g. the Zoom client playing
+    // the meeting while the operator monitors it here), the operator hears a
+    // superposition our PCM taps can never see. Detect it and say so — the
+    // 2026-07-05 hunt burned hours on exactly this invisible second copy.
+    warnAboutForeignRenderSessions(device);
     safeRelease(device);
 
     hr = client_->GetMixFormat(&mixFormat_);
@@ -527,6 +535,68 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
           std::memcpy(slot, &sample, sizeof(int32_t));
         }
       }
+    }
+  }
+
+  // Z4/O4: enumerate ACTIVE render sessions other processes hold on the
+  // monitor endpoint and warn with the offender's name — the operator hears
+  // their output superimposed on ours, and no PCM tap can show it.
+  void warnAboutForeignRenderSessions(IMMDevice* device) {
+    if (device == nullptr) {
+      return;
+    }
+    IAudioSessionManager2* manager = nullptr;
+    if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
+                                reinterpret_cast<void**>(&manager))) ||
+        manager == nullptr) {
+      return;  // best-effort guard; never fail the monitor over it
+    }
+    IAudioSessionEnumerator* sessions = nullptr;
+    if (FAILED(manager->GetSessionEnumerator(&sessions)) || sessions == nullptr) {
+      safeRelease(manager);
+      return;
+    }
+    int count = 0;
+    (void)sessions->GetCount(&count);
+    const DWORD ourPid = ::GetCurrentProcessId();
+    std::string offenders;
+    for (int index = 0; index < count; ++index) {
+      IAudioSessionControl* control = nullptr;
+      if (FAILED(sessions->GetSession(index, &control)) || control == nullptr) {
+        continue;
+      }
+      AudioSessionState sessionState = AudioSessionStateInactive;
+      IAudioSessionControl2* control2 = nullptr;
+      if (SUCCEEDED(control->GetState(&sessionState)) && sessionState == AudioSessionStateActive &&
+          SUCCEEDED(control->QueryInterface(__uuidof(IAudioSessionControl2),
+                                            reinterpret_cast<void**>(&control2))) &&
+          control2 != nullptr) {
+        DWORD pid = 0;
+        if (SUCCEEDED(control2->GetProcessId(&pid)) && pid != 0 && pid != ourPid) {
+          std::string name = "pid " + std::to_string(pid);
+          if (HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+            char path[MAX_PATH];
+            DWORD size = MAX_PATH;
+            if (::QueryFullProcessImageNameA(process, 0, path, &size)) {
+              const std::string full(path, size);
+              const auto slash = full.find_last_of("\\/");
+              name = slash == std::string::npos ? full : full.substr(slash + 1);
+            }
+            ::CloseHandle(process);
+          }
+          if (offenders.find(name) == std::string::npos) {
+            offenders += offenders.empty() ? name : (", " + name);
+          }
+        }
+      }
+      safeRelease(control2);
+      safeRelease(control);
+    }
+    safeRelease(sessions);
+    safeRelease(manager);
+    if (!offenders.empty()) {
+      warn("Another app is playing audio on the monitor device (" + offenders +
+           ") — you may hear it doubled over the mix. Mute it or monitor on a different device.");
     }
   }
 
