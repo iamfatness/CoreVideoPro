@@ -810,3 +810,57 @@ TEST(AudioDsp, EightBandEqBoostsItsBand) {
   const double flat500 = tailPeakAt(500.0, nullptr);
   EXPECT_TRUE(std::fabs(mid500 - flat500) < 0.02);  // distant band untouched
 }
+
+// ---- C7: competitive dynamics ------------------------------------------------
+
+TEST(AudioDsp, StereoCompressorAttacksReleasesAndReportsGainReduction) {
+  const double sampleRate = 48000.0;
+  // 0.5s of a loud constant signal (~-2.5 dBFS) against threshold -20, ratio 4.
+  std::vector<float> stereo(48000, 0.75f);
+  const double grDb = corevideo::modules::applyStereoCompressor(
+      stereo.data(), stereo.size(), sampleRate, -20.0, 4.0, 10.0, 120.0, 0.0, 0.0);
+
+  // Static math: level -2.5dB, over = 17.5dB, GR = (1 - 1/4)*17.5 ~= 13.1dB.
+  EXPECT_TRUE(grDb > 11.0);
+  EXPECT_TRUE(grDb < 15.0);
+
+  // ATTACK: the first millisecond is barely compressed; the tail is fully
+  // compressed (output ~= 0.75 * 10^(-13.1/20) ~= 0.166).
+  EXPECT_TRUE(stereo[2] > 0.6f);                      // ~40µs in: gain still near 1
+  EXPECT_TRUE(std::fabs(stereo[stereo.size() - 2] - 0.166f) < 0.02f);
+}
+
+TEST(AudioDsp, StereoCompressorMakeupRestoresLevel) {
+  const double sampleRate = 48000.0;
+  std::vector<float> stereo(48000, 0.75f);
+  corevideo::modules::applyStereoCompressor(
+      stereo.data(), stereo.size(), sampleRate, -20.0, 4.0, 1.0, 120.0, 0.0, 13.0);
+  // GR ~13.1dB + makeup 13dB ~= unity at the tail.
+  EXPECT_TRUE(std::fabs(stereo[stereo.size() - 2] - 0.74f) < 0.05f);
+}
+
+TEST(AudioDsp, GateRangeDucksToFloorInsteadOfSilenceAndHoldStaysOpen) {
+  const double sampleRate = 48000.0;
+  // Layout: 100ms loud burst, then 400ms quiet hiss.
+  const size_t frames = 24000;
+  std::vector<float> stereo(frames * 2);
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const float sample = frame < 4800 ? 0.5f : 0.01f;
+    stereo[frame * 2] = sample;
+    stereo[frame * 2 + 1] = sample;
+  }
+
+  // rangeDb -20 (audible floor), holdMs 100.
+  corevideo::modules::applyStereoLinkedGate(stereo.data(), stereo.size(), -30.0, 2.0, 30.0, sampleRate,
+                                            -20.0, 100.0);
+
+  // HOLD: ~50ms after the burst ends (inside the 100ms hold) the hiss passes.
+  const size_t holdIdx = (4800 + 2400) * 2;
+  EXPECT_TRUE(std::fabs(stereo[holdIdx] - 0.01f) < 0.003f);
+
+  // RANGE: deep in the gated tail the hiss sits near the -20dB floor
+  // (0.01 * 0.1 = 0.001), NOT at zero.
+  const size_t tailIdx = (frames - 100) * 2;
+  EXPECT_TRUE(stereo[tailIdx] > 0.0005f);
+  EXPECT_TRUE(stereo[tailIdx] < 0.002f);
+}

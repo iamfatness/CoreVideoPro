@@ -1380,6 +1380,51 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         set => SetSelectedChannelInsertParam("Noise Gate", "releaseMs", value);
     }
 
+    // C7: competitive gate — attack, hold (stays open between words), and
+    // range (ducks to a floor instead of hard silence).
+    public double WorkspaceGateAttackMs
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "attackMs", 5);
+        set => SetSelectedChannelInsertParam("Noise Gate", "attackMs", value);
+    }
+
+    public double WorkspaceGateHoldMs
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "holdMs", 50);
+        set => SetSelectedChannelInsertParam("Noise Gate", "holdMs", value);
+    }
+
+    public double WorkspaceGateRangeDb
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "rangeDb", -60);
+        set => SetSelectedChannelInsertParam("Noise Gate", "rangeDb", value);
+    }
+
+    // C7: competitive compressor — envelope times, soft knee, makeup.
+    public double WorkspaceCompAttackMs
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "attackMs", 10);
+        set => SetSelectedChannelInsertParam("Compressor", "attackMs", value);
+    }
+
+    public double WorkspaceCompReleaseMs
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "releaseMs", 120);
+        set => SetSelectedChannelInsertParam("Compressor", "releaseMs", value);
+    }
+
+    public double WorkspaceCompKneeDb
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "kneeDb", 6);
+        set => SetSelectedChannelInsertParam("Compressor", "kneeDb", value);
+    }
+
+    public double WorkspaceCompMakeupDb
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "makeupDb", 0);
+        set => SetSelectedChannelInsertParam("Compressor", "makeupDb", value);
+    }
+
     public double WorkspaceEqHighpassHz
     {
         get => GetSelectedChannelInsertParam("Built-in EQ", "highpassHz", 90);
@@ -1426,6 +1471,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(WorkspaceGateThresholdDb));
         OnPropertyChanged(nameof(WorkspaceGateReleaseMs));
+        OnPropertyChanged(nameof(WorkspaceGateAttackMs));
+        OnPropertyChanged(nameof(WorkspaceGateHoldMs));
+        OnPropertyChanged(nameof(WorkspaceGateRangeDb));
+        OnPropertyChanged(nameof(WorkspaceCompAttackMs));
+        OnPropertyChanged(nameof(WorkspaceCompReleaseMs));
+        OnPropertyChanged(nameof(WorkspaceCompKneeDb));
+        OnPropertyChanged(nameof(WorkspaceCompMakeupDb));
         OnPropertyChanged(nameof(WorkspaceEqHighpassHz));
         for (var band = 1; band <= 8; band++)
         {

@@ -485,7 +485,8 @@ using ChannelInsertSettings = std::map<std::string, std::map<std::string, double
 // Defined below (spec 4.4): per-channel insert processing over panned stereo.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
                                    const std::vector<std::string>& inserts, bool noiseSuppression,
-                                   const ChannelInsertSettings* settings = nullptr);
+                                   const ChannelInsertSettings* settings = nullptr,
+                                   double* compGainReductionDb = nullptr);
 
 struct RoutedAudioSource {
   std::string sourceId;
@@ -729,12 +730,18 @@ inline void applyStereoEqCascade(float* stereo, size_t count, const std::vector<
 // the SAME smoothed gain applied to both channels (an unlinked gate would let
 // the image wander as channels open independently). Same envelope/coefficient
 // model as applyNoiseGate. Returns the gated-sample fraction [0,1].
+// C7 additions: `rangeDb` is the closed-gate FLOOR (competitive gates duck to
+// a range, not to digital silence — far more natural on speech), `holdMs`
+// keeps the gate open after the signal drops below threshold (prevents
+// inter-word chatter). Defaults preserve the original hard-gate behavior.
 inline double applyStereoLinkedGate(float* stereo, size_t count, double thresholdDbfs, double attackMs,
-                                    double releaseMs, double sampleRate) {
+                                    double releaseMs, double sampleRate,
+                                    double rangeDb = -80.0, double holdMs = 0.0) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
     return 0.0;
   }
   const double threshold = dbfsToLinear(thresholdDbfs);
+  const double floorGain = dbfsToLinear(rangeDb);
   const auto timeConstantCoeff = [sampleRate](double timeMs) -> double {
     if (timeMs <= 0.0) {
       return 0.0;
@@ -744,8 +751,10 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
   };
   const double attackCoeff = timeConstantCoeff(attackMs);
   const double releaseCoeff = timeConstantCoeff(releaseMs);
+  const size_t holdFrames = holdMs <= 0.0 ? 0 : static_cast<size_t>(holdMs / 1000.0 * sampleRate);
   double envelope = 0.0;
-  double gain = 0.0;
+  double gain = floorGain;
+  size_t holdRemaining = 0;
   size_t gatedFrames = 0;
   const size_t frames = count / 2;
   for (size_t frame = 0; frame < frames; ++frame) {
@@ -753,7 +762,18 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
                                       std::fabs(static_cast<double>(stereo[frame * 2 + 1])));
     const double envCoeff = magnitude > envelope ? attackCoeff : releaseCoeff;
     envelope = envCoeff * envelope + (1.0 - envCoeff) * magnitude;
-    const double targetGain = envelope >= threshold ? 1.0 : 0.0;
+
+    double targetGain;
+    if (envelope >= threshold) {
+      targetGain = 1.0;
+      holdRemaining = holdFrames;
+    } else if (holdRemaining > 0) {
+      targetGain = 1.0;  // hold window: stay open between words
+      --holdRemaining;
+    } else {
+      targetGain = floorGain;
+    }
+
     const double gainCoeff = targetGain > gain ? attackCoeff : releaseCoeff;
     gain = gainCoeff * gain + (1.0 - gainCoeff) * targetGain;
     if (gain < 0.5) {
@@ -763,6 +783,60 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
     stereo[frame * 2 + 1] = static_cast<float>(static_cast<double>(stereo[frame * 2 + 1]) * gain);
   }
   return static_cast<double>(gatedFrames) / static_cast<double>(frames);
+}
+
+// Channel-linked stereo compressor (C7: the competitive version — the old
+// applyCompressor is an envelope-free waveshaper). Feed-forward design:
+// peak detector over max(|L|,|R|) per frame, STATIC soft-knee gain computer,
+// attack/release smoothing on the gain-reduction signal (attack when GR
+// rises, release when it falls), same gain to both channels, then makeup.
+// Returns the maximum gain reduction in dB (>= 0) for GR metering.
+inline double applyStereoCompressor(float* stereo, size_t count, double sampleRate,
+                                    double thresholdDb, double ratio, double attackMs,
+                                    double releaseMs, double kneeDb, double makeupDb) {
+  if (stereo == nullptr || count < 2 || sampleRate <= 0.0 || ratio < 1.0) {
+    return 0.0;
+  }
+  const auto timeCoeff = [sampleRate](double timeMs) -> double {
+    if (timeMs <= 0.0) {
+      return 0.0;
+    }
+    return std::exp(-1.0 / (timeMs / 1000.0 * sampleRate));
+  };
+  const double attackCoeff = timeCoeff(attackMs);
+  const double releaseCoeff = timeCoeff(releaseMs);
+  const double makeup = dbfsToLinear(makeupDb);
+  const double knee = std::max(0.0, kneeDb);
+  const double slope = 1.0 - 1.0 / ratio;
+
+  double smoothedGrDb = 0.0;
+  double maxGrDb = 0.0;
+  const size_t frames = count / 2;
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const double magnitude = std::max(std::fabs(static_cast<double>(stereo[frame * 2])),
+                                      std::fabs(static_cast<double>(stereo[frame * 2 + 1])));
+    const double levelDb = linearToDbfs(magnitude);
+    const double over = levelDb - thresholdDb;
+
+    double targetGrDb = 0.0;
+    if (knee > 0.0 && over > -knee / 2.0 && over < knee / 2.0) {
+      const double x = over + knee / 2.0;
+      targetGrDb = slope * x * x / (2.0 * knee);  // quadratic knee interpolation
+    } else if (over >= knee / 2.0) {
+      targetGrDb = slope * over;
+    }
+
+    const double smoothing = targetGrDb > smoothedGrDb ? attackCoeff : releaseCoeff;
+    smoothedGrDb = smoothing * smoothedGrDb + (1.0 - smoothing) * targetGrDb;
+    if (smoothedGrDb > maxGrDb) {
+      maxGrDb = smoothedGrDb;
+    }
+
+    const double gain = dbfsToLinear(-smoothedGrDb) * makeup;
+    stereo[frame * 2] = static_cast<float>(stereo[frame * 2] * gain);
+    stereo[frame * 2 + 1] = static_cast<float>(stereo[frame * 2 + 1] * gain);
+  }
+  return maxGrDb;
 }
 
 // Per-CHANNEL insert chain over the source's panned stereo, run inside
@@ -778,7 +852,8 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
 // Returns the number of inserts that actually processed audio.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
                                    const std::vector<std::string>& inserts, bool noiseSuppression,
-                                   const ChannelInsertSettings* settings) {
+                                   const ChannelInsertSettings* settings,
+                                   double* compGainReductionDb) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
     return 0;
   }
@@ -808,9 +883,11 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
     if (lowered.find("gate") != std::string::npos || lowered.find("noise") != std::string::npos) {
       applyStereoLinkedGate(stereo, count,
                             std::clamp(param(insert, "thresholdDb", -48.0), -80.0, -12.0),
-                            5.0,
+                            std::clamp(param(insert, "attackMs", 5.0), 0.5, 50.0),
                             std::clamp(param(insert, "releaseMs", 120.0), 20.0, 500.0),
-                            sampleRate);
+                            sampleRate,
+                            std::clamp(param(insert, "rangeDb", -60.0), -80.0, -6.0),
+                            std::clamp(param(insert, "holdMs", 50.0), 0.0, 500.0));
       gated = true;
       ++applied;
     } else if (lowered.find("high-pass") != std::string::npos || lowered.find("highpass") != std::string::npos ||
@@ -836,9 +913,19 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
       applyStereoEqCascade(stereo, count, cascade);
       ++applied;
     } else if (lowered.find("compressor") != std::string::npos) {
-      applyCompressor(stereo, count,
-                      std::clamp(param(insert, "thresholdDb", -18.0), -40.0, -6.0),
-                      std::clamp(param(insert, "ratio", 4.0), 1.0, 20.0));
+      // C7: the real compressor (envelope + soft knee + makeup). GR of the
+      // LAST compressor in the chain is reported for metering.
+      const double grDb = applyStereoCompressor(
+          stereo, count, sampleRate,
+          std::clamp(param(insert, "thresholdDb", -18.0), -40.0, -6.0),
+          std::clamp(param(insert, "ratio", 4.0), 1.0, 20.0),
+          std::clamp(param(insert, "attackMs", 10.0), 0.1, 100.0),
+          std::clamp(param(insert, "releaseMs", 120.0), 10.0, 1000.0),
+          std::clamp(param(insert, "kneeDb", 6.0), 0.0, 24.0),
+          std::clamp(param(insert, "makeupDb", 0.0), 0.0, 24.0));
+      if (compGainReductionDb != nullptr) {
+        *compGainReductionDb = grDb;
+      }
       ++applied;
     } else if (lowered.find("limiter") != std::string::npos) {
       applyPeakLimiter(stereo, count, std::clamp(param(insert, "ceilingDb", -1.0), -12.0, -0.1));
