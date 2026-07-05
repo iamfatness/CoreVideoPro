@@ -290,7 +290,10 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                     // stream, monitor). "stream" was previously omitted here, so
                     // the grid under-reported what was actually routed until the
                     // core snapshot hydrate (ApplyCoreSends) corrected it.
-                    else if (bus.Id is "master" or "pgm-l" or "pgm-r" or "stream" or "mon")
+                    // Z1: sources marked DefaultUnrouted (Zoom ISO) stage no sends -
+                    // the operator routes them deliberately.
+                    else if (!source.DefaultUnrouted &&
+                             bus.Id is "master" or "pgm-l" or "pgm-r" or "stream" or "mon")
                     {
                         cell.IsRouted = true;
                         cell.GainDb = 0;
