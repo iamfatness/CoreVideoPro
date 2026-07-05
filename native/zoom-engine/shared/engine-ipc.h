@@ -40,6 +40,31 @@ struct ShmAudioHeader {
     uint32_t byte_len;
 };
 
+// Audio RING (2026-07-05, owner-heard garbled Zoom audio): the single-slot
+// ShmAudioHeader snapshot was overwritten every 10ms packet - whenever the
+// consumer pipe-event handling lagged even one packet, audio was lost,
+// duplicated, or torn. Video can latest-wins; AUDIO CANNOT. 32 sequenced
+// slots give the reader ~320ms of lossless catch-up.
+struct ShmAudioRingHeader {
+    uint32_t magic;                   // CVAR = 0x43564152; guards layout mismatch
+    volatile uint32_t write_counter;  // packets written; slot index = counter % slot_count
+    uint32_t slot_count;
+    uint32_t slot_payload;            // payload bytes per slot
+};
+struct ShmAudioRingSlot {
+    volatile uint32_t seq;  // 2*counter+1 while writing, 2*counter+2 complete
+    uint32_t byte_len;
+    uint32_t sample_rate;
+    uint16_t channels;
+    uint16_t reserved;
+    // int16 interleaved PCM payload follows (slot_payload bytes reserved)
+};
+enum : uint32_t { kAudioRingMagic = 0x43564152u, kAudioRingSlots = 32u, kAudioRingSlotPayload = 4096u };
+inline size_t audio_ring_slot_stride() { return sizeof(ShmAudioRingSlot) + kAudioRingSlotPayload; }
+inline size_t audio_ring_region_size() {
+    return sizeof(ShmAudioRingHeader) + kAudioRingSlots * audio_ring_slot_stride();
+}
+
 // ── Instance-scoped IPC naming ────────────────────────────────────────────────
 // The named pipes / unix sockets / shared-memory regions all share the
 // "ZoomObsPlugin_" base name this engine inherited from the OBS Zoom plugin it

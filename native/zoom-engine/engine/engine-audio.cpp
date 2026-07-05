@@ -147,11 +147,18 @@ bool EngineAudio::ensure_shm(AudioTarget &target,
                              const std::string &source_uuid,
                              uint32_t byte_len)
 {
-    const size_t total = sizeof(ShmAudioHeader) + byte_len;
-    if (target.shm.ptr && target.shm.size >= total) return true;
+    (void)byte_len;  // ring slots are fixed-size; the region never resizes
+    if (target.shm.ptr && target.shm.size >= audio_ring_region_size()) return true;
 
     const std::string region_name = EngineIpc::shm_prefix() + source_uuid + "_audio";
-    return shm_region_create(target.shm, region_name, total);
+    if (!shm_region_create(target.shm, region_name, audio_ring_region_size())) return false;
+    auto *hdr = static_cast<ShmAudioRingHeader *>(target.shm.ptr);
+    hdr->slot_count = kAudioRingSlots;
+    hdr->slot_payload = kAudioRingSlotPayload;
+    hdr->write_counter = 0;
+    std::atomic_thread_fence(std::memory_order_release);
+    hdr->magic = kAudioRingMagic;  // magic LAST: readers ignore until layout is ready
+    return true;
 }
 
 void EngineAudio::output_audio_frame(AudioTarget &target,
@@ -172,19 +179,24 @@ void EngineAudio::output_audio_frame(AudioTarget &target,
         return;
     }
 
-    auto *hdr        = static_cast<ShmAudioHeader *>(target.shm.ptr);
-    uint32_t seq = hdr->sequence + 1;
-    if ((seq & 1u) == 0) ++seq;
-    hdr->sequence = seq;
+    // Ring write: per-slot seqlock (odd while writing) then publish the counter.
+    auto *hdr = static_cast<ShmAudioRingHeader *>(target.shm.ptr);
+    const uint32_t w = hdr->write_counter;
+    const uint32_t copyLen = byte_len <= kAudioRingSlotPayload ? byte_len : kAudioRingSlotPayload;
+    auto *slotBase = static_cast<char *>(target.shm.ptr) + sizeof(ShmAudioRingHeader) +
+                     static_cast<size_t>(w % kAudioRingSlots) * audio_ring_slot_stride();
+    auto *slot = reinterpret_cast<ShmAudioRingSlot *>(slotBase);
+    slot->seq = 2u * w + 1u;
     std::atomic_thread_fence(std::memory_order_release);
-    hdr->sample_rate = data->GetSampleRate();
-    hdr->channels    = static_cast<uint16_t>(data->GetChannelNum());
-    hdr->reserved    = 0;
-    hdr->byte_len    = byte_len;
-    std::memcpy(static_cast<char *>(target.shm.ptr) + sizeof(ShmAudioHeader),
-                data->GetBuffer(), byte_len);
+    slot->sample_rate = static_cast<uint32_t>(data->GetSampleRate());
+    slot->channels    = static_cast<uint16_t>(data->GetChannelNum());
+    slot->reserved    = 0;
+    slot->byte_len    = copyLen;
+    std::memcpy(slotBase + sizeof(ShmAudioRingSlot), data->GetBuffer(), copyLen);
     std::atomic_thread_fence(std::memory_order_release);
-    hdr->sequence = seq + 1;
+    slot->seq = 2u * w + 2u;
+    std::atomic_thread_fence(std::memory_order_release);
+    hdr->write_counter = w + 1u;
 
     ++target.frame_count;
     if (target.frame_count == 1 || target.frame_count % 250 == 0) {

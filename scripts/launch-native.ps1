@@ -47,7 +47,19 @@ function Sync-NativeCoreArtifacts {
         Get-ChildItem -Path $candidate -Filter "corevideo-*" -File |
             Where-Object { $_.Extension -in ".exe", ".dll" -and $_.BaseName -notmatch "-tests$" } |
             ForEach-Object {
-                Copy-Item -Path $_.FullName -Destination (Join-Path $TargetDir $_.Name) -Force
+                $item = $_
+                try {
+                    Copy-Item -Path $item.FullName -Destination (Join-Path $TargetDir $item.Name) -Force -ErrorAction Stop
+                } catch [System.IO.IOException] {
+                    # A hung/zombie engine can hold its exe locked. Same-size
+                    # staged copy => keep the existing binary and continue.
+                    $existing = Join-Path $TargetDir $item.Name
+                    if ((Test-Path $existing) -and ((Get-Item $existing).Length -eq $item.Length)) {
+                        Write-Host "[launch:native] locked but same-size, keeping existing: $($item.Name)" -ForegroundColor Yellow
+                    } else {
+                        throw
+                    }
+                }
             }
         return
     }

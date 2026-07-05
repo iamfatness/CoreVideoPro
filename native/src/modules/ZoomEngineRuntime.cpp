@@ -852,17 +852,27 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
 }
 
 void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
-  // Only per-participant audio subscriptions ("participant-audio-*", ours,
-  // subscribed with isolate_audio) are ingested. The engine also mirrors audio
-  // onto its video-source targets (OBS plugin heritage); ingesting those too
-  // would sum the same signal multiple times.
-  if (event.participantId == 0 || event.byteLength == 0 ||
-      event.sourceUuid.rfind("participant-audio-", 0) != 0) {
+  // Two Zoom audio stream kinds (owner requirement 2026-07-05):
+  //  - ISO per-participant streams ("participant-audio-*", isolate_audio) -
+  //    NOTE Zoom gates these server-side (silence suppression: packets stop
+  //    and resume between talk bursts), so they are inherently choppy for
+  //    non-active speakers.
+  //  - The MEETING MIX (the engine mirrors mixed audio onto the active-
+  //    speaker video target) - continuous, Zoom-processed program audio.
+  //    Ingested as the dedicated "zoom-mix" source so it gets its own
+  //    mixer row and routing. Other video-target mirrors stay dropped
+  //    (ingesting every mirror would sum the same signal repeatedly).
+  const bool isIso = event.sourceUuid.rfind("participant-audio-", 0) == 0;
+  static const std::string kMixSuffix = "-active-speaker";
+  const bool isMix = event.sourceUuid.size() > kMixSuffix.size() &&
+                     event.sourceUuid.compare(event.sourceUuid.size() - kMixSuffix.size(),
+                                              kMixSuffix.size(), kMixSuffix) == 0;
+  if (event.participantId == 0 || event.byteLength == 0 || (!isIso && !isMix)) {
     return;
   }
 
   ShmRegion region;
-  const auto size = zoomEnginePcmAudioByteSize(event.byteLength);
+  const auto size = zoomEngineAudioRingByteSize();
   if (!shm_region_open_read(region, zoomEngineAudioSharedMemoryName(event.sourceUuid, instanceToken_), size)) {
     static int s_openFailures = 0;
     if (++s_openFailures <= 3) {
@@ -871,32 +881,49 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
     }
     return;
   }
-  const auto chunk = readZoomEnginePcmAudioSnapshot(region.ptr, region.size);
+  // Ring drain (2026-07-05 garbled-Zoom fix): read EVERY packet written since
+  // our cursor — the old single-slot snapshot lost/duplicated packets whenever
+  // this handler lagged one 10ms packet behind the engine.
+  // ISO streams key by participant (per-speaker mixer rows); the meeting mix
+  // is one shared source with a stable id.
+  const std::string pendingKey = isIso ? std::to_string(event.participantId) : std::string("zoom-mix");
+  auto& pending = pendingAudio_[pendingKey];
+  std::vector<ZoomEnginePcmAudioChunk> chunks;
+  const auto lost = readZoomEnginePcmAudioRing(region.ptr, region.size, pending.nextReadCounter, chunks);
   shm_region_destroy(region);
-  if (!chunk) {
-    return;  // torn mid-write or malformed — the next 10ms packet retries
+  if (lost > 0) {
+    const auto before = pending.lostPackets;
+    pending.lostPackets += static_cast<std::int64_t>(lost);
+    if (before == 0 || (before / 100) != (pending.lostPackets / 100)) {
+      std::fprintf(stderr, "[zoom-audio] participant %u lost %zu packet(s) (total %lld) — reader lagged the ring\n",
+                   event.participantId, lost, static_cast<long long>(pending.lostPackets));
+    }
+  }
+  if (chunks.empty()) {
+    return;
   }
 
   // ~1 second of pending audio per source; beyond that the consumer is stalled
   // and the oldest samples are dropped (latest-wins, like the video queues).
   constexpr std::size_t kMaxPendingAudioSamplesPerChannel = 48000;
-  auto& pending = pendingAudio_[std::to_string(event.participantId)];
   const auto droppedBefore = pending.droppedSamples;
-  if (appendZoomEnginePcmChunk(pending, *chunk, kMaxPendingAudioSamplesPerChannel)) {
-    // Ingest health line: first chunk per source, then every ~30s (per 3000
-    // 10ms packets). Peak lets a silent-but-flowing source (muted mic) be told
-    // apart from a broken ingest at a glance in media-core.log.
-    ++pending.ingestedChunks;
-    if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
-      float peak = 0.f;
-      for (const float sample : chunk->pcm) {
-        peak = (std::max)(peak, std::abs(sample));
+  for (const auto& chunk : chunks) {
+    if (appendZoomEnginePcmChunk(pending, chunk, kMaxPendingAudioSamplesPerChannel)) {
+      // Ingest health line: first chunk per source, then every ~30s (per 3000
+      // 10ms packets). Peak lets a silent-but-flowing source (muted mic) be
+      // told apart from a broken ingest at a glance in media-core.log.
+      ++pending.ingestedChunks;
+      if (pending.ingestedChunks == 1 || pending.ingestedChunks % 3000 == 0) {
+        float peak = 0.f;
+        for (const float sample : chunk.pcm) {
+          peak = (std::max)(peak, std::abs(sample));
+        }
+        std::fprintf(stderr,
+                     "[zoom-audio] participant %u chunk #%lld rate=%d ch=%d samples=%zu peak=%.3f pending=%zu\n",
+                     event.participantId, static_cast<long long>(pending.ingestedChunks), chunk.sampleRate,
+                     chunk.channels, chunk.pcm.size() / static_cast<std::size_t>(chunk.channels),
+                     static_cast<double>(peak), pending.pcm.size());
       }
-      std::fprintf(stderr,
-                   "[zoom-audio] participant %u chunk #%lld rate=%d ch=%d samples=%zu peak=%.3f pending=%zu\n",
-                   event.participantId, static_cast<long long>(pending.ingestedChunks), chunk->sampleRate,
-                   chunk->channels, chunk->pcm.size() / static_cast<std::size_t>(chunk->channels),
-                   static_cast<double>(peak), pending.pcm.size());
     }
   }
   if (pending.droppedSamples != droppedBefore && droppedBefore == 0) {

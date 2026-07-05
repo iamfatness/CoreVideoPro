@@ -385,13 +385,24 @@ TEST(ZoomEngineRuntime, IngestsIsoAudioPcmFromSharedMemoryIntoCompositorPoll) {
   ASSERT_TRUE(shm_region_create(
       region,
       corevideo::modules::zoomEngineAudioSharedMemoryName(sourceUuid),
-      corevideo::modules::zoomEnginePcmAudioByteSize(byteLength)));
-  auto* header = static_cast<ShmAudioHeader*>(region.ptr);
-  header->sequence = 2;
-  header->sample_rate = 48000;
-  header->channels = 1;
-  header->byte_len = byteLength;
-  std::memcpy(static_cast<char*>(region.ptr) + sizeof(ShmAudioHeader), samples.data(), byteLength);
+      corevideo::modules::zoomEngineAudioRingByteSize()));
+  // Ring layout (garbled-Zoom fix): header + sequenced slots.
+  auto* header = static_cast<ShmAudioRingHeader*>(region.ptr);
+  header->magic = kAudioRingMagic;
+  header->slot_count = kAudioRingSlots;
+  header->slot_payload = kAudioRingSlotPayload;
+  const auto writePacket = [&](std::uint32_t counter) {
+    auto* slotBase = static_cast<char*>(region.ptr) + sizeof(ShmAudioRingHeader) +
+                     static_cast<size_t>(counter % kAudioRingSlots) * audio_ring_slot_stride();
+    auto* slot = reinterpret_cast<ShmAudioRingSlot*>(slotBase);
+    slot->sample_rate = 48000;
+    slot->channels = 1;
+    slot->byte_len = byteLength;
+    std::memcpy(slotBase + sizeof(ShmAudioRingSlot), samples.data(), byteLength);
+    slot->seq = 2u * counter + 2u;
+    header->write_counter = counter + 1u;
+  };
+  writePacket(0);
 
   corevideo::modules::ZoomEngineEvent event;
   event.kind = corevideo::modules::ZoomEngineEventKind::Audio;
@@ -425,7 +436,7 @@ TEST(ZoomEngineRuntime, IngestsIsoAudioPcmFromSharedMemoryIntoCompositorPoll) {
   // The engine rewrote the region (new even sequence): the next event ingests
   // the new chunk ONCE — the duplicate event for the same sequence is skipped,
   // so the samples are not doubled.
-  header->sequence = 4;
+  writePacket(1);
   runtime.applyEngineEventForTest(event);
   runtime.applyEngineEventForTest(event);
   auto third = runtime.pollCompositorAudioFrames(140);

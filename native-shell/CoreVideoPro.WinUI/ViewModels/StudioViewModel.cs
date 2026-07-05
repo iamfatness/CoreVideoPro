@@ -1371,13 +1371,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double WorkspaceGateThresholdDb
     {
         get => GetSelectedChannelInsertParam("Noise Gate", "thresholdDb", -48);
-        set => SetSelectedChannelInsertParam("Noise Gate", "thresholdDb", value);
+        set => SetSelectedChannelInsertParam("Noise Gate", "thresholdDb", value, -48);
     }
 
     public double WorkspaceGateReleaseMs
     {
         get => GetSelectedChannelInsertParam("Noise Gate", "releaseMs", 120);
-        set => SetSelectedChannelInsertParam("Noise Gate", "releaseMs", value);
+        set => SetSelectedChannelInsertParam("Noise Gate", "releaseMs", value, 120);
     }
 
     // C7: competitive gate — attack, hold (stays open between words), and
@@ -1385,44 +1385,44 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double WorkspaceGateAttackMs
     {
         get => GetSelectedChannelInsertParam("Noise Gate", "attackMs", 5);
-        set => SetSelectedChannelInsertParam("Noise Gate", "attackMs", value);
+        set => SetSelectedChannelInsertParam("Noise Gate", "attackMs", value, 5);
     }
 
     public double WorkspaceGateHoldMs
     {
         get => GetSelectedChannelInsertParam("Noise Gate", "holdMs", 50);
-        set => SetSelectedChannelInsertParam("Noise Gate", "holdMs", value);
+        set => SetSelectedChannelInsertParam("Noise Gate", "holdMs", value, 50);
     }
 
     public double WorkspaceGateRangeDb
     {
         get => GetSelectedChannelInsertParam("Noise Gate", "rangeDb", -60);
-        set => SetSelectedChannelInsertParam("Noise Gate", "rangeDb", value);
+        set => SetSelectedChannelInsertParam("Noise Gate", "rangeDb", value, -60);
     }
 
     // C7: competitive compressor — envelope times, soft knee, makeup.
     public double WorkspaceCompAttackMs
     {
         get => GetSelectedChannelInsertParam("Compressor", "attackMs", 10);
-        set => SetSelectedChannelInsertParam("Compressor", "attackMs", value);
+        set => SetSelectedChannelInsertParam("Compressor", "attackMs", value, 10);
     }
 
     public double WorkspaceCompReleaseMs
     {
         get => GetSelectedChannelInsertParam("Compressor", "releaseMs", 120);
-        set => SetSelectedChannelInsertParam("Compressor", "releaseMs", value);
+        set => SetSelectedChannelInsertParam("Compressor", "releaseMs", value, 120);
     }
 
     public double WorkspaceCompKneeDb
     {
         get => GetSelectedChannelInsertParam("Compressor", "kneeDb", 6);
-        set => SetSelectedChannelInsertParam("Compressor", "kneeDb", value);
+        set => SetSelectedChannelInsertParam("Compressor", "kneeDb", value, 6);
     }
 
     public double WorkspaceCompMakeupDb
     {
         get => GetSelectedChannelInsertParam("Compressor", "makeupDb", 0);
-        set => SetSelectedChannelInsertParam("Compressor", "makeupDb", value);
+        set => SetSelectedChannelInsertParam("Compressor", "makeupDb", value, 0);
     }
 
     // C7b: live gain-reduction readout for the selected channel. 0..24 dB
@@ -1438,7 +1438,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double WorkspaceEqHighpassHz
     {
         get => GetSelectedChannelInsertParam("Built-in EQ", "highpassHz", 90);
-        set => SetSelectedChannelInsertParam("Built-in EQ", "highpassHz", value);
+        set => SetSelectedChannelInsertParam("Built-in EQ", "highpassHz", value, 90);
     }
 
     // C6b: the 8 band gains (63…8k, keys band1Db..band8Db, default 0 = flat).
@@ -1447,7 +1447,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void SetEqBand(int band, double value)
     {
-        SetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", value);
+        SetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", value, 0);
         OnPropertyChanged(nameof(WorkspaceEqBandsCsv));
     }
 
@@ -1468,13 +1468,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public double WorkspaceCompThresholdDb
     {
         get => GetSelectedChannelInsertParam("Compressor", "thresholdDb", -18);
-        set => SetSelectedChannelInsertParam("Compressor", "thresholdDb", value);
+        set => SetSelectedChannelInsertParam("Compressor", "thresholdDb", value, -18);
     }
 
     public double WorkspaceCompRatio
     {
         get => GetSelectedChannelInsertParam("Compressor", "ratio", 4);
-        set => SetSelectedChannelInsertParam("Compressor", "ratio", value);
+        set => SetSelectedChannelInsertParam("Compressor", "ratio", value, 4);
     }
 
     private void NotifyWorkspaceParamsChanged()
@@ -1517,7 +1517,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? value
             : fallback;
 
-    public void SetSelectedChannelInsertParam(string insertName, string paramKey, double value)
+    public void SetSelectedChannelInsertParam(string insertName, string paramKey, double value, double? defaultValue = null)
     {
         if (SelectedAudioMix is not { } mix)
         {
@@ -1530,7 +1530,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mix.InsertSettings[insertName] = parameters;
         }
 
-        if (parameters.TryGetValue(paramKey, out var current) && Math.Abs(current - value) < 0.001)
+        // No-op guard. CRITICAL blind spot fixed: when the key is NOT stored
+        // yet, the getter had returned the DEFAULT and TwoWay bindings write
+        // that default straight back on every notify - without comparing
+        // against the default, enabling an insert cascaded ~20 writes, each
+        // notifying all workspace params and syncing the core (the gate-
+        // enable burst). A missing key equals its default.
+        var current = parameters.TryGetValue(paramKey, out var stored) ? stored : defaultValue;
+        if (current is { } comparable && Math.Abs(comparable - value) < 0.001)
         {
             return;
         }
@@ -7474,7 +7481,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     ManualGainDb = prior?.ManualGainDb ?? nativeChannel.ManualGainDb ?? 0,
                     Pan = prior?.Pan ?? nativeChannel.Pan ?? 0,
                     Solo = prior?.Solo ?? nativeChannel.Solo,
-                    NoiseSuppression = nativeChannel.NoiseSuppression,
+                    // Zoom-garble fix: nativeChannel.NoiseSuppression is the ANALYZER
+                    // heuristic (telemetry), not an operator setting - echoing it
+                    // into the row made the core run the NS gate on Zoom sources,
+                    // flickering per tick (attack-from-silence at every block seam).
+                    // Suppression is operator-only: preserve the prior choice.
+                    NoiseSuppression = prior?.NoiseSuppression ?? false,
                     Muted = prior?.Muted ?? nativeChannel.Muted,
                     Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
                     Lufs = nativeChannel.RmsDbfs,
@@ -7505,10 +7517,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // C7d (owner: workspace controls silently dead): the processing
         // workspace edits the SELECTED channel — with no selection every
-        // slider snapped back. Auto-select the first channel whenever the
-        // current selection is empty or left the mix.
-        if (mergedById.Count > 0 &&
-            (string.IsNullOrEmpty(SelectedParticipantId) || !mergedById.ContainsKey(SelectedParticipantId)))
+        // slider snapped back. Auto-select ONLY when the selection is EMPTY.
+        // Crash lesson (0xc000027b, gate-toggle repro): stealing a selection
+        // that merely LEFT the map for a tick (transient partial syncs) made
+        // selection ping-pong at snapshot rate — rack list rebuild + ~20
+        // workspace notifications per flip until the CoreMessagingXP
+        // fail-fast. A momentarily-missing selection is HELD, mirroring the
+        // core's hold-last rule: control-plane transients must not move UI
+        // state either.
+        if (mergedById.Count > 0 && string.IsNullOrEmpty(SelectedParticipantId))
         {
             SelectedParticipantId = mergedById.Keys.First();
         }

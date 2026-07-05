@@ -379,6 +379,78 @@ std::optional<ZoomEnginePcmAudioChunk> readZoomEnginePcmAudioSnapshot(
   return chunk;
 }
 
+std::size_t zoomEngineAudioRingByteSize() { return audio_ring_region_size(); }
+
+std::size_t readZoomEnginePcmAudioRing(const void* sharedMemory, std::size_t sharedMemorySize,
+                                       std::uint64_t& nextReadCounter,
+                                       std::vector<ZoomEnginePcmAudioChunk>& out) {
+  if (sharedMemory == nullptr || sharedMemorySize < audio_ring_region_size()) {
+    return 0;
+  }
+  ShmAudioRingHeader header{};
+  std::memcpy(&header, sharedMemory, sizeof(header));
+  if (header.magic != kAudioRingMagic || header.slot_count != kAudioRingSlots ||
+      header.slot_payload != kAudioRingSlotPayload) {
+    return 0;  // old-layout writer or not yet initialized
+  }
+  const std::uint64_t writeCounter = header.write_counter;
+  if (writeCounter < nextReadCounter) {
+    // The WRITER RESTARTED (the engine recreates a target ring on active-
+    // speaker change / resubscribe, resetting write_counter to 0). Resync the
+    // cursor to the reborn ring instead of stalling forever - this was a
+    // splice at EVERY speaker change (owner-heard constant garble in
+    // conversation).
+    nextReadCounter = writeCounter > (kAudioRingSlots - 1) ? writeCounter - (kAudioRingSlots - 1) : 0;
+  }
+  if (writeCounter == nextReadCounter) {
+    return 0;  // nothing new
+  }
+  std::size_t lost = 0;
+  // If the writer lapped us, resume at the oldest slot still guaranteed live
+  // (one full ring behind, minus one slot of safety against in-flight writes).
+  const std::uint64_t oldestSafe =
+      writeCounter > (kAudioRingSlots - 1) ? writeCounter - (kAudioRingSlots - 1) : 0;
+  if (nextReadCounter < oldestSafe) {
+    lost += static_cast<std::size_t>(oldestSafe - nextReadCounter);
+    nextReadCounter = oldestSafe;
+  }
+  const auto* base = static_cast<const std::uint8_t*>(sharedMemory) + sizeof(ShmAudioRingHeader);
+  for (std::uint64_t counter = nextReadCounter; counter < writeCounter; ++counter) {
+    const auto* slotBase = base + static_cast<std::size_t>(counter % kAudioRingSlots) * audio_ring_slot_stride();
+    ShmAudioRingSlot before{};
+    std::memcpy(&before, slotBase, sizeof(before));
+    const std::uint32_t expected = static_cast<std::uint32_t>(2 * counter + 2);
+    if (before.seq != expected || before.byte_len == 0 || before.byte_len > kAudioRingSlotPayload ||
+        before.channels == 0 || before.channels > 8 || before.sample_rate < 8000 ||
+        before.sample_rate > 192000 || before.byte_len % (sizeof(std::int16_t) * before.channels) != 0) {
+      ++lost;  // torn, lapped mid-scan, or malformed - skip this packet only
+      continue;
+    }
+    std::vector<std::uint8_t> raw(before.byte_len);
+    std::memcpy(raw.data(), slotBase + sizeof(ShmAudioRingSlot), before.byte_len);
+    ShmAudioRingSlot after{};
+    std::memcpy(&after, slotBase, sizeof(after));
+    if (after.seq != expected || after.byte_len != before.byte_len) {
+      ++lost;  // torn during the copy
+      continue;
+    }
+    ZoomEnginePcmAudioChunk chunk;
+    chunk.sequence = expected;
+    chunk.sampleRate = static_cast<int>(before.sample_rate);
+    chunk.channels = static_cast<int>(before.channels);
+    const std::size_t sampleValues = before.byte_len / sizeof(std::int16_t);
+    chunk.pcm.resize(sampleValues);
+    for (std::size_t index = 0; index < sampleValues; ++index) {
+      std::int16_t sample;
+      std::memcpy(&sample, raw.data() + index * sizeof(std::int16_t), sizeof(sample));
+      chunk.pcm[index] = static_cast<float>(sample) / 32768.0f;
+    }
+    out.push_back(std::move(chunk));
+  }
+  nextReadCounter = writeCounter;
+  return lost;
+}
+
 bool appendZoomEnginePcmChunk(ZoomEnginePendingAudio& pending,
                               const ZoomEnginePcmAudioChunk& chunk,
                               std::size_t maxSamplesPerChannel) {
