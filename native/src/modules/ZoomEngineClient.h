@@ -138,6 +138,18 @@ struct ZoomEnginePcmAudioChunk {
 std::optional<ZoomEnginePcmAudioChunk> readZoomEnginePcmAudioSnapshot(
     const void* sharedMemory, std::size_t sharedMemorySize);
 
+// Ring reader (2026-07-05 Zoom-garble fix): drains ALL packets written since
+// `nextReadCounter` (up to one ring of catch-up), appending decoded chunks to
+// `out` in order and advancing the counter. Returns the number of packets
+// LOST (overwritten before this reader caught up, or torn) - callers log it.
+std::size_t readZoomEnginePcmAudioRing(const void* sharedMemory, std::size_t sharedMemorySize,
+                                       std::uint64_t& nextReadCounter,
+                                       std::vector<ZoomEnginePcmAudioChunk>& out);
+
+// Fixed region size of the ring layout (both sides of the SHM agree via
+// zoom-engine/shared/engine-ipc.h).
+std::size_t zoomEngineAudioRingByteSize();
+
 // Per-source pending-PCM accumulator for the runtime's audio ingest. Chunks
 // append in arrival order; the mixer drains the whole buffer once per audio
 // tick (one coalesced AudioFrame per source per poll, so multiple 10ms Zoom
@@ -148,6 +160,9 @@ struct ZoomEnginePendingAudio {
   int sampleRate = 0;
   int channels = 0;
   std::uint32_t lastSequence = 0;
+  // Ring read cursor: packets consumed from the source ring so far.
+  std::uint64_t nextReadCounter = 0;
+  std::int64_t lostPackets = 0;
   std::int64_t droppedSamples = 0;
   std::int64_t ingestedChunks = 0;
   std::vector<float> pcm;

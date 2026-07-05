@@ -389,25 +389,48 @@ inline double applyPeakLimiter(float* samples, size_t count, double thresholdDbf
   return -linearToDbfs(gain);  // gain < 1 -> negative dB; report the magnitude (>0)
 }
 
+// Full limiter state: the GAIN and the PEAK-HOLD DETECTOR both persist across
+// blocks (a per-call detector failed the block-continuity test - the same
+// stateless-across-blocks defect class this file keeps re-learning).
+struct LimiterState {
+  double gain = 1.0;
+  double heldPeak = 0.0;
+  size_t holdRemaining = 0;
+};
+
 // C7d: SMOOTHED brickwall limiter for streaming blocks. The block limiter
 // above derives ONE gain from the whole block's peak — across 20ms ticks that
 // gain JUMPS at every boundary (50Hz zipper distortion on a hot mix; owner-
-// reported). This one is frame-linked with INSTANT attack (the ceiling holds
-// exactly) and release-smoothed recovery, and its gain persists across blocks
-// through `gainState` (same double per bus/channel; nullptr = stateless).
+// reported). Timeline-analysis lesson (10-min tape: click bursts EXACTLY when
+// speech peaks crossed the -1dBFS ceiling): the original INSTANT attack
+// dropped the gain arbitrarily far in ONE sample — a waveform kink = a click
+// per engagement on a hot mic. The attack is now FAST BUT SMOOTH (~0.5ms);
+// during that half-millisecond the per-sample clamp below is the true
+// brickwall (sub-ms soft clipping is far less audible than gain steps). Gain
+// persists across blocks through `gainState` (nullptr = stateless).
 inline double applySmoothedPeakLimiter(float* samples, size_t count, int channels,
                                        double thresholdDbfs, double releaseMs, double sampleRate,
-                                       double* gainState = nullptr) {
+                                       LimiterState* state = nullptr) {
   if (samples == nullptr || count == 0 || channels <= 0 || sampleRate <= 0.0) {
     return 0.0;
   }
   const double threshold = dbfsToLinear(thresholdDbfs);
   const double releaseCoeff = releaseMs <= 0.0 ? 0.0 : std::exp(-1.0 / (releaseMs / 1000.0 * sampleRate));
-  double localGain = 1.0;
-  double& gain = gainState != nullptr ? *gainState : localGain;
-  if (!(gain > 0.0) || gain > 1.0) {
-    gain = 1.0;  // heal an uninitialized/corrupt state
+  const double attackCoeff = std::exp(-1.0 / (0.0005 * sampleRate));  // ~0.5ms
+  // Owner: "buzzing when speaking" — with the raw waveform as detector, the
+  // gain recovers between glottal pulses and re-attacks on each one: gain
+  // ripple at the voice's pitch rate = harmonic buzz. PEAK-HOLD detector:
+  // the envelope holds the recent peak ~10ms so gain tracks syllables, never
+  // individual waveform cycles.
+  const size_t holdFrames = static_cast<size_t>(0.010 * sampleRate);
+  LimiterState localState;
+  LimiterState& st = state != nullptr ? *state : localState;
+  if (!(st.gain > 0.0) || st.gain > 1.0) {
+    st.gain = 1.0;  // heal an uninitialized/corrupt state
   }
+  double& gain = st.gain;
+  double& heldPeak = st.heldPeak;
+  size_t& holdRemaining = st.holdRemaining;
   double maxReductionDb = 0.0;
   const size_t frames = count / static_cast<size_t>(channels);
   for (size_t frame = 0; frame < frames; ++frame) {
@@ -415,14 +438,19 @@ inline double applySmoothedPeakLimiter(float* samples, size_t count, int channel
     for (int channel = 0; channel < channels; ++channel) {
       magnitude = std::max(magnitude, std::fabs(static_cast<double>(samples[frame * channels + channel])));
     }
-    const double required = magnitude > threshold ? threshold / magnitude : 1.0;
-    if (required < gain) {
-      gain = required;  // instant attack — brickwall holds
+    if (magnitude >= heldPeak) {
+      heldPeak = magnitude;
+      holdRemaining = holdFrames;
+    } else if (holdRemaining > 0) {
+      --holdRemaining;
     } else {
-      gain = releaseCoeff * gain + (1.0 - releaseCoeff);  // smooth recovery toward 1
-      if (gain > required) {
-        gain = required;
-      }
+      heldPeak = releaseCoeff * heldPeak + (1.0 - releaseCoeff) * magnitude;
+    }
+    const double required = heldPeak > threshold ? threshold / heldPeak : 1.0;
+    if (required < gain) {
+      gain = attackCoeff * gain + (1.0 - attackCoeff) * required;  // fast smooth attack
+    } else {
+      gain = releaseCoeff * gain + (1.0 - releaseCoeff) * required;  // smooth recovery
     }
     for (int channel = 0; channel < channels; ++channel) {
       double value = static_cast<double>(samples[frame * channels + channel]) * gain;
@@ -542,19 +570,6 @@ struct AudioFeedState {
   std::vector<float> fifo;
   int sampleRate = 0;
   int channels = 0;
-  // Adaptive reserve = PRIMING DEPTH, not a held-back tail (v1 subtracted the
-  // reserve from every emission - the FIFO hovered at the reserve and emitted
-  // ZERO on alternate ticks: periodic 20ms holes, owner-reported "way worse").
-  // Semantics: reserve 0 = pure pass-through (zero latency). On a mid-stream
-  // dry tick (the click) the reserve arms and the source RE-PRIMES: nothing
-  // emits until reserve+tick is buffered (we are already inside a gap - one
-  // slightly longer gap, once), then every tick emits a FULL block while the
-  // cushion floats in the FIFO. Repeat dry events double the reserve (cap 4
-  // ticks). One-shot bursts and unit tests never arm it.
-  size_t reserveSamples = 0;
-  bool primed = false;
-  size_t lastEmitted = 0;
-  int64_t dryEvents = 0;
 };
 
 // Block RESHAPER, zero added latency: whatever arrives is emitted immediately
@@ -583,38 +598,21 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
 
     const size_t tickSamples =
         static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
-
-    // Dry mid-stream = the audible click. Arm (or escalate) the reserve and
-    // re-prime - we are already inside a gap, so the priming pause is once.
-    if (state.fifo.empty() && state.lastEmitted > 0) {
-      ++state.dryEvents;
-      state.reserveSamples = state.reserveSamples == 0 ? tickSamples
-                                                       : std::min(state.reserveSamples * 2, tickSamples * 4);
-      state.primed = false;
-    }
-
-    size_t emit = 0;
-    if (state.reserveSamples == 0) {
-      emit = std::min(state.fifo.size(), tickSamples);  // pass-through mode
-    } else {
-      if (!state.primed && state.fifo.size() >= state.reserveSamples + tickSamples) {
-        state.primed = true;
-      }
-      if (state.primed) {
-        emit = std::min(state.fifo.size(), tickSamples);  // FULL blocks; cushion floats
-      }
-    }
+    const size_t emit = std::min(state.fifo.size(), tickSamples);
     frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
-    state.lastEmitted = emit;
 
     // Cap runaway accumulation (device clock slightly fast): keep at most
-    // 6 ticks buffered by dropping the OLDEST audio.
+    // 6 ticks buffered by dropping the OLDEST audio. The drop MUST be frame-
+    // aligned: an odd-count erase on interleaved stereo flips L into R for
+    // every sample thereafter (owner-heard: left/right out of sync + comb
+    // warble on the bursty Zoom streams that hit this cap).
     const size_t cap = tickSamples * 6;
     if (state.fifo.size() > cap) {
-      state.fifo.erase(state.fifo.begin(),
-                       state.fifo.begin() + static_cast<std::ptrdiff_t>(state.fifo.size() - cap));
+      size_t drop = state.fifo.size() - cap;
+      drop -= drop % static_cast<size_t>(frame.channels);
+      state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(drop));
     }
   }
 
@@ -622,7 +620,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
   // hole the surplus exists to fill — drain up to one tick from its FIFO as
   // a synthesized frame.
   for (auto& [sourceId, state] : states) {
-    if (state.channels <= 0 || state.sampleRate <= 0) {
+    if (state.fifo.empty() || state.channels <= 0 || state.sampleRate <= 0) {
       continue;
     }
     bool seen = false;
@@ -637,31 +635,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     }
     const size_t tickSamples =
         static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
-    if (state.fifo.empty()) {
-      if (state.lastEmitted > 0) {
-        ++state.dryEvents;  // THE click: stream was flowing, this tick has nothing
-        state.reserveSamples = state.reserveSamples == 0 ? tickSamples
-                                                         : std::min(state.reserveSamples * 2, tickSamples * 4);
-        state.primed = false;
-        state.lastEmitted = 0;
-      }
-      continue;
-    }
-    size_t emit = 0;
-    if (state.reserveSamples == 0) {
-      emit = std::min(state.fifo.size(), tickSamples);
-    } else {
-      if (!state.primed && state.fifo.size() >= state.reserveSamples + tickSamples) {
-        state.primed = true;
-      }
-      if (state.primed) {
-        emit = std::min(state.fifo.size(), tickSamples);
-      }
-    }
-    if (emit == 0) {
-      state.lastEmitted = 0;
-      continue;
-    }
+    const size_t emit = std::min(state.fifo.size(), tickSamples);
     AudioFrame fill;
     fill.participantId = sourceId;
     fill.sampleRate = state.sampleRate;
@@ -669,9 +643,70 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     fill.sampleCount = static_cast<int>(emit / static_cast<size_t>(state.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
-    state.lastEmitted = emit;
     frames.push_back(std::move(fill));
   }
+}
+
+// Zoom-source lesson (owner: same buzz on a Zoom source): PCM enters the mix
+// at the SOURCE devices rate (Zoom SDK commonly 32k mono) and the 48k bus
+// summed it raw - wrong speed + a shortfall tail every tick (50Hz buzz). All
+// PCM is resampled to the bus rate at mix ingest with PERSISTENT fractional
+// phase + one-frame history so block boundaries stay seamless.
+struct LinearResampleState {
+  double phase = 0.0;          // fractional position inside the history frame
+  std::vector<float> tail;     // last source frame (per channel) from the previous block
+  bool primed = false;
+  int fromRate = 0;            // reset state if the source rate changes
+};
+
+inline void resampleLinearTo(std::vector<float>& pcm, int channels, int fromRate, int toRate,
+                             LinearResampleState& state) {
+  if (pcm.empty() || channels <= 0 || fromRate <= 0 || toRate <= 0 || fromRate == toRate) {
+    return;
+  }
+  if (state.fromRate != fromRate) {
+    state.tail.clear();
+    state.primed = false;
+    state.phase = 0.0;
+    state.fromRate = fromRate;
+  }
+  const auto ch = static_cast<size_t>(channels);
+  std::vector<float> source;
+  source.reserve(pcm.size() + ch);
+  if (state.primed) {
+    source.insert(source.end(), state.tail.begin(), state.tail.end());
+  }
+  source.insert(source.end(), pcm.begin(), pcm.end());
+  const size_t sourceFrames = source.size() / ch;
+  if (sourceFrames < 2) {
+    state.tail.assign(source.end() - static_cast<std::ptrdiff_t>(ch), source.end());
+    state.primed = true;
+    pcm.clear();
+    return;
+  }
+  const double step = static_cast<double>(fromRate) / static_cast<double>(toRate);
+  std::vector<float> out;
+  out.reserve((static_cast<size_t>(static_cast<double>(sourceFrames) / step) + 2) * ch);
+  double pos = state.phase;
+  while (pos <= static_cast<double>(sourceFrames - 2) + 1e-9) {
+    const auto base = static_cast<size_t>(pos);
+    const double frac = pos - static_cast<double>(base);
+    for (size_t c = 0; c < ch; ++c) {
+      const double a = source[base * ch + c];
+      const double b = source[(base + 1) * ch + c];
+      out.push_back(static_cast<float>(a + (b - a) * frac));
+    }
+    pos += step;
+  }
+  // Keep history from the first UNPRODUCED position onward so the carried
+  // phase is always in [0,1) - a negative phase under a single-frame tail
+  // cast to huge unsigned indices (the first stitched sample read garbage).
+  const auto keepFrom = static_cast<size_t>(pos);
+  const size_t keepClamped = keepFrom < sourceFrames ? keepFrom : sourceFrames - 1;
+  state.tail.assign(source.begin() + static_cast<std::ptrdiff_t>(keepClamped * ch), source.end());
+  state.primed = true;
+  state.phase = pos - static_cast<double>(keepClamped);
+  pcm = std::move(out);
 }
 
 // C7c: PERSISTENT per-source DSP state. The chain runs on 20ms blocks; without
@@ -691,9 +726,34 @@ struct ChannelDspState {
   size_t gateHoldRemaining = 0;
   // Compressor smoothed gain reduction (dB).
   double compGrDb = 0.0;
-  // C7d: channel limiter smoothed gain (1.0 = no reduction).
-  double limiterGain = 1.0;
+  // C7d: channel limiter full state (gain + peak-hold detector).
+  LimiterState limiter;
+  // P2 (pull-model spec): every parameter change is a RAMP, never a step -
+  // slewed values per insert/param key (~60ms time constant per block).
+  std::map<std::string, double> paramSlew;
+  // Fader/pan slew (mixRoutedBuses) - control changes must not zipper.
+  double gainSlew = -1.0;  // <0 = uninitialized (snap to target)
+  double panSlew = -2.0;   // <-1 = uninitialized
 };
+
+// P2 helper: slew a control value toward its target across blocks. Stateless
+// callers (tests) get the raw target - deterministic single-block behavior.
+inline double slewParam(ChannelDspState* state, const std::string& key, double target,
+                        double blockSeconds) {
+  if (state == nullptr) {
+    return target;
+  }
+  auto [it, inserted] = state->paramSlew.try_emplace(key, target);
+  if (inserted) {
+    return target;  // first sighting: no ramp-in
+  }
+  const double coeff = std::exp(-blockSeconds / 0.060);
+  it->second = coeff * it->second + (1.0 - coeff) * target;
+  if (std::fabs(it->second - target) < 1e-4) {
+    it->second = target;  // snap when converged so steady state is exact
+  }
+  return it->second;
+}
 
 // Defined below (spec 4.4): per-channel insert processing over panned stereo.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
@@ -732,7 +792,7 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints,
     bool masterLimiter = true,
     std::map<std::string, double>* outCompGainReductionDbBySource = nullptr,
-    std::map<std::string, double>* busLimiterGainStates = nullptr) {
+    std::map<std::string, LimiterState>* busLimiterGainStates = nullptr) {
   bool soloActive = false;
   for (const auto& source : sources) {
     if (source.solo && !source.muted) {
@@ -754,16 +814,34 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     if (frames == 0) {
       continue;
     }
+    // P2: fader and pan RAMP (Ardour: every control change is a ramp) - raw
+    // per-tick values stepped audibly (zipper) when the operator moved a
+    // control during speech. Slew ~60ms via the per-source DSP state.
+    double gainNow = source.gainLinear;
+    double panNow = source.pan;
+    if (source.dspState != nullptr) {
+      const double blockSec = static_cast<double>(frames) / (source.sampleRate > 0.0 ? source.sampleRate : 48000.0);
+      const double coeff = std::exp(-blockSec / 0.060);
+      auto& st = *source.dspState;
+      if (st.gainSlew < 0.0) st.gainSlew = gainNow;
+      if (st.panSlew < -1.0) st.panSlew = panNow;
+      st.gainSlew = coeff * st.gainSlew + (1.0 - coeff) * gainNow;
+      st.panSlew = coeff * st.panSlew + (1.0 - coeff) * panNow;
+      if (std::fabs(st.gainSlew - gainNow) < 1e-4) st.gainSlew = gainNow;
+      if (std::fabs(st.panSlew - panNow) < 1e-4) st.panSlew = panNow;
+      gainNow = st.gainSlew;
+      panNow = st.panSlew;
+    }
     // Linear balance: panning toward one side attenuates the opposite channel.
-    const double leftWeight = source.pan <= 0.0 ? 1.0 : (1.0 - source.pan);
-    const double rightWeight = source.pan >= 0.0 ? 1.0 : (1.0 + source.pan);
+    const double leftWeight = panNow <= 0.0 ? 1.0 : (1.0 - panNow);
+    const double rightWeight = panNow >= 0.0 ? 1.0 : (1.0 + panNow);
     std::vector<float> stereo(frames * 2, 0.0f);
     for (size_t index = 0; index < frames; ++index) {
       const float left = (*source.pcm)[index * static_cast<size_t>(source.channels)];
       const float right =
           source.channels == 1 ? left : (*source.pcm)[index * static_cast<size_t>(source.channels) + 1];
-      stereo[index * 2] = static_cast<float>(left * source.gainLinear * leftWeight);
-      stereo[index * 2 + 1] = static_cast<float>(right * source.gainLinear * rightWeight);
+      stereo[index * 2] = static_cast<float>(left * gainNow * leftWeight);
+      stereo[index * 2 + 1] = static_cast<float>(right * gainNow * rightWeight);
     }
     // Spec 4.4: the channel's insert chain (gate/EQ/compressor/limiter) and the
     // noise-suppression toggle process the strip output before any send.
@@ -802,10 +880,7 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     if (masterLimiter) {
       // C7d: smoothed + stateful per bus - the old block limiter jumped its
       // gain at every 20ms boundary (zipper distortion on a hot mix).
-      double* gainState = busLimiterGainStates != nullptr ? &(*busLimiterGainStates)[busId] : nullptr;
-      if (gainState != nullptr && *gainState == 0.0) {
-        *gainState = 1.0;
-      }
+      LimiterState* gainState = busLimiterGainStates != nullptr ? &(*busLimiterGainStates)[busId] : nullptr;
       applySmoothedPeakLimiter(bus.data(), bus.size(), 2, -1.0, 60.0, 48000.0, gainState);
     } else {
       // Spec 4.4: the limiter toggle previously gated REPORTING only — buses
@@ -1109,7 +1184,7 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
 
   // C5b: per-insert parameter with a default — looked up by the insert's exact
   // name (the shell sends the same names it stores on the chain).
-  const auto param = [settings](const std::string& insertName, const char* key, double fallback) -> double {
+  const auto rawParam = [settings](const std::string& insertName, const char* key, double fallback) -> double {
     if (settings == nullptr) {
       return fallback;
     }
@@ -1119,6 +1194,14 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
     }
     const auto valueIt = insertIt->second.find(key);
     return valueIt != insertIt->second.end() ? valueIt->second : fallback;
+  };
+  // P2 (owner: clicking when adjusting the plugins): parameter reads are
+  // SLEWED (~60ms) so slider drags ramp the DSP instead of stepping its
+  // coefficients between blocks. Stateless callers get raw values.
+  const double blockSeconds = sampleRate > 0.0 ? (static_cast<double>(count) / 2.0) / sampleRate : 0.02;
+  const auto param = [&rawParam, state, blockSeconds](const std::string& insertName, const char* key,
+                                                      double fallback) -> double {
+    return slewParam(state, insertName + "/" + key, rawParam(insertName, key, fallback), blockSeconds);
   };
 
   int applied = 0;
@@ -1157,7 +1240,11 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
       for (int band = 0; band < 8; ++band) {
         const std::string key = "band" + std::to_string(band + 1) + "Db";
         const double gainDb = std::clamp(param(insert, key.c_str(), 0.0), -12.0, 12.0);
-        if (std::fabs(gainDb) >= 0.05) {
+        // P2: with persistent state the topology stays CONSTANT (all 8 bands
+        // always in the cascade) so a band leaving flat mid-drag cannot shift
+        // section indices and orphan filter memory - a flat peaking biquad is
+        // an exact pass-through, so always-on costs nothing audible.
+        if (state != nullptr || std::fabs(gainDb) >= 0.05) {
           cascade.push_back(eqPeaking(sampleRate, kEqBandHz[band], gainDb, 1.4));
         }
       }
@@ -1183,7 +1270,7 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
       applySmoothedPeakLimiter(stereo, count, 2,
                                std::clamp(param(insert, "ceilingDb", -1.0), -12.0, -0.1),
                                60.0, sampleRate,
-                               state != nullptr ? &state->limiterGain : nullptr);
+                               state != nullptr ? &state->limiter : nullptr);
       ++applied;
     }
     // Unrecognized third-party plugin names stay pass-through until the

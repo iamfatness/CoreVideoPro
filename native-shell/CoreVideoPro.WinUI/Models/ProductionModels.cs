@@ -959,12 +959,16 @@ public static class ProductionStateHelper
                 ManualGainDb = 0,
                 Pan = 0,
                 Solo = false,
-                NoiseSuppression = true,
+                // Zoom-garble root cause 3 (2026-07-05): new Zoom rows defaulted to
+                // NoiseSuppression=true + EQ+Compressor inserts - every speaker got
+                // a flickering gate and processing NOBODY asked for. Channels are
+                // CLEAN by default; the operator adds processing deliberately.
+                NoiseSuppression = false,
                 Muted = participant.IsMuted,
                 Status = participant.IsMuted ? "muted" : "balanced",
                 Lufs = EstimateParticipantLufs(participant.AudioLevel, participant.IsMuted),
                 TruePeakDb = EstimateTruePeakDb(participant.AudioLevel, participant.IsMuted),
-                PluginInserts = ["Built-in EQ", "Compressor"]
+                PluginInserts = []
             };
         }).ToList();
     }

@@ -1647,6 +1647,10 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   audioMonitorDeviceName_ = command.getString("deviceName");
   audioMonitorVolume_ = std::max(0.0, std::min(1.0, command.getNumber("volume", audioMonitorVolume_)));
   audioMonitorWarning_.clear();
+  // Click-hunt: the operator toggle state was not reaching the adapter -
+  // log exactly what each sync carries so UI-vs-core disagreements are visible.
+  std::fprintf(stderr, "[monitor] sync: enabled=%d device=%s volume=%.2f\n",
+               audioMonitorEnabled_ ? 1 : 0, audioMonitorDeviceName_.c_str(), audioMonitorVolume_);
 
   if (!audioMonitorEnabled_) {
     if (modules_.monitorOutput) {
@@ -4107,6 +4111,20 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // variable 480/960 blocks were audible as raw-path distortion.
   modules::steadyAudioFrameFeed(work.audioFrames, audioFeedStates_);
 
+  // Canonical bus rate for every source BEFORE any mixing (Zoom-source buzz:
+  // 32k PCM summed raw into the 48k bus = wrong speed + per-tick shortfall).
+  {
+    const int busRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+    for (auto& frame : work.audioFrames) {
+      if (!frame.pcm.empty() && frame.channels > 0 && frame.sampleRate > 0 && frame.sampleRate != busRate) {
+        modules::resampleLinearTo(frame.pcm, frame.channels, frame.sampleRate, busRate,
+                                  audioResampleStates_[frame.participantId]);
+        frame.sampleRate = busRate;
+        frame.sampleCount = static_cast<int>(frame.pcm.size() / static_cast<size_t>(frame.channels));
+      }
+    }
+  }
+
   // DEBUG TAP (env-gated): dump the mic PCM entering the mix and the MON bus
   // leaving it as raw float32 - the decisive click-hunt instrument. Set
   // COREVIDEO_AUDIO_DEBUG_DIR to enable; files append per process run.
@@ -4152,6 +4170,12 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           source.inserts = &channel.pluginInserts;
           source.insertSettings = &channel.insertSettings;  // C5b params
           source.dspState = &channelDspStates_[frame.participantId];  // C7c continuity
+          if (debugDir != nullptr) {
+            std::fprintf(stderr, "[dsp] %s state=%p env=%.5f gain=%.5f hold=%zu\n",
+                         frame.participantId.c_str(), static_cast<void*>(source.dspState),
+                         source.dspState->gateEnvelope, source.dspState->gateGain,
+                         source.dspState->gateHoldRemaining);
+          }
           source.noiseSuppression = channel.noiseSuppression;
           source.sampleRate = modules_.mixer->monitorBusSampleRate();
           break;

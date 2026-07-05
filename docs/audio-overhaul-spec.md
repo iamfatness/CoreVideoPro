@@ -18,6 +18,23 @@ documented evidence/gaps). Every load-bearing claim carries a `file:line` anchor
 
 ---
 
+## 0. The bar (owner doctrine, 2026-07-05)
+
+Ranked priorities for every audio/video decision in this codebase, stated by the owner:
+
+1. **A/V sync on the broadcast is paramount.** Audio and video in lockstep beats either being
+   minimally latent alone. Every output path joins the shared-epoch PTS clock; any deliberate
+   buffering must sit outside the synced program path or compensate its PTS.
+2. **Clean audio / great sound is THE bar.** Clicks, grain, splices, and zipper artifacts are
+   disqualifying regardless of latency numbers. Proven corollaries from the 2026-07-05 click
+   hunt: streaming DSP carries persistent state across blocks; control-plane transients never
+   puncture the data plane (hold-last guards); the self-monitor carries a ~40ms standing
+   cushion because scheduler jitter must land in buffer, not in ears.
+3. **Low latency serves 1 and 2 — never overrides them.** Zero-slack designs are reserved for
+   the broadcast/program path where the encoder buffers anyway.
+
+The goal is to leave mimoLive, Ecamm, and vMix in the dust on the combined audio+video pipeline.
+
 ## 1. Executive summary
 
 The audio subsystem is **not** a broken mixer on top of working audio — it is a **working mixer

@@ -39,10 +39,14 @@ namespace corevideo::modules {
 #include <propidl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <thread>
+
+#include "modules/SpscRing.h"
 
 namespace corevideo::modules {
 namespace {
@@ -154,31 +158,29 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       cleanup();
       return false;
     }
-    {
-      const char* kind = "pcm";
-      int validBits = mixFormat_->wBitsPerSample;
-      if (mixFormat_->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
-        kind = "float";
-      } else if (mixFormat_->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
-        const auto& ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE&>(*mixFormat_);
-        kind = ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ? "ext-float" : "ext-pcm";
-        validBits = ext.Samples.wValidBitsPerSample;
-      }
-      std::fprintf(stderr, "[monitor] device mix format: %luHz %dch %d-bit (%d valid) %s (source %dHz)\n",
-                   static_cast<unsigned long>(mixFormat_->nSamplesPerSec), static_cast<int>(mixFormat_->nChannels),
-                   static_cast<int>(mixFormat_->wBitsPerSample), validBits, kind, sourceSampleRate_);
-    }
     if (!describeFormat(*mixFormat_)) {
       warn("Unsupported device sample format; only float32 and 16/32-bit PCM are handled.");
       cleanup();
       return false;
     }
 
-    // 200 ms shared-mode endpoint buffer (in 100 ns units).
-    constexpr REFERENCE_TIME kBufferDuration = 2'000'000;
-    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, kBufferDuration, 0, mixFormat_, nullptr);
+    // Pull model (docs/audio-pull-monitor-spec.md): the DEVICE paces delivery
+    // via the event; a dedicated render thread pulls from the SPSC ring. The
+    // engine's resampler (RATEADJUST) absorbs clock drift via the slow
+    // ring-depth trim — our code never time-warps samples.
+    constexpr REFERENCE_TIME kBufferDuration = 2'000'000;  // 200ms endpoint buffer
+    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                             AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_RATEADJUST,
+                             kBufferDuration, 0, mixFormat_, nullptr);
     if (FAILED(hr)) {
       warn("Could not initialize the shared-mode render stream (hr=" + hexHr(hr) + ").");
+      cleanup();
+      return false;
+    }
+
+    renderEvent_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (renderEvent_ == nullptr || FAILED(client_->SetEventHandle(renderEvent_))) {
+      warn("Could not arm the event-driven render callback.");
       cleanup();
       return false;
     }
@@ -197,6 +199,14 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       return false;
     }
 
+    // Drift correction v3: the ENGINE resamples (SetSampleRate a few ppm on a
+    // slow loop) - we never touch sample data. Absence is non-fatal: without
+    // the service the cushion drains over ~27min and re-primes (one soft
+    // hiccup), which beats any hand-rolled warp.
+    if (FAILED(client_->GetService(__uuidof(IAudioClockAdjustment), reinterpret_cast<void**>(&clockAdjust_)))) {
+      clockAdjust_ = nullptr;
+    }
+
     hr = client_->Start();
     if (FAILED(hr)) {
       warn("Could not start the WASAPI render stream (hr=" + hexHr(hr) + ").");
@@ -204,12 +214,28 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       return false;
     }
 
+    ring_.clear();
+    ringDryFrames_ = 0;
+    ringDropFrames_ = 0;
+    renderRun_.store(true, std::memory_order_release);
+    renderThread_ = std::thread([this] { renderLoop(); });
+
     active_ = true;
     openedDeviceId_ = deviceId;
     return true;
   }
 
   void stop() override {
+    // Join the render thread FIRST (it takes no app locks, so joining here —
+    // under audioOutputMutex_ — cannot deadlock; see the engine-off teardown
+    // rules). Only then stop the client and release COM objects it used.
+    renderRun_.store(false, std::memory_order_release);
+    if (renderEvent_ != nullptr) {
+      ::SetEvent(renderEvent_);
+    }
+    if (renderThread_.joinable()) {
+      renderThread_.join();
+    }
     if (client_ != nullptr && active_) {
       client_->Stop();
     }
@@ -219,62 +245,49 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     resolvedEndpointId_.clear();
   }
 
+  // PULL MODEL (docs/audio-pull-monitor-spec.md): render() is now a pure,
+  // non-blocking PUSH into the SPSC ring from the audio worker. The device-
+  // paced render thread (renderLoop) is the only writer to WASAPI. This
+  // removes the padding race that generated every transport artifact class of
+  // the 2026-07-05 click hunt (grain, drift, servo splice/flutter).
   bool render(const float* interleaved, int frameCount, int channels, double volume) override {
-    if (!active_ || renderClient_ == nullptr || client_ == nullptr || interleaved == nullptr ||
-        frameCount <= 0 || channels <= 0) {
+    if (!active_ || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return false;
     }
 
-    // Underrun detection (spec R5): a zero padding when we have previously
-    // rendered means the endpoint drained everything and has been playing
-    // silence since the last fill — an audible glitch. Count the gap event
-    // (once per render call) and log rate-capped so a soak's glitches are
-    // visible in media-core.log instead of only in the operator's ears.
-    {
-      UINT32 startPadding = 0;
-      if (framesRendered_ > 0 && SUCCEEDED(client_->GetCurrentPadding(&startPadding)) && startPadding == 0) {
-        ++underruns_;
-        if (underruns_ == 1 || underruns_ % 50 == 0) {
-          std::fprintf(stderr, "[monitor] endpoint underrun #%lld (device '%s')\n",
-                       static_cast<long long>(underruns_), deviceName_.c_str());
-        }
-      }
-    }
-
-    // Resample the source bus to the device rate (linear, mono/stereo-aware).
+    // Convert to device-rate stereo in the worker (lerp only when rates
+    // genuinely differ) and apply volume at push.
     const double ratio = static_cast<double>(deviceSampleRate_) / static_cast<double>(sourceSampleRate_);
     const int outFrames =
         deviceSampleRate_ == sourceSampleRate_ ? frameCount : std::max(1, static_cast<int>(std::llround(frameCount * ratio)));
-
-    int written = 0;
-    while (written < outFrames) {
-      UINT32 padding = 0;
-      if (FAILED(client_->GetCurrentPadding(&padding))) {
-        break;
-      }
-      const UINT32 available = bufferFrameCount_ > padding ? bufferFrameCount_ - padding : 0;
-      if (available == 0) {
-        break;  // endpoint full; drop the rest this tick rather than block
-      }
-      const UINT32 chunk = std::min<UINT32>(available, static_cast<UINT32>(outFrames - written));
-      BYTE* buffer = nullptr;
-      if (FAILED(renderClient_->GetBuffer(chunk, &buffer)) || buffer == nullptr) {
-        break;
-      }
-      writeChunk(buffer, chunk, written, outFrames, interleaved, frameCount, channels, volume);
-      renderClient_->ReleaseBuffer(chunk, 0);
-      written += static_cast<int>(chunk);
+    pushScratch_.resize(static_cast<size_t>(outFrames) * 2);
+    const auto gain = static_cast<float>(std::clamp(volume, 0.0, 1.0));
+    for (int outIndex = 0; outIndex < outFrames; ++outIndex) {
+      float left = 0.f;
+      float right = 0.f;
+      sampleSource(outIndex, outFrames, interleaved, frameCount, channels, left, right);
+      pushScratch_[static_cast<size_t>(outIndex) * 2] = left * gain;
+      pushScratch_[static_cast<size_t>(outIndex) * 2 + 1] = right * gain;
     }
 
-    framesRendered_ += written;
-    return written > 0;
+    const size_t accepted = ring_.push(pushScratch_.data(), static_cast<size_t>(outFrames));
+    if (accepted < static_cast<size_t>(outFrames)) {
+      ringDropFrames_ += static_cast<int64_t>(outFrames) - static_cast<int64_t>(accepted);
+      // Bounded-latency policy: with the depth trim active this should never
+      // fire in steady state; if it does, it is telemetry, not a click (the
+      // ring seam stays continuous — only the newest tail is lost).
+    }
+    framesRendered_ += static_cast<int64_t>(accepted);
+    return accepted > 0;
   }
 
   bool active() const override { return active_; }
   bool hardwareOutput() const override { return true; }
   std::string deviceName() const override { return deviceName_; }
   std::vector<std::string> warnings() const override { return warnings_; }
-  std::int64_t underrunCount() const override { return underruns_; }
+  // Telemetry continuity: "underruns" now means ring-dry EVENTS (the device
+  // asked for audio the worker had not produced yet).
+  std::int64_t underrunCount() const override { return ringDryEvents_.load(std::memory_order_relaxed); }
   std::string resolvedEndpointId() const override { return resolvedEndpointId_; }
 
  private:
@@ -375,19 +388,31 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     return true;
   }
 
-  // Fetch the source stereo sample for an output frame, resampling by index.
+  // Fetch the source stereo sample for an output frame. LINEAR interpolation
+  // (not nearest-index): with the servo stretching blocks by ±1 frame, nearest
+  // rounding concentrated the whole correction into one audible step — lerp
+  // spreads it smoothly across the block. The mapping branch also engages when
+  // the servo changed the block length at equal rates.
   void sampleSource(int outIndex, int outFrames, const float* interleaved, int sourceFrames, int sourceChannels,
                     float& left, float& right) const {
-    int sourceIndex = outIndex;
+    const auto fetch = [&](int frame, float& outL, float& outR) {
+      const int clamped = std::clamp(frame, 0, sourceFrames - 1);
+      const float l = interleaved[static_cast<size_t>(clamped) * sourceChannels];
+      outL = l;
+      outR = sourceChannels == 1 ? l : interleaved[static_cast<size_t>(clamped) * sourceChannels + 1];
+    };
     if (deviceSampleRate_ != sourceSampleRate_ && outFrames > 1) {
       const double position = static_cast<double>(outIndex) * (sourceFrames - 1) / static_cast<double>(outFrames - 1);
-      sourceIndex = std::clamp(static_cast<int>(std::llround(position)), 0, sourceFrames - 1);
+      const int base = static_cast<int>(position);
+      const float frac = static_cast<float>(position - base);
+      float l0 = 0.f, r0 = 0.f, l1 = 0.f, r1 = 0.f;
+      fetch(base, l0, r0);
+      fetch(base + 1, l1, r1);
+      left = l0 + (l1 - l0) * frac;
+      right = r0 + (r1 - r0) * frac;
     } else {
-      sourceIndex = std::min(outIndex, sourceFrames - 1);
+      fetch(std::min(outIndex, sourceFrames - 1), left, right);
     }
-    const float l = interleaved[static_cast<size_t>(sourceIndex) * sourceChannels];
-    left = l;
-    right = sourceChannels == 1 ? l : interleaved[static_cast<size_t>(sourceIndex) * sourceChannels + 1];
   }
 
   void writeChunk(BYTE* buffer, UINT32 chunk, int writtenSoFar, int outFrames, const float* interleaved,
@@ -419,8 +444,99 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     }
   }
 
+  // Device-paced consumer: waits for the endpoint's event, then fills ALL the
+  // space the device exposes from the ring (silence on dry, counted). Takes
+  // NO application locks and does no file I/O — real-time discipline per the
+  // pull-model spec §4.
+  void renderLoop() {
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    double depthAccum = 0.0;
+    int depthSamples = 0;
+    while (renderRun_.load(std::memory_order_acquire)) {
+      if (::WaitForSingleObject(renderEvent_, 500) != WAIT_OBJECT_0) {
+        continue;  // periodic timeout keeps shutdown responsive
+      }
+      if (!renderRun_.load(std::memory_order_acquire)) {
+        break;
+      }
+      UINT32 padding = 0;
+      if (FAILED(client_->GetCurrentPadding(&padding))) {
+        continue;
+      }
+      UINT32 available = bufferFrameCount_ > padding ? bufferFrameCount_ - padding : 0;
+      while (available > 0) {
+        const UINT32 chunk = std::min<UINT32>(available, 2048);
+        BYTE* buffer = nullptr;
+        if (FAILED(renderClient_->GetBuffer(chunk, &buffer)) || buffer == nullptr) {
+          break;
+        }
+        pullScratch_.resize(static_cast<size_t>(chunk) * 2);
+        const size_t real = ring_.pop(pullScratch_.data(), chunk);
+        if (real < chunk) {
+          ringDryFrames_ += static_cast<int64_t>(chunk - real);
+          const auto events = ringDryEvents_.fetch_add(1, std::memory_order_relaxed) + 1;
+          if (events == 1 || events % 200 == 0) {
+            std::fprintf(stderr, "[monitor] ring dry #%lld (%u frames silence; device '%s')\n",
+                         static_cast<long long>(events), chunk - static_cast<UINT32>(real), deviceName_.c_str());
+          }
+        }
+        writeDeviceBlock(buffer, chunk, pullScratch_.data());
+        renderClient_->ReleaseBuffer(chunk, 0);
+        available -= chunk;
+      }
+
+      // Clock-drift trim (spec §3): ring depth is a phase-stable signal
+      // (unlike endpoint padding). Nudge the engine's resampler a few ppm
+      // every ~5s so the standing depth holds at ~3 worker ticks forever.
+      depthAccum += static_cast<double>(ring_.depthFrames());
+      ++depthSamples;
+      if (clockAdjust_ != nullptr && depthSamples >= 500) {
+        const double averageDepth = depthAccum / depthSamples;
+        depthAccum = 0.0;
+        depthSamples = 0;
+        const double target = deviceSampleRate_ * 0.060;  // 60ms standing depth
+        const double correction =
+            std::clamp((averageDepth - target) / (5.0 * deviceSampleRate_), -0.0005, 0.0005);
+        // Ring too deep → engine consumes too slowly → RAISE its idea of our
+        // rate so it drains faster (and vice versa).
+        const double newRate = static_cast<double>(deviceSampleRate_) * (1.0 + correction);
+        (void)clockAdjust_->SetSampleRate(static_cast<float>(newRate));
+      }
+    }
+  }
+
+  // Convert ring floats (device-rate stereo, volume pre-applied) to the
+  // device's sample format.
+  void writeDeviceBlock(BYTE* buffer, UINT32 frames, const float* stereo) const {
+    for (UINT32 frame = 0; frame < frames; ++frame) {
+      const float left = stereo[static_cast<size_t>(frame) * 2];
+      const float right = stereo[static_cast<size_t>(frame) * 2 + 1];
+      for (int channel = 0; channel < deviceChannels_; ++channel) {
+        const float value = channel == 0 ? left : (channel == 1 ? right : 0.f);
+        BYTE* slot = buffer + (static_cast<size_t>(frame) * deviceChannels_ + channel) * deviceBytesPerSample_;
+        if (deviceIsFloat_) {
+          const float clamped = std::clamp(value, -1.f, 1.f);
+          std::memcpy(slot, &clamped, sizeof(float));
+        } else if (deviceBytesPerSample_ == 2) {
+          const float clamped = std::clamp(value, -1.f, 1.f);
+          const auto sample = static_cast<int16_t>(std::llround(clamped * 32767.0f));
+          std::memcpy(slot, &sample, sizeof(int16_t));
+        } else {  // 32-bit PCM
+          const float clamped = std::clamp(value, -1.f, 1.f);
+          const auto sample = static_cast<int32_t>(std::llround(static_cast<double>(clamped) * 2147483647.0));
+          std::memcpy(slot, &sample, sizeof(int32_t));
+        }
+      }
+    }
+  }
+
   void cleanup() {
+    safeRelease(clockAdjust_);
     safeRelease(renderClient_);
+    if (renderEvent_ != nullptr) {
+      ::CloseHandle(renderEvent_);
+      renderEvent_ = nullptr;
+    }
     if (mixFormat_ != nullptr) {
       ::CoTaskMemFree(mixFormat_);
       mixFormat_ = nullptr;
@@ -454,7 +570,18 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   int deviceBytesPerSample_ = 4;
   bool deviceIsFloat_ = true;
   int64_t framesRendered_ = 0;
-  int64_t underruns_ = 0;
+  // Pull-model state (spec §3): SPSC ring between the audio worker (producer)
+  // and the device-paced render thread (consumer).
+  SpscRing ring_{16384};  // ~340ms capacity @48k; standing target 60ms
+  HANDLE renderEvent_ = nullptr;
+  std::thread renderThread_;
+  std::atomic<bool> renderRun_{false};
+  std::vector<float> pushScratch_;
+  std::vector<float> pullScratch_;
+  std::atomic<int64_t> ringDryEvents_{0};
+  int64_t ringDryFrames_ = 0;
+  int64_t ringDropFrames_ = 0;
+  IAudioClockAdjustment* clockAdjust_ = nullptr;
   std::string resolvedEndpointId_;
   std::string openedDeviceId_;
   std::string deviceName_;

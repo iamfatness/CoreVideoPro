@@ -407,9 +407,12 @@ class MediaCore {
   // restart every 20ms block = audible buzz (owner-reported mic distortion).
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
   // C7d: per-bus limiter gain state (same block-continuity requirement).
-  std::map<std::string, double> busLimiterGains_;
+  std::map<std::string, modules::LimiterState> busLimiterGains_;
   // Spec 4.2: per-source sample-steady feed FIFOs (worker domain).
   std::map<std::string, modules::AudioFeedState> audioFeedStates_;
+  // Mix-ingest resampler states (worker domain): every source lands on the
+  // bus rate before any sum (Zoom SDK delivers 32k; the mic is 48k).
+  std::map<std::string, modules::LinearResampleState> audioResampleStates_;
   // Click-hunt hold-last guards: consecutive empty control-plane syncs seen
   // while live state was non-empty (adopt a true clear-all after 25).
   int emptyRoutingSyncStreak_ = 0;

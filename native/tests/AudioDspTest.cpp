@@ -1,4 +1,5 @@
 #include "modules/AudioDsp.h"
+#include "modules/SpscRing.h"
 
 #include <gtest/gtest.h>
 
@@ -928,14 +929,14 @@ TEST(AudioDsp, SmoothedLimiterIsContinuousAcrossBlocks) {
   }
 
   std::vector<float> oneShot = reference;
-  double gainA = 1.0;
-  corevideo::modules::applySmoothedPeakLimiter(oneShot.data(), oneShot.size(), 2, -1.0, 60.0, sampleRate, &gainA);
+  corevideo::modules::LimiterState stateA;
+  corevideo::modules::applySmoothedPeakLimiter(oneShot.data(), oneShot.size(), 2, -1.0, 60.0, sampleRate, &stateA);
 
   std::vector<float> blocks = reference;
-  double gainB = 1.0;
+  corevideo::modules::LimiterState stateB;
   const size_t half = frames;
-  corevideo::modules::applySmoothedPeakLimiter(blocks.data(), half, 2, -1.0, 60.0, sampleRate, &gainB);
-  corevideo::modules::applySmoothedPeakLimiter(blocks.data() + half, half, 2, -1.0, 60.0, sampleRate, &gainB);
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data(), half, 2, -1.0, 60.0, sampleRate, &stateB);
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data() + half, half, 2, -1.0, 60.0, sampleRate, &stateB);
 
   double maxDelta = 0.0;
   double peak = 0.0;
@@ -1005,45 +1006,79 @@ TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
   }
 }
 
-TEST(AudioDsp, AdaptiveReservePrimesOnceThenAbsorbsMissingPackets) {
-  // The click = a mid-stream tick with no packet. After ONE such event the
-  // reserve arms and re-primes; from then on a packetless tick is served a
-  // FULL block from the cushion - no hole, no click. (v1 subtracted the
-  // reserve per-emission and made periodic holes - owner: "way worse".)
-  std::map<std::string, corevideo::modules::AudioFeedState> states;
-  float sequence = 0.0f;
-  const auto makeFrame = [&sequence](int samples) {
-    corevideo::modules::AudioFrame frame;
-    frame.participantId = "mic";
-    frame.sampleRate = 48000;
-    frame.channels = 1;
-    for (int index = 0; index < samples; ++index) {
-      frame.pcm.push_back(sequence);
-      sequence += 1.0f;
-    }
-    frame.sampleCount = samples;
-    return frame;
-  };
-  const auto tick = [&](int packetSamples) -> size_t {
-    std::vector<corevideo::modules::AudioFrame> frames;
-    if (packetSamples > 0) {
-      frames.push_back(makeFrame(packetSamples));
-    }
-    corevideo::modules::steadyAudioFrameFeed(frames, states);
-    size_t emitted = 0;
-    for (const auto& frame : frames) {
-      emitted += frame.pcm.size();
-    }
-    return emitted;
-  };
+TEST(SpscRing, PushPopWrapFullAndDryProperties) {
+  corevideo::modules::SpscRing ring(8);  // tiny capacity to force wrap + full
+  float in[16];
+  float out[16];
 
-  EXPECT_EQ(tick(960), 960u);  // pass-through
-  EXPECT_EQ(tick(960), 960u);
-  EXPECT_EQ(tick(0), 0u);      // THE dry tick: click happens once, reserve arms
-  EXPECT_EQ(states["mic"].dryEvents, 1);
-  EXPECT_EQ(tick(960), 0u);    // re-priming: held (we are already in the gap)
-  EXPECT_EQ(tick(960), 960u);  // primed: full block, cushion = 960 floats
-  EXPECT_EQ(tick(0), 960u);    // packetless tick AFTER priming: cushion serves a FULL block - the save
-  EXPECT_EQ(tick(960), 960u);  // stream continues seamlessly
-  EXPECT_EQ(states["mic"].dryEvents, 1);  // no new dry events after arming
+  // Sequence continuity across a wrap boundary.
+  float seq = 1.0f;
+  for (int round = 0; round < 5; ++round) {
+    for (int i = 0; i < 5; ++i) {
+      in[i * 2] = seq;
+      in[i * 2 + 1] = -seq;
+      seq += 1.0f;
+    }
+    EXPECT_EQ(ring.push(in, 5), 5u);
+    EXPECT_EQ(ring.pop(out, 5), 5u);
+    for (int i = 0; i < 5; ++i) {
+      EXPECT_EQ(out[i * 2], seq - 5.0f + i);
+      EXPECT_EQ(out[i * 2 + 1], -(seq - 5.0f + i));
+    }
+  }
+
+  // Full: accepts only free space, never blocks or overwrites.
+  for (int i = 0; i < 8; ++i) {
+    in[i * 2] = 100.0f + i;
+    in[i * 2 + 1] = 0.0f;
+  }
+  EXPECT_EQ(ring.push(in, 8), 8u);
+  EXPECT_EQ(ring.push(in, 3), 0u);  // full → zero accepted
+  EXPECT_EQ(ring.depthFrames(), 8u);
+
+  // Dry: pop more than available → silence tail + real count returned.
+  EXPECT_EQ(ring.pop(out, 10), 8u);
+  EXPECT_EQ(out[7 * 2], 107.0f);
+  EXPECT_EQ(out[8 * 2], 0.0f);   // silence fill
+  EXPECT_EQ(out[9 * 2 + 1], 0.0f);
+  EXPECT_EQ(ring.depthFrames(), 0u);
+
+  // clear() discards buffered audio.
+  EXPECT_EQ(ring.push(in, 4), 4u);
+  ring.clear();
+  EXPECT_EQ(ring.depthFrames(), 0u);
+}
+
+TEST(AudioDsp, IngestResamplerIsContinuousAcrossBlocksAndTimeCorrect) {
+  // Zoom-source lesson: 32k PCM must land on the 48k bus rate seamlessly.
+  // Two-block stateful resampling must equal one continuous call, and 20ms of
+  // 32k input must produce ~20ms of 48k output.
+  const int from = 32000, to = 48000;
+  const int frames = 1280;  // two 20ms mono blocks at 32k
+  std::vector<float> full(frames);
+  for (int i = 0; i < frames; ++i) {
+    full[i] = static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 220.0 * i / from));
+  }
+
+  std::vector<float> oneShot = full;
+  corevideo::modules::LinearResampleState stateA;
+  corevideo::modules::resampleLinearTo(oneShot, 1, from, to, stateA);
+
+  std::vector<float> blockA(full.begin(), full.begin() + 640);
+  std::vector<float> blockB(full.begin() + 640, full.end());
+  corevideo::modules::LinearResampleState stateB;
+  corevideo::modules::resampleLinearTo(blockA, 1, from, to, stateB);
+  corevideo::modules::resampleLinearTo(blockB, 1, from, to, stateB);
+
+  std::vector<float> stitched = blockA;
+  stitched.insert(stitched.end(), blockB.begin(), blockB.end());
+  EXPECT_EQ(stitched.size(), oneShot.size());
+  double maxDelta = 0.0;
+  for (size_t i = 0; i < std::min(stitched.size(), oneShot.size()); ++i) {
+    maxDelta = std::max(maxDelta, std::fabs(static_cast<double>(stitched[i] - oneShot[i])));
+  }
+  EXPECT_TRUE(maxDelta < 1e-6);
+
+  // Time correctness: 1280 frames @32k = 40ms -> ~1920 frames @48k (±2).
+  EXPECT_TRUE(oneShot.size() >= 1918u && oneShot.size() <= 1922u);
 }
