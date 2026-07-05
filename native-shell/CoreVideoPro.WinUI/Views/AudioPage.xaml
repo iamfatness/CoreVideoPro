@@ -504,11 +504,11 @@
                                         <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
                                                 Background="#10222B" BorderBrush="#1B5E6B">
                                             <Button.Flyout>
-                                                <MenuFlyout>
-                                                    <MenuFlyoutItem Text="Remove from chain"
-                                                                    Tag="{x:Bind Name}"
-                                                                    Click="OnRemoveInsertSlotClicked" />
-                                                </MenuFlyout>
+                                                <!-- C5b: slot editor — parameter sliders for built-ins
+                                                     (populated on open; params vary per insert) + Remove. -->
+                                                <Flyout Opening="OnInsertSlotFlyoutOpening">
+                                                    <StackPanel Width="240" Spacing="6" />
+                                                </Flyout>
                                             </Button.Flyout>
                                             <StackPanel Orientation="Horizontal" Spacing="6">
                                                 <TextBlock Text="{x:Bind SlotLabel}" FontSize="9"

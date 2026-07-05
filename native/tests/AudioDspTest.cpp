@@ -754,3 +754,25 @@ TEST(AudioDsp, MasterLimiterToggleOffSkipsLimiterButStillClamps) {
   EXPECT_TRUE(limitedPeak < 0.95);
   EXPECT_TRUE(std::fabs(clampedPeak - 1.0) < 1e-6);
 }
+
+TEST(AudioDsp, ChannelInsertSettingsOverrideTheDefaults) {
+  // C5b: hiss at ~-34 dBFS. The DEFAULT gate threshold (-48) lets it pass;
+  // an operator override to -20 dBFS gates it to silence.
+  const double sampleRate = 48000.0;
+  const auto tailPeak = [sampleRate](const corevideo::modules::ChannelInsertSettings* settings) {
+    std::vector<float> hiss(19200, 0.02f);  // interleaved stereo, 200ms
+    const std::vector<std::string> inserts{"Noise Gate"};
+    corevideo::modules::applyChannelInsertChain(hiss.data(), hiss.size(), sampleRate, inserts, false, settings);
+    double peak = 0.0;
+    for (size_t i = hiss.size() / 2; i < hiss.size(); ++i) {
+      peak = std::max(peak, std::fabs(static_cast<double>(hiss[i])));
+    }
+    return peak;
+  };
+
+  EXPECT_TRUE(tailPeak(nullptr) > 0.015);  // default -48 threshold: passes
+
+  corevideo::modules::ChannelInsertSettings settings;
+  settings["Noise Gate"]["thresholdDb"] = -20.0;
+  EXPECT_TRUE(tailPeak(&settings) < 0.001);  // operator threshold: gated
+}

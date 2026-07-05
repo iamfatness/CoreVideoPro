@@ -479,9 +479,13 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
 // contribute nothing. Each bus is brickwall-limited to -1 dBFS so summed
 // crosspoints never clip. Pure and deterministic: same inputs -> same buses.
 // ---------------------------------------------------------------------------
+// Per-insert parameter overrides (C5b): {insertName -> {param -> value}}.
+using ChannelInsertSettings = std::map<std::string, std::map<std::string, double>>;
+
 // Defined below (spec 4.4): per-channel insert processing over panned stereo.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
-                                   const std::vector<std::string>& inserts, bool noiseSuppression);
+                                   const std::vector<std::string>& inserts, bool noiseSuppression,
+                                   const ChannelInsertSettings* settings = nullptr);
 
 struct RoutedAudioSource {
   std::string sourceId;
@@ -496,6 +500,8 @@ struct RoutedAudioSource {
   const std::vector<std::string>* inserts = nullptr;
   bool noiseSuppression = false;
   double sampleRate = 48000.0;
+  // C5b: per-insert parameter overrides; null = all defaults.
+  const ChannelInsertSettings* insertSettings = nullptr;
 };
 
 struct RoutedAudioCrosspoint {
@@ -545,7 +551,7 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
       static const std::vector<std::string> kNoInserts;
       applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
                               source.inserts != nullptr ? *source.inserts : kNoInserts,
-                              source.noiseSuppression);
+                              source.noiseSuppression, source.insertSettings);
     }
     sourceStereo[source.sourceId] = std::move(stereo);
   }
@@ -771,10 +777,26 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
 // `noiseSuppression` (the strip toggle) gates even with no named insert.
 // Returns the number of inserts that actually processed audio.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
-                                   const std::vector<std::string>& inserts, bool noiseSuppression) {
+                                   const std::vector<std::string>& inserts, bool noiseSuppression,
+                                   const ChannelInsertSettings* settings) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
     return 0;
   }
+
+  // C5b: per-insert parameter with a default — looked up by the insert's exact
+  // name (the shell sends the same names it stores on the chain).
+  const auto param = [settings](const std::string& insertName, const char* key, double fallback) -> double {
+    if (settings == nullptr) {
+      return fallback;
+    }
+    const auto insertIt = settings->find(insertName);
+    if (insertIt == settings->end()) {
+      return fallback;
+    }
+    const auto valueIt = insertIt->second.find(key);
+    return valueIt != insertIt->second.end() ? valueIt->second : fallback;
+  };
+
   int applied = 0;
   bool gated = false;
   for (const auto& insert : inserts) {
@@ -784,22 +806,33 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
       lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
     }
     if (lowered.find("gate") != std::string::npos || lowered.find("noise") != std::string::npos) {
-      applyStereoLinkedGate(stereo, count, -48.0, 5.0, 120.0, sampleRate);
+      applyStereoLinkedGate(stereo, count,
+                            std::clamp(param(insert, "thresholdDb", -48.0), -80.0, -12.0),
+                            5.0,
+                            std::clamp(param(insert, "releaseMs", 120.0), 20.0, 500.0),
+                            sampleRate);
       gated = true;
       ++applied;
     } else if (lowered.find("high-pass") != std::string::npos || lowered.find("highpass") != std::string::npos ||
                lowered.find("low-cut") != std::string::npos || lowered.find("hpf") != std::string::npos) {
-      applyStereoEqCascade(stereo, count, {eqHighpass(sampleRate, 90.0)});
+      applyStereoEqCascade(stereo, count,
+                           {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0))});
       ++applied;
     } else if (lowered.find("eq") != std::string::npos || lowered.find("voice") != std::string::npos) {
-      applyStereoEqCascade(stereo, count,
-                           {eqHighpass(sampleRate, 90.0), eqPeaking(sampleRate, 3000.0, 2.0, 1.0)});
+      applyStereoEqCascade(
+          stereo, count,
+          {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0)),
+           eqPeaking(sampleRate,
+                     std::clamp(param(insert, "presenceHz", 3000.0), 800.0, 8000.0),
+                     std::clamp(param(insert, "presenceDb", 2.0), -12.0, 12.0), 1.0)});
       ++applied;
     } else if (lowered.find("compressor") != std::string::npos) {
-      applyCompressor(stereo, count, -18.0, 4.0);
+      applyCompressor(stereo, count,
+                      std::clamp(param(insert, "thresholdDb", -18.0), -40.0, -6.0),
+                      std::clamp(param(insert, "ratio", 4.0), 1.0, 20.0));
       ++applied;
     } else if (lowered.find("limiter") != std::string::npos) {
-      applyPeakLimiter(stereo, count, -1.0);
+      applyPeakLimiter(stereo, count, std::clamp(param(insert, "ceilingDb", -1.0), -12.0, -0.1));
       ++applied;
     }
     // Unrecognized third-party plugin names stay pass-through until the

@@ -602,6 +602,11 @@ public sealed class ParticipantAudioMix
     public double Lufs { get; set; } = -60;
     public double TruePeakDb { get; set; } = -60;
     public List<string> PluginInserts { get; set; } = [];
+
+    // C5b: per-insert parameter overrides {insertName -> {param -> value}}.
+    // Missing entries mean the core's defaults (gate -48dB, EQ 90Hz/+2dB,
+    // comp -18dB 4:1). Rides the mixer wire as `insertSettings`.
+    public Dictionary<string, Dictionary<string, double>> InsertSettings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class AudioMixState

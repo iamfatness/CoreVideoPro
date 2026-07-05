@@ -1364,6 +1364,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void RemoveSelectedChannelInsert(string insertName) => ToggleSelectedRackInsert(insertName);
 
+    // ---- C5b: built-in insert parameters. Missing key = the core's default;
+    // the slider flyout reads via Get (showing the default) and writes via Set,
+    // which syncs the whole insertSettings map on the mixer wire.
+    public double GetSelectedChannelInsertParam(string insertName, string paramKey, double fallback) =>
+        SelectedAudioMix?.InsertSettings.TryGetValue(insertName, out var parameters) == true &&
+        parameters.TryGetValue(paramKey, out var value)
+            ? value
+            : fallback;
+
+    public void SetSelectedChannelInsertParam(string insertName, string paramKey, double value)
+    {
+        if (SelectedAudioMix is not { } mix)
+        {
+            return;
+        }
+
+        if (!mix.InsertSettings.TryGetValue(insertName, out var parameters))
+        {
+            parameters = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            mix.InsertSettings[insertName] = parameters;
+        }
+
+        if (parameters.TryGetValue(paramKey, out var current) && Math.Abs(current - value) < 0.001)
+        {
+            return;
+        }
+
+        parameters[paramKey] = value;
+        CommandStatus = $"{insertName}: {paramKey} = {value:0.#}";
+        _ = TrySyncMediaCoreAsync();
+    }
+
     public void AddVstInsertToSelectedChannel(string pluginName)
     {
         if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginName))
@@ -7293,7 +7325,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Lufs = nativeChannel.RmsDbfs,
                     TruePeakDb = nativeChannel.PeakDbfs,
                     PluginInserts = prior?.PluginInserts.ToList() ??
-                        nativeChannel.PluginInserts.Select(insert => insert.Name).ToList()
+                        nativeChannel.PluginInserts.Select(insert => insert.Name).ToList(),
+                    InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
                 };
 
                 mergedById[channel.ParticipantId] = channel;
@@ -7331,7 +7364,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Status = "waiting-for-pcm",
             Lufs = -120,
             TruePeakDb = -120,
-            PluginInserts = prior?.PluginInserts.ToList() ?? []
+            PluginInserts = prior?.PluginInserts.ToList() ?? [],
+            InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
         };
 
     private string BuildAutoProductionReadout()
@@ -7905,7 +7939,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
             NormalizeMixerPan(mix?.Pan ?? 0),
             mix?.Solo ?? false,
-            mix?.PluginInserts ?? []);
+            mix?.PluginInserts ?? [],
+            mix?.InsertSettings);
     }
 
     public static bool IsConfiguredCaptureAudioSource(MediaCoreCaptureAudioSourceWire source) =>
