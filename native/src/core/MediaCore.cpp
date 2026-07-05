@@ -4309,13 +4309,39 @@ void MediaCore::startPluginHostScan() {
         status = "error";
       } else {
         plugins = parsePluginScanOutput(output);
-        status = "ready";
+        status = "probing";
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      pluginHostPlugins_ = plugins;
+      pluginHostStatus_ = status;
+      if (status != "probing") {
+        pluginHostScanInFlight_ = false;
+        return;
+      }
+    }
+
+    // P2a: probe each plugin in ITS OWN host process (one crashing plugin
+    // cannot poison the rest — nonzero exit IS the fail verdict), publishing
+    // verdicts incrementally so the browser fills in as probes complete.
+    // Still on this detached thread — never inside a lock domain.
+    for (size_t index = 0; index < plugins.size(); ++index) {
+      const auto probeOutput = runPluginHostProcess(exePath, {"--probe", plugins[index].id});
+      const auto verdict = parsePluginProbeResult(probeOutput);
+
+      std::lock_guard<std::mutex> lock(pluginHostMutex_);
+      if (index < pluginHostPlugins_.size() && pluginHostPlugins_[index].id == plugins[index].id) {
+        pluginHostPlugins_[index].probe = verdict.pass ? "pass" : "fail";
+        if (!verdict.vendor.empty() && pluginHostPlugins_[index].vendor.empty()) {
+          pluginHostPlugins_[index].vendor = verdict.vendor;
+        }
       }
     }
 
     std::lock_guard<std::mutex> lock(pluginHostMutex_);
-    pluginHostPlugins_ = std::move(plugins);
-    pluginHostStatus_ = status;
+    pluginHostStatus_ = "ready";
     pluginHostScanInFlight_ = false;
   }).detach();
 }
