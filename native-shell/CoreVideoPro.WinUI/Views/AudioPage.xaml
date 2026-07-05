@@ -433,16 +433,17 @@
                     </ItemsRepeater.Layout>
                     <ItemsRepeater.ItemTemplate>
                         <DataTemplate x:DataType="models:AudioParticipantRow">
-                            <Button MinWidth="88" Padding="8,4" CornerRadius="3"
+                            <Button MinWidth="88" MaxWidth="170" Padding="8,4" CornerRadius="3"
                                     Background="#0B2F38" BorderBrush="#1B5E6B" BorderThickness="1"
                                     Command="{Binding ViewModel.SelectParticipantCommand, ElementName=AudioRoot}"
                                     CommandParameter="{x:Bind Id}"
-                                    ToolTipService.ToolTip="{x:Bind Subtitle}">
+                                    ToolTipService.ToolTip="{x:Bind Name}">
                                 <StackPanel Spacing="0">
+                                    <!-- C5d: MaxWidth — long device names can't blow up the row -->
                                     <TextBlock Text="{x:Bind Name}" FontSize="11" FontWeight="SemiBold"
-                                               Foreground="#A7E8F2" TextTrimming="CharacterEllipsis" />
+                                               Foreground="#A7E8F2" TextTrimming="CharacterEllipsis" MaxWidth="150" />
                                     <TextBlock Text="{x:Bind BusLabel, Mode=OneWay}" FontSize="8"
-                                               Foreground="#5FA9B5" TextTrimming="CharacterEllipsis" />
+                                               Foreground="#5FA9B5" TextTrimming="CharacterEllipsis" MaxWidth="150" />
                                 </StackPanel>
                             </Button>
                         </DataTemplate>
@@ -459,31 +460,17 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel VerticalAlignment="Center" MinWidth="130">
+                    <StackPanel VerticalAlignment="Center" MinWidth="130" MaxWidth="200">
                         <TextBlock Text="CHANNEL" FontSize="8" CharacterSpacing="80"
                                    Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.SelectedParticipant.Name, Mode=OneWay, FallbackValue='—'}"
+                        <!-- C5d: resolves for EVERY channel (local audio, media), not
+                             just Zoom participants -->
+                        <TextBlock Text="{x:Bind ViewModel.SelectedChannelDisplayName, Mode=OneWay}"
                                    FontSize="14" FontWeight="Bold" Foreground="#A7E8F2"
                                    TextTrimming="CharacterEllipsis" />
                     </StackPanel>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                        <ToggleButton Content="GATE" FontSize="10" Padding="12,6" MinWidth="56"
-                                      IsChecked="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
-                                      Tag="Noise Gate" Click="OnRackInsertClicked"
-                                      ToolTipService.ToolTip="Noise gate (-48 dBFS, channel-linked)" />
-                        <ToggleButton Content="EQ" FontSize="10" Padding="12,6" MinWidth="56"
-                                      IsChecked="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
-                                      Tag="Built-in EQ" Click="OnRackInsertClicked"
-                                      ToolTipService.ToolTip="Voice EQ (90 Hz high-pass + presence)" />
-                        <ToggleButton Content="COMP" FontSize="10" Padding="12,6" MinWidth="56"
-                                      IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
-                                      Tag="Compressor" Click="OnRackInsertClicked"
-                                      ToolTipService.ToolTip="Compressor (-18 dBFS, 4:1)" />
-                        <ToggleButton Content="LIM" FontSize="10" Padding="12,6" MinWidth="56"
-                                      IsChecked="{x:Bind ViewModel.SelectedRackLimiterEnabled, Mode=OneWay}"
-                                      Tag="Limiter" Click="OnRackInsertClicked"
-                                      ToolTipService.ToolTip="Channel brickwall (-1 dBFS)" />
-                    </StackPanel>
+                    <!-- C5d: the duplicate GATE/EQ/COMP/LIM cells are gone — the slot
+                         chips ARE the chain; "+ Add" is the one way to add. -->
                     <!-- C5a: the visible insert rack — one slot chip per applied
                          insert, in chain order (LV1's rack column, horizontal).
                          Built-ins process live; VST slots say P2 until the host. -->
@@ -553,8 +540,8 @@
                         </ItemsRepeater.Layout>
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:AudioParticipantRow">
-                                <Border Width="92" Background="#0B1016" BorderBrush="#1C2630"
-                                        BorderThickness="1" CornerRadius="3" Padding="6,8,6,6">
+                                <Border Width="120" Background="#0B1016" BorderBrush="#1C2630"
+                                        BorderThickness="1" CornerRadius="3" Padding="8,8,8,6">
                                     <Grid RowSpacing="6">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto" />
@@ -564,12 +551,16 @@
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
 
+                                        <!-- C5d: pan visible and labeled (was clipped by negative margins) -->
                                         <StackPanel Spacing="0">
+                                            <TextBlock Text="PAN" FontSize="8" CharacterSpacing="60"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       HorizontalAlignment="Center" />
                                             <Slider Minimum="-1" Maximum="1" StepFrequency="0.05"
                                                     Value="{x:Bind Pan, Mode=OneWay}"
                                                     Tag="{x:Bind Id}"
                                                     ValueChanged="OnRowPanChanged"
-                                                    Margin="0,-6,0,-10" />
+                                                    Margin="0,-2,0,-6" />
                                             <TextBlock Text="{x:Bind PanLabel, Mode=OneWay}" FontSize="8"
                                                        Foreground="{StaticResource StudioMutedBrush}"
                                                        HorizontalAlignment="Center" />

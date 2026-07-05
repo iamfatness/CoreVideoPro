@@ -1364,6 +1364,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void RemoveSelectedChannelInsert(string insertName) => ToggleSelectedRackInsert(insertName);
 
+    // C5d: the rack header name must work for EVERY channel — local audio and
+    // media are audio rows, not Zoom participants, so SelectedParticipant.Name
+    // showed "—" while a chain was clearly loaded (owner screenshot).
+    public string SelectedChannelDisplayName =>
+        AudioParticipantRows.FirstOrDefault(row =>
+            string.Equals(row.Id, SelectedParticipantId, StringComparison.Ordinal))?.Name
+        ?? SelectedParticipant?.Name
+        ?? "Select a channel";
+
     // ---- C5b: built-in insert parameters. Missing key = the core's default;
     // the slider flyout reads via Get (showing the default) and writes via Set,
     // which syncs the whole insertSettings map on the mixer wire.
@@ -3976,6 +3985,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedRackCompressorEnabled));
         OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
+        OnPropertyChanged(nameof(SelectedChannelDisplayName));
         RefreshSelectedChannelInsertSlots();  // C5a rack slots follow the chain
     }
 
