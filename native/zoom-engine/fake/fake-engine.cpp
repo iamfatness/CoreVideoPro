@@ -195,9 +195,23 @@ struct Target {
     bool is_auto = false;  // created by auto-subscribe vs explicit `subscribe`
 };
 
+// Z4a (zoom-audio-spec): deterministic TONE emission over the REAL audio ring
+// transport so the full pipeline (ring -> core -> feed -> mix -> monitor) can
+// be soak-tested without a meeting or an operator ear. Each participant gets a
+// distinct frequency (220Hz + pid%8 * 110) - artifacts show as spectral smear,
+// clicks, or autocorr echoes against a mathematically known signal.
+struct AudioToneTarget {
+    uint32_t participant_id = 0;
+    ShmRegion shm;
+    uint64_t samplePos = 0;
+    uint64_t packetsWritten = 0;
+    std::chrono::steady_clock::time_point startedAt;
+};
+
 static std::mutex                 g_mtx;          // guards everything below
 static std::vector<Participant>   g_roster;       // current participants
 static uint32_t                   g_active_speaker = 0;
+static std::map<std::string, AudioToneTarget> g_audioTargets;  // Z4a tone streams
 static std::map<std::string, Target> g_targets;   // by source_uuid
 static bool                       g_joined = false;
 static std::atomic<bool>          g_running{true};
@@ -343,6 +357,54 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
         R"(,"w":)" + std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
 }
 
+// Z4a: emit all 10ms tone packets due for a target through the SHARED ring
+// layout (engine-ipc.h) - the same writer protocol as the real engine.
+static void produce_audio_locked(const std::string& uuid, AudioToneTarget& target) {
+    if (!target.shm.ptr) {
+        const std::string region_name = EngineIpc::shm_prefix() + uuid + "_audio";
+        if (!shm_region_create(target.shm, region_name, audio_ring_region_size())) return;
+        auto* hdr = static_cast<ShmAudioRingHeader*>(target.shm.ptr);
+        hdr->slot_count = kAudioRingSlots;
+        hdr->slot_payload = kAudioRingSlotPayload;
+        hdr->write_counter = 0;
+        std::atomic_thread_fence(std::memory_order_release);
+        hdr->magic = kAudioRingMagic;
+        target.startedAt = std::chrono::steady_clock::now();
+    }
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - target.startedAt).count();
+    const auto due = static_cast<uint64_t>(elapsedMs / 10);
+    const double freq = 220.0 + static_cast<double>(target.participant_id % 8u) * 110.0;
+    while (target.packetsWritten < due) {
+        auto* hdr = static_cast<ShmAudioRingHeader*>(target.shm.ptr);
+        const uint32_t w = hdr->write_counter;
+        auto* slotBase = static_cast<char*>(target.shm.ptr) + sizeof(ShmAudioRingHeader) +
+                         static_cast<size_t>(w % kAudioRingSlots) * audio_ring_slot_stride();
+        auto* slot = reinterpret_cast<ShmAudioRingSlot*>(slotBase);
+        slot->seq = 2u * w + 1u;
+        std::atomic_thread_fence(std::memory_order_release);
+        slot->sample_rate = 48000;
+        slot->channels = 1;
+        slot->reserved = 0;
+        slot->byte_len = 480 * sizeof(int16_t);
+        auto* pcm = reinterpret_cast<int16_t*>(slotBase + sizeof(ShmAudioRingSlot));
+        for (int i = 0; i < 480; ++i) {
+            const double phase = 2.0 * 3.14159265358979323846 * freq *
+                                 static_cast<double>(target.samplePos + static_cast<uint64_t>(i)) / 48000.0;
+            pcm[i] = static_cast<int16_t>(std::lround(std::sin(phase) * 0.25 * 32767.0));
+        }
+        target.samplePos += 480;
+        std::atomic_thread_fence(std::memory_order_release);
+        slot->seq = 2u * w + 2u;
+        std::atomic_thread_fence(std::memory_order_release);
+        hdr->write_counter = w + 1u;
+        ++target.packetsWritten;
+        EngineIpc::write(std::string("{\"cmd\":\"audio\",\"source_uuid\":\"") + uuid +
+                         "\",\"participant_id\":" + std::to_string(target.participant_id) +
+                         ",\"byte_len\":960}");
+    }
+}
+
 // ── Producer thread: ~30 fps frame fabrication for all active targets ─────────
 static void producer_loop() {
     using clock = std::chrono::steady_clock;
@@ -359,6 +421,12 @@ static void producer_loop() {
                     // when a participant leaves, its feed naturally goes stale.
                     if (roster_has(t.participant_id))
                         produce_frame_locked(t, tick);
+                }
+                // Z4a: tone packets for subscribed audio targets (paced by
+                // absolute elapsed time, so this ~33ms loop emits 3-4 per pass).
+                for (auto& [auuid, atarget] : g_audioTargets) {
+                    if (roster_has(atarget.participant_id))
+                        produce_audio_locked(auuid, atarget);
                 }
             }
         }
@@ -522,6 +590,8 @@ int main(int argc, char** argv) {
                 g_active_speaker = 0;
                 for (auto& [uuid, t] : g_targets) shm_region_destroy(t.shm);
                 g_targets.clear();
+                for (auto& [auuid, atarget] : g_audioTargets) shm_region_destroy(atarget.shm);
+                g_audioTargets.clear();
             }
             EngineIpc::write(R"({"cmd":"left"})");
 
@@ -532,8 +602,15 @@ int main(int argc, char** argv) {
             EngineIpc::write(R"({"cmd":"debug","stage":"raw_media_stopped","reason":"fake"})");
 
         } else if (line.find(IPC_CMD_SUBSCRIBE_AUDIO) != std::string::npos) {
-            // No synthetic audio — acknowledge so the parent's audio path is exercised.
+            // Z4a: start a deterministic tone stream over the real ring transport.
             std::string uuid = json_str(line, "source_uuid");
+            {
+                const uint32_t pid = json_uint(line, "participant_id");
+                if (!uuid.empty() && pid != 0) {
+                    std::lock_guard<std::mutex> lk(g_mtx);
+                    g_audioTargets[uuid].participant_id = pid;
+                }
+            }
             EngineIpc::write(
                 R"({"cmd":"debug","stage":"audio_subscribe","source_uuid":")" +
                 json_escape(uuid) + "\"}");
