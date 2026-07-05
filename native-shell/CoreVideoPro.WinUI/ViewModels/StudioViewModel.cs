@@ -1318,6 +1318,73 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? string.Join(" -> ", mix.PluginInserts)
             : "No inserts";
 
+    // ---- C5a: the visible insert rack (LV1-style slot chain). Each applied
+    // insert is a SLOT in chain order; built-ins process today (#178),
+    // third-party VST3 slots are explicitly "awaiting host" until P2 — shown,
+    // never faked. Signature-gated rebuild (bound-collection churn is the
+    // 0xc000027b crash class).
+    private IReadOnlyList<InsertSlotItem> _selectedChannelInsertSlots = [];
+    private string _insertSlotsSignature = "";
+
+    public IReadOnlyList<InsertSlotItem> SelectedChannelInsertSlots => _selectedChannelInsertSlots;
+
+    private static readonly string[] BuiltInInsertNames = ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"];
+
+    private static bool IsBuiltInInsert(string name) =>
+        BuiltInInsertNames.Any(builtIn => string.Equals(builtIn, name, StringComparison.OrdinalIgnoreCase)) ||
+        name.Contains("gate", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("eq", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("compressor", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("limiter", StringComparison.OrdinalIgnoreCase);
+
+    private void RefreshSelectedChannelInsertSlots()
+    {
+        var inserts = SelectedAudioMix?.PluginInserts ?? [];
+        var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts);
+        if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _insertSlotsSignature = signature;
+        _selectedChannelInsertSlots = inserts
+            .Select((name, index) => new InsertSlotItem
+            {
+                Name = name,
+                SlotLabel = $"{index + 1}",
+                IsBuiltIn = IsBuiltInInsert(name),
+                StatusLabel = IsBuiltInInsert(name) ? "LIVE" : "P2",
+            })
+            .ToList();
+        OnPropertyChanged(nameof(SelectedChannelInsertSlots));
+    }
+
+    /// <summary>Add-insert options for the rack flyout: built-ins + every scanned VST3.</summary>
+    public IReadOnlyList<string> BuiltInInsertOptions => BuiltInInsertNames;
+
+    public void RemoveSelectedChannelInsert(string insertName) => ToggleSelectedRackInsert(insertName);
+
+    public void AddVstInsertToSelectedChannel(string pluginName)
+    {
+        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginName))
+        {
+            return;
+        }
+
+        if (mix.PluginInserts.Any(insert => string.Equals(insert, pluginName, StringComparison.OrdinalIgnoreCase)))
+        {
+            CommandStatus = $"{pluginName} is already on {SelectedParticipant?.Name ?? "selected channel"}";
+            return;
+        }
+
+        mix.PluginInserts.Add(pluginName);
+        CommandStatus = $"{pluginName} slotted on {SelectedParticipant?.Name ?? "selected channel"} — live processing arrives with the plugin host (P2)";
+        RefreshMixerValueBindings(mix.ParticipantId);
+        RefreshAudioProcessingTargets();
+        NotifySelectedRackChanged();
+        _ = TrySyncMediaCoreAsync();
+    }
+
     public string VstBridgeStatusLabel =>
         SelectedAudioMix?.PluginInserts.Any(insert => insert.StartsWith("VST", StringComparison.OrdinalIgnoreCase)) == true
             ? "VST3 bridge slot configured - scan/load bridge required for live PCM processing"
@@ -3877,6 +3944,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedRackCompressorEnabled));
         OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
+        RefreshSelectedChannelInsertSlots();  // C5a rack slots follow the chain
     }
 
     // ---- VST host P1: operator-initiated plugin discovery (spec 4.5). The

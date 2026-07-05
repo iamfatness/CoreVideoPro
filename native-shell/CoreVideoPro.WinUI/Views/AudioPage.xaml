@@ -484,9 +484,55 @@
                                       Tag="Limiter" Click="OnRackInsertClicked"
                                       ToolTipService.ToolTip="Channel brickwall (-1 dBFS)" />
                     </StackPanel>
-                    <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.SelectedInsertChainLabel, Mode=OneWay}"
-                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <!-- C5a: the visible insert rack — one slot chip per applied
+                         insert, in chain order (LV1's rack column, horizontal).
+                         Built-ins process live; VST slots say P2 until the host. -->
+                    <Grid Grid.Column="2" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                      VerticalScrollMode="Disabled" HorizontalScrollMode="Enabled"
+                                      VerticalAlignment="Center">
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.SelectedChannelInsertSlots, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <StackLayout Orientation="Horizontal" Spacing="4" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="models:InsertSlotItem">
+                                        <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
+                                                Background="#10222B" BorderBrush="#1B5E6B">
+                                            <Button.Flyout>
+                                                <MenuFlyout>
+                                                    <MenuFlyoutItem Text="Remove from chain"
+                                                                    Tag="{x:Bind Name}"
+                                                                    Click="OnRemoveInsertSlotClicked" />
+                                                </MenuFlyout>
+                                            </Button.Flyout>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Text="{x:Bind SlotLabel}" FontSize="9"
+                                                           Foreground="{StaticResource StudioMutedBrush}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Text="{x:Bind Name}" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="#A7E8F2" VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
+                                                <TextBlock Text="{x:Bind StatusLabel}" FontSize="8" FontWeight="Bold"
+                                                           Foreground="{x:Bind StatusBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </ScrollViewer>
+                        <DropDownButton Grid.Column="1" Content="+ Add" FontSize="10" Padding="10,4"
+                                        VerticalAlignment="Center">
+                            <DropDownButton.Flyout>
+                                <MenuFlyout x:Name="AddInsertFlyout" Opening="OnAddInsertFlyoutOpening" />
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+                    </Grid>
                 </Grid>
             </Border>
 

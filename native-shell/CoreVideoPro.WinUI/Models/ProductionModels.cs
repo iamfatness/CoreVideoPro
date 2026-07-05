@@ -108,6 +108,23 @@ public enum StudioTab
     Automation
 }
 
+// C5a: one slot in the selected channel's visible insert rack. Built-ins are
+// processed by the core today; VST slots are explicit "awaiting host (P2)".
+public sealed class InsertSlotItem
+{
+    private static readonly Microsoft.UI.Xaml.Media.Brush LiveBrush =
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 46, 210, 116));
+
+    private static readonly Microsoft.UI.Xaml.Media.Brush PendingBrush =
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 199, 154, 46));
+
+    public required string Name { get; init; }
+    public required string SlotLabel { get; init; }
+    public bool IsBuiltIn { get; init; }
+    public string StatusLabel { get; init; } = "";
+    public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn ? LiveBrush : PendingBrush;
+}
+
 public sealed class FeedHealthRow
 {
     public required string ParticipantId { get; init; }
