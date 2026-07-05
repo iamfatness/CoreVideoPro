@@ -819,12 +819,21 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
                            {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0))});
       ++applied;
     } else if (lowered.find("eq") != std::string::npos || lowered.find("voice") != std::string::npos) {
-      applyStereoEqCascade(
-          stereo, count,
-          {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0)),
-           eqPeaking(sampleRate,
-                     std::clamp(param(insert, "presenceHz", 3000.0), 800.0, 8000.0),
-                     std::clamp(param(insert, "presenceDb", 2.0), -12.0, 12.0), 1.0)});
+      // C6b: 8-BAND parametric EQ (owner-directed). Bands sit at the standard
+      // octave centers; each band's gain comes from insertSettings
+      // (band1Db..band8Db, default 0 = flat). Flat bands are skipped — an
+      // untouched EQ is just the low-cut.
+      static constexpr double kEqBandHz[8] = {63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0};
+      std::vector<AudioBiquadCoefficients> cascade;
+      cascade.push_back(eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0)));
+      for (int band = 0; band < 8; ++band) {
+        const std::string key = "band" + std::to_string(band + 1) + "Db";
+        const double gainDb = std::clamp(param(insert, key.c_str(), 0.0), -12.0, 12.0);
+        if (std::fabs(gainDb) >= 0.05) {
+          cascade.push_back(eqPeaking(sampleRate, kEqBandHz[band], gainDb, 1.4));
+        }
+      }
+      applyStereoEqCascade(stereo, count, cascade);
       ++applied;
     } else if (lowered.find("compressor") != std::string::npos) {
       applyCompressor(stereo, count,

@@ -1364,6 +1364,79 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public void RemoveSelectedChannelInsert(string insertName) => ToggleSelectedRackInsert(insertName);
 
+    // ---- C6 workspace: TwoWay parameter properties over the insertSettings
+    // map, one per visible slider. Getters show the core default until the
+    // operator moves something; setters ride Set…InsertParam (sync + clamp in
+    // the core). Notified by NotifySelectedRackChanged on selection/chain change.
+    public double WorkspaceGateThresholdDb
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "thresholdDb", -48);
+        set => SetSelectedChannelInsertParam("Noise Gate", "thresholdDb", value);
+    }
+
+    public double WorkspaceGateReleaseMs
+    {
+        get => GetSelectedChannelInsertParam("Noise Gate", "releaseMs", 120);
+        set => SetSelectedChannelInsertParam("Noise Gate", "releaseMs", value);
+    }
+
+    public double WorkspaceEqHighpassHz
+    {
+        get => GetSelectedChannelInsertParam("Built-in EQ", "highpassHz", 90);
+        set => SetSelectedChannelInsertParam("Built-in EQ", "highpassHz", value);
+    }
+
+    // C6b: the 8 band gains (63…8k, keys band1Db..band8Db, default 0 = flat).
+    private double GetEqBand(int band) =>
+        GetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", 0);
+
+    private void SetEqBand(int band, double value)
+    {
+        SetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", value);
+        OnPropertyChanged(nameof(WorkspaceEqBandsCsv));
+    }
+
+    public double WorkspaceEqBand1 { get => GetEqBand(1); set => SetEqBand(1, value); }
+    public double WorkspaceEqBand2 { get => GetEqBand(2); set => SetEqBand(2, value); }
+    public double WorkspaceEqBand3 { get => GetEqBand(3); set => SetEqBand(3, value); }
+    public double WorkspaceEqBand4 { get => GetEqBand(4); set => SetEqBand(4, value); }
+    public double WorkspaceEqBand5 { get => GetEqBand(5); set => SetEqBand(5, value); }
+    public double WorkspaceEqBand6 { get => GetEqBand(6); set => SetEqBand(6, value); }
+    public double WorkspaceEqBand7 { get => GetEqBand(7); set => SetEqBand(7, value); }
+    public double WorkspaceEqBand8 { get => GetEqBand(8); set => SetEqBand(8, value); }
+
+    /// <summary>All 8 band gains as csv for the response-curve control.</summary>
+    public string WorkspaceEqBandsCsv =>
+        string.Join(",", Enumerable.Range(1, 8).Select(band =>
+            GetEqBand(band).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
+
+    public double WorkspaceCompThresholdDb
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "thresholdDb", -18);
+        set => SetSelectedChannelInsertParam("Compressor", "thresholdDb", value);
+    }
+
+    public double WorkspaceCompRatio
+    {
+        get => GetSelectedChannelInsertParam("Compressor", "ratio", 4);
+        set => SetSelectedChannelInsertParam("Compressor", "ratio", value);
+    }
+
+    private void NotifyWorkspaceParamsChanged()
+    {
+        OnPropertyChanged(nameof(WorkspaceGateThresholdDb));
+        OnPropertyChanged(nameof(WorkspaceGateReleaseMs));
+        OnPropertyChanged(nameof(WorkspaceEqHighpassHz));
+        for (var band = 1; band <= 8; band++)
+        {
+            OnPropertyChanged($"WorkspaceEqBand{band}");
+        }
+
+        OnPropertyChanged(nameof(WorkspaceEqBandsCsv));
+        OnPropertyChanged(nameof(WorkspaceCompThresholdDb));
+        OnPropertyChanged(nameof(WorkspaceCompRatio));
+    }
+
     // C5d: the rack header name must work for EVERY channel — local audio and
     // media are audio rows, not Zoom participants, so SelectedParticipant.Name
     // showed "—" while a chain was clearly loaded (owner screenshot).
@@ -3986,6 +4059,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
         OnPropertyChanged(nameof(SelectedChannelDisplayName));
+        NotifyWorkspaceParamsChanged();  // C6 sliders + curves follow the channel
         RefreshSelectedChannelInsertSlots();  // C5a rack slots follow the chain
     }
 

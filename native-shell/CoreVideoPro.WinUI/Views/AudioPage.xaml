@@ -451,74 +451,222 @@
                 </ItemsRepeater>
             </ScrollViewer>
 
-            <!-- Selected channel rack strip -->
+            <!-- C6: the PROCESSING WORKSPACE (LV1 top half) — always visible for
+                 the selected channel: RACK column (slot chain, vertical), then
+                 GATE / COMP / EQ cells with their controls AND the response
+                 curve drawn from the same parameters the core chain applies.
+                 No flyout hunting: what you see is what processes. -->
             <Border Grid.Row="2" Background="#0C141B" BorderBrush="#1C2630" BorderThickness="1"
-                    CornerRadius="4" Padding="10,6">
-                <Grid ColumnSpacing="12">
+                    CornerRadius="4" Padding="10,8" Height="255">
+                <Grid ColumnSpacing="10">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="190" />
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="1.4*" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel VerticalAlignment="Center" MinWidth="130" MaxWidth="200">
-                        <TextBlock Text="CHANNEL" FontSize="8" CharacterSpacing="80"
-                                   Foreground="{StaticResource StudioMutedBrush}" />
-                        <!-- C5d: resolves for EVERY channel (local audio, media), not
-                             just Zoom participants -->
-                        <TextBlock Text="{x:Bind ViewModel.SelectedChannelDisplayName, Mode=OneWay}"
-                                   FontSize="14" FontWeight="Bold" Foreground="#A7E8F2"
-                                   TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                    <!-- C5d: the duplicate GATE/EQ/COMP/LIM cells are gone — the slot
-                         chips ARE the chain; "+ Add" is the one way to add. -->
-                    <!-- C5a: the visible insert rack — one slot chip per applied
-                         insert, in chain order (LV1's rack column, horizontal).
-                         Built-ins process live; VST slots say P2 until the host. -->
-                    <Grid Grid.Column="2" ColumnSpacing="6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
-                                      VerticalScrollMode="Disabled" HorizontalScrollMode="Enabled"
-                                      VerticalAlignment="Center">
+
+                    <!-- RACK column: channel name + the slot chain, vertical -->
+                    <Grid RowSpacing="4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="CHANNEL" FontSize="8" CharacterSpacing="80"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.SelectedChannelDisplayName, Mode=OneWay}"
+                                       FontSize="14" FontWeight="Bold" Foreground="#A7E8F2"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <ItemsRepeater ItemsSource="{x:Bind ViewModel.SelectedChannelInsertSlots, Mode=OneWay}">
                                 <ItemsRepeater.Layout>
-                                    <StackLayout Orientation="Horizontal" Spacing="4" />
+                                    <StackLayout Orientation="Vertical" Spacing="3" />
                                 </ItemsRepeater.Layout>
                                 <ItemsRepeater.ItemTemplate>
                                     <DataTemplate x:DataType="models:InsertSlotItem">
                                         <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
+                                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                                                 Background="#10222B" BorderBrush="#1B5E6B">
                                             <Button.Flyout>
-                                                <!-- C5b: slot editor — parameter sliders for built-ins
-                                                     (populated on open; params vary per insert) + Remove. -->
                                                 <Flyout Opening="OnInsertSlotFlyoutOpening">
                                                     <StackPanel Width="240" Spacing="6" />
                                                 </Flyout>
                                             </Button.Flyout>
-                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Grid ColumnSpacing="6">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="{x:Bind SlotLabel}" FontSize="9"
                                                            Foreground="{StaticResource StudioMutedBrush}"
                                                            VerticalAlignment="Center" />
-                                                <TextBlock Text="{x:Bind Name}" FontSize="10" FontWeight="SemiBold"
+                                                <TextBlock Grid.Column="1" Text="{x:Bind Name}" FontSize="10" FontWeight="SemiBold"
                                                            Foreground="#A7E8F2" VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis" MaxWidth="140" />
-                                                <TextBlock Text="{x:Bind StatusLabel}" FontSize="8" FontWeight="Bold"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="8" FontWeight="Bold"
                                                            Foreground="{x:Bind StatusBrush}"
                                                            VerticalAlignment="Center" />
-                                            </StackPanel>
+                                            </Grid>
                                         </Button>
                                     </DataTemplate>
                                 </ItemsRepeater.ItemTemplate>
                             </ItemsRepeater>
                         </ScrollViewer>
-                        <DropDownButton Grid.Column="1" Content="+ Add" FontSize="10" Padding="10,4"
-                                        VerticalAlignment="Center">
+                        <DropDownButton Grid.Row="2" Content="+ Add insert" FontSize="10" Padding="10,4"
+                                        HorizontalAlignment="Stretch">
                             <DropDownButton.Flyout>
                                 <MenuFlyout x:Name="AddInsertFlyout" Opening="OnAddInsertFlyoutOpening" />
                             </DropDownButton.Flyout>
                         </DropDownButton>
+                    </Grid>
+
+                    <!-- GATE cell -->
+                    <Grid Grid.Column="1" RowSpacing="4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <TextBlock Text="GATE" FontSize="10" FontWeight="ExtraBold" CharacterSpacing="60"
+                                       Foreground="#A7E8F2" VerticalAlignment="Center" />
+                            <ToggleButton Content="IN" FontSize="9" Padding="8,2" HorizontalAlignment="Right"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
+                                          Tag="Noise Gate" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Engage the gate on this channel" />
+                        </Grid>
+                        <controls:DspResponseCurve Grid.Row="1" Kind="gate"
+                                                   P1="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}" />
+                        <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
+                                Minimum="-80" Maximum="-12" StepFrequency="1"
+                                Value="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=TwoWay}" />
+                        <Slider Grid.Row="3" Header="Release (ms)" FontSize="9"
+                                Minimum="20" Maximum="500" StepFrequency="5"
+                                Value="{x:Bind ViewModel.WorkspaceGateReleaseMs, Mode=TwoWay}" />
+                    </Grid>
+
+                    <!-- COMP cell -->
+                    <Grid Grid.Column="2" RowSpacing="4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <TextBlock Text="COMP" FontSize="10" FontWeight="ExtraBold" CharacterSpacing="60"
+                                       Foreground="#A7E8F2" VerticalAlignment="Center" />
+                            <ToggleButton Content="IN" FontSize="9" Padding="8,2" HorizontalAlignment="Right"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
+                                          Tag="Compressor" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Engage the compressor on this channel" />
+                        </Grid>
+                        <controls:DspResponseCurve Grid.Row="1" Kind="comp"
+                                                   P1="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
+                                                   P2="{x:Bind ViewModel.WorkspaceCompRatio, Mode=OneWay}" />
+                        <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
+                                Minimum="-40" Maximum="-6" StepFrequency="1"
+                                Value="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=TwoWay}" />
+                        <Slider Grid.Row="3" Header="Ratio" FontSize="9"
+                                Minimum="1" Maximum="20" StepFrequency="0.5"
+                                Value="{x:Bind ViewModel.WorkspaceCompRatio, Mode=TwoWay}" />
+                    </Grid>
+
+                    <!-- EQ cell (frequency response drawn from the real biquads) -->
+                    <Grid Grid.Column="3" RowSpacing="4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <TextBlock Text="EQ" FontSize="10" FontWeight="ExtraBold" CharacterSpacing="60"
+                                       Foreground="#A7E8F2" VerticalAlignment="Center" />
+                            <ToggleButton Content="IN" FontSize="9" Padding="8,2" HorizontalAlignment="Right"
+                                          IsChecked="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
+                                          Tag="Built-in EQ" Click="OnRackInsertClicked"
+                                          ToolTipService.ToolTip="Engage the voice EQ on this channel" />
+                        </Grid>
+                        <controls:DspResponseCurve Grid.Row="1" Kind="eq"
+                                                   P1="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
+                                                   Bands="{x:Bind ViewModel.WorkspaceEqBandsCsv, Mode=OneWay}" />
+                        <!-- C6b: 8-BAND EQ — vertical gain fader per band at the octave
+                             centers, matching the native cascade, plus the low cut. -->
+                        <Grid Grid.Row="2" ColumnSpacing="2" Height="86">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.6*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,6,0">
+                                <TextBlock Text="LOW CUT" FontSize="8" Foreground="{StaticResource StudioMutedBrush}"
+                                           HorizontalAlignment="Center" />
+                                <Slider Minimum="20" Maximum="400" StepFrequency="5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand1, Mode=TwoWay}" />
+                                <TextBlock Text="63" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand2, Mode=TwoWay}" />
+                                <TextBlock Text="125" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="3">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand3, Mode=TwoWay}" />
+                                <TextBlock Text="250" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="4">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand4, Mode=TwoWay}" />
+                                <TextBlock Text="500" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="5">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand5, Mode=TwoWay}" />
+                                <TextBlock Text="1k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="6">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand6, Mode=TwoWay}" />
+                                <TextBlock Text="2k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="7">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand7, Mode=TwoWay}" />
+                                <TextBlock Text="4k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="8">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand8, Mode=TwoWay}" />
+                                <TextBlock Text="8k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
                     </Grid>
                 </Grid>
             </Border>
