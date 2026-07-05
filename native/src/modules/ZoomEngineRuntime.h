@@ -181,6 +181,19 @@ class ZoomEngineRuntime {
   // samples instead of overlap-summing. Bounded (~1s per source, drop-oldest).
   // Guarded by mutex_.
   std::map<std::string, ZoomEnginePendingAudio> pendingAudio_;
+  // Z2b: persistently-open audio ring regions, drained on the 50Hz poll (the
+  // per-pipe-event open/drain/close cycle lost hundreds of packets/source at
+  // 500 events/s - the soak harness ring telemetry caught it). Keyed by the
+  // stream source uuid; pendingKey routes chunks to the right mixer channel.
+  // Region held opaquely (engine-ipc.h with its windows.h stays out of this
+  // public header); the .cpp reinterprets to ShmRegion.
+  struct AudioStreamRef {
+    std::string pendingKey;
+    void* regionOpaque = nullptr;  // owned ShmRegion*, destroyed on close
+  };
+  std::map<std::string, AudioStreamRef> audioStreams_;
+  void drainAudioStreamLocked(const std::string& uuid, AudioStreamRef& ref);
+  void closeAudioStreamsLocked();
 };
 
 }  // namespace corevideo::modules
