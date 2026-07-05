@@ -2004,24 +2004,27 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void EnsureDefaultZoomAudioRoutingSends_AddsAllBusesForEachParticipantAndPreservesOverrides()
+    public void EnsureDefaultZoomAudioRoutingSends_RoutesTheMeetingMixNotIsoParticipants()
     {
+        // Z1 (docs/zoom-audio-spec.md): ISO participant streams default UNROUTED
+        // (routing them alongside the meeting mix summed the same voice twice at
+        // ~110ms skew - the measured internal echo). The MEETING MIX carries the
+        // program defaults; operator ISO overrides survive untouched.
         var sends = StudioViewModel.EnsureDefaultZoomAudioRoutingSends(
             [new MediaCoreAudioRoutingSendWire("16778240", "master", -6)],
             ["16778240", "16785408", "16778240", ""]);
 
-        // The operator's existing master override survives; every other bus is
-        // filled in at unity for both (deduped) participants.
-        Assert.Equal(10, sends.Count);
+        // The deliberate ISO route survives; no OTHER participant sends appear.
         Assert.Contains(sends, send => send.SourceId == "16778240" && send.BusId == "master" && send.GainDb == -6);
-        foreach (var participantId in new[] { "16778240", "16785408" })
+        Assert.DoesNotContain(sends, send => send.SourceId == "16785408");
+        Assert.DoesNotContain(sends, send => send.SourceId == "16778240" && send.BusId != "master");
+
+        // zoom-mix gets the full program default set.
+        foreach (var busId in new[] { "master", "pgm-l", "pgm-r", "stream", "mon" })
         {
-            foreach (var busId in new[] { "pgm-l", "pgm-r", "stream", "mon" })
-            {
-                Assert.Contains(sends, send => send.SourceId == participantId && send.BusId == busId && send.GainDb == 0);
-            }
+            Assert.Contains(sends, send => send.SourceId == "zoom-mix" && send.BusId == busId && send.GainDb == 0);
         }
-        Assert.Contains(sends, send => send.SourceId == "16785408" && send.BusId == "master" && send.GainDb == 0);
+        Assert.Equal(6, sends.Count);
     }
 
     [Fact]

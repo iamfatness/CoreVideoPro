@@ -10,7 +10,7 @@ public sealed record RoutingBus(string Id, string Label);
 /// A routable source (a matrix row) — an assigned Input (1–10) or a synthetic
 /// source such as the Zoom program mix or media playback.
 /// </summary>
-public sealed record RoutingSource(string Id, string Label);
+public sealed record RoutingSource(string Id, string Label, bool DefaultUnrouted = false);
 
 /// <summary>
 /// A video destination in the routing matrix (a matrix column) — an ISO record

@@ -3547,7 +3547,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 "local-machine-audio",
                 ResolveLocalAudioRoutingSourceLabel(SelectedLocalAudioCaptureDeviceName)));
         }
-        AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom program mix"));
+        AddUniqueRoutingSource(sources, new RoutingSource("zoom-mix", "Zoom meeting mix (program default)"));
         AddUniqueRoutingSource(sources, new RoutingSource("media", "Media playback"));
         AudioRoutingMatrix.Build(sources);
         RefreshAudioProcessingTargets();
@@ -3559,7 +3559,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         foreach (var input in ShowInputs.Where(IsShowInputAudioSource))
         {
             var sourceId = ResolveAudioRoutingMatrixSourceId(FormatInputSourceId(input.SlotNumber));
-            AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)}"));
+            // Z1: ISO streams default unrouted (the meeting mix is program default).
+            AddUniqueRoutingSource(sources, new RoutingSource(sourceId, $"{input.SlotLabel} - {ResolveShowInputSourceLabel(input)} (ISO)", DefaultUnrouted: true));
         }
 
         foreach (var captureDevice in CaptureDevices
@@ -8060,6 +8061,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // silent on master/monitor/program/stream no matter how hot their meter
     // is. Default every in-room participant to unity sends on the same buses
     // capture/local/media sources get; the routing matrix can still override.
+    // Z1 (docs/zoom-audio-spec.md): Zoom ISO participant streams default
+    // UNROUTED - routing the same voice via BOTH the meeting mix and ISO
+    // summed it twice at ~110ms skew (the measured internal echo). The
+    // MEETING MIX ("zoom-mix") carries the program defaults instead; ISO rows
+    // stay visible in the matrix for deliberate per-speaker routing.
     public static IReadOnlyList<MediaCoreAudioRoutingSendWire> EnsureDefaultZoomAudioRoutingSends(
         IReadOnlyList<MediaCoreAudioRoutingSendWire> sends,
         IReadOnlyList<string> zoomParticipantIds)
@@ -8071,16 +8077,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredBusIds = ["master", "pgm-l", "pgm-r", "stream", "mon"];
         var completed = sends.ToList();
-        foreach (var participantId in zoomParticipantIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
+        foreach (var busId in requiredBusIds)
         {
-            foreach (var busId in requiredBusIds)
+            if (!completed.Any(send =>
+                    string.Equals(send.SourceId, "zoom-mix", StringComparison.Ordinal) &&
+                    string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
             {
-                if (!completed.Any(send =>
-                        string.Equals(send.SourceId, participantId, StringComparison.Ordinal) &&
-                        string.Equals(send.BusId, busId, StringComparison.OrdinalIgnoreCase)))
-                {
-                    completed.Add(new MediaCoreAudioRoutingSendWire(participantId, busId, 0));
-                }
+                completed.Add(new MediaCoreAudioRoutingSendWire("zoom-mix", busId, 0));
             }
         }
 
