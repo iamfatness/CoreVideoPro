@@ -530,6 +530,91 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
 // Per-insert parameter overrides (C5b): {insertName -> {param -> value}}.
 using ChannelInsertSettings = std::map<std::string, std::map<std::string, double>>;
 
+// Spec 4.2 (deferred piece, now owner-forcing): per-source sample-steady feed.
+// Capture delivers ~10ms packets on the DEVICE clock while the worker consumes
+// on ITS 50Hz clock — some ticks catch one packet, some two, so downstream
+// blocks vary 480/960/1440 samples and every short tick is an audible hole in
+// the signal (raw-path distortion with zero underruns on either side). This
+// FIFO absorbs the phase jitter: audio accumulates per source, nothing is
+// emitted until PRIME (2 ticks) is buffered, then every tick emits EXACTLY
+// one tick of samples. Steady-state latency cost: ~20-40ms on these sources.
+struct AudioFeedState {
+  std::vector<float> fifo;
+  int sampleRate = 0;
+  int channels = 0;
+};
+
+// Block RESHAPER, zero added latency: whatever arrives is emitted immediately
+// up to ONE tick of samples; any surplus (a tick that caught two packets)
+// carries forward and fills the next short/empty tick. This converts the
+// observed 480/1440/480 arrival jitter into steady full ticks without holding
+// audio hostage (single bursts — and unit tests — pass straight through).
+inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
+                                 std::map<std::string, AudioFeedState>& states,
+                                 double ticksPerSecond = 50.0) {
+  std::vector<std::string> seenSources;
+  for (auto& frame : frames) {
+    if (frame.channels <= 0 || frame.sampleRate <= 0) {
+      continue;  // metadata-only frames pass through untouched
+    }
+    seenSources.push_back(frame.participantId);
+    auto& state = states[frame.participantId];
+    if (state.sampleRate != frame.sampleRate || state.channels != frame.channels) {
+      state.fifo.clear();  // format change: restart at the new layout
+      state.sampleRate = frame.sampleRate;
+      state.channels = frame.channels;
+    }
+    if (!frame.pcm.empty()) {
+      state.fifo.insert(state.fifo.end(), frame.pcm.begin(), frame.pcm.end());
+    }
+
+    const size_t tickSamples =
+        static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
+    const size_t emit = std::min(state.fifo.size(), tickSamples);
+    frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
+    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+
+    // Cap runaway accumulation (device clock slightly fast): keep at most
+    // 6 ticks buffered by dropping the OLDEST audio.
+    const size_t cap = tickSamples * 6;
+    if (state.fifo.size() > cap) {
+      state.fifo.erase(state.fifo.begin(),
+                       state.fifo.begin() + static_cast<std::ptrdiff_t>(state.fifo.size() - cap));
+    }
+  }
+
+  // Second pass: a tick where a source delivered NO packet is exactly the
+  // hole the surplus exists to fill — drain up to one tick from its FIFO as
+  // a synthesized frame.
+  for (auto& [sourceId, state] : states) {
+    if (state.fifo.empty() || state.channels <= 0 || state.sampleRate <= 0) {
+      continue;
+    }
+    bool seen = false;
+    for (const auto& id : seenSources) {
+      if (id == sourceId) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) {
+      continue;
+    }
+    const size_t tickSamples =
+        static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
+    const size_t emit = std::min(state.fifo.size(), tickSamples);
+    AudioFrame fill;
+    fill.participantId = sourceId;
+    fill.sampleRate = state.sampleRate;
+    fill.channels = state.channels;
+    fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    fill.sampleCount = static_cast<int>(emit / static_cast<size_t>(state.channels));
+    state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    frames.push_back(std::move(fill));
+  }
+}
+
 // C7c: PERSISTENT per-source DSP state. The chain runs on 20ms blocks; without
 // state carried across blocks every biquad and envelope restarts at each block
 // boundary - audible as a 50Hz buzz/distortion layered on the signal (owner-

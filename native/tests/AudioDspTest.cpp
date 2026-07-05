@@ -946,3 +946,61 @@ TEST(AudioDsp, SmoothedLimiterIsContinuousAcrossBlocks) {
   EXPECT_TRUE(maxDelta < 1e-6);   // continuous across the boundary
   EXPECT_TRUE(peak <= corevideo::modules::dbfsToLinear(-1.0) + 1e-6);  // brickwall holds
 }
+
+TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
+  // Spec 4.2: packets arrive 480/1440/0/960... on the device clock. The
+  // reshaper emits IMMEDIATELY up to one tick (960 = 48k mono / 50Hz), carries
+  // surplus into short/empty ticks, and never reorders: the output is the
+  // unbroken input sequence in blocks of at most one tick.
+  std::map<std::string, corevideo::modules::AudioFeedState> states;
+  float sequence = 0.0f;
+  const auto makeFrame = [&sequence](int samples) {
+    corevideo::modules::AudioFrame frame;
+    frame.participantId = "mic";
+    frame.sampleRate = 48000;
+    frame.channels = 1;
+    for (int index = 0; index < samples; ++index) {
+      frame.pcm.push_back(sequence);
+      sequence += 1.0f;
+    }
+    frame.sampleCount = samples;
+    return frame;
+  };
+
+  std::vector<float> emitted;
+  std::vector<size_t> blockSizes;
+  const auto tick = [&](int packetSamples) {
+    std::vector<corevideo::modules::AudioFrame> frames;
+    if (packetSamples > 0) {
+      frames.push_back(makeFrame(packetSamples));
+    }
+    corevideo::modules::steadyAudioFrameFeed(frames, states);
+    for (const auto& frame : frames) {
+      if (!frame.pcm.empty()) {
+        blockSizes.push_back(frame.pcm.size());
+        emitted.insert(emitted.end(), frame.pcm.begin(), frame.pcm.end());
+      }
+    }
+  };
+
+  tick(480);   // passes straight through (no latency for one-shots/tests)
+  tick(1440);  // emit 960, carry 480
+  tick(480);   // 480 + carried 480 = full 960
+  tick(960);   // full tick
+  tick(1440);  // emit 960, carry 480
+  tick(0);     // NO packet this tick: the carried 480 fills the hole
+
+  size_t total = 0;
+  for (const size_t size : blockSizes) {
+    EXPECT_TRUE(size <= 960u);  // never more than one tick per block
+    total += size;
+  }
+  EXPECT_EQ(total, emitted.size());
+  EXPECT_EQ(emitted.size(), static_cast<size_t>(480 + 1440 + 480 + 960 + 1440));  // nothing held
+  for (size_t index = 0; index < emitted.size(); ++index) {
+    EXPECT_EQ(emitted[index], static_cast<float>(index));
+    if (emitted[index] != static_cast<float>(index)) {
+      break;
+    }
+  }
+}
