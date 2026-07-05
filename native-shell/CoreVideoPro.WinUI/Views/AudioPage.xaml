@@ -543,12 +543,35 @@
                         <controls:DspResponseCurve Grid.Row="1" Kind="gate"
                                                    P1="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=OneWay}"
                                                    IsEngaged="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}" />
-                        <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
-                                Minimum="-80" Maximum="-12" StepFrequency="1"
-                                Value="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=TwoWay}" />
-                        <Slider Grid.Row="3" Header="Release (ms)" FontSize="9"
-                                Minimum="20" Maximum="500" StepFrequency="5"
-                                Value="{x:Bind ViewModel.WorkspaceGateReleaseMs, Mode=TwoWay}" />
+                        <!-- C7: competitive gate — threshold/range, attack/hold/release -->
+                        <Grid Grid.Row="2" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Header="Threshold (dB)" FontSize="9"
+                                    Minimum="-80" Maximum="-12" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=TwoWay}" />
+                            <Slider Grid.Column="1" Header="Range (dB)" FontSize="9"
+                                    Minimum="-80" Maximum="-6" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.WorkspaceGateRangeDb, Mode=TwoWay}" />
+                        </Grid>
+                        <Grid Grid.Row="3" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Header="Attack" FontSize="9"
+                                    Minimum="0.5" Maximum="50" StepFrequency="0.5"
+                                    Value="{x:Bind ViewModel.WorkspaceGateAttackMs, Mode=TwoWay}" />
+                            <Slider Grid.Column="1" Header="Hold" FontSize="9"
+                                    Minimum="0" Maximum="500" StepFrequency="10"
+                                    Value="{x:Bind ViewModel.WorkspaceGateHoldMs, Mode=TwoWay}" />
+                            <Slider Grid.Column="2" Header="Release" FontSize="9"
+                                    Minimum="20" Maximum="500" StepFrequency="5"
+                                    Value="{x:Bind ViewModel.WorkspaceGateReleaseMs, Mode=TwoWay}" />
+                        </Grid>
                     </Grid>
 
                     <!-- COMP cell -->
@@ -571,12 +594,39 @@
                                                    P1="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=OneWay}"
                                                    IsEngaged="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
                                                    P2="{x:Bind ViewModel.WorkspaceCompRatio, Mode=OneWay}" />
-                        <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
-                                Minimum="-40" Maximum="-6" StepFrequency="1"
-                                Value="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=TwoWay}" />
-                        <Slider Grid.Row="3" Header="Ratio" FontSize="9"
-                                Minimum="1" Maximum="20" StepFrequency="0.5"
-                                Value="{x:Bind ViewModel.WorkspaceCompRatio, Mode=TwoWay}" />
+                        <!-- C7: competitive compressor — threshold/ratio, attack/release/knee/makeup -->
+                        <Grid Grid.Row="2" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Header="Threshold (dB)" FontSize="9"
+                                    Minimum="-40" Maximum="-6" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=TwoWay}" />
+                            <Slider Grid.Column="1" Header="Ratio" FontSize="9"
+                                    Minimum="1" Maximum="20" StepFrequency="0.5"
+                                    Value="{x:Bind ViewModel.WorkspaceCompRatio, Mode=TwoWay}" />
+                        </Grid>
+                        <Grid Grid.Row="3" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Header="Attack" FontSize="9"
+                                    Minimum="0.1" Maximum="100" StepFrequency="0.5"
+                                    Value="{x:Bind ViewModel.WorkspaceCompAttackMs, Mode=TwoWay}" />
+                            <Slider Grid.Column="1" Header="Release" FontSize="9"
+                                    Minimum="10" Maximum="1000" StepFrequency="10"
+                                    Value="{x:Bind ViewModel.WorkspaceCompReleaseMs, Mode=TwoWay}" />
+                            <Slider Grid.Column="2" Header="Knee" FontSize="9"
+                                    Minimum="0" Maximum="24" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.WorkspaceCompKneeDb, Mode=TwoWay}" />
+                            <Slider Grid.Column="3" Header="Makeup" FontSize="9"
+                                    Minimum="0" Maximum="24" StepFrequency="0.5"
+                                    Value="{x:Bind ViewModel.WorkspaceCompMakeupDb, Mode=TwoWay}" />
+                        </Grid>
                     </Grid>
 
                     <!-- EQ cell (frequency response drawn from the real biquads) -->
