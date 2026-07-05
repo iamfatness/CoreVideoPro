@@ -3985,3 +3985,29 @@ TEST(PluginHostScan, SnapshotCarriesPluginHostStateInEveryShape) {
   EXPECT_EQ(pluginHost->getString("status"), "absent");
   EXPECT_TRUE(pluginHost->get("plugins")->asArray().empty());
 }
+
+TEST(PluginHostScan, ParsesProbeResultsAndTreatsSilenceAsCrash) {
+  // P2a: a pass with vendor + class metadata.
+  const auto pass = corevideo::core::parsePluginProbeResult(
+      "{\"cmd\":\"probe-result\",\"id\":\"C:/VST3/Span.vst3\",\"pass\":true,"
+      "\"vendor\":\"Voxengo\",\"audioClasses\":1,\"className\":\"SPAN\",\"reasons\":[]}\n");
+  EXPECT_TRUE(pass.parsed);
+  EXPECT_TRUE(pass.pass);
+  EXPECT_EQ(pass.vendor, "Voxengo");
+  EXPECT_EQ(pass.className, "SPAN");
+  EXPECT_TRUE(pass.reason.empty());
+
+  // A structured failure carries its reason.
+  const auto fail = corevideo::core::parsePluginProbeResult(
+      "{\"cmd\":\"probe-result\",\"id\":\"x\",\"pass\":false,\"reasons\":[\"no GetPluginFactory export - not a VST3 module\"]}\n");
+  EXPECT_TRUE(fail.parsed);
+  EXPECT_FALSE(fail.pass);
+  EXPECT_NE(fail.reason.find("GetPluginFactory"), std::string::npos);
+
+  // NO probe-result line = the host process died loading the plugin. That is
+  // the isolation verdict, not a parse error.
+  const auto crashed = corevideo::core::parsePluginProbeResult("");
+  EXPECT_FALSE(crashed.parsed);
+  EXPECT_FALSE(crashed.pass);
+  EXPECT_NE(crashed.reason.find("crashed"), std::string::npos);
+}

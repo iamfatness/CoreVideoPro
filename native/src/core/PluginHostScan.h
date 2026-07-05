@@ -62,6 +62,43 @@ inline std::vector<PluginHostPluginInfo> parsePluginScanOutput(const std::string
   return plugins;
 }
 
+// P2a: one probe verdict per plugin, parsed from the host's probe-result line.
+struct PluginProbeResult {
+  bool pass = false;
+  std::string vendor;
+  std::string className;
+  std::string reason;  // first failure reason, "" when passing
+  bool parsed = false;
+};
+
+inline PluginProbeResult parsePluginProbeResult(const std::string& output) {
+  PluginProbeResult result;
+  std::istringstream stream(output);
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.empty() || line.front() != '{') {
+      continue;
+    }
+    const auto parsed = rpc::Json::parse(line);
+    if (!parsed.has_value() || parsed->getString("cmd") != "probe-result") {
+      continue;
+    }
+    result.parsed = true;
+    result.pass = parsed->get("pass") != nullptr && parsed->get("pass")->asBool();
+    result.vendor = parsed->getString("vendor");
+    result.className = parsed->getString("className");
+    if (const rpc::Json* reasons = parsed->get("reasons");
+        reasons != nullptr && reasons->isArray() && !reasons->asArray().empty()) {
+      result.reason = reasons->asArray().front().asString();
+    }
+    return result;
+  }
+  // No probe-result line: the host process died mid-probe (plugin crashed on
+  // load). That IS the verdict — the isolation caught it.
+  result.reason = "plugin crashed the probe process";
+  return result;
+}
+
 // Runs `<exePath> --scan`, returning raw stdout ("" on launch failure).
 // SECURITY: exePath derives from an environment variable, so this must NEVER
 // go through a shell (std::system/popen would be command injection — CodeQL
@@ -69,7 +106,7 @@ inline std::vector<PluginHostPluginInfo> parsePluginScanOutput(const std::string
 // an anonymous pipe: the path is an argv element, not shell input, and no
 // temp files are involved. Callers run this OFF the lock domains.
 #ifdef _WIN32
-inline std::string runPluginHostScan(const std::string& exePath) {
+inline std::string runPluginHostProcess(const std::string& exePath, const std::vector<std::string>& args) {
   if (exePath.empty()) {
     return {};
   }
@@ -92,7 +129,10 @@ inline std::string runPluginHostScan(const std::string& exePath) {
 
   // lpApplicationName carries the exact executable path (no shell, no PATH
   // search); the command line only supplies argv for the child.
-  std::string commandLine = "\"" + exePath + "\" --scan";
+  std::string commandLine = "\"" + exePath + "\"";
+  for (const auto& arg : args) {
+    commandLine += " \"" + arg + "\"";
+  }
   std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
   mutableCommandLine.push_back('\0');
   PROCESS_INFORMATION process{};
@@ -118,10 +158,14 @@ inline std::string runPluginHostScan(const std::string& exePath) {
   ::CloseHandle(process.hProcess);
   ::CloseHandle(process.hThread);
   return exitCode == 0 ? output
-                       : (output.find("\"cmd\":\"plugin\"") != std::string::npos ? output : std::string{});
+                       : (output.find("\"cmd\":\"") != std::string::npos ? output : std::string{});
+}
+
+inline std::string runPluginHostScan(const std::string& exePath) {
+  return runPluginHostProcess(exePath, {"--scan"});
 }
 #else
-inline std::string runPluginHostScan(const std::string& exePath) {
+inline std::string runPluginHostProcess(const std::string& exePath, const std::vector<std::string>& args) {
   if (exePath.empty()) {
     return {};
   }
@@ -141,7 +185,13 @@ inline std::string runPluginHostScan(const std::string& exePath) {
     ::dup2(fds[1], STDERR_FILENO);
     ::close(fds[0]);
     ::close(fds[1]);
-    ::execl(exePath.c_str(), "corevideo-plugin-host", "--scan", static_cast<char*>(nullptr));
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>("corevideo-plugin-host"));
+    for (const auto& arg : args) {
+      argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+    ::execv(exePath.c_str(), argv.data());
     _exit(127);  // exec failed — no shell fallback, by design
   }
 
@@ -158,7 +208,11 @@ inline std::string runPluginHostScan(const std::string& exePath) {
   ::waitpid(child, &status, 0);
   const bool cleanExit = WIFEXITED(status) && WEXITSTATUS(status) == 0;
   return cleanExit ? output
-                   : (output.find("\"cmd\":\"plugin\"") != std::string::npos ? output : std::string{});
+                   : (output.find("\"cmd\":\"") != std::string::npos ? output : std::string{});
+}
+
+inline std::string runPluginHostScan(const std::string& exePath) {
+  return runPluginHostProcess(exePath, {"--scan"});
 }
 #endif
 

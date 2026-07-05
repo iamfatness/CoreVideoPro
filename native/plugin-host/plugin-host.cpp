@@ -14,8 +14,10 @@
 //   {"cmd":"scan-complete","count":N}
 // Errors are {"cmd":"error","msg":"..."} and never abort remaining roots.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -134,10 +136,174 @@ std::vector<fs::path> scanRoots() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// P2a probe: load the plugin module IN THIS PROCESS (never the media core) and
+// interrogate its class factory. No VST3 SDK: the factory ABI is COM-style, so
+// minimal C vtable declarations suffice for counting audio-effect classes. A
+// plugin that crashes on load kills THIS process (nonzero exit = probe fail) —
+// that is the crash-isolation posture working, not an error to prevent.
+// ---------------------------------------------------------------------------
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+namespace {
+
+// VST3 factory ABI (COM-compatible on Windows x64).
+struct PFactoryInfo {
+  char vendor[64];
+  char url[256];
+  char email[128];
+  int32_t flags;
+};
+
+struct PClassInfo {
+  char cid[16];
+  int32_t cardinality;
+  char category[32];
+  char name[64];
+};
+
+struct IPluginFactoryVtbl {
+  int32_t(__stdcall* queryInterface)(void* self, const char* iid, void** obj);
+  uint32_t(__stdcall* addRef)(void* self);
+  uint32_t(__stdcall* release)(void* self);
+  int32_t(__stdcall* getFactoryInfo)(void* self, PFactoryInfo* info);
+  int32_t(__stdcall* countClasses)(void* self);
+  int32_t(__stdcall* getClassInfo)(void* self, int32_t index, PClassInfo* info);
+};
+
+struct IPluginFactory {
+  IPluginFactoryVtbl* vtbl;
+};
+
+using InitDllFn = bool(__stdcall*)();
+using GetPluginFactoryFn = IPluginFactory*(__stdcall*)();
+
+fs::path resolveModulePath(const fs::path& bundle) {
+  std::error_code ec;
+  if (!fs::is_directory(bundle, ec)) {
+    return bundle;  // single-file .vst3 module
+  }
+  const fs::path arch = bundle / "Contents" / "x86_64-win";
+  if (fs::exists(arch, ec)) {
+    for (const auto& entry : fs::directory_iterator(arch, ec)) {
+      if (entry.path().extension() == ".vst3") {
+        return entry.path();
+      }
+    }
+  }
+  // Non-standard layouts: any .vst3 FILE anywhere inside the bundle dir.
+  for (fs::recursive_directory_iterator it(bundle, fs::directory_options::skip_permission_denied, ec), end;
+       it != end && !ec; it.increment(ec)) {
+    if (!it->is_directory(ec) && it->path().extension() == ".vst3") {
+      return it->path();
+    }
+  }
+  return {};
+}
+
+int probeBundle(const std::string& bundlePath) {
+  std::vector<std::string> reasons;
+  const fs::path module = resolveModulePath(fs::path(bundlePath));
+  if (module.empty()) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"no x86_64-win module in bundle\"]}\n",
+                 jsonEscape(bundlePath).c_str());
+    return 0;
+  }
+
+  HMODULE library = ::LoadLibraryExA(module.string().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+  if (library == nullptr) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"module failed to load (code %lu)\"]}\n",
+                 jsonEscape(bundlePath).c_str(), ::GetLastError());
+    return 0;
+  }
+
+  const auto initDll = reinterpret_cast<InitDllFn>(::GetProcAddress(library, "InitDll"));
+  const auto getFactory = reinterpret_cast<GetPluginFactoryFn>(::GetProcAddress(library, "GetPluginFactory"));
+  if (getFactory == nullptr) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"no GetPluginFactory export - not a VST3 module\"]}\n",
+                 jsonEscape(bundlePath).c_str());
+    return 0;
+  }
+  if (initDll != nullptr && !initDll()) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"InitDll returned false\"]}\n",
+                 jsonEscape(bundlePath).c_str());
+    return 0;
+  }
+
+  IPluginFactory* factory = getFactory();
+  if (factory == nullptr || factory->vtbl == nullptr) {
+    std::fprintf(stdout,
+                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"GetPluginFactory returned null\"]}\n",
+                 jsonEscape(bundlePath).c_str());
+    return 0;
+  }
+
+  PFactoryInfo factoryInfo{};
+  factory->vtbl->getFactoryInfo(factory, &factoryInfo);
+  const int32_t classCount = factory->vtbl->countClasses(factory);
+  int audioClasses = 0;
+  std::string firstAudioClassName;
+  for (int32_t index = 0; index < classCount; ++index) {
+    PClassInfo classInfo{};
+    if (factory->vtbl->getClassInfo(factory, index, &classInfo) != 0) {
+      continue;
+    }
+    const std::string category(classInfo.category, strnlen(classInfo.category, sizeof(classInfo.category)));
+    const std::string className(classInfo.name, strnlen(classInfo.name, sizeof(classInfo.name)));
+    // One line per class — the core ignores these; they make probe verdicts
+    // debuggable from the raw output.
+    std::fprintf(stdout, "{\"cmd\":\"probe-class\",\"index\":%d,\"category\":\"%s\",\"name\":\"%s\"}\n",
+                 index, jsonEscape(category).c_str(), jsonEscape(className).c_str());
+    if (category == "Audio Module Class") {
+      ++audioClasses;
+      if (firstAudioClassName.empty()) {
+        firstAudioClassName = className;
+      }
+    }
+  }
+  factory->vtbl->release(factory);
+
+  const bool pass = audioClasses > 0;
+  const char* failReason = classCount == 0
+                               ? "\"factory reports no classes (vendor shell plugins need their own scanner)\""
+                               : "\"module exposes no Audio Module Class\"";
+  std::fprintf(stdout,
+               "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":%s,\"vendor\":\"%s\",\"audioClasses\":%d,\"className\":\"%s\",\"reasons\":[%s]}\n",
+               jsonEscape(bundlePath).c_str(), pass ? "true" : "false",
+               jsonEscape(std::string(factoryInfo.vendor, strnlen(factoryInfo.vendor, sizeof(factoryInfo.vendor)))).c_str(),
+               audioClasses, jsonEscape(firstAudioClassName).c_str(),
+               pass ? "" : failReason);
+  std::fflush(stdout);
+  // Deliberately no FreeLibrary/ExitDll: some plugins crash on unload, and this
+  // process is about to exit anyway — the OS reclaims everything.
+  return 0;
+}
+
+}  // namespace
+#endif  // _WIN32
+
 int main(int argc, char** argv) {
-  const bool scanMode = argc > 1 && std::string(argv[1]) == "--scan";
-  if (!scanMode) {
-    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"corevideo-plugin-host P1 supports --scan only\"}\n");
+  const std::string mode = argc > 1 ? argv[1] : "";
+  if (mode == "--probe" && argc > 2) {
+#ifdef _WIN32
+    return probeBundle(argv[2]);
+#else
+    std::fprintf(stdout, "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"probe unsupported on this platform\"]}\n",
+                 jsonEscape(argv[2]).c_str());
+    return 0;
+#endif
+  }
+
+  if (mode != "--scan") {
+    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"corevideo-plugin-host supports --scan and --probe <bundle>\"}\n");
     return 2;
   }
 
