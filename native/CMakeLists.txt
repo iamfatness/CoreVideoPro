@@ -62,7 +62,8 @@ add_library(corevideo_native
 )
 
 target_include_directories(corevideo_native PUBLIC src)
-target_include_directories(corevideo_native PRIVATE zoom-engine/shared plugin-host)
+target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
+target_include_directories(corevideo_native PUBLIC plugin-host)
 target_compile_definitions(corevideo_native
   PUBLIC
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>

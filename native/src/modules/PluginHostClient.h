@@ -164,7 +164,7 @@ class PluginHostClient {
 
  private:
 #endif
-  bool ready_ = false;
+  std::atomic<bool> ready_{false};  // starter thread writes, audio worker reads
   std::atomic<int64_t> exchanges_{0};
   std::atomic<int64_t> deadlineMisses_{0};
 

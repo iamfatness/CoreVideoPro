@@ -4061,6 +4061,18 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
       for (auto& [busId, pcm] : results.routedBusPcm) {
         const auto found = busInserts.find(busId);
         if (found != busInserts.end() && !pcm.empty()) {
+          // P2b-2: host-handled inserts (vst*/host*) route the bus block
+          // through the out-of-process plugin host with a hard 4ms deadline.
+          // Not ready -> kick the async starter and BYPASS this tick; miss ->
+          // BYPASS with the audio untouched. Built-in inserts always run.
+          const bool wantsHost = std::any_of(found->second.begin(), found->second.end(), isHostHandledInsertName);
+          if (wantsHost) {
+            if (pluginHostClient_.ready()) {
+              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4);
+            } else {
+              ensurePluginHostServeStarted();
+            }
+          }
           modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
         }
       }
@@ -4346,6 +4358,21 @@ void MediaCore::startPluginHostScan() {
   }).detach();
 }
 
+void MediaCore::ensurePluginHostServeStarted() {
+  bool expected = false;
+  if (!pluginHostServeStarting_.compare_exchange_strong(expected, true)) {
+    return;  // starter already ran (or is running)
+  }
+  // Detached: CreateProcess + kernel-object setup never runs in the audio
+  // worker; the worker bypasses until ready() flips.
+  std::thread([this] {
+    const auto exePath = resolvePluginHostExecutablePath();
+    if (!exePath.empty()) {
+      pluginHostClient_.start(exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    }
+  }).detach();
+}
+
 rpc::Json MediaCore::pluginHostState() const {
   std::lock_guard<std::mutex> lock(pluginHostMutex_);
   rpc::Json::Array plugins;
@@ -4360,6 +4387,12 @@ rpc::Json MediaCore::pluginHostState() const {
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
+      // P2b-2: the live serve transport, when running.
+      {"serve", rpc::Json::Object{
+                    {"running", pluginHostClient_.ready() && pluginHostClient_.hostAlive()},
+                    {"exchanges", static_cast<double>(pluginHostClient_.exchanges())},
+                    {"deadlineMisses", static_cast<double>(pluginHostClient_.deadlineMisses())},
+                }},
   };
 }
 

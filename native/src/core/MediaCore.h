@@ -2,11 +2,13 @@
 
 #include "core/Director.h"
 #include "core/PluginHostScan.h"
+#include "modules/PluginHostClient.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -115,6 +117,9 @@ class MediaCore {
   // behind pluginHostMutex_ (a leaf lock — held briefly by the thread and by
   // snapshot export, never around any other lock).
   void startPluginHostScan();
+  // P2b-2: idempotent async start of the resident serve host (worker-safe:
+  // only flips an atomic + detaches a starter thread).
+  void ensurePluginHostServeStarted();
   [[nodiscard]] rpc::Json pluginHostState() const;
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);
@@ -397,6 +402,11 @@ class MediaCore {
   std::string audioMonitorWarning_;
   // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
   // thread cannot take coreMutex, which the server owns).
+  // P2b-2: the live transport client. exchange() runs in the audio worker
+  // (audioOutputMutex_ span, single caller); start() runs on a detached
+  // starter (ready_ is atomic) - NEVER spawned from the worker.
+  modules::PluginHostClient pluginHostClient_;
+  std::atomic<bool> pluginHostServeStarting_{false};
   mutable std::mutex pluginHostMutex_;
   std::string pluginHostStatus_ = "absent";  // absent|scanning|ready|error
   std::vector<PluginHostPluginInfo> pluginHostPlugins_;

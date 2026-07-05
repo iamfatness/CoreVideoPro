@@ -4065,3 +4065,14 @@ TEST(PluginHostTransport, ExchangesBlocksWithTheRealHostAndBypassesOnDeath) {
   client.stop();
 }
 #endif
+
+TEST(PluginHostScan, HostHandledInsertNamesMatchVstAndHostOnly) {
+  using corevideo::core::isHostHandledInsertName;
+  EXPECT_TRUE(isHostHandledInsertName("VST3 Bridge Slot"));
+  EXPECT_TRUE(isHostHandledInsertName("vst3:TDR Nova"));
+  EXPECT_TRUE(isHostHandledInsertName("Host Test Gain"));
+  EXPECT_FALSE(isHostHandledInsertName("Noise Gate"));
+  EXPECT_FALSE(isHostHandledInsertName("Built-in EQ"));
+  EXPECT_FALSE(isHostHandledInsertName("Compressor"));
+  EXPECT_FALSE(isHostHandledInsertName("Limiter"));
+}
