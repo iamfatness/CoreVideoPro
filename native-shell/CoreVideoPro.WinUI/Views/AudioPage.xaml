@@ -541,7 +541,8 @@
                                           ToolTipService.ToolTip="Engage the gate on this channel" />
                         </Grid>
                         <controls:DspResponseCurve Grid.Row="1" Kind="gate"
-                                                   P1="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=OneWay}" />
+                                                   P1="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}" />
                         <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
                                 Minimum="-80" Maximum="-12" StepFrequency="1"
                                 Value="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=TwoWay}" />
@@ -568,6 +569,7 @@
                         </Grid>
                         <controls:DspResponseCurve Grid.Row="1" Kind="comp"
                                                    P1="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
                                                    P2="{x:Bind ViewModel.WorkspaceCompRatio, Mode=OneWay}" />
                         <Slider Grid.Row="2" Header="Threshold (dBFS)" FontSize="9"
                                 Minimum="-40" Maximum="-6" StepFrequency="1"
@@ -594,6 +596,7 @@
                         </Grid>
                         <controls:DspResponseCurve Grid.Row="1" Kind="eq"
                                                    P1="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=OneWay}"
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackEqEnabled, Mode=OneWay}"
                                                    Bands="{x:Bind ViewModel.WorkspaceEqBandsCsv, Mode=OneWay}" />
                         <!-- C6b: 8-BAND EQ — vertical gain fader per band at the octave
                              centers, matching the native cascade, plus the low cut. -->

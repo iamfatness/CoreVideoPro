@@ -18,6 +18,7 @@ public sealed partial class DspResponseCurve : UserControl
     {
         InitializeComponent();
         SizeChanged += (_, _) => Redraw();
+        Loaded += (_, _) => ApplyEngagedStroke();
     }
 
     public static readonly DependencyProperty KindProperty = DependencyProperty.Register(
@@ -45,6 +46,31 @@ public sealed partial class DspResponseCurve : UserControl
     {
         get => (string)GetValue(BandsProperty);
         set => SetValue(BandsProperty, value);
+    }
+
+    // C6c (owner: "graphics don't reflect their state"): engaged = bright green
+    // = the core is processing; disengaged = dim grey preview of what IN would
+    // do. The graph must never look live when the insert isn't on the chain.
+    public static readonly DependencyProperty IsEngagedProperty = DependencyProperty.Register(
+        nameof(IsEngaged), typeof(bool), typeof(DspResponseCurve),
+        new PropertyMetadata(false, static (d, _) => ((DspResponseCurve)d).ApplyEngagedStroke()));
+
+    public bool IsEngaged
+    {
+        get => (bool)GetValue(IsEngagedProperty);
+        set => SetValue(IsEngagedProperty, value);
+    }
+
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush EngagedStroke =
+        new(Windows.UI.Color.FromArgb(255, 63, 210, 168));
+
+    private static readonly Microsoft.UI.Xaml.Media.SolidColorBrush BypassedStroke =
+        new(Windows.UI.Color.FromArgb(255, 70, 84, 92));
+
+    private void ApplyEngagedStroke()
+    {
+        CurveLine.Stroke = IsEngaged ? EngagedStroke : BypassedStroke;
+        CurveLine.Opacity = IsEngaged ? 1.0 : 0.55;
     }
 
     public string Kind
