@@ -482,11 +482,31 @@ inline void mixAudioBus(float* destination, size_t count, const std::vector<Audi
 // Per-insert parameter overrides (C5b): {insertName -> {param -> value}}.
 using ChannelInsertSettings = std::map<std::string, std::map<std::string, double>>;
 
+// C7c: PERSISTENT per-source DSP state. The chain runs on 20ms blocks; without
+// state carried across blocks every biquad and envelope restarts at each block
+// boundary - audible as a 50Hz buzz/distortion layered on the signal (owner-
+// reported on the mic). One of these lives per source for the source.s
+// lifetime; the pure single-block behavior (state = nullptr) is preserved for
+// deterministic tests.
+struct ChannelDspState {
+  // EQ cascade: one L/R state pair per section index (resized on demand;
+  // reset if the cascade shape changes between blocks).
+  std::vector<std::pair<AudioBiquadState, AudioBiquadState>> eqSections;
+  size_t eqShapeSignature = 0;
+  // Gate follower.
+  double gateEnvelope = 0.0;
+  double gateGain = 0.0;
+  size_t gateHoldRemaining = 0;
+  // Compressor smoothed gain reduction (dB).
+  double compGrDb = 0.0;
+};
+
 // Defined below (spec 4.4): per-channel insert processing over panned stereo.
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
                                    const std::vector<std::string>& inserts, bool noiseSuppression,
                                    const ChannelInsertSettings* settings = nullptr,
-                                   double* compGainReductionDb = nullptr);
+                                   double* compGainReductionDb = nullptr,
+                                   ChannelDspState* state = nullptr);
 
 struct RoutedAudioSource {
   std::string sourceId;
@@ -503,6 +523,9 @@ struct RoutedAudioSource {
   double sampleRate = 48000.0;
   // C5b: per-insert parameter overrides; null = all defaults.
   const ChannelInsertSettings* insertSettings = nullptr;
+  // C7c: persistent DSP state for this source (owned by the caller, one per
+  // source lifetime). Null = stateless single-block processing.
+  ChannelDspState* dspState = nullptr;
 };
 
 struct RoutedAudioCrosspoint {
@@ -554,7 +577,8 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
       double compGrDb = 0.0;
       applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
                               source.inserts != nullptr ? *source.inserts : kNoInserts,
-                              source.noiseSuppression, source.insertSettings, &compGrDb);
+                              source.noiseSuppression, source.insertSettings, &compGrDb,
+                              source.dspState);
       // C7b: per-source compressor gain reduction, captured for the GR meter.
       if (outCompGainReductionDbBySource != nullptr && compGrDb > 0.0) {
         (*outCompGainReductionDbBySource)[source.sourceId] = compGrDb;
@@ -717,14 +741,24 @@ inline AudioBiquadCoefficients eqPeaking(double sampleRate, double frequencyHz, 
   return coeff;
 }
 
-// Cascade biquad sections over INTERLEAVED stereo, independent state per channel.
-inline void applyStereoEqCascade(float* stereo, size_t count, const std::vector<AudioBiquadCoefficients>& sections) {
+// Cascade biquad sections over INTERLEAVED stereo, independent state per
+// channel. C7c: pass `state` to persist filter memory across blocks (the
+// stateless form restarts every call - fine for one-shot buffers, buzzy for
+// 20ms streaming ticks).
+inline void applyStereoEqCascade(float* stereo, size_t count, const std::vector<AudioBiquadCoefficients>& sections,
+                                 ChannelDspState* state = nullptr) {
   if (stereo == nullptr || count < 2 || sections.empty()) {
     return;
   }
-  for (const auto& section : sections) {
-    AudioBiquadState left;
-    AudioBiquadState right;
+  if (state != nullptr) {
+    state->eqSections.resize(sections.size());
+  }
+  for (size_t sectionIndex = 0; sectionIndex < sections.size(); ++sectionIndex) {
+    const auto& section = sections[sectionIndex];
+    AudioBiquadState localLeft;
+    AudioBiquadState localRight;
+    AudioBiquadState& left = state != nullptr ? state->eqSections[sectionIndex].first : localLeft;
+    AudioBiquadState& right = state != nullptr ? state->eqSections[sectionIndex].second : localRight;
     for (size_t index = 0; index + 1 < count; index += 2) {
       stereo[index] = static_cast<float>(biquadProcessSample(section, left, static_cast<double>(stereo[index])));
       stereo[index + 1] = static_cast<float>(biquadProcessSample(section, right, static_cast<double>(stereo[index + 1])));
@@ -742,7 +776,8 @@ inline void applyStereoEqCascade(float* stereo, size_t count, const std::vector<
 // inter-word chatter). Defaults preserve the original hard-gate behavior.
 inline double applyStereoLinkedGate(float* stereo, size_t count, double thresholdDbfs, double attackMs,
                                     double releaseMs, double sampleRate,
-                                    double rangeDb = -80.0, double holdMs = 0.0) {
+                                    double rangeDb = -80.0, double holdMs = 0.0,
+                                    ChannelDspState* state = nullptr) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
     return 0.0;
   }
@@ -758,9 +793,13 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
   const double attackCoeff = timeConstantCoeff(attackMs);
   const double releaseCoeff = timeConstantCoeff(releaseMs);
   const size_t holdFrames = holdMs <= 0.0 ? 0 : static_cast<size_t>(holdMs / 1000.0 * sampleRate);
-  double envelope = 0.0;
-  double gain = floorGain;
-  size_t holdRemaining = 0;
+  // C7c: envelope/gain/hold persist across blocks when state is provided.
+  double localEnvelope = 0.0;
+  double localGain = floorGain;
+  size_t localHold = 0;
+  double& envelope = state != nullptr ? state->gateEnvelope : localEnvelope;
+  double& gain = state != nullptr ? state->gateGain : localGain;
+  size_t& holdRemaining = state != nullptr ? state->gateHoldRemaining : localHold;
   size_t gatedFrames = 0;
   const size_t frames = count / 2;
   for (size_t frame = 0; frame < frames; ++frame) {
@@ -799,7 +838,8 @@ inline double applyStereoLinkedGate(float* stereo, size_t count, double threshol
 // Returns the maximum gain reduction in dB (>= 0) for GR metering.
 inline double applyStereoCompressor(float* stereo, size_t count, double sampleRate,
                                     double thresholdDb, double ratio, double attackMs,
-                                    double releaseMs, double kneeDb, double makeupDb) {
+                                    double releaseMs, double kneeDb, double makeupDb,
+                                    ChannelDspState* state = nullptr) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0 || ratio < 1.0) {
     return 0.0;
   }
@@ -815,7 +855,9 @@ inline double applyStereoCompressor(float* stereo, size_t count, double sampleRa
   const double knee = std::max(0.0, kneeDb);
   const double slope = 1.0 - 1.0 / ratio;
 
-  double smoothedGrDb = 0.0;
+  // C7c: the smoothed GR persists across blocks when state is provided.
+  double localGr = 0.0;
+  double& smoothedGrDb = state != nullptr ? state->compGrDb : localGr;
   double maxGrDb = 0.0;
   const size_t frames = count / 2;
   for (size_t frame = 0; frame < frames; ++frame) {
@@ -859,7 +901,8 @@ inline double applyStereoCompressor(float* stereo, size_t count, double sampleRa
 inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRate,
                                    const std::vector<std::string>& inserts, bool noiseSuppression,
                                    const ChannelInsertSettings* settings,
-                                   double* compGainReductionDb) {
+                                   double* compGainReductionDb,
+                                   ChannelDspState* state) {
   if (stereo == nullptr || count < 2 || sampleRate <= 0.0) {
     return 0;
   }
@@ -893,13 +936,15 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
                             std::clamp(param(insert, "releaseMs", 120.0), 20.0, 500.0),
                             sampleRate,
                             std::clamp(param(insert, "rangeDb", -60.0), -80.0, -6.0),
-                            std::clamp(param(insert, "holdMs", 50.0), 0.0, 500.0));
+                            std::clamp(param(insert, "holdMs", 50.0), 0.0, 500.0),
+                            state);
       gated = true;
       ++applied;
     } else if (lowered.find("high-pass") != std::string::npos || lowered.find("highpass") != std::string::npos ||
                lowered.find("low-cut") != std::string::npos || lowered.find("hpf") != std::string::npos) {
       applyStereoEqCascade(stereo, count,
-                           {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0))});
+                           {eqHighpass(sampleRate, std::clamp(param(insert, "highpassHz", 90.0), 20.0, 400.0))},
+                           state);
       ++applied;
     } else if (lowered.find("eq") != std::string::npos || lowered.find("voice") != std::string::npos) {
       // C6b: 8-BAND parametric EQ (owner-directed). Bands sit at the standard
@@ -916,7 +961,7 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
           cascade.push_back(eqPeaking(sampleRate, kEqBandHz[band], gainDb, 1.4));
         }
       }
-      applyStereoEqCascade(stereo, count, cascade);
+      applyStereoEqCascade(stereo, count, cascade, state);
       ++applied;
     } else if (lowered.find("compressor") != std::string::npos) {
       // C7: the real compressor (envelope + soft knee + makeup). GR of the
@@ -928,7 +973,8 @@ inline int applyChannelInsertChain(float* stereo, size_t count, double sampleRat
           std::clamp(param(insert, "attackMs", 10.0), 0.1, 100.0),
           std::clamp(param(insert, "releaseMs", 120.0), 10.0, 1000.0),
           std::clamp(param(insert, "kneeDb", 6.0), 0.0, 24.0),
-          std::clamp(param(insert, "makeupDb", 0.0), 0.0, 24.0));
+          std::clamp(param(insert, "makeupDb", 0.0), 0.0, 24.0),
+          state);
       if (compGainReductionDb != nullptr) {
         *compGainReductionDb = grDb;
       }

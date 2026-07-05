@@ -125,8 +125,8 @@ public sealed partial class DspResponseCurve : UserControl
 
         var points = Kind switch
         {
-            "comp" => DspCurveMath.CompressorTransfer(P1, P2),
-            "gate" => DspCurveMath.GateTransfer(P1),
+            "comp" => DspCurveMath.CompressorTransfer(P1, P2, P3),
+            "gate" => DspCurveMath.GateTransfer(P1, P2),
             _ => DspCurveMath.EqResponse(P1, ParseBands(Bands))
         };
 

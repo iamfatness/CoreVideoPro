@@ -1537,6 +1537,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         parameters[paramKey] = value;
         CommandStatus = $"{insertName}: {paramKey} = {value:0.#}";
+        // C7c (owner: "the UI is still not reflected when you make changes"):
+        // the response curves bind the Workspace* properties OneWay — without
+        // this notify a slider drag never re-drew its curve.
+        NotifyWorkspaceParamsChanged();
         _ = TrySyncMediaCoreAsync();
     }
 
