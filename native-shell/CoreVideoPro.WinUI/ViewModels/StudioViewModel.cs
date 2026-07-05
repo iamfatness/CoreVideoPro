@@ -1386,17 +1386,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         set => SetSelectedChannelInsertParam("Built-in EQ", "highpassHz", value);
     }
 
-    public double WorkspaceEqPresenceHz
+    // C6b: the 8 band gains (63…8k, keys band1Db..band8Db, default 0 = flat).
+    private double GetEqBand(int band) =>
+        GetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", 0);
+
+    private void SetEqBand(int band, double value)
     {
-        get => GetSelectedChannelInsertParam("Built-in EQ", "presenceHz", 3000);
-        set => SetSelectedChannelInsertParam("Built-in EQ", "presenceHz", value);
+        SetSelectedChannelInsertParam("Built-in EQ", $"band{band}Db", value);
+        OnPropertyChanged(nameof(WorkspaceEqBandsCsv));
     }
 
-    public double WorkspaceEqPresenceDb
-    {
-        get => GetSelectedChannelInsertParam("Built-in EQ", "presenceDb", 2);
-        set => SetSelectedChannelInsertParam("Built-in EQ", "presenceDb", value);
-    }
+    public double WorkspaceEqBand1 { get => GetEqBand(1); set => SetEqBand(1, value); }
+    public double WorkspaceEqBand2 { get => GetEqBand(2); set => SetEqBand(2, value); }
+    public double WorkspaceEqBand3 { get => GetEqBand(3); set => SetEqBand(3, value); }
+    public double WorkspaceEqBand4 { get => GetEqBand(4); set => SetEqBand(4, value); }
+    public double WorkspaceEqBand5 { get => GetEqBand(5); set => SetEqBand(5, value); }
+    public double WorkspaceEqBand6 { get => GetEqBand(6); set => SetEqBand(6, value); }
+    public double WorkspaceEqBand7 { get => GetEqBand(7); set => SetEqBand(7, value); }
+    public double WorkspaceEqBand8 { get => GetEqBand(8); set => SetEqBand(8, value); }
+
+    /// <summary>All 8 band gains as csv for the response-curve control.</summary>
+    public string WorkspaceEqBandsCsv =>
+        string.Join(",", Enumerable.Range(1, 8).Select(band =>
+            GetEqBand(band).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)));
 
     public double WorkspaceCompThresholdDb
     {
@@ -1415,8 +1427,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(WorkspaceGateThresholdDb));
         OnPropertyChanged(nameof(WorkspaceGateReleaseMs));
         OnPropertyChanged(nameof(WorkspaceEqHighpassHz));
-        OnPropertyChanged(nameof(WorkspaceEqPresenceHz));
-        OnPropertyChanged(nameof(WorkspaceEqPresenceDb));
+        for (var band = 1; band <= 8; band++)
+        {
+            OnPropertyChanged($"WorkspaceEqBand{band}");
+        }
+
+        OnPropertyChanged(nameof(WorkspaceEqBandsCsv));
         OnPropertyChanged(nameof(WorkspaceCompThresholdDb));
         OnPropertyChanged(nameof(WorkspaceCompRatio));
     }

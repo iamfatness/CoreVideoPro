@@ -776,3 +776,37 @@ TEST(AudioDsp, ChannelInsertSettingsOverrideTheDefaults) {
   settings["Noise Gate"]["thresholdDb"] = -20.0;
   EXPECT_TRUE(tailPeak(&settings) < 0.001);  // operator threshold: gated
 }
+
+TEST(AudioDsp, EightBandEqBoostsItsBand) {
+  // C6b: +12 dB on band 8 (8 kHz) must boost an 8 kHz tone while leaving a
+  // 500 Hz tone essentially unchanged (band 4 flat).
+  const double sampleRate = 48000.0;
+  const auto tailPeakAt = [sampleRate](double toneHz, const corevideo::modules::ChannelInsertSettings* settings) {
+    const size_t frames = 24000;
+    std::vector<float> stereo(frames * 2);
+    for (size_t frame = 0; frame < frames; ++frame) {
+      const float sample = static_cast<float>(
+          0.1 * std::sin(2.0 * 3.14159265358979323846 * toneHz * static_cast<double>(frame) / sampleRate));
+      stereo[frame * 2] = sample;
+      stereo[frame * 2 + 1] = sample;
+    }
+    const std::vector<std::string> inserts{"Built-in EQ"};
+    corevideo::modules::applyChannelInsertChain(stereo.data(), stereo.size(), sampleRate, inserts, false, settings);
+    double peak = 0.0;
+    for (size_t i = stereo.size() / 2; i < stereo.size(); ++i) {
+      peak = std::max(peak, std::fabs(static_cast<double>(stereo[i])));
+    }
+    return peak;
+  };
+
+  corevideo::modules::ChannelInsertSettings settings;
+  settings["Built-in EQ"]["band8Db"] = 12.0;
+
+  const double boosted8k = tailPeakAt(8000.0, &settings);
+  const double flat8k = tailPeakAt(8000.0, nullptr);
+  EXPECT_TRUE(boosted8k > flat8k * 2.5);  // +12 dB ~= x3.98, allow filter slop
+
+  const double mid500 = tailPeakAt(500.0, &settings);
+  const double flat500 = tailPeakAt(500.0, nullptr);
+  EXPECT_TRUE(std::fabs(mid500 - flat500) < 0.02);  // distant band untouched
+}

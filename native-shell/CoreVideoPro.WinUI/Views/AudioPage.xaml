@@ -457,7 +457,7 @@
                  curve drawn from the same parameters the core chain applies.
                  No flyout hunting: what you see is what processes. -->
             <Border Grid.Row="2" Background="#0C141B" BorderBrush="#1C2630" BorderThickness="1"
-                    CornerRadius="4" Padding="10,8" Height="230">
+                    CornerRadius="4" Padding="10,8" Height="255">
                 <Grid ColumnSpacing="10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="190" />
@@ -594,23 +594,75 @@
                         </Grid>
                         <controls:DspResponseCurve Grid.Row="1" Kind="eq"
                                                    P1="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=OneWay}"
-                                                   P2="{x:Bind ViewModel.WorkspaceEqPresenceHz, Mode=OneWay}"
-                                                   P3="{x:Bind ViewModel.WorkspaceEqPresenceDb, Mode=OneWay}" />
-                        <Grid Grid.Row="2" ColumnSpacing="8">
+                                                   Bands="{x:Bind ViewModel.WorkspaceEqBandsCsv, Mode=OneWay}" />
+                        <!-- C6b: 8-BAND EQ — vertical gain fader per band at the octave
+                             centers, matching the native cascade, plus the low cut. -->
+                        <Grid Grid.Row="2" ColumnSpacing="2" Height="86">
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.6*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <Slider Header="Low cut (Hz)" FontSize="9"
-                                    Minimum="20" Maximum="400" StepFrequency="5"
-                                    Value="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=TwoWay}" />
-                            <Slider Grid.Column="1" Header="Presence (Hz)" FontSize="9"
-                                    Minimum="800" Maximum="8000" StepFrequency="100"
-                                    Value="{x:Bind ViewModel.WorkspaceEqPresenceHz, Mode=TwoWay}" />
-                            <Slider Grid.Column="2" Header="Presence (dB)" FontSize="9"
-                                    Minimum="-12" Maximum="12" StepFrequency="0.5"
-                                    Value="{x:Bind ViewModel.WorkspaceEqPresenceDb, Mode=TwoWay}" />
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,6,0">
+                                <TextBlock Text="LOW CUT" FontSize="8" Foreground="{StaticResource StudioMutedBrush}"
+                                           HorizontalAlignment="Center" />
+                                <Slider Minimum="20" Maximum="400" StepFrequency="5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqHighpassHz, Mode=TwoWay}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand1, Mode=TwoWay}" />
+                                <TextBlock Text="63" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand2, Mode=TwoWay}" />
+                                <TextBlock Text="125" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="3">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand3, Mode=TwoWay}" />
+                                <TextBlock Text="250" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="4">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand4, Mode=TwoWay}" />
+                                <TextBlock Text="500" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="5">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand5, Mode=TwoWay}" />
+                                <TextBlock Text="1k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="6">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand6, Mode=TwoWay}" />
+                                <TextBlock Text="2k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="7">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand7, Mode=TwoWay}" />
+                                <TextBlock Text="4k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="8">
+                                <Slider Orientation="Vertical" Height="62" HorizontalAlignment="Center"
+                                        Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                        Value="{x:Bind ViewModel.WorkspaceEqBand8, Mode=TwoWay}" />
+                                <TextBlock Text="8k" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" HorizontalAlignment="Center" />
+                            </StackPanel>
                         </Grid>
                     </Grid>
                 </Grid>

@@ -63,17 +63,29 @@ public static class DspCurveMath
         return den <= 1e-12 ? 0 : num / den;
     }
 
+    /// <summary>The 8-band centers — MUST match kEqBandHz in native AudioDsp.h.</summary>
+    public static readonly double[] EqBandHz = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+
     /// <summary>
-    /// EQ frequency response (voice chain: high-pass cascade with presence peak)
+    /// 8-band EQ frequency response (C6b: high-pass + up to eight peaking bands
+    /// at the octave centers, mirroring the native chain — flat bands skipped)
     /// as normalized points: x = log-frequency position [0..1], y = gain mapped
     /// [0..1] where 0 = MinDb and 1 = MaxDb.
     /// </summary>
     public static IReadOnlyList<(double X, double Y)> EqResponse(
-        double highpassHz, double presenceHz, double presenceDb,
+        double highpassHz, IReadOnlyList<double> bandGainsDb,
         int pointCount = 64, double sampleRate = 48000)
     {
-        var highpass = Highpass(sampleRate, Math.Clamp(highpassHz, 20, 400));
-        var presence = Peaking(sampleRate, Math.Clamp(presenceHz, 800, 8000), Math.Clamp(presenceDb, -12, 12));
+        var cascade = new List<Biquad> { Highpass(sampleRate, Math.Clamp(highpassHz, 20, 400)) };
+        for (var band = 0; band < EqBandHz.Length; band++)
+        {
+            var gainDb = band < bandGainsDb.Count ? Math.Clamp(bandGainsDb[band], -12, 12) : 0;
+            if (Math.Abs(gainDb) >= 0.05)
+            {
+                cascade.Add(Peaking(sampleRate, EqBandHz[band], gainDb, 1.4));
+            }
+        }
+
         var points = new List<(double, double)>(pointCount);
         var logMin = Math.Log10(MinFrequencyHz);
         var logMax = Math.Log10(MaxFrequencyHz);
@@ -81,7 +93,12 @@ public static class DspCurveMath
         {
             var x = index / (double)(pointCount - 1);
             var frequency = Math.Pow(10, logMin + x * (logMax - logMin));
-            var magnitude = MagnitudeAt(highpass, frequency, sampleRate) * MagnitudeAt(presence, frequency, sampleRate);
+            var magnitude = 1.0;
+            foreach (var stage in cascade)
+            {
+                magnitude *= MagnitudeAt(stage, frequency, sampleRate);
+            }
+
             var db = 20 * Math.Log10(Math.Max(magnitude, 1e-6));
             var y = (Math.Clamp(db, MinDb, MaxDb) - MinDb) / (MaxDb - MinDb);
             points.Add((x, y));

@@ -36,6 +36,17 @@ public sealed partial class DspResponseCurve : UserControl
         nameof(P3), typeof(double), typeof(DspResponseCurve),
         new PropertyMetadata(0.0, static (d, _) => ((DspResponseCurve)d).Redraw()));
 
+    // C6b: 8-band gains as a csv string ("0,0,-3,…") — x:Bind-friendly single value.
+    public static readonly DependencyProperty BandsProperty = DependencyProperty.Register(
+        nameof(Bands), typeof(string), typeof(DspResponseCurve),
+        new PropertyMetadata("", static (d, _) => ((DspResponseCurve)d).Redraw()));
+
+    public string Bands
+    {
+        get => (string)GetValue(BandsProperty);
+        set => SetValue(BandsProperty, value);
+    }
+
     public string Kind
     {
         get => (string)GetValue(KindProperty);
@@ -60,6 +71,23 @@ public sealed partial class DspResponseCurve : UserControl
         set => SetValue(P3Property, value);
     }
 
+    private static double[] ParseBands(string csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+        {
+            return [];
+        }
+
+        var parts = csv.Split(',');
+        var bands = new double[parts.Length];
+        for (var index = 0; index < parts.Length; index++)
+        {
+            _ = double.TryParse(parts[index], System.Globalization.CultureInfo.InvariantCulture, out bands[index]);
+        }
+
+        return bands;
+    }
+
     private void Redraw()
     {
         var width = CurveHost.ActualWidth;
@@ -73,7 +101,7 @@ public sealed partial class DspResponseCurve : UserControl
         {
             "comp" => DspCurveMath.CompressorTransfer(P1, P2),
             "gate" => DspCurveMath.GateTransfer(P1),
-            _ => DspCurveMath.EqResponse(P1, P2, P3)
+            _ => DspCurveMath.EqResponse(P1, ParseBands(Bands))
         };
 
         CurveLine.Points.Clear();
