@@ -1537,6 +1537,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         parameters[paramKey] = value;
         CommandStatus = $"{insertName}: {paramKey} = {value:0.#}";
+        // C7c (owner: "the UI is still not reflected when you make changes"):
+        // the response curves bind the Workspace* properties OneWay — without
+        // this notify a slider drag never re-drew its curve.
+        NotifyWorkspaceParamsChanged();
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -4121,6 +4125,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedRackLimiterEnabled));
         OnPropertyChanged(nameof(SelectedInsertChainLabel));
         OnPropertyChanged(nameof(SelectedChannelDisplayName));
+        OnPropertyChanged(nameof(HasSelectedAudioChannel));
+        OnPropertyChanged(nameof(WorkspaceEnabledOpacity));
         NotifyWorkspaceParamsChanged();  // C6 sliders + curves follow the channel
         RefreshSelectedChannelInsertSlots();  // C5a rack slots follow the chain
     }
@@ -7493,7 +7499,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _audioMixChannels.Clear();
         _audioMixChannels.AddRange(mergedById.Values);
+
+        // C7d (owner: workspace controls silently dead): the processing
+        // workspace edits the SELECTED channel — with no selection every
+        // slider snapped back. Auto-select the first channel whenever the
+        // current selection is empty or left the mix.
+        if (mergedById.Count > 0 &&
+            (string.IsNullOrEmpty(SelectedParticipantId) || !mergedById.ContainsKey(SelectedParticipantId)))
+        {
+            SelectedParticipantId = mergedById.Keys.First();
+        }
     }
+
+    /// <summary>C7d: true when the workspace has a live channel to edit.</summary>
+    public bool HasSelectedAudioChannel => SelectedAudioMix is not null;
+
+    /// <summary>Workspace cells dim when there is nothing to edit (Grid has no IsEnabled).</summary>
+    public double WorkspaceEnabledOpacity => HasSelectedAudioChannel ? 1.0 : 0.45;
 
     public static ParticipantAudioMix BuildWaitingForPcmAudioMixChannel(
         string sourceId,

@@ -524,8 +524,10 @@
                         </DropDownButton>
                     </Grid>
 
-                    <!-- GATE cell -->
-                    <Grid Grid.Column="1" RowSpacing="4">
+                    <!-- GATE cell (disabled until a channel is selected - C7d) -->
+                    <Grid Grid.Column="1" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -542,7 +544,8 @@
                         </Grid>
                         <controls:DspResponseCurve Grid.Row="1" Kind="gate"
                                                    P1="{x:Bind ViewModel.WorkspaceGateThresholdDb, Mode=OneWay}"
-                                                   IsEngaged="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}" />
+                                                   IsEngaged="{x:Bind ViewModel.SelectedRackGateEnabled, Mode=OneWay}"
+                                                   P2="{x:Bind ViewModel.WorkspaceGateRangeDb, Mode=OneWay}" />
                         <!-- C7: competitive gate — threshold/range, attack/hold/release -->
                         <Grid Grid.Row="2" ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -575,7 +578,9 @@
                     </Grid>
 
                     <!-- COMP cell -->
-                    <Grid Grid.Column="2" RowSpacing="4">
+                    <Grid Grid.Column="2" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -607,7 +612,8 @@
                         <controls:DspResponseCurve Grid.Row="1" Kind="comp"
                                                    P1="{x:Bind ViewModel.WorkspaceCompThresholdDb, Mode=OneWay}"
                                                    IsEngaged="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
-                                                   P2="{x:Bind ViewModel.WorkspaceCompRatio, Mode=OneWay}" />
+                                                   P2="{x:Bind ViewModel.WorkspaceCompRatio, Mode=OneWay}"
+                                                   P3="{x:Bind ViewModel.WorkspaceCompKneeDb, Mode=OneWay}" />
                         <!-- C7: competitive compressor — threshold/ratio, attack/release/knee/makeup -->
                         <Grid Grid.Row="2" ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -644,7 +650,9 @@
                     </Grid>
 
                     <!-- EQ cell (frequency response drawn from the real biquads) -->
-                    <Grid Grid.Column="3" RowSpacing="4">
+                    <Grid Grid.Column="3" RowSpacing="4"
+                          IsHitTestVisible="{x:Bind ViewModel.HasSelectedAudioChannel, Mode=OneWay}"
+                          Opacity="{x:Bind ViewModel.WorkspaceEnabledOpacity, Mode=OneWay}">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />

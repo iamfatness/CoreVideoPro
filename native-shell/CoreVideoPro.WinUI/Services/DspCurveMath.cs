@@ -109,39 +109,52 @@ public static class DspCurveMath
 
     /// <summary>
     /// Compressor static transfer curve (input dB → output dB over [-60..0]),
-    /// normalized to [0..1] both axes. Hard knee at the threshold, slope 1/ratio above.
+    /// normalized to [0..1] both axes. C7c: knee-aware — quadratic interpolation
+    /// across the knee width, matching applyStereoCompressor's gain computer.
     /// </summary>
     public static IReadOnlyList<(double X, double Y)> CompressorTransfer(
-        double thresholdDb, double ratio, int pointCount = 48)
+        double thresholdDb, double ratio, double kneeDb = 0, int pointCount = 48)
     {
         var points = new List<(double, double)>(pointCount);
         var clampedRatio = Math.Max(1, ratio);
+        var slope = 1.0 - 1.0 / clampedRatio;
+        var knee = Math.Max(0, kneeDb);
         for (var index = 0; index < pointCount; index++)
         {
             var x = index / (double)(pointCount - 1);
             var inputDb = -60 + x * 60;
-            var outputDb = inputDb <= thresholdDb
-                ? inputDb
-                : thresholdDb + (inputDb - thresholdDb) / clampedRatio;
-            points.Add((x, (Math.Clamp(outputDb, -60, 0) + 60) / 60));
+            var over = inputDb - thresholdDb;
+            double grDb = 0;
+            if (knee > 0 && over > -knee / 2 && over < knee / 2)
+            {
+                var k = over + knee / 2;
+                grDb = slope * k * k / (2 * knee);
+            }
+            else if (over >= knee / 2)
+            {
+                grDb = slope * over;
+            }
+
+            points.Add((x, (Math.Clamp(inputDb - grDb, -60, 0) + 60) / 60));
         }
 
         return points;
     }
 
     /// <summary>
-    /// Gate static transfer curve: below the threshold the output drops to the
-    /// floor; above it, unity. Normalized [0..1] both axes over [-80..0] dB in.
+    /// Gate static transfer curve: below the threshold the output drops by the
+    /// RANGE (C7c - matches the core floor-not-silence gate); above it, unity.
     /// </summary>
-    public static IReadOnlyList<(double X, double Y)> GateTransfer(double thresholdDb, int pointCount = 48)
+    public static IReadOnlyList<(double X, double Y)> GateTransfer(
+        double thresholdDb, double rangeDb = -80, int pointCount = 48)
     {
         var points = new List<(double, double)>(pointCount);
         for (var index = 0; index < pointCount; index++)
         {
             var x = index / (double)(pointCount - 1);
             var inputDb = -80 + x * 80;
-            var outputDb = inputDb < thresholdDb ? -80.0 : inputDb;
-            points.Add((x, (outputDb + 80) / 80));
+            var outputDb = inputDb < thresholdDb ? Math.Max(-80, inputDb + rangeDb) : inputDb;
+            points.Add((x, (Math.Clamp(outputDb, -80, 0) + 80) / 80));
         }
 
         return points;

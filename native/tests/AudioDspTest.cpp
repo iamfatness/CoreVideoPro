@@ -864,3 +864,85 @@ TEST(AudioDsp, GateRangeDucksToFloorInsteadOfSilenceAndHoldStaysOpen) {
   EXPECT_TRUE(stereo[tailIdx] > 0.0005f);
   EXPECT_TRUE(stereo[tailIdx] < 0.002f);
 }
+
+TEST(AudioDsp, PersistentStateMakesBlockProcessingContinuous) {
+  // C7c: the owner-reported mic distortion. Streaming DSP processes 20ms
+  // blocks; WITHOUT carried state every biquad/envelope restarts at each block
+  // boundary (a 50Hz buzz). With ChannelDspState, two half-buffer calls must
+  // produce EXACTLY the same output as one full-buffer call.
+  const double sampleRate = 48000.0;
+  const size_t frames = 1920;  // two 20ms stereo blocks
+  std::vector<float> reference(frames * 2);
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const float sample = static_cast<float>(0.4 * std::sin(2.0 * 3.14159265358979323846 * 220.0 * frame / sampleRate));
+    reference[frame * 2] = sample;
+    reference[frame * 2 + 1] = sample;
+  }
+  const std::vector<std::string> inserts{"Built-in EQ", "Compressor"};
+  corevideo::modules::ChannelInsertSettings settings;
+  settings["Built-in EQ"]["band3Db"] = 6.0;
+  settings["Compressor"]["thresholdDb"] = -24.0;
+
+  // One continuous call (stateless is fine for a single buffer).
+  std::vector<float> oneShot = reference;
+  corevideo::modules::applyChannelInsertChain(oneShot.data(), oneShot.size(), sampleRate, inserts, false,
+                                              &settings);
+
+  // Two block calls WITH persistent state: must match the one-shot exactly.
+  std::vector<float> blocks = reference;
+  corevideo::modules::ChannelDspState state;
+  const size_t half = frames;  // half the interleaved buffer
+  corevideo::modules::applyChannelInsertChain(blocks.data(), half, sampleRate, inserts, false, &settings,
+                                              nullptr, &state);
+  corevideo::modules::applyChannelInsertChain(blocks.data() + half, half, sampleRate, inserts, false,
+                                              &settings, nullptr, &state);
+  double maxDelta = 0.0;
+  for (size_t index = 0; index < blocks.size(); ++index) {
+    maxDelta = std::max(maxDelta, std::fabs(static_cast<double>(blocks[index] - oneShot[index])));
+  }
+  EXPECT_TRUE(maxDelta < 1e-6);
+
+  // And WITHOUT state the second block restarts its filters — visibly
+  // different (the bug this fixes).
+  std::vector<float> stateless = reference;
+  corevideo::modules::applyChannelInsertChain(stateless.data(), half, sampleRate, inserts, false, &settings);
+  corevideo::modules::applyChannelInsertChain(stateless.data() + half, half, sampleRate, inserts, false, &settings);
+  double statelessDelta = 0.0;
+  for (size_t index = half; index < stateless.size(); ++index) {
+    statelessDelta = std::max(statelessDelta, std::fabs(static_cast<double>(stateless[index] - oneShot[index])));
+  }
+  EXPECT_TRUE(statelessDelta > 1e-4);
+}
+
+TEST(AudioDsp, SmoothedLimiterIsContinuousAcrossBlocks) {
+  // C7d: the block limiter jumped its gain at every 20ms boundary on hot
+  // input (zipper distortion). The smoothed limiter with carried state must
+  // produce the same output block-by-block as one continuous call.
+  const double sampleRate = 48000.0;
+  const size_t frames = 1920;
+  std::vector<float> reference(frames * 2);
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const float sample = static_cast<float>(1.4 * std::sin(2.0 * 3.14159265358979323846 * 180.0 * frame / sampleRate));
+    reference[frame * 2] = sample;
+    reference[frame * 2 + 1] = sample;
+  }
+
+  std::vector<float> oneShot = reference;
+  double gainA = 1.0;
+  corevideo::modules::applySmoothedPeakLimiter(oneShot.data(), oneShot.size(), 2, -1.0, 60.0, sampleRate, &gainA);
+
+  std::vector<float> blocks = reference;
+  double gainB = 1.0;
+  const size_t half = frames;
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data(), half, 2, -1.0, 60.0, sampleRate, &gainB);
+  corevideo::modules::applySmoothedPeakLimiter(blocks.data() + half, half, 2, -1.0, 60.0, sampleRate, &gainB);
+
+  double maxDelta = 0.0;
+  double peak = 0.0;
+  for (size_t index = 0; index < blocks.size(); ++index) {
+    maxDelta = std::max(maxDelta, std::fabs(static_cast<double>(blocks[index] - oneShot[index])));
+    peak = std::max(peak, std::fabs(static_cast<double>(blocks[index])));
+  }
+  EXPECT_TRUE(maxDelta < 1e-6);   // continuous across the boundary
+  EXPECT_TRUE(peak <= corevideo::modules::dbfsToLinear(-1.0) + 1e-6);  // brickwall holds
+}
