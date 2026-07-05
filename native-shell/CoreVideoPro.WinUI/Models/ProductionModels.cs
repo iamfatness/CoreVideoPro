@@ -601,6 +601,8 @@ public sealed class ParticipantAudioMix
     public required string Status { get; init; }
     public double Lufs { get; set; } = -60;
     public double TruePeakDb { get; set; } = -60;
+    // C7b: live compressor gain reduction (dB, 0 = idle) from the core chain.
+    public double GainReductionDb { get; set; }
     public List<string> PluginInserts { get; set; } = [];
 
     // C5b: per-insert parameter overrides {insertName -> {param -> value}}.

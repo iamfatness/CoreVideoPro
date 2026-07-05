@@ -513,7 +513,8 @@ struct RoutedAudioCrosspoint {
 
 inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     const std::vector<RoutedAudioSource>& sources, const std::vector<RoutedAudioCrosspoint>& crosspoints,
-    bool masterLimiter = true) {
+    bool masterLimiter = true,
+    std::map<std::string, double>* outCompGainReductionDbBySource = nullptr) {
   bool soloActive = false;
   for (const auto& source : sources) {
     if (source.solo && !source.muted) {
@@ -550,9 +551,14 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     // noise-suppression toggle process the strip output before any send.
     if ((source.inserts != nullptr && !source.inserts->empty()) || source.noiseSuppression) {
       static const std::vector<std::string> kNoInserts;
+      double compGrDb = 0.0;
       applyChannelInsertChain(stereo.data(), stereo.size(), source.sampleRate,
                               source.inserts != nullptr ? *source.inserts : kNoInserts,
-                              source.noiseSuppression, source.insertSettings);
+                              source.noiseSuppression, source.insertSettings, &compGrDb);
+      // C7b: per-source compressor gain reduction, captured for the GR meter.
+      if (outCompGainReductionDbBySource != nullptr && compGrDb > 0.0) {
+        (*outCompGainReductionDbBySource)[source.sourceId] = compGrDb;
+      }
     }
     sourceStereo[source.sourceId] = std::move(stereo);
   }
