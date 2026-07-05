@@ -542,12 +542,17 @@ struct AudioFeedState {
   std::vector<float> fifo;
   int sampleRate = 0;
   int channels = 0;
-  // Adaptive reserve: starts 0 (pure pass-through - zero latency, one-shot
-  // bursts and tests unaffected). The FIRST time a continuous stream runs dry
-  // mid-flow (an audible click), the reserve arms at one tick and the FIFO
-  // thereafter holds that much back - 20ms of latency in exchange for never
-  // clicking again on that source.
+  // Adaptive reserve = PRIMING DEPTH, not a held-back tail (v1 subtracted the
+  // reserve from every emission - the FIFO hovered at the reserve and emitted
+  // ZERO on alternate ticks: periodic 20ms holes, owner-reported "way worse").
+  // Semantics: reserve 0 = pure pass-through (zero latency). On a mid-stream
+  // dry tick (the click) the reserve arms and the source RE-PRIMES: nothing
+  // emits until reserve+tick is buffered (we are already inside a gap - one
+  // slightly longer gap, once), then every tick emits a FULL block while the
+  // cushion floats in the FIFO. Repeat dry events double the reserve (cap 4
+  // ticks). One-shot bursts and unit tests never arm it.
   size_t reserveSamples = 0;
+  bool primed = false;
   size_t lastEmitted = 0;
   int64_t dryEvents = 0;
 };
@@ -579,15 +584,26 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     const size_t tickSamples =
         static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
 
-    // Dry mid-stream = the audible click. Arm the reserve so it cannot recur.
+    // Dry mid-stream = the audible click. Arm (or escalate) the reserve and
+    // re-prime - we are already inside a gap, so the priming pause is once.
     if (state.fifo.empty() && state.lastEmitted > 0) {
       ++state.dryEvents;
-      state.reserveSamples = tickSamples;
+      state.reserveSamples = state.reserveSamples == 0 ? tickSamples
+                                                       : std::min(state.reserveSamples * 2, tickSamples * 4);
+      state.primed = false;
     }
 
-    const size_t beyondReserve =
-        state.fifo.size() > state.reserveSamples ? state.fifo.size() - state.reserveSamples : 0;
-    const size_t emit = std::min(beyondReserve, tickSamples);
+    size_t emit = 0;
+    if (state.reserveSamples == 0) {
+      emit = std::min(state.fifo.size(), tickSamples);  // pass-through mode
+    } else {
+      if (!state.primed && state.fifo.size() >= state.reserveSamples + tickSamples) {
+        state.primed = true;
+      }
+      if (state.primed) {
+        emit = std::min(state.fifo.size(), tickSamples);  // FULL blocks; cushion floats
+      }
+    }
     frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
@@ -624,14 +640,24 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (state.fifo.empty()) {
       if (state.lastEmitted > 0) {
         ++state.dryEvents;  // THE click: stream was flowing, this tick has nothing
-        state.reserveSamples = tickSamples;
+        state.reserveSamples = state.reserveSamples == 0 ? tickSamples
+                                                         : std::min(state.reserveSamples * 2, tickSamples * 4);
+        state.primed = false;
         state.lastEmitted = 0;
       }
       continue;
     }
-    const size_t beyondReserve =
-        state.fifo.size() > state.reserveSamples ? state.fifo.size() - state.reserveSamples : 0;
-    const size_t emit = std::min(beyondReserve, tickSamples);
+    size_t emit = 0;
+    if (state.reserveSamples == 0) {
+      emit = std::min(state.fifo.size(), tickSamples);
+    } else {
+      if (!state.primed && state.fifo.size() >= state.reserveSamples + tickSamples) {
+        state.primed = true;
+      }
+      if (state.primed) {
+        emit = std::min(state.fifo.size(), tickSamples);
+      }
+    }
     if (emit == 0) {
       state.lastEmitted = 0;
       continue;
