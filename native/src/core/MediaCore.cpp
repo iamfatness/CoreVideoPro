@@ -1,4 +1,4 @@
-#include "core/MediaCore.h"
+﻿#include "core/MediaCore.h"
 
 #include "compositor/CompositorLayout.h"
 #include "core/LockHoldGuardrail.h"
@@ -748,7 +748,7 @@ std::vector<rpc::Json> MediaCore::drainZoomVideoFrameEvents() {
   // THREAD-SAFE (no core lock required): zoomEngineRuntime_ is created once in the
   // constructor and never reset; drainFrameEvents takes its own mutex and returns
   // empty when nothing is pending (including before configure). This lets a dedicated
-  // pump thread drain Zoom frames WITHOUT contending on the core lock — the
+  // pump thread drain Zoom frames WITHOUT contending on the core lock â€” the
   // media-core-sync command holds that lock 50-100ms and was starving the drain,
   // causing the Zoom feed to buffer (~360ms) and drop unevenly.
   return zoomEngineRuntime_->drainFrameEvents();
@@ -793,7 +793,7 @@ void MediaCore::enqueueProgramFramePreviewEvent() {
 
 void MediaCore::enqueueProgramSharedTextureEvent() {
   // DISABLED: the program monitor uses the WinUI ScenePreviewControl composite, not
-  // the GPU shared texture, so this event is unused — and it was emitted at the full
+  // the GPU shared texture, so this event is unused â€” and it was emitted at the full
   // render rate (~125/s), flooding the shared frame-event queue and starving the
   // 30fps Zoom video frames (high latency + drops). Re-enable if/when the program
   // monitor goes back to the GPU shared-texture (VideoSurfaceHost) path.
@@ -812,7 +812,7 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
     return;
   }
   // Compute a structural signature over the handle, canvas dims, and per-tile
-  // identity + geometry (label, slot, rects) — but NOT the active-speaker flag,
+  // identity + geometry (label, slot, rects) â€” but NOT the active-speaker flag,
   // since that border is baked into the texture and must not churn the consumer.
   uint32_t signature = 2166136261u;
   auto mix = [&signature](const std::string& value) {
@@ -862,7 +862,7 @@ void MediaCore::enqueuePreviewSharedTextureEvent() {
   if (event.isNull()) {
     return;
   }
-  // Emit only on structural change (handle/dims) or cold start — the live pixels
+  // Emit only on structural change (handle/dims) or cold start â€” the live pixels
   // flow through the stable keyed-mutex texture, presented continuously by the
   // host, so a per-frame event would only flood the pipe (see the program event).
   uint32_t signature = 2166136261u;
@@ -923,7 +923,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   // Increment 2 (depends on the audio decouple): in the live server the render thread
   // keeps lastProgramFrame_ fresh at ~60fps and the audio/output worker keeps the
   // audio/output snapshot fresh, so an EMPTY poll (the 250ms media-core-sync) no
-  // longer needs to drive a synthetic tick under coreMutex — return the latest
+  // longer needs to drive a synthetic tick under coreMutex â€” return the latest
   // published snapshot without the heavy tick. Commands still render so their effect
   // is reflected immediately; direct/test callers (no worker) always render.
   if (audioWorkerActive_ && commands.empty()) {
@@ -1372,7 +1372,7 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   }
   {
     // Encoder module mutation: guard against the audio/output worker's concurrent
-    // encoder->submit/session in runAudioOutputWork. coreMutex(outer)→this(inner).
+    // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     configureEncoderRecordingRequest();
     modules_.encoder->start(command.getStringArray("destinations"), command.getStringArray("isoParticipantIds"));
@@ -1498,7 +1498,7 @@ void MediaCore::stopRecordingSession(const rpc::Json& command) {
   {
     // Encoder module mutation: guard against the audio/output worker's
     // concurrent encoder->submit/submitAudio/session in runAudioOutputWork.
-    // coreMutex (outer, held by the command thread) → audioOutputMutex_ (inner),
+    // coreMutex (outer, held by the command thread) â†’ audioOutputMutex_ (inner),
     // matching startRecordingSession/startProgramOutput. Finalizes the MP4
     // container(s) so the artifact is playable immediately after stop instead
     // of only after process exit or the next recording start.
@@ -1526,8 +1526,8 @@ void MediaCore::recoverRecordingSession(const rpc::Json& command) {
 
 void MediaCore::configureEncoderRecordingRequest() {
   // PRECONDITION: the caller holds audioOutputMutex_ (this mutates encoder state via
-  // modules_.encoder->configureRecording). All callers — startProgramOutput,
-  // setRecordingTargets, startRecordingSession — acquire it around the call.
+  // modules_.encoder->configureRecording). All callers â€” startProgramOutput,
+  // setRecordingTargets, startRecordingSession â€” acquire it around the call.
   modules::RecordingSessionRequest request;
   request.sessionId = recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_;
   request.targetFolder = recordingTargetFolder_;
@@ -1546,9 +1546,26 @@ void MediaCore::configureEncoderRecordingRequest() {
 }
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
-  audioChannels_.clear();
   audioLimiterEnabled_ = !command.get("limiterEnabled") || command.get("limiterEnabled")->asBool();
   const rpc::Json* channels = command.get("channels");
+  // HOLD-LAST guard (same measured shell churn as the routing matrix): an
+  // empty channel list mid-show would strip gain/pan/inserts off live audio
+  // for a tick. Hold the last non-empty list; adopt empty only if it persists.
+  const bool incomingEmpty = !channels || !channels->isArray() || channels->asArray().empty();
+  if (incomingEmpty && !audioChannels_.empty()) {
+    ++emptyMixSyncStreak_;
+    if (emptyMixSyncStreak_ < 25) {
+      return;
+    }
+  }
+  if (!incomingEmpty) {
+    emptyMixSyncStreak_ = 0;
+  } else {
+    previousAudioChannels_.clear();
+    absentMixChannelStreaks_.clear();
+  }
+
+  audioChannels_.clear();
   if (!channels || !channels->isArray()) {
     return;
   }
@@ -1568,7 +1585,7 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     input.solo = channel.get("solo") && channel.get("solo")->asBool();
     input.pluginInserts = channel.getStringArray("pluginInserts");
     // C5b: per-insert parameter overrides (gate threshold, EQ freqs, comp
-    // ratio…). Unknown keys are carried and ignored by the chain.
+    // ratioâ€¦). Unknown keys are carried and ignored by the chain.
     if (const rpc::Json* settings = channel.get("insertSettings"); settings != nullptr && settings->isObject()) {
       for (const auto& [insertName, params] : settings->asObject()) {
         if (!params.isObject()) {
@@ -1586,6 +1603,31 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
       audioChannels_.push_back(std::move(input));
     }
   }
+  // PER-CHANNEL hold-last (same measured partial-sync churn as the routing
+  // matrix): a channel absent from this sync keeps its previous gain/pan/
+  // inserts until the absence persists; present channels take the new values.
+  {
+    std::set<std::string> incomingChannels;
+    for (const auto& channel : audioChannels_) {
+      incomingChannels.insert(channel.participantId);
+      absentMixChannelStreaks_.erase(channel.participantId);
+    }
+    for (const auto& previous : previousAudioChannels_) {
+      if (incomingChannels.find(previous.participantId) != incomingChannels.end()) {
+        continue;
+      }
+      if (absentMixChannelStreaks_[previous.participantId] < 25) {
+        audioChannels_.push_back(previous);
+      }
+    }
+    for (auto it = absentMixChannelStreaks_.begin(); it != absentMixChannelStreaks_.end();) {
+      if (incomingChannels.find(it->first) == incomingChannels.end()) {
+        ++it->second;
+      }
+      it = it->second > 30 ? absentMixChannelStreaks_.erase(it) : std::next(it);
+    }
+    previousAudioChannels_ = audioChannels_;
+  }
   // Audio-only command: in the live server the audio/output worker re-mixes on its
   // own cadence, so the command thread must not run a blocking render+readback here.
   // Direct/test callers (no worker) render synchronously so the returned snapshot
@@ -1598,7 +1640,7 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   // monitorOutput->start/stop + mixer reads mutate/read audio/output module state the
   // worker also touches (monitorOutput->render, mixer->monitorBus*); guard the whole
-  // body. coreMutex(outer, held by the command loop) → audioOutputMutex_(inner).
+  // body. coreMutex(outer, held by the command loop) â†’ audioOutputMutex_(inner).
   std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
   audioMonitorEnabled_ = command.get("enabled") && command.get("enabled")->asBool();
   audioMonitorDeviceId_ = command.getString("deviceId");
@@ -1677,11 +1719,34 @@ bool isAudioRoutingBus(const std::string& busId) {
 }  // namespace
 
 void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
+  const rpc::Json* sends = command.get("sends");
+  // HOLD-LAST guard (click-hunt 2026-07-05, measured on the rig): the shell
+  // transiently syncs an EMPTY matrix during row-rebuild windows (~1/s), and
+  // clearing here unrouted live audio for a tick — a 20ms hole in the MON bus
+  // per episode, audible as clicking/warble. A live mixer must never hard-drop
+  // audio on a blank control-plane sync: keep the last non-empty matrix and
+  // only adopt an empty one after it persists (a real clear-all keeps sending
+  // empty and wins after ~1s).
+  const bool incomingEmpty = !sends || !sends->isArray() || sends->asArray().empty();
+  if (incomingEmpty && !audioRoutingSends_.empty()) {
+    ++emptyRoutingSyncStreak_;
+    if (emptyRoutingSyncStreak_ < 25) {
+      return;  // transient blank: hold the live routing
+    }
+  }
+  if (!incomingEmpty) {
+    emptyRoutingSyncStreak_ = 0;
+  } else {
+    // Adopting a persistent clear-all: the per-source hold must not
+    // resurrect the routes we are deliberately dropping.
+    previousRoutingSends_.clear();
+    absentRoutingSourceStreaks_.clear();
+  }
+
   audioRoutingSends_.clear();
   audioRoutingWarnings_.clear();
   audioRoutingSynced_ = true;
 
-  const rpc::Json* sends = command.get("sends");
   if (!sends || !sends->isArray()) {
     return;
   }
@@ -1742,6 +1807,31 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
       addWarning("Audio routing source " + sourceId + " is routed to no bus.");
     }
   }
+
+  // PER-SOURCE hold-last (rig-measured: PARTIAL syncs — mic missing, media
+  // present — still punctured live audio 34x/min after the empty-sync guard).
+  // A source absent from this sync keeps its previous sends until the absence
+  // PERSISTS (~0.5s of consecutive syncs); then the removal is adopted.
+  // Sources present in the sync always take the new values and reset.
+  const std::set<std::string> incomingSources = routedSources;
+  for (const auto& sourceId : incomingSources) {
+    absentRoutingSourceStreaks_.erase(sourceId);
+  }
+  for (const auto& previous : previousRoutingSends_) {
+    if (incomingSources.find(previous.sourceId) != incomingSources.end()) {
+      continue;  // present: new config wins
+    }
+    if (absentRoutingSourceStreaks_[previous.sourceId] < 25) {
+      audioRoutingSends_.push_back(previous);
+    }
+  }
+  for (auto it = absentRoutingSourceStreaks_.begin(); it != absentRoutingSourceStreaks_.end();) {
+    if (incomingSources.find(it->first) == incomingSources.end()) {
+      ++it->second;
+    }
+    it = it->second > 30 ? absentRoutingSourceStreaks_.erase(it) : std::next(it);  // adopted: forget
+  }
+  previousRoutingSends_ = audioRoutingSends_;
 
   audioRoutingWarnings_ = std::move(warnings);
 }
@@ -1956,7 +2046,7 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
   }
 
   if (signature == multiviewLayoutSignature_) {
-    // Unchanged layout — do NOT churn multiviewSources_ or reset the structural-emit flag.
+    // Unchanged layout â€” do NOT churn multiviewSources_ or reset the structural-emit flag.
     return false;
   }
 
@@ -1970,11 +2060,11 @@ bool MediaCore::applyMultiviewLayout(const rpc::Json& layout) {
 }
 
 bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
-  // The WinUI sends the PREVIEW scene node — the same shape as load-scene-graph
-  // ({sceneId, background, routes[], colorGrade, overlays[]}) — carried either by
+  // The WinUI sends the PREVIEW scene node â€” the same shape as load-scene-graph
+  // ({sceneId, background, routes[], colorGrade, overlays[]}) â€” carried either by
   // the set-preview-scene command or the frequent spine `previewScene` object.
   // Parse into temps + build a cheap content signature so a re-send of an unchanged
-  // scene is a no-op (mirrors applyMultiviewLayout — never churns state on repeats).
+  // scene is a no-op (mirrors applyMultiviewLayout â€” never churns state on repeats).
   const std::string sceneId = previewScene.getString("sceneId", "unloaded");
   std::string signature = "s:" + sceneId + ";";
 
@@ -2049,7 +2139,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   }
 
   // Preview overlays (optional): rendered statically at the on-air phase (no
-  // independent animation clock — the preview bus mirrors structure, not motion).
+  // independent animation clock â€” the preview bus mirrors structure, not motion).
   std::map<std::string, OverlayAssetState> overlays;
   if (const rpc::Json* overlaysNode = previewScene.get("overlays"); overlaysNode && overlaysNode->isArray()) {
     int overlayOrder = 0;
@@ -2077,7 +2167,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   }
 
   if (previewSceneActive_ && signature == previewSceneSignature_) {
-    return false;  // Unchanged — do not churn preview state.
+    return false;  // Unchanged â€” do not churn preview state.
   }
 
   previewSceneSignature_ = std::move(signature);
@@ -2180,10 +2270,10 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     }
 
     // PREVIEW cell: composite the FULL previewed scene by remapping every
-    // preview-plan layer's rect into the PVW sub-rect — mirroring the PGM cell
-    // above — so the PVW cell always matches the dedicated PREVIEW monitor and
-    // follows a Take (Preview→Program swaps previewSceneRoutes_). When nothing is
-    // cued in preview (no preview layers) the cell stays empty — an ATEM PVW bus
+    // preview-plan layer's rect into the PVW sub-rect â€” mirroring the PGM cell
+    // above â€” so the PVW cell always matches the dedicated PREVIEW monitor and
+    // follows a Take (Previewâ†’Program swaps previewSceneRoutes_). When nothing is
+    // cued in preview (no preview layers) the cell stays empty â€” an ATEM PVW bus
     // shows what is cued or black, never an arbitrary roster source. (The old
     // fallback drew multiviewSources_.front(), a fixed first-source feed that
     // never reflected the preview and never swapped on Take.)
@@ -2288,7 +2378,7 @@ std::vector<modules::MultiviewTileRect> MediaCore::buildMultiviewTiles(const std
     pvw.slot = -1;
     // The PVW cell renders the live preview composite (buildMultiviewRenderPlan),
     // not a specific roster source, so it carries no pinned sourceId/participantId
-    // — clicking it is a no-op rather than cueing an arbitrary source. (It used to
+    // â€” clicking it is a no-op rather than cueing an arbitrary source. (It used to
     // pin multiviewSources_.front(), a fixed first-source feed that never swapped.)
     assignRect(pvw, layout.previewCell);
     tiles.push_back(std::move(pvw));
@@ -2640,7 +2730,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"status", warnings.empty() ? "live" : "warning"},
       {"masterLevel", masterLevel},
       // REAL BS.1770 program loudness (owner-reported: this read a hardcoded
-      // -16 whenever mixer channels were synced — i.e. always). The worker's
+      // -16 whenever mixer channels were synced â€” i.e. always). The worker's
       // updateProgramLoudnessMeter maintains these members under the same
       // audioOutputMutex_ this function holds. Short-term (3s) is the live
       // console readout; fall back to momentary until its window fills.
@@ -2707,7 +2797,7 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
                                                         programMeterR_.data() + momentaryOffset, momentarySamples, rate);
   programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
   // True peak uses 4x oversampling (a polyphase FIR per sample). Re-scanning the
-  // full 3 s window every tick costs ~240ms and was starving the 60fps render —
+  // full 3 s window every tick costs ~240ms and was starving the 60fps render â€”
   // oversample only THIS chunk and hold a slowly-decaying peak, which is what a
   // true-peak meter displays anyway.
   const double chunkTruePeak = std::max(modules::computeTruePeakDbfs(chunkL.data(), frames, 4),
@@ -3484,7 +3574,7 @@ bool MediaCore::hasPreviewScene() const {
   // Composite the preview bus whenever a preview scene has been synced with at least one
   // layer. Compositing single-source previews too (not just multi-layer) keeps the WinUI
   // logic simple and CORRECT: the composite is stable/always-on once a scene is set, so a
-  // multi-layer→single-source preview switch never strands the consumer on a stale texture
+  // multi-layerâ†’single-source preview switch never strands the consumer on a stale texture
   // (the preview-shared-texture event is structural-change-gated and never re-emits an
   // "off" state). Live video still requires a per-frame recomposite regardless, so gating
   // out the single-source case would not save the per-frame GPU pass anyway.
@@ -3770,7 +3860,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       std::vector<modules::VideoFrame> merged;
       merged.reserve(engineFrames.size());
       for (auto engineFrame : engineFrames) {
-        // Carry over any decoded frame for this participant — I420 (GPU path) OR
+        // Carry over any decoded frame for this participant â€” I420 (GPU path) OR
         // BGRA. Matching only hasPixels() dropped the raw-I420 Zoom frames (which
         // have hasI420() but NOT hasPixels()), replacing them with the metadata-only
         // engine roster frame -> participant rendered BLANK on program/preview.
@@ -3805,7 +3895,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
 
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   // On the light display tick, tell the compositor to skip the blocking GPU->CPU
-  // readbacks (base64 preview + pixel signature) — only the GPU shared texture is
+  // readbacks (base64 preview + pixel signature) â€” only the GPU shared texture is
   // needed on screen, and the per-frame CPU Map otherwise caps the render rate.
   // EXCEPTION: when an output/encoder/recording session is active, the encoder
   // submit (on the audio/output worker) needs the composed CPU pixels, so do the
@@ -3831,7 +3921,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   }
   markStage(s_stageProgramUs);
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
-  // texture (mirrors the program shared texture). Opt-in — only when a layout is
+  // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
   // stays on the light videoOnly tick (no CPU readback).
   if (!multiviewSources_.empty()) {
@@ -3856,7 +3946,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   }
   markStage(s_stageMultiviewUs);
   // Third GPU composite: the PREVIEW scene into its OWN keyed-mutex shared texture
-  // (mirrors the program shared texture). Opt-in — only for a genuinely multi-layer
+  // (mirrors the program shared texture). Opt-in â€” only for a genuinely multi-layer
   // preview scene (a single passthrough source stays on the cheap WinUI single-source
   // path). Reuses the same videoFrames, stays on the light videoOnly tick (no CPU
   // readback), and never touches the audio/output lock.
@@ -3908,7 +3998,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // the channel looks dead). Recording/streaming still use the full-rate frame.
   {
     const auto nowTp = std::chrono::steady_clock::now();
-    // The shared-texture handle is tiny (a handle + dimensions) — emit it on every
+    // The shared-texture handle is tiny (a handle + dimensions) â€” emit it on every
     // render so the GPU program present runs at the full render rate (~60fps).
     enqueueProgramSharedTextureEvent();
     // Per-participant GPU textures for the legacy multiview tiles (tiny handles).
@@ -3917,7 +4007,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     // (and once at cold start), so this is safe to call every render.
     enqueueMultiviewSharedTextureEvent();
     // The preview shared-texture event is likewise emitted only on structural
-    // change (handle/dims) — the live pixels flow through the keyed-mutex texture.
+    // change (handle/dims) â€” the live pixels flow through the keyed-mutex texture.
     enqueuePreviewSharedTextureEvent();
     // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
     // never emit it on the light display tick (it has no fresh readback).
@@ -4003,7 +4093,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
 // Run the heavy/blocking audio + output DSP/IO. Caller holds audioOutputMutex_ (or is
 // the single-threaded test path). Touches only audioOutputMutex_-domain modules
 // (mixer / monitorOutput / encoder / outputSender) + the BS.1770 loudness members,
-// never coreMutex-domain published members — all results go into the returned struct.
+// never coreMutex-domain published members â€” all results go into the returned struct.
 MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem& work) {
   AudioOutputResults results;
   if (!work.valid) {
@@ -4016,6 +4106,22 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // (buses, monitor, encoder) is exactly one tick of samples per source -
   // variable 480/960 blocks were audible as raw-path distortion.
   modules::steadyAudioFrameFeed(work.audioFrames, audioFeedStates_);
+
+  // DEBUG TAP (env-gated): dump the mic PCM entering the mix and the MON bus
+  // leaving it as raw float32 - the decisive click-hunt instrument. Set
+  // COREVIDEO_AUDIO_DEBUG_DIR to enable; files append per process run.
+  static const char* debugDir = std::getenv("COREVIDEO_AUDIO_DEBUG_DIR");
+  if (debugDir != nullptr) {
+    for (const auto& frame : work.audioFrames) {
+      if (!frame.pcm.empty()) {
+        const std::string path = std::string(debugDir) + "/tap-in-" + frame.participantId + ".f32";
+        if (FILE* file = std::fopen(path.c_str(), "ab")) {
+          std::fwrite(frame.pcm.data(), sizeof(float), frame.pcm.size(), file);
+          std::fclose(file);
+        }
+      }
+    }
+  }
 
   const auto tMix0 = std::chrono::steady_clock::now();
   results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);
@@ -4053,6 +4159,25 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
       routedSources.push_back(source);
     }
+    if (debugDir != nullptr) {
+      const std::string path = std::string(debugDir) + "/tap-structure.txt";
+      if (FILE* file = std::fopen(path.c_str(), "ab")) {
+        for (const auto& src : routedSources) {
+          std::string inserts;
+          if (src.inserts != nullptr) {
+            for (const auto& name : *src.inserts) {
+              inserts += name + "+";
+            }
+          }
+          std::fprintf(file, "%s f=%zu ch=%d ns=%d g=%.4f mu=%d ins=%s | ", src.sourceId.c_str(),
+                       src.pcm != nullptr ? src.pcm->size() / static_cast<size_t>(src.channels > 0 ? src.channels : 1) : 0,
+                       src.channels, src.noiseSuppression ? 1 : 0, src.gainLinear, src.muted ? 1 : 0,
+                       inserts.c_str());
+        }
+        std::fprintf(file, "sends=%zu chans=%zu\n", work.routingSends.size(), work.channels.size());
+        std::fclose(file);
+      }
+    }
     std::vector<modules::RoutedAudioCrosspoint> crosspoints;
     crosspoints.reserve(work.routingSends.size());
     for (const auto& send : work.routingSends) {
@@ -4061,6 +4186,23 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
                                                    &results.compGainReductionDbBySource, &busLimiterGains_);
+    if (debugDir != nullptr) {
+      const auto monTap = results.routedBusPcm.find("mon");
+      if (monTap != results.routedBusPcm.end() && !monTap->second.empty()) {
+        const std::string path = std::string(debugDir) + "/tap-mon.f32";
+        if (FILE* file = std::fopen(path.c_str(), "ab")) {
+          std::fwrite(monTap->second.data(), sizeof(float), monTap->second.size(), file);
+          std::fclose(file);
+        }
+      }
+      if (monTap != results.routedBusPcm.end()) {
+        const std::string sizesPath = std::string(debugDir) + "/tap-mon-sizes.txt";
+        if (FILE* file = std::fopen(sizesPath.c_str(), "ab")) {
+          std::fprintf(file, "%zu\n", monTap->second.size() / 2);
+          std::fclose(file);
+        }
+      }
+    }
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
     if (!results.routedBusPcm.empty()) {
@@ -4133,7 +4275,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       results.monitorUnderruns = modules_.monitorOutput->underrunCount();
 
       // Feedback guard (spec R6): the out-of-box config loopback-captures the
-      // default render endpoint — if the monitor plays into that SAME endpoint,
+      // default render endpoint â€” if the monitor plays into that SAME endpoint,
       // its output re-enters the mix. Endpoint ids are GUID paths; compare
       // case-insensitively.
       const auto monitorEndpoint = modules_.monitorOutput->resolvedEndpointId();
@@ -4149,7 +4291,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           if (equalsIgnoreCase(loopbackEndpoint, monitorEndpoint)) {
             results.monitorFeedbackRisk = true;
             const std::string feedbackWarning =
-                "Monitor output plays into the same endpoint the local loopback source captures — "
+                "Monitor output plays into the same endpoint the local loopback source captures â€” "
                 "feedback loop. Pick a different monitor device or disable the local audio source.";
             results.monitorWarning = results.monitorWarning.empty()
                                          ? feedbackWarning
@@ -4260,7 +4402,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   }
 }
 
-// Worker entry point: gather (brief coreMutex) → work (audioOutputMutex_ only) →
+// Worker entry point: gather (brief coreMutex) â†’ work (audioOutputMutex_ only) â†’
 // publish (brief coreMutex). The render thread takes ONLY coreMutex and so is never
 // blocked by the long DSP/IO span; the worker never holds both locks at once.
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
@@ -4268,7 +4410,7 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
   {
     std::lock_guard<std::mutex> lock(coreMutex);
     // Increment 6 guardrail: gather/publish are the worker's only coreMutex
-    // holds and are budgeted sub-ms — the long DSP/IO span below runs under
+    // holds and are budgeted sub-ms â€” the long DSP/IO span below runs under
     // audioOutputMutex_ only. An over-budget hold here means blocking work
     // crept back under the big lock.
     ScopedLockHoldTimer holdTimer("audio.gather", LockHoldGuardrail::kDefaultBudgetUs);
@@ -4297,7 +4439,7 @@ std::string resolvePluginHostExecutablePath() {
   char modulePath[MAX_PATH] = {};
   if (::GetModuleFileNameA(nullptr, modulePath, MAX_PATH) > 0) {
     std::string path(modulePath);
-    const auto slash = path.find_last_of("\/");
+    const auto slash = path.find_last_of("\\/");
     if (slash != std::string::npos) {
       const std::string sibling = path.substr(0, slash + 1) + "corevideo-plugin-host.exe";
       if (::GetFileAttributesA(sibling.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -4320,7 +4462,7 @@ void MediaCore::startPluginHostScan() {
     pluginHostStatus_ = "scanning";
   }
 
-  // Detached: process spawn + directory walk can take hundreds of ms — never
+  // Detached: process spawn + directory walk can take hundreds of ms â€” never
   // inside cmd.handle's coreMutex budget. MediaCore lives for the process
   // lifetime, so capturing `this` is safe.
   std::thread([this] {
@@ -4350,9 +4492,9 @@ void MediaCore::startPluginHostScan() {
     }
 
     // P2a: probe each plugin in ITS OWN host process (one crashing plugin
-    // cannot poison the rest — nonzero exit IS the fail verdict), publishing
+    // cannot poison the rest â€” nonzero exit IS the fail verdict), publishing
     // verdicts incrementally so the browser fills in as probes complete.
-    // Still on this detached thread — never inside a lock domain.
+    // Still on this detached thread â€” never inside a lock domain.
     for (size_t index = 0; index < plugins.size(); ++index) {
       const auto probeOutput = runPluginHostProcess(exePath, {"--probe", plugins[index].id});
       const auto verdict = parsePluginProbeResult(probeOutput);

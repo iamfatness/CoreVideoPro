@@ -4076,3 +4076,144 @@ TEST(PluginHostScan, HostHandledInsertNamesMatchVstAndHostOnly) {
   EXPECT_FALSE(isHostHandledInsertName("Compressor"));
   EXPECT_FALSE(isHostHandledInsertName("Limiter"));
 }
+
+TEST(MediaCoreCommand, TransientEmptyRoutingSyncHoldsLiveRoutes) {
+  // Click-hunt 2026-07-05 (rig-measured): the shell transiently syncs an
+  // EMPTY routing matrix / channel list ~1x per second during row-rebuild
+  // windows, which unrouted live audio for a tick - an audible click per
+  // episode. The core must HOLD the last non-empty config through transient
+  // blanks and adopt an empty sync only when it persists (a real clear-all).
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  const auto routedSends = corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}},
+  };
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "sync-audio-routing-matrix"}, {"sends", routedSends}},
+      corevideo::rpc::Json::Object{
+          {"type", "sync-participant-audio-mix"},
+          {"channels", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+                           {"participantId", "pcm-speaker"}, {"inputLevel", 80}}}},
+      },
+  });
+
+  // One transient EMPTY sync of both: routes and channels must survive.
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "sync-audio-routing-matrix"},
+                                   {"sends", corevideo::rpc::Json::Array{}}},
+      corevideo::rpc::Json::Object{{"type", "sync-participant-audio-mix"},
+                                   {"channels", corevideo::rpc::Json::Array{}}},
+  });
+  {
+    const auto* matrix = state.get("audioRoutingMatrix");
+    ASSERT_NE(matrix, nullptr);
+    const auto* busTaps = matrix->get("busTaps");
+    ASSERT_NE(busTaps, nullptr);
+    bool masterStillRouted = false;
+    for (const auto& tap : busTaps->asArray()) {
+      const auto* frames = tap.get("frames");
+      if (tap.getString("busId") == "master" && frames != nullptr && frames->asNumber() > 0) {
+        masterStillRouted = true;
+      }
+    }
+    EXPECT_TRUE(masterStillRouted);
+  }
+
+  // A PERSISTENT clear-all (25+ consecutive empties) is adopted.
+  for (int repeat = 0; repeat < 30; ++repeat) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{{"type", "sync-audio-routing-matrix"},
+                                     {"sends", corevideo::rpc::Json::Array{}}},
+    });
+  }
+  {
+    const auto* matrix = state.get("audioRoutingMatrix");
+    if (matrix != nullptr) {
+      const auto* busTaps = matrix->get("busTaps");
+      bool anyRouted = false;
+      if (busTaps != nullptr) {
+        for (const auto& tap : busTaps->asArray()) {
+          const auto* frames = tap.get("frames");
+          if (frames != nullptr && frames->asNumber() > 0) {
+            anyRouted = true;
+          }
+        }
+      }
+      EXPECT_TRUE(!anyRouted);
+    }
+  }
+}
+
+TEST(MediaCoreCommand, PartialSyncMissingASourceHoldsItsRoutesAndChannel) {
+  // Rig-measured follow-up: PARTIAL syncs (media present, mic absent) still
+  // punctured audio after the empty-sync guard. A source missing from one
+  // sync keeps its sends AND channel strip until the absence persists.
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<PcmTestZoomSource>();
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}},
+               corevideo::rpc::Json::Object{{"sourceId", "media-playback"}, {"busId", "master"}, {"gainDb", 0}},
+           }},
+      },
+  });
+
+  // Partial sync: media-playback present, pcm-speaker MISSING.
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "sync-audio-routing-matrix"},
+          {"sends",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{{"sourceId", "media-playback"}, {"busId", "master"}, {"gainDb", 0}},
+           }},
+      },
+  });
+  {
+    const auto* matrix = state.get("audioRoutingMatrix");
+    ASSERT_NE(matrix, nullptr);
+    const auto* busTaps = matrix->get("busTaps");
+    ASSERT_NE(busTaps, nullptr);
+    bool masterHasAudio = false;
+    for (const auto& tap : busTaps->asArray()) {
+      const auto* frames = tap.get("frames");
+      if (tap.getString("busId") == "master" && frames != nullptr && frames->asNumber() > 0) {
+        masterHasAudio = true;  // pcm-speaker still routed through the hold
+      }
+    }
+    EXPECT_TRUE(masterHasAudio);
+  }
+
+  // Persistent absence (30 syncs) adopts the removal.
+  for (int repeat = 0; repeat < 30; ++repeat) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+        corevideo::rpc::Json::Object{
+            {"type", "sync-audio-routing-matrix"},
+            {"sends",
+             corevideo::rpc::Json::Array{
+                 corevideo::rpc::Json::Object{{"sourceId", "media-playback"}, {"busId", "master"}, {"gainDb", 0}},
+             }},
+        },
+    });
+  }
+  {
+    const auto* matrix = state.get("audioRoutingMatrix");
+    ASSERT_NE(matrix, nullptr);
+    const auto* busTaps = matrix->get("busTaps");
+    ASSERT_NE(busTaps, nullptr);
+    bool masterHasAudio = false;
+    for (const auto& tap : busTaps->asArray()) {
+      const auto* frames = tap.get("frames");
+      if (tap.getString("busId") == "master" && frames != nullptr && frames->asNumber() > 0) {
+        masterHasAudio = true;
+      }
+    }
+    EXPECT_TRUE(!masterHasAudio);  // media-playback has no PCM; pcm-speaker adopted-removed
+  }
+}

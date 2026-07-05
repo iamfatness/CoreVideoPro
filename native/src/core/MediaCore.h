@@ -410,6 +410,10 @@ class MediaCore {
   std::map<std::string, double> busLimiterGains_;
   // Spec 4.2: per-source sample-steady feed FIFOs (worker domain).
   std::map<std::string, modules::AudioFeedState> audioFeedStates_;
+  // Click-hunt hold-last guards: consecutive empty control-plane syncs seen
+  // while live state was non-empty (adopt a true clear-all after 25).
+  int emptyRoutingSyncStreak_ = 0;
+  int emptyMixSyncStreak_ = 0;
   std::string audioMonitorWarning_;
   // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
   // thread cannot take coreMutex, which the server owns).
@@ -429,6 +433,12 @@ class MediaCore {
     std::vector<std::string> busPluginInserts;
   };
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
+  // Per-source/channel hold-last: previous non-empty config + absence streaks
+  // (partial syncs during shell row-rebuild churn must not unroute live audio).
+  std::vector<AudioRoutingSendInput> previousRoutingSends_;
+  std::map<std::string, int> absentRoutingSourceStreaks_;
+  std::vector<ParticipantAudioChannelInput> previousAudioChannels_;
+  std::map<std::string, int> absentMixChannelStreaks_;
   std::vector<std::string> audioRoutingWarnings_;
   bool audioRoutingSynced_ = false;
   std::vector<std::string> outputDestinations_;
