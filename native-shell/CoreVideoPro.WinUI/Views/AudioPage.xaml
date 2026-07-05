@@ -582,10 +582,24 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <Grid>
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
                             <TextBlock Text="COMP" FontSize="10" FontWeight="ExtraBold" CharacterSpacing="60"
                                        Foreground="#A7E8F2" VerticalAlignment="Center" />
-                            <ToggleButton Content="IN" FontSize="9" Padding="8,2" HorizontalAlignment="Right"
+                            <!-- C7b: live gain-reduction meter + readout -->
+                            <controls:AudioLevelMeter Grid.Column="1"
+                                                      Level="{x:Bind ViewModel.WorkspaceCompGrLevel, Mode=OneWay}"
+                                                      SegmentCount="16" Height="8" VerticalAlignment="Center"
+                                                      Margin="4,0" />
+                            <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.WorkspaceCompGrLabel, Mode=OneWay}"
+                                       FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
+                                       VerticalAlignment="Center" />
+                            <ToggleButton Grid.Column="3" Content="IN" FontSize="9" Padding="8,2"
                                           IsChecked="{x:Bind ViewModel.SelectedRackCompressorEnabled, Mode=OneWay}"
                                           Tag="Compressor" Click="OnRackInsertClicked"
                                           ToolTipService.ToolTip="Engage the compressor on this channel" />

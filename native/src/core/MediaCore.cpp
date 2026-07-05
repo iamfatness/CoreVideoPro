@@ -2593,6 +2593,12 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"gainDb", gainDb},
         {"rmsDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel)) : deriveRmsDbfs(0)},
         {"peakDbfs", hasPcm ? round1Dbfs(modules::linearToDbfs(measured->peakLevel)) : derivePeakDbfs(0)},
+        // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
+        // feeds the workspace GR meter.
+        {"gainReductionDb",
+         audioCompGainReductionDbBySource_.count(channel.participantId) != 0
+             ? audioCompGainReductionDbBySource_.at(channel.participantId)
+             : 0.0},
         {"pan", channel.pan},
         {"solo", channel.solo},
         {"noiseSuppression", noiseSuppression},
@@ -4047,7 +4053,8 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWor
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
     }
     const auto tMrb0 = std::chrono::steady_clock::now();
-    results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled);
+    results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
+                                                   &results.compGainReductionDbBySource);
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
     if (!results.routedBusPcm.empty()) {
@@ -4231,6 +4238,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   }
   routedBusPcm_ = results.routedBusPcm;
   mixedAudioFrameCount_ = results.mixedFrameCount;
+  audioCompGainReductionDbBySource_ = std::move(results.compGainReductionDbBySource);
   if (results.monitorTouched) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;

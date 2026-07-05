@@ -399,6 +399,9 @@ class MediaCore {
   int64_t audioMonitorFramesPlayed_ = 0;
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
   bool audioMonitorFeedbackRisk_ = false;  // monitor endpoint == loopback endpoint (spec R6)
+  // C7b: latest per-source compressor GR (published from the worker; read by
+  // the audioMixSession export under audioOutputMutex_).
+  std::map<std::string, double> audioCompGainReductionDbBySource_;
   std::string audioMonitorWarning_;
   // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
   // thread cannot take coreMutex, which the server owns).
@@ -455,7 +458,9 @@ class MediaCore {
     std::string monitorWarning;
     int64_t monitorFramesPlayedDelta = 0;
     int64_t monitorUnderruns = 0;  // cumulative device-dry gaps (spec R5)
-    bool monitorFeedbackRisk = false;  // monitor endpoint == a loopback capture endpoint (spec R6)
+    bool monitorFeedbackRisk = false;
+    // C7b: per-source compressor gain reduction this tick (dB, >0 only).
+    std::map<std::string, double> compGainReductionDbBySource;
     bool recordingActive = false;
     int64_t recordingProgramFramesDelta = 0;
     int64_t recordingIsoFramesDelta = 0;

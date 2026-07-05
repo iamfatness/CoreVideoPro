@@ -383,6 +383,8 @@ public sealed class NativeMediaCoreParticipantAudioChannel
     public double GainDb { get; init; }
     public double RmsDbfs { get; init; } = -60;
     public double PeakDbfs { get; init; } = -60;
+    // C7b: live compressor gain reduction in dB (0 = idle/not engaged).
+    public double GainReductionDb { get; init; }
     public double? ManualGainDb { get; init; }
     public double? Pan { get; init; }
     public bool Solo { get; init; }

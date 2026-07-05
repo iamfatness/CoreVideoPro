@@ -1425,6 +1425,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         set => SetSelectedChannelInsertParam("Compressor", "makeupDb", value);
     }
 
+    // C7b: live gain-reduction readout for the selected channel. 0..24 dB
+    // mapped to a 0..100 meter level; notified per snapshot apply.
+    public int WorkspaceCompGrLevel =>
+        (int)Math.Clamp((SelectedAudioMix?.GainReductionDb ?? 0) / 24.0 * 100.0, 0, 100);
+
+    public string WorkspaceCompGrLabel =>
+        SelectedAudioMix is { GainReductionDb: > 0.05 } mix
+            ? $"GR −{mix.GainReductionDb:0.0} dB"
+            : "GR —";
+
     public double WorkspaceEqHighpassHz
     {
         get => GetSelectedChannelInsertParam("Built-in EQ", "highpassHz", 90);
@@ -7460,6 +7470,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     Status = string.IsNullOrWhiteSpace(nativeChannel.Status) ? "native-pcm" : nativeChannel.Status,
                     Lufs = nativeChannel.RmsDbfs,
                     TruePeakDb = nativeChannel.PeakDbfs,
+                    GainReductionDb = nativeChannel.GainReductionDb,
                     PluginInserts = prior?.PluginInserts.ToList() ??
                         nativeChannel.PluginInserts.Select(insert => insert.Name).ToList(),
                     InsertSettings = prior?.InsertSettings ?? new(StringComparer.OrdinalIgnoreCase)
@@ -8871,6 +8882,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
         HydrateAudioRoutingMatrixFromSnapshot(snapshot);
         RefreshVstPluginHostFromSnapshot(snapshot);
+        // C7b: the GR meter tracks the live per-snapshot value (cheap scalar
+        // props — no collection churn).
+        OnPropertyChanged(nameof(WorkspaceCompGrLevel));
+        OnPropertyChanged(nameof(WorkspaceCompGrLabel));
         RefreshAudioReadoutBindings();
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
