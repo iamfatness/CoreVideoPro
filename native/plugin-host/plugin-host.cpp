@@ -290,8 +290,73 @@ int probeBundle(const std::string& bundlePath) {
 }  // namespace
 #endif  // _WIN32
 
+// ---------------------------------------------------------------------------
+// P2b serve: the resident audio-exchange loop. The core creates the SHM block
+// and both events, then spawns us with the instance name; we open them, wait
+// for req, process the block IN PLACE, publish seqOut, signal done. The v1
+// processor is a built-in -6 dB gain — the real VST instance plugs into
+// processBlock() in P2c once a probe-passing plugin exists to verify against.
+// Exits after 30s with no requests (parent gone) — the core respawns on demand.
+// ---------------------------------------------------------------------------
+#include "host-transport.h"
+
+#ifdef _WIN32
+namespace {
+
+void processBlock(corevideo::pluginhost::HostAudioBlock* block) {
+  const int32_t count = block->sampleCount < 0 ? 0
+                        : (block->sampleCount > corevideo::pluginhost::kHostBlockMaxSamples
+                               ? corevideo::pluginhost::kHostBlockMaxSamples
+                               : block->sampleCount);
+  for (int32_t index = 0; index < count; ++index) {
+    block->pcm[index] *= 0.5012f;  // -6 dB test processor (P2c: real VST here)
+  }
+}
+
+int serveInstance(const std::string& instance) {
+  using namespace corevideo::pluginhost;
+  HANDLE shm = ::OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, hostShmName(instance).c_str());
+  HANDLE req = ::OpenEventA(SYNCHRONIZE, FALSE, hostReqEventName(instance).c_str());
+  HANDLE done = ::OpenEventA(EVENT_MODIFY_STATE, FALSE, hostDoneEventName(instance).c_str());
+  if (shm == nullptr || req == nullptr || done == nullptr) {
+    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: transport objects missing for '%s'\"}\n",
+                 jsonEscape(instance).c_str());
+    return 3;
+  }
+  auto* block = static_cast<HostAudioBlock*>(::MapViewOfFile(shm, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(HostAudioBlock)));
+  if (block == nullptr || block->magic != kHostBlockMagic) {
+    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: block unmapped or bad magic\"}\n");
+    return 3;
+  }
+
+  std::fprintf(stdout, "{\"cmd\":\"serving\",\"instance\":\"%s\"}\n", jsonEscape(instance).c_str());
+  std::fflush(stdout);
+
+  for (;;) {
+    const DWORD wait = ::WaitForSingleObject(req, 30000);
+    if (wait != WAIT_OBJECT_0) {
+      return 0;  // idle 30s — parent gone or bypassed; exit, the core respawns
+    }
+    processBlock(block);
+    block->seqOut = block->seqIn;
+    ::SetEvent(done);
+  }
+}
+
+}  // namespace
+#endif  // _WIN32
+
 int main(int argc, char** argv) {
   const std::string mode = argc > 1 ? argv[1] : "";
+  if (mode == "--serve" && argc > 2) {
+#ifdef _WIN32
+    return serveInstance(argv[2]);
+#else
+    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve unsupported on this platform\"}\n");
+    return 3;
+#endif
+  }
+
   if (mode == "--probe" && argc > 2) {
 #ifdef _WIN32
     return probeBundle(argv[2]);

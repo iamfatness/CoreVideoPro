@@ -8,6 +8,7 @@
 // temp file (the scan is an operator-initiated, non-real-time action running
 // on its own thread — never under coreMutex or the audio worker).
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -60,6 +61,18 @@ inline std::vector<PluginHostPluginInfo> parsePluginScanOutput(const std::string
     }
   }
   return plugins;
+}
+
+// P2b-2: which insert names route through the out-of-process host. Built-in
+// names (gate/EQ/compressor/limiter) never match; "vst"-anything and the
+// explicit host-test name do. Pure for tests.
+inline bool isHostHandledInsertName(const std::string& name) {
+  std::string lowered;
+  lowered.reserve(name.size());
+  for (const char character : name) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+  }
+  return lowered.find("vst") != std::string::npos || lowered.find("host") != std::string::npos;
 }
 
 // P2a: one probe verdict per plugin, parsed from the host's probe-result line.

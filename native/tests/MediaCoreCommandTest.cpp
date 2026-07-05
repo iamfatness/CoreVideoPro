@@ -1,4 +1,4 @@
-#include "compositor/CompositorLayout.h"
+﻿#include "compositor/CompositorLayout.h"
 #include "core/MediaCore.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
@@ -3047,7 +3047,7 @@ TEST(HardwareEncoderAdapter, MediaFoundationWritesMp4ArtifactWhenRecordingIsArme
   EXPECT_EQ(std::filesystem::path(started.recordingArtifactPath).extension().string(), ".mp4");
 
   // recordingDurationMs is the WALL-CLOCK video timeline (RecordingPtsClock,
-  // spec 4.3) — frames muxed 60ms apart advance it ~120ms, however many frames
+  // spec 4.3) â€” frames muxed 60ms apart advance it ~120ms, however many frames
   // that is. (The old frame-count x 1/fps model drifted recordings A/V apart.)
   encoder->submit(makeTestProgramFrame(42));
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
@@ -3725,7 +3725,7 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
 // Regression: in a pgmPvw layout with sources but NO scene cued in preview, the
 // PVW cell must NOT be pinned to an arbitrary roster source (the old "v1" fallback
 // drew multiviewSources_.front(), which never reflected the preview and never
-// swapped on Take). The PVW tile carries the "pvw" role with an EMPTY sourceId —
+// swapped on Take). The PVW tile carries the "pvw" role with an EMPTY sourceId â€”
 // it renders the live preview composite (empty here) rather than a source. Skips
 // without a D3D11 device (the multiview event needs the GPU composite).
 TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPreviewScene) {
@@ -3739,7 +3739,7 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
   modules.compositor = std::move(gpuCompositor);
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
-  // Program/Preview layout mode — this is the one with a dedicated PVW cell.
+  // Program/Preview layout mode â€” this is the one with a dedicated PVW cell.
   (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "configure-multiviewer"},
       {"layoutMode", "pgmPvwTop"},
@@ -3763,7 +3763,7 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
       {"canvasHeight", 1080},
       {"sources", sources},
   });
-  // NOTE: deliberately no set-preview-scene — nothing is cued in preview.
+  // NOTE: deliberately no set-preview-scene â€” nothing is cued in preview.
 
   mediaCore.renderDisplayTick();
 
@@ -3957,7 +3957,7 @@ TEST(MediaCoreAudioMonitor, WarnsWhenMonitorPlaysIntoTheLoopbackCaptureEndpoint)
 }
 
 TEST(PluginHostScan, ParsesPluginLinesAndIgnoresNoise) {
-  // VST host P1: the scan output parser is pure — the host exe never runs in
+  // VST host P1: the scan output parser is pure â€” the host exe never runs in
   // tests. Noise lines and the scan-complete trailer must be ignored.
   const std::string output =
       "some tool banner\n"
@@ -4010,4 +4010,69 @@ TEST(PluginHostScan, ParsesProbeResultsAndTreatsSilenceAsCrash) {
   EXPECT_FALSE(crashed.parsed);
   EXPECT_FALSE(crashed.pass);
   EXPECT_NE(crashed.reason.find("crashed"), std::string::npos);
+}
+
+#ifdef _WIN32
+#include "modules/PluginHostClient.h"
+
+TEST(PluginHostTransport, ExchangesBlocksWithTheRealHostAndBypassesOnDeath) {
+  // VST P2b: the SHM/event transport against the REAL host executable (sits
+  // next to this test binary). Proves the live path end to end: block goes
+  // over, comes back processed (-6 dB test processor) inside the deadline â€”
+  // and killing the host mid-show BYPASSES instead of hanging or corrupting.
+  char modulePath[MAX_PATH] = {};
+  ASSERT_TRUE(::GetModuleFileNameA(nullptr, modulePath, MAX_PATH) > 0);
+  std::string hostPath(modulePath);
+  hostPath = hostPath.substr(0, hostPath.find_last_of("\\/") + 1) + "corevideo-plugin-host.exe";
+  {
+    std::ifstream hostExists(hostPath, std::ios::binary);
+    if (!hostExists) {
+      // Stub/CI configurations may not build the host exe - the transport e2e
+      // only means something where it exists (dev/full builds).
+      std::fprintf(stderr, "[ SKIPPED ] corevideo-plugin-host.exe not built in this configuration\n");
+      return;
+    }
+  }
+
+  corevideo::modules::PluginHostClient client;
+  ASSERT_TRUE(client.start(hostPath, "transport-test-1"));
+
+  std::vector<float> pcm(1920, 0.5f);  // one 20ms stereo tick at 48k
+  bool processed = false;
+  for (int attempt = 0; attempt < 50 && !processed; ++attempt) {  // first block races spawn
+    std::fill(pcm.begin(), pcm.end(), 0.5f);
+    processed = client.exchange(pcm.data(), pcm.size(), 2, 48000, 100);
+    if (!processed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  ASSERT_TRUE(processed);
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.5f * 0.5012f) < 1e-4);
+  EXPECT_TRUE(std::fabs(pcm.back() - 0.5f * 0.5012f) < 1e-4);
+
+  // Steady state: a tight (spec-level) deadline is met.
+  std::fill(pcm.begin(), pcm.end(), 0.25f);
+  ASSERT_TRUE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 20));
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.25f * 0.5012f) < 1e-4);
+
+  // Kill the host mid-show: bypass, audio untouched, counter ticks, no hang.
+  const auto missesBefore = client.deadlineMisses();
+  client.terminateHostForTest();
+  std::fill(pcm.begin(), pcm.end(), 0.25f);
+  EXPECT_FALSE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 30));
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.25f) < 1e-6);
+  EXPECT_TRUE(client.deadlineMisses() > missesBefore);
+  client.stop();
+}
+#endif
+
+TEST(PluginHostScan, HostHandledInsertNamesMatchVstAndHostOnly) {
+  using corevideo::core::isHostHandledInsertName;
+  EXPECT_TRUE(isHostHandledInsertName("VST3 Bridge Slot"));
+  EXPECT_TRUE(isHostHandledInsertName("vst3:TDR Nova"));
+  EXPECT_TRUE(isHostHandledInsertName("Host Test Gain"));
+  EXPECT_FALSE(isHostHandledInsertName("Noise Gate"));
+  EXPECT_FALSE(isHostHandledInsertName("Built-in EQ"));
+  EXPECT_FALSE(isHostHandledInsertName("Compressor"));
+  EXPECT_FALSE(isHostHandledInsertName("Limiter"));
 }

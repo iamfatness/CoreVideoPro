@@ -63,6 +63,7 @@ add_library(corevideo_native
 
 target_include_directories(corevideo_native PUBLIC src)
 target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
+target_include_directories(corevideo_native PUBLIC plugin-host)
 target_compile_definitions(corevideo_native
   PUBLIC
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
@@ -384,7 +385,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
-  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared)
+  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared plugin-host)
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)
