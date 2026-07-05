@@ -542,6 +542,14 @@ struct AudioFeedState {
   std::vector<float> fifo;
   int sampleRate = 0;
   int channels = 0;
+  // Adaptive reserve: starts 0 (pure pass-through - zero latency, one-shot
+  // bursts and tests unaffected). The FIRST time a continuous stream runs dry
+  // mid-flow (an audible click), the reserve arms at one tick and the FIFO
+  // thereafter holds that much back - 20ms of latency in exchange for never
+  // clicking again on that source.
+  size_t reserveSamples = 0;
+  size_t lastEmitted = 0;
+  int64_t dryEvents = 0;
 };
 
 // Block RESHAPER, zero added latency: whatever arrives is emitted immediately
@@ -570,10 +578,20 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
 
     const size_t tickSamples =
         static_cast<size_t>(frame.sampleRate / ticksPerSecond) * static_cast<size_t>(frame.channels);
-    const size_t emit = std::min(state.fifo.size(), tickSamples);
+
+    // Dry mid-stream = the audible click. Arm the reserve so it cannot recur.
+    if (state.fifo.empty() && state.lastEmitted > 0) {
+      ++state.dryEvents;
+      state.reserveSamples = tickSamples;
+    }
+
+    const size_t beyondReserve =
+        state.fifo.size() > state.reserveSamples ? state.fifo.size() - state.reserveSamples : 0;
+    const size_t emit = std::min(beyondReserve, tickSamples);
     frame.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     frame.sampleCount = static_cast<int>(emit / static_cast<size_t>(frame.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    state.lastEmitted = emit;
 
     // Cap runaway accumulation (device clock slightly fast): keep at most
     // 6 ticks buffered by dropping the OLDEST audio.
@@ -588,7 +606,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
   // hole the surplus exists to fill — drain up to one tick from its FIFO as
   // a synthesized frame.
   for (auto& [sourceId, state] : states) {
-    if (state.fifo.empty() || state.channels <= 0 || state.sampleRate <= 0) {
+    if (state.channels <= 0 || state.sampleRate <= 0) {
       continue;
     }
     bool seen = false;
@@ -603,7 +621,21 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     }
     const size_t tickSamples =
         static_cast<size_t>(state.sampleRate / ticksPerSecond) * static_cast<size_t>(state.channels);
-    const size_t emit = std::min(state.fifo.size(), tickSamples);
+    if (state.fifo.empty()) {
+      if (state.lastEmitted > 0) {
+        ++state.dryEvents;  // THE click: stream was flowing, this tick has nothing
+        state.reserveSamples = tickSamples;
+        state.lastEmitted = 0;
+      }
+      continue;
+    }
+    const size_t beyondReserve =
+        state.fifo.size() > state.reserveSamples ? state.fifo.size() - state.reserveSamples : 0;
+    const size_t emit = std::min(beyondReserve, tickSamples);
+    if (emit == 0) {
+      state.lastEmitted = 0;
+      continue;
+    }
     AudioFrame fill;
     fill.participantId = sourceId;
     fill.sampleRate = state.sampleRate;
@@ -611,6 +643,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     fill.pcm.assign(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
     fill.sampleCount = static_cast<int>(emit / static_cast<size_t>(state.channels));
     state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(emit));
+    state.lastEmitted = emit;
     frames.push_back(std::move(fill));
   }
 }
