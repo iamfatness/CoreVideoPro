@@ -3934,7 +3934,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // callers (unit tests) keep it synchronous + single-threaded so applyCommands /
   // applyCommand still publish audio/output results into the returned snapshot.
   if (!videoOnly && !audioWorkerActive_) {
-    const auto work = gatherAudioOutputWork();
+    auto work = gatherAudioOutputWork();
     const auto results = runAudioOutputWork(work);
     publishAudioOutputResults(results);
   }
@@ -4004,13 +4004,18 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
 // the single-threaded test path). Touches only audioOutputMutex_-domain modules
 // (mixer / monitorOutput / encoder / outputSender) + the BS.1770 loudness members,
 // never coreMutex-domain published members — all results go into the returned struct.
-MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(const AudioOutputWorkItem& work) {
+MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem& work) {
   AudioOutputResults results;
   if (!work.valid) {
     return results;
   }
   results.valid = true;
   results.recordingActive = work.recordingActive;
+
+  // Spec 4.2: absorb capture-vs-tick phase jitter so every downstream block
+  // (buses, monitor, encoder) is exactly one tick of samples per source -
+  // variable 480/960 blocks were audible as raw-path distortion.
+  modules::steadyAudioFrameFeed(work.audioFrames, audioFeedStates_);
 
   const auto tMix0 = std::chrono::steady_clock::now();
   results.mixedFrameCount = modules_.mixer->mix(work.audioFrames);

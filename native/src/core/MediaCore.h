@@ -408,6 +408,8 @@ class MediaCore {
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
   // C7d: per-bus limiter gain state (same block-continuity requirement).
   std::map<std::string, double> busLimiterGains_;
+  // Spec 4.2: per-source sample-steady feed FIFOs (worker domain).
+  std::map<std::string, modules::AudioFeedState> audioFeedStates_;
   std::string audioMonitorWarning_;
   // VST host P1: scan results behind a dedicated leaf mutex (the detached scan
   // thread cannot take coreMutex, which the server owns).
@@ -479,7 +481,7 @@ class MediaCore {
   // published members. The caller owns the locking (so the same trio serves both the
   // worker — phased/locked — and the synchronous test path — single-threaded, no locks).
   [[nodiscard]] AudioOutputWorkItem gatherAudioOutputWork();
-  [[nodiscard]] AudioOutputResults runAudioOutputWork(const AudioOutputWorkItem& work);
+  [[nodiscard]] AudioOutputResults runAudioOutputWork(AudioOutputWorkItem& work);
   void publishAudioOutputResults(const AudioOutputResults& results);
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
   // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
