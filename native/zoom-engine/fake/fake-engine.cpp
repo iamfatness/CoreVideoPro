@@ -432,11 +432,18 @@ static void producer_loop() {
             std::lock_guard<std::mutex> lk(g_mtx);
             if (g_joined) {
                 ++tick;
-                for (auto& [uuid, t] : g_targets) {
-                    // Only emit frames for participants currently in the meeting —
-                    // when a participant leaves, its feed naturally goes stale.
-                    if (roster_has(t.participant_id))
-                        produce_frame_locked(t, tick);
+                // COREVIDEO_FAKE_NO_VIDEO=1: audio-only mode for the audio soak
+                // (4x video synthesis saturated the box: worker 43.6/50 ticks/s
+                // -> feed-cap drops at exactly the deficit rate, soak run 17).
+                static const bool s_noVideo = [] {
+                    const char* env = std::getenv("COREVIDEO_FAKE_NO_VIDEO");
+                    return env != nullptr && env[0] == 0x31;
+                }();
+                if (!s_noVideo) {
+                    for (auto& [uuid, t] : g_targets) {
+                        if (roster_has(t.participant_id))
+                            produce_frame_locked(t, tick);
+                    }
                 }
                 // Z4a: tone packets for every SUBSCRIBED audio target - the app
                 // decides which streams exist (ISO per participant + the mixed

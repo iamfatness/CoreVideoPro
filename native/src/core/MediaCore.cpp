@@ -4128,14 +4128,25 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // DEBUG TAP (env-gated): dump the mic PCM entering the mix and the MON bus
   // leaving it as raw float32 - the decisive click-hunt instrument. Set
   // COREVIDEO_AUDIO_DEBUG_DIR to enable; files append per process run.
+  // Tap files stay OPEN across ticks: per-tick fopen/fclose x many files cost
+  // ~13ms/tick on the audio worker (soak run 16: work=17ms, 42/50 ticks) -
+  // the Heisenberg lesson, structural edition. Diagnostic-only; OS closes at
+  // process exit.
+  static const auto debugTapFile = [](const std::string& path) -> FILE* {
+    static std::map<std::string, FILE*> files;
+    auto it = files.find(path);
+    if (it == files.end()) {
+      it = files.emplace(path, std::fopen(path.c_str(), "ab")).first;
+    }
+    return it->second;
+  };
   static const char* debugDir = std::getenv("COREVIDEO_AUDIO_DEBUG_DIR");
   if (debugDir != nullptr) {
     for (const auto& frame : work.audioFrames) {
       if (!frame.pcm.empty()) {
         const std::string path = std::string(debugDir) + "/tap-in-" + frame.participantId + ".f32";
-        if (FILE* file = std::fopen(path.c_str(), "ab")) {
+        if (FILE* file = debugTapFile(path)) {
           std::fwrite(frame.pcm.data(), sizeof(float), frame.pcm.size(), file);
-          std::fclose(file);
         }
       }
     }
@@ -4185,7 +4196,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
     if (debugDir != nullptr) {
       const std::string path = std::string(debugDir) + "/tap-structure.txt";
-      if (FILE* file = std::fopen(path.c_str(), "ab")) {
+      if (FILE* file = debugTapFile(path)) {
         for (const auto& src : routedSources) {
           std::string inserts;
           if (src.inserts != nullptr) {
@@ -4199,7 +4210,6 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                        inserts.c_str());
         }
         std::fprintf(file, "sends=%zu chans=%zu\n", work.routingSends.size(), work.channels.size());
-        std::fclose(file);
       }
     }
     std::vector<modules::RoutedAudioCrosspoint> crosspoints;
@@ -4214,16 +4224,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       const auto monTap = results.routedBusPcm.find("mon");
       if (monTap != results.routedBusPcm.end() && !monTap->second.empty()) {
         const std::string path = std::string(debugDir) + "/tap-mon.f32";
-        if (FILE* file = std::fopen(path.c_str(), "ab")) {
+        if (FILE* file = debugTapFile(path)) {
           std::fwrite(monTap->second.data(), sizeof(float), monTap->second.size(), file);
-          std::fclose(file);
         }
       }
       if (monTap != results.routedBusPcm.end()) {
         const std::string sizesPath = std::string(debugDir) + "/tap-mon-sizes.txt";
-        if (FILE* file = std::fopen(sizesPath.c_str(), "ab")) {
+        if (FILE* file = debugTapFile(sizesPath)) {
           std::fprintf(file, "%zu\n", monTap->second.size() / 2);
-          std::fclose(file);
         }
       }
     }

@@ -63,6 +63,12 @@ constexpr double kFrameStaleAfterMs = 1000.0;
 ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {}
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
+  // Stop the video-ingest thread FIRST: it takes mutex_ briefly and touches
+  // SHM regions that teardown below releases.
+  videoIngestRun_.store(false, std::memory_order_release);
+  if (videoIngestThread_.joinable()) {
+    videoIngestThread_.join();
+  }
   // Order matters: (1) stop the sender and drop anything still queued (the
   // process is going away — plan semantics: drop + log, never replay), but do
   // NOT join yet; (2) stopReader() terminates the engine process, which breaks
@@ -345,12 +351,10 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
 }
 
 std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t timestampMs) {
+  // Frames are ingested by the dedicated video-ingest thread; this poll just
+  // returns published state (pixel work on the render tick collapsed the
+  // audio worker to 8 ticks/s in soak run 15).
   std::lock_guard<std::mutex> lock(mutex_);
-  // Video-beacon fix: steady-state frame reads happen HERE at the render poll
-  // cadence with regions held open; a sequence peek skips unchanged frames.
-  for (auto& [uuid, ref] : videoStreams_) {
-    drainVideoStreamLocked(uuid, ref);
-  }
   return state_.pollCompositorVideoFrames(timestampMs);
 }
 
@@ -803,87 +807,124 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
   auto& ref = videoStreams_[event.sourceUuid];
   if (ref.width != event.width || ref.height != event.height) {
-    if (ref.regionOpaque != nullptr) {
-      auto* stale = static_cast<ShmRegion*>(ref.regionOpaque);
-      shm_region_destroy(*stale);
-      delete stale;
-      ref.regionOpaque = nullptr;
-    }
+    ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
     ref.lastSequence = 0;
   }
   ref.participantId = event.participantId;
   ref.width = event.width;
   ref.height = event.height;
-  drainVideoStreamLocked(event.sourceUuid, ref);
+  ensureVideoIngestThreadLocked();
 }
 
-void ZoomEngineRuntime::drainVideoStreamLocked(const std::string& uuid, VideoStreamRef& ref) {
-  if (ref.width == 0 || ref.height == 0 || ref.participantId == 0) {
+void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
+  if (videoIngestRun_.load(std::memory_order_acquire)) {
     return;
   }
-  if (ref.regionOpaque == nullptr) {
-    auto* opened = new ShmRegion();
-    if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
-                              zoomEngineI420FrameByteSize(ref.width, ref.height))) {
-      delete opened;
-      return;  // not created yet; retry next poll
-    }
-    ref.regionOpaque = opened;
-  }
-  ShmRegion& region = *static_cast<ShmRegion*>(ref.regionOpaque);
-  // Sequence peek: unchanged (or mid-write) frame = a 16-byte read, no copy.
-  const auto sequence = readZoomEngineI420FrameSequence(region.ptr, region.size);
-  if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
-    return;
-  }
-  ref.lastSequence = sequence;
-  ZoomEngineEvent event;
-  event.sourceUuid = uuid;
-  event.participantId = ref.participantId;
-  event.width = ref.width;
-  event.height = ref.height;
-  const auto closeRegion = []() {};
-  // Snapshot the I420 planes for the GPU compositor and a small (<=640x360) BGRA
-  // thumbnail for the WinUI base64 path. The expensive per-pixel I420->BGRA
-  // convert at full resolution is gone — only the small thumbnail is converted on
-  // the CPU; the compositor converts the I420 planes on the GPU in-shader.
-  const auto frame = readZoomEngineI420FrameSnapshot(region.ptr, region.size, event.sourceUuid, event.participantId, 640, 360);
-  closeRegion();
-  if (!frame) {
-    state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory snapshot was incomplete, stale, or malformed");
-    return;
-  }
-  state_.recordFrameIngestSuccess(
-      event.sourceUuid,
-      event.participantId,
-      event.width,
-      event.height,
-      frame->frameId,
-      runtimeElapsedMs());
+  videoIngestRun_.store(true, std::memory_order_release);
+  videoIngestThread_ = std::thread([this] { videoIngestLoop(); });
+}
 
-  // Tap the full-resolution I420 planes for the compositor without disturbing the
-  // stdout/event queue below that feeds the WinUI multiview tiles.
-  if (!frame->participantId.empty() && frame->i420Width > 0 && frame->i420Height > 0 && !frame->i420.empty()) {
-    DecodedFrame& decoded = latestDecodedFrames_[frame->participantId];
-    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(frame->i420);
-    decoded.width = static_cast<int>(frame->i420Width);
-    decoded.height = static_cast<int>(frame->i420Height);
-    decoded.frameId = static_cast<std::int64_t>(frame->frameId);
+void ZoomEngineRuntime::videoIngestLoop() {
+  while (videoIngestRun_.load(std::memory_order_acquire)) {
+    drainVideoStreamsThreePhase();
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+  }
+}
+
+void ZoomEngineRuntime::drainVideoStreamsThreePhase() {
+  // Phase 1 (locked, cheap): open missing regions, peek sequences, collect
+  // the streams that have a NEW complete frame. shared_ptr region holders let
+  // phase 2 read safely even if a leave/reset drops the stream meanwhile.
+  struct SnapshotJob {
+    std::string uuid;
+    std::shared_ptr<void> holder;
+    ShmRegion* region = nullptr;
+    std::uint32_t participantId = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t sequence = 0;
+  };
+  std::vector<SnapshotJob> jobs;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [uuid, ref] : videoStreams_) {
+      if (ref.width == 0 || ref.height == 0 || ref.participantId == 0) {
+        continue;
+      }
+      if (!ref.regionOpaque) {
+        auto* opened = new ShmRegion();
+        if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
+                                  zoomEngineI420FrameByteSize(ref.width, ref.height))) {
+          delete opened;
+          continue;  // not created yet; retry next poll
+        }
+        ref.regionOpaque = std::shared_ptr<void>(opened, [](void* pointer) {
+          auto* region = static_cast<ShmRegion*>(pointer);
+          shm_region_destroy(*region);
+          delete region;
+        });
+      }
+      auto* region = static_cast<ShmRegion*>(ref.regionOpaque.get());
+      const auto sequence = readZoomEngineI420FrameSequence(region->ptr, region->size);
+      if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
+        continue;  // never written, mid-write, or unchanged: 16-byte cost
+      }
+      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence});
+    }
+  }
+
+  // Phase 2 (UNLOCKED, heavy): full I420 copy + thumbnail conversion per new
+  // frame. The seqlock inside the snapshot re-validates against tearing.
+  struct SnapshotResult {
+    SnapshotJob job;
+    std::optional<ZoomEngineRgbaFrame> frame;
+  };
+  std::vector<SnapshotResult> results;
+  results.reserve(jobs.size());
+  for (auto& job : jobs) {
+    results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
+                                                            job.participantId, 640, 360)});
+  }
+
+  // Phase 3 (locked, cheap): publish.
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& result : results) {
+    auto stream = videoStreams_.find(result.job.uuid);
+    if (stream == videoStreams_.end()) {
+      continue;  // stream left while we were reading
+    }
+    if (!result.frame) {
+      state_.recordFrameIngestFailure(result.job.uuid, result.job.participantId,
+                                      "shared memory snapshot was incomplete, stale, or malformed");
+      continue;
+    }
+    stream->second.lastSequence = result.job.sequence;
+    publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame);
+  }
+}
+
+void ZoomEngineRuntime::publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
+                                                const ZoomEngineRgbaFrame& frame) {
+  state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
+                                  runtimeElapsedMs());
+
+  // Tap the full-resolution I420 planes for the compositor without disturbing
+  // the stdout/event queue below that feeds the WinUI multiview tiles.
+  if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && !frame.i420.empty()) {
+    DecodedFrame& decoded = latestDecodedFrames_[frame.participantId];
+    decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(frame.i420);
+    decoded.width = static_cast<int>(frame.i420Width);
+    decoded.height = static_cast<int>(frame.i420Height);
+    decoded.frameId = static_cast<std::int64_t>(frame.frameId);
   }
 
   const auto observedAtMs = runtimeElapsedMs();
-
-  // The compositor already has the full-res I420 frame (latestDecodedFrames_
-  // above). The snapshot already produced a downscaled BGRA thumbnail (capped at
-  // 640x360) for the WinUI monitors; stream it directly as base64.
-  const int thumbW = static_cast<int>(frame->width);
-  const int thumbH = static_cast<int>(frame->height);
-  const auto& thumb = frame->rgba;
-  // LATEST-WINS: this queue is drained by the render thread, which gets starved by
-  // command processing (media-core-sync holds the core lock). Unbounded, it
-  // accumulated tens of seconds of stale frames (the "10s+ latency"). Cap it and
-  // drop the oldest so the WinUI always gets near-current frames.
-  constexpr std::size_t kMaxPendingZoomFrameEvents = 16;  // ~2 frames x up to 8 participants
+  const int thumbW = static_cast<int>(frame.width);
+  const int thumbH = static_cast<int>(frame.height);
+  const auto& thumb = frame.rgba;
+  // LATEST-WINS cap (see the pre-beacon history: unbounded, this queue once
+  // accumulated tens of seconds of stale frames).
+  constexpr std::size_t kMaxPendingZoomFrameEvents = 16;
   if (pendingFrameEvents_.size() >= kMaxPendingZoomFrameEvents) {
     pendingFrameEvents_.erase(pendingFrameEvents_.begin());
   }
@@ -891,10 +932,10 @@ void ZoomEngineRuntime::drainVideoStreamLocked(const std::string& uuid, VideoStr
       {"type", "zoom-video-frame"},
       {"frame",
        rpc::Json::Object{
-           {"participantId", frame->participantId},
+           {"participantId", frame.participantId},
            {"width", thumbW},
            {"height", thumbH},
-           {"frameId", static_cast<int>(frame->frameId)},
+           {"frameId", static_cast<int>(frame.frameId)},
            {"observedAtMs", observedAtMs},
            {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::system_clock::now().time_since_epoch())
@@ -978,6 +1019,24 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
                    uuid.c_str(), lost, static_cast<long long>(pending.lostPackets));
     }
   }
+  // Diagnostic ring tap (env-gated like the mix taps): chunk PCM exactly as
+  // decoded off the ring, BEFORE pending/feed - splits writer/ring corruption
+  // from downstream (phase forensics showed whole-packet skips with zero
+  // counted losses; this tap decides which side of the ring they enter).
+  static const char* ringTapDir = std::getenv("COREVIDEO_AUDIO_DEBUG_DIR");
+  if (ringTapDir != nullptr && !chunks.empty()) {
+    static std::map<std::string, FILE*> s_ringTapFiles;
+    const std::string path = std::string(ringTapDir) + "/tap-ring-" + ref.pendingKey + ".f32";
+    auto it = s_ringTapFiles.find(path);
+    if (it == s_ringTapFiles.end()) {
+      it = s_ringTapFiles.emplace(path, std::fopen(path.c_str(), "ab")).first;
+    }
+    if (FILE* file = it->second) {
+      for (const auto& chunk : chunks) {
+        std::fwrite(chunk.pcm.data(), sizeof(float), chunk.pcm.size(), file);
+      }
+    }
+  }
   constexpr std::size_t kMaxPendingAudioSamplesPerChannel = 48000;
   for (const auto& chunk : chunks) {
     if (appendZoomEnginePcmChunk(pending, chunk, kMaxPendingAudioSamplesPerChannel)) {
@@ -992,14 +1051,8 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
 }
 
 void ZoomEngineRuntime::closeVideoStreamsLocked() {
-  for (auto& [uuid, ref] : videoStreams_) {
-    if (ref.regionOpaque != nullptr) {
-      auto* region = static_cast<ShmRegion*>(ref.regionOpaque);
-      shm_region_destroy(*region);
-      delete region;
-      ref.regionOpaque = nullptr;
-    }
-  }
+  // shared_ptr holders: the deleter destroys each region at last release
+  // (possibly after an in-flight unlocked snapshot completes - safe).
   videoStreams_.clear();
 }
 
