@@ -462,6 +462,13 @@ static void producer_loop() {
 
 // ── Churn thread: active-speaker rotation + roster oscillation ────────────────
 static void churn_loop() {
+    // Z4b soak mode: a deterministic AUDIO soak needs stable streams - roster
+    // churn (a simulation feature for multiview tile testing) ends ISO tone
+    // streams mid-capture. COREVIDEO_FAKE_NO_CHURN=1 freezes the roster AND
+    // the active-speaker rotation.
+    if (const char* noChurn = std::getenv("COREVIDEO_FAKE_NO_CHURN"); noChurn && noChurn[0] == 0x31) {
+        return;
+    }
     using clock = std::chrono::steady_clock;
     int half_seconds = 0;
     bool fourth_present = false;  // is "mv4" currently in the meeting?
