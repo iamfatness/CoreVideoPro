@@ -114,6 +114,16 @@ class WgcSession {
           onFrame(pool);
         });
     session_ = framePool_.CreateCaptureSession(item);
+    // No capture border (owner: no orange frame around the captured display).
+    // Requires Win10 21H1+/Win11; harmless no-op where unsupported.
+    try {
+      session_.IsBorderRequired(false);
+    } catch (...) {
+    }
+    try {
+      session_.IsCursorCaptureEnabled(true);
+    } catch (...) {
+    }
     session_.StartCapture();
     running_.store(true, std::memory_order_release);
     return true;

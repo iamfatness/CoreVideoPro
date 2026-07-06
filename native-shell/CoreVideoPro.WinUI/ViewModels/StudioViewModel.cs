@@ -6035,7 +6035,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Stub core or no native bridge: screens simply absent.
         }
 
-        RunOnUiThread(() => ApplyDiscoveredCaptureDevices(screens.Count == 0 ? discovered : [.. discovered, .. screens]));
+        RunOnUiThread(() =>
+        {
+            ApplyDiscoveredCaptureDevices(screens.Count == 0 ? discovered : [.. discovered, .. screens]);
+            EnsureAssignedScreensConnected();
+        });
     }
 
     private void ApplyDiscoveredCaptureDevices(IReadOnlyList<CaptureDevice> discovered)
@@ -10450,6 +10454,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshShowInputEditors(bool force = false)
     {
+        EnsureAssignedScreensConnected();
         var mediaAssets = MediaBinGroups.SelectMany(group => group.Assets).ToList();
 
         // Rebuild each slot's Source dropdown options ONLY when the set the picker
@@ -10746,6 +10751,50 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 slot.Kind = ResolveShowInputKind(defaultCapture);
                 slot.CaptureDeviceId = defaultCapture.Id;
             }
+        }
+    }
+
+    // Screens connect CORE-side and ONLY on operator intent; but intent is
+    // expressed by ASSIGNMENT (any picker path), not by a connect button - an
+    // assigned screen that is not streaming is always wrong (owner-reported:
+    // screen in the multiviewer, no frames). Idempotent; in-flight guarded.
+    private readonly HashSet<string> _screenConnectsInFlight = [];
+
+    private void EnsureAssignedScreensConnected()
+    {
+        foreach (var device in CaptureDevices)
+        {
+            if (!device.Id.StartsWith("screen:", StringComparison.Ordinal) ||
+                device.ConnectionState == CaptureConnectionState.Connected ||
+                _screenConnectsInFlight.Contains(device.Id))
+            {
+                continue;
+            }
+            var assigned = ShowInputs.Any(slot =>
+                string.Equals(slot.CaptureDeviceId, device.Id, StringComparison.Ordinal));
+            if (!assigned)
+            {
+                continue;
+            }
+            _screenConnectsInFlight.Add(device.Id);
+            LaunchLog.Write($"capture: auto-connecting assigned screen {device.Id}");
+            _ = ConnectAssignedScreenAsync(device.Id);
+        }
+    }
+
+    private async Task ConnectAssignedScreenAsync(string deviceId)
+    {
+        try
+        {
+            await ConnectCaptureDeviceAsync(deviceId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"capture: screen auto-connect failed {deviceId}: {ex.Message}");
+        }
+        finally
+        {
+            RunOnUiThread(() => _screenConnectsInFlight.Remove(deviceId));
         }
     }
 
