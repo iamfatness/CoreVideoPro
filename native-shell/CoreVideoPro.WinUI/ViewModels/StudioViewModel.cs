@@ -92,6 +92,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _masterLimiterEnabled = true;
 
     [ObservableProperty]
+    private bool _masteringEnabled;
+
+    [ObservableProperty]
+    private int _masteringTargetIndex;  // 0=-14 streaming, 1=-16 podcast, 2=-23 broadcast
+
+    [ObservableProperty]
+    private double _masteringGlueAmount = 0.5;
+
+    [ObservableProperty]
     private bool _audioMonitoringEnabled;
 
     [ObservableProperty]
@@ -727,6 +736,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string MasterLimiterActivityLabel =>
         !MasterLimiterEnabled ? "Bypassed" : AudioMix.LimiterActive ? "Reducing peaks" : "Standing by";
+
+    public double MasteringTargetLufs => MasteringTargetIndex switch { 1 => -16.0, 2 => -23.0, _ => -14.0 };
+
+    public string MasteringActivityLabel =>
+        !MasteringEnabled
+            ? "Bypassed"
+            : $"Riding {_bridge.LastSnapshot?.AudioMixSession.MasteringRideDb ?? 0:+0.0;-0.0} dB toward {MasteringTargetLufs:0} LUFS";
 
     public string MasterLimiterSummary =>
         MasterLimiterEnabled
@@ -1962,6 +1978,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
         _ = TrySyncMediaCoreAsync();
     }
+
+    partial void OnMasteringEnabledChanged(bool value)
+    {
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    partial void OnMasteringTargetIndexChanged(int value) => _ = TrySyncMediaCoreAsync();
+
+    partial void OnMasteringGlueAmountChanged(double value) => _ = TrySyncMediaCoreAsync();
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -6124,6 +6150,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(MasterLimiterModeLabel));
         OnPropertyChanged(nameof(MasterLimiterActivityLabel));
         OnPropertyChanged(nameof(MasterLimiterSummary));
+        OnPropertyChanged(nameof(MasteringActivityLabel));
         RefreshAudioMonitorBindings();
     }
 
@@ -7843,6 +7870,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.CaptionStyle,
                 BrandKit.DefaultOverlayBehavior),
             AudioLimiterEnabled = MasterLimiterEnabled,
+            AudioMasteringEnabled = MasteringEnabled,
+            AudioMasteringTargetLufs = MasteringTargetLufs,
+            AudioMasteringGlueAmount = MasteringGlueAmount,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,

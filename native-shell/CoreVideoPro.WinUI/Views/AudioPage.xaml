@@ -226,6 +226,37 @@
                                           IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
                         </Grid>
 
+                        <!-- Mastering chain (mastering-chain-spec M1): master-bus
+                             processor; program L/R inherit the processed signal. -->
+                        <Grid ColumnSpacing="8"
+                              Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="Mastering" FontSize="12" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind ViewModel.MasteringActivityLabel, Mode=OneWay}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           TextWrapping="WrapWholeWords" />
+                                <ComboBox Header="Loudness target"
+                                          SelectedIndex="{x:Bind ViewModel.MasteringTargetIndex, Mode=TwoWay}"
+                                          IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBoxItem Content="-14 LUFS (Streaming)" />
+                                    <ComboBoxItem Content="-16 LUFS (Podcast)" />
+                                    <ComboBoxItem Content="-23 LUFS (Broadcast)" />
+                                </ComboBox>
+                                <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
+                                        Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}"
+                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1"
+                                          Header="Mastering"
+                                          IsOn="{x:Bind ViewModel.MasteringEnabled, Mode=TwoWay}" />
+                        </Grid>
+
                     </StackPanel>
                 </Border>
 

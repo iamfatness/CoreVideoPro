@@ -427,6 +427,8 @@ public sealed class NativeMediaCoreAudioMixSession
     public NativeMediaCorePluginHost PluginHost { get; init; } = new();
     public bool LimiterEnabled { get; init; } = true;
     public bool LimiterActive { get; init; }
+    public bool MasteringEnabled { get; init; }
+    public double MasteringRideDb { get; init; }
     public int MixedFrameCount { get; init; }
     public bool MonitorEnabled { get; init; }
     public string? MonitorStatus { get; init; }

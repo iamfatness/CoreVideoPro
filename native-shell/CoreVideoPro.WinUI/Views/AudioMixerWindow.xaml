@@ -558,6 +558,19 @@
                                FontSize="12" />
                     <ToggleSwitch Header="{x:Bind ViewModel.MasterLimiterModeLabel, Mode=OneWay}"
                                   IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
+                    <ToggleSwitch Header="Mastering" Margin="0,8,0,0"
+                                  IsOn="{x:Bind ViewModel.MasteringEnabled, Mode=TwoWay}" />
+                    <ComboBox Header="Loudness target" SelectedIndex="{x:Bind ViewModel.MasteringTargetIndex, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" HorizontalAlignment="Stretch">
+                        <ComboBoxItem Content="-14 LUFS (Streaming)" />
+                        <ComboBoxItem Content="-16 LUFS (Podcast)" />
+                        <ComboBoxItem Content="-23 LUFS (Broadcast)" />
+                    </ComboBox>
+                    <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
+                            Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.MasteringActivityLabel, Mode=OneWay}"
+                               Opacity="0.7" FontSize="12" />
                 </StackPanel>
             </Border>
         </Grid>
