@@ -27,7 +27,7 @@ struct MasteringParams {
   double targetLufs = -14.0;   // streaming default; -16 podcast, -23 EBU R128
   double ceilingDbfs = -1.3;   // sample-peak ceiling with margin until true-peak lands
   double glueAmount = 0.5;     // 0..1 scales the glue compressor engagement
-  double maxRideDb = 8.0;      // loudness ride bound (+/-)
+  double maxRideDb = 12.0;     // loudness ride bound (+/-)
 };
 
 struct MasteringState {
@@ -73,11 +73,16 @@ inline double processMasteringChain(MasteringState& state, const MasteringParams
     }
   }
 
-  // 2) Ride: steer toward the target over ~30s of sustained error, bounded.
+  // 2) Ride: asymmetric steering - DOWN (too loud) in ~3s, UP in ~8s. Down
+  // is protective and must act fast; up is a boost and can be gentler. The
+  // 200ms gain slew below keeps both inaudible as changes.
   if (state.loudnessPrimed && !gated) {
-    const double errorDb = params.targetLufs - state.loudnessAvgLufs;
+    // Steer on OUTPUT loudness (input + current ride) - steering on input
+    // never sees its own correction and integrates to the clamp (windup).
+    const double errorDb = params.targetLufs - (state.loudnessAvgLufs + state.rideGainDb);
     const double blockSeconds = static_cast<double>(frames) / sampleRate;
-    const double step = errorDb * std::min(1.0, blockSeconds / 30.0);
+    const double timeConstant = errorDb < 0.0 ? 3.0 : 8.0;
+    const double step = errorDb * std::min(1.0, blockSeconds / timeConstant);
     state.rideGainDb = std::clamp(state.rideGainDb + step, -params.maxRideDb, params.maxRideDb);
   }
 

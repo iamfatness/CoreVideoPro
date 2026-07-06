@@ -1557,6 +1557,11 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("ceilingDbfs")) params.ceilingDbfs = v->asNumber();
     if (const auto* v = mastering->get("glueAmount")) params.glueAmount = v->asNumber();
     if (const auto* v = mastering->get("maxRideDb")) params.maxRideDb = v->asNumber();
+    if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
+      std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
+                   params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,
+                   params.maxRideDb);
+    }
     masteringParams_ = params;
   }
   const rpc::Json* channels = command.get("channels");
@@ -4248,6 +4253,12 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         // inherits the mastered master - program L/R, the STREAM bus (what
         // the encoder broadcasts), and MON (what the operator hears; without
         // this the chain was inaudible at the monitor - owner-reported).
+        static int s_masteringLogTick = 0;
+        if (++s_masteringLogTick % 250 == 1) {
+          std::fprintf(stderr, "[mastering] ride=%.2fdB avg=%.1fLUFS target=%.1f\n",
+                       results.masteringRideDb, masteringState_.loudnessAvgLufs,
+                       work.masteringParams.targetLufs);
+        }
         results.routedBusPcm["pgm-l"] = master->second;
         results.routedBusPcm["pgm-r"] = master->second;
         results.routedBusPcm["stream"] = master->second;
