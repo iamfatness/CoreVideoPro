@@ -970,6 +970,10 @@ ModuleSet createDefaultModules() {
   if (auto uvc = createUvcCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(uvc));
   }
+  // Screen capture (WGC): monitors as sources, same arbitration rules.
+  if (auto wgcScreens = createWgcScreenCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(wgcScreens));
+  }
   if (hardwareCaptureDevices.size() == 1) {
     modules.captureDevice = std::move(hardwareCaptureDevices.front());
   } else if (!hardwareCaptureDevices.empty()) {
