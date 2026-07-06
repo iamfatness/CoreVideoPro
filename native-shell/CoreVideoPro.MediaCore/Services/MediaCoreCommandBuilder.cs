@@ -32,7 +32,8 @@ public static class MediaCoreCommandBuilder
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
-            BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled),
+            BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled, context.AudioMasteringEnabled,
+                context.AudioMasteringTargetLufs, context.AudioMasteringCeilingDbfs, context.AudioMasteringGlueAmount),
             BuildAudioMonitorCommand(context.AudioMonitor),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
@@ -343,10 +344,18 @@ public static class MediaCoreCommandBuilder
             ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
         });
 
-    private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels, bool limiterEnabled) =>
+    private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels, bool limiterEnabled,
+        bool masteringEnabled, double masteringTargetLufs, double masteringCeilingDbfs, double masteringGlueAmount) =>
         Command("sync-participant-audio-mix", new Dictionary<string, object?>
         {
             ["limiterEnabled"] = limiterEnabled,
+            ["mastering"] = new
+            {
+                enabled = masteringEnabled,
+                targetLufs = masteringTargetLufs,
+                ceilingDbfs = masteringCeilingDbfs,
+                glueAmount = masteringGlueAmount
+            },
             ["channels"] = channels.Select(channel => new
             {
                 participantId = channel.ParticipantId,

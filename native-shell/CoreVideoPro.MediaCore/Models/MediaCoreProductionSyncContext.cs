@@ -241,6 +241,12 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public bool AudioLimiterEnabled { get; init; } = true;
+    // Mastering chain (docs/mastering-chain-spec.md M1) - master-bus processor
+    // settings; the core applies once and program L/R inherit (owner topology).
+    public bool AudioMasteringEnabled { get; init; }
+    public double AudioMasteringTargetLufs { get; init; } = -14.0;
+    public double AudioMasteringCeilingDbfs { get; init; } = -1.3;
+    public double AudioMasteringGlueAmount { get; init; } = 0.5;
 
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller
