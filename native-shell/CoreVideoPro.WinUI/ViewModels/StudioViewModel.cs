@@ -104,7 +104,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _masteringCeilingDbfs = -1.3;
 
     [ObservableProperty]
-    private double _masteringMaxRideDb = 8.0;
+    private double _masteringMaxRideDb = 12.0;
 
     [ObservableProperty]
     private bool _audioMonitoringEnabled;
