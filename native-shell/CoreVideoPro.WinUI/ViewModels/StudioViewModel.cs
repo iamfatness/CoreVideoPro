@@ -5593,6 +5593,43 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Screen sources connect CORE-SIDE: connect-capture-device starts the
+        // WGC session and frames enter the compositor as "capture:screen:<n>".
+        if (device.Id.StartsWith("screen:", StringComparison.Ordinal))
+        {
+            try
+            {
+                var statuses = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+                var match = statuses.FirstOrDefault(s => s.Id == device.Id);
+                RunOnUiThread(() =>
+                {
+                    device.ConnectionState = match?.ConnectionState == "connected"
+                        ? CaptureConnectionState.Connected
+                        : CaptureConnectionState.Detected;
+                    device.SignalPresent = match?.SignalPresent ?? false;
+                    if (device.ConnectionState == CaptureConnectionState.Connected)
+                    {
+                        AssignConnectedCaptureDeviceToShowInput(device);
+                        RefreshDualCaptureSourceOptions();
+                        RefreshCaptureFleetSummary();
+                        RefreshShowInputEditors();
+                        RefreshPreviewRoutingState();
+                        RefreshMultiviewGridTiles();
+                        CommandStatus = $"Screen capture live: {device.Name}.";
+                    }
+                    else
+                    {
+                        CommandStatus = $"Screen capture failed to start for {device.Name}.";
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                LaunchLog.Write($"capture: screen connect failed {device.Id}: {ex.Message}");
+            }
+            return;
+        }
+
         // Native-first UVC path (opt-in via COREVIDEO_NATIVE_UVC=1): let the
         // core open the camera with its Media Foundation adapter — frames enter
         // the compositor directly, skipping the MediaCapture -> shared-memory
@@ -5961,7 +5998,44 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             discovered = [];
         }
 
-        RunOnUiThread(() => ApplyDiscoveredCaptureDevices(discovered));
+        // Screen sources (capture-sources-spec SC): the CORE enumerates monitors
+        // ("screen:<n>" via Windows.Graphics.Capture); the WinUI device class
+        // only sees webcams, so merge the core list here.
+        var screens = new List<CaptureDevice>();
+        try
+        {
+            var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
+            foreach (var native in nativeDevices)
+            {
+                if (!native.Id.StartsWith("screen:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                screens.Add(new CaptureDevice
+                {
+                    Id = native.Id,
+                    NativeDeviceId = native.Id,
+                    Vendor = "Screen capture",
+                    Name = native.Name,
+                    Inputs = [new CaptureDeviceInput { Id = "screen", Label = "Entire display" }],
+                    SelectedInputId = "screen",
+                    Width = native.Width,
+                    Height = native.Height,
+                    FrameRate = native.FrameRate,
+                    ConnectionState = native.ConnectionState == "connected"
+                        ? CaptureConnectionState.Connected
+                        : CaptureConnectionState.Detected,
+                    SignalPresent = native.SignalPresent,
+                    AudioSyncOffsetMs = 0
+                });
+            }
+        }
+        catch
+        {
+            // Stub core or no native bridge: screens simply absent.
+        }
+
+        RunOnUiThread(() => ApplyDiscoveredCaptureDevices(screens.Count == 0 ? discovered : [.. discovered, .. screens]));
     }
 
     private void ApplyDiscoveredCaptureDevices(IReadOnlyList<CaptureDevice> discovered)
