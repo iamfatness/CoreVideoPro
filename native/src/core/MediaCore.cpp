@@ -4234,14 +4234,17 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
                                                    &results.compGainReductionDbBySource, &busLimiterGains_);
-    // Mastering chain on the MASTER bus (M1). Topology note: pgm-l/pgm-r
-    // inherit only after the owner confirms master==L/R (spec 0).
+    // Mastering chain on the MASTER bus (M1). Topology CONFIRMED by owner
+    // 2026-07-06: master and program L/R carry the SAME signal - the chain
+    // applies once and pgm-l/pgm-r inherit the processed master.
     if (work.masteringParams.enabled) {
       auto master = results.routedBusPcm.find("master");
       if (master != results.routedBusPcm.end() && master->second.size() >= 2) {
         results.masteringRideDb = modules::processMasteringChain(
             masteringState_, work.masteringParams, master->second.data(),
             master->second.size() / 2, 48000.0);
+        results.routedBusPcm["pgm-l"] = master->second;
+        results.routedBusPcm["pgm-r"] = master->second;
       }
     }
     if (debugDir != nullptr) {
