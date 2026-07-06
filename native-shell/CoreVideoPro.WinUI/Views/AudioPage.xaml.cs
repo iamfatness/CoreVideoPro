@@ -26,6 +26,21 @@ public sealed partial class AudioPage : UserControl
             typeof(AudioPage),
             new PropertyMetadata(null));
 
+    // B5: false when this console is HOSTED IN the pop-out mixer window
+    // (hides the recursive "Pop out mixer" affordance).
+    public bool ShowPopOutButton
+    {
+        get => (bool)GetValue(ShowPopOutButtonProperty);
+        set => SetValue(ShowPopOutButtonProperty, value);
+    }
+
+    public static readonly DependencyProperty ShowPopOutButtonProperty =
+        DependencyProperty.Register(
+            nameof(ShowPopOutButton),
+            typeof(bool),
+            typeof(AudioPage),
+            new PropertyMetadata(true));
+
     // B3 strip editing. Same programmatic-echo guard as AudioMixerWindow: row
     // values refresh from snapshots, which re-fires ValueChanged with a value
     // that already matches the model — pushing that back would ping-pong.

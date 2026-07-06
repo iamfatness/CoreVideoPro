@@ -3,21 +3,20 @@ using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
 using WinRT.Interop;
 
 namespace CoreVideoPro.WinUI.Views;
 
 /// <summary>
-/// Pop-out audio mixer control surface. Real audio routing and DSP remain in the media engine.
+/// Pop-out audio mixer window. B5: hosts the SAME AudioPage console the Audio
+/// tab renders (one implementation, no forked strip layouts); this class owns
+/// only window chrome and lifetime.
 /// </summary>
 public sealed partial class AudioMixerWindow : Window
 {
     private const int WindowWidth = 1080;
     private const int WindowHeight = 700;
     private bool _chromeApplied;
-    private bool _ready;
 
     public AudioMixerWindow(StudioViewModel viewModel)
     {
@@ -25,8 +24,6 @@ public sealed partial class AudioMixerWindow : Window
         InitializeComponent();
         Closed += OnWindowClosed;
         Activated += OnWindowActivated;
-        ShowRotaryStyle();
-        _ready = true;
     }
 
     public StudioViewModel ViewModel { get; }
@@ -56,138 +53,6 @@ public sealed partial class AudioMixerWindow : Window
         {
             ViewModel.ReportAudioMixerFailure(ex);
         }
-    }
-
-    private void OnRotaryStyleClicked(object sender, RoutedEventArgs args) => ShowRotaryStyle();
-
-    private void OnDawStyleClicked(object sender, RoutedEventArgs args) => ShowDawStyle();
-
-    private void ShowRotaryStyle()
-    {
-        RotaryMixerPanel.Visibility = Visibility.Visible;
-        DawMixerPanel.Visibility = Visibility.Collapsed;
-        RotaryStyleButton.IsEnabled = false;
-        DawStyleButton.IsEnabled = true;
-    }
-
-    private void ShowDawStyle()
-    {
-        RotaryMixerPanel.Visibility = Visibility.Collapsed;
-        DawMixerPanel.Visibility = Visibility.Visible;
-        RotaryStyleButton.IsEnabled = true;
-        DawStyleButton.IsEnabled = false;
-    }
-
-    private void OnSelectClicked(object sender, RoutedEventArgs args)
-    {
-        if (TryResolveParticipantId(sender, out var participantId))
-        {
-            ExecuteMixerAction(() =>
-            {
-                ViewModel.SelectParticipantCommand.Execute(participantId);
-                ViewModel.SelectAudioProcessingTarget($"channel:{participantId}");
-            });
-        }
-    }
-
-    private void OnMuteClicked(object sender, RoutedEventArgs args)
-    {
-        if (TryResolveParticipantId(sender, out var participantId))
-        {
-            ExecuteMixerAction(() => ViewModel.ToggleMixerMute(participantId));
-        }
-    }
-
-    private void OnSoloClicked(object sender, RoutedEventArgs args)
-    {
-        if (TryResolveParticipantId(sender, out var participantId))
-        {
-            ExecuteMixerAction(() => ViewModel.ToggleMixerSolo(participantId));
-        }
-    }
-
-    private void OnGainSliderValueChanged(object sender, RangeBaseValueChangedEventArgs args)
-    {
-        if (!_ready || !TryResolveParticipantId(sender, out var participantId))
-        {
-            return;
-        }
-
-        if (IsProgrammaticMixerValue(participantId, args.NewValue, row => row.ManualGainDb, 0.05))
-        {
-            return;
-        }
-
-        var requestedGain = args.NewValue;
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            if (_ready)
-            {
-                ExecuteMixerAction(() => ViewModel.SetMixerManualGain(participantId, requestedGain));
-            }
-        });
-    }
-
-    private void OnPanSliderValueChanged(object sender, RangeBaseValueChangedEventArgs args)
-    {
-        if (!_ready || !TryResolveParticipantId(sender, out var participantId))
-        {
-            return;
-        }
-
-        if (IsProgrammaticMixerValue(participantId, args.NewValue, row => row.Pan, 0.005))
-        {
-            return;
-        }
-
-        var requestedPan = args.NewValue;
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            if (_ready)
-            {
-                ExecuteMixerAction(() => ViewModel.SetMixerPan(participantId, requestedPan));
-            }
-        });
-    }
-
-    private void ExecuteMixerAction(Action action)
-    {
-        try
-        {
-            action();
-        }
-        catch (Exception ex)
-        {
-            ViewModel.ReportAudioMixerFailure(ex);
-        }
-    }
-
-    private bool IsProgrammaticMixerValue(
-        string participantId,
-        double value,
-        Func<CoreVideoPro.WinUI.Models.AudioParticipantRow, double> selector,
-        double tolerance)
-    {
-        if (!double.IsFinite(value))
-        {
-            return true;
-        }
-
-        var row = ViewModel.AudioParticipantRows.FirstOrDefault(item =>
-            string.Equals(item.Id, participantId, StringComparison.Ordinal));
-        return row is not null && Math.Abs(selector(row) - value) <= tolerance;
-    }
-
-    private static bool TryResolveParticipantId(object sender, out string participantId)
-    {
-        participantId = string.Empty;
-        if (sender is not FrameworkElement { Tag: { } tag })
-        {
-            return false;
-        }
-
-        participantId = tag.ToString()?.Trim() ?? string.Empty;
-        return participantId.Length > 0;
     }
 
     private void ApplyChromeAndSize()
