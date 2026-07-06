@@ -604,6 +604,17 @@ int main(int argc, char** argv) {
                 g_active_speaker = g_roster.empty() ? 0 : g_roster.front().id;
                 g_joined = true;
                 sync_auto_targets_locked();
+                // Mixed-audio parity: the REAL engine delivers meeting-mix audio
+                // on its active-speaker target without any fake-visible
+                // subscription (soak run 12: the app only subscribes ISO, so a
+                // subscription-dependent mix never formed). Create the ONE mix
+                // stream at join, keyed by a stable active-speaker uuid.
+                {
+                    auto& mixed = g_audioTargets["participant-video-" +
+                                                 std::to_string(g_active_speaker) + "-active-speaker"];
+                    mixed.participant_id = g_active_speaker;
+                    mixed.fixedFreq = 330.0;
+                }
             }
             EngineIpc::write(R"({"cmd":"joined"})");
             { std::lock_guard<std::mutex> lk(g_mtx); send_participants_locked(); }
