@@ -132,16 +132,21 @@ class WgcSession {
     }
   }
 
-  // Poll side: move the latest ready frame out (tiny lock, no pixel work).
-  bool takeLatest(std::vector<std::uint8_t>& outBgra, int& outWidth, int& outHeight) {
+  // Poll side: SHARE the latest frame every call (tiny lock, no pixel work).
+  // The compositor holds per-source textures and re-uploads only when the
+  // frameId changes, so returning the same buffer every tick is free - and
+  // take-and-clear made the source VANISH on ticks between WGC deliveries
+  // (owner-reported flashing in the multiviewer).
+  bool getLatest(std::shared_ptr<const std::vector<std::uint8_t>>& outBgra, int& outWidth,
+                 int& outHeight, std::int64_t& outFrameId) {
     std::lock_guard<std::mutex> lock(latestMutex_);
-    if (latestBgra_.empty()) {
+    if (!latestBgra_ || latestBgra_->empty()) {
       return false;
     }
-    outBgra = std::move(latestBgra_);
-    latestBgra_.clear();
+    outBgra = latestBgra_;
     outWidth = latestWidth_;
     outHeight = latestHeight_;
+    outFrameId = latestFrameId_;
     return true;
   }
 
@@ -200,9 +205,10 @@ class WgcSession {
     context_->Unmap(staging_.Get(), 0);
     {
       std::lock_guard<std::mutex> lock(latestMutex_);
-      latestBgra_ = std::move(bgra);
+      latestBgra_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(bgra));
       latestWidth_ = stagingWidth_;
       latestHeight_ = stagingHeight_;
+      ++latestFrameId_;
     }
   }
 
@@ -216,9 +222,10 @@ class WgcSession {
   wgc::Direct3D11CaptureFramePool::FrameArrived_revoker frameArrived_;
   std::atomic<bool> running_{false};
   std::mutex latestMutex_;
-  std::vector<std::uint8_t> latestBgra_;
+  std::shared_ptr<const std::vector<std::uint8_t>> latestBgra_;
   int latestWidth_ = 0;
   int latestHeight_ = 0;
+  std::int64_t latestFrameId_ = 0;
   int width_ = 0;
   int height_ = 0;
 };
@@ -267,10 +274,11 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<VideoFrame> frames;
     for (auto& [deviceId, session] : sessions_) {
-      std::vector<std::uint8_t> bgra;
+      std::shared_ptr<const std::vector<std::uint8_t>> bgra;
       int width = 0;
       int height = 0;
-      if (!session->takeLatest(bgra, width, height)) {
+      std::int64_t frameId = 0;
+      if (!session->getLatest(bgra, width, height, frameId)) {
         continue;
       }
       VideoFrame frame;
@@ -280,7 +288,8 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.naturalWidth = width;
       frame.naturalHeight = height;
       frame.timestampMs = timestampMs;
-      frame.pixels = std::make_shared<const std::vector<std::uint8_t>>(std::move(bgra));
+      frame.frameId = frameId;
+      frame.pixels = bgra;
       frame.pixelWidth = width;
       frame.pixelHeight = height;
       frame.pixelStride = width * 4;
