@@ -117,6 +117,32 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
   sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
 
+## Current state addendum (2026-07-05, the audio war + the soak rig)
+
+**Audio is CLEAN and machine-verified.** The 2026-07-05 marathon: pull-model monitor
+(docs/audio-pull-monitor-spec.md - SPSC ring, event-driven render thread, ring-depth
+rate trim), Zoom audio rebuilt per docs/zoom-audio-spec.md (128-slot SHM rings,
+poll-drain ingest with persistent regions, 1Hz discovery-beacon events, ONE live mix
+stream, resumption declick, Z1 exclusive routing: zoom-mix -> program, ISO unrouted by
+default). Video ingest: beacons + a dedicated ingest thread (three-phase: peek locked /
+snapshot UNLOCKED / publish locked) - **LAW: no pixel work under shared locks or hot
+ticks, ever** (it collapsed the audio worker to 8 ticks/s).
+
+**The soak rig (tools/audio/)**: `powershell -File tools/audio/soak.ps1 -Minutes N`
+swaps in the fake engine (tone mode: deterministic per-participant sines + 330Hz mix,
+COREVIDEO_FAKE_NO_CHURN=1 + COREVIDEO_FAKE_NO_VIDEO=1 for audio soaks), UIA-joins,
+Engine On via the control API (:8011), captures taps, runs tone-scan.cjs, prints
+SOAK PASS/FAIL, ALWAYS restores the real engine. First SOAK PASS 2026-07-05 (run 18:
+clicks:0 on a full-length capture). Debug taps hold files OPEN across ticks (fopen
+per tick on the worker costs ~13ms). tap-ring-<key>.f32 = ring-reader output (splits
+ring vs downstream).
+
+**Mastering chain M1** (docs/mastering-chain-spec.md): AudioMastering.h on the master
+bus (LUFS ride + glue + ceiling; mastering{} params on the audio sync command; ride dB
+is snapshot telemetry). Owner topology question (master == pgm-l/r?) open in spec 0.
+New specs: docs/capture-sources-spec.md (browser sources via WebView2 host process,
+screen capture via Windows.Graphics.Capture).
+
 ## Current state (2026-07-04)
 
 Working: Zoom video stable under multi-participant churn; program-zoom on the GPU I420
