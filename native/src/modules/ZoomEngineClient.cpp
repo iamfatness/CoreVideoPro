@@ -232,6 +232,15 @@ std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength) {
   return sizeof(ShmAudioHeader) + static_cast<std::size_t>(byteLength);
 }
 
+std::uint32_t readZoomEngineI420FrameSequence(const void* sharedMemory, std::size_t sharedMemorySize) {
+  if (sharedMemory == nullptr || sharedMemorySize < sizeof(ShmFrameHeader)) {
+    return 0;
+  }
+  ShmFrameHeader header{};
+  std::memcpy(&header, sharedMemory, sizeof(header));
+  return header.sequence;
+}
+
 std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const void* sharedMemory,
     std::size_t sharedMemorySize,
