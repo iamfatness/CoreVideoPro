@@ -693,4 +693,10 @@ std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 // supersedes these frames for the same device id.
 std::unique_ptr<ICaptureDevice> createUvcCaptureDevice();
 
+// Screen capture via Windows.Graphics.Capture (docs/capture-sources-spec.md
+// SC): monitors enumerate as "screen:<n>" capture devices; frames deliver as
+// BGRA keyed "capture:screen:<n>". Dev-gated (COREVIDEO_WITH_WGC); nullptr
+// when the flag is off.
+std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice();
+
 }  // namespace corevideo::modules
