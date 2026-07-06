@@ -347,6 +347,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/AudioDspTest.cpp
+    tests/AudioMasteringTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp

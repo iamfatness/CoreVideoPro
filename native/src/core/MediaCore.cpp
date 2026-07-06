@@ -1547,6 +1547,17 @@ void MediaCore::configureEncoderRecordingRequest() {
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   audioLimiterEnabled_ = !command.get("limiterEnabled") || command.get("limiterEnabled")->asBool();
+  // Mastering chain (docs/mastering-chain-spec.md M1) - settings ride the same
+  // sync command; telemetry (ride dB) goes OUT via the snapshot, never echoed
+  // back into settings (law 5).
+  if (const rpc::Json* mastering = command.get("mastering")) {
+    modules::MasteringParams params;
+    params.enabled = mastering->get("enabled") && mastering->get("enabled")->asBool();
+    if (const auto* v = mastering->get("targetLufs")) params.targetLufs = v->asNumber();
+    if (const auto* v = mastering->get("ceilingDbfs")) params.ceilingDbfs = v->asNumber();
+    if (const auto* v = mastering->get("glueAmount")) params.glueAmount = v->asNumber();
+    masteringParams_ = params;
+  }
   const rpc::Json* channels = command.get("channels");
   // HOLD-LAST guard (same measured shell churn as the routing matrix): an
   // empty channel list mid-show would strip gain/pan/inserts off live audio
@@ -2568,6 +2579,8 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"pluginHost", pluginHostState()},
           {"limiterEnabled", audioLimiterEnabled_},
           {"limiterActive", audioLimiterEnabled_ && nativeMix.limiterActive},
+          {"masteringEnabled", masteringParams_.enabled},
+          {"masteringRideDb", audioMasteringRideDb_},
           {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
           {"monitorEnabled", audioMonitorEnabled_},
           {"monitorStatus", audioMonitorStatus_},
@@ -4072,6 +4085,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
   work.limiterEnabled = audioLimiterEnabled_;
+  work.masteringParams = masteringParams_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
   work.audioMonitorVolume = audioMonitorVolume_;
   // Feedback-guard inputs (spec R6): the resolved endpoints of every ACTIVE
@@ -4220,6 +4234,16 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
                                                    &results.compGainReductionDbBySource, &busLimiterGains_);
+    // Mastering chain on the MASTER bus (M1). Topology note: pgm-l/pgm-r
+    // inherit only after the owner confirms master==L/R (spec 0).
+    if (work.masteringParams.enabled) {
+      auto master = results.routedBusPcm.find("master");
+      if (master != results.routedBusPcm.end() && master->second.size() >= 2) {
+        results.masteringRideDb = modules::processMasteringChain(
+            masteringState_, work.masteringParams, master->second.data(),
+            master->second.size() / 2, 48000.0);
+      }
+    }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
       if (monTap != results.routedBusPcm.end() && !monTap->second.empty()) {
@@ -4417,6 +4441,7 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     return;
   }
   routedBusPcm_ = results.routedBusPcm;
+  audioMasteringRideDb_ = results.masteringRideDb;
   mixedAudioFrameCount_ = results.mixedFrameCount;
   audioCompGainReductionDbBySource_ = std::move(results.compGainReductionDbBySource);
   if (results.monitorTouched) {
