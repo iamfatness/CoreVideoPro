@@ -43,6 +43,7 @@ try {
     Get-ChildItem $tapDir | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -Confirm:$false }
     $env:COREVIDEO_AUDIO_DEBUG_DIR = $tapDir
     $env:COREVIDEO_FAKE_NO_CHURN = "1"  # stable streams for deterministic audio verdicts
+    $env:COREVIDEO_FAKE_NO_VIDEO = "1"  # audio-only: video synthesis load skews audio verdicts
 
     Write-Host "[soak] launching app" -ForegroundColor Cyan
     Push-Location $repoRoot
@@ -104,4 +105,5 @@ finally {
     }
     Remove-Item Env:COREVIDEO_AUDIO_DEBUG_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:COREVIDEO_FAKE_NO_CHURN -ErrorAction SilentlyContinue
+    Remove-Item Env:COREVIDEO_FAKE_NO_VIDEO -ErrorAction SilentlyContinue
 }

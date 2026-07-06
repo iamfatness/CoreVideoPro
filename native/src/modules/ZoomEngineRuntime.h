@@ -204,10 +204,25 @@ class ZoomEngineRuntime {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t lastSequence = 0;
-    void* regionOpaque = nullptr;  // owned ShmRegion*
+    // shared_ptr so the UNLOCKED snapshot phase can hold the mapping alive
+    // while leave/reset paths release their reference under the lock.
+    std::shared_ptr<void> regionOpaque;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
-  void drainVideoStreamLocked(const std::string& uuid, VideoStreamRef& ref);
+  // Three-phase video drain (audio-starvation fix: frame copies + thumbnail
+  // conversion must NEVER run under mutex_ - they blocked the audio poll and
+  // halved the worker tick rate). Peek/publish lock briefly; snapshot runs
+  // unlocked on seqlock-protected regions.
+  void drainVideoStreamsThreePhase();
+  // Dedicated ingest thread: runs the three phases on its OWN ~120Hz cadence
+  // so neither the render tick nor the audio worker ever carries pixel work
+  // (run-15: phase 2 inside the render tick collapsed the audio worker to
+  // 8 ticks/s via coreMutex contention).
+  std::thread videoIngestThread_;
+  std::atomic<bool> videoIngestRun_{false};
+  void videoIngestLoop();
+  void ensureVideoIngestThreadLocked();
+  void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame);
   void closeVideoStreamsLocked();
 };
 
