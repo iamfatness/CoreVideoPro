@@ -247,6 +247,7 @@ public sealed record MediaCoreProductionSyncContext
     public double AudioMasteringTargetLufs { get; init; } = -14.0;
     public double AudioMasteringCeilingDbfs { get; init; } = -1.3;
     public double AudioMasteringGlueAmount { get; init; } = 0.5;
+    public double AudioMasteringMaxRideDb { get; init; } = 8.0;
 
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller

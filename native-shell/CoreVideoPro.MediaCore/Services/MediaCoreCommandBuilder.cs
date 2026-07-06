@@ -33,7 +33,8 @@ public static class MediaCoreCommandBuilder
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled, context.AudioMasteringEnabled,
-                context.AudioMasteringTargetLufs, context.AudioMasteringCeilingDbfs, context.AudioMasteringGlueAmount),
+                context.AudioMasteringTargetLufs, context.AudioMasteringCeilingDbfs, context.AudioMasteringGlueAmount,
+                context.AudioMasteringMaxRideDb),
             BuildAudioMonitorCommand(context.AudioMonitor),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
@@ -345,7 +346,8 @@ public static class MediaCoreCommandBuilder
         });
 
     private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels, bool limiterEnabled,
-        bool masteringEnabled, double masteringTargetLufs, double masteringCeilingDbfs, double masteringGlueAmount) =>
+        bool masteringEnabled, double masteringTargetLufs, double masteringCeilingDbfs, double masteringGlueAmount,
+        double masteringMaxRideDb) =>
         Command("sync-participant-audio-mix", new Dictionary<string, object?>
         {
             ["limiterEnabled"] = limiterEnabled,
@@ -354,7 +356,8 @@ public static class MediaCoreCommandBuilder
                 enabled = masteringEnabled,
                 targetLufs = masteringTargetLufs,
                 ceilingDbfs = masteringCeilingDbfs,
-                glueAmount = masteringGlueAmount
+                glueAmount = masteringGlueAmount,
+                maxRideDb = masteringMaxRideDb
             },
             ["channels"] = channels.Select(channel => new
             {

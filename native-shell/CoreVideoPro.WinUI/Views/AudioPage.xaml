@@ -252,6 +252,20 @@
                                 <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
                                         Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}"
                                         IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" />
+                                <!-- Advanced (owner: simple by default, deep when needed) -->
+                                <Expander Header="Advanced" IsExpanded="False" HorizontalAlignment="Stretch"
+                                          HorizontalContentAlignment="Stretch"
+                                          IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}">
+                                    <StackPanel Spacing="6">
+                                        <Slider Header="True-peak ceiling (dBFS)" Minimum="-6" Maximum="-0.5" StepFrequency="0.1"
+                                                Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" />
+                                        <Slider Header="Max loudness ride (dB)" Minimum="0" Maximum="12" StepFrequency="0.5"
+                                                Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" />
+                                        <TextBlock Text="Deeper processing (EQ, multiband, reference matching) lands via the master insert rack and mastering presets."
+                                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                                   TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Expander>
                             </StackPanel>
                             <ToggleSwitch Grid.Column="1"
                                           Header="Mastering"

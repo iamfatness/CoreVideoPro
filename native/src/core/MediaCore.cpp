@@ -1556,6 +1556,7 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("targetLufs")) params.targetLufs = v->asNumber();
     if (const auto* v = mastering->get("ceilingDbfs")) params.ceilingDbfs = v->asNumber();
     if (const auto* v = mastering->get("glueAmount")) params.glueAmount = v->asNumber();
+    if (const auto* v = mastering->get("maxRideDb")) params.maxRideDb = v->asNumber();
     masteringParams_ = params;
   }
   const rpc::Json* channels = command.get("channels");
@@ -4243,8 +4244,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         results.masteringRideDb = modules::processMasteringChain(
             masteringState_, work.masteringParams, master->second.data(),
             master->second.size() / 2, 48000.0);
+        // ONE program signal (owner topology): every program-facing bus
+        // inherits the mastered master - program L/R, the STREAM bus (what
+        // the encoder broadcasts), and MON (what the operator hears; without
+        // this the chain was inaudible at the monitor - owner-reported).
         results.routedBusPcm["pgm-l"] = master->second;
         results.routedBusPcm["pgm-r"] = master->second;
+        results.routedBusPcm["stream"] = master->second;
+        results.routedBusPcm["mon"] = master->second;
       }
     }
     if (debugDir != nullptr) {

@@ -101,6 +101,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _masteringGlueAmount = 0.5;
 
     [ObservableProperty]
+    private double _masteringCeilingDbfs = -1.3;
+
+    [ObservableProperty]
+    private double _masteringMaxRideDb = 8.0;
+
+    [ObservableProperty]
     private bool _audioMonitoringEnabled;
 
     [ObservableProperty]
@@ -1988,6 +1994,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMasteringTargetIndexChanged(int value) => _ = TrySyncMediaCoreAsync();
 
     partial void OnMasteringGlueAmountChanged(double value) => _ = TrySyncMediaCoreAsync();
+
+    partial void OnMasteringCeilingDbfsChanged(double value) => _ = TrySyncMediaCoreAsync();
+
+    partial void OnMasteringMaxRideDbChanged(double value) => _ = TrySyncMediaCoreAsync();
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -7873,6 +7883,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringEnabled = MasteringEnabled,
             AudioMasteringTargetLufs = MasteringTargetLufs,
             AudioMasteringGlueAmount = MasteringGlueAmount,
+            AudioMasteringCeilingDbfs = MasteringCeilingDbfs,
+            AudioMasteringMaxRideDb = MasteringMaxRideDb,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
