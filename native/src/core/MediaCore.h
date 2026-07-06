@@ -4,6 +4,7 @@
 #include "core/PluginHostScan.h"
 #include "modules/PluginHostClient.h"
 #include "modules/AudioDsp.h"
+#include "modules/AudioMastering.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
@@ -391,6 +392,9 @@ class MediaCore {
   };
   std::vector<ParticipantAudioChannelInput> audioChannels_;
   bool audioLimiterEnabled_ = true;
+  modules::MasteringParams masteringParams_;          // set under coreMutex (sync command)
+  modules::MasteringState masteringState_;            // touched ONLY under audioOutputMutex_
+  double audioMasteringRideDb_ = 0.0;                 // published telemetry (coreMutex)
   bool audioMonitorEnabled_ = false;
   std::string audioMonitorDeviceId_;
   std::string audioMonitorDeviceName_;
@@ -456,6 +460,7 @@ class MediaCore {
     std::vector<ParticipantAudioChannelInput> channels;
     std::vector<AudioRoutingSendInput> routingSends;
     bool limiterEnabled = true;  // spec 4.4: toggle now controls the bus limiter
+    modules::MasteringParams masteringParams;  // mastering-chain-spec M1
     bool audioMonitorEnabled = false;
     double audioMonitorVolume = 0.0;
     // Resolved endpoint ids of ACTIVE loopback capture sources, gathered under
@@ -472,6 +477,7 @@ class MediaCore {
   // Results produced under `audioOutputMutex_` and published back under `coreMutex`.
   struct AudioOutputResults {
     bool valid = false;
+    double masteringRideDb = 0.0;  // telemetry (never a setting - law 5)
     std::map<std::string, std::vector<float>> routedBusPcm;
     int64_t mixedFrameCount = 0;
     bool monitorTouched = false;  // only overwrite monitor status when the monitor ran
