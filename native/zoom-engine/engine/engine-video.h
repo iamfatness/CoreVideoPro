@@ -44,6 +44,8 @@ private:
         IpcFd e2p_fd;
         ShmRegion shm;
         uint64_t frame_count = 0;
+    uint32_t last_beacon_w = 0;
+    uint32_t last_beacon_h = 0;
     };
 
     bool ensure_shm(SourceTarget &target,

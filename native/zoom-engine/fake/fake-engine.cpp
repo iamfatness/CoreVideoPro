@@ -352,10 +352,13 @@ static void produce_frame_locked(Target& t, uint64_t tick) {
             R"(,"h":)" + std::to_string(h) + "}");
     }
 
-    EngineIpc::write(
-        R"({"cmd":"frame","source_uuid":")" + t.source_uuid +
-        R"(","participant_id":)" + std::to_string(t.participant_id) +
-        R"(,"w":)" + std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
+    // Video-beacon fix: discovery/liveness beacon only (core polls frames).
+    if (t.frame_count == 1 || t.frame_count % 30 == 0) {
+        EngineIpc::write(
+            R"({"cmd":"frame","source_uuid":")" + t.source_uuid +
+            R"(","participant_id":)" + std::to_string(t.participant_id) +
+            R"(,"w":)" + std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
+    }
 }
 
 // Z4a: emit all 10ms tone packets due for a target through the SHARED ring
@@ -435,21 +438,13 @@ static void producer_loop() {
                     if (roster_has(t.participant_id))
                         produce_frame_locked(t, tick);
                 }
-                // Z4a: tone packets for subscribed audio targets (paced by
-                // absolute elapsed time, so this ~33ms loop emits 3-4 per pass).
-                // Parity with the real engine: a MIXED meeting stream rides the
-                // active-speaker target (ingested as zoom-mix, which Z1 routes
-                // as the program default - without it no MON bus forms).
-                {
-                    auto& mixed = g_audioTargets["participant-video-1-active-speaker"];
-                    if (mixed.participant_id == 0) {
-                        mixed.participant_id = 1;
-                        mixed.fixedFreq = 330.0;
-                    }
-                    produce_audio_locked("participant-video-1-active-speaker", mixed);
-                }
+                // Z4a: tone packets for every SUBSCRIBED audio target - the app
+                // decides which streams exist (ISO per participant + the mixed
+                // stream it subscribes on the active-speaker target). A second
+                // hardcoded mix stream here interleaved TWO tones into the
+                // core zoom-mix buffer = packet-boundary phase chaos (run 11).
                 for (auto& [auuid, atarget] : g_audioTargets) {
-                    if (atarget.fixedFreq == 0.0 && roster_has(atarget.participant_id))
+                    if (atarget.fixedFreq > 0.0 || roster_has(atarget.participant_id))
                         produce_audio_locked(auuid, atarget);
                 }
             }
@@ -639,7 +634,12 @@ int main(int argc, char** argv) {
                 const uint32_t pid = json_uint(line, "participant_id");
                 if (!uuid.empty() && pid != 0) {
                     std::lock_guard<std::mutex> lk(g_mtx);
-                    g_audioTargets[uuid].participant_id = pid;
+                    auto& target = g_audioTargets[uuid];
+                    target.participant_id = pid;
+                    // The app subscribes MIXED audio on the active-speaker
+                    // target: fixed 330Hz so the mix stream is deterministic.
+                    if (uuid.size() > 15 && uuid.rfind("-active-speaker") == uuid.size() - 15)
+                        target.fixedFreq = 330.0;
                 }
             }
             EngineIpc::write(

@@ -115,6 +115,10 @@ std::string zoomEngineAudioSharedMemoryName(const std::string& sourceUuid,
                                             const std::string& instanceToken = {});
 std::size_t zoomEngineI420FrameByteSize(std::uint32_t width, std::uint32_t height);
 std::size_t zoomEnginePcmAudioByteSize(std::uint32_t byteLength);
+// Video-beacon fix: cheap header peek - returns the snapshot sequence (even =
+// complete) so pollers skip the full-frame copy when nothing changed.
+std::uint32_t readZoomEngineI420FrameSequence(const void* sharedMemory, std::size_t sharedMemorySize);
+
 std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
     const void* sharedMemory,
     std::size_t sharedMemorySize,

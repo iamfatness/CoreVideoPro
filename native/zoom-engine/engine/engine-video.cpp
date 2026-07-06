@@ -228,10 +228,20 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
                 std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
         }
 
-        EngineIpc::write(
-            R"({"cmd":"frame","source_uuid":")" + source_uuid +
-            R"(","participant_id":)" + std::to_string(m_participant_id) +
-            R"(,"w":)" + std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
+        // Video-beacon fix: the core reads frames on its render poll with a
+        // sequence peek - the event is a DISCOVERY/dimension beacon. Per-frame
+        // events at 30fps x N sources drowned the core command queue
+        // (soak-measured queueWait 3.7s). Emit on first frame, dimension
+        // change, and ~1/s as liveness.
+        const bool dimsChanged = w != target.last_beacon_w || h != target.last_beacon_h;
+        if (target.frame_count == 1 || dimsChanged || target.frame_count % 30 == 0) {
+            target.last_beacon_w = w;
+            target.last_beacon_h = h;
+            EngineIpc::write(
+                R"({"cmd":"frame","source_uuid":")" + source_uuid +
+                R"(","participant_id":)" + std::to_string(m_participant_id) +
+                R"(,"w":)" + std::to_string(w) + R"(,"h":)" + std::to_string(h) + "}");
+        }
     }
 }
 

@@ -119,6 +119,7 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     latestDecodedFrames_.clear();
     pendingAudio_.clear();
     closeAudioStreamsLocked();
+  closeVideoStreamsLocked();
     sentSubscriptions_.clear();  // a fresh join must re-subscribe from scratch
   }
 }
@@ -238,6 +239,7 @@ rpc::Json ZoomEngineRuntime::leave() {
   latestDecodedFrames_.clear();
   pendingAudio_.clear();
   closeAudioStreamsLocked();
+  closeVideoStreamsLocked();
   sentSubscriptions_.clear();  // a rejoin must re-subscribe from scratch
   ++fallbackTick_;
   return rawCaptureSnapshotLocked();
@@ -344,6 +346,11 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
 
 std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t timestampMs) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Video-beacon fix: steady-state frame reads happen HERE at the render poll
+  // cadence with regions held open; a sequence peek skips unchanged frames.
+  for (auto& [uuid, ref] : videoStreams_) {
+    drainVideoStreamLocked(uuid, ref);
+  }
   return state_.pollCompositorVideoFrames(timestampMs);
 }
 
@@ -789,14 +796,53 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "frame event missing source, participant, width, or height");
     return;
   }
+  // Video-beacon fix: the event REGISTERS the stream (and primes an immediate
+  // read); steady-state frame reads happen on the render poll with the region
+  // held open, gated by a header-sequence peek. Per-event full-frame copies
+  // under the core lock were the measured queue-drowning source
+  // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
+  auto& ref = videoStreams_[event.sourceUuid];
+  if (ref.width != event.width || ref.height != event.height) {
+    if (ref.regionOpaque != nullptr) {
+      auto* stale = static_cast<ShmRegion*>(ref.regionOpaque);
+      shm_region_destroy(*stale);
+      delete stale;
+      ref.regionOpaque = nullptr;
+    }
+    ref.lastSequence = 0;
+  }
+  ref.participantId = event.participantId;
+  ref.width = event.width;
+  ref.height = event.height;
+  drainVideoStreamLocked(event.sourceUuid, ref);
+}
 
-  ShmRegion region;
-  const auto size = zoomEngineI420FrameByteSize(event.width, event.height);
-  if (!shm_region_open_read(region, zoomEngineVideoSharedMemoryName(event.sourceUuid, instanceToken_), size)) {
-    state_.recordFrameIngestFailure(event.sourceUuid, event.participantId, "shared memory region could not be opened");
+void ZoomEngineRuntime::drainVideoStreamLocked(const std::string& uuid, VideoStreamRef& ref) {
+  if (ref.width == 0 || ref.height == 0 || ref.participantId == 0) {
     return;
   }
-  const auto closeRegion = [&region]() { shm_region_destroy(region); };
+  if (ref.regionOpaque == nullptr) {
+    auto* opened = new ShmRegion();
+    if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
+                              zoomEngineI420FrameByteSize(ref.width, ref.height))) {
+      delete opened;
+      return;  // not created yet; retry next poll
+    }
+    ref.regionOpaque = opened;
+  }
+  ShmRegion& region = *static_cast<ShmRegion*>(ref.regionOpaque);
+  // Sequence peek: unchanged (or mid-write) frame = a 16-byte read, no copy.
+  const auto sequence = readZoomEngineI420FrameSequence(region.ptr, region.size);
+  if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
+    return;
+  }
+  ref.lastSequence = sequence;
+  ZoomEngineEvent event;
+  event.sourceUuid = uuid;
+  event.participantId = ref.participantId;
+  event.width = ref.width;
+  event.height = ref.height;
+  const auto closeRegion = []() {};
   // Snapshot the I420 planes for the GPU compositor and a small (<=640x360) BGRA
   // thumbnail for the WinUI base64 path. The expensive per-pixel I420->BGRA
   // convert at full resolution is gone — only the small thumbnail is converted on
@@ -882,6 +928,24 @@ void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {
   // drain); steady-state draining happens on the 50Hz poll with the region
   // held open - the per-event open/drain/close cycle lost hundreds of
   // packets per source at 500 events/s (soak-measured).
+  if (isMix && event.sourceUuid != mixStreamUuid_) {
+    // ONE live mix stream at a time: two concurrent -active-speaker streams
+    // draining into pendingAudio_["zoom-mix"] interleave two different
+    // signals packet-by-packet (soak run 11: phase chaos at every packet
+    // seam). Speaker changes hand the mix over sequentially instead.
+    if (!mixStreamUuid_.empty()) {
+      auto previous = audioStreams_.find(mixStreamUuid_);
+      if (previous != audioStreams_.end()) {
+        if (previous->second.regionOpaque != nullptr) {
+          auto* stale = static_cast<ShmRegion*>(previous->second.regionOpaque);
+          shm_region_destroy(*stale);
+          delete stale;
+        }
+        audioStreams_.erase(previous);
+      }
+    }
+    mixStreamUuid_ = event.sourceUuid;
+  }
   auto& ref = audioStreams_[event.sourceUuid];
   ref.pendingKey = isIso ? std::to_string(event.participantId) : std::string("zoom-mix");
   drainAudioStreamLocked(event.sourceUuid, ref);
@@ -925,6 +989,18 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
       }
     }
   }
+}
+
+void ZoomEngineRuntime::closeVideoStreamsLocked() {
+  for (auto& [uuid, ref] : videoStreams_) {
+    if (ref.regionOpaque != nullptr) {
+      auto* region = static_cast<ShmRegion*>(ref.regionOpaque);
+      shm_region_destroy(*region);
+      delete region;
+      ref.regionOpaque = nullptr;
+    }
+  }
+  videoStreams_.clear();
 }
 
 void ZoomEngineRuntime::closeAudioStreamsLocked() {

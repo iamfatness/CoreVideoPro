@@ -192,8 +192,23 @@ class ZoomEngineRuntime {
     void* regionOpaque = nullptr;  // owned ShmRegion*, destroyed on close
   };
   std::map<std::string, AudioStreamRef> audioStreams_;
+  std::string mixStreamUuid_;  // the ONE live mixed-audio stream (see ingest)
   void drainAudioStreamLocked(const std::string& uuid, AudioStreamRef& ref);
   void closeAudioStreamsLocked();
+  // Video-beacon fix (soak-measured queue drowning: per-frame events at 30fps
+  // x N sources each did a full I420 copy + CPU thumbnail under the lock).
+  // Frame events now REGISTER streams; frames are read on the render poll,
+  // gated by a header-sequence peek (unchanged frame = 16-byte read).
+  struct VideoStreamRef {
+    std::uint32_t participantId = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t lastSequence = 0;
+    void* regionOpaque = nullptr;  // owned ShmRegion*
+  };
+  std::map<std::string, VideoStreamRef> videoStreams_;
+  void drainVideoStreamLocked(const std::string& uuid, VideoStreamRef& ref);
+  void closeVideoStreamsLocked();
 };
 
 }  // namespace corevideo::modules
