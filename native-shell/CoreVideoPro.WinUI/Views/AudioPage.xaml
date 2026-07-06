@@ -55,6 +55,7 @@
                             <Button Grid.Column="1" Content="Pop out mixer"
                                     Style="{StaticResource OperatorGhostButton}"
                                     MinWidth="132"
+                                    Visibility="{x:Bind ShowPopOutButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                     Command="{x:Bind ViewModel.OpenAudioMixerCommand}" />
                         </Grid>
                         <!-- C1/C3: the console shows state with meters and lit buttons; the
@@ -452,6 +453,7 @@
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxLines="1" />
                 <Button Grid.Column="2" Content="Pop out mixer" Style="{StaticResource OperatorGhostButton}"
                         VerticalAlignment="Center"
+                        Visibility="{x:Bind ShowPopOutButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                         Command="{x:Bind ViewModel.OpenAudioMixerCommand}" />
             </Grid>
 
