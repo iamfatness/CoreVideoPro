@@ -42,6 +42,16 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public int SlotNumber => _slot.SlotNumber;
 
+    // Lifecycle L1 (source-lifecycle-spec 3.2): detach the slot entirely -
+    // Kind=Unassigned nulls the ids (model OnKindChanged) and the slot leaves
+    // the show. Idempotent.
+    public void Unassign()
+    {
+        _slot.InShow = false;
+        _slot.Kind = ShowInputKind.Unassigned;
+        _onChanged();
+    }
+
     public string SlotLabel => _slot.SlotLabel;
 
     public ShowInputKind Kind

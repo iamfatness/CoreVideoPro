@@ -6040,6 +6040,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RunOnUiThread(() =>
         {
             ApplyDiscoveredCaptureDevices(screens.Count == 0 ? discovered : [.. discovered, .. screens]);
+            SweepGhostShowInputAssignments();
             EnsureAssignedScreensConnected();
         });
     }
@@ -10814,6 +10815,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         finally
         {
             RunOnUiThread(() => _screenConnectsInFlight.Remove(deviceId));
+        }
+    }
+
+    // Lifecycle L1: operator-facing unassign (button on each Show Input row).
+    [RelayCommand]
+    private void UnassignShowInput(ShowInputSlotViewModel editor)
+    {
+        if (editor is null)
+        {
+            return;
+        }
+        LaunchLog.Write(string.Format("lifecycle: unassign slot {0} (was {1} cap={2} pid={3})",
+            editor.SlotNumber, editor.Kind, editor.CaptureDeviceId ?? "-", editor.ParticipantId ?? "-"));
+        editor.Unassign();
+        RefreshShowInputEditors(force: true);
+        RefreshPreviewRoutingState();
+        RefreshMultiviewGridTiles();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // Lifecycle L1: startup/refresh ghost sweep - parked slots whose source is
+    // gone or which duplicate a lower slot get cleared automatically, LOGGED.
+    private void SweepGhostShowInputAssignments()
+    {
+        foreach (var slot in ShowInputs)
+        {
+            if (slot.InShow || !slot.IsAssigned)
+            {
+                continue;
+            }
+            if (IsShowInputSourceStale(slot) || IsDuplicateShowInputAssignment(slot))
+            {
+                LaunchLog.Write(string.Format("lifecycle: sweep ghost slot {0} (kind={1} cap={2} pid={3})",
+                    slot.SlotNumber, slot.Kind, slot.CaptureDeviceId ?? "-", slot.ParticipantId ?? "-"));
+                slot.Kind = ShowInputKind.Unassigned;
+            }
         }
     }
 
