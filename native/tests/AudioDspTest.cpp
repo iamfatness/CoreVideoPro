@@ -1009,7 +1009,10 @@ TEST(AudioDsp, SteadyFeedReshapesJitteryPacketsWithoutHoldingAudio) {
 TEST(SpscRing, PushPopWrapFullAndDryProperties) {
   corevideo::modules::SpscRing ring(8);  // tiny capacity to force wrap + full
   float in[16];
-  float out[16];
+  // 10 FRAMES (20 floats): the dry-pop phase requests 10 frames - out[16] was
+  // a stack overflow (UB) that MSVC survived and GCC did not; CI has been red
+  // on Linux since this test landed.
+  float out[20];
 
   // Sequence continuity across a wrap boundary.
   float seq = 1.0f;
