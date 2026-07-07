@@ -5599,8 +5599,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             try
             {
+                LaunchLog.Write(string.Format("capture: screen connect requested {0}", device.Id));
                 var statuses = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
                 var match = statuses.FirstOrDefault(s => s.Id == device.Id);
+                LaunchLog.Write(string.Format("capture: screen connect response {0}: statuses={1} match={2}", device.Id, statuses.Count, match?.ConnectionState ?? "none"));
                 RunOnUiThread(() =>
                 {
                     device.ConnectionState = match?.ConnectionState == "connected"
@@ -9027,10 +9029,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) =>
         RunOnUiThread(() => ApplySnapshotChanged(snapshot));
 
+    private int _screenDiscoveryAttempts;
+    private DateTime _screenDiscoveryLastAttempt = DateTime.MinValue;
+
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
         // The compositor is always on, so surfaces always accept the latest program frame.
         _surfaces.OnMediaCoreSnapshot(snapshot);
+
+        // Screen sources come from the CORE enumeration; the startup device
+        // refresh races core spawn (pipe not ready -> silent empty) and the
+        // device WATCHER only fires on webcam plug events - so screens vanished
+        // on fresh launches (owner-reported). RETRY on the snapshot heartbeat
+        // until screens land (bounded; ~3s apart).
+        if (_screenDiscoveryAttempts < 10 &&
+            !CaptureDevices.Any(d => d.Id.StartsWith("screen:", StringComparison.Ordinal)) &&
+            (DateTime.UtcNow - _screenDiscoveryLastAttempt).TotalSeconds > 3)
+        {
+            _screenDiscoveryAttempts++;
+            _screenDiscoveryLastAttempt = DateTime.UtcNow;
+            _ = RefreshCaptureDevicesAsync();
+        }
 
         // Always apply meeting/ZoomStatus/roster fields from the snapshot BEFORE any
         // early-return so meeting status keeps updating even when capture is unsubscribed.
@@ -10798,9 +10817,45 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // A slot is STALE when its assigned source no longer exists anywhere we
+    // can see - the device left the roster or the participant left the call.
+    private bool IsShowInputSourceStale(ShowInputSlot slot)
+    {
+        if (!slot.IsAssigned)
+        {
+            return false;  // empty, not stale (handled by the free-slot search)
+        }
+        if (!string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
+        {
+            return CaptureDevices.All(d => !string.Equals(d.Id, slot.CaptureDeviceId, StringComparison.Ordinal));
+        }
+        if (!string.IsNullOrWhiteSpace(slot.ParticipantId))
+        {
+            return RoomVideoParticipants.All(p => !string.Equals(p.Id, slot.ParticipantId, StringComparison.Ordinal));
+        }
+        return false;
+    }
+
+    private bool IsDuplicateShowInputAssignment(ShowInputSlot slot)
+    {
+        if (!slot.IsAssigned)
+        {
+            return false;
+        }
+        return ShowInputs.Any(other =>
+            other.SlotNumber < slot.SlotNumber &&
+            other.IsAssigned &&
+            string.Equals(other.CaptureDeviceId, slot.CaptureDeviceId, StringComparison.Ordinal) &&
+            string.Equals(other.ParticipantId, slot.ParticipantId, StringComparison.Ordinal));
+    }
+
     private void AssignConnectedCaptureDeviceToShowInput(CaptureDevice device)
     {
         var targetKind = ResolveShowInputKind(device);
+        LaunchLog.Write(string.Format("assign: {0} kind={1} slots={2} freeInShow={3} freeParked={4}", device.Id, targetKind,
+            ShowInputs.Count,
+            ShowInputs.Count(s => s.InShow && !s.IsAssigned),
+            ShowInputs.Count(s => !s.InShow && !s.IsAssigned)));
         var existing = ShowInputs.FirstOrDefault(slot =>
             slot.Kind == targetKind &&
             string.Equals(slot.CaptureDeviceId, device.Id, StringComparison.Ordinal));
@@ -10811,11 +10866,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var slot = ShowInputs.FirstOrDefault(slot => slot.InShow && !slot.IsAssigned) ??
-            ShowInputs.FirstOrDefault(slot => !slot.InShow && !slot.IsAssigned);
+            ShowInputs.FirstOrDefault(slot => !slot.InShow && !slot.IsAssigned) ??
+            // Lifecycle reclaim: slots hold assignments forever (nothing cleans
+            // up when a device/participant disappears), so a full roster of
+            // GHOSTS silently blocked every new source (owner-reported: ten
+            // stale slots, freeParked=0). Reuse a slot whose source no longer
+            // exists - parked ones first, then in-show ghosts.
+            ShowInputs.FirstOrDefault(slot => !slot.InShow && IsShowInputSourceStale(slot)) ??
+            // Duplicate ghosts: persistence-era damage left MANY parked slots
+            // pointing at one device (rig-measured: 8 of 10 on the same cam).
+            // A parked duplicate of a lower slot is always reclaimable.
+            ShowInputs.FirstOrDefault(slot => !slot.InShow && IsDuplicateShowInputAssignment(slot)) ??
+            ShowInputs.FirstOrDefault(slot => IsShowInputSourceStale(slot));
         if (slot is null)
         {
+            LaunchLog.Write(string.Format("assign: {0} REJECTED - all {1} slots hold live sources", device.Id, ShowInputs.Count));
+            foreach (var s in ShowInputs)
+            {
+                LaunchLog.Write(string.Format("assign: slot{0} kind={1} cap={2} pid={3} inShow={4}", s.SlotNumber, s.Kind, s.CaptureDeviceId ?? "-", s.ParticipantId ?? "-", s.InShow));
+            }
+            CommandStatus = "All Show Inputs are assigned to live sources. Unassign one on the Inputs tab first.";
             return;
         }
+        LaunchLog.Write(string.Format("assign: {0} -> slot {1}", device.Id, slot.SlotNumber));
 
         slot.Kind = targetKind;
         slot.CaptureDeviceId = device.Id;
