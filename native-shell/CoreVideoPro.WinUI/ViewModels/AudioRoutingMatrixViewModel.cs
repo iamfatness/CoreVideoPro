@@ -255,6 +255,43 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         OnPropertyChanged(nameof(BusHeaders));
     }
 
+    // Lifecycle L6 (audio-tab-redesign 4, completed): custom/aux buses are
+    // deletable; the five fixed program buses and ISO columns are not. Cells
+    // for the bus are removed from every row (their sends die with the bus).
+    public static bool IsBusRemovable(string busId) =>
+        busId.StartsWith("aux-", StringComparison.Ordinal) ||
+        busId.StartsWith("bus-", StringComparison.Ordinal);
+
+    [RelayCommand]
+    private void RemoveBus(RoutingBus bus)
+    {
+        if (bus is null || !IsBusRemovable(bus.Id))
+        {
+            return;
+        }
+        var removedRoutes = 0;
+        foreach (var row in Rows)
+        {
+            var cell = row.Cells.FirstOrDefault(c => c.Bus.Id == bus.Id);
+            if (cell is not null)
+            {
+                if (cell.IsRouted)
+                {
+                    cell.IsRouted = false;
+                    removedRoutes++;
+                    RouteChanged?.Invoke(cell);
+                }
+                if (ReferenceEquals(SelectedCrosspoint, cell))
+                {
+                    SelectedCrosspoint = null;
+                }
+                row.Cells.Remove(cell);
+            }
+        }
+        BusHeaders.Remove(bus);
+        OnPropertyChanged(nameof(BusHeaders));
+    }
+
     /// <summary>
     /// Rebuild the matrix for the given sources, preserving any existing crosspoint
     /// state and defaulting new sources into the program and monitor buses at unity.

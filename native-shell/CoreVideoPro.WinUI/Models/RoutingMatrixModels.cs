@@ -4,7 +4,11 @@ namespace CoreVideoPro.WinUI.Models;
 /// A destination bus in the routing matrix (a matrix column). For audio these are
 /// the program/ISO/monitor/stream mix buses a source can be sent to.
 /// </summary>
-public sealed record RoutingBus(string Id, string Label);
+public sealed record RoutingBus(string Id, string Label)
+{
+    // Lifecycle L6: aux/custom buses are deletable; fixed program buses are not.
+    public bool IsRemovable => Id.StartsWith("aux-", StringComparison.Ordinal) || Id.StartsWith("bus-", StringComparison.Ordinal);
+}
 
 /// <summary>
 /// A routable source (a matrix row) — an assigned Input (1–10) or a synthetic
