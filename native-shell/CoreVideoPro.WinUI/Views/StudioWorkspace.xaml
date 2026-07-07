@@ -260,9 +260,11 @@
         <Grid Grid.Row="2" Padding="8" ColumnSpacing="6"
               Visibility="{x:Bind ViewModel.IsStudioTab, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="190" MinWidth="150" MaxWidth="210" />
+                <!-- Design spec: Scenes ~250px, Participants ~240px. The prior
+                     190px squeezed scene names to unreadable ellipsis. -->
+                <ColumnDefinition Width="250" MinWidth="220" MaxWidth="290" />
                 <ColumnDefinition Width="*" MinWidth="360" />
-                <ColumnDefinition Width="190" MinWidth="140" MaxWidth="210" />
+                <ColumnDefinition Width="240" MinWidth="210" MaxWidth="280" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -342,6 +344,7 @@
                                                     <TextBlock Text="{x:Bind Name}"
                                                                FontWeight="SemiBold"
                                                                FontSize="12"
+                                                               TextWrapping="Wrap" MaxLines="2"
                                                                TextTrimming="CharacterEllipsis"
                                                                ToolTipService.ToolTip="{x:Bind Name}" />
                                                     <TextBlock Text="{x:Bind MetaLabel}"
