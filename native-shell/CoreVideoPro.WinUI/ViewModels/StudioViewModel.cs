@@ -5698,7 +5698,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // Screen sources connect CORE-SIDE: connect-capture-device starts the
         // WGC session and frames enter the compositor as "capture:screen:<n>".
-        if (device.Id.StartsWith("screen:", StringComparison.Ordinal))
+        if (device.Id.StartsWith("screen:", StringComparison.Ordinal) || device.Id.StartsWith("window:", StringComparison.Ordinal))
         {
             try
             {
@@ -6112,18 +6112,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
             foreach (var native in nativeDevices)
             {
-                if (!native.Id.StartsWith("screen:", StringComparison.Ordinal))
+                var isScreen = native.Id.StartsWith("screen:", StringComparison.Ordinal);
+                var isWindow = native.Id.StartsWith("window:", StringComparison.Ordinal);
+                if (!isScreen && !isWindow)
                 {
                     continue;
                 }
+                var inputLabel = isWindow ? "Application window" : "Entire display";
                 screens.Add(new CaptureDevice
                 {
                     Id = native.Id,
                     NativeDeviceId = native.Id,
                     Vendor = "Screen capture",
                     Name = native.Name,
-                    Inputs = [new CaptureDeviceInput { Id = "screen", Label = "Entire display" }],
-                    SelectedInputId = "screen",
+                    Inputs = [new CaptureDeviceInput { Id = isWindow ? "window" : "screen", Label = inputLabel }],
+                    SelectedInputId = isWindow ? "window" : "screen",
                     Width = native.Width,
                     Height = native.Height,
                     FrameRate = native.FrameRate,
@@ -9154,7 +9157,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // on fresh launches (owner-reported). RETRY on the snapshot heartbeat
         // until screens land (bounded; ~3s apart).
         if (_screenDiscoveryAttempts < 10 &&
-            !CaptureDevices.Any(d => d.Id.StartsWith("screen:", StringComparison.Ordinal)) &&
+            !CaptureDevices.Any(d => d.Id.StartsWith("screen:", StringComparison.Ordinal) || d.Id.StartsWith("window:", StringComparison.Ordinal)) &&
             (DateTime.UtcNow - _screenDiscoveryLastAttempt).TotalSeconds > 3)
         {
             _screenDiscoveryAttempts++;
@@ -10894,7 +10897,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var device in CaptureDevices)
         {
-            if (!device.Id.StartsWith("screen:", StringComparison.Ordinal) ||
+            if ((!device.Id.StartsWith("screen:", StringComparison.Ordinal) && !device.Id.StartsWith("window:", StringComparison.Ordinal)) ||
                 device.ConnectionState == CaptureConnectionState.Connected ||
                 _screenConnectsInFlight.Contains(device.Id))
             {
