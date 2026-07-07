@@ -1562,6 +1562,13 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
     if (const auto* v = mastering->get("ceilingDbfs")) params.ceilingDbfs = v->asNumber();
     if (const auto* v = mastering->get("glueAmount")) params.glueAmount = v->asNumber();
     if (const auto* v = mastering->get("maxRideDb")) params.maxRideDb = v->asNumber();
+    if (const auto* v = mastering->get("inputGainDb")) params.inputGainDb = v->asNumber();
+    if (const auto* v = mastering->get("highPassHz")) params.highPassHz = v->asNumber();
+    if (const auto* v = mastering->get("lowPassHz")) params.lowPassHz = v->asNumber();
+    if (const auto* v = mastering->get("lowShelfDb")) params.lowShelfDb = v->asNumber();
+    if (const auto* v = mastering->get("presenceDb")) params.presenceDb = v->asNumber();
+    if (const auto* v = mastering->get("highShelfDb")) params.highShelfDb = v->asNumber();
+    if (const auto* v = mastering->get("stereoWidth")) params.stereoWidth = v->asNumber();
     if (params.enabled != masteringParams_.enabled || params.targetLufs != masteringParams_.targetLufs) {
       std::fprintf(stderr, "[mastering] enabled=%d target=%.1f ceiling=%.1f glue=%.2f maxRide=%.1f\n",
                    params.enabled ? 1 : 0, params.targetLufs, params.ceilingDbfs, params.glueAmount,

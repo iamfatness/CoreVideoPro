@@ -121,3 +121,98 @@ TEST(AudioMastering, LoudProgramRidesDownTowardTarget) {
   }
   EXPECT_LT(state.rideGainDb, -3.0);
 }
+
+// --- M2 rack stages ---
+
+// Steady-state RMS of a mono tone after running enough blocks for filter
+// transients to settle.
+static double steadyToneRms(const MasteringParams& params, double freq, double amp) {
+  MasteringState state;
+  double rms = 0.0;
+  size_t start = 0;
+  for (int block = 0; block < 40; ++block) {
+    auto pcm = makeSine(freq, amp, 960, 48000.0, start);
+    start += 960;
+    processMasteringChain(state, params, pcm.data(), 960, 48000.0);
+    rms = blockRms(pcm);  // last block = settled
+  }
+  return rms;
+}
+
+TEST(AudioMasteringRack, HighPassAttenuatesLowTonePassesHigh) {
+  MasteringParams params;
+  params.enabled = true;
+  params.targetLufs = 0.0;  // ride effectively off at this level range
+  params.maxRideDb = 0.0;   // freeze the ride so we measure the filter only
+  params.glueAmount = 0.0;
+  params.ceilingDbfs = -0.01;
+  params.highPassHz = 200.0;
+
+  const double lowRms = steadyToneRms(params, 40.0, 0.1);   // an octave+ below cutoff
+  const double highRms = steadyToneRms(params, 2000.0, 0.1); // well above cutoff
+  EXPECT_LT(lowRms, highRms * 0.5);  // low tone strongly attenuated
+  EXPECT_GT(highRms, 0.05);          // high tone largely preserved
+}
+
+TEST(AudioMasteringRack, LowPassAttenuatesHighTone) {
+  MasteringParams params;
+  params.enabled = true;
+  params.maxRideDb = 0.0;
+  params.glueAmount = 0.0;
+  params.ceilingDbfs = -0.01;
+  params.lowPassHz = 1000.0;
+
+  const double lowRms = steadyToneRms(params, 200.0, 0.1);
+  const double highRms = steadyToneRms(params, 8000.0, 0.1);
+  EXPECT_LT(highRms, lowRms * 0.5);
+}
+
+TEST(AudioMasteringRack, LowShelfBoostRaisesLowTone) {
+  MasteringParams base;
+  base.enabled = true;
+  base.maxRideDb = 0.0;
+  base.glueAmount = 0.0;
+  base.ceilingDbfs = -0.01;
+
+  MasteringParams boosted = base;
+  boosted.lowShelfDb = 6.0;
+
+  const double flat = steadyToneRms(base, 60.0, 0.05);
+  const double lifted = steadyToneRms(boosted, 60.0, 0.05);
+  EXPECT_GT(lifted, flat * 1.5);  // ~+6dB shelf ~= x2
+}
+
+TEST(AudioMasteringRack, StereoWidthZeroCollapsesToMono) {
+  MasteringState state;
+  MasteringParams params;
+  params.enabled = true;
+  params.maxRideDb = 0.0;
+  params.glueAmount = 0.0;
+  params.ceilingDbfs = -0.01;
+  params.stereoWidth = 0.0;
+
+  // Hard-panned stereo: L tone, R silent.
+  std::vector<float> pcm(960 * 2);
+  for (size_t i = 0; i < 960; ++i) {
+    pcm[i * 2] = static_cast<float>(0.2 * std::sin(2.0 * 3.14159265 * 440.0 * i / 48000.0));
+    pcm[i * 2 + 1] = 0.0f;
+  }
+  processMasteringChain(state, params, pcm.data(), 960, 48000.0);
+  // width 0 => L == R at every sample (pure mid).
+  for (size_t i = 0; i < 960; ++i) {
+    EXPECT_LT(std::abs(pcm[i * 2] - pcm[i * 2 + 1]), 1e-5f);
+  }
+}
+
+TEST(AudioMasteringRack, InputGainScales) {
+  MasteringParams params;
+  params.enabled = true;
+  params.maxRideDb = 0.0;
+  params.glueAmount = 0.0;
+  params.ceilingDbfs = -0.01;
+  params.inputGainDb = -6.0;
+
+  const double full = steadyToneRms([] { MasteringParams p; p.enabled = true; p.maxRideDb = 0.0; p.glueAmount = 0.0; p.ceilingDbfs = -0.01; return p; }(), 440.0, 0.1);
+  const double trimmed = steadyToneRms(params, 440.0, 0.1);
+  EXPECT_LT(trimmed, full * 0.6);  // -6dB ~= x0.5
+}
