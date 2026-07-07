@@ -40,6 +40,10 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
     return inner_->connect(deviceId);
   }
+
+  std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
+    return inner_->disconnect(deviceId);
+  }
   std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>& sources) override {
     return inner_->configureSrtIngestSources(sources);
   }

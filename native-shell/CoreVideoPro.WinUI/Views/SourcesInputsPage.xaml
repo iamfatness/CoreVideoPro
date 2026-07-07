@@ -203,6 +203,12 @@
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
                                                 Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                        <!-- Lifecycle L2: stop the session + unassign its slots -->
+                                        <Button Content="Take offline"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Command="{Binding ViewModel.TakeCaptureDeviceOfflineCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}"
+                                                Visibility="{x:Bind IsConnected, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                         <Button Content="Color grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenCaptureDeviceColorGradeEditorCommand, ElementName=SourcesInputsRoot}"

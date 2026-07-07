@@ -259,6 +259,16 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
     return infosLocked();
   }
 
+  std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto session = sessions_.find(deviceId);
+    if (session != sessions_.end()) {
+      session->second->stop();
+      sessions_.erase(session);
+    }
+    return infosLocked();
+  }
+
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto targets = enumerateMonitors();

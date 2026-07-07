@@ -397,6 +397,11 @@ rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
   return captureDeviceArray(modules_.captureDevice->connect(deviceId));
 }
 
+rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
+  std::fprintf(stderr, "[lifecycle] disconnect capture %s\n", deviceId.c_str());
+  return captureDeviceArray(modules_.captureDevice->disconnect(deviceId));
+}
+
 void MediaCore::registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height) {
   if (auto* adapter = dynamic_cast<modules::WinUiCaptureDeviceAdapter*>(modules_.captureDevice.get())) {
     adapter->registerCaptureBuffer(deviceId, shmName, width, height);

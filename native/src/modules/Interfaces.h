@@ -647,6 +647,9 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) = 0;
   virtual std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) = 0;
   virtual std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) = 0;
+  // Lifecycle L2: stop the device session and release its resources. Default
+  // no-op for adapters without live sessions.
+  virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
   virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
 };
