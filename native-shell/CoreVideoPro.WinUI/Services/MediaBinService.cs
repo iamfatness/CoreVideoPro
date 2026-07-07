@@ -66,6 +66,31 @@ public sealed class MediaBinService
         return imported;
     }
 
+    // Lifecycle L4 (source-lifecycle-spec): remove an asset from the bin.
+    // NON-DESTRUCTIVE by design (professional product): the file is moved to a
+    // .trash subfolder of the media root, not hard-deleted, so an accidental
+    // remove is recoverable from disk. Returns true when the file was moved.
+    public bool DeleteAsset(MediaAsset asset)
+    {
+        if (asset is null || string.IsNullOrWhiteSpace(asset.FilePath) || !File.Exists(asset.FilePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var trashFolder = Path.Combine(MediaBinClassifier.DefaultMediaRoot, ".trash");
+            Directory.CreateDirectory(trashFolder);
+            var destination = BuildUniqueDestinationPath(trashFolder, Path.GetFileName(asset.FilePath));
+            File.Move(asset.FilePath, destination);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static MediaBinGroup ToMediaBinGroup(MediaBinGroupDescriptor group) =>
         new()
         {

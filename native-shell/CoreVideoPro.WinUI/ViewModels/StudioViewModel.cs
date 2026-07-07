@@ -5168,6 +5168,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // Lifecycle L4 (source-lifecycle-spec): remove a media asset from the bin.
+    // If a scene layer or Show Input references it, we REFUSE with an honest
+    // message naming the references (no silent no-ops; the operator unassigns
+    // first). Otherwise: stop playback if it is the playing asset, move the
+    // file to the recoverable .trash, clear selection, refresh.
+    [RelayCommand]
+    private void RemoveMediaAsset(string assetId)
+    {
+        var asset = FindMediaAsset(assetId);
+        if (asset is null)
+        {
+            return;
+        }
+
+        var references = FindMediaAssetReferences(asset.Id);
+        if (references.Count > 0)
+        {
+            CommandStatus = $"'{asset.Name}' is in use ({string.Join(", ", references)}). Unassign it there before removing.";
+            LaunchLog.Write($"lifecycle: media remove blocked {asset.Id} - referenced by {string.Join("; ", references)}");
+            return;
+        }
+
+        if (IsMediaAssetPlaying(asset.Id))
+        {
+            SelectedMediaAssetPlaying = false;
+            MediaPlaybackStatus = "No media asset playing";
+        }
+
+        var removed = _mediaBinService.DeleteAsset(asset);
+        if (!removed)
+        {
+            CommandStatus = $"Could not remove '{asset.Name}'.";
+            return;
+        }
+
+        LaunchLog.Write($"lifecycle: media removed {asset.Id} ({asset.Name})");
+        if (string.Equals(SelectedMediaAssetId, asset.Id, StringComparison.Ordinal))
+        {
+            SelectedMediaAssetId = null;
+            SelectedMediaAssetName = string.Empty;
+            SelectedMediaAssetPath = string.Empty;
+        }
+        RefreshMediaBin();
+        OnPropertyChanged(nameof(HasSelectedMediaAsset));
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        CommandStatus = $"Removed '{asset.Name}' (recoverable from the media .trash folder).";
+    }
+
+    // Scene layers and Show Input slots that reference a media asset, as
+    // human-readable labels for the refuse-when-in-use message.
+    private IReadOnlyList<string> FindMediaAssetReferences(string assetId)
+    {
+        var references = new List<string>();
+        foreach (var (sceneId, routes) in _sceneRoutes)
+        {
+            var uses = routes.Any(route =>
+                ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out var id) &&
+                string.Equals(id, assetId, StringComparison.Ordinal));
+            if (uses)
+            {
+                var sceneName = _scenes.FirstOrDefault(s => string.Equals(s.Id, sceneId, StringComparison.Ordinal))?.Name ?? sceneId;
+                references.Add($"scene '{sceneName}'");
+            }
+        }
+        foreach (var slot in ShowInputs)
+        {
+            if (ShowInputRosterService.TryGetMediaAssetId(slot.ParticipantId, out var id) &&
+                string.Equals(id, assetId, StringComparison.Ordinal))
+            {
+                references.Add($"Input {slot.SlotNumber}");
+            }
+        }
+        return references;
+    }
+
     public void UseSelectedMediaAssetAsBrandLogo()
     {
         if (string.IsNullOrWhiteSpace(SelectedMediaAssetId))

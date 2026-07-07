@@ -157,6 +157,15 @@ public static class MediaBinClassifier
                         continue;
                     }
 
+                    // Lifecycle L4: skip dot-folders (e.g. the .trash recycle bin
+                    // where removed assets are moved) so removed media never
+                    // re-appears in the bin.
+                    if (relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        .Any(segment => segment.StartsWith('.')))
+                    {
+                        continue;
+                    }
+
                     var kind = ClassifyFile(relativePath, fileName);
                     if (kind is null)
                     {
