@@ -24,14 +24,20 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                   Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
         <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <!-- C4: Auto so the SETUP-only right panel collapses to zero in
-                     SHOW mode and the console gets the full width. -->
-                <ColumnDefinition Width="Auto" />
+                <!-- SETUP three-region layout (audio-tab-redesign 4):
+                     Devices | Routing matrix | Processing -->
+                <ColumnDefinition Width="340" />
+                <ColumnDefinition Width="*" MinWidth="420" />
+                <ColumnDefinition Width="360" />
             </Grid.ColumnDefinitions>
 
-            <StackPanel Spacing="12">
+            <!-- Header: mode switch, first issue, diagnostics drawer -->
+            <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Spacing="12">
                 <Border Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
                         <Grid ColumnSpacing="8">
@@ -112,17 +118,21 @@
                         </Expander>
                         <!-- C1: the master loudness/bus/limiter readout trio moved into the
                              console's MASTER strip (big LUFS + meters). -->
+
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- DEVICES and master processing -->
+            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}" VerticalAlignment="Top">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Devices &amp; master" Style="{StaticResource OperatorSectionTitle}" />
                         <Border Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6"
                                 Padding="12">
-                            <Grid ColumnSpacing="12" RowSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="1.4*" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="8">
                                 <StackPanel Spacing="5">
                                     <TextBlock Text="Monitor output"
                                                FontSize="12"
@@ -132,14 +142,13 @@
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
                                 </StackPanel>
-                                <ComboBox Grid.Column="1"
-                                          Header="Device"
+                                <ComboBox Header="Device"
                                           ItemsSource="{x:Bind ViewModel.AudioRenderDevices, Mode=OneWay}"
                                           SelectedValue="{x:Bind ViewModel.SelectedAudioMonitorDeviceId, Mode=TwoWay}"
                                           SelectedValuePath="Id"
                                           DisplayMemberPath="Name"
                                           HorizontalAlignment="Stretch" />
-                                <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
+                                <StackPanel Spacing="4">
                                     <ToggleButton Content="Monitor"
                                                   IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
                                                   MinWidth="96"
@@ -161,19 +170,14 @@
                                                    HorizontalAlignment="Right" />
                                     </Grid>
                                 </StackPanel>
-                            </Grid>
+                            </StackPanel>
                         </Border>
                         <Border Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6"
                                 Padding="12">
-                            <Grid ColumnSpacing="12" RowSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="1.3*" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="8">
                                 <StackPanel Spacing="5">
                                     <TextBlock Text="Local audio source"
                                                FontSize="12"
@@ -187,14 +191,13 @@
                                                Foreground="{StaticResource StudioWarningBrush}"
                                                TextWrapping="WrapWholeWords" />
                                 </StackPanel>
-                                <ComboBox Grid.Column="1"
-                                          Header="Input / loopback"
+                                <ComboBox Header="Input / loopback"
                                           ItemsSource="{x:Bind ViewModel.AudioCaptureDevices, Mode=OneWay}"
                                           SelectedValue="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceId, Mode=TwoWay}"
                                           SelectedValuePath="Id"
                                           DisplayMemberPath="DisplayLabel"
                                           HorizontalAlignment="Stretch" />
-                                <StackPanel Grid.Column="2" Spacing="4" MinWidth="120">
+                                <StackPanel Spacing="4">
                                     <ToggleButton Content="Source"
                                                   IsChecked="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}"
                                                   MinWidth="96"
@@ -202,10 +205,9 @@
                                     <TextBlock Text="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceName, Mode=OneWay}"
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
-                                               TextWrapping="WrapWholeWords"
-                                               MaxWidth="180" />
+                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
-                            </Grid>
+                            </StackPanel>
                         </Border>
                         <Grid ColumnSpacing="10"
                               Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
@@ -271,10 +273,11 @@
                                           Header="Mastering"
                                           IsOn="{x:Bind ViewModel.MasteringEnabled, Mode=TwoWay}" />
                         </Grid>
+                </StackPanel>
+            </Border>
 
-                    </StackPanel>
-                </Border>
-
+            <!-- ROUTING MATRIX -->
+            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="12">
                 <!-- C3: SETUP surface — buses + the routing matrix -->
                 <Border Style="{StaticResource OperatorSectionBorder}"
                         Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
@@ -313,9 +316,10 @@
                 </Border>
             </StackPanel>
 
+            <!-- PROCESSING -->
             <!-- C4: the right panel is SETUP-only — the console rack strip carries
                  the per-channel processors in SHOW mode. -->
-            <Border Grid.Column="1" Style="{StaticResource OperatorSectionBorder}" Width="340"
+            <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource OperatorSectionBorder}" VerticalAlignment="Top"
                     Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
