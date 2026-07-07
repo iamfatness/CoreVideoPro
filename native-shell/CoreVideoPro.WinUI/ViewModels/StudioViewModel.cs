@@ -10818,6 +10818,50 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // Lifecycle L2: take a device offline - stop its core session (WGC/SRT),
+    // unassign every slot that references it, refresh. Webcams using the WinUI
+    // MediaCapture bridge keep their existing capture-toggle path; this covers
+    // the core-session kinds (screens today).
+    [RelayCommand]
+    private async Task TakeCaptureDeviceOfflineAsync(string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return;
+        }
+        LaunchLog.Write(string.Format("lifecycle: take offline {0}", deviceId));
+        try
+        {
+            var statuses = await _bridge.DisconnectNativeCaptureDeviceAsync(deviceId).ConfigureAwait(false);
+            var match = statuses.FirstOrDefault(s => s.Id == deviceId);
+            RunOnUiThread(() =>
+            {
+                var device = CaptureDevices.FirstOrDefault(d => d.Id == deviceId);
+                if (device is not null)
+                {
+                    device.ConnectionState = CaptureConnectionState.Detected;
+                    device.SignalPresent = match?.SignalPresent ?? false;
+                }
+                foreach (var editor in ShowInputEditors.Where(e => string.Equals(e.CaptureDeviceId, deviceId, StringComparison.Ordinal)).ToList())
+                {
+                    LaunchLog.Write(string.Format("lifecycle: offline {0} unassigns slot {1}", deviceId, editor.SlotNumber));
+                    editor.Unassign();
+                }
+                RefreshShowInputEditors(force: true);
+                RefreshDualCaptureSourceOptions();
+                RefreshCaptureFleetSummary();
+                RefreshPreviewRoutingState();
+                RefreshMultiviewGridTiles();
+                CommandStatus = string.Format("{0} is offline.", device?.Name ?? deviceId);
+                _ = TrySyncMediaCoreAsync();
+            });
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write(string.Format("lifecycle: take offline failed {0}: {1}", deviceId, ex.Message));
+        }
+    }
+
     // Lifecycle L1: operator-facing unassign (button on each Show Input row).
     [RelayCommand]
     private void UnassignShowInput(ShowInputSlotViewModel editor)

@@ -130,6 +130,12 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         _supervisor.ListCaptureDevicesAsync(cancellationToken);
 
+    // Lifecycle L2: core-side session teardown for a capture device.
+    public Task<IReadOnlyList<NativeCaptureDeviceStatus>> DisconnectNativeCaptureDeviceAsync(
+        string deviceId,
+        CancellationToken cancellationToken = default) =>
+        _supervisor.DisconnectCaptureDeviceAsync(deviceId, cancellationToken);
+
     public async Task<RawCaptureSnapshot> JoinZoomAsync(
         string meetingUrl,
         string displayName,
