@@ -169,6 +169,31 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         RouteChanged?.Invoke(cell);
     }
 
+    // Lifecycle L3 (source-lifecycle-spec 3.2): clear EVERY send of one source
+    // in one act - the per-cell remove made unrouting a source a 5-click chore.
+    [RelayCommand]
+    private void ClearSourceSends(AudioRoutingSourceRowViewModel row)
+    {
+        if (row is null)
+        {
+            return;
+        }
+        var cleared = 0;
+        foreach (var cell in row.Cells)
+        {
+            if (cell.IsRouted)
+            {
+                cell.IsRouted = false;
+                cleared++;
+                RouteChanged?.Invoke(cell);
+            }
+        }
+        if (cleared > 0 && SelectedCrosspoint is not null && row.Cells.Contains(SelectedCrosspoint))
+        {
+            SelectedCrosspoint = null;
+        }
+    }
+
     [RelayCommand]
     private void RemoveSelectedRoute()
     {

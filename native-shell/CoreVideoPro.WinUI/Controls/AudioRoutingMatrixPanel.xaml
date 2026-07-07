@@ -67,9 +67,22 @@
                                     <StackPanel Orientation="Horizontal">
                                         <Border Width="154" Height="24" Padding="4,0,8,0" VerticalAlignment="Center"
                                                 Background="#141A20" BorderBrush="#25303A" BorderThickness="0,0,1,1">
-                                            <TextBlock Text="{x:Bind SourceLabel}" FontSize="10" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource StudioTextBrush}"
-                                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{x:Bind SourceLabel}" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource StudioTextBrush}"
+                                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                <!-- Lifecycle L3: one act clears every send of this source -->
+                                                <Button Grid.Column="1" Content="&#xE894;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                                        Padding="3,1" Margin="4,0,0,0" VerticalAlignment="Center"
+                                                        Background="Transparent" BorderThickness="0" Opacity="0.55"
+                                                        Command="{Binding ViewModel.AudioRoutingMatrix.ClearSourceSendsCommand, ElementName=MatrixPanelRoot}"
+                                                        CommandParameter="{x:Bind}"
+                                                        ToolTipService.ToolTip="Clear all sends for this source" />
+                                            </Grid>
                                         </Border>
                                         <ItemsRepeater ItemsSource="{x:Bind Cells}">
                                             <ItemsRepeater.Layout>
