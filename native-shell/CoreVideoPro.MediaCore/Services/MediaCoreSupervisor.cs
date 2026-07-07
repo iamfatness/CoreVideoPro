@@ -473,6 +473,29 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    // Lifecycle L2: stop the device session core-side (WGC/SRT teardown).
+    public async Task<IReadOnlyList<NativeCaptureDeviceStatus>> DisconnectCaptureDeviceAsync(
+        string deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "disconnect-capture-device",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        using (response)
+        {
+            return CoreProtocolParser.TryParseCaptureDevices(response) ?? [];
+        }
+    }
+
     // Announce a WinUI capture-card shared-memory buffer to the core so it ingests
     // the real BGRA frames as a "capture:<deviceId>" source. Best-effort.
     public async Task RegisterCaptureShmAsync(

@@ -161,6 +161,14 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
   }
 
+  if (hasType(request, "disconnect-capture-device")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "disconnect-capture-device requires a payload.");
+    }
+    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.disconnectCaptureDevice(payload->getString("deviceId"))}});
+  }
+
   if (hasType(request, "register-capture-shm")) {
     const Json* payload = request.get("payload");
     if (!payload || !payload->isObject()) {
