@@ -39,11 +39,58 @@ namespace wgd = winrt::Windows::Graphics::DirectX;
 
 struct MonitorTarget {
   HMONITOR monitor = nullptr;
-  std::string id;
+  HWND window = nullptr;   // set for window targets; monitor is null then
+  bool isWindow = false;
+  std::string id;          // "screen:<n>" or "window:<hwnd-hex>"
   std::string name;
   int width = 0;
   int height = 0;
 };
+
+// Top-level, visible, titled application windows are capturable sources
+// (capture-sources-spec: capture a browser, a slide deck, any app). Tool
+// windows, our own windows, and cloaked/hidden windows are excluded.
+inline std::vector<MonitorTarget> enumerateWindows() {
+  std::vector<MonitorTarget> targets;
+  EnumWindows(
+      [](HWND hwnd, LPARAM state) -> BOOL {
+        auto* list = reinterpret_cast<std::vector<MonitorTarget>*>(state);
+        if (!IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != nullptr) {
+          return TRUE;
+        }
+        const LONG exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+        if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
+          return TRUE;
+        }
+        char title[256] = {};
+        const int len = GetWindowTextA(hwnd, title, sizeof(title));
+        if (len <= 0) {
+          return TRUE;
+        }
+        RECT rect{};
+        if (!GetWindowRect(hwnd, &rect)) {
+          return TRUE;
+        }
+        const int w = rect.right - rect.left;
+        const int h = rect.bottom - rect.top;
+        if (w < 64 || h < 64) {
+          return TRUE;  // tray/zero-size helpers
+        }
+        MonitorTarget target;
+        target.window = hwnd;
+        target.isWindow = true;
+        target.width = w;
+        target.height = h;
+        char idbuf[32] = {};
+        std::snprintf(idbuf, sizeof(idbuf), "window:%p", reinterpret_cast<void*>(hwnd));
+        target.id = idbuf;
+        target.name = std::string(title, static_cast<size_t>(len));
+        list->push_back(std::move(target));
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&targets));
+  return targets;
+}
 
 std::vector<MonitorTarget> enumerateMonitors() {
   std::vector<MonitorTarget> targets;
@@ -100,9 +147,12 @@ class WgcSession {
     auto interop = winrt::get_activation_factory<wgc::GraphicsCaptureItem>()
                        .as<IGraphicsCaptureItemInterop>();
     wgc::GraphicsCaptureItem item{nullptr};
-    if (FAILED(interop->CreateForMonitor(target.monitor,
-                                         winrt::guid_of<wgc::GraphicsCaptureItem>(),
-                                         winrt::put_abi(item)))) {
+    const HRESULT created = target.isWindow
+        ? interop->CreateForWindow(target.window, winrt::guid_of<wgc::GraphicsCaptureItem>(),
+                                   winrt::put_abi(item))
+        : interop->CreateForMonitor(target.monitor, winrt::guid_of<wgc::GraphicsCaptureItem>(),
+                                    winrt::put_abi(item));
+    if (FAILED(created)) {
       return false;
     }
     width_ = item.Size().Width;
@@ -271,7 +321,9 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
 
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto targets = enumerateMonitors();
+    auto targets = enumerateMonitors();
+    const auto windows = enumerateWindows();
+    targets.insert(targets.end(), windows.begin(), windows.end());
     for (const auto& target : targets) {
       if (target.id != deviceId) {
         continue;
@@ -321,16 +373,19 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
  private:
   std::vector<CaptureDeviceInfo> infosLocked() const {
     std::vector<CaptureDeviceInfo> infos;
-    for (const auto& target : enumerateMonitors()) {
+    auto targets = enumerateMonitors();
+    const auto windows = enumerateWindows();
+    targets.insert(targets.end(), windows.begin(), windows.end());
+    for (const auto& target : targets) {
       CaptureDeviceInfo info;
       info.id = target.id;
       info.name = target.name;
-      info.kind = "screen";
+      info.kind = target.isWindow ? "window" : "screen";
       info.vendor = "Windows Graphics Capture";
-      info.inputIds = {"screen"};
-      info.inputLabels = {"Entire display"};
+      info.inputIds = {target.isWindow ? "window" : "screen"};
+      info.inputLabels = {target.isWindow ? "Application window" : "Entire display"};
       info.inputHasEmbeddedAudio = {false};
-      info.selectedInputId = "screen";
+      info.selectedInputId = target.isWindow ? "window" : "screen";
       info.width = target.width;
       info.height = target.height;
       info.frameRate = 60;
