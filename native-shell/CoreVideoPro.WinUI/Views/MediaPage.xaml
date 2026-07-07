@@ -115,6 +115,7 @@
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Text="{x:Bind Name}" FontSize="12"
                                                                VerticalAlignment="Center" />
@@ -132,6 +133,12 @@
                                                             Style="{StaticResource OperatorGhostButton}"
                                                             Command="{Binding ViewModel.PlayMediaAssetCommand, ElementName=MediaRoot}"
                                                             CommandParameter="{x:Bind Id}" />
+                                                    <!-- Lifecycle L4: remove asset (to recoverable .trash) -->
+                                                    <Button Grid.Column="4" Content="Remove"
+                                                            Style="{StaticResource OperatorGhostButton}"
+                                                            Command="{Binding ViewModel.RemoveMediaAssetCommand, ElementName=MediaRoot}"
+                                                            CommandParameter="{x:Bind Id}"
+                                                            ToolTipService.ToolTip="Remove from the bin (recoverable from the .trash folder; blocked while a scene or Input uses it)" />
                                                 </Grid>
                                             </DataTemplate>
                                         </ItemsRepeater.ItemTemplate>
