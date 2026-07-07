@@ -17,8 +17,14 @@
     <SolidColorBrush x:Key="StudioWarningBrush" Color="#E8A41F" />       <!-- pgm alias -->
     <SolidColorBrush x:Key="StudioAirBrush" Color="#E5433F" />           <!-- air red - on-air, record -->
 
+    <!-- Design-system fonts (bundled OFL): Space Grotesk = display/UI;
+         IBM Plex Mono = labels, telemetry, numeric values. -->
+    <FontFamily x:Key="StudioUiFont">ms-appx:///Assets/Fonts/SpaceGrotesk.ttf#Space Grotesk</FontFamily>
+    <FontFamily x:Key="StudioMonoFont">ms-appx:///Assets/Fonts/IBMPlexMono-Regular.ttf#IBM Plex Mono</FontFamily>
+
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{StaticResource StudioTextBrush}" />
+        <Setter Property="FontFamily" Value="{StaticResource StudioUiFont}" />
     </Style>
 
     <Style TargetType="CheckBox">

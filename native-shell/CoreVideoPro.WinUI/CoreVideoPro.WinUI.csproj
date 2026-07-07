@@ -38,6 +38,8 @@
 
   <ItemGroup>
     <Content Include="Assets\*.png" />
+    <!-- Design-system fonts (bundled, OFL): Space Grotesk (UI) + IBM Plex Mono (labels). -->
+    <Content Include="Assets\Fonts\*.ttf" />
   </ItemGroup>
 
   <!-- Staged by scripts/package-native-msix.ps1 before MSIX publish (see MsixPayloadDir). -->
