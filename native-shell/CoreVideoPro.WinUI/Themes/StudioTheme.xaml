@@ -2,12 +2,20 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <SolidColorBrush x:Key="StudioTextBrush" Color="#E8F0EC" />
-    <SolidColorBrush x:Key="StudioTextSecondaryBrush" Color="#B8C8C0" />
-    <SolidColorBrush x:Key="StudioSurfaceBrush" Color="#141C24" />
-    <SolidColorBrush x:Key="StudioSurfaceRaisedBrush" Color="#1A242E" />
-    <SolidColorBrush x:Key="StudioFieldBrush" Color="#0C1118" />
-    <SolidColorBrush x:Key="StudioWarningBrush" Color="#F3A64B" />
+    <!-- CoreVideo Pro design tokens (design_handoff_corevideo_pro). -->
+    <SolidColorBrush x:Key="StudioTextBrush" Color="#E9EDEF" />          <!-- tx primary -->
+    <SolidColorBrush x:Key="StudioTextSecondaryBrush" Color="#8B949B" /> <!-- mut -->
+    <SolidColorBrush x:Key="StudioDimBrush" Color="#5C656B" />           <!-- dim tertiary, mono labels -->
+    <SolidColorBrush x:Key="StudioSurfaceBrush" Color="#16191B" />       <!-- surface raised controls -->
+    <SolidColorBrush x:Key="StudioSurfaceRaisedBrush" Color="#1B1F22" /> <!-- surface, one step up -->
+    <SolidColorBrush x:Key="StudioFieldBrush" Color="#0E1112" />         <!-- tile inset wells -->
+    <SolidColorBrush x:Key="StudioTileBrush" Color="#0E1112" />          <!-- tile alias -->
+    <SolidColorBrush x:Key="StudioLine2Brush" Color="#0DFFFFFF" />       <!-- line2 subtle divider -->
+    <!-- Status tokens (LOAD-BEARING - encode live-production state). -->
+    <SolidColorBrush x:Key="StudioLiveBrush" Color="#22C86E" />          <!-- live green -->
+    <SolidColorBrush x:Key="StudioProgramBrush" Color="#E8A41F" />       <!-- pgm amber -->
+    <SolidColorBrush x:Key="StudioWarningBrush" Color="#E8A41F" />       <!-- pgm alias -->
+    <SolidColorBrush x:Key="StudioAirBrush" Color="#E5433F" />           <!-- air red - on-air, record -->
 
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{StaticResource StudioTextBrush}" />
@@ -58,7 +66,7 @@
 
     <Style x:Key="StudioAccentButton" TargetType="Button">
         <Setter Property="Background" Value="{StaticResource StudioAccentBrush}" />
-        <Setter Property="Foreground" Value="#07110E" />
+        <Setter Property="Foreground" Value="#06170D" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="Padding" Value="16,10" />

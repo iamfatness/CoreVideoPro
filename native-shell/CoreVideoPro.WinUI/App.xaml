@@ -15,11 +15,15 @@
             <conv:StudioTabEqualsConverter x:Key="TabEquals" />
             <conv:TabActiveConverter x:Key="TabActive" />
             <conv:StringNotEmptyToVisibilityConverter x:Key="NotEmptyToVis" />
-            <SolidColorBrush x:Key="StudioBackgroundBrush" Color="#0A0F16" />
-            <SolidColorBrush x:Key="StudioPanelBrush" Color="#11161A" />
-            <SolidColorBrush x:Key="StudioAccentBrush" Color="#3DDC97" />
-            <SolidColorBrush x:Key="StudioMutedBrush" Color="#94A59B" />
-            <SolidColorBrush x:Key="StudioBorderBrush" Color="#2A343C" />
+            <!-- CoreVideo Pro design system tokens (design_handoff_corevideo_pro).
+                 bg / panel / live / mut / line. Dark-theme only. -->
+            <SolidColorBrush x:Key="StudioBackgroundBrush" Color="#0A0B0C" />
+            <SolidColorBrush x:Key="StudioPanelBrush" Color="#101315" />
+            <SolidColorBrush x:Key="StudioAccentBrush" Color="#22C86E" />
+            <SolidColorBrush x:Key="StudioMutedBrush" Color="#8B949B" />
+            <!-- line: rgba(255,255,255,0.09) - a subtle translucent hairline
+                 that adapts to whatever surface sits behind it. -->
+            <SolidColorBrush x:Key="StudioBorderBrush" Color="#17FFFFFF" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>
