@@ -28,6 +28,14 @@ struct MasteringParams {
   double ceilingDbfs = -1.3;   // sample-peak ceiling with margin until true-peak lands
   double glueAmount = 0.5;     // 0..1 scales the glue compressor engagement
   double maxRideDb = 12.0;     // loudness ride bound (+/-)
+  // M2 rack stages (mastering-chain-spec, TG-style). 0/neutral = stage bypassed.
+  double inputGainDb = 0.0;    // INPUT trim
+  double highPassHz = 0.0;     // FILTER rumble cut (0 = off)
+  double lowPassHz = 0.0;      // FILTER air cut (0 = off)
+  double lowShelfDb = 0.0;     // TONE low shelf @ 120Hz
+  double presenceDb = 0.0;     // TONE presence bell @ 3kHz
+  double highShelfDb = 0.0;    // TONE high shelf @ 10kHz
+  double stereoWidth = 1.0;    // SPREADER: 0 = mono, 1 = as-is, 2 = wide
 };
 
 struct MasteringState {
@@ -41,7 +49,71 @@ struct MasteringState {
   double glueEnvelope = 0.0;
   double glueGainDb = 0.0;
   LimiterState limiter;
+  // M2 rack filter/EQ states (per channel, persist across blocks).
+  AudioBiquadState hpL, hpR, lpL, lpR;
+  AudioBiquadState lowShelfL, lowShelfR, presenceL, presenceR, highShelfL, highShelfR;
 };
+
+// RBJ cookbook shelves (peaking already lives in AudioDsp.h as eqPeaking).
+inline AudioBiquadCoefficients masteringLowShelf(double sampleRate, double frequencyHz, double gainDb) {
+  const double a = std::pow(10.0, gainDb / 40.0);
+  const double w0 = 2.0 * kAudioPi * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / 2.0 * std::sqrt(2.0);
+  const double twoSqrtAAlpha = 2.0 * std::sqrt(a) * alpha;
+  const double a0 = (a + 1.0) + (a - 1.0) * cosW0 + twoSqrtAAlpha;
+  AudioBiquadCoefficients c;
+  c.b0 = a * ((a + 1.0) - (a - 1.0) * cosW0 + twoSqrtAAlpha) / a0;
+  c.b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cosW0) / a0;
+  c.b2 = a * ((a + 1.0) - (a - 1.0) * cosW0 - twoSqrtAAlpha) / a0;
+  c.a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cosW0) / a0;
+  c.a2 = ((a + 1.0) + (a - 1.0) * cosW0 - twoSqrtAAlpha) / a0;
+  return c;
+}
+
+inline AudioBiquadCoefficients masteringHighShelf(double sampleRate, double frequencyHz, double gainDb) {
+  const double a = std::pow(10.0, gainDb / 40.0);
+  const double w0 = 2.0 * kAudioPi * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / 2.0 * std::sqrt(2.0);
+  const double twoSqrtAAlpha = 2.0 * std::sqrt(a) * alpha;
+  const double a0 = (a + 1.0) - (a - 1.0) * cosW0 + twoSqrtAAlpha;
+  AudioBiquadCoefficients c;
+  c.b0 = a * ((a + 1.0) + (a - 1.0) * cosW0 + twoSqrtAAlpha) / a0;
+  c.b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cosW0) / a0;
+  c.b2 = a * ((a + 1.0) + (a - 1.0) * cosW0 - twoSqrtAAlpha) / a0;
+  c.a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cosW0) / a0;
+  c.a2 = ((a + 1.0) - (a - 1.0) * cosW0 - twoSqrtAAlpha) / a0;
+  return c;
+}
+
+inline AudioBiquadCoefficients masteringHighPass(double sampleRate, double frequencyHz, double q = 0.707) {
+  const double w0 = 2.0 * kAudioPi * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * q);
+  const double a0 = 1.0 + alpha;
+  AudioBiquadCoefficients c;
+  c.b0 = (1.0 + cosW0) / 2.0 / a0;
+  c.b1 = -(1.0 + cosW0) / a0;
+  c.b2 = (1.0 + cosW0) / 2.0 / a0;
+  c.a1 = -2.0 * cosW0 / a0;
+  c.a2 = (1.0 - alpha) / a0;
+  return c;
+}
+
+inline AudioBiquadCoefficients masteringLowPass(double sampleRate, double frequencyHz, double q = 0.707) {
+  const double w0 = 2.0 * kAudioPi * frequencyHz / sampleRate;
+  const double cosW0 = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * q);
+  const double a0 = 1.0 + alpha;
+  AudioBiquadCoefficients c;
+  c.b0 = (1.0 - cosW0) / 2.0 / a0;
+  c.b1 = (1.0 - cosW0) / a0;
+  c.b2 = (1.0 - cosW0) / 2.0 / a0;
+  c.a1 = -2.0 * cosW0 / a0;
+  c.a2 = (1.0 - alpha) / a0;
+  return c;
+}
 
 // Process one interleaved-stereo block in place. Returns the current ride gain
 // in dB (telemetry; never echo it into settings - law 5).
@@ -49,6 +121,37 @@ inline double processMasteringChain(MasteringState& state, const MasteringParams
                                     float* interleaved, size_t frames, double sampleRate) {
   if (!params.enabled || interleaved == nullptr || frames == 0 || sampleRate <= 0.0) {
     return state.rideGainDb;
+  }
+
+  // M2 rack, front of chain (TG order: INPUT -> FILTER -> TONE, all before the
+  // dynamics). Each stage is bypassed at its neutral value so "off" is exactly
+  // bit-identical to no stage. Filter/EQ biquad state persists across blocks.
+  if (params.inputGainDb != 0.0) {
+    const double g = std::pow(10.0, params.inputGainDb / 20.0);
+    for (size_t i = 0; i < frames * 2; ++i) {
+      interleaved[i] = static_cast<float>(interleaved[i] * g);
+    }
+  }
+  auto applyStereoBiquad = [&](const AudioBiquadCoefficients& c, AudioBiquadState& sL, AudioBiquadState& sR) {
+    for (size_t i = 0; i < frames; ++i) {
+      interleaved[i * 2] = static_cast<float>(biquadProcessSample(c, sL, interleaved[i * 2]));
+      interleaved[i * 2 + 1] = static_cast<float>(biquadProcessSample(c, sR, interleaved[i * 2 + 1]));
+    }
+  };
+  if (params.highPassHz > 0.0) {
+    applyStereoBiquad(masteringHighPass(sampleRate, params.highPassHz), state.hpL, state.hpR);
+  }
+  if (params.lowPassHz > 0.0 && params.lowPassHz < sampleRate / 2.0) {
+    applyStereoBiquad(masteringLowPass(sampleRate, params.lowPassHz), state.lpL, state.lpR);
+  }
+  if (params.lowShelfDb != 0.0) {
+    applyStereoBiquad(masteringLowShelf(sampleRate, 120.0, params.lowShelfDb), state.lowShelfL, state.lowShelfR);
+  }
+  if (params.presenceDb != 0.0) {
+    applyStereoBiquad(eqPeaking(sampleRate, 3000.0, params.presenceDb, 1.0), state.presenceL, state.presenceR);
+  }
+  if (params.highShelfDb != 0.0) {
+    applyStereoBiquad(masteringHighShelf(sampleRate, 10000.0, params.highShelfDb), state.highShelfL, state.highShelfR);
   }
 
   // 1) Measure: momentary loudness of this block folded into a ~20s average
@@ -130,7 +233,22 @@ inline double processMasteringChain(MasteringState& state, const MasteringParams
     }
   }
 
-  // 5) Ceiling: the shipped smooth peak limiter (persistent state).
+  // 5) SPREADER: mid/side stereo width (TG spreader). width 1.0 = identity,
+  //    0 = mono, 2 = double the side signal. Applied before the ceiling so the
+  //    limiter still guarantees the true peak after widening.
+  if (params.stereoWidth != 1.0) {
+    const double w = std::clamp(params.stereoWidth, 0.0, 2.0);
+    for (size_t i = 0; i < frames; ++i) {
+      const double l = interleaved[i * 2];
+      const double r = interleaved[i * 2 + 1];
+      const double mid = (l + r) * 0.5;
+      const double side = (l - r) * 0.5 * w;
+      interleaved[i * 2] = static_cast<float>(mid + side);
+      interleaved[i * 2 + 1] = static_cast<float>(mid - side);
+    }
+  }
+
+  // 6) Ceiling: the shipped smooth peak limiter (persistent state).
   applySmoothedPeakLimiter(interleaved, frames * 2, 2, params.ceilingDbfs, 80.0, sampleRate,
                            &state.limiter);
   return state.rideGainDb;

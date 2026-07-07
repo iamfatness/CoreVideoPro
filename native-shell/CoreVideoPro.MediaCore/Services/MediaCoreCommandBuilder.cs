@@ -32,9 +32,7 @@ public static class MediaCoreCommandBuilder
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
-            BuildAudioMixCommand(context.AudioMixChannels, context.AudioLimiterEnabled, context.AudioMasteringEnabled,
-                context.AudioMasteringTargetLufs, context.AudioMasteringCeilingDbfs, context.AudioMasteringGlueAmount,
-                context.AudioMasteringMaxRideDb),
+            BuildAudioMixCommand(context),
             BuildAudioMonitorCommand(context.AudioMonitor),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
@@ -345,21 +343,26 @@ public static class MediaCoreCommandBuilder
             ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
         });
 
-    private static NativeMediaCoreCommand BuildAudioMixCommand(IReadOnlyList<MediaCoreAudioMixChannelWire> channels, bool limiterEnabled,
-        bool masteringEnabled, double masteringTargetLufs, double masteringCeilingDbfs, double masteringGlueAmount,
-        double masteringMaxRideDb) =>
+    private static NativeMediaCoreCommand BuildAudioMixCommand(MediaCoreProductionSyncContext context) =>
         Command("sync-participant-audio-mix", new Dictionary<string, object?>
         {
-            ["limiterEnabled"] = limiterEnabled,
+            ["limiterEnabled"] = context.AudioLimiterEnabled,
             ["mastering"] = new
             {
-                enabled = masteringEnabled,
-                targetLufs = masteringTargetLufs,
-                ceilingDbfs = masteringCeilingDbfs,
-                glueAmount = masteringGlueAmount,
-                maxRideDb = masteringMaxRideDb
+                enabled = context.AudioMasteringEnabled,
+                targetLufs = context.AudioMasteringTargetLufs,
+                ceilingDbfs = context.AudioMasteringCeilingDbfs,
+                glueAmount = context.AudioMasteringGlueAmount,
+                maxRideDb = context.AudioMasteringMaxRideDb,
+                inputGainDb = context.AudioMasteringInputGainDb,
+                highPassHz = context.AudioMasteringHighPassHz,
+                lowPassHz = context.AudioMasteringLowPassHz,
+                lowShelfDb = context.AudioMasteringLowShelfDb,
+                presenceDb = context.AudioMasteringPresenceDb,
+                highShelfDb = context.AudioMasteringHighShelfDb,
+                stereoWidth = context.AudioMasteringStereoWidth
             },
-            ["channels"] = channels.Select(channel => new
+            ["channels"] = context.AudioMixChannels.Select(channel => new
             {
                 participantId = channel.ParticipantId,
                 inputLevel = channel.InputLevel,

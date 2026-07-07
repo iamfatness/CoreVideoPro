@@ -248,6 +248,14 @@ public sealed record MediaCoreProductionSyncContext
     public double AudioMasteringCeilingDbfs { get; init; } = -1.3;
     public double AudioMasteringGlueAmount { get; init; } = 0.5;
     public double AudioMasteringMaxRideDb { get; init; } = 12.0;
+    // M2 rack stages
+    public double AudioMasteringInputGainDb { get; init; }
+    public double AudioMasteringHighPassHz { get; init; }
+    public double AudioMasteringLowPassHz { get; init; }
+    public double AudioMasteringLowShelfDb { get; init; }
+    public double AudioMasteringPresenceDb { get; init; }
+    public double AudioMasteringHighShelfDb { get; init; }
+    public double AudioMasteringStereoWidth { get; init; } = 1.0;
 
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller

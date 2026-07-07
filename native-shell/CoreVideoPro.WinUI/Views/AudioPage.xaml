@@ -254,16 +254,35 @@
                                 <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
                                         Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}"
                                         IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" />
-                                <!-- Advanced (owner: simple by default, deep when needed) -->
-                                <Expander Header="Advanced" IsExpanded="False" HorizontalAlignment="Stretch"
+                                <!-- Mastering rack (mastering-chain-spec M2, TG-style stages):
+                                     simple by default, the full rack one click down. -->
+                                <Expander Header="Mastering rack" IsExpanded="False" HorizontalAlignment="Stretch"
                                           HorizontalContentAlignment="Stretch"
                                           IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}">
                                     <StackPanel Spacing="6">
+                                        <TextBlock Text="INPUT" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
+                                        <Slider Header="Input gain (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                                Value="{x:Bind ViewModel.MasteringInputGainDb, Mode=TwoWay}" />
+                                        <TextBlock Text="FILTER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
+                                        <Slider Header="High-pass (Hz, 0 = off)" Minimum="0" Maximum="300" StepFrequency="5"
+                                                Value="{x:Bind ViewModel.MasteringHighPassHz, Mode=TwoWay}" />
+                                        <Slider Header="Low-pass (Hz, 0 = off)" Minimum="0" Maximum="20000" StepFrequency="500"
+                                                Value="{x:Bind ViewModel.MasteringLowPassHz, Mode=TwoWay}" />
+                                        <TextBlock Text="TONE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
+                                        <Slider Header="Low shelf @120Hz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                                Value="{x:Bind ViewModel.MasteringLowShelfDb, Mode=TwoWay}" />
+                                        <Slider Header="Presence @3kHz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                                Value="{x:Bind ViewModel.MasteringPresenceDb, Mode=TwoWay}" />
+                                        <Slider Header="High shelf @10kHz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
+                                                Value="{x:Bind ViewModel.MasteringHighShelfDb, Mode=TwoWay}" />
+                                        <TextBlock Text="LIMITER / SPREADER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
                                         <Slider Header="True-peak ceiling (dBFS)" Minimum="-6" Maximum="-0.5" StepFrequency="0.1"
                                                 Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" />
                                         <Slider Header="Max loudness ride (dB)" Minimum="0" Maximum="12" StepFrequency="0.5"
                                                 Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" />
-                                        <TextBlock Text="Deeper processing (EQ, multiband, reference matching) lands via the master insert rack and mastering presets."
+                                        <Slider Header="Stereo width (1 = normal, 0 = mono, 2 = wide)" Minimum="0" Maximum="2" StepFrequency="0.05"
+                                                Value="{x:Bind ViewModel.MasteringStereoWidth, Mode=TwoWay}" />
+                                        <TextBlock Text="Reference-matched presets (matchering-style) land next: analyze a reference track, apply its curve here."
                                                    FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
                                                    TextWrapping="WrapWholeWords" />
                                     </StackPanel>

@@ -107,6 +107,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _masteringMaxRideDb = 12.0;
 
     [ObservableProperty]
+    private double _masteringInputGainDb;
+
+    [ObservableProperty]
+    private double _masteringHighPassHz;
+
+    [ObservableProperty]
+    private double _masteringLowPassHz;
+
+    [ObservableProperty]
+    private double _masteringLowShelfDb;
+
+    [ObservableProperty]
+    private double _masteringPresenceDb;
+
+    [ObservableProperty]
+    private double _masteringHighShelfDb;
+
+    [ObservableProperty]
+    private double _masteringStereoWidth = 1.0;
+
+    [ObservableProperty]
     private bool _audioMonitoringEnabled;
 
     [ObservableProperty]
@@ -1998,6 +2019,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnMasteringCeilingDbfsChanged(double value) => _ = TrySyncMediaCoreAsync();
 
     partial void OnMasteringMaxRideDbChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringInputGainDbChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringHighPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringLowPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringLowShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringPresenceDbChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringHighShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringStereoWidthChanged(double value) => _ = TrySyncMediaCoreAsync();
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -8041,6 +8069,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringGlueAmount = MasteringGlueAmount,
             AudioMasteringCeilingDbfs = MasteringCeilingDbfs,
             AudioMasteringMaxRideDb = MasteringMaxRideDb,
+            AudioMasteringInputGainDb = MasteringInputGainDb,
+            AudioMasteringHighPassHz = MasteringHighPassHz,
+            AudioMasteringLowPassHz = MasteringLowPassHz,
+            AudioMasteringLowShelfDb = MasteringLowShelfDb,
+            AudioMasteringPresenceDb = MasteringPresenceDb,
+            AudioMasteringHighShelfDb = MasteringHighShelfDb,
+            AudioMasteringStereoWidth = MasteringStereoWidth,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
