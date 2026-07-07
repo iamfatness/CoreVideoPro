@@ -10958,6 +10958,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // gone or which duplicate a lower slot get cleared automatically, LOGGED.
     private void SweepGhostShowInputAssignments()
     {
+        var swept = 0;
         foreach (var slot in ShowInputs)
         {
             if (slot.InShow || !slot.IsAssigned)
@@ -10969,7 +10970,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write(string.Format("lifecycle: sweep ghost slot {0} (kind={1} cap={2} pid={3})",
                     slot.SlotNumber, slot.Kind, slot.CaptureDeviceId ?? "-", slot.ParticipantId ?? "-"));
                 slot.Kind = ShowInputKind.Unassigned;
+                swept++;
             }
+        }
+
+        // Lifecycle L7 (source-lifecycle-spec): persist the cleaned roster so
+        // ghosts never survive two sessions. Without this, the sweep cleared
+        // slots at runtime but the stale records stayed in the JSON file and
+        // came back on every launch (the exact accumulation that produced the
+        // 8-ghost roster the owner hit).
+        if (swept > 0)
+        {
+            LaunchLog.Write(string.Format("lifecycle: persistence GC rewrote roster after {0} ghost(s)", swept));
+            SaveShowInputRoster();
         }
     }
 

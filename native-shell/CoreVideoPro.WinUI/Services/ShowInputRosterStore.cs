@@ -65,11 +65,13 @@ public static class ShowInputRosterSerializer
         }
     }
 
+    public const int CurrentVersion = 2;
+
     /// <summary>Project the live slots into a serializable snapshot.</summary>
     public static ShowInputRosterSnapshot CaptureFrom(IEnumerable<ShowInputSlot> slots) =>
-        new()
+        GarbageCollect(new ShowInputRosterSnapshot
         {
-            Version = 1,
+            Version = CurrentVersion,
             Slots = slots
                 .Select(slot => new ShowInputSlotRecord
                 {
@@ -81,6 +83,53 @@ public static class ShowInputRosterSerializer
                     InShow = slot.InShow
                 })
                 .ToList()
+        });
+
+    /// <summary>
+    /// Lifecycle L7 (source-lifecycle-spec): self-healing garbage collection of
+    /// the persisted roster. Parked (non-in-show) slots that DUPLICATE the
+    /// source of a lower-numbered slot are reset to Unassigned, so duplicate
+    /// ghosts can never accumulate across sessions even if the runtime sweep
+    /// did not run. In-show slots are always kept (operator intent wins). The
+    /// snapshot is versioned so future migrations are explicit.
+    /// </summary>
+    public static ShowInputRosterSnapshot GarbageCollect(ShowInputRosterSnapshot snapshot)
+    {
+        if (snapshot?.Slots is not { Count: > 0 })
+        {
+            return snapshot ?? new ShowInputRosterSnapshot { Version = CurrentVersion };
+        }
+
+        var ordered = snapshot.Slots.OrderBy(record => record.SlotNumber).ToList();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var record in ordered)
+        {
+            var key = SourceKey(record);
+            if (key is null)
+            {
+                continue;  // unassigned
+            }
+            if (!seen.Add(key) && !record.InShow)
+            {
+                // Duplicate of an earlier slot's source, and parked: drop it.
+                record.Kind = ShowInputKind.Unassigned;
+                record.ParticipantId = null;
+                record.CaptureDeviceId = null;
+                record.AudioDeviceId = null;
+            }
+        }
+
+        snapshot.Version = CurrentVersion;
+        return snapshot;
+    }
+
+    private static string? SourceKey(ShowInputSlotRecord record) =>
+        record.Kind switch
+        {
+            ShowInputKind.Unassigned => null,
+            ShowInputKind.ZoomParticipant or ShowInputKind.Media =>
+                string.IsNullOrWhiteSpace(record.ParticipantId) ? null : $"{record.Kind}:{record.ParticipantId}",
+            _ => string.IsNullOrWhiteSpace(record.CaptureDeviceId) ? null : $"{record.Kind}:{record.CaptureDeviceId}"
         };
 
     /// <summary>
@@ -95,6 +144,10 @@ public static class ShowInputRosterSerializer
         {
             return;
         }
+
+        // Lifecycle L7: garbage-collect duplicate ghosts on load, so a stale
+        // pre-L7 roster file self-heals the first time it is read.
+        snapshot = GarbageCollect(snapshot);
 
         var bySlot = snapshot.Slots
             .GroupBy(record => record.SlotNumber)
