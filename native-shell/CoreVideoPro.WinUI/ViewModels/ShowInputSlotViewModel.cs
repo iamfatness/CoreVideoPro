@@ -172,7 +172,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             _participants.FirstOrDefault(p => string.Equals(p.Id, pid, StringComparison.Ordinal))?.Name ?? string.Empty,
         ShowInputKind.Media when ShowInputRosterService.TryGetMediaAssetId(ParticipantId, out var assetId) =>
             _mediaAssets.FirstOrDefault(a => string.Equals(a.Id, assetId, StringComparison.Ordinal))?.Name ?? string.Empty,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
             when CaptureDeviceId is { Length: > 0 } deviceId =>
             _captureDevices.FirstOrDefault(d => string.Equals(d.Id, deviceId, StringComparison.Ordinal))?.Name ?? string.Empty,
         _ => string.Empty
@@ -209,7 +209,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             {
                 ParticipantId = SourceOptions.FirstOrDefault()?.Value;
             }
-            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
                      (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
             {
                 CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;

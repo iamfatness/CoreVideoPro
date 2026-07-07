@@ -16,6 +16,7 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.Blackmagic, Label = "Blackmagic SDI/HDMI" },
         new() { Value = ShowInputKind.Aja, Label = "AJA SDI/HDMI" },
         new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
+        new() { Value = ShowInputKind.Screen, Label = "Screen" },
         new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" },
         new() { Value = ShowInputKind.Media, Label = "Media asset" }
     ];
@@ -83,7 +84,7 @@ public static class ShowInputRosterService
         ShowInputKind.ZoomParticipant when slot.ParticipantId is { Length: > 0 } pid => ZoomSourceId(pid),
         // A Media slot stores its "media:<assetId>" id directly in ParticipantId.
         ShowInputKind.Media when slot.ParticipantId is { Length: > 0 } media => media,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
             when slot.CaptureDeviceId is { Length: > 0 } cap => CaptureSourceId(cap),
         _ => null
     };
@@ -209,6 +210,10 @@ public static class ShowInputRosterService
                     Label = device.Name
                 })
                 .ToList(),
+            ShowInputKind.Screen => captureDevices
+                .Where(device => device.Id.StartsWith("screen:", StringComparison.Ordinal))
+                .Select(device => new ShowInputSourceOption { Value = device.Id, Label = device.Name })
+                .ToList(),
             ShowInputKind.UvcWebcam => captureDevices
                 .Where(device =>
                     device.Vendor.Equals("uvc", StringComparison.OrdinalIgnoreCase) ||
@@ -253,7 +258,7 @@ public static class ShowInputRosterService
             return;
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest)
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest)
         {
             route.Mode = SourceRouteMode.CaptureDevice;
             route.ParticipantId = null;
@@ -301,7 +306,7 @@ public static class ShowInputRosterService
         var assignedDeviceIds = new HashSet<string>(
             slots
                 .Where(slot => slot.InShow &&
-                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
                     !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                 .Select(slot => slot.CaptureDeviceId!),
             StringComparer.Ordinal);
@@ -399,7 +404,7 @@ public static class ShowInputRosterService
                 ParticipantId: pid);
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest &&
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
             slot.CaptureDeviceId is { Length: > 0 } deviceId &&
             devicesById.TryGetValue(deviceId, out var device))
         {
@@ -486,7 +491,7 @@ public static class ShowInputRosterService
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
-            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest =>
+            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
             ShowInputKind.Media =>
                 TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) && mediaAssetsById.ContainsKey(mediaAssetId),

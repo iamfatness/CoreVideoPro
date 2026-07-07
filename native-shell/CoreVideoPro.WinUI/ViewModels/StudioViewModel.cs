@@ -9831,7 +9831,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sourceId;
         }
 
-        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest
+        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
             ? $"capture:{captureDeviceId}"
             : captureDeviceId;
     }
@@ -10551,7 +10551,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.SrtIngest) &&
+                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest) &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))
@@ -10902,6 +10902,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "aja" => ShowInputKind.Aja,
             "srt" => ShowInputKind.SrtIngest,
             "uvc" or "windows" => ShowInputKind.UvcWebcam,
+            "screen capture" => ShowInputKind.Screen,
             _ => ShowInputKind.UvcWebcam
         };
 
