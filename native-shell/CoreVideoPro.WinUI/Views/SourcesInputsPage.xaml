@@ -385,6 +385,7 @@
                                             <ColumnDefinition Width="1.3*" />
                                             <ColumnDefinition Width="1.2*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Text="{x:Bind SlotNumber}" FontWeight="SemiBold" FontSize="12"
                                                    VerticalAlignment="Center" />
@@ -429,6 +430,14 @@
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
+                                                VerticalAlignment="Center" />
+                                        <!-- Lifecycle L1: detach this slot (source stays available) -->
+                                        <Button Grid.Column="7"
+                                                Content="Unassign"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Command="{Binding ViewModel.UnassignShowInputCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind}"
+                                                ToolTipService.ToolTip="Clear this Show Input slot (the source stays available in Sources)"
                                                 VerticalAlignment="Center" />
                                     </Grid>
                                 </Border>
