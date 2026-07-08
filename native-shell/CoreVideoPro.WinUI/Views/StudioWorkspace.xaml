@@ -76,17 +76,12 @@
                 <Setter Property="MinHeight" Value="48" />
             </Style>
 
-            <Style x:Key="OutputStatLabel" TargetType="TextBlock">
-                <Setter Property="FontSize" Value="10" />
-                <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
-                <Setter Property="CharacterSpacing" Value="40" />
+            <!-- Design system: telemetry labels are mono UPPERCASE, values mono. -->
+            <Style x:Key="OutputStatLabel" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoLabel}">
+                <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
             </Style>
 
-            <Style x:Key="OutputStatValue" TargetType="TextBlock">
-                <Setter Property="FontSize" Value="12" />
-                <Setter Property="FontWeight" Value="SemiBold" />
-                <Setter Property="Foreground" Value="#E8F2EC" />
-            </Style>
+            <Style x:Key="OutputStatValue" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoValue}" />
 
             <Style x:Key="RecordButton" TargetType="Button" BasedOn="{StaticResource TransportButton}">
                 <Setter Property="Background" Value="#4A2020" />
@@ -116,9 +111,15 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                    <Border Width="36" Height="36" CornerRadius="8" Background="#1E2A33">
-                        <TextBlock Text="CV" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    <!-- App-icon squircle with the Multiview brand mark (design spec). -->
+                    <Border Width="36" Height="36" CornerRadius="9" Padding="6">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+                                <GradientStop Color="#15191B" Offset="0" />
+                                <GradientStop Color="#0B0D0E" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <cvcontrols:MultiviewMark />
                     </Border>
                     <StackPanel VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="CoreVideo Pro" FontWeight="SemiBold" FontSize="14"
@@ -264,7 +265,8 @@
                      190px squeezed scene names to unreadable ellipsis. -->
                 <ColumnDefinition Width="250" MinWidth="220" MaxWidth="290" />
                 <ColumnDefinition Width="*" MinWidth="360" />
-                <ColumnDefinition Width="240" MinWidth="210" MaxWidth="280" />
+                <!-- Auto so the room panel collapses to zero width when hidden. -->
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource StudioPanelBorder}" Padding="10">
@@ -459,6 +461,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
                         <TextBlock Text="MULTIVIEWER" FontWeight="Bold" FontSize="12"
@@ -512,6 +515,16 @@
                                            Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
                         </Button>
+                        <!-- Owner: room panel is redundant with Sources; show/hide toggle. -->
+                        <ToggleButton Grid.Column="7"
+                                      Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                      IsChecked="{x:Bind ViewModel.ShowRoomPanel, Mode=TwoWay}"
+                                      ToolTipService.ToolTip="Show or hide the Video-in-room panel (the Sources tab covers this)">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE716;" FontSize="11" />
+                                <TextBlock Text="Room" />
+                            </StackPanel>
+                        </ToggleButton>
                     </Grid>
                 </Border>
 
@@ -548,7 +561,8 @@
                 </Border>
             </Grid>
 
-            <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}" Padding="10">
+            <Border Grid.Column="2" Style="{StaticResource StudioPanelBorder}" Padding="10" Width="240"
+                    Visibility="{x:Bind ViewModel.ShowRoomPanel, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <Grid RowSpacing="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -558,8 +572,21 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Text="{x:Bind ViewModel.CurrentRoomHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="13"
-                               Foreground="{StaticResource StudioTextBrush}" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind ViewModel.CurrentRoomHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="13"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource StudioTextBrush}" />
+                        <!-- Owner: room panel is redundant with Sources; let it hide. -->
+                        <Button Grid.Column="1" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                Padding="6,2" Background="Transparent" BorderThickness="0"
+                                Foreground="{StaticResource StudioMutedBrush}"
+                                ToolTipService.ToolTip="Hide the room panel (Sources covers this)"
+                                Click="OnHideRoomPanelClicked" />
+                    </Grid>
                     <TextBlock Grid.Row="1" Text="{x:Bind ViewModel.CurrentRoomLabel, Mode=OneWay}" FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
 
@@ -1115,9 +1142,10 @@
                               VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
-                            <TextBlock Text="OUTPUTS" FontSize="11" FontWeight="ExtraBold"
-                                       Foreground="#8FDCC8" CharacterSpacing="60" />
+                            <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
+                                                 DotFill="{StaticResource StudioLiveBrush}" />
+                            <TextBlock Text="OUTPUTS" Style="{StaticResource StudioMonoTag}"
+                                       FontSize="11" Foreground="#8FDCC8" CharacterSpacing="60" />
                         </StackPanel>
 
                         <StackPanel Spacing="2" MinWidth="56">

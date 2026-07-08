@@ -87,4 +87,33 @@
         <Setter Property="CornerRadius" Value="10" />
         <Setter Property="FontSize" Value="12" />
     </Style>
+
+    <!-- Mono typography (design_handoff_corevideo_pro): IBM Plex Mono for field
+         labels, timecodes, meter values, badges. CharacterSpacing is 1/1000 em,
+         so 160 = .16em. Field labels read UPPERCASE (author the text uppercase). -->
+    <Style x:Key="StudioMonoLabel" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource StudioMonoFont}" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="CharacterSpacing" Value="160" />
+        <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
+    </Style>
+
+    <Style x:Key="StudioMonoLabelDim" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoLabel}">
+        <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
+    </Style>
+
+    <Style x:Key="StudioMonoValue" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource StudioMonoFont}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="CharacterSpacing" Value="20" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="Foreground" Value="{StaticResource StudioTextBrush}" />
+    </Style>
+
+    <Style x:Key="StudioMonoTag" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource StudioMonoFont}" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="CharacterSpacing" Value="120" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
 </ResourceDictionary>

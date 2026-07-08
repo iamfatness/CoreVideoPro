@@ -1,0 +1,23 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.MultiviewMark"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- The CoreVideo Pro "Multiview" brand mark (design_handoff_corevideo_pro):
+         a rounded 16:9 monitor frame divided 2x2 with the top-right (live) tile
+         filled. Pure vector via a 120x120 Viewbox so it stays crisp at any size.
+         Stroke = frame + cross; TileFill = the live tile (state variant). -->
+    <Viewbox>
+        <Canvas Width="120" Height="120">
+            <Rectangle Canvas.Left="14" Canvas.Top="22" Width="92" Height="76"
+                       RadiusX="15" RadiusY="15" Fill="Transparent"
+                       Stroke="{x:Bind Stroke, Mode=OneWay}" StrokeThickness="6" />
+            <Line X1="60" Y1="22" X2="60" Y2="98"
+                  Stroke="{x:Bind Stroke, Mode=OneWay}" StrokeThickness="5" />
+            <Line X1="14" Y1="60" X2="106" Y2="60"
+                  Stroke="{x:Bind Stroke, Mode=OneWay}" StrokeThickness="5" />
+            <Rectangle Canvas.Left="65" Canvas.Top="27" Width="36" Height="28"
+                       RadiusX="6" RadiusY="6" Fill="{x:Bind TileFill, Mode=OneWay}" />
+        </Canvas>
+    </Viewbox>
+</UserControl>

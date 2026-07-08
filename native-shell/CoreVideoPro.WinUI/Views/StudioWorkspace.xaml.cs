@@ -96,4 +96,13 @@ public sealed partial class StudioWorkspace : UserControl
         });
     }
 
+    // Owner: the room panel is redundant with the Sources tab. The X on the
+    // panel hides it; the "Room" toggle in the multiviewer header brings it back.
+    private void OnHideRoomPanelClicked(object sender, RoutedEventArgs args)
+    {
+        if (ViewModel is not null)
+        {
+            ViewModel.ShowRoomPanel = false;
+        }
+    }
 }
