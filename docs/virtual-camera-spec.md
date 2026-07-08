@@ -15,8 +15,20 @@ correct path: a registered software camera the OS Frame Server serves to ANY app
 enumerates cameras through MediaCapture/WinRT/DirectShow-bridge — which is what Zoom,
 Teams, Meet, and modern apps use. The box is Win 11 (✓ 26200).
 
+**No driver signing (the decisive win, owner-confirmed 2026-07-07).** The MF Virtual
+Camera is a **user-mode COM DLL**, not a kernel driver — so it needs **no signed
+kernel-mode driver, no test-signing, no WHQL**, unlike the old AVStream/DirectShow
+virtual-cam era. `MFCreateVirtualCamera` registers our user-mode media source with the
+Frame Server; that is the entire installation. **`smourier/VCamSample`
+(https://github.com/smourier/VCamSample) is the canonical minimal reference for V2b** —
+a clean `IMFMediaSource` + CLSID self-registration + `MFCreateVirtualCamera` example. V2b
+follows its shape (our media source reads NV12 from the SHM slot instead of generating a
+test pattern). Only a per-user COM registration (`DllRegisterServer` writing the CLSID)
+is needed — no elevation for a current-user camera.
+
 Rejected: DirectShow source filter (legacy; many modern apps no longer see DShow-only
-cams; per-app quirks). If a Win10 fallback is ever needed it's a separate adapter.
+cams; per-app quirks; and it would reintroduce the signing/registration friction MF avoids).
+If a Win10 fallback is ever needed it's a separate adapter.
 
 **Process reality (the load-bearing constraint):** the virtual camera's media source
 runs INSIDE the Windows Frame Server process (`frameserver.exe`), NOT inside
@@ -77,10 +89,16 @@ frames from OUR SHM (no arbitrary input); registration is explicit operator inte
   the program frame, gated by `transport.virtualcam.set`. Snapshot `virtualCamera` read
   model. Stub simulation. Pure NV12-convert + ring tests. No OS registration yet — the
   frame pipe exists and is unit-verifiable; nothing user-visible as a camera.
-- **V2 — the COM DLL + MFCreateVirtualCamera (the big one).**
-  `corevideo-virtualcam.dll`: IMFMediaSource serving NV12 samples from the SHM ring at
-  the declared format; MFCreateVirtualCamera registration on enable, Remove on disable.
-  This is where "CoreVideo Pro Camera" appears in Zoom.
+- **V2a — core SHM publisher + control command + snapshot (SHIPPED).** NV12 program-frame
+  seqlock slot, `sync-virtual-camera` command, `virtualCamera` snapshot + read model,
+  MFCreateVirtualCamera call (dev-gated). No driver, no signing.
+- **V2b — the COM DLL (the big one, needs rig verification against Zoom).**
+  `corevideo-virtualcam.dll`, modeled on **`smourier/VCamSample`**: a user-mode
+  `IMFMediaSource` serving NV12 samples from the SHM slot at the declared format, with
+  `DllRegisterServer` self-registering the CLSID (per-user, no elevation). The core's
+  MFCreateVirtualCamera(...).Start() then makes "CoreVideo Pro Camera" appear in Zoom.
+  Iterate live with the owner (build → register → confirm in the Windows Camera app →
+  confirm in Zoom). No kernel driver, no signing anywhere in this path.
 - **V3 — format/quality**: 1080p60 negotiation, mirror toggle, the standby slate, aspect
   handling.
 - **V4 — shell UI + diagnostics**: enable toggle + status pill in the transport/output
