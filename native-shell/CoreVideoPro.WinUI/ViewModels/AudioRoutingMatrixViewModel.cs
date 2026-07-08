@@ -287,6 +287,18 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         busId.StartsWith("aux-", StringComparison.Ordinal) ||
         busId.StartsWith("bus-", StringComparison.Ordinal);
 
+    // audio-tab-redesign 4: rename an aux/custom bus. The header and every
+    // crosspoint cell share the RoutingBus instance, so setting its notifying
+    // Label updates the whole column at once. Fixed buses are not renamable.
+    public void RenameBus(RoutingBus bus, string newLabel)
+    {
+        if (bus is null || !IsBusRemovable(bus.Id) || string.IsNullOrWhiteSpace(newLabel))
+        {
+            return;
+        }
+        bus.Label = newLabel.Trim();
+    }
+
     [RelayCommand]
     private void RemoveBus(RoutingBus bus)
     {

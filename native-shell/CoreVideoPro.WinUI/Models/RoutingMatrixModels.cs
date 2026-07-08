@@ -1,12 +1,27 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace CoreVideoPro.WinUI.Models;
 
 /// <summary>
 /// A destination bus in the routing matrix (a matrix column). For audio these are
-/// the program/ISO/monitor/stream mix buses a source can be sent to.
+/// the program/ISO/monitor/stream mix buses a source can be sent to. The header
+/// and every crosspoint cell share ONE instance, so a notifying <see cref="Label"/>
+/// lets a rename update the whole column at once (audio-tab-redesign 4).
 /// </summary>
-public sealed record RoutingBus(string Id, string Label)
+public sealed partial class RoutingBus : ObservableObject
 {
-    // Lifecycle L6: aux/custom buses are deletable; fixed program buses are not.
+    public RoutingBus(string id, string label)
+    {
+        Id = id;
+        _label = label;
+    }
+
+    public string Id { get; }
+
+    [ObservableProperty]
+    private string _label;
+
+    // Lifecycle L6: aux/custom buses are deletable AND renamable; fixed program buses are not.
     public bool IsRemovable => Id.StartsWith("aux-", StringComparison.Ordinal) || Id.StartsWith("bus-", StringComparison.Ordinal);
 }
 
