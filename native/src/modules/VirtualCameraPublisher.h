@@ -38,6 +38,8 @@ class IVirtualCameraPublisher {
   // Remove the OS virtual camera and release the slot. Idempotent.
   virtual void stop() = 0;
   virtual VirtualCameraStatus status() const = 0;
+  // Mirror-me: flip the published frame horizontally (optional; default no-op).
+  virtual void setMirror(bool mirror) { (void)mirror; }
 };
 
 // Dev-gated (COREVIDEO_WITH_VIRTUALCAM). Returns a no-op stub otherwise, so the

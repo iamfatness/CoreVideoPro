@@ -104,11 +104,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _virtualCameraEnabled;
 
+    // V5: mirror-me self-view (flip the published frame horizontally).
+    [ObservableProperty]
+    private bool _virtualCameraMirror;
+
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         _ = TrySyncMediaCoreAsync();
     }
+
+    partial void OnVirtualCameraMirrorChanged(bool value) => _ = TrySyncMediaCoreAsync();
 
     public string VirtualCameraStatusLabel
     {
@@ -8148,6 +8154,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringHighShelfDb = MasteringHighShelfDb,
             AudioMasteringStereoWidth = MasteringStereoWidth,
             VirtualCameraEnabled = VirtualCameraEnabled,
+            VirtualCameraMirror = VirtualCameraMirror,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,

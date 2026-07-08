@@ -99,6 +99,9 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (!convertBgraToNv12(px.bgra.data(), w, h, nv12_)) {
       return;
     }
+    if (mirror_) {
+      mirrorNv12InPlace(nv12_.data(), w, h);  // mirror-me self-view
+    }
     auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
     const std::size_t bytes = nv12_.size() <= kVirtualCameraMaxPayload ? nv12_.size()
                                                                         : kVirtualCameraMaxPayload;
@@ -139,6 +142,8 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
 
   VirtualCameraStatus status() const override { return status_; }
 
+  void setMirror(bool mirror) override { mirror_ = mirror; }
+
  private:
   void fail(const std::string& message) {
     status_.state = "failed";
@@ -147,6 +152,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   }
 
   bool started_ = false;
+  bool mirror_ = false;
   HANDLE mapping_ = nullptr;
   void* view_ = nullptr;
   VirtualCameraShmHeader* header_ = nullptr;

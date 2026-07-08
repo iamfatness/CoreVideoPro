@@ -257,8 +257,9 @@ public sealed record MediaCoreProductionSyncContext
     public double AudioMasteringHighShelfDb { get; init; }
     public double AudioMasteringStereoWidth { get; init; } = 1.0;
 
-    // Virtual camera (virtual-camera-spec V4).
+    // Virtual camera (virtual-camera-spec V4/V5).
     public bool VirtualCameraEnabled { get; init; }
+    public bool VirtualCameraMirror { get; init; }
 
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller

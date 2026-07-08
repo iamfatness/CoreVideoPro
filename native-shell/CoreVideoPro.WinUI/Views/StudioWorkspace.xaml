@@ -1167,6 +1167,23 @@
                             </StackPanel>
                         </StackPanel>
                     </ToggleButton>
+                    <!-- V5: virtual camera options (mirror). -->
+                    <Button MinHeight="44" MinWidth="36" CornerRadius="8" Padding="8"
+                            ToolTipService.ToolTip="Virtual camera options">
+                        <FontIcon Glyph="&#xE713;" FontSize="13" />
+                        <Button.Flyout>
+                            <Flyout Placement="Top">
+                                <StackPanel Spacing="10" MinWidth="230">
+                                    <TextBlock Text="Virtual camera" FontWeight="Bold" FontSize="13" />
+                                    <ToggleSwitch Header="Mirror (self-view)"
+                                                  IsOn="{x:Bind ViewModel.VirtualCameraMirror, Mode=TwoWay}" />
+                                    <TextBlock Text="Flips the camera horizontally, like most webcam self-views."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
                 </StackPanel>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->
