@@ -394,6 +394,7 @@ if(BUILD_TESTING)
     tests/VirtualCameraComposeTest.cpp
     tests/MasteringReferenceTest.cpp
     tests/ImageResizeTest.cpp
+    tests/VirtualCameraShmRoundtripTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
@@ -433,7 +434,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
-  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared plugin-host)
+  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared plugin-host virtualcam-dll)
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)
