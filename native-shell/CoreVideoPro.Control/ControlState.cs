@@ -40,6 +40,7 @@ public sealed record ControlState
 
     public bool VirtualCameraOn { get; init; }
     public string VirtualCameraStatus { get; init; } = string.Empty;
+    public string VirtualCameraRawStatus { get; init; } = string.Empty;
 
     public IReadOnlyList<ControlInputState> Inputs { get; init; } = System.Array.Empty<ControlInputState>();
 

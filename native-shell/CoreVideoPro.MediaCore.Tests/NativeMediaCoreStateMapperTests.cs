@@ -553,4 +553,26 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Equal("degraded", snapshot.Compositor.Status);
         Assert.Equal("publishing", snapshot.ProgramTransport.Status);
     }
+
+    [Fact]
+    public void CarriesVirtualCameraStatusFromWireState()
+    {
+        // Regression: the wire-state mapper synthesizes a fresh base (virtual
+        // camera off), so it must read the camera status from the wire - else the
+        // shell shows the camera off even when the core reports it live.
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        {
+            VirtualCamera = new NativeMediaCoreVirtualCamera
+            {
+                Enabled = true,
+                Status = "live",
+                Resolution = new NativeMediaCoreVirtualCameraResolution { Width = 1280, Height = 720 },
+                Fps = 30
+            }
+        });
+
+        Assert.Equal("live", snapshot.VirtualCamera.Status);
+        Assert.True(snapshot.VirtualCamera.Enabled);
+        Assert.Equal(1280, snapshot.VirtualCamera.Resolution.Width);
+    }
 }

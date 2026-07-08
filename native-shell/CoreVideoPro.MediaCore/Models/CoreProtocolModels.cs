@@ -309,6 +309,7 @@ public sealed class NativeMediaCoreWireState
     public string? CompositorRenderer { get; init; }
     public NativeMediaCoreEncoderSession? EncoderSession { get; init; }
     public NativeMediaCoreOutputSenderSession? OutputSenderSession { get; init; }
+    public NativeMediaCoreVirtualCamera? VirtualCamera { get; init; }
     public NativeMediaCoreRecordingSession? Recording { get; init; }
     public NativeMediaCoreWireHealth? Health { get; init; }
     public NativeMediaCoreProfile? Profile { get; init; }

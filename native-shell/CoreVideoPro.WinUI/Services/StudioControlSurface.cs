@@ -359,6 +359,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             MasteringTarget = _vm.MasteringTargetIndex,
             VirtualCameraOn = _vm.VirtualCameraEnabled,
             VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
+            VirtualCameraRawStatus = _vm.VirtualCameraRawStatus,
             Inputs = inputs,
         };
     }
