@@ -362,6 +362,7 @@ if(BUILD_TESTING)
     tests/AsyncEncoderSinkTest.cpp
     tests/AudioDspTest.cpp
     tests/AudioMasteringTest.cpp
+    tests/VirtualCameraFrameTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
