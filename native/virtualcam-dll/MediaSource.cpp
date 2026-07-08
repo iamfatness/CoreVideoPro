@@ -119,15 +119,12 @@ IFACEMETHODIMP MediaSource::Start(IMFPresentationDescriptor* descriptor, const G
   if (descriptor == nullptr) return E_INVALIDARG;
 
   // Announce the stream (new on first start, updated on restart).
+  // QueueEventParamUnk AddRefs the stream into the event itself - do NOT wrap it
+  // in a PROPVARIANT we later clear (that would over-release the stream).
   ComPtr<IUnknown> streamUnk;
   stream_.As(&streamUnk);
-  PROPVARIANT var;
-  PropVariantInit(&var);
-  var.vt = VT_UNKNOWN;
-  var.punkVal = streamUnk.Get();
   events_->QueueEventParamUnk(started_ ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK,
                               streamUnk.Get());
-  PropVariantClear(&var);
 
   hr = stream_->Start();
   if (FAILED(hr)) return hr;
