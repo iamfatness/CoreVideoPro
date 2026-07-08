@@ -33,6 +33,7 @@ public static class NativeMediaCoreStateMapper
 
         var encoderSession = wire.EncoderSession ?? baseSnapshot.EncoderSession;
         var outputSenderSession = wire.OutputSenderSession ?? baseSnapshot.OutputSenderSession;
+        var virtualCamera = wire.VirtualCamera ?? baseSnapshot.VirtualCamera;
         var recording = wire.Recording is not null
             ? wire.Recording with
             {
@@ -187,6 +188,7 @@ public static class NativeMediaCoreStateMapper
             ProgramTransport = programTransport,
             EncoderSession = encoderSession,
             OutputSenderSession = outputSenderSession,
+            VirtualCamera = virtualCamera,
             OutputHealth = outputHealth,
             Recording = recording,
             AudioMixSession = audioMixSession,

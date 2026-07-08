@@ -126,20 +126,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
-            var vc = _bridge.LastSnapshot?.VirtualCamera;
-            if (vc is null || !VirtualCameraEnabled)
+            // Reflect operator intent first: if the operator enabled it, the pill
+            // must never read "off" just because the snapshot hasn't reported
+            // "live" yet (it reads "on"/"starting" until the core confirms).
+            if (!VirtualCameraEnabled)
             {
                 return "Virtual camera off";
             }
-            return vc.Status switch
+            var vc = _bridge.LastSnapshot?.VirtualCamera;
+            return vc?.Status switch
             {
                 "live" => $"Virtual camera live ({vc.Resolution.Width}x{vc.Resolution.Height})",
-                "starting" => "Virtual camera starting",
                 "failed" => string.IsNullOrEmpty(vc.Warning) ? "Virtual camera failed" : vc.Warning,
-                _ => "Virtual camera off"
+                _ => "Virtual camera on"
             };
         }
     }
+
+    /// <summary>Raw virtual-camera status from the core snapshot (off/starting/live/failed),
+    /// for the control-API read model and diagnostics - distinct from the intent-aware label.</summary>
+    public string VirtualCameraRawStatus => _bridge.LastSnapshot?.VirtualCamera?.Status ?? "(none)";
 
     partial void OnShowRoomPanelChanged(bool value) => OnPropertyChanged(nameof(RoomPanelToggleLabel));
 
