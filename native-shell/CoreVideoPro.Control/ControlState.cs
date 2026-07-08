@@ -35,6 +35,11 @@ public sealed record ControlState
     public bool AudioMonitorOn { get; init; }
     public double AudioMonitorVolume { get; init; }
     public bool MasterLimiterOn { get; init; }
+    public bool MasteringOn { get; init; }
+    public int MasteringTarget { get; init; }
+
+    public bool VirtualCameraOn { get; init; }
+    public string VirtualCameraStatus { get; init; } = string.Empty;
 
     public IReadOnlyList<ControlInputState> Inputs { get; init; } = System.Array.Empty<ControlInputState>();
 

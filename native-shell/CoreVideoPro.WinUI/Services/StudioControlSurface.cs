@@ -31,7 +31,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         nameof(StudioViewModel.AutomationAutoTakeEnabled), nameof(StudioViewModel.AutomationAutoAssignInputsEnabled),
         nameof(StudioViewModel.AutomationLowerThirdsEnabled), nameof(StudioViewModel.AutomationCaptionsEnabled),
         nameof(StudioViewModel.AudioMonitoringEnabled), nameof(StudioViewModel.AudioMonitorVolume),
-        nameof(StudioViewModel.MasterLimiterEnabled), nameof(StudioViewModel.ProgramLowerThirdKey),
+        nameof(StudioViewModel.MasterLimiterEnabled), nameof(StudioViewModel.MasteringEnabled),
+        nameof(StudioViewModel.MasteringTargetIndex), nameof(StudioViewModel.VirtualCameraEnabled),
+        nameof(StudioViewModel.ProgramLowerThirdKey),
         nameof(StudioViewModel.ProgramLowerThirdEnabled), nameof(StudioViewModel.ShowInputSummary),
         nameof(StudioViewModel.ProductionMode),
     };
@@ -346,6 +348,10 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             AudioMonitorOn = _vm.AudioMonitoringEnabled,
             AudioMonitorVolume = _vm.AudioMonitorVolume,
             MasterLimiterOn = _vm.MasterLimiterEnabled,
+            MasteringOn = _vm.MasteringEnabled,
+            MasteringTarget = _vm.MasteringTargetIndex,
+            VirtualCameraOn = _vm.VirtualCameraEnabled,
+            VirtualCameraStatus = _vm.VirtualCameraStatusLabel,
             Inputs = inputs,
         };
     }
