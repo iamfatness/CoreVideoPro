@@ -393,6 +393,7 @@ if(BUILD_TESTING)
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
     tests/MasteringReferenceTest.cpp
+    tests/ImageResizeTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/CompositorFramingTest.cpp
