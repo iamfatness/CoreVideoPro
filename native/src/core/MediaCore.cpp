@@ -534,6 +534,7 @@ rpc::Json MediaCore::sessionState() const {
        }},
       {"encoderSession", encoderSessionState(session)},
       {"outputSenderSession", outputSenderSessionState()},
+      {"virtualCamera", virtualCameraState()},
       {"captureDevices", captureDevicesState()},
       {"health", health()},
       {"profile", profile()},
@@ -990,6 +991,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     recoverRecordingSession(command);
   } else if (type == "sync-participant-audio-mix") {
     syncParticipantAudioMix(command);
+  } else if (type == "sync-virtual-camera") {
+    syncVirtualCamera(command);
   } else if (type == "sync-audio-monitor") {
     syncAudioMonitor(command);
   } else if (type == "scan-vst-plugins") {
@@ -1664,6 +1667,40 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   if (!audioWorkerActive_) {
     renderSyntheticTick();
   }
+}
+
+// Virtual Camera (docs/virtual-camera-spec.md V2): enable/disable the system
+// webcam output. On enable the publisher creates the SHM slot and (Windows dev
+// build) registers MFCreateVirtualCamera; the output tick then publishes the
+// program frame as NV12. Idempotent.
+void MediaCore::syncVirtualCamera(const rpc::Json& command) {
+  const bool on = !command.get("on") || command.get("on")->asBool();
+  const int width = command.get("width") ? static_cast<int>(command.get("width")->asNumber()) : 1280;
+  const int height = command.get("height") ? static_cast<int>(command.get("height")->asNumber()) : 720;
+  const int fps = command.get("fps") ? static_cast<int>(command.get("fps")->asNumber()) : 30;
+
+  if (on && !virtualCameraEnabled_) {
+    virtualCamera_->start(width, height, fps);
+    virtualCameraEnabled_ = true;
+    std::fprintf(stderr, "[virtualcam] enable requested %dx%d@%d\n", width, height, fps);
+  } else if (!on && virtualCameraEnabled_) {
+    virtualCamera_->stop();
+    virtualCameraEnabled_ = false;
+    std::fprintf(stderr, "[virtualcam] disable requested\n");
+  }
+}
+
+rpc::Json MediaCore::virtualCameraState() const {
+  const auto status = virtualCamera_->status();
+  return rpc::Json::Object{
+      {"enabled", status.enabled},
+      {"status", status.state},
+      {"deviceName", status.deviceName},
+      {"resolution", rpc::Json::Object{{"width", status.width}, {"height", status.height}}},
+      {"fps", status.fps},
+      {"framesPublished", static_cast<double>(status.framesPublished)},
+      {"warning", status.warning},
+  };
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
@@ -4448,6 +4485,15 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
   } catch (...) {
     failOutputSenderSync("Output sender failed during sync.");
+  }
+  // Virtual Camera: publish the program frame to the SHM slot the OS reads.
+  // Same per-tick output cadence as the network senders (no shared-lock pixel
+  // work). No-op when the operator has not enabled the virtual camera.
+  if (virtualCameraEnabled_) {
+    try {
+      virtualCamera_->publish(work.programFrame);
+    } catch (...) {
+    }
   }
   if (work.recordingActive) {
     ++results.recordingProgramFramesDelta;
