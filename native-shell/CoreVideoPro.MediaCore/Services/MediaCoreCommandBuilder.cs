@@ -35,7 +35,8 @@ public static class MediaCoreCommandBuilder
             BuildAudioMixCommand(context),
             BuildAudioMonitorCommand(context.AudioMonitor),
             BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
-            BuildCaptureAudioSourcesCommand(context.CaptureAudioSources)
+            BuildCaptureAudioSourcesCommand(context.CaptureAudioSources),
+            BuildVirtualCameraCommand(context)
         };
 
         commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey));
@@ -609,6 +610,15 @@ public static class MediaCoreCommandBuilder
             ["audioBitrateKbps"] = profile.AudioBitrateKbps,
             ["codec"] = profile.Codec
         };
+
+    private static NativeMediaCoreCommand BuildVirtualCameraCommand(MediaCoreProductionSyncContext context) =>
+        Command("sync-virtual-camera", new Dictionary<string, object?>
+        {
+            ["on"] = context.VirtualCameraEnabled,
+            ["width"] = 1280,
+            ["height"] = 720,
+            ["fps"] = 30
+        });
 
     private static NativeMediaCoreCommand Command(string type, IReadOnlyDictionary<string, object?> payload) =>
         new()

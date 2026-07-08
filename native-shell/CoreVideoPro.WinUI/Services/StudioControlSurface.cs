@@ -44,6 +44,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
         "transport.engine.toggle", "transport.engine.set",
+        "transport.virtualcam.toggle", "transport.virtualcam.set",
         "scene.select", "view.setMode",
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
@@ -127,6 +128,12 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return await RunTransportToggle(_vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
             case "transport.engine.set":
                 return await RunTransportSet(_vm.ZoomCaptureSubscribed, Bool(args, 0), _vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
+            case "transport.virtualcam.toggle":
+                _vm.VirtualCameraEnabled = !_vm.VirtualCameraEnabled;
+                return ControlInvokeResult.Success;
+            case "transport.virtualcam.set":
+                _vm.VirtualCameraEnabled = Bool(args, 0);
+                return ControlInvokeResult.Success;
 
             // ---- Scenes / view ------------------------------------------------------
             case "scene.select":

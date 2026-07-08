@@ -100,6 +100,35 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string RoomPanelToggleLabel => ShowRoomPanel ? "Hide room" : "Show room";
 
+    // Virtual camera (virtual-camera-spec V4): program as a system webcam.
+    [ObservableProperty]
+    private bool _virtualCameraEnabled;
+
+    partial void OnVirtualCameraEnabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    public string VirtualCameraStatusLabel
+    {
+        get
+        {
+            var vc = _bridge.LastSnapshot?.VirtualCamera;
+            if (vc is null || !VirtualCameraEnabled)
+            {
+                return "Virtual camera off";
+            }
+            return vc.Status switch
+            {
+                "live" => $"Virtual camera live ({vc.Resolution.Width}x{vc.Resolution.Height})",
+                "starting" => "Virtual camera starting",
+                "failed" => string.IsNullOrEmpty(vc.Warning) ? "Virtual camera failed" : vc.Warning,
+                _ => "Virtual camera off"
+            };
+        }
+    }
+
     partial void OnShowRoomPanelChanged(bool value) => OnPropertyChanged(nameof(RoomPanelToggleLabel));
 
     [ObservableProperty]
@@ -8090,6 +8119,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringPresenceDb = MasteringPresenceDb,
             AudioMasteringHighShelfDb = MasteringHighShelfDb,
             AudioMasteringStereoWidth = MasteringStereoWidth,
+            VirtualCameraEnabled = VirtualCameraEnabled,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
@@ -9196,6 +9226,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(WorkspaceCompGrLevel));
         OnPropertyChanged(nameof(WorkspaceCompGrLabel));
         RefreshAudioReadoutBindings();
+        OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
