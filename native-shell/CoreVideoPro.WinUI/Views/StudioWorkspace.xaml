@@ -76,17 +76,12 @@
                 <Setter Property="MinHeight" Value="48" />
             </Style>
 
-            <Style x:Key="OutputStatLabel" TargetType="TextBlock">
-                <Setter Property="FontSize" Value="10" />
-                <Setter Property="Foreground" Value="{StaticResource StudioMutedBrush}" />
-                <Setter Property="CharacterSpacing" Value="40" />
+            <!-- Design system: telemetry labels are mono UPPERCASE, values mono. -->
+            <Style x:Key="OutputStatLabel" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoLabel}">
+                <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
             </Style>
 
-            <Style x:Key="OutputStatValue" TargetType="TextBlock">
-                <Setter Property="FontSize" Value="12" />
-                <Setter Property="FontWeight" Value="SemiBold" />
-                <Setter Property="Foreground" Value="#E8F2EC" />
-            </Style>
+            <Style x:Key="OutputStatValue" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoValue}" />
 
             <Style x:Key="RecordButton" TargetType="Button" BasedOn="{StaticResource TransportButton}">
                 <Setter Property="Background" Value="#4A2020" />
@@ -1147,9 +1142,10 @@
                               VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
-                            <TextBlock Text="OUTPUTS" FontSize="11" FontWeight="ExtraBold"
-                                       Foreground="#8FDCC8" CharacterSpacing="60" />
+                            <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
+                                                 DotFill="{StaticResource StudioLiveBrush}" />
+                            <TextBlock Text="OUTPUTS" Style="{StaticResource StudioMonoTag}"
+                                       FontSize="11" Foreground="#8FDCC8" CharacterSpacing="60" />
                         </StackPanel>
 
                         <StackPanel Spacing="2" MinWidth="56">
