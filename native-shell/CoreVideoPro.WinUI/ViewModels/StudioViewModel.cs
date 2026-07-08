@@ -91,6 +91,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _masterLimiterEnabled = true;
 
+    // The right "Video in room" panel is redundant with the Sources tab
+    // (owner 2026-07-07: "probably not needed"); HIDDEN by default, revealed
+    // via the "Room" toggle in the multiviewer header. Frees the width for
+    // the multiviewer.
+    [ObservableProperty]
+    private bool _showRoomPanel;
+
+    public string RoomPanelToggleLabel => ShowRoomPanel ? "Hide room" : "Show room";
+
+    partial void OnShowRoomPanelChanged(bool value) => OnPropertyChanged(nameof(RoomPanelToggleLabel));
+
     [ObservableProperty]
     private bool _masteringEnabled;
 
