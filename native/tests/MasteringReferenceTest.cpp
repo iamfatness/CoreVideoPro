@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <cmath>
+#include <string>
 #include <vector>
 
 using corevideo::modules::analyzeMasteringReference;
@@ -81,4 +82,47 @@ TEST(MasteringReference, DeriveIgnoresSilentReferenceLoudness) {
   base.targetLufs = -14.0;
   auto out = deriveMasteringParamsFromReference(ref, base);
   EXPECT_LT(std::abs(out.targetLufs - (-14.0)), 1e-9);  // kept base; silent ref ignored
+}
+
+TEST(MasteringReference, CompareInvalidProfilesIsInvalid) {
+  using corevideo::modules::compareMasteringToReference;
+  MasteringReferenceProfile a;  // invalid
+  MasteringReferenceProfile b;
+  b.valid = true;
+  EXPECT_FALSE(compareMasteringToReference(a, b).valid);
+}
+
+TEST(MasteringReference, BrighterProgramReadsBrighter) {
+  using corevideo::modules::compareMasteringToReference;
+  using corevideo::modules::masteringBrightnessVerdict;
+  MasteringReferenceProfile program;   // more highs relative to lows
+  program.valid = true;
+  program.lowDb = -30; program.midDb = -20; program.highDb = -12;  // high tilt +8
+  MasteringReferenceProfile reference;
+  reference.valid = true;
+  reference.lowDb = -20; reference.midDb = -20; reference.highDb = -24; // high tilt -4
+  auto d = compareMasteringToReference(program, reference);
+  ASSERT_TRUE(d.valid);
+  EXPECT_GT(d.highDb, 0.0);          // program has more highs vs mid than ref
+  EXPECT_EQ(std::string(masteringBrightnessVerdict(d)), "brighter");
+}
+
+TEST(MasteringReference, MatchedTiltReadsMatched) {
+  using corevideo::modules::compareMasteringToReference;
+  using corevideo::modules::masteringBrightnessVerdict;
+  MasteringReferenceProfile p;
+  p.valid = true; p.lowDb = -25; p.midDb = -18; p.highDb = -20;
+  auto d = compareMasteringToReference(p, p);  // compare to itself
+  EXPECT_EQ(std::string(masteringBrightnessVerdict(d)), "matched");
+  EXPECT_LT(std::abs(d.loudnessLu), 1e-9);
+}
+
+TEST(MasteringReference, LoudnessDeltaSigned) {
+  using corevideo::modules::compareMasteringToReference;
+  MasteringReferenceProfile p, r;
+  p.valid = r.valid = true;
+  p.lowDb = r.lowDb = -20; p.midDb = r.midDb = -18; p.highDb = r.highDb = -22;
+  p.integratedLufs = -14; r.integratedLufs = -20;
+  auto d = compareMasteringToReference(p, r);
+  EXPECT_LT(std::abs(d.loudnessLu - 6.0), 1e-9);  // program 6 LU louder
 }

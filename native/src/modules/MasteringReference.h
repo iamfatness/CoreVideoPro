@@ -112,4 +112,48 @@ inline MasteringParams deriveMasteringParamsFromReference(const MasteringReferen
   return out;
 }
 
+// How the current program compares to a reference, for operator feedback
+// ("your show is brighter / quieter than the reference"). Positive = program
+// has MORE than the reference in that band / is louder.
+struct MasteringMatchDelta {
+  double lowDb = 0.0;
+  double midDb = 0.0;
+  double highDb = 0.0;
+  double loudnessLu = 0.0;  // program LUFS - reference LUFS
+  bool valid = false;
+};
+
+inline MasteringMatchDelta compareMasteringToReference(const MasteringReferenceProfile& program,
+                                                       const MasteringReferenceProfile& reference) {
+  MasteringMatchDelta delta;
+  if (!program.valid || !reference.valid) {
+    return delta;
+  }
+  // Tilt is what matters for "brighter/darker", so compare each band RELATIVE
+  // to its own mid (removes overall level, isolating spectral balance).
+  delta.lowDb = (program.lowDb - program.midDb) - (reference.lowDb - reference.midDb);
+  delta.midDb = 0.0;  // mid is the reference point for tilt
+  delta.highDb = (program.highDb - program.midDb) - (reference.highDb - reference.midDb);
+  delta.loudnessLu = program.integratedLufs - reference.integratedLufs;
+  delta.valid = true;
+  return delta;
+}
+
+// One-word brightness verdict from a match delta (for a status readout).
+// "brighter" when the program's high-vs-low tilt exceeds the reference by a
+// perceptible margin (~1.5 dB), "darker" below, else "matched".
+inline const char* masteringBrightnessVerdict(const MasteringMatchDelta& delta) {
+  if (!delta.valid) {
+    return "unknown";
+  }
+  const double tilt = delta.highDb - delta.lowDb;  // + = program relatively brighter
+  if (tilt > 1.5) {
+    return "brighter";
+  }
+  if (tilt < -1.5) {
+    return "darker";
+  }
+  return "matched";
+}
+
 }  // namespace corevideo::modules
