@@ -211,19 +211,24 @@
                             BorderThickness="1" CornerRadius="999" Padding="14,8" FontSize="12" FontWeight="Bold"
                             ToolTipService.ToolTip="{x:Bind ViewModel.CaptureEngineHint, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon Glyph="&#xE7E8;" FontSize="13" />
+                            <!-- Design language: red dot until capture is on, then green. -->
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                                     Fill="{x:Bind ViewModel.CaptureDotBrush, Mode=OneWay}" />
                             <TextBlock Text="{x:Bind ViewModel.EngineRunningLabel, Mode=OneWay}" />
                         </StackPanel>
                     </Button>
                     <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}" FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="180"
                                TextTrimming="CharacterEllipsis" />
-                    <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}" BorderThickness="1"
-                            CornerRadius="12" Padding="10,4">
+                    <!-- Zoom connection pill: same design language - red "Zoom" when offline, green when live. -->
+                    <Border Background="{x:Bind ViewModel.ZoomPillBackground, Mode=OneWay}"
+                            BorderBrush="{x:Bind ViewModel.ZoomPillBorder, Mode=OneWay}" BorderThickness="1"
+                            CornerRadius="999" Padding="12,6">
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <Ellipse Width="8" Height="8" Fill="{StaticResource StudioAccentBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.ZoomStatus, Mode=OneWay}" FontSize="12"
-                                       Foreground="{StaticResource StudioTextBrush}" />
+                            <Ellipse Width="8" Height="8" VerticalAlignment="Center"
+                                     Fill="{x:Bind ViewModel.ZoomPillDot, Mode=OneWay}" />
+                            <TextBlock Text="Zoom" FontSize="12" FontWeight="Bold"
+                                       Foreground="{x:Bind ViewModel.ZoomPillForeground, Mode=OneWay}" />
                         </StackPanel>
                     </Border>
                 </StackPanel>

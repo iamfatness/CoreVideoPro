@@ -34,7 +34,7 @@ public static class WindowChromeService
 
     public static void Apply(Window window, AppWindow appWindow)
     {
-        TrySetIcon(appWindow);
+        TrySetIcon(window, appWindow);
         ApplyCore(window, appWindow);
         ApplyCore(window, appWindow);
 
@@ -49,15 +49,42 @@ public static class WindowChromeService
         }
     }
 
-    // Sets the window/taskbar icon to the brand mark. Best-effort: a missing or
-    // locked icon file must never crash a window's creation.
-    private static void TrySetIcon(AppWindow appWindow)
+    private const uint ImageIcon = 1;
+    private const uint LrLoadFromFile = 0x00000010;
+    private const uint WmSetIcon = 0x0080;
+    private static readonly IntPtr IconSmall = IntPtr.Zero;
+    private static readonly IntPtr IconBig = new(1);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadImage(IntPtr hinst, string name, uint type, int cx, int cy, uint fuLoad);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    // Sets the window/taskbar icon to the brand mark. AppWindow.SetIcon drives
+    // the taskbar + alt-tab; a direct WM_SETICON also sets the standard caption's
+    // small icon (top-left of the title bar), which SetIcon alone can leave as
+    // the default. Best-effort: a missing/locked icon must never crash a window.
+    private static void TrySetIcon(Window window, AppWindow appWindow)
     {
         try
         {
-            if (File.Exists(AppIconPath))
+            if (!File.Exists(AppIconPath))
             {
-                appWindow.SetIcon(AppIconPath);
+                return;
+            }
+            appWindow.SetIcon(AppIconPath);
+
+            var hwnd = WindowNative.GetWindowHandle(window);
+            var small = LoadImage(IntPtr.Zero, AppIconPath, ImageIcon, 16, 16, LrLoadFromFile);
+            var big = LoadImage(IntPtr.Zero, AppIconPath, ImageIcon, 32, 32, LrLoadFromFile);
+            if (small != IntPtr.Zero)
+            {
+                SendMessage(hwnd, WmSetIcon, IconSmall, small);
+            }
+            if (big != IntPtr.Zero)
+            {
+                SendMessage(hwnd, WmSetIcon, IconBig, big);
             }
         }
         catch

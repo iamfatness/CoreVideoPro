@@ -1095,7 +1095,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _currentRoomLabel;
 
-    public string EngineRunningLabel => ZoomCaptureSubscribed ? "Capture On" : "Capture Off";
+    // Design language: label stays "Capture"; the pill's colour + dot show on/off.
+    public string EngineRunningLabel => "Capture";
 
     public bool CanToggleCapture => Settings.IsInMeeting;
 
@@ -1681,17 +1682,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "VST3 slot is staged for this processing target; live plugin execution still requires the native plugin bridge."
             : "Built-in processing settings are synced with the native media core metadata.";
 
-    public Brush EngineToggleBackground => ZoomCaptureSubscribed
-        ? new SolidColorBrush(Windows.UI.Color.FromArgb(31, 61, 220, 151))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(10, 255, 255, 255));
+    // Status-pill design language: a pill is GREEN (dot + tint + text) when its
+    // thing is on/live, RED when off/offline. Capture and Zoom share this so the
+    // operator reads state by colour + dot, not by wording. Green #22C86E, red
+    // #E5433F (StudioAccent / StudioAir).
+    private static SolidColorBrush PillBackground(bool on) => new(on
+        ? Windows.UI.Color.FromArgb(31, 34, 200, 110)
+        : Windows.UI.Color.FromArgb(28, 229, 67, 63));
+    private static SolidColorBrush PillBorder(bool on) => new(on
+        ? Windows.UI.Color.FromArgb(150, 34, 200, 110)
+        : Windows.UI.Color.FromArgb(150, 229, 67, 63));
+    private static SolidColorBrush PillForeground(bool on) => new(on
+        ? Windows.UI.Color.FromArgb(255, 174, 242, 223)
+        : Windows.UI.Color.FromArgb(255, 247, 176, 174));
+    private static SolidColorBrush PillDot(bool on) => new(on
+        ? Windows.UI.Color.FromArgb(255, 34, 200, 110)
+        : Windows.UI.Color.FromArgb(255, 229, 67, 63));
 
-    public Brush EngineToggleBorder => ZoomCaptureSubscribed
-        ? new SolidColorBrush(Windows.UI.Color.FromArgb(140, 61, 220, 151))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(46, 189, 207, 196));
+    public Brush EngineToggleBackground => PillBackground(ZoomCaptureSubscribed);
+    public Brush EngineToggleBorder => PillBorder(ZoomCaptureSubscribed);
+    public Brush EngineToggleForeground => PillForeground(ZoomCaptureSubscribed);
+    public Brush CaptureDotBrush => PillDot(ZoomCaptureSubscribed);
 
-    public Brush EngineToggleForeground => ZoomCaptureSubscribed
-        ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 174, 242, 223))
-        : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 165, 155));
+    // Zoom connection pill: just "Zoom", red until a meeting is live then green.
+    public bool ZoomOnline => ZoomStatus == "Zoom Live";
+    public Brush ZoomPillBackground => PillBackground(ZoomOnline);
+    public Brush ZoomPillBorder => PillBorder(ZoomOnline);
+    public Brush ZoomPillForeground => PillForeground(ZoomOnline);
+    public Brush ZoomPillDot => PillDot(ZoomOnline);
 
     public IReadOnlyList<ParticipantListItem> ParticipantListItems { get; private set; } = [];
 
@@ -2010,6 +2028,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(EngineToggleBackground));
         OnPropertyChanged(nameof(EngineToggleBorder));
         OnPropertyChanged(nameof(EngineToggleForeground));
+        OnPropertyChanged(nameof(CaptureDotBrush));
         if (_bridge.LastSnapshot is { } snapshot)
         {
             ApplyMeetingFieldsFromSnapshot(snapshot);
@@ -2017,6 +2036,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         OnPropertyChanged(nameof(CurrentRoomHeader));
         RefreshTransportState();
+    }
+
+    partial void OnZoomStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(ZoomOnline));
+        OnPropertyChanged(nameof(ZoomPillBackground));
+        OnPropertyChanged(nameof(ZoomPillBorder));
+        OnPropertyChanged(nameof(ZoomPillForeground));
+        OnPropertyChanged(nameof(ZoomPillDot));
     }
 
     partial void OnRecordingChanged(bool value)
