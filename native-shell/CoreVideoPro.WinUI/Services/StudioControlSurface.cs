@@ -116,32 +116,17 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 _vm.SetTakeTransitionCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
             case "transport.record.toggle":
-                await ExecuteIfCan(_vm.ToggleRecordingCommand).ConfigureAwait(true);
-                return ControlInvokeResult.Success;
+                return await RunTransportToggle(_vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.record.set":
-                if (_vm.Recording != Bool(args, 0))
-                {
-                    await ExecuteIfCan(_vm.ToggleRecordingCommand).ConfigureAwait(true);
-                }
-                return ControlInvokeResult.Success;
+                return await RunTransportSet(_vm.Recording, Bool(args, 0), _vm.ToggleRecordingCommand, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
-                await ExecuteIfCan(_vm.ToggleStreamingCommand).ConfigureAwait(true);
-                return ControlInvokeResult.Success;
+                return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.stream.set":
-                if (_vm.Streaming != Bool(args, 0))
-                {
-                    await ExecuteIfCan(_vm.ToggleStreamingCommand).ConfigureAwait(true);
-                }
-                return ControlInvokeResult.Success;
+                return await RunTransportSet(_vm.Streaming, Bool(args, 0), _vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
-                await ExecuteIfCan(_vm.ToggleEngineCommand).ConfigureAwait(true);
-                return ControlInvokeResult.Success;
+                return await RunTransportToggle(_vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
             case "transport.engine.set":
-                if (_vm.ZoomCaptureSubscribed != Bool(args, 0))
-                {
-                    await ExecuteIfCan(_vm.ToggleEngineCommand).ConfigureAwait(true);
-                }
-                return ControlInvokeResult.Success;
+                return await RunTransportSet(_vm.ZoomCaptureSubscribed, Bool(args, 0), _vm.ToggleEngineCommand, "capture engine").ConfigureAwait(true);
 
             // ---- Scenes / view ------------------------------------------------------
             case "scene.select":
@@ -363,12 +348,35 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         _feedbackTimer.Start();
     }
 
-    private static async Task ExecuteIfCan(CommunityToolkit.Mvvm.Input.IAsyncRelayCommand command)
+    // Transport toggle/set that reports HONESTLY: when the underlying command is
+    // gated off (e.g. record needs a meeting), it returns Fail with the reason
+    // instead of the old false ok:true (the "record.set says ok but recording
+    // stays false" bug). A set whose target already matches is a Success no-op.
+    private static async Task<ControlInvokeResult> RunTransportToggle(
+        CommunityToolkit.Mvvm.Input.IAsyncRelayCommand command, string what)
     {
-        if (command.CanExecute(null))
+        if (!command.CanExecute(null))
         {
-            await command.ExecuteAsync(null).ConfigureAwait(true);
+            return ControlInvokeResult.Fail($"Cannot toggle {what} right now (the control is unavailable in the current state).");
         }
+        await command.ExecuteAsync(null).ConfigureAwait(true);
+        return ControlInvokeResult.Success;
+    }
+
+    private static async Task<ControlInvokeResult> RunTransportSet(
+        bool current, bool target, CommunityToolkit.Mvvm.Input.IAsyncRelayCommand command, string what)
+    {
+        if (current == target)
+        {
+            return ControlInvokeResult.Success;  // already in the requested state
+        }
+        if (!command.CanExecute(null))
+        {
+            return ControlInvokeResult.Fail(
+                $"Cannot {(target ? "start" : "stop")} {what} right now (the control is unavailable in the current state).");
+        }
+        await command.ExecuteAsync(null).ConfigureAwait(true);
+        return ControlInvokeResult.Success;
     }
 
     private static string Str(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is string s ? s : string.Empty;
