@@ -375,6 +375,7 @@ if(BUILD_TESTING)
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraSlateTest.cpp
+    tests/VirtualCameraComposeTest.cpp
     tests/MasteringReferenceTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
