@@ -923,8 +923,10 @@
                             Foreground="{x:Bind ViewModel.RecordButtonForeground, Mode=OneWay}">
                         <StackPanel Spacing="1">
                             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                                <Ellipse Width="8" Height="8" Fill="#FFF8F8"
-                                         Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}" />
+                                <!-- Design: REC = pulsing red dot while recording. -->
+                                <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
+                                                     DotFill="{StaticResource StudioAirBrush}"
+                                                     Visibility="{x:Bind ViewModel.RecordingLiveDotVisibility, Mode=OneWay}" />
                                 <FontIcon Glyph="&#xE1CE;" FontSize="16"
                                           Visibility="{x:Bind ViewModel.RecordIconVisibility, Mode=OneWay}" />
                                 <TextBlock Text="{x:Bind ViewModel.RecordingLabel, Mode=OneWay}" />
@@ -1030,6 +1032,10 @@
                             ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}">
                         <StackPanel Spacing="1">
                             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                                <!-- Design: LIVE = pulsing green dot while streaming. -->
+                                <cvcontrols:PulseDot Diameter="8" VerticalAlignment="Center"
+                                                     DotFill="{StaticResource StudioLiveBrush}"
+                                                     Visibility="{x:Bind ViewModel.Streaming, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
                                 <FontIcon Glyph="&#xE958;" FontSize="16" />
                                 <TextBlock Text="{x:Bind ViewModel.StreamingLabel, Mode=OneWay}" />
                             </StackPanel>
