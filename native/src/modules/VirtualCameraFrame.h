@@ -78,4 +78,37 @@ inline bool convertBgraToNv12(const std::uint8_t* bgra, int width, int height,
   return true;
 }
 
+// Mirror an NV12 frame horizontally in place (the webcam "mirror me" option -
+// most virtual-cam users expect a mirrored self-view). Flips each Y row, and
+// each UV pair as a unit (U/V stay paired; the pairs reverse across the row).
+// V3 (docs/virtual-camera-spec.md). Pure; even width required (NV12 is even).
+inline void mirrorNv12InPlace(std::uint8_t* nv12, int width, int height) {
+  if (nv12 == nullptr || width <= 0 || height <= 0 || (width & 1) != 0) {
+    return;
+  }
+  // Y plane: reverse each row.
+  for (int row = 0; row < height; ++row) {
+    std::uint8_t* y = nv12 + static_cast<std::size_t>(row) * width;
+    for (int a = 0, b = width - 1; a < b; ++a, --b) {
+      const std::uint8_t t = y[a];
+      y[a] = y[b];
+      y[b] = t;
+    }
+  }
+  // UV plane: reverse the order of the 2-byte (U,V) chroma pairs per row.
+  std::uint8_t* uv = nv12 + static_cast<std::size_t>(width) * height;
+  const int pairsPerRow = width / 2;
+  for (int row = 0; row < height / 2; ++row) {
+    std::uint8_t* r = uv + static_cast<std::size_t>(row) * width;
+    for (int a = 0, b = pairsPerRow - 1; a < b; ++a, --b) {
+      const std::uint8_t u = r[a * 2];
+      const std::uint8_t v = r[a * 2 + 1];
+      r[a * 2] = r[b * 2];
+      r[a * 2 + 1] = r[b * 2 + 1];
+      r[b * 2] = u;
+      r[b * 2 + 1] = v;
+    }
+  }
+}
+
 }  // namespace corevideo::modules

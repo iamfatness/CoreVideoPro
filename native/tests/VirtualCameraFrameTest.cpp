@@ -69,3 +69,25 @@ TEST(VirtualCameraFrame, PureRedAndBlueHaveOppositeChroma) {
   EXPECT_GT(static_cast<int>(red[uvStart + 1]), static_cast<int>(blue[uvStart + 1]));   // V: red > blue
   EXPECT_GT(static_cast<int>(blue[uvStart]), static_cast<int>(red[uvStart]));           // U: blue > red
 }
+
+TEST(VirtualCameraFrame, MirrorFlipsLumaRowsAndChromaPairs) {
+  using corevideo::modules::mirrorNv12InPlace;
+  // 4x2 NV12: Y = 8 bytes (2 rows of 4), UV = 4 bytes (1 row of 2 pairs).
+  // Y row0 = 1 2 3 4 -> 4 3 2 1; row1 = 5 6 7 8 -> 8 7 6 5.
+  // UV row = (U0 V0)(U1 V1) = 10 11 20 21 -> (U1 V1)(U0 V0) = 20 21 10 11.
+  std::vector<std::uint8_t> f = {1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 20, 21};
+  mirrorNv12InPlace(f.data(), 4, 2);
+  const std::vector<std::uint8_t> want = {4, 3, 2, 1, 8, 7, 6, 5, 20, 21, 10, 11};
+  EXPECT_EQ(f, want);
+}
+
+TEST(VirtualCameraFrame, MirrorTwiceIsIdentity) {
+  using corevideo::modules::mirrorNv12InPlace;
+  auto px = solidBgra(8, 4, 30, 60, 90);
+  std::vector<std::uint8_t> nv12;
+  ASSERT_TRUE(convertBgraToNv12(px.data(), 8, 4, nv12));
+  const auto original = nv12;
+  mirrorNv12InPlace(nv12.data(), 8, 4);
+  mirrorNv12InPlace(nv12.data(), 8, 4);
+  EXPECT_EQ(nv12, original);
+}
