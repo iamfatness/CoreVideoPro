@@ -49,6 +49,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
+        "audio.mastering.set", "audio.mastering.target",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
         "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
@@ -181,6 +182,12 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
             case "audio.masterLimiter.set":
                 _vm.MasterLimiterEnabled = Bool(args, 0);
+                return ControlInvokeResult.Success;
+            case "audio.mastering.set":
+                _vm.MasteringEnabled = Bool(args, 0);
+                return ControlInvokeResult.Success;
+            case "audio.mastering.target":
+                _vm.MasteringTargetIndex = Math.Clamp(Int(args, 0), 0, 2);
                 return ControlInvokeResult.Success;
 
             // ---- Multiview ----------------------------------------------------------
