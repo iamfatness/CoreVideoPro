@@ -1,5 +1,6 @@
 #include "modules/VirtualCameraPublisher.h"
 
+#include "modules/ImageResize.h"
 #include "modules/VirtualCameraFrame.h"
 #include "modules/VirtualCameraShm.h"
 
@@ -93,10 +94,19 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (px.width <= 0 || px.height <= 0 || px.bgra.empty()) {
       return;
     }
-    // Even dimensions required for NV12; the program preview is 16:9 even.
-    const int w = px.width & ~1;
-    const int h = px.height & ~1;
-    if (!convertBgraToNv12(px.bgra.data(), w, h, nv12_)) {
+    // Publish at the DECLARED size (the DLL's media type is fixed), so the camera
+    // shows the real program instead of falling back to the slate on a size
+    // mismatch. Scale the program preview to status_.width x status_.height.
+    const int w = status_.width & ~1;
+    const int h = status_.height & ~1;
+    const std::uint8_t* srcBgra = px.bgra.data();
+    if (px.width != w || px.height != h) {
+      if (!resizeBgraBilinear(px.bgra.data(), px.width, px.height, w, h, resized_)) {
+        return;
+      }
+      srcBgra = resized_.data();
+    }
+    if (!convertBgraToNv12(srcBgra, w, h, nv12_)) {
       return;
     }
     if (mirror_) {
@@ -157,6 +167,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   void* view_ = nullptr;
   VirtualCameraShmHeader* header_ = nullptr;
   std::vector<std::uint8_t> nv12_;
+  std::vector<std::uint8_t> resized_;
   Microsoft::WRL::ComPtr<IMFVirtualCamera> camera_;
   VirtualCameraStatus status_;
 };
