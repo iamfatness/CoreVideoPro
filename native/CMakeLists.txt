@@ -141,6 +141,22 @@ if(COREVIDEO_WITH_VIRTUALCAM)
   endif()
   # MFCreateVirtualCamera + MF runtime.
   target_link_libraries(corevideo_native PUBLIC mfplat mf mfsensorgroup ole32)
+
+  # V2b: the user-mode COM DLL the Frame Server loads (IMFMediaSource over the
+  # shared-memory slot). No kernel driver, no signing. Registered via regsvr32.
+  add_library(corevideo-virtualcam SHARED
+      virtualcam-dll/dllmain.cpp
+      virtualcam-dll/Guids.cpp
+      virtualcam-dll/MediaSource.cpp
+      virtualcam-dll/MediaStream.cpp)
+  target_compile_features(corevideo-virtualcam PRIVATE cxx_std_17)
+  target_include_directories(corevideo-virtualcam PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+      ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)
+  target_link_libraries(corevideo-virtualcam PRIVATE
+      mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
+  set_target_properties(corevideo-virtualcam PROPERTIES
+      LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
 endif()
 
 if(COREVIDEO_WITH_WGC)
