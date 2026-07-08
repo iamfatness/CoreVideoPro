@@ -40,6 +40,8 @@ class IVirtualCameraPublisher {
   virtual VirtualCameraStatus status() const = 0;
   // Mirror-me: flip the published frame horizontally (optional; default no-op).
   virtual void setMirror(bool mirror) { (void)mirror; }
+  // Operator-set display name; applies on the next start() (optional; no-op default).
+  virtual void setDeviceName(const std::string& name) { (void)name; }
 };
 
 // Dev-gated (COREVIDEO_WITH_VIRTUALCAM). Returns a no-op stub otherwise, so the

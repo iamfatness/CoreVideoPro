@@ -1180,6 +1180,12 @@
                                     <TextBlock Text="Flips the camera horizontally, like most webcam self-views."
                                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
+                                    <TextBox Header="Camera name"
+                                             Text="{x:Bind ViewModel.VirtualCameraDeviceName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             PlaceholderText="CoreVideo Pro Camera" />
+                                    <TextBlock Text="The name apps show in their camera list. Takes effect next time you enable the camera."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </Flyout>
                         </Button.Flyout>

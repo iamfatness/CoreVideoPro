@@ -108,6 +108,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _virtualCameraMirror;
 
+    // V5: operator-set camera display name (blank keeps the default).
+    [ObservableProperty]
+    private string _virtualCameraDeviceName = string.Empty;
+
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
@@ -115,6 +119,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     partial void OnVirtualCameraMirrorChanged(bool value) => _ = TrySyncMediaCoreAsync();
+
+    partial void OnVirtualCameraDeviceNameChanged(string value) => _ = TrySyncMediaCoreAsync();
 
     public string VirtualCameraStatusLabel
     {
@@ -8155,6 +8161,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringStereoWidth = MasteringStereoWidth,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraDeviceName = VirtualCameraDeviceName,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
                 AudioMonitoringEnabled,
