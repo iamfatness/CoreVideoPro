@@ -21,6 +21,10 @@
     <!-- Use the installed Windows App Runtime (2.2.x) instead of bundling WinRT next to the app. -->
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <UseAppHost>true</UseAppHost>
+    <!-- CoreVideo Pro brand mark: embeds in the .exe so Explorer + a pinned
+         taskbar button show the logo. AppWindow.SetIcon (MainWindow) applies it
+         to the running window/taskbar too. -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
@@ -38,6 +42,8 @@
 
   <ItemGroup>
     <Content Include="Assets\*.png" />
+    <!-- Ship the icon next to the exe so AppWindow.SetIcon can load it at runtime. -->
+    <Content Include="Assets\AppIcon.ico" />
     <!-- Design-system fonts (bundled, OFL): Space Grotesk (UI) + IBM Plex Mono (labels). -->
     <Content Include="Assets\Fonts\*.ttf" />
   </ItemGroup>
