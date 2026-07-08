@@ -199,6 +199,10 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("volume", d, true, "0.0-1.0") }),
             new("audio.masterLimiter.set", "Master limiter", "Enable/disable the master limiter.",
                 new[] { new ControlParam("on", b, true) }),
+            new("audio.mastering.set", "Mastering", "Enable/disable the master-bus mastering chain.",
+                new[] { new ControlParam("on", b, true) }),
+            new("audio.mastering.target", "Mastering target", "Set the mastering loudness target (0=-14 streaming, 1=-16 podcast, 2=-23 broadcast).",
+                new[] { new ControlParam("index", i, true, "0-2") }),
 
             // ---- Multiview --------------------------------------------------------------
             new("multiview.layout.set", "Multiview layout", "Set the multiview layout mode.",
