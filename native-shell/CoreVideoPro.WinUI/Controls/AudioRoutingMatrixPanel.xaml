@@ -49,9 +49,18 @@
                                     <DataTemplate x:DataType="models:RoutingBus">
                                         <Border Width="52" Padding="0,0,0,4">
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="2">
-                                                <TextBlock Text="{x:Bind Label}" FontSize="9" FontWeight="ExtraBold"
+                                                <!-- Fixed buses: static label. -->
+                                                <TextBlock Text="{x:Bind Label, Mode=OneWay}" FontSize="9" FontWeight="ExtraBold"
                                                            Foreground="#8FDCC8"
-                                                           VerticalAlignment="Center" />
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+                                                <!-- audio-tab-redesign 4: aux/custom bus label is inline-editable to rename. -->
+                                                <TextBox Text="{x:Bind Label, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                         FontSize="9" FontWeight="ExtraBold" MinWidth="34" MaxWidth="44"
+                                                         Padding="2,0" BorderThickness="0" Background="Transparent"
+                                                         Foreground="#8FDCC8" VerticalAlignment="Center"
+                                                         Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
+                                                         ToolTipService.ToolTip="Rename this bus" />
                                                 <!-- Lifecycle L6: delete an aux/custom bus (fixed buses hide this) -->
                                                 <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="8"
                                                         Padding="2,0" Background="Transparent" BorderThickness="0" Opacity="0.5"
