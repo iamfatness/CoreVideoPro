@@ -154,6 +154,12 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
 
   void setMirror(bool mirror) override { mirror_ = mirror; }
 
+  void setDeviceName(const std::string& name) override {
+    if (!started_ && !name.empty()) {
+      status_.deviceName = name;  // takes effect at the next start()
+    }
+  }
+
  private:
   void fail(const std::string& message) {
     status_.state = "failed";
@@ -190,6 +196,9 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
     status_.state = "off";
   }
   VirtualCameraStatus status() const override { return status_; }
+  void setDeviceName(const std::string& name) override {
+    if (!name.empty()) status_.deviceName = name;
+  }
 
  private:
   VirtualCameraStatus status_;

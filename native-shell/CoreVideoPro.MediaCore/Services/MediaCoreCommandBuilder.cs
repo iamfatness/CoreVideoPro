@@ -618,7 +618,8 @@ public static class MediaCoreCommandBuilder
             ["width"] = 1280,
             ["height"] = 720,
             ["fps"] = 30,
-            ["mirror"] = context.VirtualCameraMirror
+            ["mirror"] = context.VirtualCameraMirror,
+            ["deviceName"] = context.VirtualCameraDeviceName
         });
 
     private static NativeMediaCoreCommand Command(string type, IReadOnlyDictionary<string, object?> payload) =>

@@ -154,6 +154,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
             new("transport.virtualcam.mirror.set", "Virtual camera mirror", "Mirror the virtual camera output horizontally.",
                 new[] { new ControlParam("on", b, true) }),
+            new("transport.virtualcam.name.set", "Virtual camera name", "Set the virtual camera's display name (blank keeps the default).",
+                new[] { new ControlParam("name", s, false) }),
 
             // ---- Scenes / view ----------------------------------------------------------
             new("scene.select", "Select scene", "Cue a scene to Preview by id.",

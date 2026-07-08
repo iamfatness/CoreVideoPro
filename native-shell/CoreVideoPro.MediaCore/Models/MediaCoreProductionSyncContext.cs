@@ -260,6 +260,7 @@ public sealed record MediaCoreProductionSyncContext
     // Virtual camera (virtual-camera-spec V4/V5).
     public bool VirtualCameraEnabled { get; init; }
     public bool VirtualCameraMirror { get; init; }
+    public string VirtualCameraDeviceName { get; init; } = string.Empty;
 
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller

@@ -47,6 +47,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "transport.stream.toggle", "transport.stream.set",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
+        "transport.virtualcam.name.set",
         "scene.select", "view.setMode",
         "input.assign", "input.name", "input.inShow.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
@@ -139,6 +140,9 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
                 return ControlInvokeResult.Success;
             case "transport.virtualcam.mirror.set":
                 _vm.VirtualCameraMirror = Bool(args, 0);
+                return ControlInvokeResult.Success;
+            case "transport.virtualcam.name.set":
+                _vm.VirtualCameraDeviceName = Str(args, 0);
                 return ControlInvokeResult.Success;
 
             // ---- Scenes / view ------------------------------------------------------
