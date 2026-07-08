@@ -149,6 +149,9 @@ public static class ControlActionRegistry
             new("transport.engine.toggle", "Engine toggle", "Toggle the capture engine on/off."),
             new("transport.engine.set", "Engine set", "Turn the capture engine on or off explicitly.",
                 new[] { new ControlParam("on", b, true) }),
+            new("transport.virtualcam.toggle", "Virtual camera toggle", "Toggle the virtual camera output."),
+            new("transport.virtualcam.set", "Virtual camera set", "Turn the virtual camera on or off explicitly.",
+                new[] { new ControlParam("on", b, true) }),
 
             // ---- Scenes / view ----------------------------------------------------------
             new("scene.select", "Select scene", "Cue a scene to Preview by id.",

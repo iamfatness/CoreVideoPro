@@ -257,6 +257,9 @@ public sealed record MediaCoreProductionSyncContext
     public double AudioMasteringHighShelfDb { get; init; }
     public double AudioMasteringStereoWidth { get; init; } = 1.0;
 
+    // Virtual camera (virtual-camera-spec V4).
+    public bool VirtualCameraEnabled { get; init; }
+
     /// <summary>
     /// One-shot: emit scan-vst-plugins this sync (VST host P1). The caller
     /// clears its request flag after building, so the command fires once.
