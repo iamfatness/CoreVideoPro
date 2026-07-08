@@ -28,8 +28,13 @@ public static class WindowChromeService
     private static readonly ConcurrentDictionary<IntPtr, List<DispatcherQueueTimer>> ScheduledTimers = new();
     private static readonly ConcurrentDictionary<IntPtr, byte> ApplyInProgress = new();
 
+    // The CoreVideo Pro brand mark, resolved once next to the exe.
+    private static readonly string AppIconPath =
+        Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+
     public static void Apply(Window window, AppWindow appWindow)
     {
+        TrySetIcon(appWindow);
         ApplyCore(window, appWindow);
         ApplyCore(window, appWindow);
 
@@ -41,6 +46,23 @@ public static class WindowChromeService
             ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(50));
             ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(200));
             ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(600));
+        }
+    }
+
+    // Sets the window/taskbar icon to the brand mark. Best-effort: a missing or
+    // locked icon file must never crash a window's creation.
+    private static void TrySetIcon(AppWindow appWindow)
+    {
+        try
+        {
+            if (File.Exists(AppIconPath))
+            {
+                appWindow.SetIcon(AppIconPath);
+            }
+        }
+        catch
+        {
+            // Icon is cosmetic; never let it take a window down.
         }
     }
 
