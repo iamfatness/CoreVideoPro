@@ -308,6 +308,25 @@ public sealed class NativeMediaCoreOutputSenderSession
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
+// Read model for the virtual-camera snapshot block (virtual-camera-spec V2/V4).
+// Mirrors MediaCore::virtualCameraState(). status: off | starting | live | failed.
+public sealed class NativeMediaCoreVirtualCameraResolution
+{
+    public int Width { get; init; }
+    public int Height { get; init; }
+}
+
+public sealed class NativeMediaCoreVirtualCamera
+{
+    public bool Enabled { get; init; }
+    public string Status { get; init; } = "off";
+    public string DeviceName { get; init; } = "CoreVideo Pro Camera";
+    public NativeMediaCoreVirtualCameraResolution Resolution { get; init; } = new();
+    public int Fps { get; init; }
+    public long FramesPublished { get; init; }
+    public string Warning { get; init; } = string.Empty;
+}
+
 public sealed class NativeMediaCoreRecordingStream
 {
     public required string Kind { get; init; }
@@ -655,6 +674,7 @@ public sealed record NativeMediaCoreStateSnapshot
     };
     public IReadOnlyList<NativeMediaCoreOutputHealth> OutputHealth { get; init; } = [];
     public NativeMediaCoreOutputSenderSession OutputSenderSession { get; init; } = new() { Status = "idle" };
+    public NativeMediaCoreVirtualCamera VirtualCamera { get; init; } = new();
     public int SourceCount { get; init; }
     public int ResolvedRouteCount { get; init; }
     public NativeMediaCoreRenderPlan RenderPlan { get; init; } = new() { RenderPlanId = "idle" };
