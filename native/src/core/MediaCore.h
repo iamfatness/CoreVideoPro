@@ -5,6 +5,7 @@
 #include "modules/PluginHostClient.h"
 #include "modules/AudioDsp.h"
 #include "modules/AudioMastering.h"
+#include "modules/VirtualCameraPublisher.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
@@ -113,6 +114,8 @@ class MediaCore {
   void recoverRecordingSession(const rpc::Json& command);
   void configureEncoderRecordingRequest();
   void syncParticipantAudioMix(const rpc::Json& command);
+  void syncVirtualCamera(const rpc::Json& command);
+  [[nodiscard]] rpc::Json virtualCameraState() const;
   void syncAudioMonitor(const rpc::Json& command);
   // VST host P1 (docs/vst-host-spec.md): operator-initiated plugin discovery.
   // Runs `corevideo-plugin-host --scan` on a detached thread; results live
@@ -372,6 +375,8 @@ class MediaCore {
   std::string recordingLastFailure_;
   std::string recordingLastRecovery_;
   std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
+  std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
+  bool virtualCameraEnabled_ = false;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
