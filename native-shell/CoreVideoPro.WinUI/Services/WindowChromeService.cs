@@ -32,20 +32,23 @@ public static class WindowChromeService
     private static readonly string AppIconPath =
         Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
 
-    public static void Apply(Window window, AppWindow appWindow)
+    // extendTitleBar: the main window merges its branded top bar into the title
+    // bar (no separate Windows caption strip with a duplicate "CoreVideo Pro");
+    // pop-outs keep the standard caption.
+    public static void Apply(Window window, AppWindow appWindow, bool extendTitleBar = false)
     {
         TrySetIcon(window, appWindow);
-        ApplyCore(window, appWindow);
-        ApplyCore(window, appWindow);
+        ApplyCore(window, appWindow, extendTitleBar);
+        ApplyCore(window, appWindow, extendTitleBar);
 
         // WinUI often paints default white caption buttons until after the first frame.
         var queue = DispatcherQueue.GetForCurrentThread();
         if (queue is not null)
         {
             var hwnd = WindowNative.GetWindowHandle(window);
-            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(50));
-            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(200));
-            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(600));
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(50), extendTitleBar);
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(200), extendTitleBar);
+            ScheduleReapply(queue, hwnd, window, appWindow, TimeSpan.FromMilliseconds(600), extendTitleBar);
         }
     }
 
@@ -112,7 +115,8 @@ public static class WindowChromeService
         IntPtr hwnd,
         Window window,
         AppWindow appWindow,
-        TimeSpan delay)
+        TimeSpan delay,
+        bool extendTitleBar)
     {
         var timer = queue.CreateTimer();
         timer.Interval = delay;
@@ -123,7 +127,7 @@ public static class WindowChromeService
             sender.Stop();
             sender.Tick -= OnTick;
             RemoveTimer(hwnd, sender);
-            ApplyCore(window, appWindow);
+            ApplyCore(window, appWindow, extendTitleBar);
         }
 
         timer.Tick += OnTick;
@@ -157,7 +161,7 @@ public static class WindowChromeService
         }
     }
 
-    private static void ApplyCore(Window window, AppWindow appWindow)
+    private static void ApplyCore(Window window, AppWindow appWindow, bool extendTitleBar)
     {
         var hwnd = WindowNative.GetWindowHandle(window);
         if (hwnd == IntPtr.Zero)
@@ -173,8 +177,13 @@ public static class WindowChromeService
         try
         {
             EnableImmersiveDarkMode(hwnd);
-            ApplyDwmCaptionColors(hwnd);
-            ApplyAppWindowTitleBar(appWindow);
+            // When the app draws into the title bar there is no system caption
+            // strip to colour; setting DWM caption colours would force one back.
+            if (!extendTitleBar)
+            {
+                ApplyDwmCaptionColors(hwnd);
+            }
+            ApplyAppWindowTitleBar(appWindow, extendTitleBar);
         }
         catch (Exception ex) when (ex is ArgumentException or COMException or ObjectDisposedException)
         {
@@ -186,7 +195,7 @@ public static class WindowChromeService
         }
     }
 
-    private static void ApplyAppWindowTitleBar(AppWindow appWindow)
+    private static void ApplyAppWindowTitleBar(AppWindow appWindow, bool extendTitleBar)
     {
         if (appWindow.TitleBar is null)
         {
@@ -195,21 +204,40 @@ public static class WindowChromeService
 
         var background = TitleBackground;
         var foreground = TitleForeground;
-        var buttonBackground = TitleButtonBackground;
         var buttonHover = TitleButtonHover;
         var buttonPressed = TitleButtonPressed;
         var inactiveForeground = TitleInactiveForeground;
+        var transparent = Windows.UI.Color.FromArgb(0, 0, 0, 0);
 
-        appWindow.TitleBar.ExtendsContentIntoTitleBar = false;
+        // NOTE: do NOT set appWindow.TitleBar.ExtendsContentIntoTitleBar here.
+        // The main window extends via the Window API (Window.ExtendsContentIntoTitleBar
+        // + SetTitleBar); poking the AppWindow flag on the reapply timers switches
+        // the title bar into a conflicting mode and re-shows the caption.
+
+        if (extendTitleBar)
+        {
+            // App draws its own top bar: only the caption BUTTONS remain, sitting
+            // ON the app surface. Set ONLY their colours (transparent bg so they
+            // blend); touching the caption Background/Foreground would make WinUI
+            // render a title strip again.
+            appWindow.TitleBar.ButtonBackgroundColor = transparent;
+            appWindow.TitleBar.ButtonInactiveBackgroundColor = transparent;
+            appWindow.TitleBar.ButtonForegroundColor = foreground;
+            appWindow.TitleBar.ButtonInactiveForegroundColor = inactiveForeground;
+            appWindow.TitleBar.ButtonHoverBackgroundColor = buttonHover;
+            appWindow.TitleBar.ButtonPressedBackgroundColor = buttonPressed;
+            return;
+        }
+
         appWindow.TitleBar.BackgroundColor = background;
         appWindow.TitleBar.ForegroundColor = foreground;
         appWindow.TitleBar.InactiveBackgroundColor = background;
         appWindow.TitleBar.InactiveForegroundColor = inactiveForeground;
-        appWindow.TitleBar.ButtonBackgroundColor = buttonBackground;
+        appWindow.TitleBar.ButtonBackgroundColor = TitleButtonBackground;
         appWindow.TitleBar.ButtonForegroundColor = foreground;
         appWindow.TitleBar.ButtonHoverBackgroundColor = buttonHover;
         appWindow.TitleBar.ButtonPressedBackgroundColor = buttonPressed;
-        appWindow.TitleBar.ButtonInactiveBackgroundColor = buttonBackground;
+        appWindow.TitleBar.ButtonInactiveBackgroundColor = TitleButtonBackground;
         appWindow.TitleBar.ButtonInactiveForegroundColor = inactiveForeground;
     }
 

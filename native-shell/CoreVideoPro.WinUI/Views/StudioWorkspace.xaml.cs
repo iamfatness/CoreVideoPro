@@ -34,6 +34,10 @@ public sealed partial class StudioWorkspace : UserControl
         set => SetValue(ViewModelProperty, value);
     }
 
+    /// <summary>The nav bar, exposed so the window can use it as the title-bar
+    /// drag region (the app draws its own top bar; no separate caption strip).</summary>
+    public FrameworkElement TitleBarDragRegion => NavTitleBar;
+
     private static void OnViewModelChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
         ((StudioWorkspace)sender).BindViewModel(
             (StudioViewModel?)args.NewValue,

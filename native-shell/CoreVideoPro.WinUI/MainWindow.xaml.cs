@@ -42,7 +42,11 @@ public sealed partial class MainWindow : Window
                      ?? throw new InvalidOperationException("Could not resolve the main AppWindow.");
 
         Title = "CoreVideo Pro";
-        WindowChromeService.Apply(this, _appWindow);
+        // Merge the branded nav into the title bar so there is no separate
+        // Windows caption strip duplicating "CoreVideo Pro" above the logo.
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(RootContent.TitleBarDragRegion);
+        WindowChromeService.Apply(this, _appWindow, extendTitleBar: true);
         Activated += OnWindowActivated;
         RootContent.Loaded += OnRootContentLoaded;
         _appWindow.Closing += OnAppWindowClosing;
