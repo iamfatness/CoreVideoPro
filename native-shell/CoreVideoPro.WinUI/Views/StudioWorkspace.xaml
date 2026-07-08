@@ -101,7 +101,10 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="12,10" Background="{StaticResource StudioSurfaceBrush}"
+        <!-- Row 0 doubles as the window title bar (drag region); right padding
+             reserves space for the min/max/close caption buttons. -->
+        <Border Grid.Row="0" x:Name="NavTitleBar" Padding="12,10,148,10"
+                  Background="{StaticResource StudioSurfaceBrush}"
                   BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,0,0,1">
             <Grid ColumnSpacing="10">
                 <Grid.ColumnDefinitions>
