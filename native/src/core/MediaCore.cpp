@@ -1678,11 +1678,14 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const int width = command.get("width") ? static_cast<int>(command.get("width")->asNumber()) : 1280;
   const int height = command.get("height") ? static_cast<int>(command.get("height")->asNumber()) : 720;
   const int fps = command.get("fps") ? static_cast<int>(command.get("fps")->asNumber()) : 30;
+  const bool mirror = command.get("mirror") && command.get("mirror")->asBool();
 
+  virtualCamera_->setMirror(mirror);
   if (on && !virtualCameraEnabled_) {
     virtualCamera_->start(width, height, fps);
     virtualCameraEnabled_ = true;
-    std::fprintf(stderr, "[virtualcam] enable requested %dx%d@%d\n", width, height, fps);
+    std::fprintf(stderr, "[virtualcam] enable requested %dx%d@%d mirror=%d\n", width, height, fps,
+                 mirror ? 1 : 0);
   } else if (!on && virtualCameraEnabled_) {
     virtualCamera_->stop();
     virtualCameraEnabled_ = false;
