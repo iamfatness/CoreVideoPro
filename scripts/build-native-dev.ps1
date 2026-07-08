@@ -144,6 +144,7 @@ $cmakeArgs = @(
   "-DCOREVIDEO_WITH_NDI_OUTPUT=ON",
   "-DCOREVIDEO_WITH_UVC=ON",
   "-DCOREVIDEO_WITH_WGC=ON",
+  "-DCOREVIDEO_WITH_VIRTUALCAM=ON",
   "-DCOREVIDEO_BUILD_ZOOM_ENGINE=ON",
   "-DBUILD_TESTING=ON",
   "-DZOOM_SDK_DIR=$ZoomSdkDir"
@@ -159,7 +160,7 @@ if ($WithAja) {
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
   "cmake $(($cmakeArgs | ForEach-Object { Quote-CmdArg $_ }) -join ' ')",
-  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests"
+  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests corevideo-virtualcam"
 ) -join " && "
 
 cmd /c $buildCmd
