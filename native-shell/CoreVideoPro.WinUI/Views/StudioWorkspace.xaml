@@ -1250,35 +1250,15 @@
                             </StackPanel>
                         </StackPanel>
 
-                        <Border MinWidth="260"
-                                Padding="10,7"
-                                Background="#0C1118"
-                                BorderBrush="{StaticResource StudioBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6">
-                            <Grid ColumnSpacing="10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <ToggleButton Content="Monitor"
-                                              IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
-                                              MinWidth="88"
-                                              MinHeight="34"
-                                              VerticalAlignment="Center"
-                                              ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
-                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock Text="AUDIO PROOF"
-                                               Style="{StaticResource OutputStatLabel}" />
-                                    <TextBlock Text="{x:Bind ViewModel.AudioProofSummary, Mode=OneWay}"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}"
-                                               MaxWidth="150"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTipService.ToolTip="{x:Bind ViewModel.AudioProofSummary, Mode=OneWay}" />
-                                </StackPanel>
-                            </Grid>
-                        </Border>
+                        <!-- Monitor toggle (the AUDIO PROOF debug readout was removed; the
+                             engine status stays on the tooltip). -->
+                        <ToggleButton Content="Monitor"
+                                      IsChecked="{x:Bind ViewModel.AudioMonitoringEnabled, Mode=TwoWay}"
+                                      MinWidth="72"
+                                      MinHeight="30"
+                                      FontSize="12"
+                                      VerticalAlignment="Center"
+                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
 
                         <Border MinWidth="292"
                                 Padding="10,7"
@@ -1341,7 +1321,6 @@
                             <FontIcon Glyph="&#xE767;" FontSize="16" Foreground="#C6D4CC" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.MasterVolumeLabel, Mode=OneWay}"
                                        FontSize="12" FontWeight="Bold" Foreground="#C6D4CC" />
-                            <FontIcon Glyph="&#xE713;" FontSize="14" Foreground="#6C7A72" Opacity="0.6" />
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
