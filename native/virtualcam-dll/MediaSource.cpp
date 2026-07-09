@@ -43,6 +43,11 @@ HRESULT MediaSource::RuntimeClassInitialize() {
   if (FAILED(hr)) return hr;
   handler->SetCurrentMediaType(type.Get());
 
+  // Mark the stream as a video-capture pin so the Frame Server exposes it as a
+  // camera (without this the source loads but never enumerates as a camera).
+  descriptor->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE);
+  descriptor->SetUINT32(MF_DEVICESTREAM_STREAM_ID, 0);
+
   IMFStreamDescriptor* descriptors[] = {descriptor.Get()};
   hr = MFCreatePresentationDescriptor(1, descriptors, &presentation_);
   if (FAILED(hr)) return hr;
@@ -53,12 +58,16 @@ HRESULT MediaSource::RuntimeClassInitialize() {
   hr = stream_->RuntimeClassInitialize(this, descriptor.Get(), width_, height_, fps_);
   if (FAILED(hr)) return hr;
 
-  // Source/stream attribute stores (kept minimal; the Frame Server queries these
-  // and a basic software colour source needs no special declarations here).
+  // Source attributes: declare a COLOR frame source so the Frame Server treats
+  // this as a webcam. Stream attributes: video-capture category.
   hr = MFCreateAttributes(&sourceAttributes_, 1);
   if (FAILED(hr)) return hr;
-  hr = MFCreateAttributes(&streamAttributes_, 1);
+  sourceAttributes_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
+
+  hr = MFCreateAttributes(&streamAttributes_, 2);
   if (FAILED(hr)) return hr;
+  streamAttributes_->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE);
+  streamAttributes_->SetUINT32(MF_DEVICESTREAM_STREAM_ID, 0);
   return S_OK;
 }
 

@@ -26,7 +26,8 @@ class MediaSource;  // forward
 class MediaStream
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
-          IMFMediaStream> {
+          // Expose the base IMFMediaEventGenerator to QueryInterface too.
+          Microsoft::WRL::ChainInterfaces<IMFMediaStream, IMFMediaEventGenerator>> {
  public:
   MediaStream() = default;
 

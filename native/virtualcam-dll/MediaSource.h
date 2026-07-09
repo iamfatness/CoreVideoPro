@@ -12,6 +12,7 @@
 #include <mferror.h>
 #include <ks.h>
 #include <ksproxy.h>
+#include <ksmedia.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
@@ -24,7 +25,11 @@ namespace corevideo::virtualcam {
 class MediaSource
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
-          IMFMediaSourceEx, IMFGetService, IKsControl> {
+          // ChainInterfaces exposes the base interfaces (IMFMediaSource,
+          // IMFMediaEventGenerator) to QueryInterface - the Frame Server QIs for
+          // the base IMFMediaSource, and WRL would otherwise return E_NOINTERFACE.
+          Microsoft::WRL::ChainInterfaces<IMFMediaSourceEx, IMFMediaSource, IMFMediaEventGenerator>,
+          IMFGetService, IKsControl> {
  public:
   MediaSource() = default;
 
