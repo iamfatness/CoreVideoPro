@@ -14,6 +14,7 @@
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
+#include "Activator.h"
 #include "Guids.h"
 #include "MediaSource.h"
 
@@ -34,11 +35,13 @@ class ClassFactory
     *object = nullptr;
     if (outer != nullptr) return CLASS_E_NOAGGREGATION;
 
-    auto source = Make<corevideo::virtualcam::MediaSource>();
-    if (source == nullptr) return E_OUTOFMEMORY;
-    HRESULT hr = source->RuntimeClassInitialize();
+    // The Frame Server CoCreates an IMFActivate, then ActivateObject()s the
+    // media source from it.
+    auto activator = Make<corevideo::virtualcam::Activator>();
+    if (activator == nullptr) return E_OUTOFMEMORY;
+    HRESULT hr = activator->RuntimeClassInitialize();
     if (FAILED(hr)) return hr;
-    return source.CopyTo(riid, object);
+    return activator.CopyTo(riid, object);
   }
 
   IFACEMETHODIMP LockServer(BOOL lock) override {
