@@ -150,6 +150,10 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       virtualcam-dll/MediaSource.cpp
       virtualcam-dll/MediaStream.cpp)
   target_compile_features(corevideo-virtualcam PRIVATE cxx_std_17)
+  # Win11 target: unlock the MF Frame Server camera attributes
+  # (MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES etc. are gated on NTDDI >= RS2).
+  target_compile_definitions(corevideo-virtualcam PRIVATE
+      WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000C)
   target_include_directories(corevideo-virtualcam PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src
       ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)

@@ -1,8 +1,7 @@
 # Registers (or unregisters) corevideo-virtualcam.dll so the Windows Frame Server
 # can load CoreVideo Pro's virtual-camera media source (docs/virtual-camera-spec.md
-# V2b). This is a USER-MODE COM DLL - no kernel driver, no signing. It does need
-# an elevated shell because DllRegisterServer writes the InprocServer32 CLSID key
-# under HKEY_CLASSES_ROOT (machine-wide). Run from an Administrator PowerShell:
+# V2b). USER-MODE COM DLL, PER-USER registration (HKCU\Software\Classes) - NO admin
+# / elevation required. Run from a normal PowerShell:
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\register-virtualcam.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\register-virtualcam.ps1 -Unregister
@@ -28,13 +27,7 @@ if (-not $dll) {
   exit 1
 }
 
-# Elevation check.
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-  Write-Error "This must run from an elevated (Administrator) PowerShell - DllRegisterServer writes an HKCR CLSID key."
-  exit 1
-}
-
+# No elevation needed - DllRegisterServer writes a per-user HKCU CLSID key.
 $action = if ($Unregister) { "Unregistering" } else { "Registering" }
 Write-Host "$action $dll ..."
 $args = if ($Unregister) { @("/s", "/u", $dll) } else { @("/s", $dll) }

@@ -75,14 +75,22 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
       // Keep the SHM slot; the control plane can retry once the DLL is present.
       return false;
     }
-    camera_->Start(nullptr);
+    const HRESULT startHr = camera_->Start(nullptr);
+    if (FAILED(startHr)) {
+      std::fprintf(stderr, "[virtualcam] IMFVirtualCamera::Start failed hr=0x%08lx\n",
+                   static_cast<unsigned long>(startHr));
+      fail("The virtual camera was created but could not be started.");
+      camera_->Remove();
+      camera_.Reset();
+      return false;
+    }
 
     started_ = true;
     status_.enabled = true;
     status_.state = "live";
     status_.warning.clear();
-    std::fprintf(stderr, "[virtualcam] started %dx%d@%d '%s'\n", width, height, fps,
-                 status_.deviceName.c_str());
+    std::fprintf(stderr, "[virtualcam] started %dx%d@%d '%s' (create+start ok)\n", width, height,
+                 fps, status_.deviceName.c_str());
     return true;
   }
 

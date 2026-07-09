@@ -93,20 +93,23 @@ STDAPI DllCanUnloadNow() {
   return g_lockCount == 0 ? S_OK : S_FALSE;
 }
 
+// Registers PER-USER (HKCU\Software\Classes) so the installer needs NO admin /
+// elevation - matches MFVirtualCameraAccess_CurrentUser. COM merges HKCU\Software
+// \Classes into HKEY_CLASSES_ROOT for the current user, so CoCreate still finds it.
 STDAPI DllRegisterServer() {
   wchar_t clsidText[64] = {};
   StringFromGUID2(CLSID_CoreVideoVirtualCameraSource, clsidText, 64);
 
-  std::wstring inproc = L"CLSID\\";
+  std::wstring inproc = L"Software\\Classes\\CLSID\\";
   inproc += clsidText;
   const std::wstring server = inproc + L"\\InprocServer32";
   const std::wstring path = ModulePath();
 
-  LONG rc = SetKeyValue(HKEY_CLASSES_ROOT, inproc.c_str(), nullptr, L"CoreVideo Pro Camera Source");
+  LONG rc = SetKeyValue(HKEY_CURRENT_USER, inproc.c_str(), nullptr, L"CoreVideo Pro Camera Source");
   if (rc != ERROR_SUCCESS) return HRESULT_FROM_WIN32(rc);
-  rc = SetKeyValue(HKEY_CLASSES_ROOT, server.c_str(), nullptr, path.c_str());
+  rc = SetKeyValue(HKEY_CURRENT_USER, server.c_str(), nullptr, path.c_str());
   if (rc != ERROR_SUCCESS) return HRESULT_FROM_WIN32(rc);
-  rc = SetKeyValue(HKEY_CLASSES_ROOT, server.c_str(), L"ThreadingModel", L"Both");
+  rc = SetKeyValue(HKEY_CURRENT_USER, server.c_str(), L"ThreadingModel", L"Both");
   if (rc != ERROR_SUCCESS) return HRESULT_FROM_WIN32(rc);
   return S_OK;
 }
@@ -114,10 +117,10 @@ STDAPI DllRegisterServer() {
 STDAPI DllUnregisterServer() {
   wchar_t clsidText[64] = {};
   StringFromGUID2(CLSID_CoreVideoVirtualCameraSource, clsidText, 64);
-  std::wstring inproc = L"CLSID\\";
+  std::wstring inproc = L"Software\\Classes\\CLSID\\";
   inproc += clsidText;
   const std::wstring server = inproc + L"\\InprocServer32";
-  RegDeleteKeyW(HKEY_CLASSES_ROOT, server.c_str());
-  RegDeleteKeyW(HKEY_CLASSES_ROOT, inproc.c_str());
+  RegDeleteKeyW(HKEY_CURRENT_USER, server.c_str());
+  RegDeleteKeyW(HKEY_CURRENT_USER, inproc.c_str());
   return S_OK;
 }
