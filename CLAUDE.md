@@ -237,12 +237,20 @@ near-idle. `dotnet-trace` under synthetic 4-participant load ranked
 WinUI MediaCapture bridge copies **every** webcam frame through managed memory (~180MB/s
 @1080p) = ~50% CPU + ~50MB/s heap churn → 2–3GB working set → crash → UI-thread starvation.
 **Native UVC capture (`COREVIDEO_NATIVE_UVC=1`) eliminates it** — verified working set
-2.4GB→**267MB flat**, CPU→idle, 59fps, 0 drops. But the native path currently has a
-**last-mile display gap** (frames are captured and polled by the core but don't reach the
-multiview tiles → pink tiles), so it stays **opt-in (default OFF)** and the shell runs on the
-managed bridge (working sources, perf cost returns). Completing native-UVC frame display is
-the remaining last mile of the perf fix; a secondary snapshot-apply churn fix already shipped
-in `StudioViewModel.ApplyLiveParticipants` (order-independent, structural-only signature).
+~265MB (vs 5210MB on the bridge), CPU near-idle, 0 drops. The old "pink tiles" display gap
+is **FIXED** (2026-07-10): it was a frame-key mismatch — the multiview layer looks up a
+capture tile by `capture:<shell captureDeviceId>` but native frames were keyed
+`capture:<core MF id>`, because the outer `WinUiCaptureDeviceAdapter` overrode only the
+1-arg `connect(deviceId)` so the `ICaptureDevice` default dropped the shell's `outputSourceId`
+before it reached the UVC adapter. Fixed by forwarding the 2-arg
+`connect(deviceId, outputSourceId)`. Enabling native UVC also surfaced (and the full-dump+PDB
+tooling pinned) a **separate WGC screen-capture crash** — `WgcSession::onFrame` deref'd a
+torn-down D3D `context_` because `stop()` revoked the FrameArrived handler without draining an
+in-flight callback on the free-threaded pool thread; fixed with a `frameMutex_` held across
+`onFrame` + drained in `stop()` + a `~WgcSession(){ stop(); }`. Native UVC is still opt-in
+(default OFF) pending a live rig-confirm, but it is now the strictly-better path. A secondary
+snapshot-apply churn fix also shipped in `StudioViewModel.ApplyLiveParticipants`
+(order-independent, structural-only signature).
 
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
