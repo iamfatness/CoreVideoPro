@@ -787,6 +787,9 @@ class D3D11Compositor final : public ICompositor {
         } else if (!layer.plan.participantId.empty()) {
           layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
+          if (layer.frame == nullptr) {
+            warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
+          }
         } else if (!layer.plan.mediaAssetId.empty()) {
           layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
           const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
@@ -821,6 +824,50 @@ class D3D11Compositor final : public ICompositor {
       layers.push_back(std::move(layer));
     }
     return layers;
+  }
+
+  // Guardrail: a capture layer that resolves to NO frame renders as a solid
+  // colorFromParticipantId() placeholder (the "pink tile"). That is almost always a
+  // key mismatch (the layer's participantId matches no frame's) or a dead feed, and it
+  // used to fail SILENTLY — the native-UVC key mismatch cost a multi-session hunt.
+  // Make it loud: log, rate-limited per key, dumping the available capture-frame keys
+  // so any mismatch is obvious at a glance. Capture sources only (Zoom participants
+  // legitimately come and go, so a missing frame there is not necessarily a bug).
+  static void warnUnmatchedCaptureLayer(const std::string& participantId,
+                                        const std::vector<VideoFrame>& frames) {
+    if (participantId.rfind("capture:", 0) != 0) {
+      return;
+    }
+    static std::mutex logMutex;
+    static std::map<std::string, int64_t> lastLogMs;
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+    {
+      std::lock_guard<std::mutex> lock(logMutex);
+      int64_t& last = lastLogMs[participantId];
+      if (last != 0 && now - last < 5000) {
+        return;
+      }
+      last = now;
+    }
+    std::string available;
+    for (const auto& frame : frames) {
+      if (frame.participantId.rfind("capture:", 0) != 0) {
+        continue;
+      }
+      if (!available.empty()) {
+        available += ", ";
+      }
+      available += frame.participantId;
+      if (!frameHasContent(frame)) {
+        available += "(empty)";
+      }
+    }
+    std::fprintf(stderr,
+                 "[compositor] capture layer '%s' has NO matching frame (pink tile) - "
+                 "available capture frames: [%s]\n",
+                 participantId.c_str(), available.empty() ? "none" : available.c_str());
   }
 
   static const VideoFrame* frameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId) {
