@@ -95,17 +95,21 @@ function Stage-DevNativeArtifacts {
       New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     }
     foreach ($name in @("corevideo-native.exe", "corevideo-native-tests.exe", "corevideo-zoom-engine.exe", "corevideo-zoom-engine-fake.exe", "corevideo-plugin-host.exe")) {
-      $source = Join-Path $SourceDir $name
-      $destination = Join-Path $targetDir $name
-      if (-not (Test-Path $source)) {
-        continue
+      # Stage each binary AND its matching .pdb — the PDB is what makes a crash dump
+      # of this exact build diagnosable (see native/CMakeLists.txt Release /DEBUG).
+      foreach ($artifact in @($name, [System.IO.Path]::ChangeExtension($name, ".pdb"))) {
+        $source = Join-Path $SourceDir $artifact
+        $destination = Join-Path $targetDir $artifact
+        if (-not (Test-Path $source)) {
+          continue
+        }
+        $resolvedDestination = Resolve-Path $destination -ErrorAction SilentlyContinue
+        if ($resolvedDestination -and (Resolve-Path $source).Path -ieq $resolvedDestination.Path) {
+          continue
+        }
+        Copy-Item -Path $source -Destination $destination -Force
+        Write-Host "[build-native-dev] staged $artifact -> $targetDir" -ForegroundColor DarkGray
       }
-      $resolvedDestination = Resolve-Path $destination -ErrorAction SilentlyContinue
-      if ($resolvedDestination -and (Resolve-Path $source).Path -ieq $resolvedDestination.Path) {
-        continue
-      }
-      Copy-Item -Path $source -Destination $destination -Force
-      Write-Host "[build-native-dev] staged $name -> $targetDir" -ForegroundColor DarkGray
     }
   }
 }

@@ -45,7 +45,7 @@ function Sync-NativeCoreArtifacts {
         }
         Write-Host "[launch:native] staging native core from $candidate" -ForegroundColor DarkGray
         Get-ChildItem -Path $candidate -Filter "corevideo-*" -File |
-            Where-Object { $_.Extension -in ".exe", ".dll" -and $_.BaseName -notmatch "-tests$" } |
+            Where-Object { $_.Extension -in ".exe", ".dll", ".pdb" -and $_.BaseName -notmatch "-tests$" } |
             ForEach-Object {
                 $item = $_
                 try {

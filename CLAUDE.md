@@ -192,6 +192,30 @@ The right tools, cheapest first — a full evidence trail lives in
 - **The stutter only reproduces under LOAD** — use the fake engine (below) to synthesize
   participants/sources; a fresh idle StubOnly launch has a cheap apply and won't repro.
 
+**Diagnosing NATIVE crashes (make the next one post-mortemable).** Two things must be in
+place or a `corevideo-native.exe` dump is unreadable:
+1. **PDBs.** Release now emits symbols (`native/CMakeLists.txt` MSVC `/Zi /DEBUG`), and the
+   build/launch scripts stage each `.pdb` beside its binary. Analyze with
+   `cdb -y "native\build-dev;srv*https://msdl.microsoft.com/download/symbols"
+   -z "%LOCALAPPDATA%\CrashDumps\corevideo-native.exe.<pid>.dmp" -c "!analyze -v; kb; q"`.
+   **Caveat: a matching PDB only exists for the CURRENT build** — analyze a dump BEFORE
+   rebuilding the core, or the offsets stop resolving (this is exactly what lost the
+   2026-07-10 08:13 startup crash).
+2. **Full dumps.** Run `scripts/setup-crash-dumps.ps1` once (elevated — writes HKLM WER
+   `LocalDumps`) to get `DumpType=2` full-memory dumps instead of the default registers+
+   stack minidump. Dumps land in `%LOCALAPPDATA%\CrashDumps`.
+
+**Capture reader stability (the frozen-webcam / restart-storm class).** A stalled
+MediaCapture reader (`CaptureDeviceFrameReaderService`) used to restart on a fixed ~5s
+cadence forever when it couldn't recover (e.g. an Elgato Game Capture whose HDMI signal
+dropped → `reader.StartAsync` returns `OutputFormatNotSupported`; 515 restarts logged in a
+day). Now `CaptureReaderStallPolicy` applies exponential backoff (5→10→20→40→60s) and
+**gives up after 5 consecutive failed restarts**, leaving the last frame frozen and asking
+for a manual reconnect — no perpetual churn (that churn can trip the `CoreMessagingXP`
+fail-fast on a long show). The counter resets the instant a real frame lands. Separately,
+when native UVC (`COREVIDEO_NATIVE_UVC=1`) claims a device, the shell now stops any managed
+bridge reader for that same device so the two never run concurrently.
+
 **What the profiling proved (2026-07-10): the lag is the WinUI shell, not the core/GPU.**
 On an RTX 4090 the core renders the 4K program + multiview in ~6.6ms (60fps) and the GPU is
 near-idle. `dotnet-trace` under synthetic 4-participant load ranked
