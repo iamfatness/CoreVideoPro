@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Dispatching;
@@ -54,7 +56,100 @@ public sealed partial class StudioWorkspace : UserControl
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _headerClockTimer?.Stop();
+        SetPreviewLayoutOverlayOpen(false);
         BindViewModel(null, _boundViewModel);
+    }
+
+    // ==== POS-1: preview-layout editing overlay (sources-redesign-spec §B2) ====
+    // Same wiring contract as the Scenes tab (SourcesPage): feed PreviewCanvasLayers,
+    // commit via CommitPreviewCanvasLayer (the S2b preview DRAFT — program untouched
+    // until Take/Update), gate snapshot refreshes during interaction.
+
+    private bool _previewLayoutEditorWired;
+
+    private void OnEditPreviewLayoutToggled(object sender, RoutedEventArgs e) =>
+        SetPreviewLayoutOverlayOpen(EditLayoutToggle.IsChecked == true);
+
+    private void OnEditPreviewLayoutDoneClicked(object sender, RoutedEventArgs e)
+    {
+        EditLayoutToggle.IsChecked = false;
+        SetPreviewLayoutOverlayOpen(false);
+    }
+
+    private void SetPreviewLayoutOverlayOpen(bool open)
+    {
+        if (PreviewLayoutOverlay is null)
+        {
+            return;
+        }
+
+        PreviewLayoutOverlay.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        if (open)
+        {
+            if (!_previewLayoutEditorWired)
+            {
+                StudioSceneCanvasEditor.LayerChanged += OnStudioCanvasLayerChanged;
+                StudioSceneCanvasEditor.PresetRequested += OnStudioCanvasPresetRequested;
+                StudioSceneCanvasEditor.InteractionChanged += OnStudioCanvasInteractionChanged;
+                _previewLayoutEditorWired = true;
+            }
+
+            if (_boundViewModel is not null)
+            {
+                _boundViewModel.PropertyChanged += OnPreviewLayoutVmPropertyChanged;
+                _boundViewModel.PreviewCanvasLayers.CollectionChanged += OnPreviewLayoutLayersChanged;
+            }
+
+            RefreshStudioSceneCanvasEditor();
+        }
+        else
+        {
+            if (_boundViewModel is not null)
+            {
+                _boundViewModel.PropertyChanged -= OnPreviewLayoutVmPropertyChanged;
+                _boundViewModel.PreviewCanvasLayers.CollectionChanged -= OnPreviewLayoutLayersChanged;
+                _boundViewModel.SetCanvasInteractionActive(false);
+            }
+        }
+    }
+
+    private void OnPreviewLayoutVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers))
+        {
+            RefreshStudioSceneCanvasEditor();
+        }
+    }
+
+    private void OnPreviewLayoutLayersChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (StudioSceneCanvasEditor.IsInteracting)
+        {
+            return;
+        }
+
+        RefreshStudioSceneCanvasEditor();
+    }
+
+    private void RefreshStudioSceneCanvasEditor()
+    {
+        var layers = _boundViewModel?.PreviewCanvasLayers.ToList();
+        StudioSceneCanvasEditor.SetLayers(layers, layers?.FirstOrDefault());
+    }
+
+    private void OnStudioCanvasLayerChanged(object? sender, SceneCanvasLayerViewModel layer) =>
+        _boundViewModel?.CommitPreviewCanvasLayer(layer);
+
+    private void OnStudioCanvasPresetRequested(object? sender, string preset) =>
+        _boundViewModel?.ApplyCanvasPreset(preset);
+
+    private void OnStudioCanvasInteractionChanged(object? sender, bool isInteracting)
+    {
+        _boundViewModel?.SetCanvasInteractionActive(isInteracting);
+        if (!isInteracting)
+        {
+            RefreshStudioSceneCanvasEditor();
+        }
     }
 
     // Drives the wall-clock shown next to the P/P out button (HH:mm:ss, ticked once a

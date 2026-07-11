@@ -500,6 +500,17 @@
                                     <TextBlock Text="P/P out" />
                                 </StackPanel>
                             </Button>
+                            <!-- POS-1: edit the PREVIEW scene's layout (drag/resize/snap) right here on
+                                 the Studio tab — drives the S2b preview draft; Take/Update commits. -->
+                            <ToggleButton x:Name="EditLayoutToggle"
+                                          Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                          Click="OnEditPreviewLayoutToggled"
+                                          ToolTipService.ToolTip="Move and resize the preview scene's sources (drag, corner grips, Shift = keep aspect, arrows = nudge). Changes ride the preview until you Take or Update.">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE70F;" FontSize="11" />
+                                    <TextBlock Text="Edit layout" />
+                                </StackPanel>
+                            </ToggleButton>
                         </StackPanel>
                         <Button Grid.Column="4" Style="{StaticResource GhostButton}"
                                 Padding="10,4" FontSize="10" VerticalAlignment="Center"
@@ -575,6 +586,40 @@
                                         Command="{x:Bind ViewModel.PopInMultiviewCommand}" />
                             </StackPanel>
                         </Border>
+
+                        <!-- POS-1: preview-layout editing overlay. The same SceneCanvasEditorControl the
+                             Scenes tab uses, driving the S2b preview DRAFT — the preview cell/bus updates
+                             live as layers are dragged; program is untouched until Take/Update. -->
+                        <Grid x:Name="PreviewLayoutOverlay" Visibility="Collapsed" Background="#E6060B10">
+                            <Border MaxWidth="1060" Margin="16"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14">
+                                <Grid RowSpacing="8">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="Edit preview layout" FontWeight="Bold" FontSize="13" />
+                                            <TextBlock Text="Drag to move · corner grips resize · Shift keeps aspect · arrows nudge. Rides the PREVIEW until you Take or Update."
+                                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="Done" Padding="14,6"
+                                                Style="{StaticResource GhostButton}" VerticalAlignment="Top"
+                                                Click="OnEditPreviewLayoutDoneClicked" />
+                                    </Grid>
+                                    <cvcontrols:SceneCanvasEditorControl Grid.Row="1" x:Name="StudioSceneCanvasEditor"
+                                                                         MinHeight="420" />
+                                </Grid>
+                            </Border>
+                        </Grid>
                     </Grid>
                 </Border>
             </Grid>
