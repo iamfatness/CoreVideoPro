@@ -1,6 +1,7 @@
 using System.Linq;
 using CoreVideoPro.WinUI;
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -44,35 +45,19 @@ public sealed partial class SourcesInputsPage : UserControl
         // the model authoritative without a spurious write-back.
         var editor = ViewModel?.ShowInputEditors.ElementAtOrDefault(args.Index);
 
-        var kindCombo = FindDescendant<ComboBox>(root, "KindCombo");
-        if (kindCombo is null)
+        // SRC-1: one unified source picker per slot (kind inferred from the pick).
+        var unifiedCombo = FindDescendant<ComboBox>(root, "UnifiedSourceCombo");
+        if (unifiedCombo is null)
         {
             return;
         }
 
-        kindCombo.SelectionChanged -= OnShowInputKindChanged;
-        if (editor is not null)
+        unifiedCombo.SelectionChanged -= OnShowInputUnifiedSourceChanged;
+        if (editor is not null && editor.SelectedUnifiedSourceId is not null)
         {
-            // Select by the actual option object (SelectedItem), not SelectedValue: a ComboBox
-            // SelectedValue bound to an enum + SelectedValuePath does not reliably resolve the
-            // selection (string Source values do, enum Kind values render blank). Matching the
-            // option instance from the same ItemsSource is deterministic.
-            kindCombo.SelectedItem = editor.KindOptions.FirstOrDefault(option => option.Value == editor.Kind);
+            unifiedCombo.SelectedValue = editor.SelectedUnifiedSourceId;
         }
-        kindCombo.SelectionChanged += OnShowInputKindChanged;
-
-        var sourceCombo = FindDescendant<ComboBox>(root, "SourceCombo");
-        if (sourceCombo is null)
-        {
-            return;
-        }
-
-        sourceCombo.SelectionChanged -= OnShowInputSourceChanged;
-        if (editor is not null && editor.SelectedSourceId is not null)
-        {
-            sourceCombo.SelectedValue = editor.SelectedSourceId;
-        }
-        sourceCombo.SelectionChanged += OnShowInputSourceChanged;
+        unifiedCombo.SelectionChanged += OnShowInputUnifiedSourceChanged;
 
         var inputMicCombo = FindDescendant<ComboBox>(root, "InputMicCombo");
         if (inputMicCombo is not null)
@@ -89,30 +74,11 @@ public sealed partial class SourcesInputsPage : UserControl
         }
     }
 
-    private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
+    private void OnShowInputUnifiedSourceChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Read the selected option object (SelectedItem), not SelectedValue — an enum
-        // SelectedValue does not resolve reliably on this ComboBox. Tag (x:Bind), not
-        // DataContext (null inside the ItemsRepeater).
-        if (sender is not ComboBox combo ||
-            combo.Tag is not ShowInputSlotViewModel editor ||
-            combo.SelectedItem is not ShowInputKindOption option)
-        {
-            return;
-        }
-
-        var kind = option.Value;
-        if (editor.Kind == kind)
-        {
-            return;
-        }
-
-        editor.Kind = kind;
-        LaunchLog.Write($"sources: kind={kind} slot={editor.SlotNumber} -> sourceOptions={editor.SourceOptions.Count}");
-    }
-
-    private void OnShowInputSourceChanged(object sender, SelectionChangedEventArgs e)
-    {
+        // Tag (x:Bind), not DataContext (null inside the ItemsRepeater). Hint rows
+        // ("No media assets — …") are ignored by the view-model setter, which snaps the
+        // selection back onto the model value.
         if (sender is not ComboBox combo ||
             combo.Tag is not ShowInputSlotViewModel editor ||
             combo.SelectedValue is not string sourceId)
@@ -120,13 +86,21 @@ public sealed partial class SourcesInputsPage : UserControl
             return;
         }
 
-        if (string.Equals(editor.SelectedSourceId, sourceId, System.StringComparison.Ordinal))
+        if (string.Equals(editor.SelectedUnifiedSourceId, sourceId, System.StringComparison.Ordinal))
         {
             return;
         }
 
-        editor.SelectedSourceId = sourceId;
-        LaunchLog.Write($"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> ParticipantId={editor.ParticipantId}");
+        editor.SelectedUnifiedSourceId = sourceId;
+        if (ShowInputRosterService.IsHintSourceId(sourceId))
+        {
+            // The VM refused the hint row; realign the ComboBox with the model.
+            combo.SelectedValue = editor.SelectedUnifiedSourceId;
+            return;
+        }
+
+        LaunchLog.Write(
+            $"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> kind={editor.Kind}");
     }
 
     private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)

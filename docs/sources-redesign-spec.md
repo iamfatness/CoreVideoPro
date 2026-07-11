@@ -46,7 +46,9 @@ and stays. The slot table below it is where the brittleness lives:
 slot; the slot's kind is inferred from what was picked.
 
 - **SRC-1 — one picker + explicit empty states + no silent reassign** (the de-brittle
-  core, shippable alone):
+  core, shippable alone) — **SHIPPED 2026-07-11** (`BuildUnifiedSourceOptions` +
+  `SelectedUnifiedSourceId`/`IsSourceMissing` + single SOURCE column w/ kind chip and
+  MISSING badge; auto-pick removed; 8 new tests):
   - Replace TYPE+SOURCE with a single grouped ComboBox per slot: `Cameras` (UVC +
     Blackmagic/AJA), `Screens`, `Zoom guests`, `Media`, `SRT`, later `Browser`.
     Groups with zero entries render a disabled row: "No media assets — add on the

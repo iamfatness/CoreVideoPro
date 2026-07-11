@@ -20,11 +20,15 @@ public sealed class ShowInputSlotViewModelTests
 
         editor.RefreshSourceOptions([], devices);
 
+        // SRC-1: kind changes filter the per-kind options but NEVER auto-select a source
+        // (the old auto-pick could silently re-point a slot mid-show). Selection is an
+        // explicit operator action via the unified picker; the kind then follows the pick.
         editor.Kind = ShowInputKind.UvcWebcam;
         Assert.Equal(["cam-uvc"], editor.SourceOptions.Select(option => option.Value));
-        Assert.Equal("cam-uvc", editor.SelectedSourceId);
+        Assert.Null(editor.SelectedSourceId);
 
-        editor.Kind = ShowInputKind.SrtIngest;
+        editor.SelectedUnifiedSourceId = "capture:srt-ingest-01";
+        Assert.Equal(ShowInputKind.SrtIngest, editor.Kind);
         Assert.Equal(["srt-ingest-01"], editor.SourceOptions.Select(option => option.Value));
         Assert.Equal("srt-ingest-01", editor.SelectedSourceId);
     }
@@ -56,8 +60,10 @@ public sealed class ShowInputSlotViewModelTests
                 }
             });
 
-        editor.Kind = ShowInputKind.UvcWebcam;
         editor.RefreshSourceOptions([], [Device("cam-uvc", "USB Capture", "uvc")]);
+        // SRC-1: explicit pick (no auto-select); kind is inferred from the source.
+        editor.SelectedUnifiedSourceId = "capture:cam-uvc";
+        Assert.Equal(ShowInputKind.UvcWebcam, editor.Kind);
 
         // Defaults to the derived device name.
         Assert.Equal("capture:cam-uvc", editor.SourceId);

@@ -77,6 +77,113 @@ public static class ShowInputRosterService
         b.InShow = aInShow;
     }
 
+    /// <summary>Non-assignable informational rows in the unified source picker (empty-group
+    /// hints). The slot editor ignores any selection whose value carries this prefix.</summary>
+    public const string HintSourcePrefix = "hint:";
+
+    public static bool IsHintSourceId(string? sourceId) =>
+        sourceId is { Length: > 0 } && sourceId.StartsWith(HintSourcePrefix, StringComparison.Ordinal);
+
+    /// <summary>Infers the slot kind for a capture device — the operator picks a SOURCE and
+    /// the kind follows (SRC-1); nobody should have to know "UVC webcam" vs "Screen" up front.
+    /// Mirrors the per-kind filters in <see cref="BuildSourceOptions"/>.</summary>
+    public static ShowInputKind InferCaptureDeviceKind(CaptureDevice device)
+    {
+        if (device.Id.StartsWith("screen:", StringComparison.Ordinal))
+        {
+            return ShowInputKind.Screen;
+        }
+
+        return device.Vendor.ToLowerInvariant() switch
+        {
+            "blackmagic" => ShowInputKind.Blackmagic,
+            "aja" => ShowInputKind.Aja,
+            "srt" => ShowInputKind.SrtIngest,
+            _ => ShowInputKind.UvcWebcam
+        };
+    }
+
+    /// <summary>
+    /// SRC-1 (sources-redesign-spec §A2): ONE flat, grouped source list for a slot — the
+    /// operator picks a source, never a type. Values are the canonical ids
+    /// (zoom:/capture:/media:), labels carry the group ("Camera · Elgato…"). Empty Zoom/Media
+    /// groups get a non-selectable hint row instead of silently vanishing. When
+    /// <paramref name="currentSourceId"/> is assigned but no longer present, a
+    /// "Missing — was …" entry is prepended so the slot KEEPS its binding visibly instead of
+    /// silently re-pointing at another source.
+    /// </summary>
+    public static IReadOnlyList<ShowInputSourceOption> BuildUnifiedSourceOptions(
+        IReadOnlyList<Participant> participants,
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyList<MediaAsset> mediaAssets,
+        string? currentSourceId = null,
+        string? currentSourceLabel = null)
+    {
+        var options = new List<ShowInputSourceOption>();
+
+        if (participants.Count == 0)
+        {
+            options.Add(new ShowInputSourceOption
+            {
+                Value = HintSourcePrefix + "zoom",
+                Label = "No Zoom guests — join a meeting"
+            });
+        }
+        else
+        {
+            options.AddRange(participants.Select(participant => new ShowInputSourceOption
+            {
+                Value = ZoomSourceId(participant.Id),
+                Label = $"Zoom · {participant.Name} — {participant.RoleLabel}"
+            }));
+        }
+
+        foreach (var device in captureDevices)
+        {
+            var group = InferCaptureDeviceKind(device) switch
+            {
+                ShowInputKind.Screen => "Screen",
+                ShowInputKind.SrtIngest => "SRT",
+                _ => "Camera"
+            };
+            options.Add(new ShowInputSourceOption
+            {
+                Value = CaptureSourceId(device.Id),
+                Label = $"{group} · {device.Name}"
+            });
+        }
+
+        if (mediaAssets.Count == 0)
+        {
+            options.Add(new ShowInputSourceOption
+            {
+                Value = HintSourcePrefix + "media",
+                Label = "No media assets — add them on the Media tab"
+            });
+        }
+        else
+        {
+            options.AddRange(mediaAssets.Select(asset => new ShowInputSourceOption
+            {
+                Value = ToMediaSourceId(asset.Id),
+                Label = string.IsNullOrWhiteSpace(asset.Kind) ? $"Media · {asset.Name}" : $"Media · {asset.Name} ({asset.Kind})"
+            }));
+        }
+
+        // Never silently substitute: an assigned-but-gone source stays visible as Missing.
+        if (currentSourceId is { Length: > 0 } &&
+            !options.Any(option => string.Equals(option.Value, currentSourceId, StringComparison.Ordinal)))
+        {
+            options.Insert(0, new ShowInputSourceOption
+            {
+                Value = currentSourceId,
+                Label = $"Missing — was {(string.IsNullOrWhiteSpace(currentSourceLabel) ? currentSourceId : currentSourceLabel)}"
+            });
+        }
+
+        return options;
+    }
+
     /// <summary>The canonical source id an assigned slot resolves to (zoom:/capture:/media:),
     /// or null when the slot is unassigned/unresolvable. This is the key for display-name overrides.</summary>
     public static string? SlotSourceId(ShowInputSlot slot) => slot.Kind switch

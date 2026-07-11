@@ -360,18 +360,16 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="30" />
                             <ColumnDefinition Width="40" />
-                            <ColumnDefinition Width="1.1*" />
-                            <ColumnDefinition Width="1.5*" />
+                            <ColumnDefinition Width="2.6*" />
                             <ColumnDefinition Width="1.3*" />
                             <ColumnDefinition Width="1.2*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="IN" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
                         <TextBlock Grid.Column="1" Text="SHOW" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="2" Text="TYPE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="3" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="4" Text="NAME" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="5" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="2" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="3" Text="NAME" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Grid.Column="4" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
                     </Grid>
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
@@ -386,8 +384,7 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="30" />
                                             <ColumnDefinition Width="40" />
-                                            <ColumnDefinition Width="1.1*" />
-                                            <ColumnDefinition Width="1.5*" />
+                                            <ColumnDefinition Width="2.6*" />
                                             <ColumnDefinition Width="1.3*" />
                                             <ColumnDefinition Width="1.2*" />
                                             <ColumnDefinition Width="Auto" />
@@ -399,31 +396,45 @@
                                                   VerticalAlignment="Center"
                                                   IsChecked="{x:Bind InShow, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
-                                        <!-- Selection is driven via SelectedItem in code-behind
-                                             (OnShowInputEditorPrepared): an enum SelectedValue +
-                                             SelectedValuePath does not resolve reliably here. -->
-                                        <ComboBox Grid.Column="2" x:Name="KindCombo"
-                                                  Tag="{x:Bind}"
-                                                  ItemsSource="{x:Bind KindOptions, Mode=OneWay}"
-                                                  DisplayMemberPath="Label"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="3" x:Name="SourceCombo"
-                                                  Tag="{x:Bind}"
-                                                  ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
-                                                  SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
-                                                  SelectedValuePath="Value"
-                                                  DisplayMemberPath="Label"
-                                                  IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                        <!-- SRC-1: ONE grouped source picker (kind inferred from the pick) +
+                                             a kind chip + a loud MISSING badge when the assigned source is
+                                             gone (binding kept; never silently substituted). Selection is
+                                             driven in code-behind (OnShowInputEditorPrepared). -->
+                                        <Grid Grid.Column="2" ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox x:Name="UnifiedSourceCombo"
+                                                      Tag="{x:Bind}"
+                                                      ItemsSource="{x:Bind UnifiedSourceOptions, Mode=OneWay}"
+                                                      SelectedValuePath="Value"
+                                                      DisplayMemberPath="Label"
+                                                      PlaceholderText="Select a source"
+                                                      HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                            <Border Grid.Column="1" Background="#1A2229" CornerRadius="3" Padding="6,2"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind KindLabel, Mode=OneWay}" FontSize="10"
+                                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
+                                            </Border>
+                                            <Border Grid.Column="2" Background="#3A2A10" CornerRadius="3" Padding="6,2"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="{x:Bind IsSourceMissing, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                    ToolTipService.ToolTip="This source is unavailable (unplugged / left / removed). The slot keeps its binding and re-attaches when it returns.">
+                                                <TextBlock Text="MISSING" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="#E8B341" />
+                                            </Border>
+                                        </Grid>
                                         <!-- Editable display name for the assigned source; defaults to
                                              the Zoom/UVC/asset name, feeds the auto lower-thirds. -->
-                                        <TextBox Grid.Column="4"
+                                        <TextBox Grid.Column="3"
                                                  Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                                  IsEnabled="{x:Bind IsDisplayNameEditable, Mode=OneWay}"
                                                  PlaceholderText="Name"
                                                  ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="5" x:Name="InputMicCombo"
+                                        <ComboBox Grid.Column="4" x:Name="InputMicCombo"
                                                   Tag="{x:Bind}"
                                                   ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
                                                   SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
@@ -431,14 +442,14 @@
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                   HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <Button Grid.Column="6"
+                                        <Button Grid.Column="5"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
                                                 VerticalAlignment="Center" />
                                         <!-- Lifecycle L1: detach this slot (source stays available) -->
-                                        <Button Grid.Column="7"
+                                        <Button Grid.Column="6"
                                                 Content="Unassign"
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Command="{Binding ViewModel.UnassignShowInputCommand, ElementName=SourcesInputsRoot}"

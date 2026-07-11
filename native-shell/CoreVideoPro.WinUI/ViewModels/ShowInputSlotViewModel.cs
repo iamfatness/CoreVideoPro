@@ -164,6 +164,68 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// or null when unassigned. Key for the display-name override.</summary>
     public string? SourceId => ShowInputRosterService.SlotSourceId(_slot);
 
+    /// <summary>SRC-1: single unified picker — get is the canonical source id; set parses the
+    /// canonical id, infers the Kind (zoom:/media:/capture:-with-device-lookup) and assigns
+    /// kind + id together, so the operator never touches a TYPE dropdown. Hint rows and
+    /// unknown values are ignored.</summary>
+    public string? SelectedUnifiedSourceId
+    {
+        get => SourceId;
+        set
+        {
+            if (value is null ||
+                ShowInputRosterService.IsHintSourceId(value) ||
+                string.Equals(SourceId, value, StringComparison.Ordinal))
+            {
+                // Snap the ComboBox back onto the model value (hint rows are informational).
+                OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+                return;
+            }
+
+            if (value.StartsWith(ShowInputRosterService.ZoomSourcePrefix, StringComparison.Ordinal))
+            {
+                _slot.Kind = ShowInputKind.ZoomParticipant;
+                _slot.ParticipantId = value[ShowInputRosterService.ZoomSourcePrefix.Length..];
+            }
+            else if (value.StartsWith(ShowInputRosterService.MediaSourcePrefix, StringComparison.Ordinal))
+            {
+                _slot.Kind = ShowInputKind.Media;
+                // Media slots store the full "media:<assetId>" id in ParticipantId.
+                _slot.ParticipantId = value;
+            }
+            else if (value.StartsWith(ShowInputRosterService.CaptureSourcePrefix, StringComparison.Ordinal))
+            {
+                var deviceId = value[ShowInputRosterService.CaptureSourcePrefix.Length..];
+                var device = _captureDevices.FirstOrDefault(item =>
+                    string.Equals(item.Id, deviceId, StringComparison.Ordinal));
+                _slot.Kind = device is null
+                    ? ShowInputKind.UvcWebcam
+                    : ShowInputRosterService.InferCaptureDeviceKind(device);
+                _slot.CaptureDeviceId = deviceId;
+                SyncAudioDeviceFromCaptureDevice();
+            }
+            else
+            {
+                OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+                return;
+            }
+
+            RefreshSourceOptions(_participants, _captureDevices, _audioDevices, _mediaAssets);
+            OnSlotPropertyChanged();
+        }
+    }
+
+    public IReadOnlyList<ShowInputSourceOption> UnifiedSourceOptions { get; private set; } = [];
+
+    private bool _isSourceMissing;
+
+    /// <summary>True when the slot is assigned but its source is no longer available
+    /// (device unplugged, guest left, asset removed). The binding is KEPT — the source
+    /// re-attaches when it returns; we never silently substitute another source.</summary>
+    public bool IsSourceMissing => _isSourceMissing;
+
+    public string KindLabel => _slot.KindLabel;
+
     /// <summary>Editable display name for the assigned source. Defaults to the derived
     /// Zoom/UVC/asset name; setting it stores the operator override (feeding the auto
     /// lower-thirds and multiview labels). Setting it blank resets to the derived name.</summary>
@@ -220,16 +282,21 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         {
             SourceOptions = ShowInputRosterService.BuildSourceOptions(Kind, participants, captureDevices, _mediaAssets);
             AudioDeviceOptions = ShowInputRosterService.BuildAudioSourceOptions(_audioDevices);
-            if (Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Media &&
-                (string.IsNullOrWhiteSpace(ParticipantId) || !SourceOptions.Any(option => option.Value == ParticipantId)))
-            {
-                ParticipantId = SourceOptions.FirstOrDefault()?.Value;
-            }
-            else if (Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
-                     (string.IsNullOrWhiteSpace(CaptureDeviceId) || !SourceOptions.Any(option => option.Value == CaptureDeviceId)))
-            {
-                CaptureDeviceId = SourceOptions.FirstOrDefault()?.Value;
-            }
+
+            // SRC-1: ONE grouped picker; the slot's kind follows the picked source. NO silent
+            // auto-pick: the old fallback here substituted the FIRST available source whenever
+            // the current one wasn't in the rebuilt list, so a device blip (or the old
+            // type-switch flow) could re-point a slot at something the operator never chose —
+            // mid-show. A gone source now surfaces as an explicit "Missing — was …" entry and
+            // the binding is kept so it re-attaches when the source returns.
+            var unified = ShowInputRosterService.BuildUnifiedSourceOptions(participants, captureDevices, _mediaAssets);
+            _isSourceMissing = SourceId is { Length: > 0 } assignedId &&
+                !unified.Any(option => string.Equals(option.Value, assignedId, StringComparison.Ordinal));
+            UnifiedSourceOptions = _isSourceMissing
+                ? ShowInputRosterService.BuildUnifiedSourceOptions(
+                    participants, captureDevices, _mediaAssets,
+                    SourceId, _resolveDisplayName(SourceId, DerivedSourceName()))
+                : unified;
 
             SyncAudioDeviceFromCaptureDevice();
             if (!ShowAudioDevicePicker ||
@@ -244,6 +311,10 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         }
 
         OnPropertyChanged(nameof(SourceOptions));
+        OnPropertyChanged(nameof(UnifiedSourceOptions));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(IsSourceMissing));
+        OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
@@ -271,6 +342,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private void OnSlotPropertyChanged()
     {
         OnPropertyChanged(nameof(Kind));
+        OnPropertyChanged(nameof(KindLabel));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(IsSourceMissing));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
         OnPropertyChanged(nameof(AudioDeviceId));
