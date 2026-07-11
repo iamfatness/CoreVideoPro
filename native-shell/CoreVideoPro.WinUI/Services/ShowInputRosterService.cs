@@ -126,7 +126,8 @@ public static class ShowInputRosterService
             options.Add(new ShowInputSourceOption
             {
                 Value = HintSourcePrefix + "zoom",
-                Label = "No Zoom guests — join a meeting"
+                Label = "No Zoom guests — join a meeting",
+                Group = "Zoom"
             });
         }
         else
@@ -134,7 +135,8 @@ public static class ShowInputRosterService
             options.AddRange(participants.Select(participant => new ShowInputSourceOption
             {
                 Value = ZoomSourceId(participant.Id),
-                Label = $"Zoom · {participant.Name} — {participant.RoleLabel}"
+                Label = $"{participant.Name} — {participant.RoleLabel}",
+                Group = "Zoom"
             }));
         }
 
@@ -149,7 +151,8 @@ public static class ShowInputRosterService
             options.Add(new ShowInputSourceOption
             {
                 Value = CaptureSourceId(device.Id),
-                Label = $"{group} · {device.Name}"
+                Label = device.Name,
+                Group = group
             });
         }
 
@@ -158,7 +161,8 @@ public static class ShowInputRosterService
             options.Add(new ShowInputSourceOption
             {
                 Value = HintSourcePrefix + "media",
-                Label = "No media assets — add them on the Media tab"
+                Label = "No media assets — add them on the Media tab",
+                Group = "Media"
             });
         }
         else
@@ -166,7 +170,8 @@ public static class ShowInputRosterService
             options.AddRange(mediaAssets.Select(asset => new ShowInputSourceOption
             {
                 Value = ToMediaSourceId(asset.Id),
-                Label = string.IsNullOrWhiteSpace(asset.Kind) ? $"Media · {asset.Name}" : $"Media · {asset.Name} ({asset.Kind})"
+                Label = string.IsNullOrWhiteSpace(asset.Kind) ? asset.Name : $"{asset.Name} ({asset.Kind})",
+                Group = "Media"
             }));
         }
 
@@ -182,6 +187,29 @@ public static class ShowInputRosterService
         }
 
         return options;
+    }
+
+    /// <summary>Fixed submenu order for the source-picker menu.</summary>
+    public static readonly IReadOnlyList<string> UnifiedSourceGroups = ["Zoom", "Camera", "Screen", "Media", "SRT"];
+
+    /// <summary>The label shown on a slot's picker button: "Camera · Elgato HD60" for a bound
+    /// source (group carries the type, so no separate type chip is needed), the bare label for
+    /// group-less entries (Missing), or null when unbound (the button shows its placeholder).</summary>
+    public static string? UnifiedSourceDisplayLabel(
+        IReadOnlyList<ShowInputSourceOption> options, string? sourceId)
+    {
+        if (sourceId is not { Length: > 0 })
+        {
+            return null;
+        }
+
+        var option = options.FirstOrDefault(item => string.Equals(item.Value, sourceId, StringComparison.Ordinal));
+        if (option is null)
+        {
+            return sourceId;
+        }
+
+        return string.IsNullOrEmpty(option.Group) ? option.Label : $"{option.Group} · {option.Label}";
     }
 
     /// <summary>The canonical source id an assigned slot resolves to (zoom:/capture:/media:),

@@ -33,6 +33,13 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         _setDisplayName = setDisplayName ?? ((_, _) => { });
         _slot.PropertyChanged += (_, _) =>
         {
+            // Re-raise the VM's bound properties on ANY underlying model change. The roster
+            // restore (ShowInputRosterStore.ApplyTo) and slot swaps mutate the MODEL
+            // directly; without this, a row realized before the restore kept rendering the
+            // default empty slot ("Select a source" + a greyed stale checkbox) until some
+            // later refresh happened to run — the intermittent stale row the old auto-pick
+            // used to paper over.
+            OnSlotPropertyChanged();
             if (!_suppressChangedCallback)
             {
                 _onChanged();
@@ -179,6 +186,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             {
                 // Snap the ComboBox back onto the model value (hint rows are informational).
                 OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
                 return;
             }
 
@@ -207,6 +215,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             else
             {
                 OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
                 return;
             }
 
@@ -216,6 +225,12 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     }
 
     public IReadOnlyList<ShowInputSourceOption> UnifiedSourceOptions { get; private set; } = [];
+
+    /// <summary>Button-face label for the picker ("Camera · Elgato HD60", "Missing — was …"),
+    /// or "Select a source" when unbound. The group prefix carries the type, so no separate
+    /// type chip is shown.</summary>
+    public string SelectedUnifiedSourceLabel =>
+        ShowInputRosterService.UnifiedSourceDisplayLabel(UnifiedSourceOptions, SourceId) ?? "Select a source";
 
     private bool _isSourceMissing;
 
@@ -318,6 +333,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceOptions));
         OnPropertyChanged(nameof(UnifiedSourceOptions));
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
         OnPropertyChanged(nameof(IsSourceMissing));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
@@ -350,6 +366,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(Kind));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
+        OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
         OnPropertyChanged(nameof(IsSourceMissing));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(ParticipantId));

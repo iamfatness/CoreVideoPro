@@ -43,21 +43,24 @@ public sealed partial class SourcesInputsPage : UserControl
         // value never gets a post-realization PropertyChanged the way Source does), leaving
         // the TYPE column blank. Setting it with the SelectionChanged handler detached keeps
         // the model authoritative without a spurious write-back.
-        var editor = ViewModel?.ShowInputEditors.ElementAtOrDefault(args.Index);
-
-        // SRC-1: one unified source picker per slot (kind inferred from the pick).
-        var unifiedCombo = FindDescendant<ComboBox>(root, "UnifiedSourceCombo");
-        if (unifiedCombo is null)
+        // SRC-1: categorized source picker — one submenu per group so long device lists
+        // stay filterable at pick time. The menu is (re)built on every open from the
+        // button's CURRENT Tag (x:Bind editor), so ItemsRepeater recycling stays correct.
+        var unifiedButton = FindDescendant<DropDownButton>(root, "UnifiedSourceButton");
+        if (unifiedButton is null)
         {
             return;
         }
 
-        unifiedCombo.SelectionChanged -= OnShowInputUnifiedSourceChanged;
-        if (editor is not null && editor.SelectedUnifiedSourceId is not null)
+        if (unifiedButton.Flyout is not MenuFlyout)
         {
-            unifiedCombo.SelectedValue = editor.SelectedUnifiedSourceId;
+            var flyout = new MenuFlyout
+            {
+                Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft
+            };
+            flyout.Opening += (_, _) => BuildUnifiedSourceMenu(flyout, unifiedButton);
+            unifiedButton.Flyout = flyout;
         }
-        unifiedCombo.SelectionChanged += OnShowInputUnifiedSourceChanged;
 
         var inputMicCombo = FindDescendant<ComboBox>(root, "InputMicCombo");
         if (inputMicCombo is not null)
@@ -74,33 +77,54 @@ public sealed partial class SourcesInputsPage : UserControl
         }
     }
 
-    private void OnShowInputUnifiedSourceChanged(object sender, SelectionChangedEventArgs e)
+    // Rebuilds the categorized picker menu from the button's current editor. Groups render
+    // in fixed order (Zoom / Camera / Screen / Media / SRT); empty groups with a hint row
+    // show the hint disabled ("No media assets — add them on the Media tab"); groups with
+    // nothing at all are omitted.
+    private static void BuildUnifiedSourceMenu(MenuFlyout flyout, DropDownButton button)
     {
-        // Tag (x:Bind), not DataContext (null inside the ItemsRepeater). Hint rows
-        // ("No media assets — …") are ignored by the view-model setter, which snaps the
-        // selection back onto the model value.
-        if (sender is not ComboBox combo ||
-            combo.Tag is not ShowInputSlotViewModel editor ||
-            combo.SelectedValue is not string sourceId)
+        if (button.Tag is not ShowInputSlotViewModel editor)
         {
             return;
         }
 
-        if (string.Equals(editor.SelectedUnifiedSourceId, sourceId, System.StringComparison.Ordinal))
+        flyout.Items.Clear();
+        foreach (var group in ShowInputRosterService.UnifiedSourceGroups)
         {
-            return;
-        }
+            var entries = editor.UnifiedSourceOptions
+                .Where(option => string.Equals(option.Group, group, System.StringComparison.Ordinal))
+                .ToList();
+            if (entries.Count == 0)
+            {
+                continue;
+            }
 
-        editor.SelectedUnifiedSourceId = sourceId;
-        if (ShowInputRosterService.IsHintSourceId(sourceId))
-        {
-            // The VM refused the hint row; realign the ComboBox with the model.
-            combo.SelectedValue = editor.SelectedUnifiedSourceId;
-            return;
-        }
+            var subMenu = new MenuFlyoutSubItem { Text = group };
+            foreach (var entry in entries)
+            {
+                if (ShowInputRosterService.IsHintSourceId(entry.Value))
+                {
+                    subMenu.Items.Add(new MenuFlyoutItem { Text = entry.Label, IsEnabled = false });
+                    continue;
+                }
 
-        LaunchLog.Write(
-            $"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> kind={editor.Kind}");
+                var value = entry.Value;
+                var item = new MenuFlyoutItem { Text = entry.Label };
+                item.Click += (_, _) =>
+                {
+                    // Read the Tag at CLICK time — recycling may have rebound the row.
+                    if (button.Tag is ShowInputSlotViewModel current)
+                    {
+                        current.SelectedUnifiedSourceId = value;
+                        LaunchLog.Write(
+                            $"sources: source selected '{value}' slot={current.SlotNumber} -> kind={current.Kind}");
+                    }
+                };
+                subMenu.Items.Add(item);
+            }
+
+            flyout.Items.Add(subMenu);
+        }
     }
 
     private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)

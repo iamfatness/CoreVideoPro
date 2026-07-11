@@ -17,11 +17,27 @@ public sealed class ShowInputUnifiedSourceTests
             [Camera("cam-1", "Elgato HD60"), Screen("screen:0", "DISPLAY1")],
             [Asset("a-1", "intro.mp4")]);
 
-        Assert.Contains(options, o => o.Value == "zoom:p-1" && o.Label.StartsWith("Zoom ·"));
-        Assert.Contains(options, o => o.Value == "capture:cam-1" && o.Label == "Camera · Elgato HD60");
-        Assert.Contains(options, o => o.Value == "capture:screen:0" && o.Label == "Screen · DISPLAY1");
-        Assert.Contains(options, o => o.Value == "media:a-1" && o.Label.StartsWith("Media ·"));
+        Assert.Contains(options, o => o.Value == "zoom:p-1" && o.Group == "Zoom");
+        Assert.Contains(options, o => o.Value == "capture:cam-1" && o.Group == "Camera" && o.Label == "Elgato HD60");
+        Assert.Contains(options, o => o.Value == "capture:screen:0" && o.Group == "Screen" && o.Label == "DISPLAY1");
+        Assert.Contains(options, o => o.Value == "media:a-1" && o.Group == "Media");
         Assert.DoesNotContain(options, o => ShowInputRosterService.IsHintSourceId(o.Value));
+    }
+
+    [Fact]
+    public void UnifiedSourceDisplayLabel_CarriesTheGroupSoNoTypeChipIsNeeded()
+    {
+        var options = ShowInputRosterService.BuildUnifiedSourceOptions(
+            [], [Camera("cam-1", "Elgato HD60")], []);
+
+        Assert.Equal("Camera · Elgato HD60",
+            ShowInputRosterService.UnifiedSourceDisplayLabel(options, "capture:cam-1"));
+        Assert.Null(ShowInputRosterService.UnifiedSourceDisplayLabel(options, null));
+
+        var missing = ShowInputRosterService.BuildUnifiedSourceOptions(
+            [], [], [], currentSourceId: "capture:gone", currentSourceLabel: "Steven Smith");
+        Assert.Equal("Missing — was Steven Smith",
+            ShowInputRosterService.UnifiedSourceDisplayLabel(missing, "capture:gone"));
     }
 
     [Fact]
@@ -29,8 +45,8 @@ public sealed class ShowInputUnifiedSourceTests
     {
         var options = ShowInputRosterService.BuildUnifiedSourceOptions([], [], []);
 
-        Assert.Contains(options, o => o.Value == "hint:zoom" && o.Label.Contains("join a meeting"));
-        Assert.Contains(options, o => o.Value == "hint:media" && o.Label.Contains("Media tab"));
+        Assert.Contains(options, o => o.Value == "hint:zoom" && o.Group == "Zoom" && o.Label.Contains("join a meeting"));
+        Assert.Contains(options, o => o.Value == "hint:media" && o.Group == "Media" && o.Label.Contains("Media tab"));
         Assert.All(options, o => Assert.True(ShowInputRosterService.IsHintSourceId(o.Value)));
     }
 

@@ -385,31 +385,26 @@
                                                   IsChecked="{x:Bind InShow, Mode=TwoWay}"
                                                   IsEnabled="{x:Bind IsAssigned, Mode=OneWay}"
                                                   ToolTipService.ToolTip="In show — puts this input on the Studio multiview strip" />
-                                        <!-- SRC-1: ONE grouped source picker (kind inferred from the pick) +
-                                             a kind chip + a loud MISSING badge when the assigned source is
-                                             gone (binding kept; never silently substituted). Selection is
-                                             driven in code-behind (OnShowInputEditorPrepared). -->
+                                        <!-- SRC-1: categorized source picker — a DropDownButton opening a
+                                             menu with one submenu per group (Zoom / Camera / Screen / Media
+                                             / SRT), so long device lists stay filterable AT PICK TIME (the
+                                             reason the old TYPE dropdown existed) without a second control
+                                             to keep consistent. The button face carries "Group · Name", so
+                                             no separate type chip. MISSING badge when the assigned source is
+                                             gone (binding kept; never silently substituted). The flyout is
+                                             built in code-behind on open (OnShowInputEditorPrepared). -->
                                         <Grid Grid.Column="2" ColumnSpacing="6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <ComboBox x:Name="UnifiedSourceCombo"
-                                                      Tag="{x:Bind}"
-                                                      ItemsSource="{x:Bind UnifiedSourceOptions, Mode=OneWay}"
-                                                      SelectedValue="{x:Bind SelectedUnifiedSourceId, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      PlaceholderText="Select a source"
-                                                      HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                            <Border Grid.Column="1" Background="#1A2229" CornerRadius="3" Padding="6,2"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="{x:Bind KindLabel, Mode=OneWay}" FontSize="10"
-                                                           Foreground="{StaticResource StudioTextSecondaryBrush}" />
-                                            </Border>
-                                            <Border Grid.Column="2" Background="#3A2A10" CornerRadius="3" Padding="6,2"
+                                            <DropDownButton x:Name="UnifiedSourceButton"
+                                                            Tag="{x:Bind}"
+                                                            Content="{x:Bind SelectedUnifiedSourceLabel, Mode=OneWay}"
+                                                            HorizontalAlignment="Stretch"
+                                                            HorizontalContentAlignment="Left"
+                                                            VerticalAlignment="Center" />
+                                            <Border Grid.Column="1" Background="#3A2A10" CornerRadius="3" Padding="6,2"
                                                     VerticalAlignment="Center"
                                                     Visibility="{x:Bind IsSourceMissing, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                     ToolTipService.ToolTip="This source is unavailable (unplugged / left / removed). The slot keeps its binding and re-attaches when it returns.">
