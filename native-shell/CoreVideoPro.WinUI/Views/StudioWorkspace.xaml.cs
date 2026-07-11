@@ -1,3 +1,4 @@
+using System;
 using System.ComponentModel;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
@@ -13,6 +14,7 @@ public sealed partial class StudioWorkspace : UserControl
     private readonly DispatcherQueue? _dispatcher = DispatcherQueue.GetForCurrentThread();
     private StudioViewModel? _boundViewModel;
     private bool _participantListRefreshScheduled;
+    private DispatcherTimer? _headerClockTimer;
 
     public static readonly DependencyProperty ViewModelProperty =
         DependencyProperty.Register(
@@ -46,10 +48,28 @@ public sealed partial class StudioWorkspace : UserControl
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         ScheduleParticipantListRefresh();
+        StartHeaderClock();
     }
 
-    private void OnUnloaded(object sender, RoutedEventArgs e) =>
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        _headerClockTimer?.Stop();
         BindViewModel(null, _boundViewModel);
+    }
+
+    // Drives the wall-clock shown next to the P/P out button (HH:mm:ss, ticked once a
+    // second) -- the clock the operator asked to move out of the program-tile corner.
+    private void StartHeaderClock()
+    {
+        _headerClockTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _headerClockTimer.Tick -= OnHeaderClockTick;
+        _headerClockTimer.Tick += OnHeaderClockTick;
+        OnHeaderClockTick(this, null);
+        _headerClockTimer.Start();
+    }
+
+    private void OnHeaderClockTick(object? sender, object? e) =>
+        HeaderClockText.Text = CoreVideoPro.WinUI.Controls.MultiviewOverlayFormatting.FormatClock(DateTime.Now);
 
     private void BindViewModel(StudioViewModel? next, StudioViewModel? previous)
     {
