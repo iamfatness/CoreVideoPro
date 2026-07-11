@@ -125,6 +125,12 @@ std::vector<MonitorTarget> enumerateMonitors() {
 // on WGC's own callback thread.
 class WgcSession {
  public:
+  // Drain any in-flight FrameArrived callback before this object's D3D members are
+  // destroyed — the free-threaded frame pool can invoke onFrame on a DWM thread, and
+  // the revoker does not wait for a callback already running (this was crashing the
+  // whole core: WgcSession::onFrame deref'ing a torn-down context_). 2026-07-10.
+  ~WgcSession() { stop(); }
+
   bool start(const MonitorTarget& target) {
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                  D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
@@ -182,6 +188,10 @@ class WgcSession {
   void stop() {
     running_.store(false, std::memory_order_release);
     frameArrived_.revoke();
+    // Wait out any callback that already passed the running_ check before we close the
+    // pool / free the D3D members it is using. revoke() unsubscribes future calls but
+    // does NOT synchronize with one in flight on the free-threaded pool thread.
+    { std::lock_guard<std::mutex> drain(frameMutex_); }
     if (session_) {
       session_.Close();
       session_ = nullptr;
@@ -215,6 +225,9 @@ class WgcSession {
 
  private:
   void onFrame(const wgc::Direct3D11CaptureFramePool& pool) {
+    // Held for the whole callback so stop()/~WgcSession cannot free the D3D members
+    // (device_/context_/staging_) mid-frame. Paired with the drain in stop().
+    std::lock_guard<std::mutex> frameLock(frameMutex_);
     if (!running_.load(std::memory_order_acquire)) {
       return;
     }
@@ -281,6 +294,8 @@ class WgcSession {
   wgc::GraphicsCaptureSession session_{nullptr};
   wgc::Direct3D11CaptureFramePool::FrameArrived_revoker frameArrived_;
   std::atomic<bool> running_{false};
+  // Serializes onFrame against stop()/destructor teardown of the D3D members.
+  std::mutex frameMutex_;
   std::mutex latestMutex_;
   std::shared_ptr<const std::vector<std::uint8_t>> latestBgra_;
   int latestWidth_ = 0;

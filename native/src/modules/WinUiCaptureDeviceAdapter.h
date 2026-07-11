@@ -40,6 +40,14 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
     return inner_->connect(deviceId);
   }
+  // Forward the shell's routing id (outputSourceId) to the inner device. Without this
+  // override the ICaptureDevice default drops outputSourceId and calls the 1-arg connect,
+  // so native-UVC frames stay keyed by the core's own MF id instead of the shell's
+  // captureDeviceId -> the multiview layer lookup misses -> pink tiles. (2026-07-10)
+  std::vector<CaptureDeviceInfo> connect(const std::string& deviceId,
+                                         const std::string& outputSourceId) override {
+    return inner_->connect(deviceId, outputSourceId);
+  }
 
   std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
     return inner_->disconnect(deviceId);
