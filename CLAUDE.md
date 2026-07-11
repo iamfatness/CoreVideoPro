@@ -216,6 +216,19 @@ fail-fast on a long show). The counter resets the instant a real frame lands. Se
 when native UVC (`COREVIDEO_NATIVE_UVC=1`) claims a device, the shell now stops any managed
 bridge reader for that same device so the two never run concurrently.
 
+**Bridge capture allocation churn (the "video slow down").** The managed MediaCapture
+bridge used to allocate a fresh ~8MB BGRA `byte[]` **per frame** in
+`CaptureDeviceFrameReaderService.CopyBgraBytes`. Across two 60fps cameras that is ~0.7GB/s
+of garbage → the WinUI heap grew to **5.2GB** and a core sat in GC, and the GC pauses stall
+the UI thread → the operator preview visibly slows (and eventually OOMs). Fixed with a
+per-`CaptureSession` ring of 4 reused buffers (`RentFrameBuffer`) — `OnFrameArrived` is
+single-flighted so the ring advances on one thread, and depth 4 exceeds the buffers live at
+once (SHM write is synchronous; the preview holds only the latest surface state, flushed to
+the UI within ~16ms ≪ the ~66ms 4-frame reuse interval). Result: working set **5210MB →
+~350MB flat**, 0 dropped frames. The residual ~1.5 cores of bridge CPU (the per-frame
+convert + copy + SHM write) is inherent to the managed path; the full elimination is native
+UVC once its display gap is closed.
+
 **What the profiling proved (2026-07-10): the lag is the WinUI shell, not the core/GPU.**
 On an RTX 4090 the core renders the 4K program + multiview in ~6.6ms (60fps) and the GPU is
 near-idle. `dotnet-trace` under synthetic 4-participant load ranked
