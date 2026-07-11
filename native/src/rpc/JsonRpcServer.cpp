@@ -444,22 +444,47 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         renderUs = 0;
         rateStamp = now;
       }
-      // Precise 60fps pacer. The prior flat sleep_for(remainder) overshoots by ~1-2ms
-      // even at timeBeginPeriod(1) granularity, which capped a 12-13ms render tick at
-      // ~55fps despite having budget to spare. Sleep the bulk of the remaining frame,
-      // then spin the final ~1.5ms up to an absolute per-iteration deadline so the
-      // start-to-start cadence locks at 16.6ms (60fps). Low latency is the north-star,
-      // so trading a brief tail spin for a locked frame rate is worth it. Heavy
-      // iterations (work >= budget) blow past the deadline and run flat out.
+      // Precise 60fps pacer. sleep_for alone overshoots ~1-2ms even at
+      // timeBeginPeriod(1), which capped a 12-13ms render tick at ~55fps. The old
+      // solution slept then SPUN the final 1.5ms (yield loop) - 60x/s that is ~9% of a
+      // core of pure spin, and during a system stress test (vcam + browser + DAW) it
+      // showed up as OTHER apps' audio glitching. A high-resolution waitable timer
+      // (Win10 1803+) gives ~0.5ms wakeup precision without burning the CPU; only a
+      // ~200us yield tail remains to absorb the residual jitter. Heavy iterations
+      // (work >= budget) blow past the deadline and run flat out, as before.
       constexpr long long kFrameBudgetUs = 16666;  // 60fps
       const auto deadline = t0 + std::chrono::microseconds(kFrameBudgetUs);
+#ifdef _WIN32
+      static thread_local HANDLE pacerTimer = ::CreateWaitableTimerExW(
+          nullptr, nullptr,
+          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET,
+          TIMER_ALL_ACCESS);
+      // 500us tail: the high-res timer still wakes ~300-400us late under load; a 200us
+      // guard measured 58.7fps (frames slipping past the deadline). 500us re-locks 60
+      // while spinning 3x less than the old 1.5ms guard.
+      constexpr auto kSpinGuardUs = std::chrono::microseconds(500);
+      auto nowPace = std::chrono::steady_clock::now();
+      if (pacerTimer != nullptr && nowPace + kSpinGuardUs < deadline) {
+        const auto waitUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(deadline - nowPace) -
+            kSpinGuardUs;
+        LARGE_INTEGER due;
+        due.QuadPart = -(waitUs.count() * 10);  // relative, 100ns ticks
+        if (::SetWaitableTimer(pacerTimer, &due, 0, nullptr, nullptr, FALSE)) {
+          ::WaitForSingleObject(pacerTimer, 20);
+        }
+      } else if (nowPace + std::chrono::microseconds(1500) < deadline) {
+        std::this_thread::sleep_for((deadline - nowPace) - std::chrono::microseconds(1500));
+      }
+#else
       constexpr auto kSpinGuardUs = std::chrono::microseconds(1500);
       auto nowPace = std::chrono::steady_clock::now();
       if (nowPace + kSpinGuardUs < deadline) {
         std::this_thread::sleep_for((deadline - nowPace) - kSpinGuardUs);
       }
+#endif
       while (std::chrono::steady_clock::now() < deadline) {
-        // Short tail spin to absorb sleep_for overshoot; yield keeps it civil.
+        // Tiny tail to absorb timer overshoot; yield keeps it civil.
         std::this_thread::yield();
       }
     }

@@ -2475,6 +2475,12 @@ class D3D11Compositor final : public ICompositor {
   // worker. The converted NV12 is stashed in vcamLatestNv12_; the output worker
   // fetches it with a cheap CPU copy via takeVcamNv12().
   void vcamTapLoop() {
+    // Throughput work, not latency work: this thread reads ~8MB/frame of UNCACHED
+    // (write-combined) staging memory + converts to NV12 - the most memory-bus-hostile
+    // load in the app. Run it BELOW_NORMAL so under system pressure it loses slices
+    // before the OS audio engine / other apps do: a dropped vcam frame is invisible,
+    // system-wide audio glitching (owner's browser+DAW stress test) is not.
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     while (!vcamTapStop_.load(std::memory_order_acquire)) {
       {
         std::unique_lock<std::mutex> lk(vcamCvMutex_);

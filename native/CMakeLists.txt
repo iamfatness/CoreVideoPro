@@ -195,7 +195,8 @@ if(COREVIDEO_WITH_WASAPI_MONITOR)
     message(FATAL_ERROR "COREVIDEO_WITH_WASAPI_MONITOR currently supports the Windows WASAPI adapter only.")
   endif()
 
-  target_link_libraries(corevideo_native PUBLIC ole32)
+  # avrt = MMCSS (AvSetMmThreadCharacteristics) for the monitor render thread.
+  target_link_libraries(corevideo_native PUBLIC ole32 avrt)
 endif()
 
 if(COREVIDEO_WITH_WASAPI_CAPTURE)
