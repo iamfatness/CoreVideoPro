@@ -1315,9 +1315,15 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
     overlayIds_.erase(overlayId);
     if (auto existing = overlayAssets_.find(overlayId); existing != overlayAssets_.end()) {
       // Animate the overlay out rather than dropping it instantly; the render
-      // tick retires it once the building-out animation has settled.
-      existing->second.keyPhase = "building-out";
-      existing->second.keyProgress = 0.f;
+      // tick retires it once the building-out animation has settled. Only START the
+      // build-out once: the shell re-sends enabled=false on every sync while the key is
+      // hidden, and resetting keyProgress each time restarted the slide-out every tick =
+      // a "double bounce" when the operator takes the lower third out. If it is already
+      // building out, leave it alone so it plays once and retires.
+      if (existing->second.keyPhase != "building-out") {
+        existing->second.keyPhase = "building-out";
+        existing->second.keyProgress = 0.f;
+      }
     }
     overlayCount_ = static_cast<int>(overlayIds_.size());
     return;
