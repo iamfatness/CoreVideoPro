@@ -117,6 +117,96 @@ present with **skip-present** (only on a new keyed-mutex frame) — smooth-prese
   `::sendMutex_` (never reversed). `coreMutex` holds are budgeted sub-ms outside
   sanctioned sites — `core/LockHoldGuardrail` warns (rate-capped) on violations.
 
+## Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
+
+The program appears system-wide as **"CoreVideo Pro Camera"** at native **1080p60**.
+It is an out-of-process, user-mode COM Media Foundation source DLL
+(`native/virtualcam-dll/` → `corevideo-virtualcam.dll`, CLSID
+`{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}`) that the Windows **Frame Server** loads on
+demand; the core registers it as a virtual camera via `MFCreateVirtualCamera`.
+
+Pipeline: **core → cross-session shared memory → DLL → Frame Server → app**.
+
+- **Cross-session shared memory is the whole trick.** The core publishes from the user's
+  **session 1**, but the Frame Server serves the camera from the **session-0** `FrameServer`
+  svchost — so a `Local\`-named mapping is a *different* object in each session and the DLL
+  only ever saw the standby slate. Non-elevated processes can't create a `Global\` object
+  (`SeCreateGlobalPrivilege`). **Fix = a file-backed mapping** at
+  `%ProgramData%\CoreVideoPro\vcam-frame.shm` with a permissive DACL
+  (`D:(A;;FRFW;;;WD)(A;;FR;;;AC)` — Everyone + ALL APPLICATION PACKAGES,
+  `FILE_ATTRIBUTE_TEMPORARY` so it stays in cache). Same path in every session → the OS
+  keeps it coherent. See `openVirtualCameraShmFile`/`mapVirtualCameraShmView` in
+  `native/src/modules/VirtualCameraShm.h`; used by the publisher (writer), the DLL's
+  `SharedFrameReader` (reader), and the round-trip test. Layout: 32-byte header
+  (magic `0x43564643`, then seqlock `seq`/`w`/`h`/`fps`/`byteLen`/`frameNumber` as u64)
+  followed by an NV12 payload; the writer uses a seqlock, the reader retries on an odd seq.
+- **No flashing:** the DLL caches `lastGood_` and re-serves it on a transient read miss;
+  it only falls back to the slate after ~30 missed frames (`MediaStream.cpp`).
+- **No latency drift:** the DLL stamps each sample with `MFGetSystemTime()` (a live source),
+  never an accumulating `nextPts_ += frameDuration_` counter.
+- **Dims must match.** The DLL media type is **fixed 1920×1080@60** (`MediaSource.h`), so
+  `MediaCore::syncVirtualCamera` HARD-PINS 1920×1080@60 and ignores the shell's command
+  w/h/fps — a mismatch makes the DLL reject the frame → slate.
+- **Off-thread readback (why it's ~free).** Reading a 4K program back on the render thread
+  froze Take/preview (~20ms under `coreMutex`); on the audio worker it starved audio. The
+  fix: on the render tick the compositor does a cheap GPU **scale-blit** of the program
+  into a *dedicated* 1080p keyed-mutex shared texture (`exportVcamSharedTexture`,
+  fullscreen-triangle identity draw — do NOT reuse the program `sharedTexture_`, WinUI
+  already holds its keyed mutex and a third consumer deadlocks). A **second D3D device** on
+  its own thread (`vcamTapLoop`) does AcquireSync/CopyResource→staging/Map/NV12-convert, and
+  the output worker just does a cheap NV12 copy (`takeVcamNv12`) + `publishNv12`. Net render
+  cost ≈ 1ms. Rule: GPU→GPU `CopyResource` is microseconds; GPU→CPU-staging map+read is
+  ~8–12ms and MUST live on a dedicated device/thread, never under `coreMutex` or the audio
+  worker. Current: publish ~50fps 1080p; the last ~10fps to a true 60 is the scalar
+  `convertBgraToNv12` (~15ms) — SIMD it or convert to NV12 on the GPU (half the readback).
+- **Enable it:** control API `POST http://127.0.0.1:8011/invoke
+  {"action":"transport.virtualcam.set","args":[true]}` (or the transport toggle in the UI).
+- **Verify the feed:** read the 32-byte header of the ProgramData file; `frameNumber`
+  delta/sec = the publish fps.
+
+**Rig ops for the DLL (READ before rebuilding it):**
+1. Registration is HKCU (no admin): `scripts/register-virtualcam.ps1`.
+2. **Rebuilding the DLL needs the app stopped AND the Frame Server restarted elevated** — it
+   holds an image-section handle to the registered DLL, so the relink fails with `LNK1104`
+   even though `tasklist /m` shows no holder. `Start-Process powershell -Verb RunAs
+   -ArgumentList 'Restart-Service FrameServer -Force'` (owner approves the UAC).
+3. Build target: `cmake --build native\build-dev --config Release --target
+   corevideo-virtualcam corevideo-native corevideo-native-tests`.
+4. `native/virtualcam-dll/VcamLog.h` is gated serve-tracing for debugging the DLL side.
+
+## Performance profiling (operator lag/stutter/crash)
+
+The right tools, cheapest first — a full evidence trail lives in
+`docs/operator-performance-plan.md` and `docs/present-stutter-fix-spec.md`.
+
+- **`dotnet-trace` — no admin, in-process, USE THIS FIRST for the shell.**
+  `dotnet tool install -g dotnet-trace`; `dotnet-trace collect -p <pid>
+  --profile dotnet-sampled-thread-time -o x.nettrace`; `dotnet-trace report x.nettrace
+  topN -n 20`. (`--profile cpu-sampling` is Linux-collect only — don't use it here.)
+- **PresentMon 2.5.1 — needs elevation (UAC), measures on-screen frame delivery.**
+  `PresentMon --process_name CoreVideoPro.WinUI.exe --timed 20 --output_file x.csv`.
+  Read `MsBetweenDisplayChange` (`NA` = frame never displayed), and
+  `MsCPUBusy` vs `MsCPUWait` (busy = compute/UI-thread; wait = GC-suspend/IO).
+- **`dotnet-gcdump`** for the managed heap: `dotnet-gcdump collect -p <pid>`, open the
+  `.gcdump` in PerfView/VS for the retained graph (the CLI `report` under-accounts).
+- **The stutter only reproduces under LOAD** — use the fake engine (below) to synthesize
+  participants/sources; a fresh idle StubOnly launch has a cheap apply and won't repro.
+
+**What the profiling proved (2026-07-10): the lag is the WinUI shell, not the core/GPU.**
+On an RTX 4090 the core renders the 4K program + multiview in ~6.6ms (60fps) and the GPU is
+near-idle. `dotnet-trace` under synthetic 4-participant load ranked
+`CaptureDeviceFrameReaderService.OnFrameArrived` at **53%** →
+`CaptureDeviceSharedMemoryWriter.Write` → `SafeBuffer.WriteSpan` **35.7% exclusive**: the
+WinUI MediaCapture bridge copies **every** webcam frame through managed memory (~180MB/s
+@1080p) = ~50% CPU + ~50MB/s heap churn → 2–3GB working set → crash → UI-thread starvation.
+**Native UVC capture (`COREVIDEO_NATIVE_UVC=1`) eliminates it** — verified working set
+2.4GB→**267MB flat**, CPU→idle, 59fps, 0 drops. But the native path currently has a
+**last-mile display gap** (frames are captured and polled by the core but don't reach the
+multiview tiles → pink tiles), so it stays **opt-in (default OFF)** and the shell runs on the
+managed bridge (working sources, perf cost returns). Completing native-UVC frame display is
+the remaining last mile of the perf fix; a secondary snapshot-apply churn fix already shipped
+in `StudioViewModel.ApplyLiveParticipants` (order-independent, structural-only signature).
+
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
 **Audio is CLEAN and machine-verified.** The 2026-07-05 marathon: pull-model monitor
