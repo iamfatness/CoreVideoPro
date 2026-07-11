@@ -151,6 +151,7 @@ The first fully useful milestone:
 - **Working guide (build/run/architecture/crash class/current state):** [`CLAUDE.md`](CLAUDE.md).
 - GPU multiview implementation plan: [`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md).
 - Operator performance investigation & plan: [`docs/operator-performance-plan.md`](docs/operator-performance-plan.md) · present-stutter fix spec: [`docs/present-stutter-fix-spec.md`](docs/present-stutter-fix-spec.md).
+- Sources redesign, preview/program direct positioning, browser sources: [`docs/sources-redesign-spec.md`](docs/sources-redesign-spec.md) (builds on [`docs/capture-sources-spec.md`](docs/capture-sources-spec.md)).
 - Compositor architecture (OBS/CasparCG/Natron-informed): [`docs/compositor-architecture-plan.md`](docs/compositor-architecture-plan.md).
 - Sprint-by-sprint demo roadmap: [`docs/roadmap/index.html`](docs/roadmap/index.html) (open in a browser).
 - Alpha build plan & exit bar: [`docs/alpha-plan.md`](docs/alpha-plan.md).
