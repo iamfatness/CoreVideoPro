@@ -11678,8 +11678,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // NOT force: forcing re-ran the full building-out -> building-in slide on EVERY
+    // refresh, and this fires ~continuously (snapshot applies, active-speaker changes,
+    // scene refreshes call it from ~9 sites). That made the lower third perpetually slide
+    // down-and-up (owner: "goes up and down") AND cancelled each new source's transition
+    // before it could settle (owner: "isn't auto-updating as new people go into program").
+    // Un-forced: a same-source refresh updates position/text in place with no animation;
+    // only a genuine source change animates once. (2026-07-11)
     public void RefreshProgramLowerThirdKeyPosition() =>
-        UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(ProgramSceneRoutes), force: true);
+        UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(ProgramSceneRoutes));
 
     private void UpdateProgramLowerThirdKey(LowerThirdSource? source, bool force = false)
     {
@@ -11840,8 +11847,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        return sources.FirstOrDefault(source => source.IsActiveSpeaker)
-               ?? sources.FirstOrDefault(source => source.IsScreenShare)
+        // Name the source that is actually ON PROGRAM (top z-order), skipping a screen
+        // share. This previously preferred the Zoom active-speaker flag, which lagged
+        // behind manual cuts -- the lower third kept naming the last talker instead of the
+        // person just taken to program (owner: "isn't auto-updating as new people go into
+        // program"). (2026-07-11)
+        return sources.FirstOrDefault(source => !source.IsScreenShare)
                ?? sources[0];
     }
 
@@ -11860,8 +11871,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return new LowerThirdSource(
                 captureSourceId,
                 ResolveSourceDisplayName(captureSourceId, device.Name),
-                device.Vendor,
-                device.ResolutionLabel,
+                // A camera source has no presenter role/org -- leave the secondary lines
+                // blank so the lower third shows just the (operator-assignable) name
+                // instead of the device kind ("UVC", from device.Vendor) and resolution.
+                string.Empty,
+                string.Empty,
                 IsActiveSpeaker: false,
                 IsScreenShare: false);
         }
