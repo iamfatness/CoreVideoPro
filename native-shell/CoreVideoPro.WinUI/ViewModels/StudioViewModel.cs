@@ -293,7 +293,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _recordingAudioBitrateKbps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.AudioBitrateKbps;
 
     [ObservableProperty]
-    private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
+    private string _recordingTargetFolder = ResolveDefaultRecordingFolder();
+
+    // Absolute default so recordings land somewhere the operator can find
+    // (Videos\CoreVideo Pro) rather than the relative "Recordings/CoreVideo Pro" that
+    // resolved next to the core exe. Overridable via the settings Browse picker.
+    internal static string ResolveDefaultRecordingFolder()
+    {
+        try
+        {
+            var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+            if (!string.IsNullOrWhiteSpace(videos))
+            {
+                return System.IO.Path.Combine(videos, "CoreVideo Pro");
+            }
+        }
+        catch
+        {
+            // Fall back to the wire default below.
+        }
+
+        return MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
+    }
 
     [ObservableProperty]
     private string _recordingFilenamePrefix = MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix;
@@ -8746,7 +8767,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
         new(
-            TargetFolder: NormalizeOutputText(RecordingTargetFolder, MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder),
+            TargetFolder: NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder()),
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
             Format: NormalizeRecordingFormat(RecordingFormat),
             Quality: NormalizeRecordingQuality(RecordingQuality),

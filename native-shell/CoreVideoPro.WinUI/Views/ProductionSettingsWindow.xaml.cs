@@ -63,6 +63,56 @@ public sealed partial class ProductionSettingsWindow : Window
 
     private void OnFfmpegClicked(object sender, RoutedEventArgs args) => ShowSection("ffmpeg");
 
+    // Pick the folder where recordings are written. The whole path plumbing already
+    // exists (RecordingTargetFolder -> targetFolder wire -> core resolveTargetDir); this
+    // just gives the operator a real folder picker instead of hand-typing a path.
+    private async void OnBrowseRecordingFolderClicked(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FolderPicker
+            {
+                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.VideosLibrary,
+            };
+            picker.FileTypeFilter.Add("*"); // required or PickSingleFolderAsync throws
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is not null && !string.IsNullOrWhiteSpace(folder.Path))
+            {
+                ViewModel.RecordingTargetFolder = folder.Path;
+            }
+        }
+        catch
+        {
+            // Picker can throw if the shell COM apartment is busy; leave the field as-is.
+        }
+    }
+
+    // Reveal the current recording folder in Explorer so the operator can confirm where
+    // files land (creates it if it does not exist yet).
+    private void OnOpenRecordingFolderClicked(object sender, RoutedEventArgs args)
+    {
+        var path = ViewModel.RecordingTargetFolder;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Non-fatal: an invalid/inaccessible path just doesn't open.
+        }
+    }
+
     private void ShowPanel(FrameworkElement activePanel)
     {
         OutputPanel.Visibility = activePanel == OutputPanel ? Visibility.Visible : Visibility.Collapsed;
