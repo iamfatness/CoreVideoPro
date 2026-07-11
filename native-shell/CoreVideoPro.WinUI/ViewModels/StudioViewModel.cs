@@ -50,6 +50,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // UpdateProgramLowerThirdKey so a refresh for the same target never restarts the slide
     // (the displayed key lags behind during a build-out). Empty when hidden.
     private string _lowerThirdTargetSourceId = string.Empty;
+    private long _lowerThirdKeyChangeTickMs;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
@@ -11744,6 +11745,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Debounce backstop: if the resolver still churns (co-program route order flicker),
+        // never restart the slide more than ~once/sec. The sync storm from rapid re-keys --
+        // each fires a full media-core sync batch -- is what caused the operator latency.
+        // First show (no target yet) is never debounced, so a genuine show is instant.
+        var nowMs = Environment.TickCount64;
+        if (!force && _lowerThirdTargetSourceId.Length > 0 &&
+            nowMs - _lowerThirdKeyChangeTickMs < 1200)
+        {
+            return;
+        }
+        _lowerThirdKeyChangeTickMs = nowMs;
+
         LaunchLog.Write($"lower-third: key -> '{source.SourceId}' (name '{source.SourceName}')");
         _lowerThirdTargetSourceId = source.SourceId;
         _lowerThirdKeyTransitionCts?.Cancel();
@@ -11875,12 +11888,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return current;
         }
 
-        // No sticky source (first show, or the current one left program): name the
-        // on-program source (top z-order), skipping a screen share. Preferring the program
-        // cut over the Zoom active-speaker flag is what makes it follow manual takes
-        // instead of naming the last talker.
-        return sources.FirstOrDefault(source => !source.IsScreenShare)
-               ?? sources[0];
+        // No sticky source (first show, or the current one left program): pick
+        // DETERMINISTICALLY, ordered by SourceId -- NOT the ZIndex route order, which the
+        // active-speaker/fake-engine churn re-sorts every tick. A stable tiebreak means two
+        // co-program sources can't alternate the choice, so it can't ping-pong.
+        return sources.Where(source => !source.IsScreenShare)
+                      .OrderBy(source => source.SourceId, StringComparer.Ordinal)
+                      .FirstOrDefault()
+               ?? sources.OrderBy(source => source.SourceId, StringComparer.Ordinal).First();
     }
 
     private LowerThirdSource? ResolveLowerThirdSource(SourceRoute route)
