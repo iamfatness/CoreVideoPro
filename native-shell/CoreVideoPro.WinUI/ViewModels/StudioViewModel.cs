@@ -46,6 +46,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionSettingsWindow? _productionSettingsWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
+    // The source the lower third is currently showing OR animating toward. Compared in
+    // UpdateProgramLowerThirdKey so a refresh for the same target never restarts the slide
+    // (the displayed key lags behind during a build-out). Empty when hidden.
+    private string _lowerThirdTargetSourceId = string.Empty;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
@@ -11711,26 +11715,37 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (ProgramLowerThirdKey != hidden)
             {
                 _lowerThirdKeyTransitionCts?.Cancel();
+                _lowerThirdTargetSourceId = string.Empty;
                 ProgramLowerThirdKey = hidden;
                 _ = TrySyncMediaCoreAsync();
             }
             return;
         }
 
-        if (!force &&
-            ProgramLowerThirdKey.Enabled &&
-            string.Equals(ProgramLowerThirdKey.SourceId, source.SourceId, StringComparison.Ordinal) &&
-            string.Equals(ProgramLowerThirdKey.SourceName, source.SourceName, StringComparison.Ordinal))
+        // Re-key (slide out/in) ONLY on a genuine source SWITCH, compared against the
+        // TARGET we are already showing / animating toward -- NOT the currently-displayed
+        // key. During a build-OUT the displayed key still holds the OLD source id while the
+        // resolver already returns the NEW one, so comparing against the displayed key
+        // restarted the transition on every sync tick = the "weird looping when you change
+        // sources with LT on". Same target => no-op while a transition is mid-flight, or an
+        // in-place text refresh once settled on-air. Never restarts the slide. (2026-07-11)
+        if (!force && string.Equals(_lowerThirdTargetSourceId, source.SourceId, StringComparison.Ordinal))
         {
-            var next = BuildLowerThirdKey(source, "on-air");
-            if (ProgramLowerThirdKey != next)
+            if (ProgramLowerThirdKey.Enabled &&
+                string.Equals(ProgramLowerThirdKey.Phase, "on-air", StringComparison.Ordinal))
             {
-                ProgramLowerThirdKey = next;
-                _ = TrySyncMediaCoreAsync();
+                var next = BuildLowerThirdKey(source, "on-air");
+                if (ProgramLowerThirdKey != next)
+                {
+                    ProgramLowerThirdKey = next;
+                    _ = TrySyncMediaCoreAsync();
+                }
             }
             return;
         }
 
+        LaunchLog.Write($"lower-third: key -> '{source.SourceId}' (name '{source.SourceName}')");
+        _lowerThirdTargetSourceId = source.SourceId;
         _lowerThirdKeyTransitionCts?.Cancel();
         var transitionCts = new CancellationTokenSource();
         _lowerThirdKeyTransitionCts = transitionCts;
