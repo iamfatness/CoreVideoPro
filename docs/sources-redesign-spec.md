@@ -85,7 +85,7 @@ done; the gap is that it lives on the Scenes tab instead of under the operator's
 
 ### B2. Spec (Phase POS-1..3)
 
-- **POS-1 — edit-in-place on the Studio PREVIEW panel**: overlay the existing
+- **POS-1 — edit-in-place on the Studio PREVIEW panel** — **SHIPPED 2026-07-11** (overlay increment; snap/grid/safe-area settings remain): overlay the existing
   `SceneCanvasEditorControl` interaction layer directly on the preview panel (same
   hit-testing, snapping, grips), editing the S2b draft. A small toolbar toggle on the
   preview header: `Edit layout` (pencil). Click a source → grips appear; drag/resize/
