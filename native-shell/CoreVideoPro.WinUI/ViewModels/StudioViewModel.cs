@@ -11862,11 +11862,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        // Name the source that is actually ON PROGRAM (top z-order), skipping a screen
-        // share. This previously preferred the Zoom active-speaker flag, which lagged
-        // behind manual cuts -- the lower third kept naming the last talker instead of the
-        // person just taken to program (owner: "isn't auto-updating as new people go into
-        // program"). (2026-07-11)
+        // Stickiness: keep the source the lower third is ALREADY showing as long as it is
+        // still on program. Without this the choice ping-ponged between two co-program
+        // sources whose route order flickers (active-speaker re-sorting upstream re-orders
+        // ZIndex every ~1s), which changed the target and restarted the slide every tick =
+        // the residual loop. A genuine change (the current source leaves program) still
+        // re-picks below, so it keeps following manual cuts. (2026-07-11)
+        var current = sources.FirstOrDefault(source =>
+            string.Equals(source.SourceId, _lowerThirdTargetSourceId, StringComparison.Ordinal));
+        if (current is not null)
+        {
+            return current;
+        }
+
+        // No sticky source (first show, or the current one left program): name the
+        // on-program source (top z-order), skipping a screen share. Preferring the program
+        // cut over the Zoom active-speaker flag is what makes it follow manual takes
+        // instead of naming the last talker.
         return sources.FirstOrDefault(source => !source.IsScreenShare)
                ?? sources[0];
     }
