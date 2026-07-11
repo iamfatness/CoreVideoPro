@@ -248,9 +248,20 @@ tooling pinned) a **separate WGC screen-capture crash** — `WgcSession::onFrame
 torn-down D3D `context_` because `stop()` revoked the FrameArrived handler without draining an
 in-flight callback on the free-threaded pool thread; fixed with a `frameMutex_` held across
 `onFrame` + drained in `stop()` + a `~WgcSession(){ stop(); }`. Native UVC is still opt-in
-(default OFF) pending a live rig-confirm, but it is now the strictly-better path. A secondary
+(default OFF): the WinUI MediaCapture **bridge is the robust default** (the shell owns both
+id sides, so it cannot go pink; memory-stable since the buffer-reuse fix). Native UVC is the
+faster-but-more-delicate opt-in (two id spaces that must agree). A secondary
 snapshot-apply churn fix also shipped in `StudioViewModel.ApplyLiveParticipants`
 (order-independent, structural-only signature).
+
+**Loud-failure guardrail (no more silent pink).** The compositor
+(`D3D11CompositorAdapter::warnUnmatchedCaptureLayer`) now logs — rate-limited 5s/key —
+whenever a `capture:` render-plan layer resolves to NO matching frame (the pink condition),
+dumping the layer key AND the available capture-frame keys. A key mismatch on either path is
+now a 10-second diagnosis instead of a multi-session hunt. Fires only during the startup gap
+before first frames, then silent. Companion audit: `WgcSession` was the ONLY free-threaded OS
+callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
+its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
