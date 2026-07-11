@@ -485,15 +485,21 @@
                         <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.MultiviewHeader, Mode=OneWay}"
                                    FontSize="11" VerticalAlignment="Center" Margin="4,0,0,0"
                                    Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
-                        <Button Grid.Column="3" Style="{StaticResource GhostButton}"
-                                Padding="10,4" FontSize="10" VerticalAlignment="Center"
-                                Command="{x:Bind ViewModel.PopOutProgramPreviewCommand}"
-                                ToolTipService.ToolTip="Pop a dedicated Program/Preview view out to its own window">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE7F4;" FontSize="11" />
-                                <TextBlock Text="P/P out" />
-                            </StackPanel>
-                        </Button>
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
+                                       FontSize="13" FontFamily="Consolas" VerticalAlignment="Center"
+                                       Foreground="{StaticResource StudioTextBrush}"
+                                       ToolTipService.ToolTip="Live wall-clock time" />
+                            <Button Style="{StaticResource GhostButton}"
+                                    Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                    Command="{x:Bind ViewModel.PopOutProgramPreviewCommand}"
+                                    ToolTipService.ToolTip="Pop a dedicated Program/Preview view out to its own window">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE7F4;" FontSize="11" />
+                                    <TextBlock Text="P/P out" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
                         <Button Grid.Column="4" Style="{StaticResource GhostButton}"
                                 Padding="10,4" FontSize="10" VerticalAlignment="Center"
                                 Command="{x:Bind ViewModel.PopOutMultiviewCommand}"
@@ -1264,11 +1270,6 @@
                             <StackPanel Spacing="2" MinWidth="72">
                                 <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"
-                                           Style="{StaticResource OutputStatValue}" />
-                            </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="48">
-                                <TextBlock Text="LIVE" Style="{StaticResource OutputStatLabel}" />
-                                <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
                                            Style="{StaticResource OutputStatValue}" />
                             </StackPanel>
                         </StackPanel>
