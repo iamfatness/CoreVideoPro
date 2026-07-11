@@ -58,7 +58,7 @@ slot; the slot's kind is inferred from what was picked.
     re-attaches when the device returns — the vMix behavior). Never substitute.
   - Placeholder "Select a source" whenever unbound; a bound slot always renders
     name + kind chip + connect state (`live / connecting / no signal / missing`).
-- **SRC-2 — retire the dual-capture panel**: fold per-device rows (resolution/fps,
+- **SRC-2 — retire the dual-capture panel** — **SHIPPED 2026-07-11**: fold per-device rows (resolution/fps,
   signal, paired-audio picker, Connect toggle, Grade) into a compact "Devices" drawer
   under the table. One selection surface. The Primary/Secondary pickers go away —
   slots ARE the selection.

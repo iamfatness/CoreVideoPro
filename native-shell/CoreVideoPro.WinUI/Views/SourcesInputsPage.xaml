@@ -87,49 +87,13 @@
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.RefreshCaptureDevicesCommand}" />
                     </Grid>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
-                                   Style="{StaticResource OperatorSummary}" VerticalAlignment="Center" />
-                        <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="8,4"
-                                Visibility="{x:Bind ViewModel.DualCaptureLive, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Dual capture live" FontSize="11" />
-                        </Border>
-                    </StackPanel>
-
-                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                            BorderThickness="1" CornerRadius="6" Padding="10"
-                            Visibility="{x:Bind ViewModel.HasCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Spacing="8">
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="4">
-                                    <TextBlock Text="Primary capture source" FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <ComboBox ItemsSource="{x:Bind ViewModel.DualCaptureSourceOptions, Mode=OneWay}"
-                                              SelectedValue="{x:Bind ViewModel.PrimaryCaptureDeviceId, Mode=TwoWay}"
-                                              SelectedValuePath="Value"
-                                              DisplayMemberPath="Label"
-                                              HorizontalAlignment="Stretch" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Spacing="4">
-                                    <TextBlock Text="Secondary capture source" FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <ComboBox ItemsSource="{x:Bind ViewModel.DualCaptureSourceOptions, Mode=OneWay}"
-                                              SelectedValue="{x:Bind ViewModel.SecondaryCaptureDeviceId, Mode=TwoWay}"
-                                              SelectedValuePath="Value"
-                                              DisplayMemberPath="Label"
-                                              HorizontalAlignment="Stretch" />
-                                </StackPanel>
-                            </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.DualCaptureSummary, Mode=OneWay}"
-                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
-                                       TextWrapping="WrapWholeWords" />
-                        </StackPanel>
-                    </Border>
+                    <!-- SRC-2: the old Primary/Secondary "dual capture" pickers were legacy —
+                         they silently overwrote Show-input slots 1-2 and duplicated the slot
+                         table (which now auto-connects assigned devices). Devices below are a
+                         dense utility list: state + sync offset + connect/offline. Assignment,
+                         audio pairing, and grading live on the Show-inputs table. -->
+                    <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
 
                     <TextBlock Text="{x:Bind ViewModel.CaptureDevicesEmptyGuidance, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
@@ -141,79 +105,58 @@
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:CaptureDevice">
                                 <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
-                                    <StackPanel Spacing="8">
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
-                                            <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
-                                                       Foreground="{StaticResource StudioAccentBrush}" />
-                                        </Grid>
-                                        <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
-                                            <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
-                                            <Run Text=" · " />
-                                            <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
-                                        </TextBlock>
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Text="{x:Bind AssignedAudioLabel, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox x:Name="CaptureMicCombo"
-                                                      ItemsSource="{Binding ViewModel.AudioCaptureSourceOptions, ElementName=SourcesInputsRoot}"
-                                                      SelectedValue="{x:Bind AssignedAudioDeviceId, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      Header="Paired audio source"
-                                                      PlaceholderText="No paired audio source"
-                                                      SelectionChanged="OnCaptureDeviceMicChanged"
-                                                      HorizontalAlignment="Stretch" />
+                                        BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,4">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
+                                            <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind AudioSyncLabel, Mode=OneWay}" />
+                                            </TextBlock>
                                         </StackPanel>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{x:Bind AudioSyncLabel, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       VerticalAlignment="Center" />
-                                            <Button Grid.Column="1"
-                                                    Content="-20 ms"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                            <Button Grid.Column="2"
-                                                    Content="+20 ms"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                            <Button Grid.Column="3"
-                                                    Content="Reset"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.ResetCaptureAudioSyncCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                        </Grid>
-                                        <Button Content="Bring online as program source"
-                                                Style="{StaticResource OperatorGhostButton}"
+                                        <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
+                                                   Foreground="{StaticResource StudioAccentBrush}" VerticalAlignment="Center" />
+                                        <Button Grid.Column="2"
+                                                Content="-20 ms"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
+                                                ToolTipService.ToolTip="Nudge this device's audio 20 ms earlier"
+                                                Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}"
+                                                VerticalAlignment="Center" />
+                                        <Button Grid.Column="3"
+                                                Content="+20 ms"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
+                                                ToolTipService.ToolTip="Nudge this device's audio 20 ms later"
+                                                Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}"
+                                                VerticalAlignment="Center" />
+                                        <Button Grid.Column="4"
+                                                Content="Connect"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                                Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                VerticalAlignment="Center" />
                                         <!-- Lifecycle L2: stop the session + unassign its slots -->
-                                        <Button Content="Take offline"
-                                                Style="{StaticResource OperatorGhostButton}"
+                                        <Button Grid.Column="5"
+                                                Content="Take offline"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.TakeCaptureDeviceOfflineCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind IsConnected, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                        <Button Content="Color grade"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Command="{Binding ViewModel.OpenCaptureDeviceColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
-                                                CommandParameter="{x:Bind Id}" />
-                                    </StackPanel>
+                                                Visibility="{x:Bind IsConnected, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                VerticalAlignment="Center" />
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>

@@ -69,12 +69,6 @@ public sealed partial class SourcesInputsPage : UserControl
             inputMicCombo.SelectionChanged += OnShowInputMicChanged;
         }
 
-        var captureMicCombo = FindDescendant<ComboBox>(root, "CaptureMicCombo");
-        if (captureMicCombo is not null)
-        {
-            captureMicCombo.SelectionChanged -= OnCaptureDeviceMicChanged;
-            captureMicCombo.SelectionChanged += OnCaptureDeviceMicChanged;
-        }
     }
 
     // Rebuilds the categorized picker menu from the button's current editor. Groups render
@@ -154,17 +148,6 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         editor.AudioDeviceId = audioDeviceId;
-    }
-
-    private void OnCaptureDeviceMicChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (sender is not ComboBox combo ||
-            combo.DataContext is not CaptureDevice captureDevice)
-        {
-            return;
-        }
-
-        ViewModel?.SetCaptureDeviceAudioSource(captureDevice.Id, combo.SelectedValue as string);
     }
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement
