@@ -15,24 +15,26 @@
 
 using corevideo::modules::VirtualCameraShmHeader;
 using corevideo::modules::kVirtualCameraMagic;
-using corevideo::modules::virtualCameraShmName;
+using corevideo::modules::mapVirtualCameraShmView;
+using corevideo::modules::openVirtualCameraShmFile;
+using corevideo::modules::virtualCameraShmFilePath;
 using corevideo::modules::virtualCameraShmSize;
 using corevideo::virtualcam::SharedFrameReader;
 
 namespace {
 
-// Minimal writer mirroring WindowsVirtualCameraPublisher's slot format.
+// Minimal writer mirroring WindowsVirtualCameraPublisher's slot format
+// (file-backed on %ProgramData%, exactly as the real publisher does it).
 struct ShmWriter {
+  HANDLE file = INVALID_HANDLE_VALUE;
   HANDLE mapping = nullptr;
   void* view = nullptr;
   VirtualCameraShmHeader* header = nullptr;
 
   bool open() {
-    mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                 static_cast<DWORD>(virtualCameraShmSize()),
-                                 virtualCameraShmName().c_str());
-    if (mapping == nullptr) return false;
-    view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, virtualCameraShmSize());
+    file = openVirtualCameraShmFile(/*writer=*/true);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    view = mapVirtualCameraShmView(file, /*writer=*/true, &mapping);
     if (view == nullptr) return false;
     header = static_cast<VirtualCameraShmHeader*>(view);
     header->seq = 0;
@@ -54,6 +56,8 @@ struct ShmWriter {
   ~ShmWriter() {
     if (view) UnmapViewOfFile(view);
     if (mapping) CloseHandle(mapping);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    ::DeleteFileA(virtualCameraShmFilePath().c_str());  // no stale slot for the next test
   }
 };
 
@@ -81,6 +85,7 @@ TEST(VirtualCameraShmRoundtrip, ReadsBackTheFrameTheWriterPublished) {
 
 TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
   // With no writer mapping alive, the reader reports "no frame" (not a crash).
+  ::DeleteFileA(virtualCameraShmFilePath().c_str());  // ensure no stale slot file
   SharedFrameReader reader;
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;

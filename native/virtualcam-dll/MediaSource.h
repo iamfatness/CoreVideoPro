@@ -77,9 +77,9 @@ class MediaSource
   Microsoft::WRL::ComPtr<MediaStream> stream_;
   Microsoft::WRL::ComPtr<IMFAttributes> sourceAttributes_;
   Microsoft::WRL::ComPtr<IMFAttributes> streamAttributes_;
-  UINT32 width_ = 1280;
-  UINT32 height_ = 720;
-  UINT32 fps_ = 30;
+  UINT32 width_ = 1920;
+  UINT32 height_ = 1080;
+  UINT32 fps_ = 60;
   bool shutdown_ = false;
   bool started_ = false;
 };

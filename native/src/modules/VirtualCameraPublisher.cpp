@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
@@ -30,6 +31,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   ~WindowsVirtualCameraPublisher() override { stop(); }
 
   bool start(int width, int height, int fps) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (started_) {
       return true;
     }
@@ -38,15 +40,15 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     status_.fps = fps;
     status_.state = "starting";
 
-    // 1) Create the shared-memory slot (writer owns it).
-    const auto name = virtualCameraShmName();
-    mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                  static_cast<DWORD>(virtualCameraShmSize()), name.c_str());
-    if (mapping_ == nullptr) {
-      fail("Could not create the virtual-camera shared memory.");
+    // 1) Create the cross-session shared-memory slot (writer owns it). File-backed
+    //    on %ProgramData% so the Frame Server, which serves the camera from
+    //    session 0, can read what we publish from the user's session.
+    shmFile_ = openVirtualCameraShmFile(/*writer=*/true);
+    if (shmFile_ == INVALID_HANDLE_VALUE) {
+      fail("Could not create the virtual-camera shared-memory file.");
       return false;
     }
-    view_ = MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, virtualCameraShmSize());
+    view_ = mapVirtualCameraShmView(shmFile_, /*writer=*/true, &mapping_);
     if (view_ == nullptr) {
       fail("Could not map the virtual-camera shared memory.");
       return false;
@@ -95,11 +97,23 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   }
 
   void publish(const ProgramFrame& frame) override {
-    if (!started_ || header_ == nullptr) {
+    // publish() runs on the audio/output worker while start()/stop() run on the
+    // command thread - serialize so a concurrent stop() can't free view_/header_
+    // out from under us (use-after-free -> access violation).
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!started_ || header_ == nullptr || view_ == nullptr) {
       return;
     }
-    const auto& px = frame.preview;
+    // Prefer the native full-resolution program frame (the vcam serves a real
+    // webcam, so no upscale from the 320x180 UI thumbnail). Fall back to the
+    // small preview only if the full readback is not present this tick.
+    const auto& px = !frame.programFullBgra.bgra.empty() ? frame.programFullBgra : frame.preview;
     if (px.width <= 0 || px.height <= 0 || px.bgra.empty()) {
+      return;
+    }
+    // Guard the raw reads below: the preview buffer must hold width*height*4
+    // bytes, or resize/convert would read out of bounds (crash).
+    if (px.bgra.size() < static_cast<std::size_t>(px.width) * px.height * 4) {
       return;
     }
     // Publish at the DECLARED size (the DLL's media type is fixed), so the camera
@@ -136,7 +150,40 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     ++status_.framesPublished;
   }
 
+  // Fast path: the frame is ALREADY NV12 (converted on the compositor tap thread).
+  // Just mirror (optional) + seqlock-write the SHM. No per-pixel conversion here,
+  // so this stays cheap on the audio/output worker.
+  void publishNv12(const std::uint8_t* nv12, int width, int height) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!started_ || header_ == nullptr || view_ == nullptr || nv12 == nullptr) {
+      return;
+    }
+    const int w = status_.width & ~1;
+    const int h = status_.height & ~1;
+    if (width != w || height != h) {
+      return;  // must match the DLL's fixed media type, else the DLL rejects it
+    }
+    const std::size_t bytes = nv12FrameSize(w, h);
+    if (bytes == 0 || bytes > kVirtualCameraMaxPayload) {
+      return;
+    }
+    nv12_.assign(nv12, nv12 + bytes);
+    if (mirror_) {
+      mirrorNv12InPlace(nv12_.data(), w, h);
+    }
+    auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
+    header_->seq = header_->seq + 1;  // odd
+    std::memcpy(payload, nv12_.data(), bytes);
+    header_->width = w;
+    header_->height = h;
+    header_->byteLen = static_cast<std::uint32_t>(bytes);
+    header_->frameNumber = header_->frameNumber + 1;
+    header_->seq = header_->seq + 1;  // even = complete
+    ++status_.framesPublished;
+  }
+
   void stop() override {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (camera_ != nullptr) {
       camera_->Stop();
       camera_->Remove();
@@ -151,6 +198,11 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
       CloseHandle(mapping_);
       mapping_ = nullptr;
     }
+    if (shmFile_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(shmFile_);
+      shmFile_ = INVALID_HANDLE_VALUE;
+      ::DeleteFileA(virtualCameraShmFilePath().c_str());  // best-effort cleanup
+    }
     started_ = false;
     status_.enabled = false;
     if (status_.state == "live" || status_.state == "starting") {
@@ -158,11 +210,18 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     }
   }
 
-  VirtualCameraStatus status() const override { return status_; }
+  VirtualCameraStatus status() const override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return status_;
+  }
 
-  void setMirror(bool mirror) override { mirror_ = mirror; }
+  void setMirror(bool mirror) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    mirror_ = mirror;
+  }
 
   void setDeviceName(const std::string& name) override {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!started_ && !name.empty()) {
       status_.deviceName = name;  // takes effect at the next start()
     }
@@ -175,8 +234,10 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     std::fprintf(stderr, "[virtualcam] %s\n", message.c_str());
   }
 
+  mutable std::mutex mutex_;
   bool started_ = false;
   bool mirror_ = false;
+  HANDLE shmFile_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   void* view_ = nullptr;
   VirtualCameraShmHeader* header_ = nullptr;

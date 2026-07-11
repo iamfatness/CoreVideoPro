@@ -60,11 +60,17 @@ class MediaStream
   SharedFrameReader reader_;
   std::mutex mutex_;
   std::vector<std::uint8_t> scratch_;
-  UINT32 width_ = 1280;
-  UINT32 height_ = 720;
-  UINT32 fps_ = 30;
+  // Last complete frame we served, held so a transient read miss (seqlock
+  // collision / a tick the core didn't publish) re-serves the previous frame
+  // instead of flashing the standby slate. Only after a sustained absence do we
+  // fall back to the slate.
+  std::vector<std::uint8_t> lastGood_;
+  int missStreak_ = 0;
+  UINT32 width_ = 1920;
+  UINT32 height_ = 1080;
+  UINT32 fps_ = 60;
   LONGLONG nextPts_ = 0;
-  LONGLONG frameDuration_ = 333333;  // 100ns units, set from fps
+  LONGLONG frameDuration_ = 166667;  // 100ns units, set from fps (60fps default)
   bool running_ = false;
   bool shutdown_ = false;
 };

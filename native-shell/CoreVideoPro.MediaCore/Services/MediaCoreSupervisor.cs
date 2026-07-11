@@ -453,17 +453,27 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     // to the WinUI MediaCapture bridge otherwise.
     public async Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectCaptureDeviceAsync(
         string deviceId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? outputSourceId = null)
     {
+        var payload = new Dictionary<string, object?>
+        {
+            ["deviceId"] = deviceId
+        };
+        // For native UVC cameras the core enumerates a DIFFERENT stable id than the
+        // shell (Media Foundation vs WinRT symbolic link). Tell the core which id to
+        // key the emitted frames by so they match the shell's `capture:<id>` routing.
+        if (!string.IsNullOrEmpty(outputSourceId))
+        {
+            payload["outputSourceId"] = outputSourceId;
+        }
+
         var response = await SendAsync(
             new Dictionary<string, object?>
             {
                 ["id"] = NextId(),
                 ["type"] = "connect-capture-device",
-                ["payload"] = new Dictionary<string, object?>
-                {
-                    ["deviceId"] = deviceId
-                }
+                ["payload"] = payload
             },
             cancellationToken).ConfigureAwait(false);
 

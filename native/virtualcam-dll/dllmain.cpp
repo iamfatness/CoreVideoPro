@@ -17,6 +17,7 @@
 #include "Activator.h"
 #include "Guids.h"
 #include "MediaSource.h"
+#include "VcamLog.h"
 
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Make;
@@ -31,6 +32,7 @@ class ClassFactory
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IClassFactory> {
  public:
   IFACEMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** object) override {
+    corevideo::virtualcam::VcamServeLog("ClassFactory::CreateInstance (DLL loaded by a consumer)");
     if (object == nullptr) return E_POINTER;
     *object = nullptr;
     if (outer != nullptr) return CLASS_E_NOAGGREGATION;

@@ -15,6 +15,7 @@
 #include <wrl/implements.h>
 
 #include "MediaSource.h"
+#include "VcamLog.h"
 
 namespace corevideo::virtualcam {
 
@@ -27,11 +28,12 @@ class Activator
 
   // IMFActivate
   IFACEMETHODIMP ActivateObject(REFIID riid, void** ppv) override {
+    VcamServeLog("Activator::ActivateObject (building the media source)");
     if (ppv == nullptr) return E_POINTER;
     auto source = Microsoft::WRL::Make<MediaSource>();
     if (source == nullptr) return E_OUTOFMEMORY;
     HRESULT hr = source->RuntimeClassInitialize();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) { VcamServeLog("  MediaSource init FAILED"); return hr; }
     return source.CopyTo(riid, ppv);
   }
   IFACEMETHODIMP ShutdownObject() override { return S_OK; }
