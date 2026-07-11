@@ -303,6 +303,17 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _formatWidth;
         private int _formatHeight;
         private int _formatFps;
+        // Reused ring of frame buffers so the 60fps capture path does NOT allocate a
+        // fresh ~8MB BGRA array every frame. That per-frame allocation was ~0.7GB/s of
+        // garbage across two cameras -> a multi-GB managed heap -> UI-thread GC stalls =
+        // the operator "video slow down". OnFrameArrived is single-flighted (see the
+        // _publishingFrame guard), so only one thread ever advances this ring. Depth 4
+        // safely exceeds the buffers live at once: the SHM write consumes synchronously,
+        // and the preview holds only the latest surface state, flushed to the UI within
+        // ~16ms << the 4-frame reuse interval (~66ms @60fps).
+        private const int FrameRingSize = 4;
+        private readonly byte[]?[] _frameRing = new byte[FrameRingSize][];
+        private int _frameRingIndex;
         private long _lastFrameTimestampMs;
         private long _lastFramePublishFailureLogMs;
         private long _lastFrameHealthLogMs;
@@ -549,12 +560,29 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
         }
 
+        // Returns the next ring buffer, sized exactly to the frame (re-allocated only
+        // when the resolution changes, i.e. effectively never during a live feed). Called
+        // only from the single-flighted OnFrameArrived path, so no locking is needed.
+        private byte[] RentFrameBuffer(int size)
+        {
+            var index = _frameRingIndex;
+            _frameRingIndex = (_frameRingIndex + 1) % FrameRingSize;
+            var buffer = _frameRing[index];
+            if (buffer is null || buffer.Length != size)
+            {
+                buffer = new byte[size];
+                _frameRing[index] = buffer;
+            }
+
+            return buffer;
+        }
+
         private byte[] CopyBgraBytes(SoftwareBitmap bitmap)
         {
             var width = bitmap.PixelWidth;
             var height = bitmap.PixelHeight;
             var rowBytes = checked(width * 4);
-            var bytes = new byte[checked(rowBytes * height)];
+            var bytes = RentFrameBuffer(checked(rowBytes * height));
 
             try
             {
