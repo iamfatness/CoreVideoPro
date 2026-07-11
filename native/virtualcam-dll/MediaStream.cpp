@@ -3,6 +3,7 @@
 #include <mfobjects.h>
 
 #include "MediaSource.h"
+#include "VcamLog.h"
 #include "modules/VirtualCameraSlate.h"
 
 using Microsoft::WRL::ComPtr;
@@ -108,9 +109,13 @@ HRESULT MediaStream::CreateSample(IUnknown* token, IMFSample** outSample) {
   hr = sample->AddBuffer(buffer.Get());
   if (FAILED(hr)) return hr;
 
-  sample->SetSampleTime(nextPts_);
+  // Live source: stamp each sample with the ACTUAL current system time (100ns),
+  // not an accumulating counter. A counter that advances by frameDuration_ per
+  // sample drifts from the wall clock whenever the serve rate != the declared
+  // fps, and the consumer buffers to reconcile the mismatch -> growing latency.
+  // The real capture time keeps the pipeline's latency minimal.
+  sample->SetSampleTime(MFGetSystemTime());
   sample->SetSampleDuration(frameDuration_);
-  nextPts_ += frameDuration_;
   if (token != nullptr) {
     sample->SetUnknown(MFSampleExtension_Token, token);
   }
@@ -122,12 +127,32 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int w = 0;
   int h = 0;
   const bool got = reader_.readLatest(scratch_, w, h);
+  static int fillCount = 0;
+  if ((fillCount++ % 60) == 0) {
+    char b[128];
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "Fill #%d: readLatest=%d dims=%dx%d want=%ux%u len=%zu/%lu",
+                fillCount, got ? 1 : 0, w, h, width_, height_, scratch_.size(),
+                static_cast<unsigned long>(dstLen));
+    VcamServeLog(b);
+  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);
+    lastGood_.assign(scratch_.begin(), scratch_.end());  // cache for miss recovery
+    missStreak_ = 0;
     return S_OK;
   }
-  // No matching program frame -> standby slate (law 2: never a black frame).
+  // Transient miss (seqlock collision, or a tick the core didn't publish): hold
+  // the last good frame instead of flashing the slate. A single dropped read is
+  // then invisible - the camera just repeats the previous frame. Only after a
+  // sustained absence (~0.5s at 60fps) does the core count as gone -> slate.
+  constexpr int kHoldFramesBeforeSlate = 30;
+  ++missStreak_;
+  if (!lastGood_.empty() && lastGood_.size() == dstLen && missStreak_ <= kHoldFramesBeforeSlate) {
+    memcpy(dst, lastGood_.data(), dstLen);
+    return S_OK;
+  }
+  // Core absent (or never started) -> standby slate (law 2: never a black frame).
   std::vector<std::uint8_t> slate;
   corevideo::modules::fillVirtualCameraStandbySlate(static_cast<int>(width_),
                                                     static_cast<int>(height_), slate);
@@ -144,6 +169,7 @@ HRESULT MediaStream::Start() {
   if (shutdown_) return MF_E_SHUTDOWN;
   running_ = true;
   nextPts_ = 0;
+  VcamServeLog("MediaStream::Start - serving begins");
   return events_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
 }
 

@@ -5879,14 +5879,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         try
         {
-            var devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+            // outputSourceId = device.Id: the core keys the camera's frames by the
+            // SHELL's routing id, not its own MF-enumerated id, so the native frame
+            // (`capture:<device.Id>`) matches the multiview/scene routing instead of
+            // showing a placeholder tile.
+            var devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.Id, outputSourceId: device.Id).ConfigureAwait(false);
             var match = NativeUvcCapturePolicy.FindConnectedDevice(devices, device.Id, device.NativeDeviceId);
             if (match is null && !string.IsNullOrWhiteSpace(device.NativeDeviceId))
             {
                 // Stable-id mismatch (WinRT vs MF symbolic-link casing): retry
                 // addressing the device by its OS identity, which the core
-                // matches case-insensitively.
-                devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.NativeDeviceId).ConfigureAwait(false);
+                // matches case-insensitively — but STILL key frames by device.Id.
+                devices = await _bridge.ConnectNativeCaptureDeviceAsync(device.NativeDeviceId, outputSourceId: device.Id).ConfigureAwait(false);
                 match = NativeUvcCapturePolicy.FindConnectedDevice(devices, device.Id, device.NativeDeviceId);
             }
 
@@ -9237,8 +9241,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
+        // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
+        // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
+        var _swTotal = System.Diagnostics.Stopwatch.StartNew();
+        var _swStep = System.Diagnostics.Stopwatch.StartNew();
+        var _timings = new System.Text.StringBuilder();
+        void Tm(string name)
+        {
+            _timings.Append(name).Append('=').Append(_swStep.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms ");
+            _swStep.Restart();
+        }
+        void LogIfSlow(string exit)
+        {
+            _swTotal.Stop();
+            if (_swTotal.Elapsed.TotalMilliseconds > 10)
+            {
+                LaunchLog.Write($"perf: ApplySnapshot {_swTotal.Elapsed.TotalMilliseconds:F1}ms @{exit} :: {_timings}");
+            }
+        }
+
         // The compositor is always on, so surfaces always accept the latest program frame.
         _surfaces.OnMediaCoreSnapshot(snapshot);
+        Tm("surfaces");
 
         // Screen sources come from the CORE enumeration; the startup device
         // refresh races core spawn (pipe not ready -> silent empty) and the
@@ -9257,6 +9281,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // Always apply meeting/ZoomStatus/roster fields from the snapshot BEFORE any
         // early-return so meeting status keeps updating even when capture is unsubscribed.
         ApplyMeetingFieldsFromSnapshot(snapshot);
+        Tm("meetingFields");
         var programResolutionLabel = ResolveProgramResolutionLabel(snapshot);
         ProgramResolutionLabel = programResolutionLabel;
         Transport.ApplySnapshot(
@@ -9265,23 +9290,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LiveProductionSync.IsStreamingLive(snapshot),
             programResolutionLabel,
             MasterLimiterEnabled);
+        Tm("transport");
         ApplyConfiguredOutputReadouts(snapshot);
+        Tm("outputReadouts");
         RefreshAudioParticipantRows();
+        Tm("audioRows");
         HydrateAudioRoutingMatrixFromSnapshot(snapshot);
+        Tm("routingMatrix");
         RefreshVstPluginHostFromSnapshot(snapshot);
+        Tm("vstHost");
         // C7b: the GR meter tracks the live per-snapshot value (cheap scalar
         // props — no collection churn).
         OnPropertyChanged(nameof(WorkspaceCompGrLevel));
         OnPropertyChanged(nameof(WorkspaceCompGrLabel));
         RefreshAudioReadoutBindings();
+        Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         OnPropertyChanged(nameof(NativeMediaPlaybackStatus));
         MaybeLogAudioTelemetry(snapshot);
+        Tm("audioTelemetry");
         Settings.RefreshDiagnosticsReadout();
+        Tm("diagnostics");
 
         if (!ZoomCaptureSubscribed)
         {
+            LogIfSlow("notSubscribed");
             return;
         }
 
@@ -9291,13 +9325,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             liveProductionContext.CurrentBreakoutRoomId);
         if (autoStopStatus is not null)
         {
+            LogIfSlow("breakoutStop");
             StopEngineForBreakoutRoomChange(autoStopStatus);
             return;
         }
 
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext);
+        Tm("mapPatch");
         ApplyLiveProductionPatch(patch);
+        Tm("applyPatch");
         ApplyGraphicsAndCaptionStateFromSnapshot(snapshot);
+        Tm("graphicsCaptions");
+        LogIfSlow("full");
     }
 
     private LiveProductionSync.LiveProductionSyncContext BuildLiveProductionContext() =>
@@ -9441,34 +9480,44 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyLiveParticipants(IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         var mapped = ParticipantMapper.ToParticipants(participants);
+
+        // Only touch the structural UI (the room participant lists, multiview tiles,
+        // Sources pickers) when the participant/device SET actually changes. The core
+        // pushes a snapshot ~4x/second; reassigning RoomVideoParticipants to a NEW list
+        // and firing its bindings EVERY snapshot re-realizes the bound item templates on
+        // the UI thread (~5ms measured) and stalls the present -> operator-visible stutter
+        // (present-stutter-fix-spec P1). Live video/audio/tally update via their own
+        // binding paths, not these rebuilds, so when the set is unchanged there is nothing
+        // to do here. The signature captures per-participant health/screen-share + the
+        // device set, so a genuine change (join/leave/health/screen-share) still refreshes.
+        // Signature must flip ONLY on genuinely structural changes: which participants
+        // are present, whether each is video-OFF (VideoOff is filtered out of the video
+        // list -> structural) or screen-sharing, and the device set. NOT on active-speaker
+        // reordering (order-independent -> sort) and NOT on transient health flicker
+        // (LowResolution/Recovering come and go every snapshot but do not add/remove a
+        // tile). Including the raw enum + list order was rebuilding the whole roster/tile
+        // UI ~4x/second under load = the operator stutter (present-stutter-fix-spec P1).
+        var structureSignature =
+            string.Join("|", mapped
+                .Select(p => $"{p.Id}:{(p.Health == FeedHealth.VideoOff ? "off" : "on")}:{p.IsScreenSharing}")
+                .OrderBy(static x => x, StringComparer.Ordinal)) +
+            "#" + string.Join(",", CaptureDevices.Select(d => d.Id).OrderBy(static x => x, StringComparer.Ordinal));
+        if (structureSignature == _liveStructureSignature)
+        {
+            return;  // set unchanged -> skip the churn (the common case, 4x/second)
+        }
+        _liveStructureSignature = structureSignature;
+
         RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
         RoomParticipantsForInputs = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
         CurrentRoomLabel = _currentRoomName;
-
-        // Only rebuild the structural UI collections (multiview tiles, the room
-        // list, and the Sources pickers) when the participant/device SET actually
-        // changes. Doing it every snapshot (~10/s) recreates the tiles (visible
-        // flashing) and resets every Source ComboBox selection mid-pick (the
-        // operator can't hold a selection). Live video/audio update via their own
-        // binding paths, not these rebuilds.
-        var structureSignature =
-            string.Join("|", mapped.Select(p => $"{p.Id}:{p.Health}:{p.IsScreenSharing}")) +
-            "#" + string.Join(",", CaptureDevices.Select(d => d.Id));
-        var structureChanged = structureSignature != _liveStructureSignature;
-        _liveStructureSignature = structureSignature;
-
         OnPropertyChanged(nameof(RoomVideoParticipants));
         OnPropertyChanged(nameof(CurrentRoomHeader));
         RefreshAudioParticipantRows();
-
-        if (structureChanged)
-        {
-            MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
-            RefreshParticipantListItems();
-            RefreshShowInputEditors();
-            RefreshMultiviewGridTiles();
-        }
-
+        MultiviewTiles = _surfaces.BuildMultiviewTiles(RoomVideoParticipants);
+        RefreshParticipantListItems();
+        RefreshShowInputEditors();
+        RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(CamerasOnCount));
         OnPropertyChanged(nameof(ScreenShareLabel));
         SchedulePreviewRoutingRefresh();
@@ -9486,18 +9535,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (meetingState.Equals("in_meeting", StringComparison.OrdinalIgnoreCase))
         {
+            var _mf = System.Diagnostics.Stopwatch.StartNew();
+            var _mfTotal = System.Diagnostics.Stopwatch.StartNew();
+            var _mfb = new System.Text.StringBuilder();
+            void MfT(string n) { _mfb.Append(n).Append('=').Append(_mf.Elapsed.TotalMilliseconds.ToString("F1")).Append("ms "); _mf.Restart(); }
             ZoomStatus = "Zoom Live";
             CurrentRoomLabel = _currentRoomName;
             ApplyCaptionAndLowerThirdPatch(patch);
+            MfT("captionLT");
             ApplyCaptionTranscriptFromSnapshot(snapshot);
+            MfT("transcript");
             var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
+            MfT("mapParticipants");
             Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
             if (participants is { Count: > 0 })
             {
                 ApplyLiveParticipants(participants);
+                MfT("applyParticipants");
                 SyncShowInputsFromMeeting(participants);
+                MfT("syncShowInputs");
             }
-
+            if (_mfTotal.Elapsed.TotalMilliseconds > 5)
+            {
+                LaunchLog.Write($"perf: meetingFields {_mfTotal.Elapsed.TotalMilliseconds:F1}ms :: {_mfb}");
+            }
             return;
         }
 

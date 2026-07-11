@@ -393,8 +393,11 @@ rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int 
   return captureDeviceArray(modules_.captureDevice->setAudioSyncOffset(deviceId, offsetMs));
 }
 
-rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId) {
-  return captureDeviceArray(modules_.captureDevice->connect(deviceId));
+rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
+                                          const std::string& outputSourceId) {
+  return captureDeviceArray(
+      outputSourceId.empty() ? modules_.captureDevice->connect(deviceId)
+                             : modules_.captureDevice->connect(deviceId, outputSourceId));
 }
 
 rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
@@ -1675,9 +1678,14 @@ void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
 // program frame as NV12. Idempotent.
 void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const bool on = !command.get("on") || command.get("on")->asBool();
-  const int width = command.get("width") ? static_cast<int>(command.get("width")->asNumber()) : 1280;
-  const int height = command.get("height") ? static_cast<int>(command.get("height")->asNumber()) : 720;
-  const int fps = command.get("fps") ? static_cast<int>(command.get("fps")->asNumber()) : 30;
+  // The DLL's media type is FIXED at 1920x1080@60 NV12 (MediaSource.h). The
+  // publisher MUST write that exact size or the DLL rejects the frame on a dims
+  // mismatch and falls back to the slate. So we ignore any width/height/fps the
+  // shell sends and pin the vcam to the DLL's native format. (If we ever make the
+  // DLL media type dynamic, thread the negotiated size back here instead.)
+  const int width = 1920;
+  const int height = 1080;
+  const int fps = 60;
   const bool mirror = command.get("mirror") && command.get("mirror")->asBool();
   const std::string deviceName = command.get("deviceName") ? command.get("deviceName")->asString() : "";
 
@@ -3981,6 +3989,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   const bool outputActive = (encoderLifecycleStatus_ == "encoding") ||
                             recordingStatus_ == "recording" || recordingStatus_ == "warning";
   renderPlan.skipCpuReadback = videoOnly ? !outputActive : false;
+  // The virtual camera is an output too, but it wants NATIVE resolution (it serves
+  // a real webcam), not the 320x180 UI thumbnail. Gate the dedicated full-res
+  // program readback on the vcam being enabled; the publisher (on the audio/output
+  // worker) converts that full BGRA to NV12 for the SHM slot. Independent of
+  // skipCpuReadback so the light 60fps display tick still skips the small preview.
+  renderPlan.fullProgramReadback = virtualCameraEnabled_;
 
   if (modules_.mediaFrames) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
@@ -4496,7 +4510,16 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // work). No-op when the operator has not enabled the virtual camera.
   if (virtualCameraEnabled_) {
     try {
-      virtualCamera_->publish(work.programFrame);
+      // The compositor's dedicated tap device+thread did the slow readback AND
+      // the BGRA->NV12 conversion off every hot path. Here on the output worker
+      // we just fetch the latest NV12 (cheap ~3MB copy) and seqlock it into the
+      // SHM - no GPU Map, no per-pixel conversion, so audio output is not starved.
+      static std::vector<std::uint8_t> vcamNv12;  // output worker is single-threaded
+      int vcw = 0;
+      int vch = 0;
+      if (modules_.compositor->takeVcamNv12(vcamNv12, vcw, vch)) {
+        virtualCamera_->publishNv12(vcamNv12.data(), vcw, vch);
+      }
     } catch (...) {
     }
   }

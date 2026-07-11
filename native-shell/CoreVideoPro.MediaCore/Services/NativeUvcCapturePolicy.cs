@@ -19,6 +19,15 @@ public static class NativeUvcCapturePolicy
 
     public static bool IsEnabled(string? environmentValue)
     {
+        // Opt-in (set COREVIDEO_NATIVE_UVC=1). Native MF capture in the core is the RIGHT
+        // perf path — the managed WinUI MediaCapture bridge copies every webcam frame
+        // through managed memory (SafeBuffer.WriteSpan) at ~180MB/s for 1080p cameras
+        // (dotnet-trace: ~50% of wall-clock, churns the shell to 2-3GB and crashes,
+        // starving the UI thread = the operator stutter). BUT native capture is not yet the
+        // default because the core keys frames by its Media Foundation device id while the
+        // shell routes sources by its WinRT device id (different symbolic-link hashes for
+        // the same camera), so native frames don't reach the tiles (pink). Flip this to
+        // default-ON once that id reconciliation lands (see operator-performance-plan.md).
         var normalized = environmentValue?.Trim();
         return normalized is not null &&
             (normalized.Equals("1", StringComparison.Ordinal) ||

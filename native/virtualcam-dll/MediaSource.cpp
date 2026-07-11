@@ -3,6 +3,8 @@
 #include <mfobjects.h>
 #include <mfreadwrite.h>
 
+#include "VcamLog.h"
+
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::Make;
 
@@ -122,6 +124,7 @@ IFACEMETHODIMP MediaSource::CreatePresentationDescriptor(IMFPresentationDescript
 
 IFACEMETHODIMP MediaSource::Start(IMFPresentationDescriptor* descriptor, const GUID* /*timeFormat*/,
                                   const PROPVARIANT* startPosition) {
+  VcamServeLog("MediaSource::Start (consumer starting the source)");
   std::lock_guard<std::mutex> lock(mutex_);
   HRESULT hr = CheckShutdown();
   if (FAILED(hr)) return hr;

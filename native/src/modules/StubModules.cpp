@@ -873,6 +873,14 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return enumerate();
   }
 
+  std::vector<CaptureDeviceInfo> connect(const std::string& deviceId,
+                                         const std::string& outputSourceId) override {
+    for (const auto& device : devices_) {
+      (void)device->connect(deviceId, outputSourceId);
+    }
+    return enumerate();
+  }
+
   std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
     for (const auto& device : devices_) {
       (void)device->disconnect(deviceId);

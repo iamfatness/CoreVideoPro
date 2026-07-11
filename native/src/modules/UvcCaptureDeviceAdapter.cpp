@@ -552,6 +552,11 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   }
 
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
+    return connect(deviceId, std::string());
+  }
+
+  std::vector<CaptureDeviceInfo> connect(const std::string& deviceId,
+                                         const std::string& outputSourceId) override {
     std::lock_guard<std::mutex> lock(mutex_);
     refreshLocked(true);
     for (auto& entry : devices_) {
@@ -562,11 +567,15 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       // (e.g. the camera was re-plugged after an unplug).
       entry.session.reset();
       entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.symbolicLink);
+      // Emit frames keyed by the shell's routing id when it supplied one (WinRT vs
+      // Media Foundation stable-id reconciliation), else the adapter's own id.
+      entry.outputSourceId = outputSourceId;
       entry.info.connectionState = "connected";
       entry.info.signalPresent = false;
       entry.info.warning = "Waiting for the first camera frame.";
-      std::fprintf(stderr, "[uvc-capture] connect '%s' (%s)\n",
-                   entry.info.id.c_str(), entry.info.name.c_str());
+      std::fprintf(stderr, "[uvc-capture] connect '%s' (%s) frameKey='%s'\n",
+                   entry.info.id.c_str(), entry.info.name.c_str(),
+                   outputSourceId.empty() ? entry.info.id.c_str() : outputSourceId.c_str());
       break;
     }
     return snapshotLocked();
@@ -605,7 +614,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       // Re-emit the latest held frame every tick (the capture rate is slower
       // than the render tick) so the compositor never starves back to a slate.
       VideoFrame frame;
-      frame.participantId = "capture:" + entry.info.id;
+      frame.participantId =
+          "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId);
       frame.width = snapshot.width;
       frame.height = snapshot.height;
       frame.naturalWidth = snapshot.width;
@@ -629,6 +639,9 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
     // Case-variant stable ids so a shell-computed id still matches when the
     // WinRT and MF symbolic-link casing differ.
     std::vector<std::string> candidateIds;
+    // The shell's routing id to key emitted frames by (WinRT vs MF stable-id
+    // reconciliation). Empty -> key by info.id.
+    std::string outputSourceId;
     std::unique_ptr<UvcCaptureSession> session;
   };
 

@@ -181,6 +181,11 @@ struct ProgramFrame {
   uint32_t renderPlanSignature = 0;
   std::vector<std::string> warnings;
   ProgramFramePreviewPixels preview;
+  // Full-resolution program BGRA (width x height) for the virtual camera, so it
+  // serves native 1080p with no upscale. Populated only when the render plan
+  // sets fullProgramReadback (vcam enabled); empty otherwise. `preview` above
+  // stays the small 320x180 UI thumbnail.
+  ProgramFramePreviewPixels programFullBgra;
   ProgramFrameSharedTexture sharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
@@ -286,6 +291,12 @@ struct CompositorRenderPlan {
   // the light ~60fps display tick; those readbacks (a CPU Map that stalls the
   // pipeline every frame) are only needed for the throttled base64 thumbnail.
   bool skipCpuReadback = false;
+  // When true, the compositor also reads back the program at FULL resolution
+  // (BGRA) into ProgramFrame::programFullBgra. Set when the virtual camera is
+  // enabled so it publishes native 1080p instead of upscaling the 320x180 UI
+  // thumbnail. Independent of skipCpuReadback (which only gates the small
+  // preview + pixel signature).
+  bool fullProgramReadback = false;
 };
 
 struct OutputSession {
@@ -504,6 +515,19 @@ class ICompositor {
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  // Virtual camera: the render thread does a cheap GPU->GPU copy of the program
+  // into a keyed-mutex shared texture (via the render plan's fullProgramReadback
+  // flag); a dedicated device+thread reads it back AND converts it to NV12 off
+  // the render/audio hot paths. This hands the caller (the audio/output worker)
+  // the latest NV12 frame with a cheap ~3MB copy. Returns false when no new frame
+  // is available. Defaulted to no-op so the software/stub compositor stays valid;
+  // only the GPU adapter implements it.
+  virtual bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& width, int& height) {
+    (void)outNv12;
+    (void)width;
+    (void)height;
+    return false;
+  }
   // Composites the multiview grid into a second keyed-mutex DXGI shared texture
   // (the whole grid in one texture, the OBS/broadcast-multiviewer model) and
   // returns its handle/dimensions. Defaulted to an empty texture so the
@@ -647,6 +671,18 @@ class ICaptureDevice {
   virtual std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) = 0;
   virtual std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) = 0;
   virtual std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) = 0;
+  // Connect + emit this device's VideoFrames keyed by `outputSourceId` instead of
+  // the adapter's own enumerated id. The shell (WinRT) and the core (Media
+  // Foundation) hash the same physical camera to DIFFERENT stable ids, so without
+  // this the native frame key never matches the shell's `capture:<shellId>`
+  // routing and the tile stays a placeholder. Default: ignore the override and
+  // connect normally (used by adapters whose ids already agree with the shell,
+  // e.g. screen/window/SRT).
+  virtual std::vector<CaptureDeviceInfo> connect(const std::string& deviceId,
+                                                 const std::string& outputSourceId) {
+    (void)outputSourceId;
+    return connect(deviceId);
+  }
   // Lifecycle L2: stop the device session and release its resources. Default
   // no-op for adapters without live sessions.
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }

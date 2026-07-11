@@ -158,7 +158,10 @@ Json JsonRpcServer::handle(const Json& request) {
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "connect-capture-device requires a payload.");
     }
-    return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.connectCaptureDevice(payload->getString("deviceId"))}});
+    return success(id, Json::Object{{"type", "capture-devices"},
+                                    {"devices", mediaCore_.connectCaptureDevice(
+                                                    payload->getString("deviceId"),
+                                                    payload->getString("outputSourceId"))}});
   }
 
   if (hasType(request, "disconnect-capture-device")) {

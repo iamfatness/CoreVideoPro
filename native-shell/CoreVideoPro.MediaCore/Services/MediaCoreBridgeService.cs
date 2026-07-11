@@ -123,8 +123,9 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     /// </summary>
     public Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectNativeCaptureDeviceAsync(
         string deviceId,
-        CancellationToken cancellationToken = default) =>
-        _supervisor.ConnectCaptureDeviceAsync(deviceId, cancellationToken);
+        CancellationToken cancellationToken = default,
+        string? outputSourceId = null) =>
+        _supervisor.ConnectCaptureDeviceAsync(deviceId, cancellationToken, outputSourceId);
 
     public Task<IReadOnlyList<NativeCaptureDeviceStatus>> ListNativeCaptureDevicesAsync(
         CancellationToken cancellationToken = default) =>

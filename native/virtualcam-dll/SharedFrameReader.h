@@ -11,15 +11,19 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "modules/VirtualCameraShm.h"
+#include "VcamLog.h"
 
 namespace corevideo::virtualcam {
 
 using corevideo::modules::VirtualCameraShmHeader;
 using corevideo::modules::kVirtualCameraMagic;
-using corevideo::modules::virtualCameraShmName;
+using corevideo::modules::openVirtualCameraShmFile;
+using corevideo::modules::mapVirtualCameraShmView;
+using corevideo::modules::virtualCameraShmFilePath;
 using corevideo::modules::virtualCameraShmSize;
 
 class SharedFrameReader {
@@ -31,17 +35,29 @@ class SharedFrameReader {
     if (view_ != nullptr) {
       return true;
     }
-    const auto name = virtualCameraShmName();
-    mapping_ = OpenFileMappingA(FILE_MAP_READ, FALSE, name.c_str());
-    if (mapping_ == nullptr) {
-      return false;  // core not publishing yet
+    // File-backed slot on %ProgramData% (cross-session; see VirtualCameraShm.h).
+    // The core publishes from the user's session; we run in the session-0 Frame
+    // Server, so a Local\ named mapping would be invisible - we open the shared
+    // backing file instead.
+    const std::string path = virtualCameraShmFilePath();
+    file_ = openVirtualCameraShmFile(/*writer=*/false);
+    if (file_ == INVALID_HANDLE_VALUE) {
+      char b[192];
+      _snprintf_s(b, sizeof(b), _TRUNCATE, "SHM CreateFile('%s') FAILED err=%lu",
+                  path.c_str(), GetLastError());
+      VcamServeLog(b);
+      return false;  // core not publishing yet (file absent)
     }
-    view_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, virtualCameraShmSize());
+    view_ = mapVirtualCameraShmView(file_, /*writer=*/false, &mapping_);
     if (view_ == nullptr) {
-      CloseHandle(mapping_);
-      mapping_ = nullptr;
+      char b[192];
+      _snprintf_s(b, sizeof(b), _TRUNCATE, "SHM map view FAILED err=%lu", GetLastError());
+      VcamServeLog(b);
+      CloseHandle(file_);
+      file_ = INVALID_HANDLE_VALUE;
       return false;
     }
+    VcamServeLog("SHM opened OK (file-backed)");
     header_ = static_cast<const VirtualCameraShmHeader*>(view_);
     return true;
   }
@@ -54,6 +70,10 @@ class SharedFrameReader {
     if (mapping_ != nullptr) {
       CloseHandle(mapping_);
       mapping_ = nullptr;
+    }
+    if (file_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(file_);
+      file_ = INVALID_HANDLE_VALUE;
     }
     header_ = nullptr;
   }
@@ -95,6 +115,7 @@ class SharedFrameReader {
   }
 
  private:
+  HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   const void* view_ = nullptr;
   const VirtualCameraShmHeader* header_ = nullptr;

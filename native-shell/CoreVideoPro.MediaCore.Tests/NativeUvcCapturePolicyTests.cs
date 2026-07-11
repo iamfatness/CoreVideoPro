@@ -15,7 +15,8 @@ public sealed class NativeUvcCapturePolicyTests
     [InlineData(" 1 ", true)]
     [InlineData("0", false)]
     [InlineData("false", false)]
-    [InlineData("", false)]
+    [InlineData("off", false)]
+    [InlineData("", false)]     // opt-in: unset -> legacy WinUI bridge
     [InlineData(null, false)]
     public void IsEnabled_ParsesEnvironmentValues(string? value, bool expected)
     {
@@ -32,8 +33,9 @@ public sealed class NativeUvcCapturePolicyTests
     public void ShouldPreferNativeCapture_GatesOnCameraVendors(string vendor, bool expected)
     {
         Assert.Equal(expected, NativeUvcCapturePolicy.ShouldPreferNativeCapture("1", vendor));
-        // Disabled env always declines regardless of vendor.
+        // Opt-in: unset/disabled env always declines regardless of vendor.
         Assert.False(NativeUvcCapturePolicy.ShouldPreferNativeCapture(null, vendor));
+        Assert.False(NativeUvcCapturePolicy.ShouldPreferNativeCapture("0", vendor));
     }
 
     [Fact]

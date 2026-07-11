@@ -35,6 +35,12 @@ class IVirtualCameraPublisher {
   virtual bool start(int width, int height, int fps) = 0;
   // Convert + publish one program frame (no-op when not started).
   virtual void publish(const ProgramFrame& frame) = 0;
+  // Publish an ALREADY-converted NV12 frame (the compositor's tap thread did the
+  // BGRA->NV12 conversion off the hot path). Applies mirror + writes the SHM.
+  // No-op when not started or the size doesn't match the declared media type.
+  virtual void publishNv12(const std::uint8_t* nv12, int width, int height) {
+    (void)nv12; (void)width; (void)height;
+  }
   // Remove the OS virtual camera and release the slot. Idempotent.
   virtual void stop() = 0;
   virtual VirtualCameraStatus status() const = 0;

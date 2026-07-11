@@ -14,22 +14,31 @@
 #include <Windows.h>
 #include <d2d1.h>
 #include <d3d11.h>
+#include <d3d11_4.h>  // ID3D11Multithread (thread-safe immediate context)
 #include <d3dcompiler.h>
 #include <dwrite.h>
 #include <dxgi.h>
 #include <wincodec.h>
 
 #include "compositor/CompositorLayout.h"
+#include "modules/ImageResize.h"          // resizeBgraBilinear (vcam downscale on the tap thread)
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
+#include "modules/VirtualCameraFrame.h"  // convertBgraToNv12 (on the tap thread)
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <mutex>
+#include <thread>
 #include <sstream>
 #include <utility>
 
@@ -367,6 +376,8 @@ class D3D11Compositor final : public ICompositor {
     initializePipeline();
   }
 
+  ~D3D11Compositor() override { stopVcamTap(); }
+
   std::string rendererName() const override { return "d3d11"; }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
@@ -416,6 +427,12 @@ class D3D11Compositor final : public ICompositor {
     if (!renderPlan.skipCpuReadback) {
       frame.programPixelSignature = readProgramPixelSignature(deterministicPlan.width / 2, deterministicPlan.height / 2);
       frame.preview = readProgramFramePreview();
+    }
+    if (renderPlan.fullProgramReadback) {
+      exportVcamSharedTexture();  // fast GPU->GPU copy only; a dedicated device+thread reads it back
+    } else if (vcamThread_.joinable()) {
+      stopVcamTap();  // vcam disabled -> tear down the tap thread + second device so it
+                      // stops spinning keyed-mutex waits that hitch the render (runs once)
     }
     exportSharedTexture(frame);
     exportParticipantTextures(deterministicPlan, frames, frame);
@@ -2253,6 +2270,255 @@ class D3D11Compositor final : public ICompositor {
     return preview;
   }
 
+  // RENDER THREAD (cheap, ~microseconds): copy the finished program frame into a
+  // GPU-only keyed-mutex SHARED texture (GPU->GPU, no CPU read, no staging). A
+  // second D3D device on a dedicated thread (vcamTapLoop) reads it back. Producer
+  // side: acquire key 0, copy, release key 1. Non-blocking - if the tap still
+  // holds it, skip this frame.
+  void exportVcamSharedTexture() {
+    if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
+      return;
+    }
+    // The shared texture is a FIXED 1920x1080 (the vcam's native format); the
+    // program may be 4K. Downscale on the GPU here with a linear scale-blit, so
+    // the render-thread copy and the tap readback are both 1080p (not 4K) - keeps
+    // the render tick cheap (Take stays responsive) and the readback fast.
+    if (!ensureVcamTap(kVcamOutW, kVcamOutH) || !vcamShared1Rtv_ || !vcamMutex1_) {
+      return;
+    }
+    if (!ensureVcamSourceSrv()) {
+      return;
+    }
+    if (vcamMutex1_->AcquireSync(0, 0) != S_OK) {
+      return;  // tap holds it; keep this frame in renderTarget_, blit next tick
+    }
+    // Scale-blit: draw the full program (SRV) into the 1080p shared RTV. State
+    // set here is re-established by the next render() tick (and the passes that
+    // run after this one set their own), so no save/restore is needed - but we
+    // must unbind the source SRV afterward so next frame can bind it as an RTV.
+    ID3D11RenderTargetView* rtv = vcamShared1Rtv_.get();
+    context_->OMSetRenderTargets(1, &rtv, nullptr);
+    D3D11_VIEWPORT vp{0.f, 0.f, static_cast<float>(kVcamOutW), static_cast<float>(kVcamOutH), 0.f, 1.f};
+    context_->RSSetViewports(1, &vp);
+    D3D11_RECT scissor{0, 0, kVcamOutW, kVcamOutH};
+    context_->RSSetScissorRects(1, &scissor);
+    context_->IASetInputLayout(nullptr);
+    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context_->VSSetShader(vertexShader_.get(), nullptr, 0);
+    context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* srvs[] = {vcamSourceSrv_.get()};
+    context_->PSSetShaderResources(0, 1, srvs);
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetSamplers(0, 1, samplers);
+    writeVcamIdentityConstants();
+    context_->Draw(3, 0);
+    ID3D11ShaderResourceView* nullSrv[] = {nullptr};
+    context_->PSSetShaderResources(0, 1, nullSrv);
+    vcamMutex1_->ReleaseSync(1);
+    vcamNewFrame_.store(true, std::memory_order_release);
+    vcamCv_.notify_one();
+  }
+
+  // (Re)creates the SRV over renderTarget_ so the scale-blit can sample the
+  // program. Rebuilt when renderTarget_ is recreated (output-size change).
+  bool ensureVcamSourceSrv() {
+    if (vcamSourceSrv_ && vcamSourceSrvFrom_ == renderTarget_.get()) {
+      return true;
+    }
+    vcamSourceSrv_ = {};
+    vcamSourceSrvFrom_ = nullptr;
+    if (!renderTarget_) return false;
+    if (FAILED(device_->CreateShaderResourceView(renderTarget_.get(), nullptr, vcamSourceSrv_.put()))) {
+      return false;
+    }
+    vcamSourceSrvFrom_ = renderTarget_.get();
+    return true;
+  }
+
+  // Identity layer constants for the pass-through scale-blit (no grade, full UV).
+  void writeVcamIdentityConstants() {
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      return;
+    }
+    auto* c = static_cast<LayerShaderConstants*>(mapped.pData);
+    c->color[0] = c->color[1] = c->color[2] = c->color[3] = 1.f;
+    c->exposure = c->contrast = c->saturation = c->temperature = 0.f;
+    c->uvScale[0] = c->uvScale[1] = 1.f;
+    c->uvOffset[0] = c->uvOffset[1] = 0.f;
+    context_->Unmap(constantBuffer_.get(), 0);
+    ID3D11Buffer* buffers[] = {constantBuffer_.get()};
+    context_->PSSetConstantBuffers(0, 1, buffers);
+  }
+
+  // Lazily builds the vcam readback rig: a dedicated D3D device + a keyed-mutex
+  // shared texture the render device writes and the tap device reads, plus the
+  // tap thread. Rebuilt if the program size changes. Returns false on failure.
+  bool ensureVcamTap(int width, int height) {
+    if (vcamShared1_ && vcamTapW_ == width && vcamTapH_ == height) {
+      return true;
+    }
+    stopVcamTap();  // tear down any prior-size rig first
+    vcamTapW_ = width;
+    vcamTapH_ = height;
+
+    // Keyed-mutex shared texture on the RENDER device (producer).
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, vcamShared1_.put()))) {
+      return false;
+    }
+    if (FAILED(device_->CreateRenderTargetView(vcamShared1_.get(), nullptr, vcamShared1Rtv_.put()))) {
+      vcamShared1_ = {};
+      return false;
+    }
+    ComPtrLite<IDXGIResource> dxgiRes;
+    HANDLE shared = nullptr;
+    if (FAILED(vcamShared1_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiRes.put()))) ||
+        FAILED(dxgiRes->GetSharedHandle(&shared)) || shared == nullptr ||
+        FAILED(vcamShared1_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(vcamMutex1_.put())))) {
+      vcamShared1_ = {};
+      vcamMutex1_ = {};
+      return false;
+    }
+
+    // Second D3D device (consumer) - its own immediate context, so the slow read
+    // never touches the render context (no multithread tax, no coreMutex).
+    D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0;
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                                 vcamDevice2_.put(), &fl, vcamContext2_.put()))) {
+      stopVcamTap();
+      return false;
+    }
+    if (FAILED(vcamDevice2_->OpenSharedResource(shared, __uuidof(ID3D11Texture2D),
+                                                reinterpret_cast<void**>(vcamShared2_.put()))) ||
+        FAILED(vcamShared2_->QueryInterface(__uuidof(IDXGIKeyedMutex),
+                                            reinterpret_cast<void**>(vcamMutex2_.put())))) {
+      stopVcamTap();
+      return false;
+    }
+    // Staging on the SECOND device (CPU read) - the ~8MB read lands here, off the
+    // render thread entirely.
+    D3D11_TEXTURE2D_DESC sdesc = desc;
+    sdesc.Usage = D3D11_USAGE_STAGING;
+    sdesc.BindFlags = 0;
+    sdesc.MiscFlags = 0;
+    sdesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(vcamDevice2_->CreateTexture2D(&sdesc, nullptr, vcamStaging2_.put()))) {
+      stopVcamTap();
+      return false;
+    }
+    vcamTapStop_.store(false, std::memory_order_release);
+    vcamThread_ = std::thread([this] { vcamTapLoop(); });
+    std::fprintf(stderr, "[vcam-tap] rig built OK %dx%d (device2 + shared + staging + thread)\n", width, height);
+    return true;
+  }
+
+  // DEDICATED TAP THREAD (own device): the slow GPU->staging copy + Map + ~8MB CPU
+  // read happen HERE, touching neither the render thread/coreMutex nor the audio
+  // worker. The converted NV12 is stashed in vcamLatestNv12_; the output worker
+  // fetches it with a cheap CPU copy via takeVcamNv12().
+  void vcamTapLoop() {
+    while (!vcamTapStop_.load(std::memory_order_acquire)) {
+      {
+        std::unique_lock<std::mutex> lk(vcamCvMutex_);
+        vcamCv_.wait_for(lk, std::chrono::milliseconds(16), [this] {
+          return vcamNewFrame_.load(std::memory_order_acquire) ||
+                 vcamTapStop_.load(std::memory_order_acquire);
+        });
+        vcamNewFrame_.store(false, std::memory_order_release);
+      }
+      if (vcamTapStop_.load(std::memory_order_acquire)) break;
+      if (!vcamMutex2_ || !vcamShared2_ || !vcamStaging2_ || !vcamContext2_) continue;
+      if (vcamMutex2_->AcquireSync(1, 8) != S_OK) continue;  // producer still writing; try later
+      vcamContext2_->CopyResource(vcamStaging2_.get(), vcamShared2_.get());
+      vcamMutex2_->ReleaseSync(0);
+      D3D11_MAPPED_SUBRESOURCE mapped{};
+      if (SUCCEEDED(vcamContext2_->Map(vcamStaging2_.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+        const int w = vcamTapW_;
+        const int h = vcamTapH_;
+        const size_t rowBytes = static_cast<size_t>(w) * 4u;
+        // Copy the mapped staging (slow uncached GPU memory) into a cached buffer
+        // ONCE, then Unmap, then convert - reading from the cached copy is much
+        // faster than converting straight out of mapped staging memory.
+        vcamTapBuffer_.resize(rowBytes * static_cast<size_t>(h));
+        const auto* src = static_cast<const uint8_t*>(mapped.pData);
+        for (int y = 0; y < h; ++y) {
+          std::memcpy(vcamTapBuffer_.data() + static_cast<size_t>(y) * rowBytes,
+                      src + static_cast<size_t>(y) * mapped.RowPitch, rowBytes);
+        }
+        vcamContext2_->Unmap(vcamStaging2_.get(), 0);
+        // The program renders at the output resolution (e.g. 4K); the virtual
+        // camera serves a FIXED 1920x1080 (the DLL's media type). Downscale to
+        // that here on the tap thread (off every hot path), then convert to NV12.
+        const std::uint8_t* srcBgra = vcamTapBuffer_.data();
+        int cw = w;
+        int ch = h;
+        if (w != kVcamOutW || h != kVcamOutH) {
+          if (resizeBgraBilinear(vcamTapBuffer_.data(), w, h, kVcamOutW, kVcamOutH, vcamResized_)) {
+            srcBgra = vcamResized_.data();
+            cw = kVcamOutW;
+            ch = kVcamOutH;
+          }
+        }
+        // Expensive BGRA->NV12 conversion, on THIS tap thread.
+        std::vector<uint8_t> nv12;
+        if (convertBgraToNv12(srcBgra, cw, ch, nv12)) {
+          std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
+          vcamLatestW_ = cw;
+          vcamLatestH_ = ch;
+          vcamLatestNv12_.swap(nv12);
+          ++vcamLatestGen_;
+        }
+      }
+    }
+  }
+
+  void stopVcamTap() {
+    vcamTapStop_.store(true, std::memory_order_release);
+    vcamCv_.notify_all();
+    if (vcamThread_.joinable()) {
+      vcamThread_.join();
+    }
+    vcamStaging2_ = {};
+    vcamShared2_ = {};
+    vcamMutex2_ = {};
+    vcamContext2_ = {};
+    vcamDevice2_ = {};
+    vcamShared1_ = {};
+    vcamShared1Rtv_ = {};
+    vcamMutex1_ = {};
+    vcamSourceSrv_ = {};
+    vcamSourceSrvFrom_ = nullptr;
+    vcamTapW_ = 0;
+    vcamTapH_ = 0;
+  }
+
+  // OUTPUT-WORKER THREAD (cheap): hand back the tap's most recent NV12 frame with
+  // a plain ~3MB CPU copy - no GPU Map, no per-pixel conversion here, so it never
+  // starves the audio/output worker. Returns false when there's no new frame
+  // since the last take.
+  bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& w, int& h) override {
+    std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
+    if (vcamLatestNv12_.empty() || vcamLatestGen_ == vcamLastTakenGen_) {
+      return false;
+    }
+    vcamLastTakenGen_ = vcamLatestGen_;
+    w = vcamLatestW_;
+    h = vcamLatestH_;
+    outNv12 = vcamLatestNv12_;  // copy out (caller owns it)
+    return true;
+  }
+
   ComPtrLite<ID3D11Device> device_;
   ComPtrLite<ID3D11DeviceContext> context_;
   ComPtrLite<ID3D11VertexShader> vertexShader_;
@@ -2269,6 +2535,43 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11Texture2D> renderTarget_;
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
+  // Virtual-camera readback rig (see exportVcamSharedTexture / vcamTapLoop). The
+  // render device writes vcamShared1_ (fast GPU->GPU); a SECOND device reads it
+  // via vcamShared2_ + a staging texture on a dedicated thread, so the slow ~8MB
+  // CPU read touches neither the render thread/coreMutex nor the audio worker.
+  ComPtrLite<ID3D11Texture2D> vcamShared1_;   // render device, keyed-mutex shared (1080p)
+  ComPtrLite<ID3D11RenderTargetView> vcamShared1Rtv_;
+  ComPtrLite<IDXGIKeyedMutex> vcamMutex1_;
+  ComPtrLite<ID3D11ShaderResourceView> vcamSourceSrv_;  // SRV of renderTarget_ (the 4K program)
+  ID3D11Texture2D* vcamSourceSrvFrom_ = nullptr;        // detects renderTarget_ recreation
+  ComPtrLite<ID3D11Device> vcamDevice2_;      // dedicated readback device
+  ComPtrLite<ID3D11DeviceContext> vcamContext2_;
+  ComPtrLite<ID3D11Texture2D> vcamShared2_;   // vcamShared1_ opened on device2
+  ComPtrLite<IDXGIKeyedMutex> vcamMutex2_;
+  ComPtrLite<ID3D11Texture2D> vcamStaging2_;  // CPU-read staging on device2
+  int vcamTapW_ = 0;
+  int vcamTapH_ = 0;
+  std::thread vcamThread_;
+  std::atomic<bool> vcamTapStop_{true};
+  std::atomic<bool> vcamNewFrame_{false};
+  std::mutex vcamCvMutex_;
+  std::condition_variable vcamCv_;
+  // The virtual camera serves a fixed 1920x1080 (the DLL's NV12 media type); the
+  // program may render larger (up to 4K), so the tap downscales to this.
+  static constexpr int kVcamOutW = 1920;
+  static constexpr int kVcamOutH = 1080;
+  // The tap reads BGRA into vcamTapBuffer_ (tap-thread only), downscales into
+  // vcamResized_ if needed, and converts to NV12 (the expensive per-pixel step,
+  // done HERE off the output worker). The output worker then copies out the small
+  // NV12 result cheaply via takeVcamNv12.
+  std::vector<uint8_t> vcamTapBuffer_;
+  std::vector<uint8_t> vcamResized_;
+  std::mutex vcamNv12Mutex_;
+  std::vector<uint8_t> vcamLatestNv12_;
+  int vcamLatestW_ = 0;
+  int vcamLatestH_ = 0;
+  uint64_t vcamLatestGen_ = 0;
+  uint64_t vcamLastTakenGen_ = 0;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
