@@ -353,25 +353,13 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                    <!-- Compact routing table: every input is a single dense row so all 10 fit
-                         in a 1080p window without large per-slot cards. Header + rows share the
-                         same column widths so the columns line up like a broadcast router list. -->
-                    <Grid Padding="8,0,8,2" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="30" />
-                            <ColumnDefinition Width="40" />
-                            <ColumnDefinition Width="2.6*" />
-                            <ColumnDefinition Width="1.3*" />
-                            <ColumnDefinition Width="1.2*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="IN" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="SHOW" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="2" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="3" Text="NAME" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="4" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                    </Grid>
+                    <!-- Dense router list, self-describing rows (no header row — the pickers,
+                         placeholders and chips label themselves). Assigned rows carry the full
+                         control set; unassigned rows collapse to slot number + picker so ten
+                         slots never read as a wall of dead controls. Width-capped so controls
+                         don't stretch absurdly on wide monitors. -->
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
+                                   MaxWidth="1520" HorizontalAlignment="Left"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
                                    ElementPrepared="OnShowInputEditorPrepared">
                         <ItemsRepeater.Layout>
@@ -384,9 +372,9 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="30" />
                                             <ColumnDefinition Width="40" />
-                                            <ColumnDefinition Width="2.6*" />
-                                            <ColumnDefinition Width="1.3*" />
-                                            <ColumnDefinition Width="1.2*" />
+                                            <ColumnDefinition Width="440" />
+                                            <ColumnDefinition Width="230" />
+                                            <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
@@ -395,7 +383,8 @@
                                         <CheckBox Grid.Column="1" MinWidth="0" Padding="0" HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"
                                                   IsChecked="{x:Bind InShow, Mode=TwoWay}"
-                                                  IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
+                                                  IsEnabled="{x:Bind IsAssigned, Mode=OneWay}"
+                                                  ToolTipService.ToolTip="In show — puts this input on the Studio multiview strip" />
                                         <!-- SRC-1: ONE grouped source picker (kind inferred from the pick) +
                                              a kind chip + a loud MISSING badge when the assigned source is
                                              gone (binding kept; never silently substituted). Selection is
@@ -409,12 +398,14 @@
                                             <ComboBox x:Name="UnifiedSourceCombo"
                                                       Tag="{x:Bind}"
                                                       ItemsSource="{x:Bind UnifiedSourceOptions, Mode=OneWay}"
+                                                      SelectedValue="{x:Bind SelectedUnifiedSourceId, Mode=OneWay}"
                                                       SelectedValuePath="Value"
                                                       DisplayMemberPath="Label"
                                                       PlaceholderText="Select a source"
                                                       HorizontalAlignment="Stretch" VerticalAlignment="Center" />
                                             <Border Grid.Column="1" Background="#1A2229" CornerRadius="3" Padding="6,2"
-                                                    VerticalAlignment="Center">
+                                                    VerticalAlignment="Center"
+                                                    Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="{x:Bind KindLabel, Mode=OneWay}" FontSize="10"
                                                            Foreground="{StaticResource StudioTextSecondaryBrush}" />
                                             </Border>
@@ -426,25 +417,28 @@
                                                            Foreground="#E8B341" />
                                             </Border>
                                         </Grid>
-                                        <!-- Editable display name for the assigned source; defaults to
-                                             the Zoom/UVC/asset name, feeds the auto lower-thirds. -->
+                                        <!-- Everything past the picker exists ONLY on assigned rows. -->
                                         <TextBox Grid.Column="3"
                                                  Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                                 IsEnabled="{x:Bind IsDisplayNameEditable, Mode=OneWay}"
+                                                 Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                  PlaceholderText="Name"
                                                  ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
                                         <ComboBox Grid.Column="4" x:Name="InputMicCombo"
                                                   Tag="{x:Bind}"
+                                                  MinWidth="200"
+                                                  PlaceholderText="Pair a microphone"
+                                                  ToolTipService.ToolTip="Microphone paired with this camera (feeds its channel strip)"
                                                   ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
                                                   SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                                  HorizontalAlignment="Left" VerticalAlignment="Center" />
                                         <Button Grid.Column="5"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
+                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
                                                 VerticalAlignment="Center" />
@@ -452,6 +446,7 @@
                                         <Button Grid.Column="6"
                                                 Content="Unassign"
                                                 Style="{StaticResource OperatorGhostButton}"
+                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                 Command="{Binding ViewModel.UnassignShowInputCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind}"
                                                 ToolTipService.ToolTip="Clear this Show Input slot (the source stays available in Sources)"

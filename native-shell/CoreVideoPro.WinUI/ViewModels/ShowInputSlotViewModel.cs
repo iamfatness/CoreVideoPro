@@ -226,6 +226,11 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public string KindLabel => _slot.KindLabel;
 
+    /// <summary>Assigned rows carry the full control set (name, audio, grade, unassign);
+    /// unassigned rows collapse to just the picker — visual hierarchy, not a wall of
+    /// dead controls.</summary>
+    public bool IsAssigned => _slot.IsAssigned;
+
     /// <summary>Editable display name for the assigned source. Defaults to the derived
     /// Zoom/UVC/asset name; setting it stores the operator override (feeding the auto
     /// lower-thirds and multiview labels). Setting it blank resets to the derived name.</summary>
@@ -315,6 +320,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
         OnPropertyChanged(nameof(IsSourceMissing));
         OnPropertyChanged(nameof(KindLabel));
+        OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
@@ -345,6 +351,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
         OnPropertyChanged(nameof(IsSourceMissing));
+        OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
         OnPropertyChanged(nameof(AudioDeviceId));
