@@ -65,7 +65,13 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             }
 
             _slot.Kind = value;
-            RefreshSourceOptions(_participants, _captureDevices);
+            // Pass ALL the retained lists. This previously passed only participants +
+            // capture devices, so the optional audioDevices/mediaAssets params defaulted
+            // to [] -- switching a slot's TYPE to "Media asset" wiped the media list (an
+            // empty source dropdown that still DISPLAYED the previous device's text) and
+            // dropped the audio-device options. (owner: "trying to add a media input but
+            // none are showing and it has a webcam name", 2026-07-11)
+            RefreshSourceOptions(_participants, _captureDevices, _audioDevices, _mediaAssets);
             OnSlotPropertyChanged();
         }
     }
