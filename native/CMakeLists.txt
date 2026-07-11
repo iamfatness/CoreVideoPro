@@ -30,6 +30,19 @@ foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${config} ${CMAKE_BINARY_DIR})
 endforeach()
 
+# Emit debug symbols (PDBs) even in Release so production crash dumps are
+# diagnosable. Without this a shipping core has NO symbols and a dump reads only as
+# raw module+offset (exactly what bit the 2026-07-10 startup crash). /Zi generates the
+# PDB, /DEBUG keeps it, and /OPT:REF + /OPT:ICF claw back the code-size/perf cost that
+# /DEBUG otherwise disables, so the binary stays as lean as a plain Release. Directory
+# scope => applies to every target defined below (core, exe, virtualcam, zoom-engine).
+if(MSVC)
+  add_compile_options($<$<CONFIG:Release>:/Zi>)
+  add_link_options($<$<CONFIG:Release>:/DEBUG>)
+  add_link_options($<$<CONFIG:Release>:/OPT:REF>)
+  add_link_options($<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
 add_library(corevideo_native
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp

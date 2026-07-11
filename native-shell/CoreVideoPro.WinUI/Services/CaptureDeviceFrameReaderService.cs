@@ -139,6 +139,38 @@ public static class CaptureDeviceFormatSelector
     }
 }
 
+// Governs how the stall watchdog retries a frozen capture reader. Before this, a
+// reader that stalled and could NOT be restarted (e.g. an Elgato Game Capture whose
+// HDMI signal dropped -> reader.StartAsync returns OutputFormatNotSupported) was
+// re-kicked on a fixed ~5s cadence FOREVER (2026-07-10: 515 restarts logged in a day).
+// That churn is exactly the kind of load that can trip the CoreMessagingXP fail-fast
+// during a long show. Now: exponential backoff, then give up and surface a terminal
+// state instead of hammering a device that isn't coming back on its own.
+public static class CaptureReaderStallPolicy
+{
+    // Stop retrying after this many consecutive restarts that never yielded a frame.
+    public const int MaxConsecutiveRestartFailures = 5;
+    public const long BaseBackoffMs = 5000;
+    public const long MaxBackoffMs = 60000;
+
+    // 1st retry waits 5s, then 10s, 20s, 40s, capped at 60s. `consecutiveFailures` is
+    // the number of restart attempts that have already failed (0 before the first).
+    public static long BackoffMsForFailureCount(int consecutiveFailures)
+    {
+        if (consecutiveFailures <= 0)
+        {
+            return BaseBackoffMs;
+        }
+
+        var shift = Math.Min(consecutiveFailures, 30);
+        var scaled = BaseBackoffMs * (1L << shift);
+        return scaled < BaseBackoffMs ? MaxBackoffMs : Math.Min(scaled, MaxBackoffMs);
+    }
+
+    public static bool ShouldGiveUp(int consecutiveFailures) =>
+        consecutiveFailures >= MaxConsecutiveRestartFailures;
+}
+
 public sealed class CaptureDeviceFrameReaderService : IDisposable
 {
     private readonly object _gate = new();
@@ -271,6 +303,17 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private int _formatWidth;
         private int _formatHeight;
         private int _formatFps;
+        // Reused ring of frame buffers so the 60fps capture path does NOT allocate a
+        // fresh ~8MB BGRA array every frame. That per-frame allocation was ~0.7GB/s of
+        // garbage across two cameras -> a multi-GB managed heap -> UI-thread GC stalls =
+        // the operator "video slow down". OnFrameArrived is single-flighted (see the
+        // _publishingFrame guard), so only one thread ever advances this ring. Depth 4
+        // safely exceeds the buffers live at once: the SHM write consumes synchronously,
+        // and the preview holds only the latest surface state, flushed to the UI within
+        // ~16ms << the 4-frame reuse interval (~66ms @60fps).
+        private const int FrameRingSize = 4;
+        private readonly byte[]?[] _frameRing = new byte[FrameRingSize][];
+        private int _frameRingIndex;
         private long _lastFrameTimestampMs;
         private long _lastFramePublishFailureLogMs;
         private long _lastFrameHealthLogMs;
@@ -288,9 +331,12 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
         private long _lastPublishTickMs;
         private long _lastRecoveryTickMs;
         private int _recovering;
+        // Consecutive restart attempts that have NOT been followed by a real frame.
+        // Reset to 0 in OnFrameArrived; drives the backoff and the give-up decision.
+        private int _consecutiveRestartFailures;
+        private int _stallGaveUp;
         private System.Threading.Timer? _stallWatchdog;
         private const long StallThresholdMs = 2500;
-        private const long RecoveryCooldownMs = 5000;
 
         public CaptureSession(string stableDeviceId, string nativeDeviceId, bool allowLateFirstFrame)
         {
@@ -477,6 +523,8 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 _firstFramePublished?.TrySetResult(FormatTelemetry);
                 Interlocked.Increment(ref _publishedSinceHealthLog);
                 Interlocked.Exchange(ref _lastPublishTickMs, now);
+                // A real frame landed: recovery worked, clear the backoff/give-up state.
+                Interlocked.Exchange(ref _consecutiveRestartFailures, 0);
                 MaybeLogFrameHealth(now);
             }
             catch (Exception ex)
@@ -512,12 +560,29 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
             }
         }
 
+        // Returns the next ring buffer, sized exactly to the frame (re-allocated only
+        // when the resolution changes, i.e. effectively never during a live feed). Called
+        // only from the single-flighted OnFrameArrived path, so no locking is needed.
+        private byte[] RentFrameBuffer(int size)
+        {
+            var index = _frameRingIndex;
+            _frameRingIndex = (_frameRingIndex + 1) % FrameRingSize;
+            var buffer = _frameRing[index];
+            if (buffer is null || buffer.Length != size)
+            {
+                buffer = new byte[size];
+                _frameRing[index] = buffer;
+            }
+
+            return buffer;
+        }
+
         private byte[] CopyBgraBytes(SoftwareBitmap bitmap)
         {
             var width = bitmap.PixelWidth;
             var height = bitmap.PixelHeight;
             var rowBytes = checked(width * 4);
-            var bytes = new byte[checked(rowBytes * height)];
+            var bytes = RentFrameBuffer(checked(rowBytes * height));
 
             try
             {
@@ -830,6 +895,13 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
 
         private void CheckForStall()
         {
+            // Once we've given up on this device, the watchdog is inert — a fresh
+            // operator reconnect creates a new session and starts over.
+            if (Interlocked.CompareExchange(ref _stallGaveUp, 0, 0) == 1)
+            {
+                return;
+            }
+
             // Only after the reader is live and a frame has been published.
             var last = Interlocked.Read(ref _lastPublishTickMs);
             if (last <= 0)
@@ -843,8 +915,12 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                 return;
             }
 
-            // Don't restart-storm: respect a cooldown, and never run two recoveries at once.
-            if (now - Interlocked.Read(ref _lastRecoveryTickMs) < RecoveryCooldownMs)
+            // Back off between restarts by how many have already failed (5s, 10s, 20s,
+            // 40s, 60s cap) so a device that isn't coming back can't restart-storm, and
+            // never run two recoveries at once.
+            var backoff = CaptureReaderStallPolicy.BackoffMsForFailureCount(
+                Interlocked.CompareExchange(ref _consecutiveRestartFailures, 0, 0));
+            if (now - Interlocked.Read(ref _lastRecoveryTickMs) < backoff)
             {
                 return;
             }
@@ -867,11 +943,17 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     return;
                 }
 
+                // Stamp the attempt time up front so the backoff gate measures from the
+                // attempt, not from a frame that may never arrive.
+                Interlocked.Exchange(ref _lastRecoveryTickMs, Environment.TickCount64);
+
                 LaunchLog.Write($"capture: stall detected {_stableDeviceId} ({stalledMs}ms with no frame) — restarting reader");
+                var restarted = false;
                 try { await reader.StopAsync().AsTask().ConfigureAwait(false); } catch { /* best effort */ }
                 try
                 {
                     var status = await reader.StartAsync().AsTask().ConfigureAwait(false);
+                    restarted = status == MediaFrameReaderStartStatus.Success;
                     LaunchLog.Write($"capture: reader restart {_stableDeviceId} status={status}");
                 }
                 catch (Exception ex)
@@ -879,9 +961,34 @@ public sealed class CaptureDeviceFrameReaderService : IDisposable
                     LaunchLog.Write($"capture: reader restart failed {_stableDeviceId}: {DescribeException(ex)}");
                 }
 
-                var now = Environment.TickCount64;
-                Interlocked.Exchange(ref _lastPublishTickMs, now);
-                Interlocked.Exchange(ref _lastRecoveryTickMs, now);
+                // Count every attempt as a failure up front; OnFrameArrived resets the
+                // counter to 0 the instant a real frame lands. This covers both a
+                // non-Success restart (never delivers) and a "Success but silent" restart
+                // (HDMI reports ready yet no pixels) — both escalate the backoff and,
+                // eventually, give up instead of looping forever.
+                var failures = Interlocked.Increment(ref _consecutiveRestartFailures);
+
+                // A restart that reported Success gets StallThresholdMs to actually
+                // deliver a frame before the next CheckForStall re-evaluates it.
+                if (restarted)
+                {
+                    Interlocked.Exchange(ref _lastPublishTickMs, Environment.TickCount64);
+                }
+
+                if (CaptureReaderStallPolicy.ShouldGiveUp(failures))
+                {
+                    // Stop hammering: the source is gone / the format won't come back on
+                    // its own. Leave the last frame frozen (the operator sees it) and let
+                    // a manual reconnect start a clean session.
+                    if (Interlocked.Exchange(ref _stallGaveUp, 1) == 0)
+                    {
+                        LaunchLog.Write(
+                            $"capture: giving up on {_stableDeviceId} after {failures} failed restarts " +
+                            $"(no signal / format unsupported) — reconnect the source to retry");
+                        _stallWatchdog?.Dispose();
+                        _stallWatchdog = null;
+                    }
+                }
             }
             finally
             {

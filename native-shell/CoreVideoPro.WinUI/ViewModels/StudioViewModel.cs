@@ -5899,6 +5899,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return false;
             }
 
+            // The core now owns this camera via Media Foundation. Tear down any managed
+            // MediaCapture bridge session for the same device so we never run two readers
+            // against one device (the bridge reader would otherwise keep restarting — see
+            // the OutputFormatNotSupported storm on 2026-07-10). No-op if none is running.
+            await _captureFrameReader.StopAsync(device.Id).ConfigureAwait(false);
+
             LaunchLog.Write(
                 $"capture: native uvc connected {device.Id} ({match.Width}x{match.Height}@{match.FrameRate}, core id {match.Id})");
             RunOnUiThread(() =>
