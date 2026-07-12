@@ -7,11 +7,11 @@ namespace CoreVideoPro.MediaCore.Services;
 /// Foundation UVC adapter instead of opening it locally via WinRT MediaCapture
 /// and bridging BGRA frames over shared memory.
 ///
-/// The native path is opt-in (set COREVIDEO_NATIVE_UVC=1) and self-falls-back:
-/// the shell only commits when the core's connect-capture-device response
-/// reports the device connected; anything else (stub core without the UVC
-/// adapter, unknown device id, camera open failure) keeps the existing WinUI
-/// MediaCapture bridge as the capture path.
+/// The native path is DEFAULT-ON (opt out with COREVIDEO_NATIVE_UVC=0) and
+/// self-falls-back: the shell only commits when the core's
+/// connect-capture-device response reports the device connected; anything else
+/// (stub core without the UVC adapter, unknown device id, camera open failure)
+/// keeps the existing WinUI MediaCapture bridge as the capture path.
 /// </summary>
 public static class NativeUvcCapturePolicy
 {
@@ -19,20 +19,21 @@ public static class NativeUvcCapturePolicy
 
     public static bool IsEnabled(string? environmentValue)
     {
-        // Opt-in (set COREVIDEO_NATIVE_UVC=1). Native MF capture in the core is the RIGHT
-        // perf path — the managed WinUI MediaCapture bridge copies every webcam frame
-        // through managed memory (SafeBuffer.WriteSpan) at ~180MB/s for 1080p cameras
-        // (dotnet-trace: ~50% of wall-clock, churns the shell to 2-3GB and crashes,
-        // starving the UI thread = the operator stutter). BUT native capture is not yet the
-        // default because the core keys frames by its Media Foundation device id while the
-        // shell routes sources by its WinRT device id (different symbolic-link hashes for
-        // the same camera), so native frames don't reach the tiles (pink). Flip this to
-        // default-ON once that id reconciliation lands (see operator-performance-plan.md).
+        // DEFAULT-ON (opt out with COREVIDEO_NATIVE_UVC=0). Native MF capture in the core
+        // is the RIGHT perf path — the managed WinUI MediaCapture bridge copies every
+        // webcam frame through managed memory (SafeBuffer.WriteSpan) at ~180MB/s for 1080p
+        // cameras (dotnet-trace: ~50% of wall-clock, churns the shell to multi-GB heaps,
+        // starving the UI thread = the operator stutter). The two blockers are FIXED and
+        // rig-verified (2026-07-10): the frame-key id mismatch (pink tiles — outer
+        // WinUiCaptureDeviceAdapter dropped outputSourceId) and the WGC teardown crash.
+        // Native capture ran owner-verified through full sessions 2026-07-11/12
+        // (~265MB flat vs multi-GB bridge, 0 drops). Per-device fallback to the bridge
+        // still applies automatically whenever the core cannot connect a camera.
         var normalized = environmentValue?.Trim();
-        return normalized is not null &&
-            (normalized.Equals("1", StringComparison.Ordinal) ||
-             normalized.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-             normalized.Equals("on", StringComparison.OrdinalIgnoreCase));
+        return normalized is null ||
+            !(normalized.Equals("0", StringComparison.Ordinal) ||
+              normalized.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+              normalized.Equals("off", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

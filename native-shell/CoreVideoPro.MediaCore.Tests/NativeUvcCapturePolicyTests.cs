@@ -14,10 +14,12 @@ public sealed class NativeUvcCapturePolicyTests
     [InlineData("on", true)]
     [InlineData(" 1 ", true)]
     [InlineData("0", false)]
+    [InlineData(" 0 ", false)]
     [InlineData("false", false)]
+    [InlineData("FALSE", false)]
     [InlineData("off", false)]
-    [InlineData("", false)]     // opt-in: unset -> legacy WinUI bridge
-    [InlineData(null, false)]
+    [InlineData("", true)]      // DEFAULT-ON: unset/blank -> native core capture
+    [InlineData(null, true)]    // (opt out with COREVIDEO_NATIVE_UVC=0)
     public void IsEnabled_ParsesEnvironmentValues(string? value, bool expected)
     {
         Assert.Equal(expected, NativeUvcCapturePolicy.IsEnabled(value));
@@ -33,8 +35,9 @@ public sealed class NativeUvcCapturePolicyTests
     public void ShouldPreferNativeCapture_GatesOnCameraVendors(string vendor, bool expected)
     {
         Assert.Equal(expected, NativeUvcCapturePolicy.ShouldPreferNativeCapture("1", vendor));
-        // Opt-in: unset/disabled env always declines regardless of vendor.
-        Assert.False(NativeUvcCapturePolicy.ShouldPreferNativeCapture(null, vendor));
+        // DEFAULT-ON: unset env behaves like enabled (camera vendors only).
+        Assert.Equal(expected, NativeUvcCapturePolicy.ShouldPreferNativeCapture(null, vendor));
+        // Explicit opt-out always declines regardless of vendor.
         Assert.False(NativeUvcCapturePolicy.ShouldPreferNativeCapture("0", vendor));
     }
 
