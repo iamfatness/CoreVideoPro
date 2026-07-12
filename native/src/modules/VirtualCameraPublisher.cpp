@@ -54,13 +54,20 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
       return false;
     }
     header_ = static_cast<VirtualCameraShmHeader*>(view_);
-    header_->seq = 0;
+    // The slot file is REUSED across app runs (never deleted - deleting would
+    // orphan any Frame Server reader holding the old file object). It may hold
+    // a previous session's frame, or an ODD seq if that session died mid-write.
+    // Re-initialize under the seqlock so live readers never see a torn header,
+    // and land on an EVEN seq so the odd/even write discipline stays intact.
+    header_->seq = header_->seq | 1u;  // odd: writing (from any prior state)
     header_->width = width;
     header_->height = height;
     header_->fps = fps;
-    header_->byteLen = 0;
+    header_->byteLen = 0;      // no frame yet - readers hold/slate until we publish
     header_->frameNumber = 0;
-    header_->magic = kVirtualCameraMagic;  // publish magic last
+    header_->magic = kVirtualCameraMagic;
+    header_->seq = (header_->seq | 1u) + 1u;  // even = complete
+    ensureVirtualCameraServeLogFile();  // serving processes can append diagnostics
 
     // 2) Register the OS virtual camera (Win11 MFCreateVirtualCamera). The DLL
     //    named by kMediaSourceClsid serves NV12 samples read from the slot.

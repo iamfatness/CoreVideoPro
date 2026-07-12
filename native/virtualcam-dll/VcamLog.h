@@ -1,9 +1,11 @@
 #pragma once
 
-// Temporary diagnostic logger (runs inside the consuming app, e.g. Zoom).
-// Writes to %LOCALAPPDATA%\CoreVideoPro\vcam-serve.log so we can see whether the
-// stream starts, RequestSample fires, the SHM opens, and real frames vs the
-// slate are served. Remove once frame serving is confirmed.
+// Serve-diagnostics logger. Runs in WHATEVER process hosts the media source:
+// the consuming app, the creating app, or a locked-down Frame Server service
+// worker. Writes to %ProgramData%\CoreVideoPro\vcam-serve.log - the publisher
+// pre-creates that file with a permissive DACL (ensureVirtualCameraServeLogFile)
+// precisely so restricted service processes can append; C:\Windows\Temp is NOT
+// writable from those processes and left us blind on the serving side.
 
 #include <windows.h>
 #include <shlobj.h>
@@ -13,10 +15,8 @@
 namespace corevideo::virtualcam {
 
 inline void VcamServeLog(const char* msg) {
-  // Fixed, world-writable path so it works no matter which process/user runs the
-  // DLL (the consuming app in the user session, OR the Frame Server as LocalService).
   FILE* f = nullptr;
-  if (_wfopen_s(&f, L"C:\\Windows\\Temp\\corevideo-vcam.log", L"a") == 0 && f != nullptr) {
+  if (_wfopen_s(&f, L"C:\\ProgramData\\CoreVideoPro\\vcam-serve.log", L"a") == 0 && f != nullptr) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     DWORD pid = GetCurrentProcessId();

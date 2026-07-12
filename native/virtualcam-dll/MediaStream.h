@@ -71,6 +71,10 @@ class MediaStream
   UINT32 fps_ = 60;
   LONGLONG nextPts_ = 0;
   LONGLONG frameDuration_ = 166667;  // 100ns units, set from fps (60fps default)
+  // Delivery pacing (see RequestSample): when the NEXT sample is due, in
+  // MFGetSystemTime units. 0 = un-anchored (first sample delivers immediately).
+  LONGLONG nextDueHns_ = 0;
+  HANDLE pacerTimer_ = nullptr;  // high-resolution waitable timer (lazy)
   bool running_ = false;
   bool shutdown_ = false;
 };

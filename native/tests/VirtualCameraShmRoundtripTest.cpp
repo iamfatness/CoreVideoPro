@@ -30,6 +30,7 @@ struct ShmWriter {
   HANDLE mapping = nullptr;
   void* view = nullptr;
   VirtualCameraShmHeader* header = nullptr;
+  bool deleteOnClose = true;
 
   bool open() {
     file = openVirtualCameraShmFile(/*writer=*/true);
@@ -37,8 +38,14 @@ struct ShmWriter {
     view = mapVirtualCameraShmView(file, /*writer=*/true, &mapping);
     if (view == nullptr) return false;
     header = static_cast<VirtualCameraShmHeader*>(view);
-    header->seq = 0;
+    // Mirror WindowsVirtualCameraPublisher::start(): the file is REUSED across
+    // runs, so re-init under the seqlock, continuing FORWARD from any prior seq
+    // (never back to 0 - a reader from the prior run must see a CHANGED seq).
+    header->seq = header->seq | 1u;  // odd: writing
+    header->byteLen = 0;
+    header->frameNumber = 0;
     header->magic = kVirtualCameraMagic;
+    header->seq = (header->seq | 1u) + 1u;  // even = complete
     return true;
   }
 
@@ -53,11 +60,21 @@ struct ShmWriter {
     header->seq = header->seq + 1;  // even
   }
 
-  ~ShmWriter() {
+  void closeHandles() {
     if (view) UnmapViewOfFile(view);
     if (mapping) CloseHandle(mapping);
     if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
-    ::DeleteFileA(virtualCameraShmFilePath().c_str());  // no stale slot for the next test
+    view = nullptr;
+    mapping = nullptr;
+    file = INVALID_HANDLE_VALUE;
+    header = nullptr;
+  }
+
+  ~ShmWriter() {
+    closeHandles();
+    if (deleteOnClose) {
+      ::DeleteFileA(virtualCameraShmFilePath().c_str());  // no stale slot for the next test
+    }
   }
 };
 
@@ -106,6 +123,75 @@ TEST(VirtualCameraShmRoundtrip, LatestWriteWins) {
   int rw = 0, rh = 0;
   ASSERT_TRUE(reader.readLatest(out, rw, rh));
   EXPECT_EQ(out, b);
+}
+
+// REGRESSION (the "flashing camera"): the writer restarting must NOT orphan a
+// reader that already holds the backing file. The old writer deleted+recreated
+// the path on start; a Frame Server reader kept mapping the unlinked old file
+// object (FILE_SHARE_DELETE), never saw another frame, and served the slate
+// forever - interleaved with a fresh instance's program frames = strobing.
+TEST(VirtualCameraShmRoundtrip, WriterRestartKeepsAnExistingReaderLive) {
+  const int w = 8, h = 8;
+  std::vector<std::uint8_t> f1(static_cast<size_t>(w) * h * 3 / 2, 0x11);
+  std::vector<std::uint8_t> f2(static_cast<size_t>(w) * h * 3 / 2, 0x22);
+
+  SharedFrameReader reader;
+  std::vector<std::uint8_t> out;
+  int rw = 0, rh = 0;
+  {
+    ShmWriter first;
+    first.deleteOnClose = false;  // an app restart does not remove the slot file
+    ASSERT_TRUE(first.open());
+    first.write(f1, w, h);
+    ASSERT_TRUE(reader.readLatest(out, rw, rh));
+    EXPECT_EQ(out, f1);
+  }  // "app exit": writer handles closed, file stays
+
+  ShmWriter second;  // "app relaunch": open-or-create IN PLACE (same file object)
+  ASSERT_TRUE(second.open());
+  second.write(f2, w, h);
+
+  // The ORIGINAL reader mapping (opened before the restart) must see the new
+  // frame - with a delete-on-start writer this read returned stale/no frames.
+  ASSERT_TRUE(reader.readLatest(out, rw, rh));
+  EXPECT_EQ(out, f2);
+}
+
+// If the file object DOES get swapped underneath a reader (the exact failure
+// mode the delete-on-start writer caused), the reader self-heals: after
+// kReopenAfterUnchangedReads frozen requests it re-opens by path and serves the
+// live file instead of degrading to the slate forever.
+TEST(VirtualCameraShmRoundtrip, ReaderSelfHealsAfterTheBackingFileIsSwapped) {
+  const int w = 8, h = 8;
+  std::vector<std::uint8_t> f1(static_cast<size_t>(w) * h * 3 / 2, 0x11);
+  std::vector<std::uint8_t> f2(static_cast<size_t>(w) * h * 3 / 2, 0x22);
+
+  SharedFrameReader reader;
+  std::vector<std::uint8_t> out;
+  int rw = 0, rh = 0;
+  {
+    ShmWriter first;
+    first.deleteOnClose = false;
+    ASSERT_TRUE(first.open());
+    first.write(f1, w, h);
+    ASSERT_TRUE(reader.readLatest(out, rw, rh));
+    EXPECT_EQ(out, f1);
+    first.closeHandles();
+    ::DeleteFileA(virtualCameraShmFilePath().c_str());  // swap: unlink the path
+  }
+
+  ShmWriter second;  // NEW file object at the same path
+  ASSERT_TRUE(second.open());
+  second.write(f2, w, h);
+  second.write(f2, w, h);  // advance seq past any collision with the reader's last
+
+  bool healed = false;
+  for (std::uint32_t i = 0; i <= SharedFrameReader::kReopenAfterUnchangedReads + 5 && !healed;
+       ++i) {
+    healed = reader.readLatest(out, rw, rh);
+  }
+  ASSERT_TRUE(healed);
+  EXPECT_EQ(out, f2);
 }
 
 #endif  // _WIN32
