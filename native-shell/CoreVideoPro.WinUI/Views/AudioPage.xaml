@@ -342,8 +342,8 @@
                     Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
-                    <!-- VST host P1: REAL plugin discovery (out-of-process scan).
-                         Retires the old "scan-only" placeholder wording. -->
+                    <!-- U1a: plugin browser — auto-scans on first open, searchable,
+                         status in operator words (never phase jargon). -->
                     <StackPanel Spacing="4">
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -351,13 +351,16 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="VST3 plugins" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Content="Scan" Style="{StaticResource OperatorGhostButton}"
+                            <Button Grid.Column="1" Content="Rescan" Style="{StaticResource OperatorGhostButton}"
+                                    ToolTipService.ToolTip="Look again for newly installed VST3 plugins"
                                     Click="OnScanVstPluginsClicked" />
                         </Grid>
                         <TextBlock Text="{x:Bind ViewModel.VstPluginHostSummary, Mode=OneWay}"
                                    FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
                                    TextWrapping="WrapWholeWords" />
-                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.VstPlugins, Mode=OneWay}">
+                        <TextBox PlaceholderText="Search plugins…" FontSize="11"
+                                 Text="{x:Bind ViewModel.VstPluginFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <ItemsRepeater ItemsSource="{x:Bind ViewModel.FilteredVstPlugins, Mode=OneWay}">
                             <ItemsRepeater.Layout>
                                 <StackLayout Orientation="Vertical" Spacing="2" />
                             </ItemsRepeater.Layout>
@@ -373,7 +376,7 @@
                                             <TextBlock Text="{x:Bind Vendor}" FontSize="9"
                                                        Foreground="{StaticResource StudioMutedBrush}" TextTrimming="CharacterEllipsis" />
                                         </StackPanel>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind Probe}" FontSize="9"
+                                        <TextBlock Grid.Column="1" Text="{x:Bind ProbeLabel}" FontSize="9"
                                                    Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" />
                                     </Grid>
                                 </DataTemplate>
@@ -559,7 +562,8 @@
                                     <DataTemplate x:DataType="models:InsertSlotItem">
                                         <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
                                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                                Background="#10222B" BorderBrush="#1B5E6B">
+                                                Background="#10222B" BorderBrush="#1B5E6B"
+                                                ToolTipService.ToolTip="{x:Bind StatusTooltip}">
                                             <Button.Flyout>
                                                 <Flyout Opening="OnInsertSlotFlyoutOpening">
                                                     <StackPanel Width="240" Spacing="6" />
@@ -586,8 +590,9 @@
                                 </ItemsRepeater.ItemTemplate>
                             </ItemsRepeater>
                         </ScrollViewer>
-                        <DropDownButton Grid.Row="2" Content="+ Add insert" FontSize="10" Padding="10,4"
-                                        HorizontalAlignment="Stretch">
+                        <DropDownButton Grid.Row="2" Content="＋ Add processing" FontSize="10" Padding="10,4"
+                                        HorizontalAlignment="Stretch"
+                                        ToolTipService.ToolTip="Add a built-in processor or a VST3 plugin to this channel">
                             <DropDownButton.Flyout>
                                 <MenuFlyout x:Name="AddInsertFlyout" Opening="OnAddInsertFlyoutOpening" />
                             </DropDownButton.Flyout>

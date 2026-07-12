@@ -436,6 +436,14 @@ public sealed class NativeMediaCorePluginInfo
     public string Name { get; init; } = string.Empty;
     public string Vendor { get; init; } = string.Empty;
     public string Probe { get; init; } = "pending";
+
+    /// <summary>Probe verdict in operator words (U1a). Core emits pending|pass|fail.</summary>
+    public string ProbeLabel => Probe switch
+    {
+        "pass" => "Ready",
+        "fail" => "Failed validation",
+        _ => "Not validated yet",
+    };
 }
 
 public sealed class NativeMediaCoreAudioMixSession
