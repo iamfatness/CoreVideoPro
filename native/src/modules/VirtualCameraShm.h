@@ -64,6 +64,14 @@ inline std::string virtualCameraShmFilePath() {
   return virtualCameraShmDir() + "\\vcam-frame.shm";
 }
 
+// Serve-diagnostics log written by the DLL from WHATEVER process hosts it (the
+// consuming app, or a locked-down Frame Server service that cannot write
+// %TEMP%-style paths). The publisher pre-creates it with a permissive DACL so
+// even a restricted serving process can append.
+inline std::string virtualCameraServeLogPath() {
+  return virtualCameraShmDir() + "\\vcam-serve.log";
+}
+
 }  // namespace corevideo::modules
 
 #if defined(_WIN32)
@@ -81,7 +89,13 @@ inline HANDLE openVirtualCameraShmFile(bool writer) {
   const std::string path = virtualCameraShmFilePath();
   if (writer) {
     ::CreateDirectoryA(virtualCameraShmDir().c_str(), nullptr);  // ok if it exists
-    ::DeleteFileA(path.c_str());  // start clean so the DACL below always applies
+    // NEVER DeleteFileA here. Readers (the Frame Server's serving instances) hold
+    // the CURRENT file object via FILE_SHARE_DELETE; deleting swaps the path to a
+    // NEW file object while they keep their mapping of the unlinked old one, so
+    // they never see another frame and degrade to a frozen frame / the slate
+    // forever (the "flashing camera": stale-instance slates interleaved with a
+    // fresh instance's program frames). Open-or-create IN PLACE and (re)assert
+    // the permissive DACL on the existing file instead.
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = FALSE;
@@ -94,16 +108,59 @@ inline HANDLE openVirtualCameraShmFile(bool writer) {
             L"D:(A;;FRFW;;;WD)(A;;FR;;;AC)", SDDL_REVISION_1, &sd, nullptr) != FALSE) {
       sa.lpSecurityDescriptor = sd;
     }
-    HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+    // WRITE_DAC lets us re-assert the DACL when the file already exists (the SA
+    // DACL only applies on CREATE). If the open is denied WRITE_DAC (file owned
+    // by someone else), fall back to plain read/write and keep whatever DACL the
+    // file already carries.
+    HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              sa.lpSecurityDescriptor != nullptr ? &sa : nullptr, OPEN_ALWAYS,
                              FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (h != INVALID_HANDLE_VALUE && sd != nullptr) {
+      ::SetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, sd);  // best effort
+    }
+    if (h == INVALID_HANDLE_VALUE) {
+      h = ::CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        sa.lpSecurityDescriptor != nullptr ? &sa : nullptr, OPEN_ALWAYS,
+                        FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    }
     if (sd != nullptr) ::LocalFree(sd);
     return h;
   }
   return ::CreateFileA(path.c_str(), GENERIC_READ,
                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                        OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+}
+
+// Pre-creates the serve-diagnostics log with a DACL that lets ANY process the
+// OS might host the camera source in (user apps, LocalService, write-restricted
+// or app-container'd Frame Server workers) append to it. Without this the
+// serving side is a diagnostics black hole - the DLL's log opens simply fail
+// in locked-down service processes. Writer-side only; best effort.
+inline void ensureVirtualCameraServeLogFile() {
+  ::CreateDirectoryA(virtualCameraShmDir().c_str(), nullptr);
+  SECURITY_ATTRIBUTES sa;
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = FALSE;
+  sa.lpSecurityDescriptor = nullptr;
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:(A;;FRFW;;;WD)(A;;FRFW;;;AC)", SDDL_REVISION_1, &sd, nullptr) != FALSE) {
+    sa.lpSecurityDescriptor = sd;
+  }
+  HANDLE h = ::CreateFileA(virtualCameraServeLogPath().c_str(),
+                           GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           sa.lpSecurityDescriptor != nullptr ? &sa : nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    if (sd != nullptr) {
+      ::SetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, sd);  // reuse case
+    }
+    ::CloseHandle(h);
+  }
+  if (sd != nullptr) ::LocalFree(sd);
 }
 
 // Maps the whole slot over an open backing-file handle. Returns the view (or

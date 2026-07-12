@@ -142,6 +142,22 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   followed by an NV12 payload; the writer uses a seqlock, the reader retries on an odd seq.
 - **No flashing:** the DLL caches `lastGood_` and re-serves it on a transient read miss;
   it only falls back to the slate after ~30 missed frames (`MediaStream.cpp`).
+- **THE SOURCE PACES DELIVERY (2026-07-12).** The pipeline requests the next sample the
+  moment the previous completes — completing `RequestSample` immediately free-runs the
+  serve chain at CPU speed (measured ~2000 samples/s = ~6GB/s of 3MB copies through the
+  Frame Server + every consumer; Zoom's video process burned 8+ cores and system audio
+  glitched whenever the camera was consumed). `MediaStream::RequestSample` now waits
+  until the next frame is DUE (high-res waitable timer; plain Sleep quantizes to ~40fps).
+  Verify cadence in `%ProgramData%\CoreVideoPro\vcam-serve.log` (Fill lines ≈ 1/s = 60/s).
+- **NEVER delete the SHM file** (`openVirtualCameraShmFile`): readers hold the file
+  object via FILE_SHARE_DELETE; delete+recreate orphans them on the unlinked file and
+  they degrade to frozen frames / the slate forever (program/slate strobing when a stale
+  and a fresh instance interleave). The writer opens IN PLACE and re-asserts the DACL
+  (`SetKernelObjectSecurity`); the reader self-heals by re-opening by path after ~1s of
+  frozen seq (`SharedFrameReader::kReopenAfterUnchangedReads`).
+- **Serve diagnostics:** the DLL logs to `%ProgramData%\CoreVideoPro\vcam-serve.log`
+  (pre-created by the publisher with a permissive DACL — locked-down Frame Server
+  workers cannot write `C:\Windows\Temp`, which left the serving side unobservable).
 - **No latency drift:** the DLL stamps each sample with `MFGetSystemTime()` (a live source),
   never an accumulating `nextPts_ += frameDuration_` counter.
 - **Dims must match.** The DLL media type is **fixed 1920×1080@60** (`MediaSource.h`), so

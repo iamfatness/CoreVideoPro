@@ -88,15 +88,38 @@ class SharedFrameReader {
     if (header_->magic != kVirtualCameraMagic) {
       return false;  // region not initialized by the core
     }
-    const auto* payload =
-        static_cast<const std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
     // No NEW frame since the last successful read: skip the 3MB copy entirely and let
     // the caller re-serve its held frame. The DLL asks at the sink's cadence (60/s)
     // while the core publishes at ~50/s, so this happens constantly; copying an
     // unchanged frame on the Frame Server's boosted capture thread was pure bus waste.
     if (header_->seq == lastServedSeq_ && (lastServedSeq_ & 1u) == 0u) {
-      return false;
+      // SELF-HEAL: a seq frozen for ~a second means our FILE OBJECT may be
+      // orphaned - if the path was ever deleted+recreated, we keep mapping the
+      // unlinked old file and would never see another frame through it (the
+      // "flashing/frozen camera" class). Re-open BY PATH to land on the live
+      // file object. lastServedSeq_ is kept: if the reopened file is genuinely
+      // new its seq differs and the next read serves it; if it is the same
+      // frozen file we stay on the caller's held-frame/slate behavior instead
+      // of re-serving a dead frame forever.
+      if (++unchangedStreak_ >= kReopenAfterUnchangedReads) {
+        unchangedStreak_ = 0;
+        close();
+        if (!ensureOpen() || header_ == nullptr ||
+            header_->magic != kVirtualCameraMagic) {
+          return false;
+        }
+        if (header_->seq == lastServedSeq_ && (lastServedSeq_ & 1u) == 0u) {
+          return false;  // same frozen file - nothing new to serve
+        }
+        // else: fall through and read the live file's frame below
+      } else {
+        return false;
+      }
+    } else {
+      unchangedStreak_ = 0;
     }
+    const auto* payload =
+        static_cast<const std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
     // 2 attempts, not 8: each torn attempt costs a full ~3MB copy on a boosted system
     // thread. If we tear twice the caller serves its held frame and we try again next
     // request (16ms later) - invisible on screen, and it stops the worst-case 24MB of
@@ -126,12 +149,18 @@ class SharedFrameReader {
     return false;
   }
 
+ public:
+  // ~1s of no-new-frame requests (at the sink's ~60/s cadence) before the reader
+  // re-opens the backing file by path (see the self-heal note in readLatest).
+  static constexpr std::uint32_t kReopenAfterUnchangedReads = 60;
+
  private:
   HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   const void* view_ = nullptr;
   const VirtualCameraShmHeader* header_ = nullptr;
   std::uint32_t lastServedSeq_ = 0xFFFFFFFFu;  // sentinel: first read always copies
+  std::uint32_t unchangedStreak_ = 0;  // consecutive no-new-frame reads (self-heal)
 };
 
 }  // namespace corevideo::virtualcam

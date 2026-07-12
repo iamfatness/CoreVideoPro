@@ -73,6 +73,47 @@ IFACEMETHODIMP MediaStream::GetStreamDescriptor(IMFStreamDescriptor** descriptor
 }
 
 IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
+  // PACE DELIVERY TO THE FRAME RATE. The pipeline requests the next sample the
+  // moment the previous one completes, so completing immediately free-runs the
+  // whole serve chain at CPU speed - measured ~2000 samples/s (vs 60 declared),
+  // i.e. ~6GB/s of 3MB copies through the Frame Server and every consumer. That
+  // load is what starved system audio and strobed the picture whenever an app
+  // consumed the camera. A camera source controls delivery cadence exactly like
+  // hardware delivering at sensor rate: wait until the next frame is DUE.
+  LONGLONG waitHns = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (shutdown_) return MF_E_SHUTDOWN;
+    if (!running_) return MF_E_INVALIDREQUEST;
+    const LONGLONG now = MFGetSystemTime();
+    if (nextDueHns_ == 0 || now >= nextDueHns_ + frameDuration_) {
+      nextDueHns_ = now;  // first sample, or we fell behind: re-anchor, no catch-up burst
+    }
+    waitHns = nextDueHns_ - now;
+    nextDueHns_ += frameDuration_;
+    // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
+    // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
+    if (waitHns > 0 && pacerTimer_ == nullptr) {
+      pacerTimer_ = ::CreateWaitableTimerExW(nullptr, nullptr,
+                                             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                             TIMER_ALL_ACCESS);
+    }
+  }
+  if (waitHns > 0) {
+    bool waited = false;
+    if (pacerTimer_ != nullptr) {
+      LARGE_INTEGER due;
+      due.QuadPart = -waitHns;  // relative
+      if (::SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
+        ::WaitForSingleObject(pacerTimer_, static_cast<DWORD>(waitHns / 10000 + 20));
+        waited = true;
+      }
+    }
+    if (!waited) {
+      ::Sleep(static_cast<DWORD>(waitHns / 10000));
+    }
+  }
+
   std::lock_guard<std::mutex> lock(mutex_);
   if (shutdown_) return MF_E_SHUTDOWN;
   if (!running_) return MF_E_INVALIDREQUEST;
@@ -169,6 +210,7 @@ HRESULT MediaStream::Start() {
   if (shutdown_) return MF_E_SHUTDOWN;
   running_ = true;
   nextPts_ = 0;
+  nextDueHns_ = 0;  // re-anchor delivery pacing per run
   VcamServeLog("MediaStream::Start - serving begins");
   return events_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
 }
@@ -186,6 +228,10 @@ void MediaStream::Shutdown() {
   shutdown_ = true;
   running_ = false;
   reader_.close();
+  if (pacerTimer_ != nullptr) {
+    ::CloseHandle(pacerTimer_);
+    pacerTimer_ = nullptr;
+  }
   if (events_) {
     events_->Shutdown();
     events_.Reset();
