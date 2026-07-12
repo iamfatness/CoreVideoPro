@@ -641,8 +641,23 @@
                             </Grid>
                             <TextBox Header="Filename prefix"
                                      Text="{x:Bind ViewModel.RecordingFilenamePrefix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-                            <TextBox Header="Target folder"
-                                     Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="Target folder" Style="{StaticResource SettingsLabel}" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0"
+                                             VerticalAlignment="Center"
+                                             Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <Button Grid.Column="1" Content="Browse&#x2026;" Click="OnBrowseRecordingFolderClicked" />
+                                    <Button Grid.Column="2" Content="Open folder" Click="OnOpenRecordingFolderClicked" />
+                                </Grid>
+                                <TextBlock Text="Recordings save here. Files are named &lt;prefix&gt;-program-&lt;timestamp&gt;.mp4."
+                                           Style="{StaticResource OperatorSummary}" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
                 </StackPanel>

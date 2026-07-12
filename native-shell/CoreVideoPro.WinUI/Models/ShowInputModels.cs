@@ -22,6 +22,11 @@ public sealed class ShowInputSourceOption
 {
     public required string Value { get; init; }
     public required string Label { get; init; }
+
+    /// <summary>Category for the source-picker menu ("Zoom", "Camera", "Screen", "SRT",
+    /// "Media") — the picker shows one submenu per group so long device lists stay
+    /// filterable at pick time. Empty for entries outside any group (e.g. Missing).</summary>
+    public string Group { get; init; } = string.Empty;
 }
 
 /// <summary>A multiviewer drag-drop reorder request: swap the Show Input assignments of two

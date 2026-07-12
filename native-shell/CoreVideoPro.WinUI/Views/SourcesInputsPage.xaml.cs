@@ -1,6 +1,7 @@
 using System.Linq;
 using CoreVideoPro.WinUI;
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -42,37 +43,24 @@ public sealed partial class SourcesInputsPage : UserControl
         // value never gets a post-realization PropertyChanged the way Source does), leaving
         // the TYPE column blank. Setting it with the SelectionChanged handler detached keeps
         // the model authoritative without a spurious write-back.
-        var editor = ViewModel?.ShowInputEditors.ElementAtOrDefault(args.Index);
-
-        var kindCombo = FindDescendant<ComboBox>(root, "KindCombo");
-        if (kindCombo is null)
+        // SRC-1: categorized source picker — one submenu per group so long device lists
+        // stay filterable at pick time. The menu is (re)built on every open from the
+        // button's CURRENT Tag (x:Bind editor), so ItemsRepeater recycling stays correct.
+        var unifiedButton = FindDescendant<DropDownButton>(root, "UnifiedSourceButton");
+        if (unifiedButton is null)
         {
             return;
         }
 
-        kindCombo.SelectionChanged -= OnShowInputKindChanged;
-        if (editor is not null)
+        if (unifiedButton.Flyout is not MenuFlyout)
         {
-            // Select by the actual option object (SelectedItem), not SelectedValue: a ComboBox
-            // SelectedValue bound to an enum + SelectedValuePath does not reliably resolve the
-            // selection (string Source values do, enum Kind values render blank). Matching the
-            // option instance from the same ItemsSource is deterministic.
-            kindCombo.SelectedItem = editor.KindOptions.FirstOrDefault(option => option.Value == editor.Kind);
+            var flyout = new MenuFlyout
+            {
+                Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft
+            };
+            flyout.Opening += (_, _) => BuildUnifiedSourceMenu(flyout, unifiedButton);
+            unifiedButton.Flyout = flyout;
         }
-        kindCombo.SelectionChanged += OnShowInputKindChanged;
-
-        var sourceCombo = FindDescendant<ComboBox>(root, "SourceCombo");
-        if (sourceCombo is null)
-        {
-            return;
-        }
-
-        sourceCombo.SelectionChanged -= OnShowInputSourceChanged;
-        if (editor is not null && editor.SelectedSourceId is not null)
-        {
-            sourceCombo.SelectedValue = editor.SelectedSourceId;
-        }
-        sourceCombo.SelectionChanged += OnShowInputSourceChanged;
 
         var inputMicCombo = FindDescendant<ComboBox>(root, "InputMicCombo");
         if (inputMicCombo is not null)
@@ -81,52 +69,56 @@ public sealed partial class SourcesInputsPage : UserControl
             inputMicCombo.SelectionChanged += OnShowInputMicChanged;
         }
 
-        var captureMicCombo = FindDescendant<ComboBox>(root, "CaptureMicCombo");
-        if (captureMicCombo is not null)
-        {
-            captureMicCombo.SelectionChanged -= OnCaptureDeviceMicChanged;
-            captureMicCombo.SelectionChanged += OnCaptureDeviceMicChanged;
-        }
     }
 
-    private void OnShowInputKindChanged(object sender, SelectionChangedEventArgs e)
+    // Rebuilds the categorized picker menu from the button's current editor. Groups render
+    // in fixed order (Zoom / Camera / Screen / Media / SRT); empty groups with a hint row
+    // show the hint disabled ("No media assets — add them on the Media tab"); groups with
+    // nothing at all are omitted.
+    private static void BuildUnifiedSourceMenu(MenuFlyout flyout, DropDownButton button)
     {
-        // Read the selected option object (SelectedItem), not SelectedValue — an enum
-        // SelectedValue does not resolve reliably on this ComboBox. Tag (x:Bind), not
-        // DataContext (null inside the ItemsRepeater).
-        if (sender is not ComboBox combo ||
-            combo.Tag is not ShowInputSlotViewModel editor ||
-            combo.SelectedItem is not ShowInputKindOption option)
+        if (button.Tag is not ShowInputSlotViewModel editor)
         {
             return;
         }
 
-        var kind = option.Value;
-        if (editor.Kind == kind)
+        flyout.Items.Clear();
+        foreach (var group in ShowInputRosterService.UnifiedSourceGroups)
         {
-            return;
+            var entries = editor.UnifiedSourceOptions
+                .Where(option => string.Equals(option.Group, group, System.StringComparison.Ordinal))
+                .ToList();
+            if (entries.Count == 0)
+            {
+                continue;
+            }
+
+            var subMenu = new MenuFlyoutSubItem { Text = group };
+            foreach (var entry in entries)
+            {
+                if (ShowInputRosterService.IsHintSourceId(entry.Value))
+                {
+                    subMenu.Items.Add(new MenuFlyoutItem { Text = entry.Label, IsEnabled = false });
+                    continue;
+                }
+
+                var value = entry.Value;
+                var item = new MenuFlyoutItem { Text = entry.Label };
+                item.Click += (_, _) =>
+                {
+                    // Read the Tag at CLICK time — recycling may have rebound the row.
+                    if (button.Tag is ShowInputSlotViewModel current)
+                    {
+                        current.SelectedUnifiedSourceId = value;
+                        LaunchLog.Write(
+                            $"sources: source selected '{value}' slot={current.SlotNumber} -> kind={current.Kind}");
+                    }
+                };
+                subMenu.Items.Add(item);
+            }
+
+            flyout.Items.Add(subMenu);
         }
-
-        editor.Kind = kind;
-        LaunchLog.Write($"sources: kind={kind} slot={editor.SlotNumber} -> sourceOptions={editor.SourceOptions.Count}");
-    }
-
-    private void OnShowInputSourceChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (sender is not ComboBox combo ||
-            combo.Tag is not ShowInputSlotViewModel editor ||
-            combo.SelectedValue is not string sourceId)
-        {
-            return;
-        }
-
-        if (string.Equals(editor.SelectedSourceId, sourceId, System.StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        editor.SelectedSourceId = sourceId;
-        LaunchLog.Write($"sources: source selected '{sourceId}' slot={editor.SlotNumber} -> ParticipantId={editor.ParticipantId}");
     }
 
     private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)
@@ -156,17 +148,6 @@ public sealed partial class SourcesInputsPage : UserControl
         }
 
         editor.AudioDeviceId = audioDeviceId;
-    }
-
-    private void OnCaptureDeviceMicChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (sender is not ComboBox combo ||
-            combo.DataContext is not CaptureDevice captureDevice)
-        {
-            return;
-        }
-
-        ViewModel?.SetCaptureDeviceAudioSource(captureDevice.Id, combo.SelectedValue as string);
     }
 
     private static T? FindDescendant<T>(DependencyObject root, string name) where T : FrameworkElement

@@ -251,15 +251,21 @@ OverlayTileLayout computeOverlayTileLayout(
     return layout;
   }
 
-  // Lower-third: title line (bright text) above the org/text line (accent).
-  const std::string& primary = !overlay.title.empty() ? overlay.title : overlay.text;
-  if (!primary.empty()) {
+  // Lower-third: presenter NAME (bright, top) over their title/role (accent, below).
+  // The NAME arrives in overlay.text and MUST be the primary line. Previously the layout
+  // rendered overlay.title as primary and dropped the name whenever a title was present,
+  // so a capture source showed its device kind ("UVC") and a participant showed only their
+  // role -- never the actual name (owner: "doesn't honor the source name"). (2026-07-11)
+  const std::string& name = !overlay.text.empty() ? overlay.text : overlay.title;
+  if (!name.empty()) {
     layout.textLines.push_back(
-        {primary, {textLeft, height * 0.18f, availableTextWidth, height * 0.34f}, kTextColor});
+        {name, {textLeft, height * 0.18f, availableTextWidth, height * 0.34f}, kTextColor});
   }
-  if (!overlay.org.empty()) {
+  const std::string& secondary =
+      (!overlay.title.empty() && overlay.title != name) ? overlay.title : overlay.org;
+  if (!secondary.empty()) {
     layout.textLines.push_back(
-        {overlay.org, {textLeft, height * 0.56f, availableTextWidth, height * 0.28f}, layout.accentArgb});
+        {secondary, {textLeft, height * 0.56f, availableTextWidth, height * 0.28f}, layout.accentArgb});
   }
   return layout;
 }

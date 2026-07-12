@@ -87,49 +87,13 @@
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.RefreshCaptureDevicesCommand}" />
                     </Grid>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
-                                   Style="{StaticResource OperatorSummary}" VerticalAlignment="Center" />
-                        <Border Background="#1A3D2E" BorderBrush="{StaticResource StudioAccentBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="8,4"
-                                Visibility="{x:Bind ViewModel.DualCaptureLive, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Dual capture live" FontSize="11" />
-                        </Border>
-                    </StackPanel>
-
-                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                            BorderThickness="1" CornerRadius="6" Padding="10"
-                            Visibility="{x:Bind ViewModel.HasCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Spacing="8">
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="4">
-                                    <TextBlock Text="Primary capture source" FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <ComboBox ItemsSource="{x:Bind ViewModel.DualCaptureSourceOptions, Mode=OneWay}"
-                                              SelectedValue="{x:Bind ViewModel.PrimaryCaptureDeviceId, Mode=TwoWay}"
-                                              SelectedValuePath="Value"
-                                              DisplayMemberPath="Label"
-                                              HorizontalAlignment="Stretch" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Spacing="4">
-                                    <TextBlock Text="Secondary capture source" FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <ComboBox ItemsSource="{x:Bind ViewModel.DualCaptureSourceOptions, Mode=OneWay}"
-                                              SelectedValue="{x:Bind ViewModel.SecondaryCaptureDeviceId, Mode=TwoWay}"
-                                              SelectedValuePath="Value"
-                                              DisplayMemberPath="Label"
-                                              HorizontalAlignment="Stretch" />
-                                </StackPanel>
-                            </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.DualCaptureSummary, Mode=OneWay}"
-                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
-                                       TextWrapping="WrapWholeWords" />
-                        </StackPanel>
-                    </Border>
+                    <!-- SRC-2: the old Primary/Secondary "dual capture" pickers were legacy —
+                         they silently overwrote Show-input slots 1-2 and duplicated the slot
+                         table (which now auto-connects assigned devices). Devices below are a
+                         dense utility list: state + sync offset + connect/offline. Assignment,
+                         audio pairing, and grading live on the Show-inputs table. -->
+                    <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
 
                     <TextBlock Text="{x:Bind ViewModel.CaptureDevicesEmptyGuidance, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
@@ -141,79 +105,58 @@
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="models:CaptureDevice">
                                 <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                                        BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
-                                    <StackPanel Spacing="8">
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
-                                            <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
-                                                       Foreground="{StaticResource StudioAccentBrush}" />
-                                        </Grid>
-                                        <TextBlock FontSize="11" Foreground="{StaticResource StudioMutedBrush}">
-                                            <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
-                                            <Run Text=" · " />
-                                            <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
-                                        </TextBlock>
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Text="{x:Bind AssignedAudioLabel, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}" />
-                                            <ComboBox x:Name="CaptureMicCombo"
-                                                      ItemsSource="{Binding ViewModel.AudioCaptureSourceOptions, ElementName=SourcesInputsRoot}"
-                                                      SelectedValue="{x:Bind AssignedAudioDeviceId, Mode=OneWay}"
-                                                      SelectedValuePath="Value"
-                                                      DisplayMemberPath="Label"
-                                                      Header="Paired audio source"
-                                                      PlaceholderText="No paired audio source"
-                                                      SelectionChanged="OnCaptureDeviceMicChanged"
-                                                      HorizontalAlignment="Stretch" />
+                                        BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,4">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
+                                            <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind FormatLabel, Mode=OneWay}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind ObservedSignalLabel, Mode=OneWay}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind AudioSyncLabel, Mode=OneWay}" />
+                                            </TextBlock>
                                         </StackPanel>
-                                        <Grid ColumnSpacing="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{x:Bind AudioSyncLabel, Mode=OneWay}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                       VerticalAlignment="Center" />
-                                            <Button Grid.Column="1"
-                                                    Content="-20 ms"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                            <Button Grid.Column="2"
-                                                    Content="+20 ms"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                            <Button Grid.Column="3"
-                                                    Content="Reset"
-                                                    Style="{StaticResource OperatorGhostButton}"
-                                                    Command="{Binding ViewModel.ResetCaptureAudioSyncCommand, ElementName=SourcesInputsRoot}"
-                                                    CommandParameter="{x:Bind Id}" />
-                                        </Grid>
-                                        <Button Content="Bring online as program source"
-                                                Style="{StaticResource OperatorGhostButton}"
+                                        <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
+                                                   Foreground="{StaticResource StudioAccentBrush}" VerticalAlignment="Center" />
+                                        <Button Grid.Column="2"
+                                                Content="-20 ms"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
+                                                ToolTipService.ToolTip="Nudge this device's audio 20 ms earlier"
+                                                Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}"
+                                                VerticalAlignment="Center" />
+                                        <Button Grid.Column="3"
+                                                Content="+20 ms"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
+                                                ToolTipService.ToolTip="Nudge this device's audio 20 ms later"
+                                                Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
+                                                CommandParameter="{x:Bind Id}"
+                                                VerticalAlignment="Center" />
+                                        <Button Grid.Column="4"
+                                                Content="Connect"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+                                                Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                VerticalAlignment="Center" />
                                         <!-- Lifecycle L2: stop the session + unassign its slots -->
-                                        <Button Content="Take offline"
-                                                Style="{StaticResource OperatorGhostButton}"
+                                        <Button Grid.Column="5"
+                                                Content="Take offline"
+                                                Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.TakeCaptureDeviceOfflineCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
-                                                Visibility="{x:Bind IsConnected, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                        <Button Content="Color grade"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Command="{Binding ViewModel.OpenCaptureDeviceColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
-                                                CommandParameter="{x:Bind Id}" />
-                                    </StackPanel>
+                                                Visibility="{x:Bind IsConnected, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                VerticalAlignment="Center" />
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ItemsRepeater.ItemTemplate>
@@ -353,27 +296,13 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                    <!-- Compact routing table: every input is a single dense row so all 10 fit
-                         in a 1080p window without large per-slot cards. Header + rows share the
-                         same column widths so the columns line up like a broadcast router list. -->
-                    <Grid Padding="8,0,8,2" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="30" />
-                            <ColumnDefinition Width="40" />
-                            <ColumnDefinition Width="1.1*" />
-                            <ColumnDefinition Width="1.5*" />
-                            <ColumnDefinition Width="1.3*" />
-                            <ColumnDefinition Width="1.2*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="IN" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="1" Text="SHOW" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="2" Text="TYPE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="3" Text="SOURCE" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="4" Text="NAME" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                        <TextBlock Grid.Column="5" Text="AUDIO" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource StudioMutedBrush}" />
-                    </Grid>
+                    <!-- Dense router list, self-describing rows (no header row — the pickers,
+                         placeholders and chips label themselves). Assigned rows carry the full
+                         control set; unassigned rows collapse to slot number + picker so ten
+                         slots never read as a wall of dead controls. Width-capped so controls
+                         don't stretch absurdly on wide monitors. -->
                     <ItemsRepeater x:Name="ShowInputEditorsRepeater"
+                                   MaxWidth="1520" HorizontalAlignment="Left"
                                    ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
                                    ElementPrepared="OnShowInputEditorPrepared">
                         <ItemsRepeater.Layout>
@@ -386,10 +315,9 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="30" />
                                             <ColumnDefinition Width="40" />
-                                            <ColumnDefinition Width="1.1*" />
-                                            <ColumnDefinition Width="1.5*" />
-                                            <ColumnDefinition Width="1.3*" />
-                                            <ColumnDefinition Width="1.2*" />
+                                            <ColumnDefinition Width="440" />
+                                            <ColumnDefinition Width="230" />
+                                            <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
@@ -398,49 +326,65 @@
                                         <CheckBox Grid.Column="1" MinWidth="0" Padding="0" HorizontalAlignment="Center"
                                                   VerticalAlignment="Center"
                                                   IsChecked="{x:Bind InShow, Mode=TwoWay}"
-                                                  IsEnabled="{x:Bind ShowInShowToggle, Mode=OneWay}" />
-                                        <!-- Selection is driven via SelectedItem in code-behind
-                                             (OnShowInputEditorPrepared): an enum SelectedValue +
-                                             SelectedValuePath does not resolve reliably here. -->
-                                        <ComboBox Grid.Column="2" x:Name="KindCombo"
-                                                  Tag="{x:Bind}"
-                                                  ItemsSource="{x:Bind KindOptions, Mode=OneWay}"
-                                                  DisplayMemberPath="Label"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="3" x:Name="SourceCombo"
-                                                  Tag="{x:Bind}"
-                                                  ItemsSource="{x:Bind SourceOptions, Mode=OneWay}"
-                                                  SelectedValue="{x:Bind SelectedSourceId, Mode=OneWay}"
-                                                  SelectedValuePath="Value"
-                                                  DisplayMemberPath="Label"
-                                                  IsEnabled="{x:Bind IsSourcePickerEnabled, Mode=OneWay}"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <!-- Editable display name for the assigned source; defaults to
-                                             the Zoom/UVC/asset name, feeds the auto lower-thirds. -->
-                                        <TextBox Grid.Column="4"
+                                                  IsEnabled="{x:Bind IsAssigned, Mode=OneWay}"
+                                                  ToolTipService.ToolTip="In show — puts this input on the Studio multiview strip" />
+                                        <!-- SRC-1: categorized source picker — a DropDownButton opening a
+                                             menu with one submenu per group (Zoom / Camera / Screen / Media
+                                             / SRT), so long device lists stay filterable AT PICK TIME (the
+                                             reason the old TYPE dropdown existed) without a second control
+                                             to keep consistent. The button face carries "Group · Name", so
+                                             no separate type chip. MISSING badge when the assigned source is
+                                             gone (binding kept; never silently substituted). The flyout is
+                                             built in code-behind on open (OnShowInputEditorPrepared). -->
+                                        <Grid Grid.Column="2" ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <DropDownButton x:Name="UnifiedSourceButton"
+                                                            Tag="{x:Bind}"
+                                                            Content="{x:Bind SelectedUnifiedSourceLabel, Mode=OneWay}"
+                                                            HorizontalAlignment="Stretch"
+                                                            HorizontalContentAlignment="Left"
+                                                            VerticalAlignment="Center" />
+                                            <Border Grid.Column="1" Background="#3A2A10" CornerRadius="3" Padding="6,2"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="{x:Bind IsSourceMissing, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                    ToolTipService.ToolTip="This source is unavailable (unplugged / left / removed). The slot keeps its binding and re-attaches when it returns.">
+                                                <TextBlock Text="MISSING" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="#E8B341" />
+                                            </Border>
+                                        </Grid>
+                                        <!-- Everything past the picker exists ONLY on assigned rows. -->
+                                        <TextBox Grid.Column="3"
                                                  Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                                 IsEnabled="{x:Bind IsDisplayNameEditable, Mode=OneWay}"
+                                                 Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                  PlaceholderText="Name"
                                                  ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="5" x:Name="InputMicCombo"
+                                        <ComboBox Grid.Column="4" x:Name="InputMicCombo"
                                                   Tag="{x:Bind}"
+                                                  MinWidth="200"
+                                                  PlaceholderText="Pair a microphone"
+                                                  ToolTipService.ToolTip="Microphone paired with this camera (feeds its channel strip)"
                                                   ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
                                                   SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
                                                   SelectedValuePath="Value"
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <Button Grid.Column="6"
+                                                  HorizontalAlignment="Left" VerticalAlignment="Center" />
+                                        <Button Grid.Column="5"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
+                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                 Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
                                                 VerticalAlignment="Center" />
                                         <!-- Lifecycle L1: detach this slot (source stays available) -->
-                                        <Button Grid.Column="7"
+                                        <Button Grid.Column="6"
                                                 Content="Unassign"
                                                 Style="{StaticResource OperatorGhostButton}"
+                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                 Command="{Binding ViewModel.UnassignShowInputCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind}"
                                                 ToolTipService.ToolTip="Clear this Show Input slot (the source stays available in Sources)"

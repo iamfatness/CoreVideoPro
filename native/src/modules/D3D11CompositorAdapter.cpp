@@ -21,10 +21,9 @@
 #include <wincodec.h>
 
 #include "compositor/CompositorLayout.h"
-#include "modules/ImageResize.h"          // resizeBgraBilinear (vcam downscale on the tap thread)
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
-#include "modules/VirtualCameraFrame.h"  // convertBgraToNv12 (on the tap thread)
+#include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 
 #include <algorithm>
 #include <array>
@@ -313,6 +312,44 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
   return float4(saturate(rgb), color.a);
+}
+)";
+
+// Virtual-camera GPU BGRA->NV12 convert (tap device2, see vcamTapLoop). Two
+// fullscreen-triangle passes turn the 1080p BGRA shared texture into NV12
+// planes ON the GPU, so the tap thread reads back ~3MB of finished NV12 (R8
+// luma + half-res R8G8 chroma stagings) instead of ~8MB of BGRA that a ~15ms
+// scalar CPU loop then converts. The math below is EXACTLY convertBgraToNv12's
+// BT.601 studio-swing fixed-point matrix (VirtualCameraFrame.h):
+//   Y = (66 R + 129 G + 25 B)/256 + 16
+//   U = (-38 R -  74 G + 112 B)/256 + 128
+//   V = (112 R -  94 G -  18 B)/256 + 128
+// expressed on [0,1] UNORM values (byte offsets /255); the UNORM render-target
+// store rounds to nearest, matching the CPU's "+128 then shift" rounding class.
+constexpr char kVcamNv12YPixelShader[] = R"(
+Texture2D srcTex : register(t0);
+SamplerState srcSampler : register(s0);
+
+float main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+  float3 rgb = srcTex.Sample(srcSampler, uv).rgb;
+  return dot(rgb, float3(66.0, 129.0, 25.0) / 256.0) + 16.0 / 255.0;
+}
+)";
+
+// Chroma pass at half resolution (960x540 for the fixed 1080p vcam). Each
+// target pixel's interpolated uv lands exactly on the source 2x2 block CENTER
+// ((2i+1)/W, (2j+1)/H), so a single linear-filtered sample IS the 2x2 box
+// average convertBgraToNv12 computes before its U/V dot products. R8G8 output
+// = interleaved U (.x) then V (.y), NV12's UV-plane byte order.
+constexpr char kVcamNv12UvPixelShader[] = R"(
+Texture2D srcTex : register(t0);
+SamplerState srcSampler : register(s0);
+
+float2 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+  float3 rgb = srcTex.Sample(srcSampler, uv).rgb;
+  float u = dot(rgb, float3(-38.0, -74.0, 112.0) / 256.0) + 128.0 / 255.0;
+  float v = dot(rgb, float3(112.0, -94.0, -18.0) / 256.0) + 128.0 / 255.0;
+  return float2(u, v);
 }
 )";
 
@@ -2453,28 +2490,104 @@ class D3D11Compositor final : public ICompositor {
       stopVcamTap();
       return false;
     }
-    // Staging on the SECOND device (CPU read) - the ~8MB read lands here, off the
-    // render thread entirely.
-    D3D11_TEXTURE2D_DESC sdesc = desc;
-    sdesc.Usage = D3D11_USAGE_STAGING;
-    sdesc.BindFlags = 0;
-    sdesc.MiscFlags = 0;
-    sdesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (FAILED(vcamDevice2_->CreateTexture2D(&sdesc, nullptr, vcamStaging2_.put()))) {
+    // GPU BGRA->NV12 convert rig, entirely on the SECOND device (see
+    // kVcamNv12YPixelShader / kVcamNv12UvPixelShader): sample the shared BGRA,
+    // render Y into an R8 target + interleaved UV into a half-res R8G8 target,
+    // copy both into small stagings. The CPU readback shrinks to ~3MB of
+    // finished NV12 with zero per-pixel CPU work.
+    //
+    // Source SRV: vcamShared1_ is created with BIND_SHADER_RESOURCE, so the
+    // shared texture opened on this device normally supports a direct SRV. If
+    // the driver refuses, fall back to a device2-local copy that carries the
+    // shader-resource bind and sample that instead.
+    vcamUseLocalCopy2_ = false;
+    if (FAILED(vcamDevice2_->CreateShaderResourceView(vcamShared2_.get(), nullptr, vcamSrcSrv2_.put()))) {
+      vcamSrcSrv2_ = {};
+      D3D11_TEXTURE2D_DESC ldesc = desc;
+      ldesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      ldesc.MiscFlags = 0;
+      if (FAILED(vcamDevice2_->CreateTexture2D(&ldesc, nullptr, vcamLocal2_.put())) ||
+          FAILED(vcamDevice2_->CreateShaderResourceView(vcamLocal2_.get(), nullptr, vcamSrcSrv2_.put()))) {
+        stopVcamTap();
+        return false;
+      }
+      vcamUseLocalCopy2_ = true;
+    }
+    std::string shaderError;
+    const auto vsBlob = compileShader(kCompositorVertexShader, "main", "vs_5_0", shaderError);
+    const auto psYBlob = compileShader(kVcamNv12YPixelShader, "main", "ps_5_0", shaderError);
+    const auto psUvBlob = compileShader(kVcamNv12UvPixelShader, "main", "ps_5_0", shaderError);
+    if (!vsBlob || !psYBlob || !psUvBlob ||
+        FAILED(vcamDevice2_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(),
+                                                nullptr, vcamVs2_.put())) ||
+        FAILED(vcamDevice2_->CreatePixelShader(psYBlob->GetBufferPointer(), psYBlob->GetBufferSize(),
+                                               nullptr, vcamPsY2_.put())) ||
+        FAILED(vcamDevice2_->CreatePixelShader(psUvBlob->GetBufferPointer(), psUvBlob->GetBufferSize(),
+                                               nullptr, vcamPsUV2_.put()))) {
+      std::fprintf(stderr, "[vcam-tap] NV12 shader build failed: %s\n", shaderError.c_str());
+      stopVcamTap();
+      return false;
+    }
+    D3D11_SAMPLER_DESC sampDesc{};
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;  // linear = the 2x2 chroma box average
+    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sampDesc.MinLOD = 0.f;
+    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(vcamDevice2_->CreateSamplerState(&sampDesc, vcamSampler2_.put()))) {
+      stopVcamTap();
+      return false;
+    }
+    // Y/UV render targets + their CPU-read stagings (the ~3MB readback).
+    const auto makeTex2 = [this](UINT tw, UINT th, DXGI_FORMAT fmt, bool staging,
+                                 ComPtrLite<ID3D11Texture2D>& outTex) -> bool {
+      D3D11_TEXTURE2D_DESC t{};
+      t.Width = tw;
+      t.Height = th;
+      t.MipLevels = 1;
+      t.ArraySize = 1;
+      t.Format = fmt;
+      t.SampleDesc.Count = 1;
+      t.Usage = staging ? D3D11_USAGE_STAGING : D3D11_USAGE_DEFAULT;
+      t.BindFlags = staging ? 0u : D3D11_BIND_RENDER_TARGET;
+      t.CPUAccessFlags = staging ? D3D11_CPU_ACCESS_READ : 0u;
+      return SUCCEEDED(vcamDevice2_->CreateTexture2D(&t, nullptr, outTex.put()));
+    };
+    const UINT yw = static_cast<UINT>(width);
+    const UINT yh = static_cast<UINT>(height);
+    if (!makeTex2(yw, yh, DXGI_FORMAT_R8_UNORM, false, vcamTexY2_) ||
+        FAILED(vcamDevice2_->CreateRenderTargetView(vcamTexY2_.get(), nullptr, vcamRtvY2_.put())) ||
+        !makeTex2(yw / 2, yh / 2, DXGI_FORMAT_R8G8_UNORM, false, vcamTexUV2_) ||
+        FAILED(vcamDevice2_->CreateRenderTargetView(vcamTexUV2_.get(), nullptr, vcamRtvUV2_.put())) ||
+        !makeTex2(yw, yh, DXGI_FORMAT_R8_UNORM, true, vcamStagY2_) ||
+        !makeTex2(yw / 2, yh / 2, DXGI_FORMAT_R8G8_UNORM, true, vcamStagUV2_)) {
       stopVcamTap();
       return false;
     }
     vcamTapStop_.store(false, std::memory_order_release);
     vcamThread_ = std::thread([this] { vcamTapLoop(); });
-    std::fprintf(stderr, "[vcam-tap] rig built OK %dx%d (device2 + shared + staging + thread)\n", width, height);
+    std::fprintf(stderr,
+                 "[vcam-tap] rig built OK %dx%d (device2 + shared%s + GPU NV12 targets + stagings + thread)\n",
+                 width, height, vcamUseLocalCopy2_ ? " via local copy" : " direct SRV");
     return true;
   }
 
-  // DEDICATED TAP THREAD (own device): the slow GPU->staging copy + Map + ~8MB CPU
-  // read happen HERE, touching neither the render thread/coreMutex nor the audio
-  // worker. The converted NV12 is stashed in vcamLatestNv12_; the output worker
-  // fetches it with a cheap CPU copy via takeVcamNv12().
+  // DEDICATED TAP THREAD (own device): the BGRA->NV12 convert runs as two GPU
+  // passes HERE (Y into R8, half-res UV into R8G8 - see kVcamNv12YPixelShader),
+  // so the GPU->CPU readback is ~3MB of finished NV12 planes with zero per-pixel
+  // CPU work, touching neither the render thread/coreMutex nor the audio worker.
+  // The NV12 is stashed in vcamLatestNv12_; the output worker fetches it with a
+  // cheap CPU copy via takeVcamNv12().
   void vcamTapLoop() {
+    // Throughput work, not latency work: this thread still reads UNCACHED
+    // (write-combined) staging memory - now ~3MB of NV12 instead of ~8MB of BGRA
+    // plus a ~15ms scalar convert. Run it BELOW_NORMAL so under system pressure
+    // it loses slices before the OS audio engine / other apps do: a dropped vcam
+    // frame is invisible, system-wide audio glitching (owner's browser+DAW
+    // stress test) is not.
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     while (!vcamTapStop_.load(std::memory_order_acquire)) {
       {
         std::unique_lock<std::mutex> lk(vcamCvMutex_);
@@ -2485,47 +2598,96 @@ class D3D11Compositor final : public ICompositor {
         vcamNewFrame_.store(false, std::memory_order_release);
       }
       if (vcamTapStop_.load(std::memory_order_acquire)) break;
-      if (!vcamMutex2_ || !vcamShared2_ || !vcamStaging2_ || !vcamContext2_) continue;
+      if (!vcamMutex2_ || !vcamShared2_ || !vcamContext2_ || !vcamSrcSrv2_ ||
+          !vcamVs2_ || !vcamPsY2_ || !vcamPsUV2_ || !vcamSampler2_ ||
+          !vcamTexY2_ || !vcamRtvY2_ || !vcamTexUV2_ || !vcamRtvUV2_ ||
+          !vcamStagY2_ || !vcamStagUV2_) {
+        continue;
+      }
       if (vcamMutex2_->AcquireSync(1, 8) != S_OK) continue;  // producer still writing; try later
-      vcamContext2_->CopyResource(vcamStaging2_.get(), vcamShared2_.get());
-      vcamMutex2_->ReleaseSync(0);
-      D3D11_MAPPED_SUBRESOURCE mapped{};
-      if (SUCCEEDED(vcamContext2_->Map(vcamStaging2_.get(), 0, D3D11_MAP_READ, 0, &mapped))) {
-        const int w = vcamTapW_;
-        const int h = vcamTapH_;
-        const size_t rowBytes = static_cast<size_t>(w) * 4u;
-        // Copy the mapped staging (slow uncached GPU memory) into a cached buffer
-        // ONCE, then Unmap, then convert - reading from the cached copy is much
-        // faster than converting straight out of mapped staging memory.
-        vcamTapBuffer_.resize(rowBytes * static_cast<size_t>(h));
-        const auto* src = static_cast<const uint8_t*>(mapped.pData);
-        for (int y = 0; y < h; ++y) {
-          std::memcpy(vcamTapBuffer_.data() + static_cast<size_t>(y) * rowBytes,
-                      src + static_cast<size_t>(y) * mapped.RowPitch, rowBytes);
+      ID3D11DeviceContext* ctx = vcamContext2_.get();
+      // Release the keyed mutex as soon as every command that touches the shared
+      // texture has been ISSUED (ReleaseSync queues in command order on this
+      // context), so the render thread can produce the next frame while we map.
+      bool released = false;
+      if (vcamUseLocalCopy2_ && vcamLocal2_) {
+        // Driver refused a direct SRV over the shared texture: copy into the
+        // device2-local sampleable texture first (frees the producer sooner).
+        ctx->CopyResource(vcamLocal2_.get(), vcamShared2_.get());
+        vcamMutex2_->ReleaseSync(0);
+        released = true;
+      }
+      // Two fullscreen-triangle passes on a fresh-default-state context (no
+      // blend, no scissor, CULL_BACK is fine for the standard SV_VertexID
+      // triangle): Y plane at full res, interleaved UV at half res.
+      ctx->IASetInputLayout(nullptr);
+      ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      ctx->VSSetShader(vcamVs2_.get(), nullptr, 0);
+      ID3D11ShaderResourceView* srvs[] = {vcamSrcSrv2_.get()};
+      ctx->PSSetShaderResources(0, 1, srvs);
+      ID3D11SamplerState* samplers[] = {vcamSampler2_.get()};
+      ctx->PSSetSamplers(0, 1, samplers);
+      const int w = vcamTapW_;
+      const int h = vcamTapH_;
+      ID3D11RenderTargetView* rtvY = vcamRtvY2_.get();
+      ctx->OMSetRenderTargets(1, &rtvY, nullptr);
+      D3D11_VIEWPORT vpY{0.f, 0.f, static_cast<float>(w), static_cast<float>(h), 0.f, 1.f};
+      ctx->RSSetViewports(1, &vpY);
+      ctx->PSSetShader(vcamPsY2_.get(), nullptr, 0);
+      ctx->Draw(3, 0);
+      ID3D11RenderTargetView* rtvUV = vcamRtvUV2_.get();
+      ctx->OMSetRenderTargets(1, &rtvUV, nullptr);
+      D3D11_VIEWPORT vpUV{0.f, 0.f, static_cast<float>(w / 2), static_cast<float>(h / 2), 0.f, 1.f};
+      ctx->RSSetViewports(1, &vpUV);
+      ctx->PSSetShader(vcamPsUV2_.get(), nullptr, 0);
+      ctx->Draw(3, 0);
+      ID3D11ShaderResourceView* nullSrv[] = {nullptr};
+      ctx->PSSetShaderResources(0, 1, nullSrv);
+      ID3D11RenderTargetView* nullRtv[] = {nullptr};
+      ctx->OMSetRenderTargets(1, nullRtv, nullptr);
+      ctx->CopyResource(vcamStagY2_.get(), vcamTexY2_.get());
+      ctx->CopyResource(vcamStagUV2_.get(), vcamTexUV2_.get());
+      if (!released) {
+        vcamMutex2_->ReleaseSync(0);
+      }
+      // Read back the two small stagings into the publish buffer: Y plane rows,
+      // then interleaved UV rows (NV12 layout), honoring each RowPitch. The Map
+      // blocks until the draws/copies above complete.
+      std::vector<uint8_t> nv12(nv12FrameSize(w, h));
+      bool ok = false;
+      D3D11_MAPPED_SUBRESOURCE mapY{};
+      if (SUCCEEDED(ctx->Map(vcamStagY2_.get(), 0, D3D11_MAP_READ, 0, &mapY))) {
+        const auto* srcY = static_cast<const uint8_t*>(mapY.pData);
+        for (int row = 0; row < h; ++row) {
+          std::memcpy(nv12.data() + static_cast<size_t>(row) * w,
+                      srcY + static_cast<size_t>(row) * mapY.RowPitch,
+                      static_cast<size_t>(w));
         }
-        vcamContext2_->Unmap(vcamStaging2_.get(), 0);
-        // The program renders at the output resolution (e.g. 4K); the virtual
-        // camera serves a FIXED 1920x1080 (the DLL's media type). Downscale to
-        // that here on the tap thread (off every hot path), then convert to NV12.
-        const std::uint8_t* srcBgra = vcamTapBuffer_.data();
-        int cw = w;
-        int ch = h;
-        if (w != kVcamOutW || h != kVcamOutH) {
-          if (resizeBgraBilinear(vcamTapBuffer_.data(), w, h, kVcamOutW, kVcamOutH, vcamResized_)) {
-            srcBgra = vcamResized_.data();
-            cw = kVcamOutW;
-            ch = kVcamOutH;
+        ctx->Unmap(vcamStagY2_.get(), 0);
+        D3D11_MAPPED_SUBRESOURCE mapUV{};
+        if (SUCCEEDED(ctx->Map(vcamStagUV2_.get(), 0, D3D11_MAP_READ, 0, &mapUV))) {
+          uint8_t* dstUV = nv12.data() + static_cast<size_t>(w) * static_cast<size_t>(h);
+          const auto* srcUV = static_cast<const uint8_t*>(mapUV.pData);
+          for (int row = 0; row < h / 2; ++row) {
+            std::memcpy(dstUV + static_cast<size_t>(row) * w,
+                        srcUV + static_cast<size_t>(row) * mapUV.RowPitch,
+                        static_cast<size_t>(w));  // (w/2) UV pairs = w bytes per row
           }
+          ctx->Unmap(vcamStagUV2_.get(), 0);
+          ok = true;
         }
-        // Expensive BGRA->NV12 conversion, on THIS tap thread.
-        std::vector<uint8_t> nv12;
-        if (convertBgraToNv12(srcBgra, cw, ch, nv12)) {
-          std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
-          vcamLatestW_ = cw;
-          vcamLatestH_ = ch;
-          vcamLatestNv12_.swap(nv12);
-          ++vcamLatestGen_;
-        }
+      }
+      if (ok) {
+        std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
+        vcamLatestW_ = w;
+        vcamLatestH_ = h;
+        vcamLatestNv12_.swap(nv12);
+        ++vcamLatestGen_;
+      } else if (!vcamTapErrorLogged_) {
+        // Device removed / driver reset / TDR: skip frames (never crash, never
+        // spin - the CV wait above still paces the loop); log ONCE per rig.
+        std::fprintf(stderr, "[vcam-tap] GPU NV12 staging Map failed; skipping frames\n");
+        vcamTapErrorLogged_ = true;
       }
     }
   }
@@ -2536,7 +2698,20 @@ class D3D11Compositor final : public ICompositor {
     if (vcamThread_.joinable()) {
       vcamThread_.join();
     }
-    vcamStaging2_ = {};
+    vcamStagY2_ = {};
+    vcamStagUV2_ = {};
+    vcamRtvY2_ = {};
+    vcamTexY2_ = {};
+    vcamRtvUV2_ = {};
+    vcamTexUV2_ = {};
+    vcamSrcSrv2_ = {};
+    vcamLocal2_ = {};
+    vcamUseLocalCopy2_ = false;
+    vcamSampler2_ = {};
+    vcamVs2_ = {};
+    vcamPsY2_ = {};
+    vcamPsUV2_ = {};
+    vcamTapErrorLogged_ = false;
     vcamShared2_ = {};
     vcamMutex2_ = {};
     vcamContext2_ = {};
@@ -2583,9 +2758,10 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
   ComPtrLite<ID3D11Texture2D> stagingTexture_;
   // Virtual-camera readback rig (see exportVcamSharedTexture / vcamTapLoop). The
-  // render device writes vcamShared1_ (fast GPU->GPU); a SECOND device reads it
-  // via vcamShared2_ + a staging texture on a dedicated thread, so the slow ~8MB
-  // CPU read touches neither the render thread/coreMutex nor the audio worker.
+  // render device writes vcamShared1_ (fast GPU->GPU); a SECOND device converts
+  // it to NV12 on the GPU and reads back ~3MB of planes via two stagings on a
+  // dedicated thread, so the readback touches neither the render thread/
+  // coreMutex nor the audio worker - and no per-pixel CPU convert exists at all.
   ComPtrLite<ID3D11Texture2D> vcamShared1_;   // render device, keyed-mutex shared (1080p)
   ComPtrLite<ID3D11RenderTargetView> vcamShared1Rtv_;
   ComPtrLite<IDXGIKeyedMutex> vcamMutex1_;
@@ -2595,7 +2771,24 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11DeviceContext> vcamContext2_;
   ComPtrLite<ID3D11Texture2D> vcamShared2_;   // vcamShared1_ opened on device2
   ComPtrLite<IDXGIKeyedMutex> vcamMutex2_;
-  ComPtrLite<ID3D11Texture2D> vcamStaging2_;  // CPU-read staging on device2
+  // GPU BGRA->NV12 convert rig on device2 (tap thread only, see vcamTapLoop and
+  // kVcamNv12YPixelShader): two fullscreen passes render the Y plane (R8) and
+  // the half-res interleaved UV plane (R8G8), so the CPU readback is ~3MB of
+  // finished NV12 instead of ~8MB of BGRA + a scalar per-pixel convert.
+  ComPtrLite<ID3D11VertexShader> vcamVs2_;    // fullscreen triangle (SV_VertexID)
+  ComPtrLite<ID3D11PixelShader> vcamPsY2_;    // luma pass
+  ComPtrLite<ID3D11PixelShader> vcamPsUV2_;   // chroma pass (linear 2x2 average)
+  ComPtrLite<ID3D11SamplerState> vcamSampler2_;
+  ComPtrLite<ID3D11ShaderResourceView> vcamSrcSrv2_;  // over vcamShared2_ (or vcamLocal2_)
+  ComPtrLite<ID3D11Texture2D> vcamLocal2_;    // fallback source copy if the shared texture can't be an SRV
+  bool vcamUseLocalCopy2_ = false;
+  ComPtrLite<ID3D11Texture2D> vcamTexY2_;     // 1920x1080 R8_UNORM render target
+  ComPtrLite<ID3D11RenderTargetView> vcamRtvY2_;
+  ComPtrLite<ID3D11Texture2D> vcamTexUV2_;    // 960x540 R8G8_UNORM render target
+  ComPtrLite<ID3D11RenderTargetView> vcamRtvUV2_;
+  ComPtrLite<ID3D11Texture2D> vcamStagY2_;    // CPU-read stagings (the ~3MB NV12 readback)
+  ComPtrLite<ID3D11Texture2D> vcamStagUV2_;
+  bool vcamTapErrorLogged_ = false;  // tap-thread only; log the GPU path failure ONCE per rig
   int vcamTapW_ = 0;
   int vcamTapH_ = 0;
   std::thread vcamThread_;
@@ -2607,12 +2800,9 @@ class D3D11Compositor final : public ICompositor {
   // program may render larger (up to 4K), so the tap downscales to this.
   static constexpr int kVcamOutW = 1920;
   static constexpr int kVcamOutH = 1080;
-  // The tap reads BGRA into vcamTapBuffer_ (tap-thread only), downscales into
-  // vcamResized_ if needed, and converts to NV12 (the expensive per-pixel step,
-  // done HERE off the output worker). The output worker then copies out the small
-  // NV12 result cheaply via takeVcamNv12.
-  std::vector<uint8_t> vcamTapBuffer_;
-  std::vector<uint8_t> vcamResized_;
+  // The tap publishes GPU-converted NV12 into vcamLatestNv12_ (Y plane then
+  // interleaved UV, w*h*3/2 bytes); the output worker copies it out cheaply via
+  // takeVcamNv12.
   std::mutex vcamNv12Mutex_;
   std::vector<uint8_t> vcamLatestNv12_;
   int vcamLatestW_ = 0;

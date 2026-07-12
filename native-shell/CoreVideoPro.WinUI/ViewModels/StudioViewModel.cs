@@ -46,6 +46,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionSettingsWindow? _productionSettingsWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
     private CancellationTokenSource? _lowerThirdKeyTransitionCts;
+    // The source the lower third is currently showing OR animating toward. Compared in
+    // UpdateProgramLowerThirdKey so a refresh for the same target never restarts the slide
+    // (the displayed key lags behind during a build-out). Empty when hidden.
+    private string _lowerThirdTargetSourceId = string.Empty;
+    private long _lowerThirdKeyChangeTickMs;
     private readonly HashSet<ColorGradeEditorViewModel> _openColorGradeEditors = [];
     private IReadOnlyList<AudioCaptureDevice> _lastDiscoveredAudioCaptureDevices = [];
     private DateTimeOffset _lastAudioTelemetryLoggedAt = DateTimeOffset.MinValue;
@@ -293,7 +298,28 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _recordingAudioBitrateKbps = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.AudioBitrateKbps;
 
     [ObservableProperty]
-    private string _recordingTargetFolder = MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
+    private string _recordingTargetFolder = ResolveDefaultRecordingFolder();
+
+    // Absolute default so recordings land somewhere the operator can find
+    // (Videos\CoreVideo Pro) rather than the relative "Recordings/CoreVideo Pro" that
+    // resolved next to the core exe. Overridable via the settings Browse picker.
+    internal static string ResolveDefaultRecordingFolder()
+    {
+        try
+        {
+            var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+            if (!string.IsNullOrWhiteSpace(videos))
+            {
+                return System.IO.Path.Combine(videos, "CoreVideo Pro");
+            }
+        }
+        catch
+        {
+            // Fall back to the wire default below.
+        }
+
+        return MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder;
+    }
 
     [ObservableProperty]
     private string _recordingFilenamePrefix = MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix;
@@ -8746,7 +8772,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreRecordingTargetsWire BuildRecordingTargets(IReadOnlyList<string> isoParticipantIds) =>
         new(
-            TargetFolder: NormalizeOutputText(RecordingTargetFolder, MediaCoreProductionSyncContext.DefaultRecordingTargets.TargetFolder),
+            TargetFolder: NormalizeOutputText(RecordingTargetFolder, ResolveDefaultRecordingFolder()),
             FilenamePrefix: NormalizeOutputText(RecordingFilenamePrefix, MediaCoreProductionSyncContext.DefaultRecordingTargets.FilenamePrefix),
             Format: NormalizeRecordingFormat(RecordingFormat),
             Quality: NormalizeRecordingQuality(RecordingQuality),
@@ -11657,8 +11683,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    // NOT force: forcing re-ran the full building-out -> building-in slide on EVERY
+    // refresh, and this fires ~continuously (snapshot applies, active-speaker changes,
+    // scene refreshes call it from ~9 sites). That made the lower third perpetually slide
+    // down-and-up (owner: "goes up and down") AND cancelled each new source's transition
+    // before it could settle (owner: "isn't auto-updating as new people go into program").
+    // Un-forced: a same-source refresh updates position/text in place with no animation;
+    // only a genuine source change animates once. (2026-07-11)
     public void RefreshProgramLowerThirdKeyPosition() =>
-        UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(ProgramSceneRoutes), force: true);
+        UpdateProgramLowerThirdKey(ResolveProgramLowerThirdSource(ProgramSceneRoutes));
 
     private void UpdateProgramLowerThirdKey(LowerThirdSource? source, bool force = false)
     {
@@ -11683,26 +11716,49 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (ProgramLowerThirdKey != hidden)
             {
                 _lowerThirdKeyTransitionCts?.Cancel();
+                _lowerThirdTargetSourceId = string.Empty;
                 ProgramLowerThirdKey = hidden;
                 _ = TrySyncMediaCoreAsync();
             }
             return;
         }
 
-        if (!force &&
-            ProgramLowerThirdKey.Enabled &&
-            string.Equals(ProgramLowerThirdKey.SourceId, source.SourceId, StringComparison.Ordinal) &&
-            string.Equals(ProgramLowerThirdKey.SourceName, source.SourceName, StringComparison.Ordinal))
+        // Re-key (slide out/in) ONLY on a genuine source SWITCH, compared against the
+        // TARGET we are already showing / animating toward -- NOT the currently-displayed
+        // key. During a build-OUT the displayed key still holds the OLD source id while the
+        // resolver already returns the NEW one, so comparing against the displayed key
+        // restarted the transition on every sync tick = the "weird looping when you change
+        // sources with LT on". Same target => no-op while a transition is mid-flight, or an
+        // in-place text refresh once settled on-air. Never restarts the slide. (2026-07-11)
+        if (!force && string.Equals(_lowerThirdTargetSourceId, source.SourceId, StringComparison.Ordinal))
         {
-            var next = BuildLowerThirdKey(source, "on-air");
-            if (ProgramLowerThirdKey != next)
+            if (ProgramLowerThirdKey.Enabled &&
+                string.Equals(ProgramLowerThirdKey.Phase, "on-air", StringComparison.Ordinal))
             {
-                ProgramLowerThirdKey = next;
-                _ = TrySyncMediaCoreAsync();
+                var next = BuildLowerThirdKey(source, "on-air");
+                if (ProgramLowerThirdKey != next)
+                {
+                    ProgramLowerThirdKey = next;
+                    _ = TrySyncMediaCoreAsync();
+                }
             }
             return;
         }
 
+        // Debounce backstop: if the resolver still churns (co-program route order flicker),
+        // never restart the slide more than ~once/sec. The sync storm from rapid re-keys --
+        // each fires a full media-core sync batch -- is what caused the operator latency.
+        // First show (no target yet) is never debounced, so a genuine show is instant.
+        var nowMs = Environment.TickCount64;
+        if (!force && _lowerThirdTargetSourceId.Length > 0 &&
+            nowMs - _lowerThirdKeyChangeTickMs < 1200)
+        {
+            return;
+        }
+        _lowerThirdKeyChangeTickMs = nowMs;
+
+        LaunchLog.Write($"lower-third: key -> '{source.SourceId}' (name '{source.SourceName}')");
+        _lowerThirdTargetSourceId = source.SourceId;
         _lowerThirdKeyTransitionCts?.Cancel();
         var transitionCts = new CancellationTokenSource();
         _lowerThirdKeyTransitionCts = transitionCts;
@@ -11819,9 +11875,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return null;
         }
 
-        return sources.FirstOrDefault(source => source.IsActiveSpeaker)
-               ?? sources.FirstOrDefault(source => source.IsScreenShare)
-               ?? sources[0];
+        // Stickiness: keep the source the lower third is ALREADY showing as long as it is
+        // still on program. Without this the choice ping-ponged between two co-program
+        // sources whose route order flickers (active-speaker re-sorting upstream re-orders
+        // ZIndex every ~1s), which changed the target and restarted the slide every tick =
+        // the residual loop. A genuine change (the current source leaves program) still
+        // re-picks below, so it keeps following manual cuts. (2026-07-11)
+        var current = sources.FirstOrDefault(source =>
+            string.Equals(source.SourceId, _lowerThirdTargetSourceId, StringComparison.Ordinal));
+        if (current is not null)
+        {
+            return current;
+        }
+
+        // No sticky source (first show, or the current one left program): pick
+        // DETERMINISTICALLY, ordered by SourceId -- NOT the ZIndex route order, which the
+        // active-speaker/fake-engine churn re-sorts every tick. A stable tiebreak means two
+        // co-program sources can't alternate the choice, so it can't ping-pong.
+        return sources.Where(source => !source.IsScreenShare)
+                      .OrderBy(source => source.SourceId, StringComparer.Ordinal)
+                      .FirstOrDefault()
+               ?? sources.OrderBy(source => source.SourceId, StringComparer.Ordinal).First();
     }
 
     private LowerThirdSource? ResolveLowerThirdSource(SourceRoute route)
@@ -11839,8 +11913,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return new LowerThirdSource(
                 captureSourceId,
                 ResolveSourceDisplayName(captureSourceId, device.Name),
-                device.Vendor,
-                device.ResolutionLabel,
+                // A camera source has no presenter role/org -- leave the secondary lines
+                // blank so the lower third shows just the (operator-assignable) name
+                // instead of the device kind ("UVC", from device.Vendor) and resolution.
+                string.Empty,
+                string.Empty,
                 IsActiveSpeaker: false,
                 IsScreenShare: false);
         }

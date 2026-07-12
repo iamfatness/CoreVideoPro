@@ -34,6 +34,8 @@ namespace corevideo::modules {
 #include <windows.h>
 
 #include <audioclient.h>
+#include <avrt.h>  // MMCSS (AvSetMmThreadCharacteristics) for the render thread
+#pragma comment(lib, "avrt")
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -457,7 +459,17 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
   // NO application locks and does no file I/O — real-time discipline per the
   // pull-model spec §4.
   void renderLoop() {
-    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // MMCSS "Pro Audio" instead of a raw TIME_CRITICAL boost: MMCSS gives this thread
+    // real-time scheduling WITH a system-managed CPU budget, so it cooperates with the
+    // OS audio engine (audiodg) and other apps' audio threads instead of competing
+    // head-on (raw TIME_CRITICAL outranks almost everything and contributed to
+    // system-wide audio pressure in the owner's stress test). Falls back to the old
+    // boost if MMCSS is unavailable.
+    DWORD mmcssTaskIndex = 0;
+    HANDLE mmcssHandle = ::AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcssTaskIndex);
+    if (mmcssHandle == nullptr) {
+      ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
     double depthAccum = 0.0;
     int depthSamples = 0;
     while (renderRun_.load(std::memory_order_acquire)) {
@@ -510,6 +522,9 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
         const double newRate = static_cast<double>(deviceSampleRate_) * (1.0 + correction);
         (void)clockAdjust_->SetSampleRate(static_cast<float>(newRate));
       }
+    }
+    if (mmcssHandle != nullptr) {
+      ::AvRevertMmThreadCharacteristics(mmcssHandle);
     }
   }
 

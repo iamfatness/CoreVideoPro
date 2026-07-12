@@ -254,6 +254,21 @@ faster-but-more-delicate opt-in (two id spaces that must agree). A secondary
 snapshot-apply churn fix also shipped in `StudioViewModel.ApplyLiveParticipants`
 (order-independent, structural-only signature).
 
+**System-audio citizenship (vcam glitching OTHER apps' audio, 2026-07-11/12).** With the
+virtual camera consumed by Zoom, other apps' audio (browser) glitched; OBS's vcam on the
+same rig was clean → our serve chain. Fixes shipped: (1) render pacer no longer spins the
+last 1.5ms of every frame — high-res waitable timer + 500µs tail (200µs measured 58.7fps;
+timer wakes ~300-400µs late); (2) the vcam tap thread runs BELOW_NORMAL (it does the most
+bus-hostile work in the app); (3) WASAPI monitor thread uses MMCSS "Pro Audio" instead of
+raw TIME_CRITICAL (`avrt.h` must be included AFTER `windows.h`); (4) **GPU BGRA→NV12** in
+the tap — two pixel shaders on the tap's own device (R8 luma + R8G8 half-res chroma; BT.601
+studio-swing matched to `convertBgraToNv12`), readback 8MB→3MB/frame, scalar convert gone;
+(5) the Frame Server DLL reader caps torn retries 8→2 and skips the copy when no new frame
+was published. Rules distilled: never spin in hot loops (waitable timer + tiny tail); raw
+TIME_CRITICAL is forbidden — MMCSS class it; GPU→CPU readbacks are uncached/WC — minimize
+bytes and convert on the GPU first (the OBS lesson: learn from OBS architecture, never copy
+its GPL code).
+
 **Loud-failure guardrail (no more silent pink).** The compositor
 (`D3D11CompositorAdapter::warnUnmatchedCaptureLayer`) now logs — rate-limited 5s/key —
 whenever a `capture:` render-plan layer resolves to NO matching frame (the pink condition),
