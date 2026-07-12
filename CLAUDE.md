@@ -329,22 +329,17 @@ Update), numeric rect fields + snap guides + arrow-key nudge, and **production r
 the assigned role rides the participant wire to the core director). Remaining: S3b
 (aspect-lock, edge handles, selection sync), S4 polish, role templates/automation (R2).
 
-In progress / next: (1) the **alpha validation pass** on the Windows rig — every
-checkbox in `docs/alpha-plan.md` Tracks A–F is still unchecked, including the ≥10-min
-audio-glitch-freedom soak that Phase 2 shipped without; (2) **real device
-capture** — native Media Foundation UVC capture is CODE-COMPLETE behind
-`COREVIDEO_WITH_UVC` (ON in `build-native-dev.ps1`; shell opt-in
-`COREVIDEO_NATIVE_UVC=1`, WinUI shm bridge remains fallback) but **not yet
-rig-validated with a live camera**; DeckLink/AJA frame delivery still to do
-(see `docs/native-production-completion-plan.md` Items 1–2); (3) the **audio
-overhaul** (`docs/audio-overhaul-spec.md`) — 4.1/4.2 landed (Zoom audio is REAL:
-ISO PCM ingest + routing + 50Hz pacer + underrun telemetry); next 4.3 recording
-A/V clock, 4.4 mixer completion + meter ballistics, **4.4b Audio tab overhaul**
-(owner-reported: doesn't reflect reality, routing matrix unusable, device
-selection broken, full UX redesign), 4.5 plugin host; (4) **Scenes tab overhaul**
-(owner-reported 2026-07-03): scene BUILDING doesn't work well (creating/editing
-layouts — sources, positions) and the tab needs a full layout/UX redesign, not
-spot fixes.
+In progress / next (2026-07-12): the road to alpha is **verification and stability,
+not feature building** — see `docs/alpha-plan.md` (rewritten 2026-07-12) for the
+gates: G0 system-audio citizenship re-test (fixes shipped, owner verdict pending),
+G1 native UVC default-ON (validated end-to-end on this rig 2026-07-10, still opt-in
+via `COREVIDEO_NATIVE_UVC=1`), G2 A/V sync proof (clap test + packaged-run audio
+track), G3 a full show drill (record + RTMP + vcam simultaneously, 30-min soak),
+G4 stability debt (engine-off teardown audit, OAuth token refresh, resize soak),
+G5 packaging-lite. Beta scope (signing/installer/updates, onboarding, licensing,
+crash pipeline, hardware matrix) lives in `docs/beta-plan.md`. The audio overhaul
+(4.1–4.4b incl. the console) and the Scenes redesign (S1–S3, R1) are SHIPPED; VST
+host P1/P2a/P2b are shipped with P2c (real plugin processing) remaining.
 DONE 2026-07-03: **per-instance engine IPC names (OBS collision fix)** — the engine's
 pipes/sockets/SHM regions were fixed names on the shared `ZoomObsPlugin_` base, so a
 running OBS zoom plugin made every join time out ("Timed out connecting to Zoom engine
