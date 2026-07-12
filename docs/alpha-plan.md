@@ -1,155 +1,100 @@
-# CoreVideo Pro - Alpha Build Plan
+# CoreVideo Pro - Alpha Plan
 
-_Status: after pulling `origin/main` at `f10493aa` (`alpha #4: finish Scenes IA cleanup`). Owner: production._
+_Status: rewritten 2026-07-12 against main after PR #277. The previous plan (late June)
+predated the July arc: the audio war, the virtual camera epic, screen/window capture,
+the console UI, mastering, and the operator-perf root cause. Most of its Track B-E
+content is now shipped product; what remains for alpha is **verification and
+stability**, not feature building. Beta scope lives in `docs/beta-plan.md`._
 
-This is the working plan for turning the current codebase into a usable Alpha
-build. The latest `main` moved the project from "build the native foundations"
-to "prove the dev-gated native paths on a Windows rig, tighten the operator
-workflow, and package a build with evidence."
+## 1. What alpha means
 
-## 1. Current Baseline
+**Alpha = the owner runs real production shows on this rig, repeatedly, without the
+app embarrassing itself.** One operator, one machine, real Zoom meetings, real
+cameras, real audience-facing outputs (record + RTMP + virtual camera). Distribution,
+onboarding, licensing, and other-machine support are explicitly **beta** concerns.
 
-CoreVideo Pro is now a native Windows production app with a typed WinUI/C# shell
-to C++ media-core boundary:
+## 2. Current baseline (what is real and verified)
 
-```text
-WinUI shell
-  -> MediaCore bridge (C#, JSON-RPC)
-  -> native media core (C++)
-      -> Zoom SDK ingest path
-      -> D3D11 compositor
-      -> Media Foundation recorder
-      -> audio routing / DSP / monitor taps
-      -> RTMP / NDI / SRT output adapters
-      -> diagnostics and support bundles
-```
+| Area | State |
+|---|---|
+| Zoom ingest (video + audio) | Real and stable: ISO video via SHM + zoom-mix/ISO audio via 128-slot rings; join/rejoin/churn proven in owner rig sessions |
+| Compositor / multiview | GPU core-composited single-texture multiview, 4K canvas, 60fps; scenes with layers/opacity/z-order/draft-editing |
+| Audio engine | Owner ear-verified + machine-soak-verified clean (clicks:0). Pull-model monitor, stateful DSP chain, 8-band EQ, comp/gate with GR metering, mastering M1+M2 rack on master bus |
+| Audio UI | LV1-style console (SHOW) + three-column SETUP, insert rack + always-visible workspace with real response curves, pop-out hosts the same surface |
+| Capture sources | Native MF UVC capture end-to-end (opt-in, validated on this rig 2026-07-10); WGC screen + window capture owner-verified; managed bridge fallback hardened (buffer ring, backoff policy) |
+| Virtual camera | End-to-end in Zoom: core -> file-backed cross-session SHM -> COM DLL -> Frame Server; 1080p publishing ~50fps, GPU NV12, mirror + custom name |
+| Overlays | Lower thirds, captions, wall clock at 60fps (DirectWrite/WIC raster) |
+| Recording / RTMP | MF mux + RTMP with real program audio on the shared-epoch PTS clock |
+| Stability tooling | Release PDBs, WER full dumps, crash-dump setup script, control API :8011, fake-engine soak harness, audio tap/scan toolkit, PresentMon/dotnet-trace recipes |
+| Perf | Operator stutter root-caused (managed capture bridge); native UVC eliminates it (267MB flat vs multi-GB churn) |
 
-The repo has a strong stub-default contract surface and a much more complete
-dev-gated native runtime than the previous Alpha plan assumed.
+## 3. Alpha gates (in order)
 
-### What Landed On Latest `main`
+### G0 - System-audio citizenship (IN FLIGHT)
+With the CVP virtual camera consumed by Zoom, other apps' audio must stay clean.
+Fixes shipped (pacer timer, tap thread priority, MMCSS, GPU NV12 tap, reader
+hardening); rig re-test staged 2026-07-12.
+- [ ] Owner repro: CVP camera live in Zoom + browser audio -> no glitching
+- [ ] If still glitching: LatencyMon during a glitch to name the driver
+- [ ] Zoom self-view color/mirror unchanged (GPU BT.601 path is new)
 
-| Area | Current state | Alpha meaning |
-|---|---|---|
-| Sources / Inputs / Routing / Scenes IA | Sources owns Input 1-10 mapping; Scenes audio routing cleanup landed | UX structure is no longer just a proposal; smoke it and polish states |
-| F2 audio bus | Real PCM routing matrix, program/ISO taps, BS.1770 meter, bus inserts, monitor tap | Audio foundation is mostly built; remaining risk is device/runtime proof |
-| F3 compositor | Framing, borders, overlay/caption raster math in D3D11 and CPU stub | Program/preview parity needs Windows visual proof |
-| Recording | MF recording mux path for real program frame + audio + ISO work landed | Needs on-disk validation with real duration, A/V sync, and file bytes |
-| RTMP | Real program audio over RTMP landed; codec compatibility matrix exists | Needs live push validation with FFmpeg runtime staged |
-| NDI | Dev-gated NDI sender landed and reconciled with program-audio sync | Optional Alpha proof unless we include NDI in the Alpha promise |
-| Automation | Local on-device director provider and native recommend-auto-production command landed | Keep as assisted Alpha feature, not a blocker for live media proof |
-| Diagnostics | Support bundle builder/export and native crash event surface landed | Needs failed-run bundle validation |
-| Packaging | Packaging and record/stream validation hardening landed | Needs clean-machine install/launch proof |
+### G1 - Native UVC default-ON
+Currently opt-in via `COREVIDEO_NATIVE_UVC=1` (persisted on this rig). It is strictly
+better than the bridge (CPU, memory, stability) and validated end-to-end here.
+- [ ] Owner visual confirm on all his real cameras (tiles, multiview, program)
+- [ ] Flip `NativeUvcCapturePolicy.IsEnabled` to default-ON (bridge remains automatic
+      per-device fallback)
+- [ ] Re-run PresentMon under real show load to confirm the 400-875ms UI freezes are
+      gone with the UI thread unstarved (closes the P4 diff-update question - only
+      build P4 if stutter survives this measurement)
 
-## 2. Alpha Exit Bar
+### G2 - A/V sync proof (north star: sync is paramount)
+- [ ] Clap test on a real recording: measure audio-video offset at head and tail
+- [ ] 5-minute recording head/tail sync check (owed since #163)
+- [ ] Verify recording from a **packaged** run has an audio track (2026-07-02 alpha
+      evidence found video-only MP4 in packaged runs; the mux was rebuilt since - verify,
+      don't assume)
 
-Alpha is "working" when, on a Windows dev machine with the required SDK/runtime
-dependencies staged, an operator can:
+### G3 - The show drill (one structured rehearsal, owner + assistant)
+A single end-to-end rehearsal that doubles as the backlog of owed rig verifications:
+- [ ] Join real meeting -> assign sources (Zoom, UVC, screen, media) -> roles -> scenes
+- [ ] Console walkthrough: fader/pan/mute/solo live, insert rack edits audible
+      (gate-threshold drag while someone talks), meters + LUFS moving
+- [ ] Mastering: enabled on master, target holds, program L/R inherit
+- [ ] Record 1080p MP4 + one RTMP push + virtual camera in Zoom **simultaneously**
+- [ ] 30+ minute soak in that state: no audio artifacts, no UI degradation, working
+      sets flat, frame drops 0
+- [ ] Engine off / leave meeting / rejoin mid-show behaves (no deadlock, no orphan state)
+- [ ] Support bundle exports after the run
 
-1. Join a real Zoom meeting and see participant feeds plus metadata.
-2. Assign Zoom participants, media, and at least one local/video input to Inputs 1-10.
-3. Route video and audio through the Sources, Routing, and Scenes workflow without
-   duplicate route state or hidden per-layer audio state.
-4. Use Magic Scene / Set & Forget to produce a stable show layout.
-5. Record a playable 1080p MP4 with real program video and real program audio.
-6. Stream one RTMP destination with real program audio in sync.
-7. Export a support bundle after a normal run and after a simulated failure.
-8. Install or launch the native app from the packaged Alpha artifact on a clean box.
+### G4 - Stability debt (fix or explicitly accept before alpha)
+- [ ] **Engine-off teardown audit** against the five ZoomISO deadlock rules (stop off
+      the UI thread, stop-then-destroy order, no locks across SDK calls, watchdog on
+      async stop confirm, no STA marshaling) - this is the reference product's
+      production failure; same architecture, same risk
+- [ ] **Stale Zoom OAuth token** hard-fails join with no fallback (known since 07-02) -
+      add refresh/re-auth path
+- [ ] 0xc000027b window-resize trigger: mitigation is by design but not soak-verified -
+      resize soak while under load
+- [ ] One elevated run of `scripts/setup-crash-dumps.ps1` on the rig (if not yet done)
 
-NDI, SRT, DeckLink/AJA, VST hosting, and full AI/cloud direction remain
-post-Alpha unless they are already staged on the validation machine and pass as
-non-blocking proofs.
+### G5 - Packaging-lite
+Alpha ships to the owner's machine(s), not the public. Unsigned MSIX / `pack:native`
+is acceptable.
+- [ ] Packaged build launches on a clean profile with Zoom runtime discovery, core
+      launch, recording folder access, vcam registration
+- [ ] Alpha release note: commit, preflight report, known gaps
 
-## 3. Replanned Workstreams
+### Stretch (does not gate alpha)
+- Virtual camera true 60fps (GPU NV12 readback in `exportVcamSharedTexture`; ~50fps
+  today is competitive for a webcam consumer)
+- Preview-screen direct editing round 2 (grips on the live preview picture - POS-2)
+- Docs hygiene: spec status tables lag shipped reality (VST P1-P2b, screens, M2, B5
+  are merged but marked pending in places); refresh during alpha close-out
 
-### Track A - Alpha Evidence And Build Hygiene
+## 4. Explicitly post-alpha (see beta-plan.md)
 
-- [ ] Run `npm run alpha:preflight` on latest `main`.
-- [ ] Attach the generated `artifacts/alpha-preflight/<timestamp>/alpha-preflight.md`
-      to the Alpha decision.
-- [ ] Fix any failed offline gates before spending time on live Zoom validation.
-- [ ] Keep warnings for missing local SDK/runtime dependencies visible rather than
-      hiding them.
-
-### Track B - Live Zoom And Source Proof
-
-- [ ] Stage Zoom SDK/runtime and build dev native artifacts.
-- [ ] Join a real meeting, enable capture, and verify roster, active speaker,
-      mute/unmute, screen share, leave/rejoin, and participant churn.
-- [ ] Validate Inputs 1-10 persistence across restart and recent meeting restore.
-- [ ] Validate at least one non-Zoom input path available on the machine
-      (UVC/test-pattern/media is acceptable for Alpha if real UVC is not staged).
-
-### Track C - Operator Workflow Polish
-
-- [ ] Smoke Sources tab as the canonical Inputs 1-10 mapping.
-- [ ] Smoke Routing video and audio matrix behavior, including ISO isolation and
-      gain changes.
-- [ ] Confirm Scenes no longer has conflicting audio/route controls.
-- [ ] Tighten empty/loading/error states for first-frame wait, missing source,
-      no route, encoder unavailable, and Zoom not joined.
-- [ ] Verify the full 16:9 canvas remains visible at common laptop and desktop
-      window sizes.
-
-### Track D - Record And Stream Proof
-
-- [ ] Run `npm run validate:record-stream -- --destinations recording --timeout-ms 30000`.
-- [ ] Record a short manual MP4 and confirm playable file, non-zero bytes, real
-      audio track, expected duration, and acceptable A/V sync.
-- [ ] Record a longer 30-minute soak when the short pass is clean.
-- [ ] Stage FFmpeg runtime and push one RTMP destination with real program audio.
-- [ ] Treat NDI as optional Alpha evidence unless explicitly promoted into the
-      release promise.
-
-### Track E - Diagnostics And Recovery
-
-- [ ] Export a support bundle after a successful run.
-- [ ] Force or simulate native-core crash/output failure and verify crash event,
-      recovery affordance, warning state, and support bundle contents.
-- [ ] Confirm output/recording failures remain visible until the operator recovers
-      them.
-- [ ] Confirm secrets in destinations and meeting config are redacted.
-
-### Track F - Packaging
-
-- [ ] Run `npm run pack:native` and, if signing is available, `npm run pack:native:msix`.
-- [ ] Launch the packaged build on a clean Windows machine or clean user profile.
-- [ ] Verify Zoom runtime discovery, native-core process launch, recording folder
-      access, and support bundle export paths.
-- [ ] Produce a short Alpha release note with commit, preflight report, known
-      warnings, and manual validation result.
-
-## 4. Recommended Alpha Sequence
-
-1. **Freeze the baseline:** stay on `main` at `f10493aa` or a named Alpha branch
-   cut from it.
-2. **Run offline gates:** `npm run alpha:preflight`; fix hard failures only.
-3. **Stage runtime dependencies:** Zoom SDK/runtime, FFmpeg, dev native build,
-   optional NDI SDK.
-4. **Run live media proof:** Zoom join, source assignment, routing, scene output,
-   record, stream.
-5. **Run failure proof:** crash/recover/support bundle.
-6. **Package and clean-launch:** create the Alpha artifact and validate startup on
-   a clean machine/profile.
-7. **Decide Alpha:** ship only if the exit bar passes with documented known gaps.
-
-## 5. Known Risks
-
-- Real Zoom raw-media behavior and entitlements can only be validated in live calls.
-- Windows-only paths cover D3D11, Media Foundation, WASAPI, WinUI, FFmpeg process
-  plumbing, and packaging; Linux/container CI is not enough.
-- Real hardware capture beyond UVC/test-pattern is still vendor-SDK dependent and
-  should not block Alpha unless promised.
-- RTMP H.265/AV1 compatibility is ingest-dependent; Alpha should default to
-  H.264/AAC unless enhanced RTMP is explicitly validated.
-- The local director should be treated as an operator assist; live media reliability
-  is the release gate.
-
-## 6. Post-Alpha
-
-- Real UVC native capture if Alpha uses only test-pattern or WinUI-local preview.
-- DeckLink/AJA frame capture and embedded audio.
-- SRT ingest/output with decode/encode.
-- NDI hardening beyond the dev-gated sender.
-- VST3 host and ASIO capture.
-- Longer multi-hour soak runs and update/installer hardening.
+Production signing + installer + auto-update; onboarding/first-run; licensing and
+access control; crash-report pipeline; hardware compatibility matrix; VST P2c real
+plugin processing; browser sources; NDI hardening / SRT / DeckLink/AJA; V5 virtual
+mic; per-source sync offsets; mastering reference presets.
