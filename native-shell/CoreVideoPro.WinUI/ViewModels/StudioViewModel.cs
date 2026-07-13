@@ -4419,18 +4419,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(FilteredVstPlugins));
     }
 
-    // ---- C3: the Audio tab's SHOW/SETUP split. SHOW = the console (mix a
-    // live show); SETUP = buses + routing matrix (configure between shows).
-    // Monitor controls and the processing rack stay visible in both.
+    // ---- C3/U2c: the Audio tab's three surfaces. SHOW = the console (mix a
+    // live show); ROUTING = the full-width bus cards + crosspoint matrix
+    // (owner 2026-07-12: routing deserves its own surface, not a squeezed
+    // SETUP column); SETUP = devices + processing configuration.
     private string _audioTabMode = "show";
 
     public bool IsAudioShowMode => string.Equals(_audioTabMode, "show", StringComparison.Ordinal);
 
-    public bool IsAudioSetupMode => !IsAudioShowMode;
+    public bool IsAudioRoutingSurface => string.Equals(_audioTabMode, "routing", StringComparison.Ordinal);
+
+    public bool IsAudioSetupMode => string.Equals(_audioTabMode, "setup", StringComparison.Ordinal);
 
     public void SetAudioTabMode(string mode)
     {
-        var normalized = string.Equals(mode, "setup", StringComparison.OrdinalIgnoreCase) ? "setup" : "show";
+        var normalized = mode?.ToLowerInvariant() switch
+        {
+            "setup" => "setup",
+            "routing" => "routing",
+            _ => "show",
+        };
         if (string.Equals(_audioTabMode, normalized, StringComparison.Ordinal))
         {
             return;
@@ -4438,6 +4446,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _audioTabMode = normalized;
         OnPropertyChanged(nameof(IsAudioShowMode));
+        OnPropertyChanged(nameof(IsAudioRoutingSurface));
         OnPropertyChanged(nameof(IsAudioSetupMode));
         if (IsAudioSetupMode)
         {
