@@ -998,6 +998,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
+        AudioRoutingMatrix.BusOutputsChanged += () => _ = TrySyncMediaCoreAsync();
         VideoRoutingMatrix.RouteChanged += OnVideoRoutingMatrixChanged;
         SrtIngestSources.CollectionChanged += OnSrtIngestSourcesChanged;
         foreach (var source in SrtIngestSources)
@@ -8276,6 +8277,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AudioMonitorVolume),
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
+            AudioBusSends = AudioRoutingMatrix.BuildBusSends()
+                .Select(send => new MediaCoreAudioBusSendWire(send.FromBusId, send.ToBusId, send.GainDb))
+                .ToList(),
+            AudioMonitorListenBusId = AudioRoutingMatrix.MonitorListenBusId,
             CaptureAudioSources = captureAudioSources,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker,

@@ -109,6 +109,16 @@ public sealed record MediaCoreAudioRoutingSendWire(
     double GainDb,
     IReadOnlyList<string>? BusPluginInserts = null);
 
+/// <summary>
+/// Bus OUTPUT routing (mixer topology): an aux/custom bus's mix summed into a
+/// fixed program bus (master/pgm-l/pgm-r/stream/mon), like a subgroup feeding
+/// the master on a real desk.
+/// </summary>
+public sealed record MediaCoreAudioBusSendWire(
+    string FromBusId,
+    string ToBusId,
+    double GainDb);
+
 public sealed record MediaCoreCaptureAudioSourceWire(
     string CaptureDeviceId,
     string? AudioDeviceId,
@@ -270,6 +280,9 @@ public sealed record MediaCoreProductionSyncContext
     public MediaCoreAudioMonitorWire AudioMonitor { get; init; } = new(false, null, null, 0);
     public IReadOnlyList<MediaCoreAudioMixChannelWire> AudioMixChannels { get; init; } = [];
     public IReadOnlyList<MediaCoreAudioRoutingSendWire> AudioRoutingSends { get; init; } = [];
+    public IReadOnlyList<MediaCoreAudioBusSendWire> AudioBusSends { get; init; } = [];
+    /// <summary>PFL/listen: the monitor auditions this bus instead of "mon"; null/empty = normal.</summary>
+    public string? AudioMonitorListenBusId { get; init; }
     public IReadOnlyList<MediaCoreCaptureAudioSourceWire> CaptureAudioSources { get; init; } = [];
     public string? CaptionText { get; init; }
     public string? CaptionSpeaker { get; init; }

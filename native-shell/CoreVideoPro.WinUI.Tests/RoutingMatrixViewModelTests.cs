@@ -243,6 +243,51 @@ public sealed class RoutingMatrixViewModelTests
     }
 
     [Fact]
+    public void BusOutputs_BuildBusSendsReflectsTheCardToggles()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        var aux = viewModel.BusHeaders.Single(bus => bus.Id == "aux-1");
+        var master = viewModel.BusHeaders.Single(bus => bus.Id == "master");
+
+        var changes = 0;
+        viewModel.BusOutputsChanged += () => changes++;
+
+        viewModel.SetBusSend(aux, "master", true);
+        viewModel.SetBusSend(aux, "mon", true);
+        viewModel.SetBusOutputGainDb(aux, -6);
+        viewModel.SetBusSend(master, "mon", true);  // fixed buses have no outputs - ignored
+
+        var sends = viewModel.BuildBusSends();
+        Assert.Equal(2, sends.Count);
+        Assert.Contains(("aux-1", "master", -6.0), sends);
+        Assert.Contains(("aux-1", "mon", -6.0), sends);
+        Assert.Equal(3, changes);  // two toggles + gain; the fixed-bus call did not fire
+
+        viewModel.SetBusSend(aux, "master", false);
+        Assert.Single(viewModel.BuildBusSends());
+    }
+
+    [Fact]
+    public void BusListen_IsExclusiveAndExposesTheListenBusId()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        var aux1 = viewModel.BusHeaders.Single(bus => bus.Id == "aux-1");
+        var aux2 = viewModel.BusHeaders.Single(bus => bus.Id == "aux-2");
+
+        Assert.Null(viewModel.MonitorListenBusId);
+
+        viewModel.SetListening(aux1, true);
+        Assert.Equal("aux-1", viewModel.MonitorListenBusId);
+
+        viewModel.SetListening(aux2, true);  // exclusive: aux-1 drops
+        Assert.False(aux1.IsListening);
+        Assert.Equal("aux-2", viewModel.MonitorListenBusId);
+
+        viewModel.SetListening(aux2, false);
+        Assert.Null(viewModel.MonitorListenBusId);
+    }
+
+    [Fact]
     public void BusRoutedCounts_ApplyCoreSendsRefreshes()
     {
         var viewModel = new AudioRoutingMatrixViewModel();

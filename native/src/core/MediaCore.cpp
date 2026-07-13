@@ -1922,6 +1922,40 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
   }
   previousRoutingSends_ = audioRoutingSends_;
 
+  // Bus OUTPUT routing (mixer topology): aux/custom buses can send their mix
+  // into the fixed program buses, like subgroups on a real desk. Only
+  // removable buses (aux-/bus-) may be sources — the fixed set as sources
+  // would allow cycles; fixed-bus targets keep the graph acyclic by
+  // construction.
+  audioBusSends_.clear();
+  if (const rpc::Json* busSends = command.get("busSends"); busSends != nullptr && busSends->isArray()) {
+    static const std::array<std::string_view, 5> kBusSendTargets = {"master", "pgm-l", "pgm-r",
+                                                                    "stream", "mon"};
+    for (const auto& send : busSends->asArray()) {
+      const std::string fromBusId = send.getString("fromBusId");
+      const std::string toBusId = send.getString("toBusId");
+      const bool fromRemovable = fromBusId.rfind("aux-", 0) == 0 || fromBusId.rfind("bus-", 0) == 0;
+      const bool toFixed = std::any_of(kBusSendTargets.begin(), kBusSendTargets.end(),
+                                       [&](std::string_view bus) { return bus == toBusId; });
+      if (!fromRemovable || !toFixed) {
+        addWarning("Bus send " + fromBusId + " -> " + toBusId +
+                   " rejected (only aux/custom buses may feed the fixed program buses).");
+        continue;
+      }
+      AudioBusSendInput input;
+      input.fromBusId = fromBusId;
+      input.toBusId = toBusId;
+      const double rawGain = send.get("gainDb") ? send.get("gainDb")->asNumber() : 0.0;
+      input.gainDb = std::max(kMinAudioRoutingGainDb, std::min(kMaxAudioRoutingGainDb, rawGain));
+      audioBusSends_.push_back(std::move(input));
+    }
+  }
+
+  // PFL/listen: the monitor auditions this bus instead of "mon". Empty or
+  // unknown = normal monitor bus.
+  const std::string listenBusId = command.getString("monitorBusId");
+  monitorListenBusId_ = isAudioRoutingBus(listenBusId) ? listenBusId : std::string();
+
   audioRoutingWarnings_ = std::move(warnings);
 }
 
@@ -4164,6 +4198,8 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork() {
   work.audioFrames = modules::coalescePcmAudioFramesBySource(std::move(audioFrames));
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
+  work.busSends = audioBusSends_;
+  work.monitorListenBusId = monitorListenBusId_;
   work.limiterEnabled = audioLimiterEnabled_;
   work.masteringParams = masteringParams_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
@@ -4314,6 +4350,38 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
                                                    &results.compGainReductionDbBySource, &busLimiterGains_);
+    // BUS OUTPUT ROUTING (mixer topology): aux/custom bus mixes sum into their
+    // destinations in two passes around the mastering block. Pass 1 (targets
+    // = "master") runs BEFORE mastering so an aux feeding the program is
+    // mastered with it and inherits everywhere. Pass 2 (all other targets)
+    // runs AFTER the mastering-inherit so a monitor-only cue send survives
+    // the inherit's overwrite of mon/stream. Touched targets are re-limited —
+    // summing can exceed the per-bus ceiling from mixRoutedBuses.
+    std::vector<modules::AudioBusSend> preMasterSends;
+    std::vector<modules::AudioBusSend> postMasterSends;
+    for (const auto& send : work.busSends) {
+      modules::AudioBusSend converted{send.fromBusId, send.toBusId, modules::dbfsToLinear(send.gainDb)};
+      (send.toBusId == "master" ? preMasterSends : postMasterSends).push_back(std::move(converted));
+    }
+    const auto relimitTouchedBuses = [&](const std::set<std::string>& touched) {
+      for (const auto& busId : touched) {
+        auto& pcm = results.routedBusPcm[busId];
+        if (pcm.empty()) {
+          continue;
+        }
+        if (work.limiterEnabled) {
+          modules::applySmoothedPeakLimiter(pcm.data(), pcm.size(), 2, -1.0, 60.0, 48000.0,
+                                            &busSendLimiterGains_[busId]);
+        } else {
+          for (auto& sample : pcm) {
+            sample = std::max(-1.0f, std::min(1.0f, sample));
+          }
+        }
+      }
+    };
+    if (!preMasterSends.empty()) {
+      relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, preMasterSends));
+    }
     // Mastering chain on the MASTER bus (M1). Topology CONFIRMED by owner
     // 2026-07-06: master and program L/R carry the SAME signal - the chain
     // applies once and pgm-l/pgm-r inherit the processed master.
@@ -4338,6 +4406,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         results.routedBusPcm["stream"] = master->second;
         results.routedBusPcm["mon"] = master->second;
       }
+    }
+    // Bus sends pass 2: non-master targets, after the mastering-inherit so a
+    // cue/aux send into MON or STREAM is not wiped by the inherit copy.
+    if (!postMasterSends.empty()) {
+      relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, postMasterSends));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -4403,7 +4476,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       results.monitorStatus = "unavailable";
       results.monitorWarning = "Native audio monitor output device is not open.";
     } else {
-      const auto& routedMonitorBus = localBusTap("mon");
+      // PFL/listen: when the operator auditions a specific bus, the monitor
+      // renders THAT bus; empty listen id = the normal MON bus. Falls back to
+      // MON (then the legacy mixer monitor mix) when the listened bus is
+      // silent this tick, so soloing an empty aux never mutes the headphones
+      // into confusion — the status label reports what is actually playing.
+      const auto& listenBus =
+          work.monitorListenBusId.empty() ? kEmptyTap : localBusTap(work.monitorListenBusId);
+      const auto& routedMonitorBus = !listenBus.empty() ? listenBus : localBusTap("mon");
       const bool hasRoutedMonitorBus = !routedMonitorBus.empty();
       const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus : modules_.mixer->monitorBusPcm();
       const int channels = hasRoutedMonitorBus ? 2 : std::max(1, modules_.mixer->monitorBusChannels());

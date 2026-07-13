@@ -469,7 +469,10 @@
              count, rename/delete for aux/custom buses). Wraps to the width. -->
         <ItemsRepeater Grid.Row="1" ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.BusHeaders, Mode=OneWay}">
             <ItemsRepeater.Layout>
-                <UniformGridLayout MinItemWidth="200" MinItemHeight="96"
+                <!-- UniformGridLayout sizes every cell from the FIRST item; the
+                     aux cards are taller (output sends row) so the uniform
+                     height must fit the tallest card or they clip. -->
+                <UniformGridLayout MinItemWidth="200" MinItemHeight="136"
                                    MinRowSpacing="6" MinColumnSpacing="6"
                                    ItemsStretch="Fill" />
             </ItemsRepeater.Layout>
@@ -498,8 +501,42 @@
                             <TextBlock Text="{x:Bind Purpose}" FontSize="10"
                                        Foreground="{StaticResource StudioMutedBrush}"
                                        TextWrapping="WrapWholeWords" />
-                            <TextBlock Text="{x:Bind RoutedSummary, Mode=OneWay}" FontSize="10"
-                                       Foreground="#7FB8A6" />
+                            <Grid ColumnSpacing="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{x:Bind RoutedSummary, Mode=OneWay}" FontSize="10"
+                                           Foreground="#7FB8A6" VerticalAlignment="Center" />
+                                <ToggleButton Grid.Column="1" Content="LISTEN" FontSize="8" Padding="6,2"
+                                              IsChecked="{x:Bind IsListening, Mode=OneWay}"
+                                              Click="OnBusListenClicked"
+                                              ToolTipService.ToolTip="Audition this bus in your headphones (PFL) — the audience mix is unaffected" />
+                            </Grid>
+                            <!-- Bus OUTPUTS (aux/custom only): subgroup-style sends into
+                                 the fixed buses, with an output level — a bus without an
+                                 output is a dead end. -->
+                            <StackPanel Orientation="Horizontal" Spacing="4"
+                                        Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Sends to" FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
+                                           VerticalAlignment="Center" />
+                                <ToggleButton Content="MASTER" FontSize="8" Padding="5,2" Tag="master"
+                                              IsChecked="{x:Bind SendsToMaster, Mode=OneWay}"
+                                              Click="OnBusSendToggleClicked"
+                                              ToolTipService.ToolTip="Sum this bus into the Master mix (the audience hears it)" />
+                                <ToggleButton Content="MON" FontSize="8" Padding="5,2" Tag="mon"
+                                              IsChecked="{x:Bind SendsToMonitor, Mode=OneWay}"
+                                              Click="OnBusSendToggleClicked"
+                                              ToolTipService.ToolTip="Sum this bus into your Monitor (headphones only)" />
+                                <ToggleButton Content="STREAM" FontSize="8" Padding="5,2" Tag="stream"
+                                              IsChecked="{x:Bind SendsToStream, Mode=OneWay}"
+                                              Click="OnBusSendToggleClicked"
+                                              ToolTipService.ToolTip="Sum this bus into the Stream mix" />
+                                <NumberBox Value="{x:Bind OutputGainDb, Mode=OneWay}" FontSize="9" Width="64"
+                                           SpinButtonPlacementMode="Hidden" Minimum="-60" Maximum="10"
+                                           ValueChanged="OnBusOutputGainChanged"
+                                           ToolTipService.ToolTip="Output level for this bus's sends (dB)" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
                 </DataTemplate>

@@ -36,6 +36,27 @@ public sealed partial class RoutingBus : ObservableObject
     [NotifyPropertyChangedFor(nameof(RoutedSummary))]
     private int _routedSourceCount;
 
+    // ---- Bus OUTPUT routing (mixer topology). Aux/custom buses can feed the
+    // fixed program buses like subgroups on a real desk; without an output a
+    // bus is a metered dead end (owner 2026-07-12). Only meaningful when
+    // IsRemovable; toggled through the matrix VM so changes sync to the core.
+    [ObservableProperty]
+    private bool _sendsToMaster;
+
+    [ObservableProperty]
+    private bool _sendsToMonitor;
+
+    [ObservableProperty]
+    private bool _sendsToStream;
+
+    /// <summary>Output level applied to every send this bus makes (dB).</summary>
+    [ObservableProperty]
+    private double _outputGainDb;
+
+    /// <summary>PFL: the monitor auditions this bus (exclusive — set via the matrix VM).</summary>
+    [ObservableProperty]
+    private bool _isListening;
+
     public string RoutedSummary => RoutedSourceCount switch
     {
         0 => "Nothing routed",
@@ -52,7 +73,7 @@ public sealed partial class RoutingBus : ObservableObject
 
         if (id.StartsWith("aux-", StringComparison.Ordinal) || id.StartsWith("bus-", StringComparison.Ordinal))
         {
-            return "Aux send — build a custom mix (a guest's mix-minus, an effects send, a second output).";
+            return "Aux — build a custom mix, then send it to Master, Monitor, or Stream below.";
         }
 
         return id switch

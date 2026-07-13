@@ -100,7 +100,12 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         new("aux-2", "AUX 2")
     ];
 
-    public ObservableCollection<RoutingBus> BusHeaders { get; } = new(DefaultBuses);
+    // Fresh instances per view-model: RoutingBus now carries mutable state
+    // (Label, routed counts, output sends, listen) — sharing the static
+    // template objects across VM instances would leak state between them
+    // (and between tests). DefaultBuses stays a read-only template.
+    public ObservableCollection<RoutingBus> BusHeaders { get; } =
+        new(DefaultBuses.Select(bus => new RoutingBus(bus.Id, bus.Label)));
 
     public ObservableCollection<AudioRoutingSourceRowViewModel> Rows { get; } = [];
 
@@ -426,6 +431,96 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
     private static bool IsIsolatedAudioBus(string busId) =>
         busId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase);
+
+    // ---- Bus OUTPUT routing (mixer topology) + PFL listen ----------------
+
+    /// <summary>Raised when bus outputs or the listen selection change (sync trigger).</summary>
+    public event Action? BusOutputsChanged;
+
+    /// <summary>Flip one of a removable bus's output sends (master/mon/stream).</summary>
+    public void SetBusSend(RoutingBus bus, string target, bool enabled)
+    {
+        if (bus is null || !IsBusRemovable(bus.Id))
+        {
+            return;
+        }
+
+        switch (target)
+        {
+            case "master": bus.SendsToMaster = enabled; break;
+            case "mon": bus.SendsToMonitor = enabled; break;
+            case "stream": bus.SendsToStream = enabled; break;
+            default: return;
+        }
+
+        BusOutputsChanged?.Invoke();
+    }
+
+    public void SetBusOutputGainDb(RoutingBus bus, double gainDb)
+    {
+        if (bus is null || !IsBusRemovable(bus.Id))
+        {
+            return;
+        }
+
+        var clamped = Math.Max(-60, Math.Min(10, gainDb));
+        if (Math.Abs(bus.OutputGainDb - clamped) < 0.01)
+        {
+            return;
+        }
+
+        bus.OutputGainDb = clamped;
+        BusOutputsChanged?.Invoke();
+    }
+
+    /// <summary>PFL: audition one bus on the monitor (exclusive; off = normal MON).</summary>
+    public void SetListening(RoutingBus bus, bool listening)
+    {
+        if (bus is null)
+        {
+            return;
+        }
+
+        foreach (var other in BusHeaders)
+        {
+            if (!ReferenceEquals(other, bus) && other.IsListening)
+            {
+                other.IsListening = false;
+            }
+        }
+
+        bus.IsListening = listening;
+        BusOutputsChanged?.Invoke();
+    }
+
+    public string? MonitorListenBusId => BusHeaders.FirstOrDefault(bus => bus.IsListening)?.Id;
+
+    /// <summary>The bus→bus sends for the core sync, derived from the card toggles.</summary>
+    public IReadOnlyList<(string FromBusId, string ToBusId, double GainDb)> BuildBusSends()
+    {
+        var sends = new List<(string, string, double)>();
+        foreach (var bus in BusHeaders)
+        {
+            if (!IsBusRemovable(bus.Id))
+            {
+                continue;
+            }
+            if (bus.SendsToMaster)
+            {
+                sends.Add((bus.Id, "master", bus.OutputGainDb));
+            }
+            if (bus.SendsToMonitor)
+            {
+                sends.Add((bus.Id, "mon", bus.OutputGainDb));
+            }
+            if (bus.SendsToStream)
+            {
+                sends.Add((bus.Id, "stream", bus.OutputGainDb));
+            }
+        }
+
+        return sends;
+    }
 
     /// <summary>
     /// U2: keep each bus's RoutedSourceCount fresh so the bus cards can say

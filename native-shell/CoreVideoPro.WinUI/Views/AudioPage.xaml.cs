@@ -262,6 +262,40 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // Bus OUTPUT routing: card toggles flip the send through the matrix VM
+    // (which owns the exclusive-listen rule and the core sync trigger).
+    private void OnBusSendToggleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.Controls.Primitives.ToggleButton
+            {
+                DataContext: Models.RoutingBus bus,
+                Tag: string target
+            } toggle && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.SetBusSend(bus, target, toggle.IsChecked == true);
+        }
+    }
+
+    private void OnBusListenClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.Controls.Primitives.ToggleButton
+            {
+                DataContext: Models.RoutingBus bus
+            } toggle && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.SetListening(bus, toggle.IsChecked == true);
+        }
+    }
+
+    private void OnBusOutputGainChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (sender.DataContext is Models.RoutingBus bus && ViewModel is { } viewModel &&
+            !double.IsNaN(args.NewValue))
+        {
+            viewModel.AudioRoutingMatrix.SetBusOutputGainDb(bus, args.NewValue);
+        }
+    }
+
     // C3: SHOW/SETUP mode buttons (Tag carries the mode).
     private void OnAudioModeClicked(object sender, RoutedEventArgs e)
     {

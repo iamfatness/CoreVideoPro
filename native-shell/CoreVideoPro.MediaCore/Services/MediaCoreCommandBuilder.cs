@@ -34,7 +34,7 @@ public static class MediaCoreCommandBuilder
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context),
             BuildAudioMonitorCommand(context.AudioMonitor),
-            BuildAudioRoutingMatrixCommand(context.AudioRoutingSends),
+            BuildAudioRoutingMatrixCommand(context),
             BuildCaptureAudioSourcesCommand(context.CaptureAudioSources),
             BuildVirtualCameraCommand(context)
         };
@@ -386,16 +386,26 @@ public static class MediaCoreCommandBuilder
             ["volume"] = Math.Clamp(monitor.Volume, 0, 1)
         });
 
-    private static NativeMediaCoreCommand BuildAudioRoutingMatrixCommand(IReadOnlyList<MediaCoreAudioRoutingSendWire> sends) =>
+    private static NativeMediaCoreCommand BuildAudioRoutingMatrixCommand(MediaCoreProductionSyncContext context) =>
         Command("sync-audio-routing-matrix", new Dictionary<string, object?>
         {
-            ["sends"] = sends.Select(send => new
+            ["sends"] = context.AudioRoutingSends.Select(send => new
             {
                 sourceId = send.SourceId,
                 busId = send.BusId,
                 gainDb = send.GainDb,
                 busPluginInserts = send.BusPluginInserts ?? []
-            }).ToList()
+            }).ToList(),
+            // Bus OUTPUT routing: aux/custom bus mixes summed into fixed buses
+            // (subgroup topology). PFL: monitorBusId lets the monitor audition
+            // any bus; empty = the normal MON bus.
+            ["busSends"] = context.AudioBusSends.Select(send => new
+            {
+                fromBusId = send.FromBusId,
+                toBusId = send.ToBusId,
+                gainDb = send.GainDb
+            }).ToList(),
+            ["monitorBusId"] = context.AudioMonitorListenBusId ?? ""
         });
 
     private static NativeMediaCoreCommand BuildCaptureAudioSourcesCommand(IReadOnlyList<MediaCoreCaptureAudioSourceWire> sources) =>
