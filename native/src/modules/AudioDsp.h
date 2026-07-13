@@ -9,6 +9,7 @@
 #include <deque>
 #include <map>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -938,6 +939,48 @@ inline std::map<std::string, std::vector<float>> mixRoutedBuses(
     }
   }
   return buses;
+}
+
+// Bus OUTPUT routing (mixer topology): sum one bus's mix into another, like a
+// subgroup/aux feeding the master on a real desk. Aux buses were previously
+// metered dead ends — routable INTO but feeding nothing (owner 2026-07-12).
+struct AudioBusSend {
+  std::string fromBusId;
+  std::string toBusId;
+  double gainLinear = 1.0;
+};
+
+// Applies the given sends in place over the mixed bus map. A missing/empty
+// source bus contributes nothing; a missing TARGET bus is created zero-filled
+// (a send is an explicit route — it must produce output even if nothing routes
+// to the target directly). Self-sends are ignored. Returns the ids of targets
+// that actually received signal (callers re-limit those — summing can exceed
+// the per-bus ceiling applied in mixRoutedBuses).
+inline std::set<std::string> applyBusSends(std::map<std::string, std::vector<float>>& buses,
+                                           const std::vector<AudioBusSend>& sends) {
+  std::set<std::string> touched;
+  for (const auto& send : sends) {
+    if (send.fromBusId == send.toBusId) {
+      continue;
+    }
+    const auto from = buses.find(send.fromBusId);
+    if (from == buses.end() || from->second.empty()) {
+      continue;
+    }
+    // NOTE: take a reference AFTER potential map insertion below — inserting
+    // the target can invalidate nothing for std::map, but from->second stays
+    // valid regardless (map iterators/references survive insertions).
+    auto& target = buses[send.toBusId];
+    if (target.size() < from->second.size()) {
+      target.resize(from->second.size(), 0.0f);
+    }
+    const auto& sourcePcm = buses[send.fromBusId];
+    for (size_t index = 0; index < sourcePcm.size(); ++index) {
+      target[index] += static_cast<float>(sourcePcm[index] * send.gainLinear);
+    }
+    touched.insert(send.toBusId);
+  }
+  return touched;
 }
 
 // Apply a bus's named insert chain to its interleaved PCM, in order. Recognized

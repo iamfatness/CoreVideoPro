@@ -708,19 +708,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
 
-    /// <summary>Which matrix the Routing tab is showing: "audio" or "video".</summary>
-    [ObservableProperty]
-    private string _routingMatrixMode = "audio";
-
-    public bool IsAudioRoutingMode => RoutingMatrixMode == "audio";
-
-    public bool IsVideoRoutingMode => RoutingMatrixMode == "video";
-
-    public TabChrome AudioRoutingModeChrome =>
-        IsAudioRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
-
-    public TabChrome VideoRoutingModeChrome =>
-        IsVideoRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
+    // U2 consolidation: the Routing tab is video-only; audio routing lives
+    // solely on the Audio tab's SETUP surface. The old "audio"/"video"
+    // RoutingMatrixMode plumbing is gone with the dual-hosting.
 
     public IReadOnlyList<SourceRoute> PreviewSceneRoutes { get; private set; } = [];
 
@@ -1008,6 +998,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
+        AudioRoutingMatrix.BusOutputsChanged += () => _ = TrySyncMediaCoreAsync();
         VideoRoutingMatrix.RouteChanged += OnVideoRoutingMatrixChanged;
         SrtIngestSources.CollectionChanged += OnSrtIngestSourcesChanged;
         foreach (var source in SrtIngestSources)
@@ -1481,7 +1472,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Name = name,
                 SlotLabel = $"{index + 1}",
                 IsBuiltIn = IsBuiltInInsert(name),
-                StatusLabel = IsBuiltInInsert(name) ? "LIVE" : "P2",
+                // U1c: truthful status in operator words, never phase jargon.
+                StatusLabel = IsBuiltInInsert(name) ? "LIVE" : "BYPASS",
+                StatusTooltip = IsBuiltInInsert(name)
+                    ? "Processing audio live."
+                    : "Installed, but audio passes through UNCHANGED — live VST processing has not shipped yet. The built-in processors are fully live.",
             })
             .ToList();
         OnPropertyChanged(nameof(SelectedChannelInsertSlots));
@@ -1693,7 +1688,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.PluginInserts.Add(pluginName);
-        CommandStatus = $"{pluginName} slotted on {SelectedParticipant?.Name ?? "selected channel"} — live processing arrives with the plugin host (P2)";
+        CommandStatus = $"{pluginName} added to {SelectedParticipant?.Name ?? "selected channel"} — audio passes through unchanged until live VST processing ships";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
         NotifySelectedRackChanged();
@@ -1908,14 +1903,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(PreviewModeChrome));
         OnPropertyChanged(nameof(SplitModeChrome));
         OnPropertyChanged(nameof(MultiviewModeChrome));
-    }
-
-    partial void OnRoutingMatrixModeChanged(string value)
-    {
-        OnPropertyChanged(nameof(IsAudioRoutingMode));
-        OnPropertyChanged(nameof(IsVideoRoutingMode));
-        OnPropertyChanged(nameof(AudioRoutingModeChrome));
-        OnPropertyChanged(nameof(VideoRoutingModeChrome));
     }
 
     partial void OnMultiviewTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
@@ -3679,12 +3666,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
-    private void SetRoutingMatrixMode(string mode)
-    {
-        RoutingMatrixMode = mode == "video" ? "video" : "audio";
-    }
-
-    [RelayCommand]
     private void SelectTab(string tab)
     {
         ActiveTab = tab switch
@@ -4334,22 +4315,69 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // U1a: the first time a plugin surface is opened this session, scan
+    // automatically — a first-time user should never meet an empty browser and
+    // a mystery Scan button. Manual Rescan stays for picking up new installs.
+    private bool _vstAutoScanKicked;
+
+    public void EnsureVstPluginScan()
+    {
+        if (_vstAutoScanKicked)
+        {
+            return;
+        }
+
+        var status = _bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent";
+        if (status is "absent" or "error")
+        {
+            _vstAutoScanKicked = true;
+            RequestVstPluginScan();
+        }
+    }
+
     // CACHED between snapshots: the browser's ItemsRepeater must NOT get a new
     // ItemsSource instance per snapshot apply (bound-collection churn is the
     // CoreMessagingXP 0xc000027b fail-fast class — see CLAUDE.md). The list
-    // reference only changes when the scan results actually change.
+    // reference only changes when the scan results (or the search filter)
+    // actually change.
     private IReadOnlyList<NativeMediaCorePluginInfo> _vstPlugins = [];
     private string _vstPluginHostSignature = "";
+    private IReadOnlyList<NativeMediaCorePluginInfo> _filteredVstPlugins = [];
+    private string _vstFilteredSignature = "";
+    private string _vstPluginFilter = "";
+    private DateTime? _vstScanObservedAt;
 
     public IReadOnlyList<NativeMediaCorePluginInfo> VstPlugins => _vstPlugins;
+
+    /// <summary>U1a: browser search filter (name or vendor, case-insensitive).</summary>
+    public string VstPluginFilter
+    {
+        get => _vstPluginFilter;
+        set
+        {
+            var normalized = value?.Trim() ?? "";
+            if (string.Equals(_vstPluginFilter, normalized, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _vstPluginFilter = normalized;
+            RefreshFilteredVstPlugins();
+        }
+    }
+
+    public IReadOnlyList<NativeMediaCorePluginInfo> FilteredVstPlugins => _filteredVstPlugins;
 
     public string VstPluginHostSummary =>
         (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
         {
-            "ready" => $"{_vstPlugins.Count} VST3 plugin(s) found — probe/hosting lands in P2 (docs/vst-host-spec.md)",
-            "scanning" => "Scanning VST3 directories…",
+            "ready" =>
+                $"{_vstPlugins.Count} VST3 plugin(s) installed" +
+                (_vstScanObservedAt is { } at ? $" · scanned {at:HH:mm}" : "") +
+                " — installed plugins pass audio through unchanged until live hosting ships",
+            "scanning" => "Scanning for installed VST3 plugins…",
             "error" => "Plugin scan failed — see media-core.log",
-            _ => "No scan yet — Scan finds installed VST3 plugins (discovery only, out of process)"
+            _ => "Looking for installed VST3 plugins…"
         };
 
     private void RefreshVstPluginHostFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
@@ -4364,22 +4392,54 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _vstPluginHostSignature = signature;
         _vstPlugins = host.Plugins;
+        if (string.Equals(host.Status, "ready", StringComparison.Ordinal))
+        {
+            _vstScanObservedAt = DateTime.Now;
+        }
         OnPropertyChanged(nameof(VstPlugins));
         OnPropertyChanged(nameof(VstPluginHostSummary));
+        RefreshFilteredVstPlugins();
     }
 
-    // ---- C3: the Audio tab's SHOW/SETUP split. SHOW = the console (mix a
-    // live show); SETUP = buses + routing matrix (configure between shows).
-    // Monitor controls and the processing rack stay visible in both.
+    private void RefreshFilteredVstPlugins()
+    {
+        var signature = _vstPluginHostSignature + "|filter:" + _vstPluginFilter.ToLowerInvariant();
+        if (string.Equals(signature, _vstFilteredSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _vstFilteredSignature = signature;
+        _filteredVstPlugins = _vstPluginFilter.Length == 0
+            ? _vstPlugins
+            : _vstPlugins
+                .Where(plugin =>
+                    plugin.Name.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase) ||
+                    plugin.Vendor.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        OnPropertyChanged(nameof(FilteredVstPlugins));
+    }
+
+    // ---- C3/U2c: the Audio tab's three surfaces. SHOW = the console (mix a
+    // live show); ROUTING = the full-width bus cards + crosspoint matrix
+    // (owner 2026-07-12: routing deserves its own surface, not a squeezed
+    // SETUP column); SETUP = devices + processing configuration.
     private string _audioTabMode = "show";
 
     public bool IsAudioShowMode => string.Equals(_audioTabMode, "show", StringComparison.Ordinal);
 
-    public bool IsAudioSetupMode => !IsAudioShowMode;
+    public bool IsAudioRoutingSurface => string.Equals(_audioTabMode, "routing", StringComparison.Ordinal);
+
+    public bool IsAudioSetupMode => string.Equals(_audioTabMode, "setup", StringComparison.Ordinal);
 
     public void SetAudioTabMode(string mode)
     {
-        var normalized = string.Equals(mode, "setup", StringComparison.OrdinalIgnoreCase) ? "setup" : "show";
+        var normalized = mode?.ToLowerInvariant() switch
+        {
+            "setup" => "setup",
+            "routing" => "routing",
+            _ => "show",
+        };
         if (string.Equals(_audioTabMode, normalized, StringComparison.Ordinal))
         {
             return;
@@ -4387,7 +4447,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _audioTabMode = normalized;
         OnPropertyChanged(nameof(IsAudioShowMode));
+        OnPropertyChanged(nameof(IsAudioRoutingSurface));
         OnPropertyChanged(nameof(IsAudioSetupMode));
+        if (IsAudioSetupMode)
+        {
+            EnsureVstPluginScan();  // U1a: SETUP shows the plugin browser — never empty
+        }
     }
 
     public void ToggleSelectedRackInsert(string insertName)
@@ -8212,6 +8277,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AudioMonitorVolume),
             AudioMixChannels = audioChannels,
             AudioRoutingSends = audioRoutingSends,
+            AudioBusSends = AudioRoutingMatrix.BuildBusSends()
+                .Select(send => new MediaCoreAudioBusSendWire(send.FromBusId, send.ToBusId, send.GainDb))
+                .ToList(),
+            AudioMonitorListenBusId = AudioRoutingMatrix.MonitorListenBusId,
             CaptureAudioSources = captureAudioSources,
             CaptionText = CaptionText,
             CaptionSpeaker = CaptionSpeaker,

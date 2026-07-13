@@ -4,8 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:models="using:CoreVideoPro.WinUI.Models"
-    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
-    xmlns:cvcontrols="using:CoreVideoPro.WinUI.Controls">
+    xmlns:vm="using:CoreVideoPro.WinUI.ViewModels">
 
     <UserControl.Resources>
         <ResourceDictionary>
@@ -27,40 +26,20 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <FontIcon Glyph="&#xE9D9;" FontSize="15" Foreground="{StaticResource StudioAccentBrush}" />
                 <StackPanel Spacing="2">
-                    <TextBlock Text="Routing" FontSize="16" FontWeight="Bold"
+                    <TextBlock Text="Video Routing" FontSize="16" FontWeight="Bold"
                                Foreground="{StaticResource StudioTextBrush}" />
-                    <TextBlock Text="Crosspoint matrices - pick Video or Audio, then click a cell to route a source."
+                    <TextBlock Text="Video crosspoints — click a cell to route a source to ISO record, multiview, or aux. Audio routing lives on the Audio tab (SETUP)."
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                 </StackPanel>
             </StackPanel>
-
-            <!-- Video / Audio selector -->
-            <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Left">
-                <Button Content="Video" Style="{StaticResource OperatorGhostButton}"
-                        HorizontalAlignment="Left" MinWidth="72" Padding="10,4"
-                        Background="{x:Bind ViewModel.VideoRoutingModeChrome.Background, Mode=OneWay}"
-                        BorderBrush="{x:Bind ViewModel.VideoRoutingModeChrome.BorderBrush, Mode=OneWay}"
-                        Foreground="{x:Bind ViewModel.VideoRoutingModeChrome.Foreground, Mode=OneWay}"
-                        Command="{x:Bind ViewModel.SetRoutingMatrixModeCommand}" CommandParameter="video"
-                        ToolTipService.ToolTip="Video routing — on/off crosspoints (ISO, multiview, aux)" />
-                <Button Content="Audio" Style="{StaticResource OperatorGhostButton}"
-                        HorizontalAlignment="Left" MinWidth="72" Padding="10,4"
-                        Background="{x:Bind ViewModel.AudioRoutingModeChrome.Background, Mode=OneWay}"
-                        BorderBrush="{x:Bind ViewModel.AudioRoutingModeChrome.BorderBrush, Mode=OneWay}"
-                        Foreground="{x:Bind ViewModel.AudioRoutingModeChrome.Foreground, Mode=OneWay}"
-                        Command="{x:Bind ViewModel.SetRoutingMatrixModeCommand}" CommandParameter="audio"
-                        ToolTipService.ToolTip="Audio routing — gain crosspoints (PGM, ISO, monitor, stream)" />
-            </StackPanel>
         </StackPanel>
 
-        <!-- Audio matrix + gain editor (B4: shared control, also hosted on the Audio tab) -->
-        <cvcontrols:AudioRoutingMatrixPanel Grid.Row="1" Grid.RowSpan="2"
-                ViewModel="{x:Bind ViewModel, Mode=OneWay}"
-                Visibility="{x:Bind ViewModel.IsAudioRoutingMode, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
+        <!-- U2 consolidation: the audio matrix moved to its ONLY home, the Audio
+             tab's SETUP surface (the B4-era dual-hosting made operators wonder
+             which copy was canonical). This page is the video patch bay. -->
 
         <!-- Video matrix -->
-        <Border Grid.Row="1" Style="{StaticResource OperatorSectionBorder}" Padding="8" CornerRadius="4"
-                Visibility="{x:Bind ViewModel.IsVideoRoutingMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+        <Border Grid.Row="1" Style="{StaticResource OperatorSectionBorder}" Padding="8" CornerRadius="4">
             <Grid>
                 <!-- Empty state -->
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" MaxWidth="420"

@@ -1129,3 +1129,48 @@ TEST(AudioDsp, SteadyFeedDeclicksFlowResumption) {
   EXPECT_TRUE(out[0].pcm[120] > 0.2f && out[0].pcm[120] < 0.3f);  // mid-fade ~0.25
   EXPECT_EQ(out[0].pcm[400], 0.5f);  // past the 240-frame fade: untouched
 }
+
+// ---- Bus OUTPUT routing (mixer topology): aux/subgroup -> program sends ----
+
+TEST(AudioDsp, BusSendSumsTheSourceBusIntoTheTargetWithGain) {
+  std::map<std::string, std::vector<float>> buses;
+  buses["aux-1"] = {0.5f, 0.5f, 0.5f, 0.5f};
+  buses["master"] = {0.1f, 0.1f, 0.1f, 0.1f};
+
+  const auto touched = corevideo::modules::applyBusSends(
+      buses, {{"aux-1", "master", 0.5}});
+
+  ASSERT_EQ(touched.size(), static_cast<size_t>(1));
+  EXPECT_TRUE(touched.count("master") == 1);
+  for (const auto sample : buses["master"]) {
+    EXPECT_LT(std::abs(sample - 0.35f), 1e-6f);  // 0.1 + 0.5*0.5
+  }
+  for (const auto sample : buses["aux-1"]) {
+    EXPECT_LT(std::abs(sample - 0.5f), 1e-6f);  // source untouched
+  }
+}
+
+TEST(AudioDsp, BusSendCreatesAMissingTargetZeroFilled) {
+  std::map<std::string, std::vector<float>> buses;
+  buses["aux-2"] = {0.25f, -0.25f};
+
+  const auto touched = corevideo::modules::applyBusSends(
+      buses, {{"aux-2", "mon", 1.0}});
+
+  ASSERT_EQ(touched.size(), static_cast<size_t>(1));
+  ASSERT_EQ(buses["mon"].size(), static_cast<size_t>(2));
+  EXPECT_LT(std::abs(buses["mon"][0] - 0.25f), 1e-6f);
+  EXPECT_LT(std::abs(buses["mon"][1] + 0.25f), 1e-6f);
+}
+
+TEST(AudioDsp, BusSendIgnoresEmptySourcesAndSelfSends) {
+  std::map<std::string, std::vector<float>> buses;
+  buses["master"] = {0.2f, 0.2f};
+
+  const auto touched = corevideo::modules::applyBusSends(
+      buses, {{"aux-1", "master", 1.0},      // aux-1 has no signal
+              {"master", "master", 1.0}});   // self-send
+
+  EXPECT_TRUE(touched.empty());
+  EXPECT_LT(std::abs(buses["master"][0] - 0.2f), 1e-6f);
+}

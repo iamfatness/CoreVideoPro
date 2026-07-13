@@ -47,7 +47,9 @@
                                 </ItemsRepeater.Layout>
                                 <ItemsRepeater.ItemTemplate>
                                     <DataTemplate x:DataType="models:RoutingBus">
-                                        <Border Width="52" Padding="0,0,0,4">
+                                        <!-- U2b: the column header explains the bus (purpose + live count). -->
+                                        <Border Width="52" Padding="0,0,0,4"
+                                                ToolTipService.ToolTip="{x:Bind Purpose}">
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="2">
                                                 <!-- Fixed buses: static label. -->
                                                 <TextBlock Text="{x:Bind Label, Mode=OneWay}" FontSize="9" FontWeight="ExtraBold"

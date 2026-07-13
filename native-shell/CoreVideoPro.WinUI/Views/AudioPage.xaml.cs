@@ -146,7 +146,11 @@ public sealed partial class AudioPage : UserControl
         {
             panel.Children.Add(new TextBlock
             {
-                Text = slot.IsBuiltIn ? "No adjustable parameters." : "Parameters arrive with the plugin host (P2).",
+                // U1c: the truth in operator words — an installed VST does NOT
+                // change the audio yet; never let it look live.
+                Text = slot.IsBuiltIn
+                    ? "No adjustable parameters."
+                    : "This plugin is installed but not processing audio yet — sound passes through unchanged. Live VST processing is coming; the built-in processors are fully live today.",
                 FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.7
@@ -179,9 +183,10 @@ public sealed partial class AudioPage : UserControl
         panel.Children.Add(remove);
     }
 
-    // Populate the "+ Add" flyout on open: built-ins first, then every scanned
-    // VST3 plugin (P1 browser results). Rebuilt each open so a new scan shows
-    // up without any binding churn.
+    // Populate the "Add processing" flyout on open: built-ins first (always
+    // live), then every scanned VST3 plugin. Rebuilt each open so a new scan
+    // shows up without any binding churn. Section headers are disabled items
+    // (MenuFlyout has no native headers).
     private void OnAddInsertFlyoutOpening(object sender, object e)
     {
         if (sender is not MenuFlyout flyout || ViewModel is not { } viewModel)
@@ -189,7 +194,12 @@ public sealed partial class AudioPage : UserControl
             return;
         }
 
+        // U1a: opening the add menu is the moment a user is LOOKING for
+        // plugins — make sure a scan has happened without them asking.
+        viewModel.EnsureVstPluginScan();
+
         flyout.Items.Clear();
+        flyout.Items.Add(new MenuFlyoutItem { Text = "BUILT-IN — processes live", IsEnabled = false });
         foreach (var builtIn in viewModel.BuiltInInsertOptions)
         {
             var item = new MenuFlyoutItem { Text = builtIn, Tag = builtIn };
@@ -197,17 +207,24 @@ public sealed partial class AudioPage : UserControl
             flyout.Items.Add(item);
         }
 
+        flyout.Items.Add(new MenuFlyoutSeparator());
+        flyout.Items.Add(new MenuFlyoutItem { Text = "VST3 PLUGINS — pass-through until live hosting ships", IsEnabled = false });
         if (viewModel.VstPlugins.Count == 0)
         {
-            flyout.Items.Add(new MenuFlyoutSeparator());
-            flyout.Items.Add(new MenuFlyoutItem { Text = "No VST3 plugins scanned — Scan in SETUP", IsEnabled = false });
+            var hostStatus = viewModel.VstPluginHostSummary;
+            flyout.Items.Add(new MenuFlyoutItem
+            {
+                Text = hostStatus.StartsWith("Scanning", StringComparison.Ordinal) || hostStatus.StartsWith("Looking", StringComparison.Ordinal)
+                    ? "Scanning for plugins — reopen this menu in a moment"
+                    : "No VST3 plugins found on this machine",
+                IsEnabled = false
+            });
             return;
         }
 
-        flyout.Items.Add(new MenuFlyoutSeparator());
         foreach (var plugin in viewModel.VstPlugins)
         {
-            var item = new MenuFlyoutItem { Text = plugin.Name + "  (VST3)", Tag = plugin.Name };
+            var item = new MenuFlyoutItem { Text = plugin.Name, Tag = plugin.Name };
             item.Click += OnAddVstInsertClicked;
             flyout.Items.Add(item);
         }
@@ -231,6 +248,51 @@ public sealed partial class AudioPage : UserControl
         if (sender is FrameworkElement { Tag: string pluginName })
         {
             ViewModel?.AddVstInsertToSelectedChannel(pluginName);
+        }
+    }
+
+    // U2a: bus-card delete. ItemsRepeater templates can't x:Bind a parent
+    // command, so the card button reaches the matrix VM via DataContext
+    // (the house idiom — see the scene layer cards).
+    private void OnRemoveBusCardClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: Models.RoutingBus bus } && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.RemoveBusCommand.Execute(bus);
+        }
+    }
+
+    // Bus OUTPUT routing: card toggles flip the send through the matrix VM
+    // (which owns the exclusive-listen rule and the core sync trigger).
+    private void OnBusSendToggleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.Controls.Primitives.ToggleButton
+            {
+                DataContext: Models.RoutingBus bus,
+                Tag: string target
+            } toggle && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.SetBusSend(bus, target, toggle.IsChecked == true);
+        }
+    }
+
+    private void OnBusListenClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Microsoft.UI.Xaml.Controls.Primitives.ToggleButton
+            {
+                DataContext: Models.RoutingBus bus
+            } toggle && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.SetListening(bus, toggle.IsChecked == true);
+        }
+    }
+
+    private void OnBusOutputGainChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (sender.DataContext is Models.RoutingBus bus && ViewModel is { } viewModel &&
+            !double.IsNaN(args.NewValue))
+        {
+            viewModel.AudioRoutingMatrix.SetBusOutputGainDb(bus, args.NewValue);
         }
     }
 

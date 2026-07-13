@@ -14,6 +14,7 @@ public sealed partial class RoutingBus : ObservableObject
     {
         Id = id;
         _label = label;
+        Purpose = BusPurposeText(id);
     }
 
     public string Id { get; }
@@ -23,6 +24,68 @@ public sealed partial class RoutingBus : ObservableObject
 
     // Lifecycle L6: aux/custom buses are deletable AND renamable; fixed program buses are not.
     public bool IsRemovable => Id.StartsWith("aux-", StringComparison.Ordinal) || Id.StartsWith("bus-", StringComparison.Ordinal);
+
+    /// <summary>
+    /// U2: what this bus is FOR, in operator words. Shown on the bus cards and
+    /// as the matrix column-header tooltip so the bus model explains itself.
+    /// </summary>
+    public string Purpose { get; }
+
+    /// <summary>U2: how many sources currently route here (kept fresh by the matrix VM).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RoutedSummary))]
+    private int _routedSourceCount;
+
+    // ---- Bus OUTPUT routing (mixer topology). Aux/custom buses can feed the
+    // fixed program buses like subgroups on a real desk; without an output a
+    // bus is a metered dead end (owner 2026-07-12). Only meaningful when
+    // IsRemovable; toggled through the matrix VM so changes sync to the core.
+    [ObservableProperty]
+    private bool _sendsToMaster;
+
+    [ObservableProperty]
+    private bool _sendsToMonitor;
+
+    [ObservableProperty]
+    private bool _sendsToStream;
+
+    /// <summary>Output level applied to every send this bus makes (dB).</summary>
+    [ObservableProperty]
+    private double _outputGainDb;
+
+    /// <summary>PFL: the monitor auditions this bus (exclusive — set via the matrix VM).</summary>
+    [ObservableProperty]
+    private bool _isListening;
+
+    public string RoutedSummary => RoutedSourceCount switch
+    {
+        0 => "Nothing routed",
+        1 => "1 source routed",
+        _ => $"{RoutedSourceCount} sources routed",
+    };
+
+    private static string BusPurposeText(string id)
+    {
+        if (id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Isolated recording feed — carries ONE source for a clean per-source recording.";
+        }
+
+        if (id.StartsWith("aux-", StringComparison.Ordinal) || id.StartsWith("bus-", StringComparison.Ordinal))
+        {
+            return "Aux — build a custom mix, then send it to Master, Monitor, or Stream below.";
+        }
+
+        return id switch
+        {
+            "master" => "The final mix. Everything the audience hears passes through here.",
+            "pgm-l" => "Program left — carries the mastered mix to outputs (record, stream, virtual camera).",
+            "pgm-r" => "Program right — carries the mastered mix to outputs (record, stream, virtual camera).",
+            "mon" => "Monitor — what YOU hear in your headphones. Never sent to the audience.",
+            "stream" => "Stream — the mix sent to your live-stream destinations.",
+            _ => "Custom bus.",
+        };
+    }
 }
 
 /// <summary>

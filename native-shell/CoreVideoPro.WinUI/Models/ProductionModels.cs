@@ -109,7 +109,8 @@ public enum StudioTab
 }
 
 // C5a: one slot in the selected channel's visible insert rack. Built-ins are
-// processed by the core today; VST slots are explicit "awaiting host (P2)".
+// processed by the core today; VST slots pass audio through unchanged until
+// live hosting (P2c) ships — the chip says so in words (U1c), never jargon.
 public sealed class InsertSlotItem
 {
     private static readonly Microsoft.UI.Xaml.Media.Brush LiveBrush =
@@ -122,6 +123,7 @@ public sealed class InsertSlotItem
     public required string SlotLabel { get; init; }
     public bool IsBuiltIn { get; init; }
     public string StatusLabel { get; init; } = "";
+    public string StatusTooltip { get; init; } = "";
     public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn ? LiveBrush : PendingBrush;
 }
 

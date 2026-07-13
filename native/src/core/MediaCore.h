@@ -419,6 +419,10 @@ class MediaCore {
   std::map<std::string, modules::ChannelDspState> channelDspStates_;
   // C7d: per-bus limiter gain state (same block-continuity requirement).
   std::map<std::string, modules::LimiterState> busLimiterGains_;
+  // Bus-send re-limit state: summing a bus into a target can exceed the
+  // target's already-limited ceiling; the post-sum pass needs its own
+  // persistent gain (worker domain, same continuity law as above).
+  std::map<std::string, modules::LimiterState> busSendLimiterGains_;
   // Spec 4.2: per-source sample-steady feed FIFOs (worker domain).
   std::map<std::string, modules::AudioFeedState> audioFeedStates_;
   // Mix-ingest resampler states (worker domain): every source lands on the
@@ -447,6 +451,17 @@ class MediaCore {
     std::vector<std::string> busPluginInserts;
   };
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
+  // Bus OUTPUT routing (mixer topology): an aux/custom bus's mix summed into a
+  // fixed destination bus, like a subgroup feeding the master on a real desk.
+  // Without these, aux buses were metered dead ends (owner 2026-07-12).
+  struct AudioBusSendInput {
+    std::string fromBusId;
+    std::string toBusId;
+    double gainDb = 0;
+  };
+  std::vector<AudioBusSendInput> audioBusSends_;
+  // PFL/listen: when set, the monitor renders THIS bus instead of "mon".
+  std::string monitorListenBusId_;
   // Per-source/channel hold-last: previous non-empty config + absence streaks
   // (partial syncs during shell row-rebuild churn must not unroute live audio).
   std::vector<AudioRoutingSendInput> previousRoutingSends_;
@@ -466,6 +481,8 @@ class MediaCore {
     std::vector<modules::AudioFrame> audioFrames;
     std::vector<ParticipantAudioChannelInput> channels;
     std::vector<AudioRoutingSendInput> routingSends;
+    std::vector<AudioBusSendInput> busSends;  // bus -> bus outputs (aux/subgroup routing)
+    std::string monitorListenBusId;           // PFL: monitor auditions this bus (else "mon")
     bool limiterEnabled = true;  // spec 4.4: toggle now controls the bus limiter
     modules::MasteringParams masteringParams;  // mastering-chain-spec M1
     bool audioMonitorEnabled = false;
