@@ -68,6 +68,26 @@ class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
             const std::string& codec, std::string& errorOut) {
+    // RESET ALL per-session state before configuring the new sink writer. This
+    // writer object is REUSED across recording sessions (every encoder start()
+    // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
+    // IMFSinkWriter. A stale audioConfigured_==true made ensureAudioStream skip
+    // AddStream on the new writer, so every audio WriteSample hit the missing
+    // stream index and failed with MF_E_INVALIDSTREAMNUMBER (0xC00D36B3) — a
+    // video-only MP4 while the master bus carried live program audio (the
+    // 2026-07-13 alpha-blocking zero-audio-recording bug: start-program-output
+    // opened generation 1, start-recording-session reopened generation 2).
+    sinkWriter_.Reset();
+    open_ = false;
+    writing_ = false;
+    audioConfigured_ = false;
+    videoStreamIndex_ = 0;
+    audioStreamIndex_ = 0;
+    videoFrameCount_ = 0;
+    audioPacketCount_ = 0;
+    audioSampleCount_ = 0;
+    audioWriteFailureCount_ = 0;
+    bytesWritten_ = 0;
     path_ = path;
     width_ = std::max(2, width);
     height_ = std::max(2, height);
@@ -318,6 +338,16 @@ class Mp4Writer {
 
     result = sinkWriter_->WriteSample(audioStreamIndex_, sample.Get());
     if (FAILED(result)) {
+      // LOUD failure (rate-limited): a recording quietly muxing zero audio is
+      // an alpha-blocking failure mode — log the first drop and every 250th
+      // (~every 5s at the 50Hz worker cadence) so it can never hide again.
+      ++audioWriteFailureCount_;
+      if (audioWriteFailureCount_ == 1 || audioWriteFailureCount_ % 250 == 0) {
+        std::fprintf(stderr,
+                     "[recording] program audio WriteSample FAILED hr=%s stream=%lu (failure %lld) file=%s\n",
+                     hresultString(result).c_str(), static_cast<unsigned long>(audioStreamIndex_),
+                     static_cast<long long>(audioWriteFailureCount_), path_.string().c_str());
+      }
       errorOut = "write audio sample: " + hresultString(result);
       return false;
     }
@@ -375,6 +405,7 @@ class Mp4Writer {
   int64_t videoFrameCount_ = 0;
   int64_t audioPacketCount_ = 0;
   int64_t audioSampleCount_ = 0;
+  int64_t audioWriteFailureCount_ = 0;
   int64_t bytesWritten_ = 0;
   bool open_ = false;
   bool writing_ = false;
@@ -543,10 +574,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       session_.recordingAudioChannels = program_.audioChannels();
       session_.recordingAudioSampleRate = program_.audioSampleRate();
       session_.recordingAudioBitrateKbps = program_.audioBitrateKbps();
-    } else if (session_.recordingWarning.empty() && !error.empty()) {
+    } else if (!error.empty() &&
+               session_.recordingWarning.rfind("Media Foundation dropped program audio", 0) != 0) {
       // A failed audio WriteSample used to vanish silently (video kept muxing,
       // the finalized MP4 just had no AAC track and nothing was surfaced).
-      // Keep the recording alive but make the drop visible.
+      // Keep the recording alive but make the drop visible — and let it
+      // OVERWRITE a benign earlier note (e.g. the format-fallback warning),
+      // which previously masked the drop entirely.
       session_.recordingWarning = "Media Foundation dropped program audio: " + error + ".";
     }
     for (auto& iso : isoWriters_) {

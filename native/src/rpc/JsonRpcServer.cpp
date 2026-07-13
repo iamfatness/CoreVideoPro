@@ -523,10 +523,24 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     // 50Hz from below — it measured 47.3 ticks/s, a chronic ~6% shortfall the
     // real-time WASAPI monitor endpoint turned into silent underruns. Advance a
     // fixed deadline grid instead: overshoot on one tick is reclaimed on the
-    // next, so the long-run cadence locks at 50.0. A tick that blows past its
-    // deadline (work overload) re-anchors the grid to now rather than sprinting
-    // through the backlog (audio sources are drained whole, so skipped grid
-    // slots carry no lost samples).
+    // next, so the long-run cadence locks at 50.0.
+    //
+    // BOUNDED CATCH-UP on a blown deadline (2026-07-13). The old policy
+    // re-anchored the grid to now on every blown deadline, on the premise that
+    // "audio sources are drained whole, so skipped grid slots carry no lost
+    // samples". That premise is false downstream: steadyAudioFrameFeed emits
+    // at most ONE tick of samples per tick and sheds its FIFO past 6 ticks, so
+    // every skipped slot permanently loses 20ms of real-time audio. Measured on
+    // the recording mux: ~48.2 ticks/s → the MP4 audio track ran 3.1% short of
+    // video (925ms drift over a 30s recording). Now a blown deadline runs the
+    // next tick IMMEDIATELY (no sleep) until the grid is regained — each
+    // catch-up tick still drains exactly one 960-frame block, so the spec-4.2
+    // fixed block size (and every DSP invariant behind it) is untouched. Only
+    // when hopelessly behind (> 5 ticks ≈ 100ms, still inside the 6-tick feed
+    // FIFO) re-anchor and accept the shed — that path now logs, rate-capped.
+    constexpr long long kMaxCatchupBehindUs = kAudioBudgetUs * 5;
+    long long reanchors = 0;
+    auto lastReanchorLog = std::chrono::steady_clock::now();
     auto deadline = std::chrono::steady_clock::now();
     while (!stopping.load()) {
       const auto t0 = std::chrono::steady_clock::now();
@@ -546,7 +560,18 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       deadline += std::chrono::microseconds(kAudioBudgetUs);
       const auto now = std::chrono::steady_clock::now();
       if (deadline <= now) {
-        deadline = now;  // overloaded tick: re-anchor, don't sprint the backlog
+        if (now - deadline > std::chrono::microseconds(kMaxCatchupBehindUs)) {
+          deadline = now;  // hopelessly behind: re-anchor (audio WILL be shed)
+          ++reanchors;
+          if (now - lastReanchorLog > std::chrono::seconds(5)) {
+            std::fprintf(stderr,
+                         "[audioOut] pacer re-anchored %lld time(s): worker >100ms behind, real-time audio shed\n",
+                         reanchors);
+            lastReanchorLog = now;
+            reanchors = 0;
+          }
+        }
+        // else: behind but recoverable — loop immediately (catch-up tick).
       } else {
         std::this_thread::sleep_until(deadline);
       }

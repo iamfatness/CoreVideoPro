@@ -294,6 +294,43 @@ before first frames, then silent. Companion audit: `WgcSession` was the ONLY fre
 callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
 its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
+## Current state addendum (2026-07-13, the zero-audio recording bug)
+
+**Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root
+cause (proven headless with the fake tone engine + stderr gates): the live flow calls
+`encoder->start()` TWICE per recording (start-program-output arms it, then
+start-recording-session restarts it), and `MediaFoundationEncoderAdapter`'s `Mp4Writer`
+is REUSED across those generations. `finalize()` never reset `audioConfigured_`, so on
+the generation-2 writer `ensureAudioStream` early-returned without `AddStream` — every
+audio `WriteSample` then hit a missing stream index and failed with
+`MF_E_INVALIDSTREAMNUMBER` (0xC00D36B3) for the whole session, while video muxed
+perfectly (its stream index IS refreshed in `open()`). The warning lived only in
+`encoderSession.warnings`; `recording.warning` stayed null → invisible. Fixes:
+(1) `Mp4Writer::open()` resets ALL per-session state; (2) the audio worker now publishes
+the encoder's `recordingWarning` into `recordingWarning_` → snapshot `recording.warning`
+(+ rate-limited `[recording]` stderr), so a video-only recording can never look healthy;
+(3) regression tests in `EncoderRecordingSessionTest.cpp` (real-MF double-start test —
+fails 0xC00D36B3 pre-fix — and a MediaCore warning-propagation test).
+
+**Audio worker pacer: bounded catch-up (same PR).** The absolute-deadline pacer used to
+RE-ANCHOR on any blown 20ms deadline ("skipped slots carry no lost samples" — false:
+`steadyAudioFrameFeed` emits max ONE tick per tick and sheds its FIFO past 6 ticks, so
+every skipped slot permanently loses 20ms of real-time audio → recordings' audio track
+ran 3.1% short of video, i.e. ~1s of A/V drift per 30s). Now a blown deadline ticks
+again immediately (blocks stay exactly 960 frames — spec 4.2 intact) and only re-anchors
+past 5 ticks behind (logged). Measured: 48.2 → 50.0 ticks/s, FIFO sheds 0, and the shed
+site itself now logs (`AudioFeedState.shedSamples`).
+
+**Headless recording-audio proof (no WinUI, no port 8011):**
+`node scripts/validate-record-audio.mjs` — spawns the core over stdio with
+`COREVIDEO_ZOOM_ENGINE_PATH` pointed at `corevideo-zoom-engine-fake.exe` (NO binary
+copy/restore dance needed for core-only tests; the env var is honored by
+`ZoomEngineRuntime::loadConfig`), joins, routes zoom-mix → master, records, and fails
+unless audio packets flow AND ffprobe shows video+audio with |start delta| < 50ms and
+|duration delta| < 200ms (rig-measured 2026-07-13: 1.8ms / 123ms over 60s @1080p60).
+Gotcha it guards: `validate:record-stream` alone proves nothing about audio (headless
+master is silent without a source).
+
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
 **Audio is CLEAN and machine-verified.** The 2026-07-05 marathon: pull-model monitor
