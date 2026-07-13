@@ -131,6 +131,18 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         _supervisor.ListCaptureDevicesAsync(cancellationToken);
 
+    // Browser sources (BR-1): core-side WebView2 host processes; the sources show up
+    // in ListNativeCaptureDevicesAsync as kind "browser" ids ("browser:<n>").
+    public Task AddBrowserSourceAsync(
+        string url, int width, int height, int fps, CancellationToken cancellationToken = default) =>
+        _supervisor.AddBrowserSourceAsync(url, width, height, fps, cancellationToken);
+
+    public Task RemoveBrowserSourceAsync(string browserId, CancellationToken cancellationToken = default) =>
+        _supervisor.RemoveBrowserSourceAsync(browserId, cancellationToken);
+
+    public Task ReloadBrowserSourceAsync(string browserId, CancellationToken cancellationToken = default) =>
+        _supervisor.ReloadBrowserSourceAsync(browserId, cancellationToken);
+
     // Lifecycle L2: core-side session teardown for a capture device.
     public Task<IReadOnlyList<NativeCaptureDeviceStatus>> DisconnectNativeCaptureDeviceAsync(
         string deviceId,

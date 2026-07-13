@@ -123,7 +123,10 @@ widgets, countdowns. Combined with §B (place/resize anywhere) this equals the
 OBS/vMix browser-source workflow.
 
 Delivery order (BR-1..3):
-- **BR-1 — render-only browser source**: `browser.add {url,w,h,fps}` → host process →
+- **BR-1 — render-only browser source** — **SHIPPED 2026-07-13** (see
+  `capture-sources-spec.md` §4 STATUS for the exact shape: WGC-self-capture host,
+  capture-SHM ingest, supervision/backoff, Browser picker group, control API):
+  `browser.add {url,w,h,fps}` → host process →
   transparent texture → appears in Sources (as a `Browser` group entry per §A) and in
   scenes/slots like any source. Reload/health/slate-on-crash included.
 - **BR-2 — operator UX**: add/edit URL dialog (with size presets: full-canvas overlay

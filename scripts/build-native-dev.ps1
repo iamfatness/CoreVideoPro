@@ -94,7 +94,7 @@ function Stage-DevNativeArtifacts {
     if (-not (Test-Path $targetDir)) {
       New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
     }
-    foreach ($name in @("corevideo-native.exe", "corevideo-native-tests.exe", "corevideo-zoom-engine.exe", "corevideo-zoom-engine-fake.exe", "corevideo-plugin-host.exe")) {
+    foreach ($name in @("corevideo-native.exe", "corevideo-native-tests.exe", "corevideo-zoom-engine.exe", "corevideo-zoom-engine-fake.exe", "corevideo-plugin-host.exe", "corevideo-browser-host.exe")) {
       # Stage each binary AND its matching .pdb — the PDB is what makes a crash dump
       # of this exact build diagnosable (see native/CMakeLists.txt Release /DEBUG).
       foreach ($artifact in @($name, [System.IO.Path]::ChangeExtension($name, ".pdb"))) {
@@ -124,7 +124,10 @@ if (-not (Test-Path (Join-Path $ZoomSdkDir "h\zoom_sdk.h"))) {
 
 Write-Host "[build-native-dev] ensuring staged Zoom runtime..." -ForegroundColor Cyan
 & (Join-Path $repoRoot "scripts\stage-zoom-sdk.ps1") -ZoomSdkDir $ZoomSdkDir
-if ($LASTEXITCODE -ne 0) {
+# stage-zoom-sdk.ps1 falls off the end (no `exit`) on a successful fresh stage, so
+# $LASTEXITCODE can be $null in a fresh shell — only a REAL nonzero code is a failure
+# (a bare `-ne 0` made the first build in a fresh worktree stop right here).
+if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
@@ -149,6 +152,7 @@ $cmakeArgs = @(
   "-DCOREVIDEO_WITH_UVC=ON",
   "-DCOREVIDEO_WITH_WGC=ON",
   "-DCOREVIDEO_WITH_VIRTUALCAM=ON",
+  "-DCOREVIDEO_WITH_BROWSER_HOST=ON",
   "-DCOREVIDEO_BUILD_ZOOM_ENGINE=ON",
   "-DBUILD_TESTING=ON",
   "-DZOOM_SDK_DIR=$ZoomSdkDir"
@@ -164,7 +168,7 @@ if ($WithAja) {
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
   "cmake $(($cmakeArgs | ForEach-Object { Quote-CmdArg $_ }) -join ' ')",
-  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests corevideo-virtualcam"
+  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests corevideo-virtualcam corevideo-browser-host"
 ) -join " && "
 
 cmd /c $buildCmd

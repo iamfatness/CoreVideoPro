@@ -18,6 +18,7 @@ option(COREVIDEO_WITH_AJA "Build the AJA NTV2 capture-device adapter. Requires C
 option(COREVIDEO_WITH_UVC "Build the native UVC (Media Foundation) capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_WGC "Build the Windows.Graphics.Capture screen-capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
 option(COREVIDEO_WITH_VIRTUALCAM "Build the Windows 11 Media Foundation virtual-camera publisher. Requires COREVIDEO_ENABLE_DEV_ADAPTERS." OFF)
+option(COREVIDEO_WITH_BROWSER_HOST "Build corevideo-browser-host.exe (WebView2 browser-source host, docs/capture-sources-spec.md Phase BR). Windows x64 only; uses the vendored third_party/webview2 SDK." OFF)
 option(COREVIDEO_BUILD_ZOOM_ENGINE "Build the vendored standalone Zoom capture engine helper. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a local Zoom Meeting SDK." OFF)
 set(COREVIDEO_ZOOM_SDK_ROOT "" CACHE PATH "Root of the extracted Zoom Windows Meeting SDK architecture folder, for example zoom-sdk-windows-7.0.5.39292/x64")
 set(ZOOM_SDK_DIR "" CACHE PATH "Path to the vendored Zoom capture engine SDK root (contains include/ or h/, plus lib/)")
@@ -47,6 +48,7 @@ add_library(corevideo_native
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/modules/AsyncEncoderSink.cpp
+  src/modules/BrowserSourceHostAdapter.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
@@ -174,6 +176,36 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
+endif()
+
+# ---------------------------------------------------------------------------
+# corevideo-browser-host — one WebView2 render process per browser source (BR-1).
+# Renders --url offscreen, WGC-self-captures its window, publishes BGRA frames
+# into the named capture SHM the core maps (src/modules/BrowserSourceShm.h).
+# Uses the VENDORED WebView2 SDK (third_party/webview2 — provenance/license in
+# its README.md); the WebView2 *Runtime* is probed at host startup.
+# ---------------------------------------------------------------------------
+if(COREVIDEO_WITH_BROWSER_HOST)
+  if(NOT WIN32)
+    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST supports Windows only.")
+  endif()
+  if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "COREVIDEO_WITH_BROWSER_HOST requires an x64 build (vendored WebView2LoaderStatic.lib is x64).")
+  endif()
+  set(COREVIDEO_WEBVIEW2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2")
+  if(NOT EXISTS "${COREVIDEO_WEBVIEW2_DIR}/include/WebView2.h")
+    message(FATAL_ERROR "Vendored WebView2 SDK missing at ${COREVIDEO_WEBVIEW2_DIR} (see its README.md).")
+  endif()
+  add_executable(corevideo-browser-host browser-host/main.cpp)
+  set_target_properties(corevideo-browser-host PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+  target_include_directories(corevideo-browser-host PRIVATE
+    src
+    "${COREVIDEO_WEBVIEW2_DIR}/include")
+  # windowsapp = C++/WinRT (Windows.Graphics.Capture); version+advapi32 are the
+  # WebView2 static loader's documented link requirements.
+  target_link_libraries(corevideo-browser-host PRIVATE
+    "${COREVIDEO_WEBVIEW2_DIR}/x64/WebView2LoaderStatic.lib"
+    windowsapp d3d11 dxgi user32 ole32 oleaut32 version advapi32 shlwapi)
 endif()
 
 if(COREVIDEO_WITH_WGC)
@@ -406,6 +438,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/AudioDspTest.cpp
+    tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraSlateTest.cpp

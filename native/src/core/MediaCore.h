@@ -2,6 +2,7 @@
 
 #include "core/Director.h"
 #include "core/PluginHostScan.h"
+#include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
 #include "modules/AudioDsp.h"
 #include "modules/AudioMastering.h"
@@ -36,6 +37,14 @@ class MediaCore {
   [[nodiscard]] rpc::Json disconnectCaptureDevice(const std::string& deviceId);
   void registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height);
   void unregisterCaptureShm(const std::string& deviceId);
+  // Browser sources (docs/capture-sources-spec.md Phase BR, slice BR-1). Each adds a
+  // dedicated corevideo-browser-host.exe (WebView2) subprocess whose frames ride the
+  // capture ingest seam keyed "capture:browser:<n>". Returns the browserSources state
+  // (with per-source health) on success; a Json string error message on rejection.
+  [[nodiscard]] rpc::Json addBrowserSource(const rpc::Json& payload, std::string& error);
+  [[nodiscard]] rpc::Json removeBrowserSource(const std::string& browserId, std::string& error);
+  [[nodiscard]] rpc::Json reloadBrowserSource(const std::string& browserId, std::string& error);
+  [[nodiscard]] rpc::Json browserSourcesState() const;
   [[nodiscard]] rpc::Json joinZoom(const rpc::Json& payload);
   // True when a real Zoom engine subprocess is configured. Lock-free (the
   // runtime pointer and its executable path are fixed at construction). The
@@ -376,6 +385,11 @@ class MediaCore {
   std::string recordingLastFailure_;
   std::string recordingLastRecovery_;
   std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
+  // Owned directly (not inside ModuleSet) so the browser commands and snapshot
+  // telemetry have typed access, and so the stub-module test path exercises the
+  // same code. Frames merge into the capture-frame stream each render tick.
+  std::unique_ptr<modules::BrowserSourceHostAdapter> browserSources_ =
+      modules::createBrowserSourceHostAdapter();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
   bool zoomJoined_ = false;

@@ -57,6 +57,7 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
         "automation.toggle", "automation.autoTake.set", "automation.autoAssignInputs.set",
         "automation.lowerThirds.set", "automation.captions.set",
+        "browser.add", "browser.remove", "browser.reload",
     };
 
     private readonly StudioViewModel _vm;
@@ -235,6 +236,50 @@ public sealed class StudioControlSurface : IControlSurface, IDisposable
             case "automation.captions.set":
                 _vm.AutomationCaptionsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
+
+            // ---- Browser sources (BR-1) ----------------------------------------------
+            case "browser.add":
+            {
+                var url = Str(args, 0);
+                if (url.Length == 0)
+                {
+                    return ControlInvokeResult.Fail("browser.add requires a url argument.");
+                }
+                _vm.NewBrowserSourceUrl = url;
+                // Optional width/height select the closest preset (BR-1 exposes the
+                // three preset sizes; BR-2 grows a full custom-size dialog).
+                if (args.Count > 2 && args[1] is int w && args[2] is int h && w > 0 && h > 0)
+                {
+                    _vm.NewBrowserSourcePresetIndex = (w, h) switch
+                    {
+                        (1280, 720) => 1,
+                        (960, 540) => 2,
+                        _ => 0
+                    };
+                }
+                await _vm.AddBrowserSourceCommand.ExecuteAsync(null).ConfigureAwait(true);
+                return ControlInvokeResult.Success;
+            }
+            case "browser.remove":
+                try
+                {
+                    await _vm.RemoveBrowserSourceAsync(Str(args, 0)).ConfigureAwait(true);
+                    return ControlInvokeResult.Success;
+                }
+                catch (Exception ex)
+                {
+                    return ControlInvokeResult.Fail(ex.Message);
+                }
+            case "browser.reload":
+                try
+                {
+                    await _vm.ReloadBrowserSourceAsync(Str(args, 0)).ConfigureAwait(true);
+                    return ControlInvokeResult.Success;
+                }
+                catch (Exception ex)
+                {
+                    return ControlInvokeResult.Fail(ex.Message);
+                }
 
             default:
                 return ControlInvokeResult.Fail($"Action '{actionId}' is not implemented by the WinUI surface.");
