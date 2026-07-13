@@ -192,6 +192,69 @@ public sealed class RoutingMatrixViewModelTests
         Assert.NotNull(FindAudioCell(viewModel, "mic-1", "master"));
     }
 
+    // ---- U2: bus cards — purpose text + live routed counts ----
+
+    [Fact]
+    public void BusPurpose_EveryDefaultBusExplainsItselfInWords()
+    {
+        foreach (var bus in AudioRoutingMatrixViewModel.DefaultBuses)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(bus.Purpose), $"bus '{bus.Id}' has no purpose text");
+            Assert.DoesNotContain("processing", bus.Id);  // ids never leak into purpose copy
+        }
+
+        Assert.Contains("audience", new RoutingBus("master", "MASTER").Purpose);
+        Assert.Contains("headphones", new RoutingBus("mon", "MON").Purpose);
+        Assert.Contains("stream", new RoutingBus("stream", "STREAM").Purpose, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ONE source", new RoutingBus("iso-3", "ISO 3").Purpose);
+        Assert.Contains("custom mix", new RoutingBus("aux-1", "AUX 1").Purpose);
+    }
+
+    [Fact]
+    public void BusRoutedCounts_TrackBuildToggleAndRemove()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build(
+            [
+                new RoutingSource("mic-1", "Mic 1"),
+                new RoutingSource("mic-2", "Mic 2")
+            ]);
+
+        var master = viewModel.BusHeaders.Single(bus => bus.Id == "master");
+        var aux = viewModel.BusHeaders.Single(bus => bus.Id == "aux-1");
+
+        // Build stages both new sources onto the program defaults.
+        Assert.Equal(2, master.RoutedSourceCount);
+        Assert.Equal(0, aux.RoutedSourceCount);
+        Assert.Equal("Nothing routed", aux.RoutedSummary);
+
+        // Routing a cell updates the count live.
+        viewModel.SelectCrosspointCommand.Execute(FindAudioCell(viewModel, "mic-1", "aux-1"));
+        Assert.Equal(1, aux.RoutedSourceCount);
+        Assert.Equal("1 source routed", aux.RoutedSummary);
+
+        // Removing the selected route updates it back down.
+        viewModel.RemoveSelectedRouteCommand.Execute(null);
+        Assert.Equal(0, aux.RoutedSourceCount);
+
+        // Clearing a whole source row drops every bus it fed.
+        viewModel.ClearSourceSendsCommand.Execute(viewModel.Rows.Single(row => row.SourceId == "mic-1"));
+        Assert.Equal(1, master.RoutedSourceCount);
+    }
+
+    [Fact]
+    public void BusRoutedCounts_ApplyCoreSendsRefreshes()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1", DefaultUnrouted: true)]);
+
+        var master = viewModel.BusHeaders.Single(bus => bus.Id == "master");
+        Assert.Equal(0, master.RoutedSourceCount);
+
+        viewModel.ApplyCoreSends([("mic-1", "master", 0.0)]);
+        Assert.Equal(1, master.RoutedSourceCount);
+    }
+
     private static VideoRoutingCrosspointViewModel FindVideoCell(
         VideoRoutingMatrixViewModel viewModel,
         string sourceId,

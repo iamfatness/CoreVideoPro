@@ -708,19 +708,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
 
-    /// <summary>Which matrix the Routing tab is showing: "audio" or "video".</summary>
-    [ObservableProperty]
-    private string _routingMatrixMode = "audio";
-
-    public bool IsAudioRoutingMode => RoutingMatrixMode == "audio";
-
-    public bool IsVideoRoutingMode => RoutingMatrixMode == "video";
-
-    public TabChrome AudioRoutingModeChrome =>
-        IsAudioRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
-
-    public TabChrome VideoRoutingModeChrome =>
-        IsVideoRoutingMode ? SelectedViewModeChrome : DefaultViewModeChrome;
+    // U2 consolidation: the Routing tab is video-only; audio routing lives
+    // solely on the Audio tab's SETUP surface. The old "audio"/"video"
+    // RoutingMatrixMode plumbing is gone with the dual-hosting.
 
     public IReadOnlyList<SourceRoute> PreviewSceneRoutes { get; private set; } = [];
 
@@ -1912,14 +1902,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(PreviewModeChrome));
         OnPropertyChanged(nameof(SplitModeChrome));
         OnPropertyChanged(nameof(MultiviewModeChrome));
-    }
-
-    partial void OnRoutingMatrixModeChanged(string value)
-    {
-        OnPropertyChanged(nameof(IsAudioRoutingMode));
-        OnPropertyChanged(nameof(IsVideoRoutingMode));
-        OnPropertyChanged(nameof(AudioRoutingModeChrome));
-        OnPropertyChanged(nameof(VideoRoutingModeChrome));
     }
 
     partial void OnMultiviewTilesChanged(IReadOnlyList<ParticipantSurfaceTile> value)
@@ -3680,12 +3662,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             "multiview" => StudioViewMode.Multiview,
             _ => StudioViewMode.Program
         };
-    }
-
-    [RelayCommand]
-    private void SetRoutingMatrixMode(string mode)
-    {
-        RoutingMatrixMode = mode == "video" ? "video" : "audio";
     }
 
     [RelayCommand]

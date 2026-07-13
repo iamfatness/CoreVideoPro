@@ -167,6 +167,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         cell.IsRouted = true;
         SelectedCrosspoint = cell;
         RouteChanged?.Invoke(cell);
+        RefreshBusRoutedCounts();
     }
 
     // Lifecycle L3 (source-lifecycle-spec 3.2): clear EVERY send of one source
@@ -192,6 +193,10 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         {
             SelectedCrosspoint = null;
         }
+        if (cleared > 0)
+        {
+            RefreshBusRoutedCounts();
+        }
     }
 
     [RelayCommand]
@@ -205,6 +210,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         cell.IsRouted = false;
         SelectedCrosspoint = null;
         RouteChanged?.Invoke(cell);
+        RefreshBusRoutedCounts();
     }
 
     /// <summary>
@@ -260,6 +266,11 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
                 changed = true;
             }
+        }
+
+        if (changed)
+        {
+            RefreshBusRoutedCounts();
         }
 
         return changed;
@@ -327,6 +338,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         }
         BusHeaders.Remove(bus);
         OnPropertyChanged(nameof(BusHeaders));
+        RefreshBusRoutedCounts();
     }
 
     /// <summary>
@@ -383,6 +395,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         NormalizeIsolatedAudioBuses();
         SelectedCrosspoint = null;
         OnPropertyChanged(nameof(HasRows));
+        RefreshBusRoutedCounts();
     }
 
     private void ClearBusColumn(string busId)
@@ -413,4 +426,30 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
 
     private static bool IsIsolatedAudioBus(string busId) =>
         busId.StartsWith("iso-", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// U2: keep each bus's RoutedSourceCount fresh so the bus cards can say
+    /// "N sources routed" without their own matrix scan. Called after every
+    /// route mutation (toggle/clear/remove/apply/build). Cheap: rows × buses.
+    /// RoutingBus.RoutedSourceCount only notifies on an actual value change.
+    /// </summary>
+    public void RefreshBusRoutedCounts()
+    {
+        foreach (var bus in BusHeaders)
+        {
+            var count = 0;
+            foreach (var row in Rows)
+            {
+                foreach (var cell in row.Cells)
+                {
+                    if (cell.IsRouted && ReferenceEquals(cell.Bus, bus))
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            bus.RoutedSourceCount = count;
+        }
+    }
 }

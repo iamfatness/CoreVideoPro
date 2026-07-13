@@ -251,6 +251,17 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
+    // U2a: bus-card delete. ItemsRepeater templates can't x:Bind a parent
+    // command, so the card button reaches the matrix VM via DataContext
+    // (the house idiom — see the scene layer cards).
+    private void OnRemoveBusCardClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: Models.RoutingBus bus } && ViewModel is { } viewModel)
+        {
+            viewModel.AudioRoutingMatrix.RemoveBusCommand.Execute(bus);
+        }
+    }
+
     // C3: SHOW/SETUP mode buttons (Tag carries the mode).
     private void OnAudioModeClicked(object sender, RoutedEventArgs e)
     {

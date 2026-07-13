@@ -14,6 +14,7 @@ public sealed partial class RoutingBus : ObservableObject
     {
         Id = id;
         _label = label;
+        Purpose = BusPurposeText(id);
     }
 
     public string Id { get; }
@@ -23,6 +24,47 @@ public sealed partial class RoutingBus : ObservableObject
 
     // Lifecycle L6: aux/custom buses are deletable AND renamable; fixed program buses are not.
     public bool IsRemovable => Id.StartsWith("aux-", StringComparison.Ordinal) || Id.StartsWith("bus-", StringComparison.Ordinal);
+
+    /// <summary>
+    /// U2: what this bus is FOR, in operator words. Shown on the bus cards and
+    /// as the matrix column-header tooltip so the bus model explains itself.
+    /// </summary>
+    public string Purpose { get; }
+
+    /// <summary>U2: how many sources currently route here (kept fresh by the matrix VM).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RoutedSummary))]
+    private int _routedSourceCount;
+
+    public string RoutedSummary => RoutedSourceCount switch
+    {
+        0 => "Nothing routed",
+        1 => "1 source routed",
+        _ => $"{RoutedSourceCount} sources routed",
+    };
+
+    private static string BusPurposeText(string id)
+    {
+        if (id.StartsWith("iso-", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Isolated recording feed — carries ONE source for a clean per-source recording.";
+        }
+
+        if (id.StartsWith("aux-", StringComparison.Ordinal) || id.StartsWith("bus-", StringComparison.Ordinal))
+        {
+            return "Aux send — build a custom mix (a guest's mix-minus, an effects send, a second output).";
+        }
+
+        return id switch
+        {
+            "master" => "The final mix. Everything the audience hears passes through here.",
+            "pgm-l" => "Program left — carries the mastered mix to outputs (record, stream, virtual camera).",
+            "pgm-r" => "Program right — carries the mastered mix to outputs (record, stream, virtual camera).",
+            "mon" => "Monitor — what YOU hear in your headphones. Never sent to the audience.",
+            "stream" => "Stream — the mix sent to your live-stream destinations.",
+            _ => "Custom bus.",
+        };
+    }
 }
 
 /// <summary>
