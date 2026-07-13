@@ -355,7 +355,20 @@ G4 stability debt (engine-off teardown audit, OAuth token refresh, resize soak),
 G5 packaging-lite. Beta scope (signing/installer/updates, onboarding, licensing,
 crash pipeline, hardware matrix) lives in `docs/beta-plan.md`. The audio overhaul
 (4.1–4.4b incl. the console) and the Scenes redesign (S1–S3, R1) are SHIPPED; VST
-host P1/P2a/P2b are shipped with P2c (real plugin processing) remaining.
+host P1/P2a/P2b/**P2c** are shipped (P3 channel inserts + params remaining).
+DONE 2026-07-12: **VST P2c — real VST3 instantiation + processing in the
+out-of-process host.** Raw COM-ABI (NO VST3 SDK — GPLv3 house rule) in
+`native/plugin-host/vst-abi.h` (layout static_asserts) + `vst-processor.h`
+(lifecycle/process machinery, factory-injectable for tests). Bus-insert naming:
+`vst:<class or plugin name>` (or `vst:<bundle>/<class>` for Waves-style shells)
+selects a scanned plugin; plain `vst` keeps the -6dB test processor. Selection
+rides the SHM block; the host loads on demand ON ITS OWN THREAD (core
+deadline-bypasses during loads) and caches per selection; host status/errors ride
+back in the block → `pluginHost.serve{activePlugin,lastError,statusCode}`.
+Unresolvable names bypass LOUDLY (never fake). Terminal proof:
+`corevideo-plugin-host --process <bundle> <class>` pushes 1s of 440Hz and prints a
+process-result JSON verdict. The safety posture is unchanged: 4ms deadline bypass,
+bypass-on-host-death, plugin code never in the core.
 DONE 2026-07-03: **per-instance engine IPC names (OBS collision fix)** — the engine's
 pipes/sockets/SHM regions were fixed names on the shared `ZoomObsPlugin_` base, so a
 running OBS zoom plugin made every join time out ("Timed out connecting to Zoom engine

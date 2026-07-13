@@ -4444,10 +4444,32 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           // through the out-of-process plugin host with a hard 4ms deadline.
           // Not ready -> kick the async starter and BYPASS this tick; miss ->
           // BYPASS with the audio untouched. Built-in inserts always run.
+          // P2c: a "vst:<name>" insert selects a REAL scanned plugin (the host
+          // loads it on demand); plain "vst"/"host" names keep the -6dB test
+          // processor. Unresolvable selections BYPASS loudly (serve.lastError
+          // + rate-capped log) — the exchange never runs with a fake target.
           const bool wantsHost = std::any_of(found->second.begin(), found->second.end(), isHostHandledInsertName);
           if (wantsHost) {
-            if (pluginHostClient_.ready()) {
-              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4);
+            std::string vstQuery;
+            for (const auto& insertName : found->second) {
+              if (!isHostHandledInsertName(insertName)) {
+                continue;
+              }
+              vstQuery = vstSelectionQueryFromInsertName(insertName);
+              if (!vstQuery.empty()) {
+                break;  // first vst: selection wins (one host slot per bus block)
+              }
+            }
+            VstInsertSelection selection;
+            selection.resolved = true;  // legacy names: empty selection = test processor
+            if (!vstQuery.empty()) {
+              selection = resolveVstInsertForWorker(vstQuery);
+            }
+            if (!selection.resolved) {
+              // loud bypass — built-ins below still run
+            } else if (pluginHostClient_.ready()) {
+              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4,
+                                         selection.bundleId, selection.className);
             } else {
               ensurePluginHostServeStarted();
             }
@@ -4755,6 +4777,8 @@ void MediaCore::startPluginHostScan() {
         if (!verdict.vendor.empty() && pluginHostPlugins_[index].vendor.empty()) {
           pluginHostPlugins_[index].vendor = verdict.vendor;
         }
+        // P2c: the audio classes are what "vst:<name>" insert names select.
+        pluginHostPlugins_[index].classNames = verdict.classNames;
       }
     }
 
@@ -4779,17 +4803,54 @@ void MediaCore::ensurePluginHostServeStarted() {
   }).detach();
 }
 
+VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query) {
+  VstInsertSelection selection;
+  bool kickScan = false;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    selection = resolveVstInsertSelection(query, pluginHostPlugins_);
+    pluginHostInsertError_ = selection.resolved ? std::string{} : selection.error;
+    if (!selection.resolved && pluginHostStatus_ == "absent" && !pluginHostScanAutoKicked_) {
+      // No scan has ever run but the operator named a plugin: kick ONE scan
+      // (async, detached) so the insert self-heals once results land.
+      pluginHostScanAutoKicked_ = true;
+      kickScan = true;
+    }
+  }
+  if (kickScan) {
+    startPluginHostScan();
+  }
+  if (!selection.resolved) {
+    // Rate-capped (~5s at the 50Hz worker): loud, not spammy.
+    static std::atomic<int> s_resolveLogTick{0};
+    if (s_resolveLogTick.fetch_add(1, std::memory_order_relaxed) % 250 == 0) {
+      std::fprintf(stderr, "[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
+    }
+  }
+  return selection;
+}
+
 rpc::Json MediaCore::pluginHostState() const {
   std::lock_guard<std::mutex> lock(pluginHostMutex_);
   rpc::Json::Array plugins;
   for (const auto& plugin : pluginHostPlugins_) {
+    rpc::Json::Array classNames;
+    for (const auto& className : plugin.classNames) {
+      classNames.emplace_back(className);
+    }
     plugins.emplace_back(rpc::Json::Object{
         {"id", plugin.id},
         {"name", plugin.name},
         {"vendor", plugin.vendor},
         {"probe", plugin.probe},
+        {"classNames", classNames},
     });
   }
+  // P2c failure honesty: a core-side selection error (typo'd insert name, no
+  // scan) outranks the host-side status; otherwise report what the host
+  // actually did (active plugin, or its load/process error).
+  const std::string lastError =
+      !pluginHostInsertError_.empty() ? pluginHostInsertError_ : pluginHostClient_.lastError();
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
@@ -4798,6 +4859,9 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"running", pluginHostClient_.ready() && pluginHostClient_.hostAlive()},
                     {"exchanges", static_cast<double>(pluginHostClient_.exchanges())},
                     {"deadlineMisses", static_cast<double>(pluginHostClient_.deadlineMisses())},
+                    {"activePlugin", pluginHostClient_.activePlugin()},
+                    {"statusCode", static_cast<double>(pluginHostClient_.statusCode())},
+                    {"lastError", lastError},
                 }},
   };
 }

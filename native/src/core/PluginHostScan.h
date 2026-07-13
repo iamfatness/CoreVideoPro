@@ -34,6 +34,9 @@ struct PluginHostPluginInfo {
   std::string name;
   std::string vendor;
   std::string probe = "pending";  // pending|pass|fail (probe lands in P2)
+  // P2c: every audio class the probe found in the bundle (Waves shells carry
+  // many). Insert names select against these.
+  std::vector<std::string> classNames;
 };
 
 inline std::vector<PluginHostPluginInfo> parsePluginScanOutput(const std::string& output) {
@@ -75,11 +78,143 @@ inline bool isHostHandledInsertName(const std::string& name) {
   return lowered.find("vst") != std::string::npos || lowered.find("host") != std::string::npos;
 }
 
+// ---------------------------------------------------------------------------
+// P2c plugin selection. Insert-name convention:
+//   "vst:<query>"          — select a REAL scanned plugin by class/plugin name
+//   "vst:<bundle>/<class>" — disambiguate shell bundles (Waves) explicitly
+//   "vst", "Host Test..."  — legacy: the host's -6dB test processor
+// All matching is case-insensitive; pure functions for tests.
+// ---------------------------------------------------------------------------
+inline std::string pluginScanToLowerAscii(const std::string& value) {
+  std::string lowered;
+  lowered.reserve(value.size());
+  for (const char character : value) {
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+  }
+  return lowered;
+}
+
+inline std::string pluginScanTrim(const std::string& value) {
+  size_t begin = 0;
+  size_t end = value.size();
+  while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+  while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+  return value.substr(begin, end - begin);
+}
+
+// "" when the insert name is not a "vst:" selection (legacy names keep the
+// test processor; built-ins never reach here).
+inline std::string vstSelectionQueryFromInsertName(const std::string& insertName) {
+  const std::string trimmed = pluginScanTrim(insertName);
+  if (trimmed.size() < 5) {
+    return {};
+  }
+  const std::string prefix = pluginScanToLowerAscii(trimmed.substr(0, 4));
+  if (prefix != "vst:") {
+    return {};
+  }
+  return pluginScanTrim(trimmed.substr(4));
+}
+
+struct VstInsertSelection {
+  bool resolved = false;
+  std::string bundleId;   // scan id (bundle path) to load in the host
+  std::string className;  // class inside the bundle ("" = host picks first audio class)
+  std::string error;      // human-readable when !resolved
+};
+
+// Resolves a "vst:" query against the scan results. Match order: explicit
+// bundle/class split, exact class name, class-name substring, plugin-name
+// match (first class wins). probe=="fail" plugins are never selectable.
+inline VstInsertSelection resolveVstInsertSelection(const std::string& query,
+                                                    const std::vector<PluginHostPluginInfo>& plugins) {
+  VstInsertSelection selection;
+  const std::string trimmed = pluginScanTrim(query);
+  if (trimmed.empty()) {
+    selection.error = "empty vst: selection";
+    return selection;
+  }
+  if (plugins.empty()) {
+    selection.error = "no VST3 scan results (run a plugin scan first)";
+    return selection;
+  }
+
+  const auto selectable = [](const PluginHostPluginInfo& plugin) { return plugin.probe != "fail"; };
+  const auto matches = [](const std::string& loweredHaystack, const std::string& loweredNeedle) {
+    return loweredHaystack.find(loweredNeedle) != std::string::npos;
+  };
+
+  // Explicit "bundle/class" form.
+  const auto slash = trimmed.find('/');
+  if (slash != std::string::npos) {
+    const std::string bundlePart = pluginScanToLowerAscii(pluginScanTrim(trimmed.substr(0, slash)));
+    const std::string classPart = pluginScanToLowerAscii(pluginScanTrim(trimmed.substr(slash + 1)));
+    for (const auto& plugin : plugins) {
+      if (!selectable(plugin)) continue;
+      if (!matches(pluginScanToLowerAscii(plugin.name), bundlePart) &&
+          !matches(pluginScanToLowerAscii(plugin.id), bundlePart)) {
+        continue;
+      }
+      for (const auto& className : plugin.classNames) {
+        if (pluginScanToLowerAscii(className) == classPart ||
+            matches(pluginScanToLowerAscii(className), classPart)) {
+          selection.resolved = true;
+          selection.bundleId = plugin.id;
+          selection.className = className;
+          return selection;
+        }
+      }
+    }
+    selection.error = "no scanned plugin matches '" + trimmed + "'";
+    return selection;
+  }
+
+  const std::string wanted = pluginScanToLowerAscii(trimmed);
+  // Pass 1: exact class-name match.
+  for (const auto& plugin : plugins) {
+    if (!selectable(plugin)) continue;
+    for (const auto& className : plugin.classNames) {
+      if (pluginScanToLowerAscii(className) == wanted) {
+        selection.resolved = true;
+        selection.bundleId = plugin.id;
+        selection.className = className;
+        return selection;
+      }
+    }
+  }
+  // Pass 2: class-name substring.
+  for (const auto& plugin : plugins) {
+    if (!selectable(plugin)) continue;
+    for (const auto& className : plugin.classNames) {
+      if (matches(pluginScanToLowerAscii(className), wanted)) {
+        selection.resolved = true;
+        selection.bundleId = plugin.id;
+        selection.className = className;
+        return selection;
+      }
+    }
+  }
+  // Pass 3: plugin (bundle) name — first known class, or let the host pick.
+  for (const auto& plugin : plugins) {
+    if (!selectable(plugin)) continue;
+    if (pluginScanToLowerAscii(plugin.name) == wanted ||
+        matches(pluginScanToLowerAscii(plugin.name), wanted)) {
+      selection.resolved = true;
+      selection.bundleId = plugin.id;
+      selection.className = plugin.classNames.empty() ? std::string{} : plugin.classNames.front();
+      return selection;
+    }
+  }
+  selection.error = "no scanned plugin matches '" + trimmed + "'";
+  return selection;
+}
+
 // P2a: one probe verdict per plugin, parsed from the host's probe-result line.
 struct PluginProbeResult {
   bool pass = false;
   std::string vendor;
   std::string className;
+  std::vector<std::string> classNames;  // P2c: all audio classes in the bundle
   std::string reason;  // first failure reason, "" when passing
   bool parsed = false;
 };
@@ -100,6 +235,14 @@ inline PluginProbeResult parsePluginProbeResult(const std::string& output) {
     result.pass = parsed->get("pass") != nullptr && parsed->get("pass")->asBool();
     result.vendor = parsed->getString("vendor");
     result.className = parsed->getString("className");
+    if (const rpc::Json* classNames = parsed->get("classNames");
+        classNames != nullptr && classNames->isArray()) {
+      for (const auto& entry : classNames->asArray()) {
+        if (!entry.asString().empty()) {
+          result.classNames.push_back(entry.asString());
+        }
+      }
+    }
     if (const rpc::Json* reasons = parsed->get("reasons");
         reasons != nullptr && reasons->isArray() && !reasons->asArray().empty()) {
       result.reason = reasons->asArray().front().asString();

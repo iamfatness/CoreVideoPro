@@ -430,6 +430,7 @@ if(BUILD_TESTING)
     tests/RtmpFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/UvcCaptureSupportTest.cpp
+    tests/VstHostAbiTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
     tests/ZoomEngineProcessTest.cpp
