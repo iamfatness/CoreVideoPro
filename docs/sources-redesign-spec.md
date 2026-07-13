@@ -91,11 +91,20 @@ done; the gap is that it lives on the Scenes tab instead of under the operator's
   preview header: `Edit layout` (pencil). Click a source → grips appear; drag/resize/
   nudge exactly as on Scenes; Take/Update commits as today. No new wire — it drives
   the same route rects.
-- **POS-2 — "bug" / undersized-asset placement**: an `Add overlay layer` action
-  (preview toolbar + Scenes) that places a media asset (or, later, browser source) at
-  its native size scaled to a chosen fraction, NOT canvas-filling; presets for the
-  classic spots (corners w/ safe-area margin) plus free placement; aspect always locked
-  for logos; persists in the scene like any route (it IS a route with a small rect).
+- **POS-2 — "bug" / undersized-asset placement** — **SHIPPED 2026-07-12** ("Add
+  overlay" flyouts on the Studio preview header — next to the POS-1 pencil — and the
+  Scenes tab; `OverlayLayerService` + `OverlayLayerMenuBuilder` +
+  `StudioViewModel.AddOverlayLayer`; 29 new test cases): an `Add overlay layer` action
+  (preview toolbar + Scenes) that places a media asset (listed per-asset, loud empty
+  state; or any Add-source option — inputs/active-speaker/screen-share/roles; later
+  browser source) at its native size scaled to a chosen fraction (default 15% canvas
+  width), NOT canvas-filling; presets for the classic spots (four corners w/ 5%
+  safe-area margin — a constant until the POS-1 settings increment ships the "default
+  bug margin %" setting) plus Center and free placement; aspect always locked to the
+  asset's natural size for logos (16:9 fallback when unknown); inserts through the S2b
+  preview DRAFT (program untouched until Take/Update) and persists in the scene like
+  any route (it IS a route with a small rect), editable with the existing
+  grips/nudge/numeric fields.
 - **POS-3 — Program-side editing, settings-gated**: same overlay on the PROGRAM panel
   behind Settings → Output → "Allow live program layout editing" (default OFF — moving
   live pixels on air is an expert move). When enabled, edits go straight to program
@@ -139,7 +148,7 @@ Delivery order (BR-1..3):
 | 1 | SRC-1 | The brittleness is live-show risk today; small, shell-only |
 | 2 | POS-1 (+settings) | Machinery exists; highest perceived-pro gain per effort |
 | 3 | BR-1 | The substantial native build; unlocks the third-party-graphics story |
-| 4 | POS-2, SRC-2 | Bug placement + one selection surface |
+| 4 | POS-2 (**shipped 2026-07-12**), SRC-2 (**shipped 2026-07-11**) | Bug placement + one selection surface |
 | 5 | BR-2/3, POS-3, SRC-3 | Polish + expert modes |
 
 Already landed with this spec: the type-switch wipe fix (`5bb3c70`).

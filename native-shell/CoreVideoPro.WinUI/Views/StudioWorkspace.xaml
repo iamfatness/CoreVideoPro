@@ -511,6 +511,20 @@
                                     <TextBlock Text="Edit layout" />
                                 </StackPanel>
                             </ToggleButton>
+                            <!-- POS-2: place a small "bug" overlay (logo / media asset / any input) as a
+                                 new top-most layer in the PREVIEW scene — corner presets w/ safe margin,
+                                 center, or free. Rides the S2b draft; Take/Update commits. -->
+                            <Button x:Name="AddOverlayButton" Style="{StaticResource GhostButton}"
+                                    Padding="10,4" FontSize="10" VerticalAlignment="Center"
+                                    ToolTipService.ToolTip="Add a small overlay layer (logo/bug) to the preview scene: pick a source, then a corner or center. Fine-tune with Edit layout. Changes ride the preview until you Take or Update.">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE8B9;" FontSize="11" />
+                                    <TextBlock Text="Add overlay" />
+                                </StackPanel>
+                                <Button.Flyout>
+                                    <MenuFlyout x:Name="AddOverlayFlyout" Opening="OnAddOverlayFlyoutOpening" />
+                                </Button.Flyout>
+                            </Button>
                         </StackPanel>
                         <Button Grid.Column="4" Style="{StaticResource GhostButton}"
                                 Padding="10,4" FontSize="10" VerticalAlignment="Center"
