@@ -96,6 +96,17 @@ done; the gap is that it lives on the Scenes tab instead of under the operator's
   its native size scaled to a chosen fraction, NOT canvas-filling; presets for the
   classic spots (corners w/ safe-area margin) plus free placement; aspect always locked
   for logos; persists in the scene like any route (it IS a route with a small rect).
+  **Still-media frames (core side, 2026-07-13)**: media routes used to composite the
+  colorFromParticipantId placeholder forever (no consumer published a frame keyed
+  `media:<assetId>`). The core's `StillMediaFrameCache` now decodes still images
+  (kind `image` OR a .png/.jpg/.jpeg/.bmp/.gif/.tif extension — the media bin files
+  PNG logos under lower-third kinds) ONCE on a background thread (WIC, straight-alpha
+  BGRA, >4K downscaled) and injects a persistent frame each render gather, so program,
+  preview bus and multiview composite real logo pixels with transparency. Missing/
+  failed assets keep the placeholder + a rate-limited warning (stderr + render-plan
+  warnings), and the compositor's unmatched-layer guardrail now covers `media:` layers.
+  Live VIDEO media routes still render the placeholder unless the asset is playing
+  (per-route decode sessions are a follow-up).
 - **POS-3 — Program-side editing, settings-gated**: same overlay on the PROGRAM panel
   behind Settings → Output → "Allow live program layout editing" (default OFF — moving
   live pixels on air is an expert move). When enabled, edits go straight to program

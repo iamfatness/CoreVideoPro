@@ -337,6 +337,30 @@ shipped** (`docs/audio-tab-redesign.md`): grid hydrates from the core's publishe
 tab, shared routing-matrix panel on both Audio and Routing tabs. Remaining: 4.4 channel
 inserts/EQ/gate actually processing, B5 shared strip pop-out, 4.5 VST host.
 
+**Still-media routes render real pixels (2026-07-13,
+`docs/sources-redesign-spec.md` §B):** scene routes referencing a media asset used
+to composite the colorFromParticipantId placeholder forever — no consumer ever
+published a VideoFrame keyed `media:<assetId>`, which made POS-2 logo bugs render
+as colored rectangles. `modules/StillMediaFrameCache` (owned by MediaCore) now
+decodes STILL images once — kind `image` OR a still extension
+(.png/.jpg/.jpeg/.bmp/.gif/.tif; the media bin files PNG logos under lower-third
+kinds) — via WIC on a dedicated background worker (never under coreMutex; leaf
+mutex only, mirrors the startPluginHostScan law), cached by (path, mtime+size)
+with a 64MB LRU budget and a >3840x2160 downscale guard, then injects one
+persistent straight-alpha BGRA frame per still into the render gather so program,
+preview bus and multiview all match it (stable frameId + shared buffer = zero
+per-tick copies/uploads). Alpha works end-to-end: the video-layer blend is
+straight SRC_ALPHA on the GPU and blendPixelBgra on the CPU preview — decode to
+32bppBGRA, NOT premultiplied PBGRA. Failures are LOUD: missing/undecodable files
+keep the placeholder + rate-limited (5s/key) stderr + render-plan warnings, and
+`warnUnmatchedCaptureLayer` now also fires for `media:` layers. Both scene parse
+sites (load-scene-graph AND set-preview-scene/spine) feed the desired set. The
+MF media adapter no longer WIC-decodes route stills on the render thread (it
+keeps background stills + video playout). Live VIDEO media routes without active
+playout still composite the placeholder — per-route decode sessions are a
+follow-up. Test seam: `MediaCore::setStillImageDecoderForTest` injects a fake
+decoder (`tests/StillMediaFrameCacheTest.cpp`).
+
 **Scenes redesign S1–S3a + R1 shipped** (`docs/scenes-tab-redesign.md`): layer
 delete/reorder/opacity, non-destructive presets + undo, duplicate/no-clobber save,
 custom scenes persist across restarts, live-scene DRAFT editing (program untouched until

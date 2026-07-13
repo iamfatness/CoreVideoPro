@@ -1303,6 +1303,36 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
+  syncStillMediaDesired();
+}
+
+void MediaCore::syncStillMediaDesired() {
+  if (!stillMediaCache_) {
+    return;
+  }
+  std::vector<modules::StillMediaFrameCache::StillRequest> desired;
+  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes) {
+    for (const auto& route : routes) {
+      if (route.mediaAssetId.empty() || route.mediaAssetPath.empty()) {
+        continue;
+      }
+      if (!modules::isStillImageMediaAsset(route.mediaAssetKind, route.mediaAssetPath)) {
+        continue;  // video media routes keep the existing playout path
+      }
+      desired.push_back({"media:" + route.mediaAssetId,
+                         modules::normalizeMediaAssetPath(route.mediaAssetPath)});
+    }
+  };
+  addRoutes(sceneRoutes_);
+  addRoutes(previewSceneRoutes_);
+  stillMediaCache_->setDesired(std::move(desired));
+}
+
+void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
+                                            size_t cacheBudgetBytes) {
+  stillMediaCache_ =
+      std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes);
+  syncStillMediaDesired();
 }
 
 void MediaCore::setParticipantTransform(const rpc::Json&) {
@@ -2304,6 +2334,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   previewSceneActive_ = true;
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;
+  syncStillMediaDesired();
   return true;
 }
 
@@ -4006,6 +4037,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
+  // Still-image media routes (logos/bugs): inject the persistent decoded frames
+  // (keyed "media:<assetId>") so program, preview bus and multiview all match
+  // them like any other source frame. Cheap by construction — shared_ptr copies
+  // of cached buffers with stable frameIds (zero per-tick pixel work; the WIC
+  // decode ran on the cache's background thread). Until a decode completes the
+  // layer keeps the existing placeholder.
+  if (stillMediaCache_) {
+    auto stillFrames = stillMediaCache_->collectFrames(frameTimestampMs);
+    videoFrames.insert(videoFrames.end(), std::make_move_iterator(stillFrames.begin()),
+                       std::make_move_iterator(stillFrames.end()));
+  }
   markStage(s_stageIngestUs);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
@@ -4040,6 +4082,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
     for (const auto& warning : modules_.mediaFrames->warnings()) {
+      if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
+        renderPlan.warnings.push_back(warning);
+      }
+    }
+  }
+  // Failure honesty: surface still-media decode failures (missing file, bad
+  // image) in the render-plan warnings so they reach snapshot diagnostics —
+  // the stderr side is rate-limited inside the cache.
+  if (stillMediaCache_) {
+    for (const auto& warning : stillMediaCache_->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
         renderPlan.warnings.push_back(warning);
       }

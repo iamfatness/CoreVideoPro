@@ -831,6 +831,9 @@ class D3D11Compositor final : public ICompositor {
           layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
           const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
           layer.frame = frameForParticipant(frames, frameSourceId);
+          if (layer.frame == nullptr) {
+            warnUnmatchedCaptureLayer(frameSourceId, frames);
+          }
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
           layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
@@ -863,16 +866,20 @@ class D3D11Compositor final : public ICompositor {
     return layers;
   }
 
-  // Guardrail: a capture layer that resolves to NO frame renders as a solid
+  // Guardrail: a capture/media layer that resolves to NO frame renders as a solid
   // colorFromParticipantId() placeholder (the "pink tile"). That is almost always a
-  // key mismatch (the layer's participantId matches no frame's) or a dead feed, and it
-  // used to fail SILENTLY — the native-UVC key mismatch cost a multi-session hunt.
-  // Make it loud: log, rate-limited per key, dumping the available capture-frame keys
-  // so any mismatch is obvious at a glance. Capture sources only (Zoom participants
-  // legitimately come and go, so a missing frame there is not necessarily a bug).
-  static void warnUnmatchedCaptureLayer(const std::string& participantId,
+  // key mismatch (the layer's key matches no frame's) or a dead feed / undecoded
+  // asset, and it used to fail SILENTLY — the native-UVC key mismatch cost a
+  // multi-session hunt, and media layers had NO warning at all. Make it loud: log,
+  // rate-limited per key, dumping the available same-prefix frame keys so any
+  // mismatch is obvious at a glance. capture:/media: sources only (Zoom
+  // participants legitimately come and go, so a missing frame there is not
+  // necessarily a bug).
+  static void warnUnmatchedCaptureLayer(const std::string& sourceKey,
                                         const std::vector<VideoFrame>& frames) {
-    if (participantId.rfind("capture:", 0) != 0) {
+    const bool isCapture = sourceKey.rfind("capture:", 0) == 0;
+    const bool isMedia = sourceKey.rfind("media:", 0) == 0;
+    if (!isCapture && !isMedia) {
       return;
     }
     static std::mutex logMutex;
@@ -882,15 +889,16 @@ class D3D11Compositor final : public ICompositor {
                             .count();
     {
       std::lock_guard<std::mutex> lock(logMutex);
-      int64_t& last = lastLogMs[participantId];
+      int64_t& last = lastLogMs[sourceKey];
       if (last != 0 && now - last < 5000) {
         return;
       }
       last = now;
     }
+    const char* prefix = isCapture ? "capture:" : "media:";
     std::string available;
     for (const auto& frame : frames) {
-      if (frame.participantId.rfind("capture:", 0) != 0) {
+      if (frame.participantId.rfind(prefix, 0) != 0) {
         continue;
       }
       if (!available.empty()) {
@@ -902,9 +910,10 @@ class D3D11Compositor final : public ICompositor {
       }
     }
     std::fprintf(stderr,
-                 "[compositor] capture layer '%s' has NO matching frame (pink tile) - "
-                 "available capture frames: [%s]\n",
-                 participantId.c_str(), available.empty() ? "none" : available.c_str());
+                 "[compositor] %s layer '%s' has NO matching frame (placeholder tile) - "
+                 "available %s frames: [%s]\n",
+                 isCapture ? "capture" : "media", sourceKey.c_str(), prefix,
+                 available.empty() ? "none" : available.c_str());
   }
 
   static const VideoFrame* frameForParticipant(const std::vector<VideoFrame>& frames, const std::string& participantId) {
