@@ -435,8 +435,8 @@
           Visibility="{x:Bind ViewModel.IsAudioRoutingSurface, Mode=OneWay, Converter={StaticResource BoolToVis}}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -465,90 +465,79 @@
             </Grid>
         </Border>
 
-        <!-- U2a: BUS CARDS — each bus explains itself (purpose, live routed
-             count, rename/delete for aux/custom buses). Wraps to the width. -->
-        <ItemsRepeater Grid.Row="1" ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.BusHeaders, Mode=OneWay}">
-            <ItemsRepeater.Layout>
-                <!-- UniformGridLayout sizes every cell from the FIRST item; the
-                     aux cards are taller (output sends row) so the uniform
-                     height must fit the tallest card or they clip. -->
-                <UniformGridLayout MinItemWidth="200" MinItemHeight="136"
-                                   MinRowSpacing="6" MinColumnSpacing="6"
-                                   ItemsStretch="Fill" />
-            </ItemsRepeater.Layout>
-            <ItemsRepeater.ItemTemplate>
-                <DataTemplate x:DataType="models:RoutingBus">
-                    <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
-                            BorderThickness="1" CornerRadius="6" Padding="10,8">
-                        <StackPanel Spacing="4">
-                            <Grid ColumnSpacing="4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="{x:Bind Label, Mode=OneWay}" FontSize="12" FontWeight="SemiBold"
+        <!-- THE MATRIX IS THE SURFACE (owner: cards buried it). It comes first
+             and takes the viewport; bus context lives in the compact strip
+             below and in the column-header tooltips. -->
+        <controls:AudioRoutingMatrixPanel Grid.Row="1" ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
+
+        <!-- U2a compact: ONE strip of bus chips — name (rename for aux), routed
+             count, LISTEN (PFL), and for aux/custom buses the output sends +
+             level. Purpose text is the chip/header tooltip, not a wall of cards. -->
+        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled">
+            <ItemsRepeater ItemsSource="{x:Bind ViewModel.AudioRoutingMatrix.BusHeaders, Mode=OneWay}">
+                <ItemsRepeater.Layout>
+                    <StackLayout Orientation="Horizontal" Spacing="6" />
+                </ItemsRepeater.Layout>
+                <ItemsRepeater.ItemTemplate>
+                    <DataTemplate x:DataType="models:RoutingBus">
+                        <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                BorderThickness="1" CornerRadius="4" Padding="8,5"
+                                ToolTipService.ToolTip="{x:Bind Purpose}">
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="{x:Bind Label, Mode=OneWay}" FontSize="11" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
                                            Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
                                 <TextBox Text="{x:Bind Label, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                         FontSize="12" Padding="4,2" BorderThickness="1"
+                                         FontSize="11" Padding="4,2" BorderThickness="1" MinWidth="52" MaxWidth="80"
                                          Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
                                          ToolTipService.ToolTip="Rename this bus" />
-                                <Button Grid.Column="1" Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="10"
-                                        Padding="4" VerticalAlignment="Top"
-                                        Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
-                                        ToolTipService.ToolTip="Delete this bus (its routes go with it)"
-                                        Click="OnRemoveBusCardClicked" />
-                            </Grid>
-                            <TextBlock Text="{x:Bind Purpose}" FontSize="10"
-                                       Foreground="{StaticResource StudioMutedBrush}"
-                                       TextWrapping="WrapWholeWords" />
-                            <Grid ColumnSpacing="4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="{x:Bind RoutedSummary, Mode=OneWay}" FontSize="10"
-                                           Foreground="#7FB8A6" VerticalAlignment="Center" />
-                                <ToggleButton Grid.Column="1" Content="LISTEN" FontSize="8" Padding="6,2"
+                                <TextBlock Text="{x:Bind RoutedSourceCount, Mode=OneWay}" FontSize="10"
+                                           Foreground="#7FB8A6" VerticalAlignment="Center"
+                                           ToolTipService.ToolTip="{x:Bind RoutedSummary, Mode=OneWay}" />
+                                <ToggleButton Content="LISTEN" FontSize="8" Padding="6,2"
                                               IsChecked="{x:Bind IsListening, Mode=OneWay}"
                                               Click="OnBusListenClicked"
                                               ToolTipService.ToolTip="Audition this bus in your headphones (PFL) — the audience mix is unaffected" />
-                            </Grid>
-                            <!-- Bus OUTPUTS (aux/custom only): subgroup-style sends into
-                                 the fixed buses, with an output level — a bus without an
-                                 output is a dead end. -->
-                            <StackPanel Orientation="Horizontal" Spacing="4"
-                                        Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="Sends to" FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
-                                           VerticalAlignment="Center" />
+                                <!-- Bus OUTPUTS (aux/custom only): a bus without an output is a dead end. -->
+                                <TextBlock Text="→" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                           VerticalAlignment="Center"
+                                           Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}" />
                                 <ToggleButton Content="MASTER" FontSize="8" Padding="5,2" Tag="master"
                                               IsChecked="{x:Bind SendsToMaster, Mode=OneWay}"
                                               Click="OnBusSendToggleClicked"
+                                              Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
                                               ToolTipService.ToolTip="Sum this bus into the Master mix (the audience hears it)" />
                                 <ToggleButton Content="MON" FontSize="8" Padding="5,2" Tag="mon"
                                               IsChecked="{x:Bind SendsToMonitor, Mode=OneWay}"
                                               Click="OnBusSendToggleClicked"
+                                              Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
                                               ToolTipService.ToolTip="Sum this bus into your Monitor (headphones only)" />
                                 <ToggleButton Content="STREAM" FontSize="8" Padding="5,2" Tag="stream"
                                               IsChecked="{x:Bind SendsToStream, Mode=OneWay}"
                                               Click="OnBusSendToggleClicked"
+                                              Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
                                               ToolTipService.ToolTip="Sum this bus into the Stream mix" />
-                                <NumberBox Value="{x:Bind OutputGainDb, Mode=OneWay}" FontSize="9" Width="64"
+                                <NumberBox Value="{x:Bind OutputGainDb, Mode=OneWay}" FontSize="9" Width="56"
                                            SpinButtonPlacementMode="Hidden" Minimum="-60" Maximum="10"
                                            ValueChanged="OnBusOutputGainChanged"
+                                           Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
                                            ToolTipService.ToolTip="Output level for this bus's sends (dB)" />
+                                <Button Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                        Padding="4,2" VerticalAlignment="Center"
+                                        Visibility="{x:Bind IsRemovable, Converter={StaticResource BoolToVis}}"
+                                        ToolTipService.ToolTip="Delete this bus (its routes go with it)"
+                                        Click="OnRemoveBusCardClicked" />
                             </StackPanel>
-                        </StackPanel>
-                    </Border>
-                </DataTemplate>
-            </ItemsRepeater.ItemTemplate>
-        </ItemsRepeater>
-
-        <!-- The crosspoint matrix, full width and height. -->
-        <controls:AudioRoutingMatrixPanel Grid.Row="2" ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
+                        </Border>
+                    </DataTemplate>
+                </ItemsRepeater.ItemTemplate>
+            </ItemsRepeater>
+        </ScrollViewer>
 
         <!-- U2b: the default-routing rule, stated instead of implied. -->
         <TextBlock Grid.Row="3" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"
-                   Text="New sources route to Master, Program L/R, Stream, and Monitor automatically (Zoom ISO channels stay unrouted until you route them). Click an empty cell to route; click a routed cell to select it and set its level." />
+                   Text="New sources route to Master, Program L/R, Stream, and Monitor automatically (Zoom ISO channels stay unrouted until you route them). Click an empty cell to route; click a routed cell to select it and set its level. Hover a bus for what it does." />
     </Grid>
 
     <!-- ===== C4b: THE CONSOLE (SHOW mode) — fixed, full-viewport, no scroll ===== -->
