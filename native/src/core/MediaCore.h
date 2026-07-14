@@ -7,6 +7,7 @@
 #include "modules/AudioMastering.h"
 #include "modules/VirtualCameraPublisher.h"
 #include "modules/Interfaces.h"
+#include "modules/StillMediaFrameCache.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
@@ -96,6 +97,13 @@ class MediaCore {
   [[nodiscard]] std::vector<std::string> routedAudioBusIds() const;
   [[nodiscard]] const std::vector<float>& audioBusTapPcm(const std::string& busId) const;
 
+  // Test seam for the still-media decode path (WIC is Windows-only, so the
+  // stub/cross-platform tests inject a fake decoder). Call before loading
+  // scenes; recreates the cache with the given decoder + byte budget.
+  void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
+                                   size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
+  [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+
  private:
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
@@ -151,6 +159,11 @@ class MediaCore {
   // next preview composite when the content actually changed. Returns true when it
   // applied a change.
   bool applyPreviewScene(const rpc::Json& previewScene);
+  // Recomputes the union of still-image media routes across the PROGRAM and
+  // PREVIEW scenes and hands it to the still-media cache (which decodes on its
+  // own background thread — never under coreMutex). Called from both scene
+  // parse sites; cheap (string scan + leaf-mutex publish, no file I/O).
+  void syncStillMediaDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false);
@@ -376,6 +389,11 @@ class MediaCore {
   std::string recordingLastFailure_;
   std::string recordingLastRecovery_;
   std::unique_ptr<modules::ZoomEngineRuntime> zoomEngineRuntime_;
+  // Persistent decoded still-image frames for media routes (logos/bugs), keyed
+  // "media:<assetId>". Decode runs on the cache's own worker thread; the render
+  // gather only does cheap shared_ptr copies (see StillMediaFrameCache.h).
+  std::unique_ptr<modules::StillMediaFrameCache> stillMediaCache_ =
+      std::make_unique<modules::StillMediaFrameCache>();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
   bool zoomJoined_ = false;
