@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
@@ -417,6 +418,55 @@ void MediaCore::unregisterCaptureShm(const std::string& deviceId) {
   }
 }
 
+rpc::Json MediaCore::addBrowserSource(const rpc::Json& payload, std::string& error) {
+  const std::string url = payload.getString("url");
+  const int width = static_cast<int>(payload.getNumber("width", 1920));
+  const int height = static_cast<int>(payload.getNumber("height", 1080));
+  const int fps = static_cast<int>(payload.getNumber("fps", 30));
+  const std::string id = browserSources_->addSource(url, width, height, fps, error);
+  if (id.empty()) {
+    return rpc::Json(nullptr);
+  }
+  return browserSourcesState();
+}
+
+rpc::Json MediaCore::removeBrowserSource(const std::string& browserId, std::string& error) {
+  if (!browserSources_->removeSource(browserId)) {
+    error = "Unknown browser source '" + browserId + "'.";
+    return rpc::Json(nullptr);
+  }
+  return browserSourcesState();
+}
+
+rpc::Json MediaCore::reloadBrowserSource(const std::string& browserId, std::string& error) {
+  if (!browserSources_->reloadSource(browserId, error)) {
+    return rpc::Json(nullptr);
+  }
+  return browserSourcesState();
+}
+
+rpc::Json MediaCore::browserSourcesState() const {
+  rpc::Json::Array sources;
+  for (const auto& item : browserSources_->telemetry()) {
+    sources.emplace_back(rpc::Json::Object{
+        {"id", item.id},
+        {"url", item.url},
+        {"width", item.width},
+        {"height", item.height},
+        {"fps", item.fps},
+        {"measuredFps", item.measuredFps},
+        {"running", item.running},
+        {"gaveUp", item.gaveUp},
+        {"restartCount", item.restartCount},
+        {"consecutiveFailures", item.consecutiveFailures},
+        {"health", item.health},
+        {"lastError", item.lastError},
+        {"framesReceived", static_cast<double>(item.framesReceived)},
+    });
+  }
+  return rpc::Json(std::move(sources));
+}
+
 bool MediaCore::zoomEngineConfigured() const {
   return zoomEngineRuntime_ && zoomEngineRuntime_->configured();
 }
@@ -539,6 +589,7 @@ rpc::Json MediaCore::sessionState() const {
       {"outputSenderSession", outputSenderSessionState()},
       {"virtualCamera", virtualCameraState()},
       {"captureDevices", captureDevicesState()},
+      {"browserSources", browserSourcesState()},
       {"health", health()},
       {"profile", profile()},
       {"audioMixSession", audioMixSessionState()},
@@ -1020,6 +1071,24 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     configureMultiviewer(command);
   } else if (type == "configure-srt-ingest-sources") {
     configureSrtIngestSources(command);
+  } else if (type == "browser-add") {
+    std::string error;
+    (void)addBrowserSource(command, error);
+    if (!error.empty()) {
+      std::fprintf(stderr, "[browser] browser-add REJECTED: %s\n", error.c_str());
+    }
+  } else if (type == "browser-remove") {
+    std::string error;
+    (void)removeBrowserSource(command.getString("browserId"), error);
+    if (!error.empty()) {
+      std::fprintf(stderr, "[browser] browser-remove REJECTED: %s\n", error.c_str());
+    }
+  } else if (type == "browser-reload") {
+    std::string error;
+    (void)reloadBrowserSource(command.getString("browserId"), error);
+    if (!error.empty()) {
+      std::fprintf(stderr, "[browser] browser-reload REJECTED: %s\n", error.c_str());
+    }
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
   } else if (type == "recommend-auto-production") {
@@ -3558,7 +3627,12 @@ rpc::Json MediaCore::outputSenderSessionState() const {
 }
 
 rpc::Json MediaCore::captureDevicesState() const {
-  return captureDeviceArray(modules_.captureDevice->enumerate());
+  auto devices = modules_.captureDevice->enumerate();
+  // Browser sources present as capture devices (kind "browser") so the shell's
+  // Sources pickers list them exactly like screens.
+  auto browserDevices = browserSources_->enumerate();
+  devices.insert(devices.end(), browserDevices.begin(), browserDevices.end());
+  return captureDeviceArray(devices);
 }
 
 rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
@@ -4004,6 +4078,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
 
   auto videoFrames = modules_.zoom->pollVideoFrames();
   auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
+  // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
+  // so scenes/multiview/routing treat them exactly like any capture device. Same
+  // per-frame copy cost as one WinUI capture-shm bridge device.
+  if (!browserSources_->empty()) {
+    auto browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
+    captureFrames.insert(captureFrames.end(),
+                         std::make_move_iterator(browserFrames.begin()),
+                         std::make_move_iterator(browserFrames.end()));
+  }
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);

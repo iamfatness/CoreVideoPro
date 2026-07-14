@@ -61,6 +61,31 @@ composition), not DXGI Desktop Duplication (monitor-only, no per-window, admin q
 
 ## 4. Browser source (Phase BR)
 
+**STATUS: BR-1 (render-only) SHIPPED 2026-07-13** (branch claude/browser-source-br1).
+What landed vs. this spec:
+
+- `corevideo-browser-host.exe` (`native/browser-host/`, one process per source, vendored
+  WebView2 SDK in `third_party/webview2/`) renders the URL in a **windowed**
+  CoreWebView2Controller inside a borderless tool-window positioned OFF the virtual
+  desktop, and **WGC-self-captures its own window** — a pragmatic composition of already
+  proven pieces instead of the windowless CompositionController below. Measured on the
+  rig: **real premultiplied BGRA alpha survives end-to-end** (transparent page regions
+  arrive alpha=0) and an animated page sustains ~28fps offscreen (Chromium occlusion
+  tracking disabled via `--disable-features=CalculateNativeWinOcclusion`).
+- Frame delivery is the existing **capture-SHM seqlock** ingest (same layout as the
+  WinUI bridge; `native/src/modules/BrowserSourceShm.h`), keyed `capture:browser:<n>`
+  — compositor/routing/multiview needed zero changes. The keyed-mutex shared-texture
+  path in this section remains the BR-1.5 upgrade (removes the per-frame CPU copy).
+- Core: `browser-add` / `browser-remove` / `browser-reload` commands
+  (`BrowserSourceHostAdapter` — CreateProcessA spawn, stdin `reload
+` pipe, EOF = quit,
+  death -> slate + LOUD warning + 5->60s capped backoff, give up after 5 straight
+  failures; `browserSources` health node in the snapshot).
+- Shell: "Add browser source" (URL + size preset) on Sources; Browser group in the
+  unified picker; control API `browser.add` / `browser.remove` / `browser.reload`.
+- NOT in BR-1: page audio (BR-A/BR-3), interactivity/custom-CSS (BR-2), zoom,
+  `allowNavigation` origin policy (popups/downloads ARE blocked; navigation is free).
+
 **Engine: WebView2 (Chromium, evergreen runtime)** — ships on Win11/Win10 via the
 Evergreen runtime; we already require .NET 9 + WinUI so the WebView2 runtime is a soft
 dependency we can bootstrap-install.

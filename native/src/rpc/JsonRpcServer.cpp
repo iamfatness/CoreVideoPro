@@ -185,6 +185,45 @@ Json JsonRpcServer::handle(const Json& request) {
     return success(id, Json::Object{{"type", "ack"}});
   }
 
+  if (hasType(request, "browser-add")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "browser-add requires a payload.");
+    }
+    std::string error;
+    const Json state = mediaCore_.addBrowserSource(*payload, error);
+    if (!error.empty()) {
+      return failure(id, "browser-error", error);
+    }
+    return success(id, Json::Object{{"type", "browser-sources"}, {"browserSources", state}});
+  }
+
+  if (hasType(request, "browser-remove")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "browser-remove requires a payload.");
+    }
+    std::string error;
+    const Json state = mediaCore_.removeBrowserSource(payload->getString("browserId"), error);
+    if (!error.empty()) {
+      return failure(id, "browser-error", error);
+    }
+    return success(id, Json::Object{{"type", "browser-sources"}, {"browserSources", state}});
+  }
+
+  if (hasType(request, "browser-reload")) {
+    const Json* payload = request.get("payload");
+    if (!payload || !payload->isObject()) {
+      return failure(id, "protocol-error", "browser-reload requires a payload.");
+    }
+    std::string error;
+    const Json state = mediaCore_.reloadBrowserSource(payload->getString("browserId"), error);
+    if (!error.empty()) {
+      return failure(id, "browser-error", error);
+    }
+    return success(id, Json::Object{{"type", "browser-sources"}, {"browserSources", state}});
+  }
+
   if (hasType(request, "unregister-capture-shm")) {
     const Json* payload = request.get("payload");
     if (!payload || !payload->isObject()) {

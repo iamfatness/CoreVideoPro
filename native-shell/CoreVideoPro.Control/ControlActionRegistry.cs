@@ -232,6 +232,19 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("on", b, true) }),
             new("automation.captions.set", "Auto captions", "Toggle automation captions.",
                 new[] { new ControlParam("on", b, true) }),
+
+            // ---- Browser sources (BR-1) ---------------------------------------------------
+            new("browser.add", "Add browser source", "Add a render-only browser source (WebView2 host process).",
+                new[]
+                {
+                    new ControlParam("url", s, true, "http(s)://, file:// or data: URL"),
+                    new ControlParam("width", i, false, "preset width (1920/1280/960); default 1920"),
+                    new ControlParam("height", i, false, "preset height (1080/720/540); default 1080")
+                }),
+            new("browser.remove", "Remove browser source", "Remove a browser source by id.",
+                new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
+            new("browser.reload", "Reload browser source", "Reload a browser source's page by id.",
+                new[] { new ControlParam("browserId", s, true, "browser:<n>") }),
         };
     }
 }

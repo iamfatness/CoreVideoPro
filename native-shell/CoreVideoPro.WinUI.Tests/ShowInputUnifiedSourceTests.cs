@@ -68,10 +68,53 @@ public sealed class ShowInputUnifiedSourceTests
     [InlineData("dev-3", "srt", ShowInputKind.SrtIngest)]
     [InlineData("dev-4", "uvc", ShowInputKind.UvcWebcam)]
     [InlineData("dev-5", "windows", ShowInputKind.UvcWebcam)]
+    [InlineData("browser:1", "browser", ShowInputKind.Browser)]
     public void InferCaptureDeviceKind_MapsDeviceToSlotKind(string id, string vendor, ShowInputKind expected)
     {
         Assert.Equal(expected, ShowInputRosterService.InferCaptureDeviceKind(Device(id, "x", vendor)));
     }
+
+    // ---- Browser sources (BR-1) -----------------------------------------------------
+
+    [Fact]
+    public void BrowserSource_GroupsUnderBrowserAndAssignsAsCaptureClass()
+    {
+        var options = ShowInputRosterService.BuildUnifiedSourceOptions(
+            [], [Browser("browser:1", "Browser: https://overlays.example")], []);
+        Assert.Contains(options, o =>
+            o.Value == "capture:browser:1" && o.Group == "Browser" &&
+            o.Label == "Browser: https://overlays.example");
+
+        var editor = Editor(out var slot);
+        editor.RefreshSourceOptions([], [Browser("browser:1", "Browser: https://overlays.example")], mediaAssets: []);
+        editor.SelectedUnifiedSourceId = "capture:browser:1";
+        Assert.Equal(ShowInputKind.Browser, slot.Kind);
+        Assert.Equal("browser:1", slot.CaptureDeviceId);
+        Assert.True(slot.IsAssigned);
+    }
+
+    [Fact]
+    public void BrowserSource_RoutesAndMultiviewWiresLikeAnyCaptureDevice()
+    {
+        var slot = new ShowInputSlot { SlotNumber = 1 };
+        slot.Kind = ShowInputKind.Browser;
+        slot.CaptureDeviceId = "browser:1";
+        slot.InShow = true;
+
+        var route = new SourceRoute { Id = "route-1" };
+        ShowInputRosterService.ApplySlotRoute(route, slot);
+        Assert.Equal(SourceRouteMode.CaptureDevice, route.Mode);
+        Assert.Equal("browser:1", route.CaptureDeviceId);
+
+        var wires = ShowInputRosterService.BuildMultiviewLayoutSources(
+            [slot], [], [Browser("browser:1", "Browser: https://overlays.example")]);
+        var wire = Assert.Single(wires);
+        Assert.Equal("capture:browser:1", wire.SourceId);
+        Assert.Equal("capture", wire.Kind);
+        Assert.Equal("browser:1", wire.CaptureDeviceId);
+    }
+
+    private static CaptureDevice Browser(string id, string name) => Device(id, name, "browser");
 
     [Fact]
     public void SelectedUnifiedSourceId_SetInfersKindAndAssignsIdsTogether()

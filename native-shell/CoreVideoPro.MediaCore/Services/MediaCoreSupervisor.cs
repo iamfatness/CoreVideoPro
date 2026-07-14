@@ -506,6 +506,79 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    // Browser sources (BR-1): the core spawns/supervises one corevideo-browser-host
+    // (WebView2) process per source; frames enter the compositor keyed
+    // "capture:browser:<n>". Failures come back as thrown errors — LOUD, never silent.
+    public async Task AddBrowserSourceAsync(
+        string url,
+        int width,
+        int height,
+        int fps,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "browser-add",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["url"] = url,
+                    ["width"] = width,
+                    ["height"] = height,
+                    ["fps"] = fps
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            ThrowIfNotOk(response, "browser-add");
+        }
+    }
+
+    public async Task RemoveBrowserSourceAsync(string browserId, CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "browser-remove",
+                ["payload"] = new Dictionary<string, object?> { ["browserId"] = browserId }
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            ThrowIfNotOk(response, "browser-remove");
+        }
+    }
+
+    public async Task ReloadBrowserSourceAsync(string browserId, CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "browser-reload",
+                ["payload"] = new Dictionary<string, object?> { ["browserId"] = browserId }
+            },
+            cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            ThrowIfNotOk(response, "browser-reload");
+        }
+    }
+
+    private static void ThrowIfNotOk(JsonDocument response, string what)
+    {
+        if (response.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{what} failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+    }
+
     // Announce a WinUI capture-card shared-memory buffer to the core so it ingests
     // the real BGRA frames as a "capture:<deviceId>" source. Best-effort.
     public async Task RegisterCaptureShmAsync(

@@ -340,7 +340,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             _showInputs.FirstOrDefault(slot => slot.SlotNumber == showInputSlotNumber) is { } showInput)
         {
             _route.ParticipantId = showInput.Kind == ShowInputKind.ZoomParticipant ? showInput.ParticipantId : null;
-            _route.CaptureDeviceId = showInput.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
+            _route.CaptureDeviceId = showInput.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser
                 ? showInput.CaptureDeviceId
                 : null;
             _route.Mode = showInput.Kind == ShowInputKind.ZoomParticipant

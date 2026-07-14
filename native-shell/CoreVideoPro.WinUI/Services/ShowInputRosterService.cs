@@ -18,7 +18,8 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
         new() { Value = ShowInputKind.Screen, Label = "Screen" },
         new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" },
-        new() { Value = ShowInputKind.Media, Label = "Media asset" }
+        new() { Value = ShowInputKind.Media, Label = "Media asset" },
+        new() { Value = ShowInputKind.Browser, Label = "Browser source" }
     ];
 
     /// <summary>Stable identity prefix used to bind a media asset to a route/tile.</summary>
@@ -94,6 +95,11 @@ public static class ShowInputRosterService
             return ShowInputKind.Screen;
         }
 
+        if (device.Id.StartsWith("browser:", StringComparison.Ordinal))
+        {
+            return ShowInputKind.Browser;
+        }
+
         return device.Vendor.ToLowerInvariant() switch
         {
             "blackmagic" => ShowInputKind.Blackmagic,
@@ -146,6 +152,7 @@ public static class ShowInputRosterService
             {
                 ShowInputKind.Screen => "Screen",
                 ShowInputKind.SrtIngest => "SRT",
+                ShowInputKind.Browser => "Browser",
                 _ => "Camera"
             };
             options.Add(new ShowInputSourceOption
@@ -190,7 +197,7 @@ public static class ShowInputRosterService
     }
 
     /// <summary>Fixed submenu order for the source-picker menu.</summary>
-    public static readonly IReadOnlyList<string> UnifiedSourceGroups = ["Zoom", "Camera", "Screen", "Media", "SRT"];
+    public static readonly IReadOnlyList<string> UnifiedSourceGroups = ["Zoom", "Camera", "Screen", "Browser", "Media", "SRT"];
 
     /// <summary>The label shown on a slot's picker button: "Camera · Elgato HD60" for a bound
     /// source (group carries the type, so no separate type chip is needed), the bare label for
@@ -219,7 +226,7 @@ public static class ShowInputRosterService
         ShowInputKind.ZoomParticipant when slot.ParticipantId is { Length: > 0 } pid => ZoomSourceId(pid),
         // A Media slot stores its "media:<assetId>" id directly in ParticipantId.
         ShowInputKind.Media when slot.ParticipantId is { Length: > 0 } media => media,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser
             when slot.CaptureDeviceId is { Length: > 0 } cap => CaptureSourceId(cap),
         _ => null
     };
@@ -393,7 +400,7 @@ public static class ShowInputRosterService
             return;
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest)
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser)
         {
             route.Mode = SourceRouteMode.CaptureDevice;
             route.ParticipantId = null;
@@ -441,7 +448,7 @@ public static class ShowInputRosterService
         var assignedDeviceIds = new HashSet<string>(
             slots
                 .Where(slot => slot.InShow &&
-                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
+                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
                     !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                 .Select(slot => slot.CaptureDeviceId!),
             StringComparer.Ordinal);
@@ -539,7 +546,7 @@ public static class ShowInputRosterService
                 ParticipantId: pid);
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest &&
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
             slot.CaptureDeviceId is { Length: > 0 } deviceId &&
             devicesById.TryGetValue(deviceId, out var device))
         {
@@ -626,7 +633,7 @@ public static class ShowInputRosterService
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
-            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest =>
+            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
             ShowInputKind.Media =>
                 TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) && mediaAssetsById.ContainsKey(mediaAssetId),

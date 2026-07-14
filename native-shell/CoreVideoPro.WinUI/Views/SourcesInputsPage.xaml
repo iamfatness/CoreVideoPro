@@ -95,6 +95,27 @@
                     <TextBlock Text="{x:Bind ViewModel.CaptureFleetSummary, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
 
+                    <!-- BR-1: minimal browser-source add (URL + size preset). The core owns
+                         the WebView2 host; the new source appears below as a "browser:<n>"
+                         device and in the unified slot picker under the Browser group. -->
+                    <Grid ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox PlaceholderText="Add browser source — https://…"
+                                 Text="{x:Bind ViewModel.NewBrowserSourceUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 FontSize="11" />
+                        <ComboBox Grid.Column="1" MinWidth="150" FontSize="11"
+                                  ItemsSource="{x:Bind ViewModel.BrowserSourcePresetOptions}"
+                                  SelectedIndex="{x:Bind ViewModel.NewBrowserSourcePresetIndex, Mode=TwoWay}" />
+                        <Button Grid.Column="2" Content="Add"
+                                Style="{StaticResource OperatorGhostButton}" FontSize="11"
+                                ToolTipService.ToolTip="Render this URL as a live source (transparent pages key over program)"
+                                Command="{x:Bind ViewModel.AddBrowserSourceCommand}" />
+                    </Grid>
+
                     <TextBlock Text="{x:Bind ViewModel.CaptureDevicesEmptyGuidance, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                TextWrapping="WrapWholeWords"

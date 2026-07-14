@@ -5877,6 +5877,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        // Browser sources (BR-1) are ALWAYS core-owned: the core spawns/supervises
+        // the WebView2 host the moment browser-add lands, so there is nothing to
+        // connect shell-side — the periodic native-device refresh carries their
+        // real state. Reflect the core's ownership and bail.
+        if (device.Id.StartsWith("browser:", StringComparison.Ordinal))
+        {
+            device.ConnectionState = CaptureConnectionState.Connected;
+            RefreshCaptureFleetSummary();
+            RefreshShowInputEditors();
+            return;
+        }
+
         // Screen sources connect CORE-SIDE: connect-capture-device starts the
         // WGC session and frames enter the compositor as "capture:screen:<n>".
         if (device.Id.StartsWith("screen:", StringComparison.Ordinal) || device.Id.StartsWith("window:", StringComparison.Ordinal))
@@ -6101,6 +6113,101 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshMultiviewGridTiles();
     }
 
+    // ---- Browser sources (BR-1, docs/capture-sources-spec.md §4) ------------------
+    // Minimal add affordance: URL + size preset. The CORE owns the WebView2 host
+    // process; the source arrives via the periodic native-device refresh as a
+    // "browser:<n>" capture device (kind chip "Browser" in the unified picker).
+
+    [ObservableProperty]
+    private string _newBrowserSourceUrl = string.Empty;
+
+    [ObservableProperty]
+    private int _newBrowserSourcePresetIndex;
+
+    public IReadOnlyList<string> BrowserSourcePresetOptions { get; } =
+    [
+        "1920x1080 (full-canvas overlay)",
+        "1280x720",
+        "960x540 (widget)"
+    ];
+
+    private static readonly (int Width, int Height)[] BrowserSourcePresets =
+    [
+        (1920, 1080),
+        (1280, 720),
+        (960, 540)
+    ];
+
+    [RelayCommand]
+    private async Task AddBrowserSourceAsync()
+    {
+        var url = NewBrowserSourceUrl?.Trim() ?? string.Empty;
+        if (url.Length == 0)
+        {
+            CommandStatus = "Enter a URL for the browser source (https://…).";
+            return;
+        }
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            url = "https://" + url;  // operator typed a bare host — assume https
+        }
+
+        var presetIndex = Math.Clamp(NewBrowserSourcePresetIndex, 0, BrowserSourcePresets.Length - 1);
+        var (width, height) = BrowserSourcePresets[presetIndex];
+        try
+        {
+            await _bridge.AddBrowserSourceAsync(url, width, height, 30).ConfigureAwait(false);
+            RunOnUiThread(() =>
+            {
+                NewBrowserSourceUrl = string.Empty;
+                CommandStatus = $"Browser source added ({width}x{height}) — starting its host…";
+            });
+            // Pick the new "browser:<n>" device up immediately (it also arrives on
+            // the periodic refresh).
+            await RefreshCaptureDevicesAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"browser: add failed: {ex.Message}");
+            RunOnUiThread(() => CommandStatus = $"Browser source add FAILED: {ex.Message}");
+        }
+    }
+
+    // Control-surface entry points (browser.remove / browser.reload). LOUD on failure.
+    public async Task RemoveBrowserSourceAsync(string browserId)
+    {
+        try
+        {
+            await _bridge.RemoveBrowserSourceAsync(browserId).ConfigureAwait(false);
+            RunOnUiThread(() => CommandStatus = $"Browser source {browserId} removed.");
+            await RefreshCaptureDevicesAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"browser: remove failed: {ex.Message}");
+            RunOnUiThread(() => CommandStatus = $"Browser source remove FAILED: {ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task ReloadBrowserSourceAsync(string browserId)
+    {
+        try
+        {
+            await _bridge.ReloadBrowserSourceAsync(browserId).ConfigureAwait(false);
+            RunOnUiThread(() => CommandStatus = $"Browser source {browserId} reloading.");
+        }
+        catch (Exception ex)
+        {
+            LaunchLog.Write($"browser: reload failed: {ex.Message}");
+            RunOnUiThread(() => CommandStatus = $"Browser source reload FAILED: {ex.Message}");
+            throw;
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanAddSrtIngestSource))]
     private void AddSrtIngestSource()
     {
@@ -6305,25 +6412,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 var isScreen = native.Id.StartsWith("screen:", StringComparison.Ordinal);
                 var isWindow = native.Id.StartsWith("window:", StringComparison.Ordinal);
-                if (!isScreen && !isWindow)
+                // Browser sources (BR-1) are core-owned WebView2 host processes; they
+                // enumerate as "browser:<n>" and merge in like screens do.
+                var isBrowser = native.Id.StartsWith("browser:", StringComparison.Ordinal);
+                if (!isScreen && !isWindow && !isBrowser)
                 {
                     continue;
                 }
-                var inputLabel = isWindow ? "Application window" : "Entire display";
+                var inputLabel = isBrowser ? "Web page (WebView2)" : isWindow ? "Application window" : "Entire display";
+                var inputId = isBrowser ? "browser" : isWindow ? "window" : "screen";
                 screens.Add(new CaptureDevice
                 {
                     Id = native.Id,
                     NativeDeviceId = native.Id,
-                    Vendor = "Screen capture",
+                    Vendor = isBrowser ? "browser" : "Screen capture",
                     Name = native.Name,
-                    Inputs = [new CaptureDeviceInput { Id = isWindow ? "window" : "screen", Label = inputLabel }],
-                    SelectedInputId = isWindow ? "window" : "screen",
+                    Inputs = [new CaptureDeviceInput { Id = inputId, Label = inputLabel }],
+                    SelectedInputId = inputId,
                     Width = native.Width,
                     Height = native.Height,
                     FrameRate = native.FrameRate,
                     ConnectionState = native.ConnectionState == "connected"
                         ? CaptureConnectionState.Connected
-                        : CaptureConnectionState.Detected,
+                        : isBrowser && native.ConnectionState == "failed"
+                            ? CaptureConnectionState.Error
+                            : CaptureConnectionState.Detected,
                     SignalPresent = native.SignalPresent,
                     AudioSyncOffsetMs = 0
                 });
