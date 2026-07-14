@@ -382,6 +382,24 @@ Update), numeric rect fields + snap guides + arrow-key nudge, and **production r
 the assigned role rides the participant wire to the core director). Remaining: S3b
 (aspect-lock, edge handles, selection sync), S4 polish, role templates/automation (R2).
 
+**Direct positioning POS-1 + POS-2 shipped** (`docs/sources-redesign-spec.md` §B):
+POS-1 (2026-07-11) put the Scenes canvas editor on the Studio preview header ("Edit
+layout" pencil), driving the S2b preview DRAFT. POS-2 (2026-07-12) adds **"Add
+overlay" bug placement** on BOTH the preview header and the Scenes tab: pick a media
+asset (listed per-asset; empty state is a loud disabled row) or any Add-source option
+(inputs/active-speaker/screen-share/roles), pick a corner/center/free preset, and a
+NEW top-most route lands in the preview scene at ~15% canvas width, aspect-locked to
+the asset's natural size (16:9 fallback), inside a 5% safe-area margin
+(`OverlayLayerService` — pure/static, unit-tested; the margin is a constant until the
+POS-1 settings increment ships a "default bug margin %" setting). Gotchas encoded in
+it: seed rects via `EnsureCanvasRects` BEFORE appending (it re-applies the preset to
+EVERY route when any rect is missing — would stomp the bug rect), set
+`SourceFramingModified=true` when forcing `FitMode="fit"` (normalization otherwise
+resets it), and ALWAYS insert through `GetPreviewEditableRoutes()` (the S2b draft) so
+PROGRAM is untouched until Take/Update. The overlay flyouts are rebuilt on `Opening`
+(transient menu, not a bound collection — outside the 0xc000027b rules). Remaining in
+§B: POS-3 (program-side editing, settings-gated) + the POS-1 settings increment.
+
 In progress / next (2026-07-12): the road to alpha is **verification and stability,
 not feature building** — see `docs/alpha-plan.md` (rewritten 2026-07-12) for the
 gates: G0 system-audio citizenship re-test (fixes shipped, owner verdict pending),
