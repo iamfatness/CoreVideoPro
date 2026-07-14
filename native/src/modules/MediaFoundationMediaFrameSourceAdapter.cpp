@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/StillMediaFrameCache.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -81,19 +82,11 @@ std::string lowercaseAscii(std::string value) {
   return value;
 }
 
+// Path normalization + still classification are shared with the still-media
+// cache (StillMediaFrameCache.h: normalizeMediaAssetPath / isStillImagePath /
+// isStillImageMediaAsset) so both sides key and classify files identically.
 std::string normalizeMediaPath(std::string path) {
-  constexpr const char* prefix = "file:///";
-  if (path.rfind(prefix, 0) == 0) {
-    path = path.substr(std::strlen(prefix));
-    std::replace(path.begin(), path.end(), '/', '\\');
-  }
-  return path;
-}
-
-bool isStillImagePath(const std::string& path) {
-  const auto lower = lowercaseAscii(path);
-  return lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") ||
-         lower.ends_with(".bmp") || lower.ends_with(".tif") || lower.ends_with(".tiff");
+  return normalizeMediaAssetPath(std::move(path));
 }
 
 std::string mediaFrameSourceId(const CompositorRenderPlanLayer& layer) {
@@ -184,6 +177,14 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     std::set<std::string> seen;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
+        continue;
+      }
+      // Still-image ROUTE layers are served by MediaCore's StillMediaFrameCache
+      // (decoded once on its background thread, injected into the frame set
+      // before this poll) — decoding them here would repeat the work on the
+      // render thread. Background still layers keep the in-place WIC path.
+      if (layer.kind == "media-video" &&
+          isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) {
         continue;
       }
       if (!seen.insert(mediaLayerStateKey(layer)).second) {

@@ -70,6 +70,11 @@ public sealed partial class StudioWorkspace : UserControl
     private void OnEditPreviewLayoutToggled(object sender, RoutedEventArgs e) =>
         SetPreviewLayoutOverlayOpen(EditLayoutToggle.IsChecked == true);
 
+    // POS-2: the Add-overlay menu is rebuilt each time it opens so it always reflects
+    // the current media bin / role set (a one-shot build would go stale).
+    private void OnAddOverlayFlyoutOpening(object sender, object e) =>
+        OverlayLayerMenuBuilder.Populate(AddOverlayFlyout, _boundViewModel ?? ViewModel);
+
     private void OnEditPreviewLayoutDoneClicked(object sender, RoutedEventArgs e)
     {
         EditLayoutToggle.IsChecked = false;

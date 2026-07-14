@@ -3987,14 +3987,19 @@ TEST(PluginHostScan, SnapshotCarriesPluginHostStateInEveryShape) {
 }
 
 TEST(PluginHostScan, ParsesProbeResultsAndTreatsSilenceAsCrash) {
-  // P2a: a pass with vendor + class metadata.
+  // P2a: a pass with vendor + class metadata (P2c: every audio class rides
+  // classNames so shell bundles are selectable per class).
   const auto pass = corevideo::core::parsePluginProbeResult(
       "{\"cmd\":\"probe-result\",\"id\":\"C:/VST3/Span.vst3\",\"pass\":true,"
-      "\"vendor\":\"Voxengo\",\"audioClasses\":1,\"className\":\"SPAN\",\"reasons\":[]}\n");
+      "\"vendor\":\"Voxengo\",\"audioClasses\":2,\"className\":\"SPAN\","
+      "\"classNames\":[\"SPAN\",\"SPAN Plus\"],\"reasons\":[]}\n");
   EXPECT_TRUE(pass.parsed);
   EXPECT_TRUE(pass.pass);
   EXPECT_EQ(pass.vendor, "Voxengo");
   EXPECT_EQ(pass.className, "SPAN");
+  ASSERT_EQ(pass.classNames.size(), 2u);
+  EXPECT_EQ(pass.classNames[0], "SPAN");
+  EXPECT_EQ(pass.classNames[1], "SPAN Plus");
   EXPECT_TRUE(pass.reason.empty());
 
   // A structured failure carries its reason.
@@ -4054,6 +4059,23 @@ TEST(PluginHostTransport, ExchangesBlocksWithTheRealHostAndBypassesOnDeath) {
   std::fill(pcm.begin(), pcm.end(), 0.25f);
   ASSERT_TRUE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 20));
   EXPECT_TRUE(std::fabs(pcm[0] - 0.25f * 0.5012f) < 1e-4);
+
+  // P2c selection plumbing through the REAL serve loop: a selection whose
+  // bundle cannot load must come back BYPASSED (audio untouched) with the
+  // load error surfaced through the status back-channel — never faked.
+  std::fill(pcm.begin(), pcm.end(), 0.25f);
+  ASSERT_TRUE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 200,
+                              "C:/definitely/not/here.vst3", "Ghost Plugin"));
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.25f) < 1e-6);  // untouched = honest bypass
+  EXPECT_FALSE(client.lastError().empty());
+  EXPECT_EQ(client.statusCode(), corevideo::pluginhost::kHostStatusPluginFailed);
+
+  // Dropping the selection returns to the test processor (and clean status).
+  std::fill(pcm.begin(), pcm.end(), 0.25f);
+  ASSERT_TRUE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 200));
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.25f * 0.5012f) < 1e-4);
+  EXPECT_TRUE(client.lastError().empty());
+  EXPECT_EQ(client.statusCode(), corevideo::pluginhost::kHostStatusTestProcessor);
 
   // Kill the host mid-show: bypass, audio untouched, counter ticks, no hang.
   const auto missesBefore = client.deadlineMisses();

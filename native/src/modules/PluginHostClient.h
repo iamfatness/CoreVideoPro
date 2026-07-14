@@ -6,14 +6,17 @@
 // `corevideo-plugin-host --serve <instance>` process, and performs the
 // synchronous deadline-bounded block exchange the audio worker calls:
 //
-//   exchange(): copy pcm in → ++seqIn → signal req → wait done (deadline)
-//               → verify seqOut == seqIn → copy pcm back.
+//   exchange(): copy pcm + plugin selection in → ++seqIn → signal req →
+//               wait done (deadline) → verify seqOut == seqIn → copy pcm back
+//               → harvest the host's status (activePlugin/lastError) when its
+//               generation changed.
 //
 // A missed deadline returns false (BYPASS — the caller keeps its unprocessed
 // audio and the show never stalls); stale completions from an abandoned tick
 // are discarded by the sequence check + a done-event reset at the top of the
-// next exchange. No locks in here: the audio worker is the single caller by
-// contract (audioOutputMutex_ work span).
+// next exchange. The audio worker is the single exchange() caller by contract
+// (audioOutputMutex_ work span); the only lock is statusMutex_, a tiny leaf
+// taken on status CHANGE (rare) and by snapshot readers.
 //
 // Windows-only transport; other platforms report never-ready so callers fall
 // through to the built-in DSP (the guaranteed fallback everywhere).
@@ -21,6 +24,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <vector>
 #include <string>
 
@@ -87,7 +91,11 @@ class PluginHostClient {
 
   [[nodiscard]] bool ready() const { return ready_; }
 
-  bool exchange(float* pcm, size_t count, int channels, int sampleRate, int deadlineMs) {
+  // P2c: pluginBundle/pluginClass select the plugin the host runs on this
+  // block. Empty bundle = the legacy -6dB test processor (plain "vst" insert
+  // names, keeps the existing rig drill working).
+  bool exchange(float* pcm, size_t count, int channels, int sampleRate, int deadlineMs,
+                const std::string& pluginBundle = {}, const std::string& pluginClass = {}) {
     using namespace corevideo::pluginhost;
     if (!ready_ || pcm == nullptr || count == 0 || count > static_cast<size_t>(kHostBlockMaxSamples)) {
       return false;
@@ -98,6 +106,8 @@ class PluginHostClient {
     block_->sampleCount = static_cast<int32_t>(count);
     block_->channels = channels;
     block_->sampleRate = sampleRate;
+    copyBlockString(block_->pluginBundle, pluginBundle.c_str());
+    copyBlockString(block_->pluginClass, pluginClass.c_str());
     const uint32_t sequence = block_->seqIn + 1;
     block_->seqIn = sequence;
     ::SetEvent(req_);
@@ -108,6 +118,11 @@ class PluginHostClient {
       return false;  // BYPASS — caller keeps its unprocessed audio
     }
 
+    harvestStatus();
+    // The block came back, but the host may have BYPASSED it (plugin load or
+    // process failure — statusCode kHostStatusPluginFailed). Copying back is
+    // still correct (the pcm is untouched); the failure is surfaced through
+    // lastError()/activePlugin() telemetry, never silently faked.
     std::memcpy(pcm, block_->pcm, count * sizeof(float));
     exchanges_.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -148,22 +163,48 @@ class PluginHostClient {
   }
 
  private:
+  // Copies the host's status strings out of the block, but only when the
+  // host bumped statusGeneration (status content changed) — steady-state
+  // ticks never touch the mutex or allocate.
+  void harvestStatus() {
+    using namespace corevideo::pluginhost;
+    const uint32_t generation = block_->statusGeneration;
+    if (generation == harvestedStatusGeneration_) {
+      return;
+    }
+    harvestedStatusGeneration_ = generation;
+    const std::string activePlugin(block_->activePlugin,
+                                   strnlen(block_->activePlugin, sizeof(block_->activePlugin)));
+    const std::string lastError(block_->lastError, strnlen(block_->lastError, sizeof(block_->lastError)));
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    activePlugin_ = activePlugin;
+    lastError_ = lastError;
+    statusCode_ = block_->statusCode;
+  }
+
   std::string instance_;
   HANDLE shm_ = nullptr;
   HANDLE req_ = nullptr;
   HANDLE done_ = nullptr;
   HANDLE process_ = nullptr;
   corevideo::pluginhost::HostAudioBlock* block_ = nullptr;
+  uint32_t harvestedStatusGeneration_ = 0;  // audio worker only
 #else
   bool start(const std::string&, const std::string&) { return false; }
   [[nodiscard]] bool ready() const { return false; }
-  bool exchange(float*, size_t, int, int, int) { return false; }
+  bool exchange(float*, size_t, int, int, int, const std::string& = {}, const std::string& = {}) {
+    return false;
+  }
   [[nodiscard]] bool hostAlive() const { return false; }
   void terminateHostForTest() {}
   void stop() {}
 
  private:
 #endif
+  mutable std::mutex statusMutex_;  // leaf: guards the harvested status strings only
+  std::string activePlugin_;
+  std::string lastError_;
+  int32_t statusCode_ = 0;
   std::atomic<bool> ready_{false};  // starter thread writes, audio worker reads
   std::atomic<int64_t> exchanges_{0};
   std::atomic<int64_t> deadlineMisses_{0};
@@ -171,6 +212,19 @@ class PluginHostClient {
  public:
   [[nodiscard]] int64_t exchanges() const { return exchanges_.load(std::memory_order_relaxed); }
   [[nodiscard]] int64_t deadlineMisses() const { return deadlineMisses_.load(std::memory_order_relaxed); }
+  // P2c host-reported status (snapshot telemetry). Safe from any thread.
+  [[nodiscard]] std::string activePlugin() const {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return activePlugin_;
+  }
+  [[nodiscard]] std::string lastError() const {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return lastError_;
+  }
+  [[nodiscard]] int32_t statusCode() const {
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return statusCode_;
+  }
 };
 
 }  // namespace corevideo::modules

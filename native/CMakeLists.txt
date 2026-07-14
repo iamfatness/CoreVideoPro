@@ -60,6 +60,7 @@ add_library(corevideo_native
   src/modules/RtmpOutputSenderAdapter.cpp
   src/modules/SrtIngestCaptureAdapter.cpp
   src/modules/SrtOutputSenderAdapter.cpp
+  src/modules/StillMediaFrameCache.cpp
   src/modules/StubRecordingEncoder.cpp
   src/modules/StubModules.cpp
   src/modules/UvcCaptureDeviceAdapter.cpp
@@ -122,8 +123,10 @@ endif()
 
 # winmm provides timeBeginPeriod() — raise the system timer resolution to 1ms so the
 # render loop's sub-frame sleep is accurate (default ~15.6ms granularity caps fps ~40).
+# windowscodecs + ole32 back the still-media WIC decoder (StillMediaFrameCache.cpp),
+# which is _WIN32-gated rather than option-gated so stills work in every Windows build.
 if(WIN32)
-  target_link_libraries(corevideo_native PUBLIC winmm)
+  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32)
 endif()
 
 if(COREVIDEO_WITH_MF_ENCODER)
@@ -462,7 +465,9 @@ if(BUILD_TESTING)
     tests/RtmpCompatibilityTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
+    tests/StillMediaFrameCacheTest.cpp
     tests/UvcCaptureSupportTest.cpp
+    tests/VstHostAbiTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
     tests/ZoomEngineProcessTest.cpp

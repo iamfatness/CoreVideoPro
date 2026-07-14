@@ -8,6 +8,7 @@
 #include "modules/AudioMastering.h"
 #include "modules/VirtualCameraPublisher.h"
 #include "modules/Interfaces.h"
+#include "modules/StillMediaFrameCache.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "rpc/Json.h"
 
@@ -105,6 +106,13 @@ class MediaCore {
   [[nodiscard]] std::vector<std::string> routedAudioBusIds() const;
   [[nodiscard]] const std::vector<float>& audioBusTapPcm(const std::string& busId) const;
 
+  // Test seam for the still-media decode path (WIC is Windows-only, so the
+  // stub/cross-platform tests inject a fake decoder). Call before loading
+  // scenes; recreates the cache with the given decoder + byte budget.
+  void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
+                                   size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
+  [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+
  private:
   void loadSceneGraph(const rpc::Json& command);
   void setParticipantTransform(const rpc::Json& command);
@@ -135,6 +143,10 @@ class MediaCore {
   // P2b-2: idempotent async start of the resident serve host (worker-safe:
   // only flips an atomic + detaches a starter thread).
   void ensurePluginHostServeStarted();
+  // P2c: resolves a "vst:<name>" insert query against the scan results.
+  // Worker-safe: takes only the leaf pluginHostMutex_, briefly. Failures are
+  // recorded (snapshot serve.lastError) + logged rate-capped — loud, never fake.
+  [[nodiscard]] VstInsertSelection resolveVstInsertForWorker(const std::string& query);
   [[nodiscard]] rpc::Json pluginHostState() const;
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);
@@ -160,6 +172,11 @@ class MediaCore {
   // next preview composite when the content actually changed. Returns true when it
   // applied a change.
   bool applyPreviewScene(const rpc::Json& previewScene);
+  // Recomputes the union of still-image media routes across the PROGRAM and
+  // PREVIEW scenes and hands it to the still-media cache (which decodes on its
+  // own background thread — never under coreMutex). Called from both scene
+  // parse sites; cheap (string scan + leaf-mutex publish, no file I/O).
+  void syncStillMediaDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false);
@@ -390,6 +407,11 @@ class MediaCore {
   // same code. Frames merge into the capture-frame stream each render tick.
   std::unique_ptr<modules::BrowserSourceHostAdapter> browserSources_ =
       modules::createBrowserSourceHostAdapter();
+  // Persistent decoded still-image frames for media routes (logos/bugs), keyed
+  // "media:<assetId>". Decode runs on the cache's own worker thread; the render
+  // gather only does cheap shared_ptr copies (see StillMediaFrameCache.h).
+  std::unique_ptr<modules::StillMediaFrameCache> stillMediaCache_ =
+      std::make_unique<modules::StillMediaFrameCache>();
   std::unique_ptr<modules::IVirtualCameraPublisher> virtualCamera_ = modules::createVirtualCameraPublisher();
   bool virtualCameraEnabled_ = false;
   bool zoomJoined_ = false;
@@ -458,6 +480,11 @@ class MediaCore {
   std::string pluginHostStatus_ = "absent";  // absent|scanning|ready|error
   std::vector<PluginHostPluginInfo> pluginHostPlugins_;
   bool pluginHostScanInFlight_ = false;
+  // P2c: last "vst:" insert-name resolution failure ("" = resolving fine),
+  // surfaced as pluginHost.serve.lastError so a typo'd insert name is a
+  // 10-second diagnosis, not silence.
+  std::string pluginHostInsertError_;
+  bool pluginHostScanAutoKicked_ = false;  // one-shot scan kick from the worker path
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;
@@ -530,6 +557,12 @@ class MediaCore {
     int64_t recordingProgramFramesDelta = 0;
     int64_t recordingIsoFramesDelta = 0;
     int64_t recordingAudioPacketsObserved = 0;
+    // Encoder-side recording warning (e.g. "Media Foundation dropped program
+    // audio: ..."), published into recordingWarning_ so the snapshot's
+    // `recording.warning` surfaces encoder failures. Before this, a recording
+    // muxing ZERO audio packets showed a clean recording section for its whole
+    // duration (2026-07-13 alpha-blocking zero-audio bug).
+    std::string recordingWarning;
     double recordingElapsedMsDelta = 0.0;
   };
   // Gather reads `coreMutex`-domain state (members + zoom/capture/media modules);

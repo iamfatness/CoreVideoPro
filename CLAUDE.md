@@ -340,6 +340,43 @@ before first frames, then silent. Companion audit: `WgcSession` was the ONLY fre
 callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
 its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
+## Current state addendum (2026-07-13, the zero-audio recording bug)
+
+**Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root
+cause (proven headless with the fake tone engine + stderr gates): the live flow calls
+`encoder->start()` TWICE per recording (start-program-output arms it, then
+start-recording-session restarts it), and `MediaFoundationEncoderAdapter`'s `Mp4Writer`
+is REUSED across those generations. `finalize()` never reset `audioConfigured_`, so on
+the generation-2 writer `ensureAudioStream` early-returned without `AddStream` — every
+audio `WriteSample` then hit a missing stream index and failed with
+`MF_E_INVALIDSTREAMNUMBER` (0xC00D36B3) for the whole session, while video muxed
+perfectly (its stream index IS refreshed in `open()`). The warning lived only in
+`encoderSession.warnings`; `recording.warning` stayed null → invisible. Fixes:
+(1) `Mp4Writer::open()` resets ALL per-session state; (2) the audio worker now publishes
+the encoder's `recordingWarning` into `recordingWarning_` → snapshot `recording.warning`
+(+ rate-limited `[recording]` stderr), so a video-only recording can never look healthy;
+(3) regression tests in `EncoderRecordingSessionTest.cpp` (real-MF double-start test —
+fails 0xC00D36B3 pre-fix — and a MediaCore warning-propagation test).
+
+**Audio worker pacer: bounded catch-up (same PR).** The absolute-deadline pacer used to
+RE-ANCHOR on any blown 20ms deadline ("skipped slots carry no lost samples" — false:
+`steadyAudioFrameFeed` emits max ONE tick per tick and sheds its FIFO past 6 ticks, so
+every skipped slot permanently loses 20ms of real-time audio → recordings' audio track
+ran 3.1% short of video, i.e. ~1s of A/V drift per 30s). Now a blown deadline ticks
+again immediately (blocks stay exactly 960 frames — spec 4.2 intact) and only re-anchors
+past 5 ticks behind (logged). Measured: 48.2 → 50.0 ticks/s, FIFO sheds 0, and the shed
+site itself now logs (`AudioFeedState.shedSamples`).
+
+**Headless recording-audio proof (no WinUI, no port 8011):**
+`node scripts/validate-record-audio.mjs` — spawns the core over stdio with
+`COREVIDEO_ZOOM_ENGINE_PATH` pointed at `corevideo-zoom-engine-fake.exe` (NO binary
+copy/restore dance needed for core-only tests; the env var is honored by
+`ZoomEngineRuntime::loadConfig`), joins, routes zoom-mix → master, records, and fails
+unless audio packets flow AND ffprobe shows video+audio with |start delta| < 50ms and
+|duration delta| < 200ms (rig-measured 2026-07-13: 1.8ms / 123ms over 60s @1080p60).
+Gotcha it guards: `validate:record-stream` alone proves nothing about audio (headless
+master is silent without a source).
+
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
 **Audio is CLEAN and machine-verified.** The 2026-07-05 marathon: pull-model monitor
@@ -383,6 +420,30 @@ shipped** (`docs/audio-tab-redesign.md`): grid hydrates from the core's publishe
 tab, shared routing-matrix panel on both Audio and Routing tabs. Remaining: 4.4 channel
 inserts/EQ/gate actually processing, B5 shared strip pop-out, 4.5 VST host.
 
+**Still-media routes render real pixels (2026-07-13,
+`docs/sources-redesign-spec.md` §B):** scene routes referencing a media asset used
+to composite the colorFromParticipantId placeholder forever — no consumer ever
+published a VideoFrame keyed `media:<assetId>`, which made POS-2 logo bugs render
+as colored rectangles. `modules/StillMediaFrameCache` (owned by MediaCore) now
+decodes STILL images once — kind `image` OR a still extension
+(.png/.jpg/.jpeg/.bmp/.gif/.tif; the media bin files PNG logos under lower-third
+kinds) — via WIC on a dedicated background worker (never under coreMutex; leaf
+mutex only, mirrors the startPluginHostScan law), cached by (path, mtime+size)
+with a 64MB LRU budget and a >3840x2160 downscale guard, then injects one
+persistent straight-alpha BGRA frame per still into the render gather so program,
+preview bus and multiview all match it (stable frameId + shared buffer = zero
+per-tick copies/uploads). Alpha works end-to-end: the video-layer blend is
+straight SRC_ALPHA on the GPU and blendPixelBgra on the CPU preview — decode to
+32bppBGRA, NOT premultiplied PBGRA. Failures are LOUD: missing/undecodable files
+keep the placeholder + rate-limited (5s/key) stderr + render-plan warnings, and
+`warnUnmatchedCaptureLayer` now also fires for `media:` layers. Both scene parse
+sites (load-scene-graph AND set-preview-scene/spine) feed the desired set. The
+MF media adapter no longer WIC-decodes route stills on the render thread (it
+keeps background stills + video playout). Live VIDEO media routes without active
+playout still composite the placeholder — per-route decode sessions are a
+follow-up. Test seam: `MediaCore::setStillImageDecoderForTest` injects a fake
+decoder (`tests/StillMediaFrameCacheTest.cpp`).
+
 **Scenes redesign S1–S3a + R1 shipped** (`docs/scenes-tab-redesign.md`): layer
 delete/reorder/opacity, non-destructive presets + undo, duplicate/no-clobber save,
 custom scenes persist across restarts, live-scene DRAFT editing (program untouched until
@@ -390,6 +451,24 @@ Update), numeric rect fields + snap guides + arrow-key nudge, and **production r
 (session-only assignment on the Inputs tab; role-targeted routes resolve at sync time;
 the assigned role rides the participant wire to the core director). Remaining: S3b
 (aspect-lock, edge handles, selection sync), S4 polish, role templates/automation (R2).
+
+**Direct positioning POS-1 + POS-2 shipped** (`docs/sources-redesign-spec.md` §B):
+POS-1 (2026-07-11) put the Scenes canvas editor on the Studio preview header ("Edit
+layout" pencil), driving the S2b preview DRAFT. POS-2 (2026-07-12) adds **"Add
+overlay" bug placement** on BOTH the preview header and the Scenes tab: pick a media
+asset (listed per-asset; empty state is a loud disabled row) or any Add-source option
+(inputs/active-speaker/screen-share/roles), pick a corner/center/free preset, and a
+NEW top-most route lands in the preview scene at ~15% canvas width, aspect-locked to
+the asset's natural size (16:9 fallback), inside a 5% safe-area margin
+(`OverlayLayerService` — pure/static, unit-tested; the margin is a constant until the
+POS-1 settings increment ships a "default bug margin %" setting). Gotchas encoded in
+it: seed rects via `EnsureCanvasRects` BEFORE appending (it re-applies the preset to
+EVERY route when any rect is missing — would stomp the bug rect), set
+`SourceFramingModified=true` when forcing `FitMode="fit"` (normalization otherwise
+resets it), and ALWAYS insert through `GetPreviewEditableRoutes()` (the S2b draft) so
+PROGRAM is untouched until Take/Update. The overlay flyouts are rebuilt on `Opening`
+(transient menu, not a bound collection — outside the 0xc000027b rules). Remaining in
+§B: POS-3 (program-side editing, settings-gated) + the POS-1 settings increment.
 
 In progress / next (2026-07-12): the road to alpha is **verification and stability,
 not feature building** — see `docs/alpha-plan.md` (rewritten 2026-07-12) for the
@@ -401,7 +480,20 @@ G4 stability debt (engine-off teardown audit, OAuth token refresh, resize soak),
 G5 packaging-lite. Beta scope (signing/installer/updates, onboarding, licensing,
 crash pipeline, hardware matrix) lives in `docs/beta-plan.md`. The audio overhaul
 (4.1–4.4b incl. the console) and the Scenes redesign (S1–S3, R1) are SHIPPED; VST
-host P1/P2a/P2b are shipped with P2c (real plugin processing) remaining.
+host P1/P2a/P2b/**P2c** are shipped (P3 channel inserts + params remaining).
+DONE 2026-07-12: **VST P2c — real VST3 instantiation + processing in the
+out-of-process host.** Raw COM-ABI (NO VST3 SDK — GPLv3 house rule) in
+`native/plugin-host/vst-abi.h` (layout static_asserts) + `vst-processor.h`
+(lifecycle/process machinery, factory-injectable for tests). Bus-insert naming:
+`vst:<class or plugin name>` (or `vst:<bundle>/<class>` for Waves-style shells)
+selects a scanned plugin; plain `vst` keeps the -6dB test processor. Selection
+rides the SHM block; the host loads on demand ON ITS OWN THREAD (core
+deadline-bypasses during loads) and caches per selection; host status/errors ride
+back in the block → `pluginHost.serve{activePlugin,lastError,statusCode}`.
+Unresolvable names bypass LOUDLY (never fake). Terminal proof:
+`corevideo-plugin-host --process <bundle> <class>` pushes 1s of 440Hz and prints a
+process-result JSON verdict. The safety posture is unchanged: 4ms deadline bypass,
+bypass-on-host-death, plugin code never in the core.
 DONE 2026-07-03: **per-instance engine IPC names (OBS collision fix)** — the engine's
 pipes/sockets/SHM regions were fixed names on the shared `ZoomObsPlugin_` base, so a
 running OBS zoom plugin made every join time out ("Timed out connecting to Zoom engine

@@ -704,6 +704,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Where(IsVisualMediaAsset)
             .ToList();
 
+    // POS-2: the Add-overlay flyouts (Studio preview header + Scenes tab) list the
+    // visual media assets directly — logos/bugs are the primary overlay case.
+    public IReadOnlyList<MediaAsset> OverlayMediaAssets => VisualMediaAssets;
+
     public AudioRoutingMatrixViewModel AudioRoutingMatrix { get; } = new();
 
     public VideoRoutingMatrixViewModel VideoRoutingMatrix { get; } = new();
@@ -12444,6 +12448,60 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 : AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
         CommandStatus = $"{label} added to {PreviewScene.Name}";
 
+        SyncPreviewCanvasLayers(routes);
+        PublishPreviewCompositionState(
+            PreviewScene,
+            routes.Select(ResolveRouteFromShowInput).ToList());
+        SchedulePreviewRoutingRefresh();
+        SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    // POS-2 (sources-redesign-spec §B2): add a small top-most "bug" overlay layer to
+    // the PREVIEW scene. Parameter is "<placement>|<option>" from the Add-overlay
+    // flyouts (Studio preview header + Scenes tab). CRITICAL: this goes through
+    // GetPreviewEditableRoutes — the S2b draft path — so a scene that is live on
+    // PROGRAM is untouched until Take/Update, exactly like every other canvas edit.
+    [RelayCommand]
+    private void AddOverlayLayer(string? parameter)
+    {
+        if (!OverlayLayerService.TryParseAddOverlayParameter(
+                parameter, out var placement, out var optionValue, out var mediaAssetId))
+        {
+            CommandStatus = $"Add overlay failed: malformed request '{parameter}'";
+            return;
+        }
+
+        double? sourceAspect = null;
+        string sourceLabel;
+        if (mediaAssetId is not null)
+        {
+            if (FindMediaAsset(mediaAssetId) is not { } asset)
+            {
+                CommandStatus = "Add overlay failed: that media asset no longer exists - re-import it on the Media tab";
+                return;
+            }
+
+            sourceAspect = OverlayLayerService.AspectFromNaturalSize(asset.NaturalWidth, asset.NaturalHeight);
+            sourceLabel = asset.Name;
+        }
+        else
+        {
+            sourceLabel = AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
+        }
+
+        var routes = GetPreviewEditableRoutes();
+        OverlayLayerService.AppendOverlayRoute(
+            routes,
+            PreviewSceneId,
+            optionValue,
+            mediaAssetId,
+            sourceAspect,
+            placement,
+            PreviewScene.Layout,
+            RoomVideoParticipants);
+
+        CommandStatus =
+            $"{sourceLabel} overlay added to {PreviewScene.Name} ({OverlayLayerService.PlacementLabel(placement)}) - drag or use Edit layout to fine-tune";
         SyncPreviewCanvasLayers(routes);
         PublishPreviewCompositionState(
             PreviewScene,

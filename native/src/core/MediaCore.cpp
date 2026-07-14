@@ -1372,6 +1372,36 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneValidationWarnings_.push_back("Scene graph routes must be an array.");
   }
   routeCount_ = static_cast<int>(sceneRoutes_.size());
+  syncStillMediaDesired();
+}
+
+void MediaCore::syncStillMediaDesired() {
+  if (!stillMediaCache_) {
+    return;
+  }
+  std::vector<modules::StillMediaFrameCache::StillRequest> desired;
+  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes) {
+    for (const auto& route : routes) {
+      if (route.mediaAssetId.empty() || route.mediaAssetPath.empty()) {
+        continue;
+      }
+      if (!modules::isStillImageMediaAsset(route.mediaAssetKind, route.mediaAssetPath)) {
+        continue;  // video media routes keep the existing playout path
+      }
+      desired.push_back({"media:" + route.mediaAssetId,
+                         modules::normalizeMediaAssetPath(route.mediaAssetPath)});
+    }
+  };
+  addRoutes(sceneRoutes_);
+  addRoutes(previewSceneRoutes_);
+  stillMediaCache_->setDesired(std::move(desired));
+}
+
+void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
+                                            size_t cacheBudgetBytes) {
+  stillMediaCache_ =
+      std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes);
+  syncStillMediaDesired();
 }
 
 void MediaCore::setParticipantTransform(const rpc::Json&) {
@@ -2373,6 +2403,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   previewSceneActive_ = true;
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;
+  syncStillMediaDesired();
   return true;
 }
 
@@ -4089,6 +4120,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
       videoFrames = std::move(merged);
     }
   }
+  // Still-image media routes (logos/bugs): inject the persistent decoded frames
+  // (keyed "media:<assetId>") so program, preview bus and multiview all match
+  // them like any other source frame. Cheap by construction — shared_ptr copies
+  // of cached buffers with stable frameIds (zero per-tick pixel work; the WIC
+  // decode ran on the cache's background thread). Until a decode completes the
+  // layer keeps the existing placeholder.
+  if (stillMediaCache_) {
+    auto stillFrames = stillMediaCache_->collectFrames(frameTimestampMs);
+    videoFrames.insert(videoFrames.end(), std::make_move_iterator(stillFrames.begin()),
+                       std::make_move_iterator(stillFrames.end()));
+  }
   markStage(s_stageIngestUs);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
@@ -4123,6 +4165,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
     for (const auto& warning : modules_.mediaFrames->warnings()) {
+      if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
+        renderPlan.warnings.push_back(warning);
+      }
+    }
+  }
+  // Failure honesty: surface still-media decode failures (missing file, bad
+  // image) in the render-plan warnings so they reach snapshot diagnostics —
+  // the stderr side is rate-limited inside the cache.
+  if (stillMediaCache_) {
+    for (const auto& warning : stillMediaCache_->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
         renderPlan.warnings.push_back(warning);
       }
@@ -4527,10 +4579,32 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           // through the out-of-process plugin host with a hard 4ms deadline.
           // Not ready -> kick the async starter and BYPASS this tick; miss ->
           // BYPASS with the audio untouched. Built-in inserts always run.
+          // P2c: a "vst:<name>" insert selects a REAL scanned plugin (the host
+          // loads it on demand); plain "vst"/"host" names keep the -6dB test
+          // processor. Unresolvable selections BYPASS loudly (serve.lastError
+          // + rate-capped log) — the exchange never runs with a fake target.
           const bool wantsHost = std::any_of(found->second.begin(), found->second.end(), isHostHandledInsertName);
           if (wantsHost) {
-            if (pluginHostClient_.ready()) {
-              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4);
+            std::string vstQuery;
+            for (const auto& insertName : found->second) {
+              if (!isHostHandledInsertName(insertName)) {
+                continue;
+              }
+              vstQuery = vstSelectionQueryFromInsertName(insertName);
+              if (!vstQuery.empty()) {
+                break;  // first vst: selection wins (one host slot per bus block)
+              }
+            }
+            VstInsertSelection selection;
+            selection.resolved = true;  // legacy names: empty selection = test processor
+            if (!vstQuery.empty()) {
+              selection = resolveVstInsertForWorker(vstQuery);
+            }
+            if (!selection.resolved) {
+              // loud bypass — built-ins below still run
+            } else if (pluginHostClient_.ready()) {
+              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4,
+                                         selection.bundleId, selection.className);
             } else {
               ensurePluginHostServeStarted();
             }
@@ -4704,7 +4778,13 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
     }
-    results.recordingAudioPacketsObserved = modules_.encoder->session().recordingAudioPacketCount;
+    const auto encoderSession = modules_.encoder->session();
+    results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;
+    // Surface the encoder's recording warning (published into recordingWarning_
+    // → snapshot recording.warning). Without this an audio WriteSample failure
+    // lived only in encoderSession.warnings and the recording section looked
+    // healthy while muxing a video-only MP4.
+    results.recordingWarning = encoderSession.recordingWarning;
     results.recordingElapsedMsDelta += static_cast<double>(work.frameIntervalMs);
   }
   return results;
@@ -4731,6 +4811,13 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
     recordingIsoFramesWritten_ += results.recordingIsoFramesDelta;
     recordingAudioPacketsObserved_ = results.recordingAudioPacketsObserved;
+    if (!results.recordingWarning.empty() && recordingWarning_ != results.recordingWarning) {
+      // Encoder-side failure (e.g. dropped program audio) becomes the visible
+      // recording warning. Log once per distinct warning — this is the loud
+      // half of the guarantee that a video-only recording cannot look healthy.
+      recordingWarning_ = results.recordingWarning;
+      std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
+    }
     recordingElapsedMs_ += results.recordingElapsedMsDelta;
   }
 }
@@ -4838,6 +4925,8 @@ void MediaCore::startPluginHostScan() {
         if (!verdict.vendor.empty() && pluginHostPlugins_[index].vendor.empty()) {
           pluginHostPlugins_[index].vendor = verdict.vendor;
         }
+        // P2c: the audio classes are what "vst:<name>" insert names select.
+        pluginHostPlugins_[index].classNames = verdict.classNames;
       }
     }
 
@@ -4862,17 +4951,54 @@ void MediaCore::ensurePluginHostServeStarted() {
   }).detach();
 }
 
+VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query) {
+  VstInsertSelection selection;
+  bool kickScan = false;
+  {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    selection = resolveVstInsertSelection(query, pluginHostPlugins_);
+    pluginHostInsertError_ = selection.resolved ? std::string{} : selection.error;
+    if (!selection.resolved && pluginHostStatus_ == "absent" && !pluginHostScanAutoKicked_) {
+      // No scan has ever run but the operator named a plugin: kick ONE scan
+      // (async, detached) so the insert self-heals once results land.
+      pluginHostScanAutoKicked_ = true;
+      kickScan = true;
+    }
+  }
+  if (kickScan) {
+    startPluginHostScan();
+  }
+  if (!selection.resolved) {
+    // Rate-capped (~5s at the 50Hz worker): loud, not spammy.
+    static std::atomic<int> s_resolveLogTick{0};
+    if (s_resolveLogTick.fetch_add(1, std::memory_order_relaxed) % 250 == 0) {
+      std::fprintf(stderr, "[plugin-host] vst insert BYPASSED: %s\n", selection.error.c_str());
+    }
+  }
+  return selection;
+}
+
 rpc::Json MediaCore::pluginHostState() const {
   std::lock_guard<std::mutex> lock(pluginHostMutex_);
   rpc::Json::Array plugins;
   for (const auto& plugin : pluginHostPlugins_) {
+    rpc::Json::Array classNames;
+    for (const auto& className : plugin.classNames) {
+      classNames.emplace_back(className);
+    }
     plugins.emplace_back(rpc::Json::Object{
         {"id", plugin.id},
         {"name", plugin.name},
         {"vendor", plugin.vendor},
         {"probe", plugin.probe},
+        {"classNames", classNames},
     });
   }
+  // P2c failure honesty: a core-side selection error (typo'd insert name, no
+  // scan) outranks the host-side status; otherwise report what the host
+  // actually did (active plugin, or its load/process error).
+  const std::string lastError =
+      !pluginHostInsertError_.empty() ? pluginHostInsertError_ : pluginHostClient_.lastError();
   return rpc::Json::Object{
       {"status", pluginHostStatus_},
       {"plugins", plugins},
@@ -4881,6 +5007,9 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"running", pluginHostClient_.ready() && pluginHostClient_.hostAlive()},
                     {"exchanges", static_cast<double>(pluginHostClient_.exchanges())},
                     {"deadlineMisses", static_cast<double>(pluginHostClient_.deadlineMisses())},
+                    {"activePlugin", pluginHostClient_.activePlugin()},
+                    {"statusCode", static_cast<double>(pluginHostClient_.statusCode())},
+                    {"lastError", lastError},
                 }},
   };
 }

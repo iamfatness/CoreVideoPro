@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <map>
 #include <numeric>
@@ -578,6 +579,11 @@ struct AudioFeedState {
   bool hasEverEmitted = false;  // fade RESUMPTIONS only - first onsets stay bit-exact
   size_t fadeInRemaining = 0;   // frames left in the current fade
   size_t fadeInTotal = 0;
+  // Loud-failure telemetry: real-time samples SHED at the FIFO cap (a worker
+  // that under-ticks loses audio here — it shortened recordings' audio track
+  // 3.1% vs video before the pacer catch-up fix, silently).
+  size_t shedSamples = 0;
+  size_t shedEvents = 0;
 };
 
 inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t samples, size_t channels) {
@@ -647,6 +653,14 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
       size_t drop = state.fifo.size() - cap;
       drop -= drop % static_cast<size_t>(frame.channels);
       state.fifo.erase(state.fifo.begin(), state.fifo.begin() + static_cast<std::ptrdiff_t>(drop));
+      // LOUD (rate-capped 1st + every 100th event per source): this shed is
+      // real-time audio permanently lost to every consumer (recording mux,
+      // stream, monitor). Persistent sheds mean the worker is under-ticking.
+      state.shedSamples += drop;
+      if (state.shedEvents++ % 100 == 0) {
+        std::fprintf(stderr, "[audio] feed FIFO shed %zu samples for %s (total %zu over %zu events)\n",
+                     drop, frame.participantId.c_str(), state.shedSamples, state.shedEvents);
+      }
     }
   }
 
