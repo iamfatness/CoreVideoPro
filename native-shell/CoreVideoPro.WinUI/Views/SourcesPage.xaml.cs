@@ -88,6 +88,11 @@ public sealed partial class SourcesPage : UserControl
         }
     }
 
+    // POS-2: rebuilt on every open so it always reflects the current media bin
+    // (the one-shot Add-source population above would show a stale asset list).
+    private void OnAddOverlayFlyoutOpening(object sender, object e) =>
+        OverlayLayerMenuBuilder.Populate(AddOverlayFlyout, _boundViewModel ?? ViewModel);
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(StudioViewModel.PreviewCanvasLayers)

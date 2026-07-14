@@ -294,6 +294,43 @@ before first frames, then silent. Companion audit: `WgcSession` was the ONLY fre
 callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
 its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
+## Current state addendum (2026-07-13, the zero-audio recording bug)
+
+**Recordings muxed ZERO audio while the master bus carried signal — FIXED.** Root
+cause (proven headless with the fake tone engine + stderr gates): the live flow calls
+`encoder->start()` TWICE per recording (start-program-output arms it, then
+start-recording-session restarts it), and `MediaFoundationEncoderAdapter`'s `Mp4Writer`
+is REUSED across those generations. `finalize()` never reset `audioConfigured_`, so on
+the generation-2 writer `ensureAudioStream` early-returned without `AddStream` — every
+audio `WriteSample` then hit a missing stream index and failed with
+`MF_E_INVALIDSTREAMNUMBER` (0xC00D36B3) for the whole session, while video muxed
+perfectly (its stream index IS refreshed in `open()`). The warning lived only in
+`encoderSession.warnings`; `recording.warning` stayed null → invisible. Fixes:
+(1) `Mp4Writer::open()` resets ALL per-session state; (2) the audio worker now publishes
+the encoder's `recordingWarning` into `recordingWarning_` → snapshot `recording.warning`
+(+ rate-limited `[recording]` stderr), so a video-only recording can never look healthy;
+(3) regression tests in `EncoderRecordingSessionTest.cpp` (real-MF double-start test —
+fails 0xC00D36B3 pre-fix — and a MediaCore warning-propagation test).
+
+**Audio worker pacer: bounded catch-up (same PR).** The absolute-deadline pacer used to
+RE-ANCHOR on any blown 20ms deadline ("skipped slots carry no lost samples" — false:
+`steadyAudioFrameFeed` emits max ONE tick per tick and sheds its FIFO past 6 ticks, so
+every skipped slot permanently loses 20ms of real-time audio → recordings' audio track
+ran 3.1% short of video, i.e. ~1s of A/V drift per 30s). Now a blown deadline ticks
+again immediately (blocks stay exactly 960 frames — spec 4.2 intact) and only re-anchors
+past 5 ticks behind (logged). Measured: 48.2 → 50.0 ticks/s, FIFO sheds 0, and the shed
+site itself now logs (`AudioFeedState.shedSamples`).
+
+**Headless recording-audio proof (no WinUI, no port 8011):**
+`node scripts/validate-record-audio.mjs` — spawns the core over stdio with
+`COREVIDEO_ZOOM_ENGINE_PATH` pointed at `corevideo-zoom-engine-fake.exe` (NO binary
+copy/restore dance needed for core-only tests; the env var is honored by
+`ZoomEngineRuntime::loadConfig`), joins, routes zoom-mix → master, records, and fails
+unless audio packets flow AND ffprobe shows video+audio with |start delta| < 50ms and
+|duration delta| < 200ms (rig-measured 2026-07-13: 1.8ms / 123ms over 60s @1080p60).
+Gotcha it guards: `validate:record-stream` alone proves nothing about audio (headless
+master is silent without a source).
+
 ## Current state addendum (2026-07-05, the audio war + the soak rig)
 
 **Audio is CLEAN and machine-verified.** The 2026-07-05 marathon: pull-model monitor
@@ -368,6 +405,24 @@ Update), numeric rect fields + snap guides + arrow-key nudge, and **production r
 (session-only assignment on the Inputs tab; role-targeted routes resolve at sync time;
 the assigned role rides the participant wire to the core director). Remaining: S3b
 (aspect-lock, edge handles, selection sync), S4 polish, role templates/automation (R2).
+
+**Direct positioning POS-1 + POS-2 shipped** (`docs/sources-redesign-spec.md` §B):
+POS-1 (2026-07-11) put the Scenes canvas editor on the Studio preview header ("Edit
+layout" pencil), driving the S2b preview DRAFT. POS-2 (2026-07-12) adds **"Add
+overlay" bug placement** on BOTH the preview header and the Scenes tab: pick a media
+asset (listed per-asset; empty state is a loud disabled row) or any Add-source option
+(inputs/active-speaker/screen-share/roles), pick a corner/center/free preset, and a
+NEW top-most route lands in the preview scene at ~15% canvas width, aspect-locked to
+the asset's natural size (16:9 fallback), inside a 5% safe-area margin
+(`OverlayLayerService` — pure/static, unit-tested; the margin is a constant until the
+POS-1 settings increment ships a "default bug margin %" setting). Gotchas encoded in
+it: seed rects via `EnsureCanvasRects` BEFORE appending (it re-applies the preset to
+EVERY route when any rect is missing — would stomp the bug rect), set
+`SourceFramingModified=true` when forcing `FitMode="fit"` (normalization otherwise
+resets it), and ALWAYS insert through `GetPreviewEditableRoutes()` (the S2b draft) so
+PROGRAM is untouched until Take/Update. The overlay flyouts are rebuilt on `Opening`
+(transient menu, not a bound collection — outside the 0xc000027b rules). Remaining in
+§B: POS-3 (program-side editing, settings-gated) + the POS-1 settings increment.
 
 In progress / next (2026-07-12): the road to alpha is **verification and stability,
 not feature building** — see `docs/alpha-plan.md` (rewritten 2026-07-12) for the

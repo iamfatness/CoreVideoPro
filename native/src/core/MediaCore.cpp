@@ -4673,7 +4673,13 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                                     static_cast<int>(programAudio.size() / static_cast<size_t>(audioChannels)),
                                     audioChannels, modules_.mixer->monitorBusSampleRate());
     }
-    results.recordingAudioPacketsObserved = modules_.encoder->session().recordingAudioPacketCount;
+    const auto encoderSession = modules_.encoder->session();
+    results.recordingAudioPacketsObserved = encoderSession.recordingAudioPacketCount;
+    // Surface the encoder's recording warning (published into recordingWarning_
+    // → snapshot recording.warning). Without this an audio WriteSample failure
+    // lived only in encoderSession.warnings and the recording section looked
+    // healthy while muxing a video-only MP4.
+    results.recordingWarning = encoderSession.recordingWarning;
     results.recordingElapsedMsDelta += static_cast<double>(work.frameIntervalMs);
   }
   return results;
@@ -4700,6 +4706,13 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
     recordingProgramFramesWritten_ += results.recordingProgramFramesDelta;
     recordingIsoFramesWritten_ += results.recordingIsoFramesDelta;
     recordingAudioPacketsObserved_ = results.recordingAudioPacketsObserved;
+    if (!results.recordingWarning.empty() && recordingWarning_ != results.recordingWarning) {
+      // Encoder-side failure (e.g. dropped program audio) becomes the visible
+      // recording warning. Log once per distinct warning — this is the loud
+      // half of the guarantee that a video-only recording cannot look healthy.
+      recordingWarning_ = results.recordingWarning;
+      std::fprintf(stderr, "[recording] warning: %s\n", recordingWarning_.c_str());
+    }
     recordingElapsedMs_ += results.recordingElapsedMsDelta;
   }
 }

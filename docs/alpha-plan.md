@@ -24,7 +24,7 @@ onboarding, licensing, and other-machine support are explicitly **beta** concern
 | Capture sources | Native MF UVC capture end-to-end (opt-in, validated on this rig 2026-07-10); WGC screen + window capture owner-verified; managed bridge fallback hardened (buffer ring, backoff policy) |
 | Virtual camera | End-to-end in Zoom: core -> file-backed cross-session SHM -> COM DLL -> Frame Server; 1080p publishing ~50fps, GPU NV12, mirror + custom name |
 | Overlays | Lower thirds, captions, wall clock at 60fps (DirectWrite/WIC raster) |
-| Recording / RTMP | MF mux + RTMP with real program audio on the shared-epoch PTS clock |
+| Recording / RTMP | MF mux + RTMP with real program audio on the shared-epoch PTS clock. 2026-07-13: the zero-audio-recording bug (exit bar #5 blocker) root-caused and fixed — Mp4Writer reuse across the start-program-output/start-recording-session double-start left the gen-2 sink writer without an AAC stream (every audio WriteSample failed 0xC00D36B3, silently). Headless proof with real tone audio: `node scripts/validate-record-audio.mjs` |
 | Stability tooling | Release PDBs, WER full dumps, crash-dump setup script, control API :8011, fake-engine soak harness, audio tap/scan toolkit, PresentMon/dotnet-trace recipes |
 | Perf | Operator stutter root-caused (managed capture bridge); native UVC eliminates it (267MB flat vs multi-GB churn) |
 
@@ -49,11 +49,25 @@ better than the bridge (CPU, memory, stability) and validated end-to-end here.
       build P4 if stutter survives this measurement)
 
 ### G2 - A/V sync proof (north star: sync is paramount)
+
+_2026-07-13 progress: the zero-audio-recording bug is fixed (stale `Mp4Writer`
+state across the encoder double-start; every audio WriteSample failed
+0xC00D36B3 silently) — this is almost certainly the same failure the 2026-07-02
+"packaged run video-only MP4" evidence saw (any second `start()` on one sink
+lifetime triggered it). Headless container proof on this rig (fake tone engine,
+60s 1080p60 recording): video h264 + audio aac both present, |start delta|
+1.8ms (< 50ms), |duration delta| 123ms (< 200ms). The same run also fixed the
+audio worker pacer (bounded catch-up instead of re-anchor: a blown 20ms
+deadline used to permanently shed 20ms of real-time audio at the feed FIFO —
+measured 3.1% audio-shorter-than-video drift before, 50.0 ticks/s and 0 sheds
+after). Repeatable proof: `node scripts/validate-record-audio.mjs`._
+
 - [ ] Clap test on a real recording: measure audio-video offset at head and tail
-- [ ] 5-minute recording head/tail sync check (owed since #163)
+- [ ] 5-minute recording head/tail sync check (owed since #163) — headless 60s
+      container check now green (above); the owed rig check is the real-meeting run
 - [ ] Verify recording from a **packaged** run has an audio track (2026-07-02 alpha
-      evidence found video-only MP4 in packaged runs; the mux was rebuilt since - verify,
-      don't assume)
+      evidence found video-only MP4 in packaged runs; the likely root cause is fixed
+      2026-07-13 - verify on a packaged run, don't assume)
 
 ### G3 - The show drill (one structured rehearsal, owner + assistant)
 A single end-to-end rehearsal that doubles as the backlog of owed rig verifications:

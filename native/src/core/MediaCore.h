@@ -534,6 +534,12 @@ class MediaCore {
     int64_t recordingProgramFramesDelta = 0;
     int64_t recordingIsoFramesDelta = 0;
     int64_t recordingAudioPacketsObserved = 0;
+    // Encoder-side recording warning (e.g. "Media Foundation dropped program
+    // audio: ..."), published into recordingWarning_ so the snapshot's
+    // `recording.warning` surfaces encoder failures. Before this, a recording
+    // muxing ZERO audio packets showed a clean recording section for its whole
+    // duration (2026-07-13 alpha-blocking zero-audio bug).
+    std::string recordingWarning;
     double recordingElapsedMsDelta = 0.0;
   };
   // Gather reads `coreMutex`-domain state (members + zoom/capture/media modules);
