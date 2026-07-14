@@ -434,6 +434,7 @@ if(BUILD_TESTING)
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/UvcCaptureSupportTest.cpp
+    tests/VstHostAbiTest.cpp
     tests/ZoomFrameReaderTest.cpp
     tests/ZoomEngineClientTest.cpp
     tests/ZoomEngineProcessTest.cpp

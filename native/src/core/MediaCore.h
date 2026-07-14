@@ -134,6 +134,10 @@ class MediaCore {
   // P2b-2: idempotent async start of the resident serve host (worker-safe:
   // only flips an atomic + detaches a starter thread).
   void ensurePluginHostServeStarted();
+  // P2c: resolves a "vst:<name>" insert query against the scan results.
+  // Worker-safe: takes only the leaf pluginHostMutex_, briefly. Failures are
+  // recorded (snapshot serve.lastError) + logged rate-capped — loud, never fake.
+  [[nodiscard]] VstInsertSelection resolveVstInsertForWorker(const std::string& query);
   [[nodiscard]] rpc::Json pluginHostState() const;
   void syncAudioRoutingMatrix(const rpc::Json& command);
   void syncCaptureAudioSources(const rpc::Json& command);
@@ -462,6 +466,11 @@ class MediaCore {
   std::string pluginHostStatus_ = "absent";  // absent|scanning|ready|error
   std::vector<PluginHostPluginInfo> pluginHostPlugins_;
   bool pluginHostScanInFlight_ = false;
+  // P2c: last "vst:" insert-name resolution failure ("" = resolving fine),
+  // surfaced as pluginHost.serve.lastError so a typo'd insert name is a
+  // 10-second diagnosis, not silence.
+  std::string pluginHostInsertError_;
+  bool pluginHostScanAutoKicked_ = false;  // one-shot scan kick from the worker path
   struct AudioRoutingSendInput {
     std::string sourceId;
     std::string busId;

@@ -1,17 +1,24 @@
 // corevideo-plugin-host — out-of-process VST3 host (docs/vst-host-spec.md).
 //
-// P1 scope: `--scan` one-shot mode. Enumerates the system VST3 directories and
-// prints one JSON line per plugin bundle found, then a scan-complete line, and
-// exits. NO plugin code is loaded (probe/load are later phases) and no VST3 SDK
-// is required — .vst3 bundles are directories (with Contents/moduleinfo.json in
-// modern bundles) or bare module files; discovery is pure filesystem metadata.
-// Running discovery in THIS process (never the media core) is the safety
-// posture: plugin paths are untrusted input, and even reading their metadata
-// stays out of the real-time process.
+// Modes (all one-shot except --serve):
+//   --scan                       enumerate VST3 bundles (P1, filesystem only)
+//   --probe <bundle>             load the module, list classes, pass/fail (P2a)
+//   --process <bundle> <class>   instantiate + push 1s of 440Hz through the
+//                                plugin, print a process-result JSON line (P2c
+//                                terminal proof — no app required)
+//   --serve <instance>           resident SHM audio-exchange loop (P2b/P2c)
+//
+// NO VST3 SDK dependency (GPLv3 — house rule): the COM ABI is declared raw in
+// vst-abi.h and validated by static_asserts + live-plugin runs. Loading
+// plugin code happens in THIS process, never the media core — a crashing
+// plugin kills this process (nonzero exit / host death), which the core
+// treats as an honest verdict (probe fail / bypass to built-ins).
 //
 // Output protocol (stdout, one JSON object per line):
 //   {"cmd":"plugin","id":"<path>","name":"...","vendor":"...","probe":"pending"}
 //   {"cmd":"scan-complete","count":N}
+//   {"cmd":"probe-class"...} / {"cmd":"probe-result"...}
+//   {"cmd":"process-result","pass":bool,"rmsInDb":x,"rmsOutDb":x,"changed":bool,"error":"..."}
 // Errors are {"cmd":"error","msg":"..."} and never abort remaining roots.
 
 #include <cstdint>
@@ -137,50 +144,33 @@ std::vector<fs::path> scanRoots() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// P2a probe: load the plugin module IN THIS PROCESS (never the media core) and
-// interrogate its class factory. No VST3 SDK: the factory ABI is COM-style, so
-// minimal C vtable declarations suffice for counting audio-effect classes. A
-// plugin that crashes on load kills THIS process (nonzero exit = probe fail) —
-// that is the crash-isolation posture working, not an error to prevent.
+// P2a probe + P2c instantiate/process: load the plugin module IN THIS PROCESS
+// (never the media core) via the raw COM ABI in vst-abi.h. No VST3 SDK. A
+// plugin that crashes on load kills THIS process (nonzero exit = probe fail /
+// host death = bypass) — that is the crash-isolation posture working, not an
+// error to prevent.
 // ---------------------------------------------------------------------------
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <objbase.h>
+
+#include <cmath>
+#include <map>
+#include <memory>
+
+#include "vst-abi.h"
+#include "vst-processor.h"
 
 namespace {
 
-// VST3 factory ABI (COM-compatible on Windows x64).
-struct PFactoryInfo {
-  char vendor[64];
-  char url[256];
-  char email[128];
-  int32_t flags;
-};
-
-struct PClassInfo {
-  char cid[16];
-  int32_t cardinality;
-  char category[32];
-  char name[64];
-};
-
-struct IPluginFactoryVtbl {
-  int32_t(__stdcall* queryInterface)(void* self, const char* iid, void** obj);
-  uint32_t(__stdcall* addRef)(void* self);
-  uint32_t(__stdcall* release)(void* self);
-  int32_t(__stdcall* getFactoryInfo)(void* self, PFactoryInfo* info);
-  int32_t(__stdcall* countClasses)(void* self);
-  int32_t(__stdcall* getClassInfo)(void* self, int32_t index, PClassInfo* info);
-};
-
-struct IPluginFactory {
-  IPluginFactoryVtbl* vtbl;
-};
-
-using InitDllFn = bool(__stdcall*)();
-using GetPluginFactoryFn = IPluginFactory*(__stdcall*)();
+using corevideo::vst3::GetPluginFactoryFn;
+using corevideo::vst3::InitDllFn;
+using corevideo::vst3::IPluginFactory;
+using corevideo::vst3::PClassInfo;
+using corevideo::vst3::PFactoryInfo;
 
 fs::path resolveModulePath(const fs::path& bundle) {
   std::error_code ec;
@@ -205,52 +195,59 @@ fs::path resolveModulePath(const fs::path& bundle) {
   return {};
 }
 
-int probeBundle(const std::string& bundlePath) {
-  std::vector<std::string> reasons;
+// Loads a .vst3 bundle's module and returns its class factory. Deliberately
+// NO FreeLibrary/ExitDll anywhere in this executable: some plugins crash on
+// unload, and every mode either exits (OS reclaims) or keeps plugins resident
+// for its lifetime.
+struct LoadedModule {
+  IPluginFactory* factory = nullptr;
+  std::string error;
+};
+
+LoadedModule loadPluginModule(const std::string& bundlePath) {
+  LoadedModule loaded;
   const fs::path module = resolveModulePath(fs::path(bundlePath));
   if (module.empty()) {
-    std::fprintf(stdout,
-                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"no x86_64-win module in bundle\"]}\n",
-                 jsonEscape(bundlePath).c_str());
-    return 0;
+    loaded.error = "no x86_64-win module in bundle";
+    return loaded;
   }
-
   HMODULE library = ::LoadLibraryExA(module.string().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
   if (library == nullptr) {
-    std::fprintf(stdout,
-                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"module failed to load (code %lu)\"]}\n",
-                 jsonEscape(bundlePath).c_str(), ::GetLastError());
-    return 0;
+    loaded.error = "module failed to load (code " + std::to_string(::GetLastError()) + ")";
+    return loaded;
   }
-
   const auto initDll = reinterpret_cast<InitDllFn>(::GetProcAddress(library, "InitDll"));
   const auto getFactory = reinterpret_cast<GetPluginFactoryFn>(::GetProcAddress(library, "GetPluginFactory"));
   if (getFactory == nullptr) {
-    std::fprintf(stdout,
-                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"no GetPluginFactory export - not a VST3 module\"]}\n",
-                 jsonEscape(bundlePath).c_str());
-    return 0;
+    loaded.error = "no GetPluginFactory export - not a VST3 module";
+    return loaded;
   }
   if (initDll != nullptr && !initDll()) {
-    std::fprintf(stdout,
-                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"InitDll returned false\"]}\n",
-                 jsonEscape(bundlePath).c_str());
-    return 0;
+    loaded.error = "InitDll returned false";
+    return loaded;
   }
-
   IPluginFactory* factory = getFactory();
   if (factory == nullptr || factory->vtbl == nullptr) {
-    std::fprintf(stdout,
-                 "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"GetPluginFactory returned null\"]}\n",
-                 jsonEscape(bundlePath).c_str());
+    loaded.error = "GetPluginFactory returned null";
+    return loaded;
+  }
+  loaded.factory = factory;
+  return loaded;
+}
+
+int probeBundle(const std::string& bundlePath) {
+  const LoadedModule loaded = loadPluginModule(bundlePath);
+  if (loaded.factory == nullptr) {
+    std::fprintf(stdout, "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":false,\"reasons\":[\"%s\"]}\n",
+                 jsonEscape(bundlePath).c_str(), jsonEscape(loaded.error).c_str());
     return 0;
   }
+  IPluginFactory* factory = loaded.factory;
 
   PFactoryInfo factoryInfo{};
   factory->vtbl->getFactoryInfo(factory, &factoryInfo);
   const int32_t classCount = factory->vtbl->countClasses(factory);
-  int audioClasses = 0;
-  std::string firstAudioClassName;
+  std::vector<std::string> audioClassNames;
   for (int32_t index = 0; index < classCount; ++index) {
     PClassInfo classInfo{};
     if (factory->vtbl->getClassInfo(factory, index, &classInfo) != 0) {
@@ -263,27 +260,120 @@ int probeBundle(const std::string& bundlePath) {
     std::fprintf(stdout, "{\"cmd\":\"probe-class\",\"index\":%d,\"category\":\"%s\",\"name\":\"%s\"}\n",
                  index, jsonEscape(category).c_str(), jsonEscape(className).c_str());
     if (category == "Audio Module Class") {
-      ++audioClasses;
-      if (firstAudioClassName.empty()) {
-        firstAudioClassName = className;
-      }
+      audioClassNames.push_back(className);
     }
   }
   factory->vtbl->release(factory);
 
-  const bool pass = audioClasses > 0;
+  const bool pass = !audioClassNames.empty();
   const char* failReason = classCount == 0
                                ? "\"factory reports no classes (vendor shell plugins need their own scanner)\""
                                : "\"module exposes no Audio Module Class\"";
+  // P2c: classNames carries EVERY audio class so shell bundles (Waves) can be
+  // selected per class from the core's insert names ("vst:<class>").
+  std::string classNamesJson;
+  for (const auto& className : audioClassNames) {
+    if (!classNamesJson.empty()) {
+      classNamesJson += ",";
+    }
+    classNamesJson += "\"" + jsonEscape(className) + "\"";
+  }
   std::fprintf(stdout,
-               "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":%s,\"vendor\":\"%s\",\"audioClasses\":%d,\"className\":\"%s\",\"reasons\":[%s]}\n",
+               "{\"cmd\":\"probe-result\",\"id\":\"%s\",\"pass\":%s,\"vendor\":\"%s\",\"audioClasses\":%zu,"
+               "\"className\":\"%s\",\"classNames\":[%s],\"reasons\":[%s]}\n",
                jsonEscape(bundlePath).c_str(), pass ? "true" : "false",
                jsonEscape(std::string(factoryInfo.vendor, strnlen(factoryInfo.vendor, sizeof(factoryInfo.vendor)))).c_str(),
-               audioClasses, jsonEscape(firstAudioClassName).c_str(),
-               pass ? "" : failReason);
+               audioClassNames.size(),
+               jsonEscape(pass ? audioClassNames.front() : std::string{}).c_str(),
+               classNamesJson.c_str(), pass ? "" : failReason);
   std::fflush(stdout);
-  // Deliberately no FreeLibrary/ExitDll: some plugins crash on unload, and this
-  // process is about to exit anyway — the OS reclaims everything.
+  // Deliberately no FreeLibrary/ExitDll (see loadPluginModule).
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// P2c CLI proof: --process <bundle> <className>. Instantiates the plugin and
+// pushes ~1s of 440Hz stereo sine through per-block process calls, then prints
+// a single machine-readable verdict. A crash mid-run = process death = no
+// process-result line, which IS the verdict for the caller.
+// ---------------------------------------------------------------------------
+void printProcessResult(bool pass, double rmsInDb, double rmsOutDb, bool changed,
+                        const std::string& plugin, uint32_t latencySamples, const std::string& error) {
+  std::fprintf(stdout,
+               "{\"cmd\":\"process-result\",\"pass\":%s,\"plugin\":\"%s\",\"rmsInDb\":%.2f,"
+               "\"rmsOutDb\":%.2f,\"changed\":%s,\"latencySamples\":%u,\"error\":\"%s\"}\n",
+               pass ? "true" : "false", jsonEscape(plugin).c_str(), rmsInDb, rmsOutDb,
+               changed ? "true" : "false", latencySamples, jsonEscape(error).c_str());
+  std::fflush(stdout);
+}
+
+int processBundle(const std::string& bundlePath, const std::string& className) {
+  const LoadedModule loaded = loadPluginModule(bundlePath);
+  if (loaded.factory == nullptr) {
+    printProcessResult(false, 0.0, 0.0, false, className, 0, loaded.error);
+    return 0;
+  }
+
+  corevideo::vsthost::VstPluginInstance instance;
+  corevideo::vsthost::VstProcessorConfig config;
+  config.sampleRate = 48000.0;
+  config.maxBlockFrames = 4096;
+  if (!instance.start(loaded.factory, className, config)) {
+    printProcessResult(false, 0.0, 0.0, false, className, 0, instance.lastError());
+    return 0;
+  }
+
+  // ~1 second of 440 Hz stereo at 48 kHz, in realistic 960-frame (20ms) ticks.
+  constexpr int kFramesPerBlock = 960;
+  constexpr int kBlocks = 50;
+  constexpr double kAmplitude = 0.5;
+  constexpr double kTwoPi = 6.283185307179586;
+  std::vector<float> block(kFramesPerBlock * 2);
+  std::vector<float> original(kFramesPerBlock * 2);
+  double sumSquaresIn = 0.0;
+  double sumSquaresOut = 0.0;
+  bool changed = false;
+  std::string error;
+  bool pass = true;
+  int64_t sampleIndex = 0;
+  for (int blockIndex = 0; blockIndex < kBlocks && pass; ++blockIndex) {
+    for (int frame = 0; frame < kFramesPerBlock; ++frame) {
+      const auto value = static_cast<float>(
+          kAmplitude * std::sin(kTwoPi * 440.0 * static_cast<double>(sampleIndex + frame) / 48000.0));
+      block[frame * 2] = value;
+      block[frame * 2 + 1] = value;
+    }
+    sampleIndex += kFramesPerBlock;
+    original = block;
+    for (const float sample : block) {
+      sumSquaresIn += static_cast<double>(sample) * sample;
+    }
+    if (!instance.processInterleavedStereo(block.data(), static_cast<int32_t>(block.size()))) {
+      error = instance.lastError();
+      pass = false;
+      break;
+    }
+    for (size_t index = 0; index < block.size(); ++index) {
+      sumSquaresOut += static_cast<double>(block[index]) * block[index];
+      if (std::fabs(block[index] - original[index]) > 1e-6f) {
+        changed = true;
+      }
+    }
+  }
+
+  const auto toDb = [](double sumSquares, int64_t count) {
+    if (count <= 0) {
+      return -120.0;
+    }
+    const double rms = std::sqrt(sumSquares / static_cast<double>(count));
+    return rms > 1e-6 ? 20.0 * std::log10(rms) : -120.0;
+  };
+  const int64_t totalSamples = static_cast<int64_t>(kFramesPerBlock) * 2 * kBlocks;
+  printProcessResult(pass, toDb(sumSquaresIn, totalSamples),
+                     pass ? toDb(sumSquaresOut, totalSamples) : -120.0, changed,
+                     instance.activeClassName().empty() ? className : instance.activeClassName(),
+                     instance.latencySamples(), error);
+  instance.shutdown();
   return 0;
 }
 
@@ -291,11 +381,17 @@ int probeBundle(const std::string& bundlePath) {
 #endif  // _WIN32
 
 // ---------------------------------------------------------------------------
-// P2b serve: the resident audio-exchange loop. The core creates the SHM block
-// and both events, then spawns us with the instance name; we open them, wait
-// for req, process the block IN PLACE, publish seqOut, signal done. The v1
-// processor is a built-in -6 dB gain — the real VST instance plugs into
-// processBlock() in P2c once a probe-passing plugin exists to verify against.
+// P2b/P2c serve: the resident audio-exchange loop. The core creates the SHM
+// block and both events, then spawns us with the instance name; we open them,
+// wait for req, process the block IN PLACE, publish seqOut, signal done.
+//
+// P2c: the block carries a plugin selection. Empty = the legacy -6dB test
+// processor (the plain "vst" insert-name rig drill). A selection loads the
+// real plugin ON THIS THREAD (the core deadline-bypasses during the load —
+// misses are honest, not a hang) and caches it for the process lifetime, so
+// alternating selections across buses never reload. Load/process failures
+// leave the block UNTOUCHED (bypass) and surface through the status fields +
+// a LOUD serve-log error line.
 // Exits after 30s with no requests (parent gone) — the core respawns on demand.
 // ---------------------------------------------------------------------------
 #include "host-transport.h"
@@ -303,15 +399,22 @@ int probeBundle(const std::string& bundlePath) {
 #ifdef _WIN32
 namespace {
 
-void processBlock(corevideo::pluginhost::HostAudioBlock* block) {
+void applyTestGain(corevideo::pluginhost::HostAudioBlock* block) {
   const int32_t count = block->sampleCount < 0 ? 0
                         : (block->sampleCount > corevideo::pluginhost::kHostBlockMaxSamples
                                ? corevideo::pluginhost::kHostBlockMaxSamples
                                : block->sampleCount);
   for (int32_t index = 0; index < count; ++index) {
-    block->pcm[index] *= 0.5012f;  // -6 dB test processor (P2c: real VST here)
+    block->pcm[index] *= 0.5012f;  // -6 dB test processor (legacy "vst" insert name)
   }
 }
+
+// One loaded plugin per distinct (bundle, class) selection, kept for the
+// process lifetime (unload crashes are a known plugin bug class).
+struct ServeSlot {
+  corevideo::vsthost::VstPluginInstance instance;
+  std::string error;  // load-time failure, sticky
+};
 
 int serveInstance(const std::string& instance) {
   using namespace corevideo::pluginhost;
@@ -325,20 +428,97 @@ int serveInstance(const std::string& instance) {
   }
   auto* block = static_cast<HostAudioBlock*>(::MapViewOfFile(shm, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(HostAudioBlock)));
   if (block == nullptr || block->magic != kHostBlockMagic) {
-    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: block unmapped or bad magic\"}\n");
+    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: block unmapped or bad magic (host/core version mismatch?)\"}\n");
     return 3;
   }
 
   std::fprintf(stdout, "{\"cmd\":\"serving\",\"instance\":\"%s\"}\n", jsonEscape(instance).c_str());
   std::fflush(stdout);
 
+  std::map<std::string, std::unique_ptr<ServeSlot>> slots;
+  std::string publishedStatusKey;  // dedupes statusGeneration bumps
+
+  const auto publishStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error) {
+    const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error;
+    if (key == publishedStatusKey) {
+      return;
+    }
+    publishedStatusKey = key;
+    block->statusCode = code;
+    copyBlockString(block->activePlugin, activePlugin.c_str());
+    copyBlockString(block->lastError, error.c_str());
+    block->statusGeneration = block->statusGeneration + 1;
+  };
+
   for (;;) {
     const DWORD wait = ::WaitForSingleObject(req, 30000);
     if (wait != WAIT_OBJECT_0) {
       return 0;  // idle 30s — parent gone or bypassed; exit, the core respawns
     }
-    processBlock(block);
-    block->seqOut = block->seqIn;
+    // Capture the sequence BEFORE processing: if the core abandons this tick
+    // and writes a new one while we work, seqOut must NOT accidentally match
+    // the new seqIn (the stale-completion discard depends on it).
+    const uint32_t seq = block->seqIn;
+
+    const std::string bundle(block->pluginBundle,
+                             strnlen(block->pluginBundle, sizeof(block->pluginBundle)));
+    const std::string className(block->pluginClass,
+                                strnlen(block->pluginClass, sizeof(block->pluginClass)));
+    if (bundle.empty()) {
+      applyTestGain(block);
+      publishStatus(kHostStatusTestProcessor, "test:-6dB", "");
+    } else {
+      const std::string slotKey = bundle + "\x1f" + className;
+      auto found = slots.find(slotKey);
+      if (found == slots.end()) {
+        // First request for this selection: load NOW, on this thread. The
+        // core keeps bypassing on its 4ms deadline while we do — honest
+        // misses, never a stall on its audio worker.
+        auto slot = std::make_unique<ServeSlot>();
+        const LoadedModule loaded = loadPluginModule(bundle);
+        if (loaded.factory == nullptr) {
+          slot->error = loaded.error;
+        } else {
+          corevideo::vsthost::VstProcessorConfig config;
+          config.sampleRate = 48000.0;
+          config.maxBlockFrames = kHostBlockMaxSamples / 2;
+          if (!slot->instance.start(loaded.factory, className, config)) {
+            slot->error = slot->instance.lastError();
+          }
+        }
+        if (!slot->error.empty()) {
+          std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: load '%s' / '%s' FAILED: %s\"}\n",
+                       jsonEscape(bundle).c_str(), jsonEscape(className).c_str(),
+                       jsonEscape(slot->error).c_str());
+        } else {
+          std::fprintf(stdout, "{\"cmd\":\"loaded\",\"bundle\":\"%s\",\"className\":\"%s\",\"latencySamples\":%u}\n",
+                       jsonEscape(bundle).c_str(),
+                       jsonEscape(slot->instance.activeClassName()).c_str(),
+                       slot->instance.latencySamples());
+        }
+        std::fflush(stdout);
+        found = slots.emplace(slotKey, std::move(slot)).first;
+      }
+
+      ServeSlot& slot = *found->second;
+      if (!slot.error.empty()) {
+        // Bypass: block left untouched. The core hears its own audio and the
+        // snapshot shows the error — never a fake "processing" status.
+        publishStatus(kHostStatusPluginFailed, className, slot.error);
+      } else if (block->sampleCount < 2 || block->sampleCount > kHostBlockMaxSamples) {
+        // Transient/garbage block header: skip (untouched), don't poison the slot.
+      } else if (slot.instance.processInterleavedStereo(block->pcm, block->sampleCount)) {
+        publishStatus(kHostStatusPluginActive, slot.instance.activeClassName(), "");
+      } else {
+        slot.error = slot.instance.lastError().empty() ? "process() failed" : slot.instance.lastError();
+        std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: process '%s' FAILED: %s\"}\n",
+                     jsonEscape(className).c_str(), jsonEscape(slot.error).c_str());
+        std::fflush(stdout);
+        publishStatus(kHostStatusPluginFailed, className, slot.error);
+      }
+    }
+
+    block->seqOut = seq;
     ::SetEvent(done);
   }
 }
@@ -348,6 +528,13 @@ int serveInstance(const std::string& instance) {
 
 int main(int argc, char** argv) {
   const std::string mode = argc > 1 ? argv[1] : "";
+#ifdef _WIN32
+  if (mode == "--serve" || mode == "--probe" || mode == "--process") {
+    // Plugins routinely assume an STA COM apartment on their loading thread.
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  }
+#endif
+
   if (mode == "--serve" && argc > 2) {
 #ifdef _WIN32
     return serveInstance(argv[2]);
@@ -367,8 +554,19 @@ int main(int argc, char** argv) {
 #endif
   }
 
+  if (mode == "--process" && argc > 2) {
+#ifdef _WIN32
+    return processBundle(argv[2], argc > 3 ? argv[3] : "");
+#else
+    std::fprintf(stdout, "{\"cmd\":\"process-result\",\"pass\":false,\"changed\":false,\"error\":\"process unsupported on this platform\"}\n");
+    return 0;
+#endif
+  }
+
   if (mode != "--scan") {
-    std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"corevideo-plugin-host supports --scan and --probe <bundle>\"}\n");
+    std::fprintf(stdout,
+                 "{\"cmd\":\"error\",\"msg\":\"corevideo-plugin-host supports --scan, --probe <bundle>, "
+                 "--process <bundle> <className>, --serve <instance>\"}\n");
     return 2;
   }
 

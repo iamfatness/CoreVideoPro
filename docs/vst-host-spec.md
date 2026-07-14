@@ -1,6 +1,7 @@
 # VST3 Plugin Host — Design Spec (audio overhaul 4.5)
 
-**Date:** 2026-07-04 · **Status:** proposed · **Parent:** `docs/audio-overhaul-spec.md` §4.5 (root
+**Date:** 2026-07-04 (P2c delivered 2026-07-12) · **Status:** P1/P2a/P2b/P2c shipped ·
+**Parent:** `docs/audio-overhaul-spec.md` §4.5 (root
 cause R7). With 4.4 shipped (built-in gate/EQ/comp/limiter genuinely processing), third-party
 plugin hosting is **the last fake in the audio chain**: a "VST3 Bridge Slot" insert is stored and
 labeled "scan/load bridge required" (`StudioViewModel.cs:1321`), and unrecognized insert names
@@ -61,19 +62,32 @@ probe: "pending"|"pass"|"fail", reasons[]}], instances: [{instanceId, slot, plug
 latencyMs, deadlineMisses, bypassed}]}` + warnings on the existing channel. Wire fields ride
 the existing snapshot; C# models auto-bind camelCase (B1 lesson: check before writing a parser).
 
-Insert-chain integration: a channel/bus insert named `vst3:<pluginId>` resolves to a host
-instance; `applyChannelInsertChain`/`applyBusInsertChain` gain a host hook that exchanges the
-block when (and only when) the instance is live, else falls through to pass-through. The
-"VST3 Bridge Slot" placeholder name is retired.
+Insert-chain integration (AS BUILT, P2b/P2c): a **bus** insert whose name contains
+`vst`/`host` routes the bus block through the host exchange before
+`applyBusInsertChain` runs the built-ins. Naming convention (P2c):
+- `vst:<class or plugin name>` — selects a REAL scanned plugin (case-insensitive; exact
+  class match, then class substring, then plugin/bundle name). WaveShell-style shell
+  bundles expose many classes — `vst:<bundle>/<class>` disambiguates explicitly.
+- plain `vst` / `Host Test Gain` (no colon) — the host's built-in -6 dB test processor
+  (kept so the transport rig drill works without any plugin installed).
+The selection rides the SHM block (`pluginBundle`/`pluginClass`); the host loads the
+plugin on demand ON ITS SERVE THREAD (the core deadline-bypasses during the load) and
+caches it per selection for the process lifetime. Host status
+(`activePlugin`/`lastError`/`statusCode`) rides back in the block and is surfaced at
+`pluginHost.serve{}`; an unresolvable `vst:` name bypasses loudly
+(`serve.lastError` + rate-capped core log), never fakes processing. Channel inserts are
+P3.
 
 ## 5. Phases (each shippable)
 
-| Phase | Scope | Proof |
-|---|---|---|
-| P1 | Host exe skeleton + token IPC + **real scan/probe** + snapshot surfacing; shell plugin browser lists real plugins with probe status; "scan-only" label retired | Rig: installed plugins appear with pass/fail; core untouched by plugin code |
-| P2 | Live processing on **bus** inserts: SHM block exchange, deadline bypass, crash restart w/ re-inject | Rig: audible third-party EQ on the MON bus; kill -9 the host mid-show → program audio continues on built-ins + warning |
-| P3 | **Channel** inserts + generic parameter surface (slider list from `params[]`) + state persistence in production prefs | Param moves are audible + survive restart |
-| P4 | Plugin editor GUI (child-HWND host window), CLAP, per-plugin isolation for flagged plugins | — |
+| Phase | Scope | Proof | Status |
+|---|---|---|---|
+| P1 | Host exe skeleton + **real scan** + snapshot surfacing; shell plugin browser lists real plugins | Installed plugins appear in the snapshot; core untouched by plugin code | **SHIPPED** (`--scan`, `PluginHostScan.h`) |
+| P2a | **Probe**: load the module in the host process, enumerate classes via raw COM-ABI factory vtables (no VST3 SDK), pass/fail verdicts incl. crash-on-load | `--probe <bundle>`; a crashing plugin kills only the probe process | **SHIPPED** |
+| P2b | Live processing on **bus** inserts: single-slot SHM block exchange + req/done events, 4ms deadline bypass, bypass-on-host-death, serve auto-start | Transport e2e test (kill the host mid-test → bypass, no hang); rig drill with the -6dB test processor | **SHIPPED** |
+| P2c | **Real VST3 instantiation + processing**: raw COM-ABI IComponent/IAudioProcessor (vst-abi.h, layout static_asserts), `vst:<name>` insert selection against scan results (shell-bundle classes supported), load-on-demand + per-selection cache in the serve loop, status/error telemetry (`serve.activePlugin`/`lastError`), `--process <bundle> <class>` CLI proof mode, fake-factory ABI unit tests | `--process` against an installed plugin prints rms/changed JSON; failure paths (license refusal, non-stereo, NaN, crash) bypass honestly | **SHIPPED** (see PR; Waves headless verdict recorded there) |
+| P3 | **Channel** inserts + generic parameter surface (slider list from `params[]`) + state persistence in production prefs | Param moves are audible + survive restart | — |
+| P4 | Plugin editor GUI (child-HWND host window), CLAP, per-plugin isolation for flagged plugins | — | — |
 
 ## 6. Testing
 
