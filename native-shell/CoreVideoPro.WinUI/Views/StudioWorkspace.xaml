@@ -853,23 +853,38 @@
                         </StackPanel>
                     </Button>
 
-                    <Button Style="{StaticResource AutomationToggleButton}"
-                            Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayCommand}"
-                            IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
-                            ToolTipService.ToolTip="Show or hide the primary browser overlay on Program">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE8A5;" FontSize="18" />
+                    <StackPanel Orientation="Horizontal" Spacing="3">
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                Padding="9,8"
+                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayPreviewCommand}"
+                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
                             <StackPanel Spacing="1">
-                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayButtonLabel, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewButtonLabel, Mode=OneWay}"
                                            FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayStatus, Mode=OneWay}"
+                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewStatus, Mode=OneWay}"
                                            FontSize="10" FontWeight="Bold"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextTrimming="CharacterEllipsis"
-                                           MaxWidth="100" />
+                                           Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
-                        </StackPanel>
-                    </Button>
+                        </Button>
+
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                Padding="9,8"
+                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayCommand}"
+                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                                <StackPanel Spacing="1">
+                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayButtonLabel, Mode=OneWay}"
+                                               FontWeight="Bold" FontSize="12" />
+                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayStatus, Mode=OneWay}"
+                                               FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource StudioMutedBrush}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
 
                     <Button Style="{StaticResource AutomationToggleButton}"
                             MinWidth="42"

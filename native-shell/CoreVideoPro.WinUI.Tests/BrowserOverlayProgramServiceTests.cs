@@ -7,45 +7,49 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class BrowserOverlayProgramServiceTests
 {
     [Fact]
-    public void HidesAuthoredBrowserRouteWhenKeyIsOut()
+    public void PreservesAuthoredBrowserRouteWhenDskIsOut()
     {
-        var routes = BrowserOverlayProgramService.ApplyOnAirState(
+        var routes = BrowserOverlayProgramService.ApplyKeyState(
             "scene-1",
             [Route("camera:1", 0), Route("browser:1", 1)],
             new HashSet<string>());
 
         Assert.Equal(1, routes[0].Opacity);
-        Assert.Equal(0, routes[1].Opacity);
+        Assert.Equal(1, routes[1].Opacity);
     }
 
     [Fact]
-    public void ShowsExistingBrowserRouteWithoutDuplicatingIt()
+    public void AddsIndependentDskAboveAuthoredBrowserRoute()
     {
-        var routes = BrowserOverlayProgramService.ApplyOnAirState(
+        var routes = BrowserOverlayProgramService.ApplyKeyState(
             "scene-1",
             [Route("camera:1", 0), Route("browser:1", 1, opacity: 0)],
             new HashSet<string>(["browser:1"]));
 
-        Assert.Equal(2, routes.Count);
-        Assert.Equal(1, routes[1].Opacity);
+        Assert.Equal(3, routes.Count);
+        Assert.Equal(0, routes[1].Opacity);
+        Assert.Equal(1, routes[2].Opacity);
+        Assert.Equal(2, routes[2].ZIndex);
     }
 
     [Fact]
-    public void ShowsOnlyTopmostDuplicateBrowserRoute()
+    public void PreservesDuplicateAuthoredRoutesAndAddsOneDsk()
     {
-        var routes = BrowserOverlayProgramService.ApplyOnAirState(
+        var routes = BrowserOverlayProgramService.ApplyKeyState(
             "scene-1",
             [Route("browser:1", 0), Route("browser:1", 1)],
             new HashSet<string>(["browser:1"]));
 
-        Assert.Equal(0, routes[0].Opacity);
+        Assert.Equal(3, routes.Count);
+        Assert.Equal(1, routes[0].Opacity);
         Assert.Equal(1, routes[1].Opacity);
+        Assert.Equal(1, routes[2].Opacity);
     }
 
     [Fact]
     public void AddsMissingOnAirBrowserAsTopmostFullCanvasRoute()
     {
-        var routes = BrowserOverlayProgramService.ApplyOnAirState(
+        var routes = BrowserOverlayProgramService.ApplyKeyState(
             "scene-1",
             [Route("camera:1", 0)],
             new HashSet<string>(["browser:1"]));

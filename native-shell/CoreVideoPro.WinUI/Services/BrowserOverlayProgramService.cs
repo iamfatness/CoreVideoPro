@@ -3,42 +3,24 @@ using CoreVideoPro.WinUI.Models;
 namespace CoreVideoPro.WinUI.Services;
 
 /// <summary>
-/// Applies the operator's browser-overlay keys to a temporary Program scene graph.
-/// The on-air state is independent from the queued Preview scene and follows Program
-/// across scene takes, matching the built-in lower-third control.
+/// Applies the operator's browser-overlay DSK to a temporary Program or Preview
+/// scene graph. The key state remains independent from the background scene,
+/// matching a professional switcher's downstream keyer.
 /// </summary>
 public static class BrowserOverlayProgramService
 {
-    public static IReadOnlyList<SourceRoute> ApplyOnAirState(
+    public static IReadOnlyList<SourceRoute> ApplyKeyState(
         string sceneId,
         IReadOnlyList<SourceRoute> sceneRoutes,
-        IReadOnlySet<string> onAirBrowserIds)
+        IReadOnlySet<string> keyedBrowserIds)
     {
         var routes = sceneRoutes.Select(route => route.Clone()).ToList();
 
-        foreach (var route in routes)
+        foreach (var browserId in keyedBrowserIds)
         {
-            if (route.Mode != SourceRouteMode.CaptureDevice ||
-                route.CaptureDeviceId is not { } browserId ||
-                !browserId.StartsWith("browser:", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            route.Opacity = 0;
-        }
-
-        foreach (var browserId in onAirBrowserIds)
-        {
-            var existing = routes.LastOrDefault(route =>
-                route.Mode == SourceRouteMode.CaptureDevice &&
-                string.Equals(route.CaptureDeviceId, browserId, StringComparison.Ordinal));
-            if (existing is not null)
-            {
-                existing.Opacity = 1;
-                continue;
-            }
-
+            // Always append a temporary DSK route. Existing browser routes belong
+            // to the scene graph (USK-style) and must remain independent: DSK out
+            // removes only this temporary key, never an authored scene layer.
             routes.Add(new SourceRoute
             {
                 Id = $"{sceneId}-browser-key-{routes.Count + 1}",

@@ -597,6 +597,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool HasBrowserCaptureDevices => BrowserCaptureDevices.Count > 0;
 
     private readonly HashSet<string> _onAirBrowserOverlayIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _previewBrowserOverlayIds = new(StringComparer.Ordinal);
     private string? _primaryBrowserOverlayId;
 
     private CaptureDevice? PrimaryBrowserOverlay =>
@@ -605,10 +606,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         BrowserCaptureDevices.FirstOrDefault();
 
     public string StudioBrowserOverlayButtonLabel =>
-        PrimaryBrowserOverlay?.IsBrowserOverlayOnAir == true ? "Overlay out" : "Overlay in";
+        PrimaryBrowserOverlay?.IsBrowserOverlayOnAir == true ? "DSK out" : "DSK in";
+
+    public string StudioBrowserOverlayPreviewButtonLabel =>
+        PrimaryBrowserOverlay?.IsBrowserOverlayInPreview == true ? "Clear PVW" : "Preview";
+
+    public string StudioBrowserOverlayPreviewStatus =>
+        PrimaryBrowserOverlay?.IsBrowserOverlayInPreview == true ? "Staged" : "Off";
 
     public string StudioBrowserOverlayStatus =>
-        PrimaryBrowserOverlay is { } overlay ? overlay.Name : "No browser source";
+        PrimaryBrowserOverlay?.IsBrowserOverlayOnAir == true ? "On air" : "Ready";
+
+    public string StudioBrowserOverlayToolTip => PrimaryBrowserOverlay is { } overlay
+        ? $"DSK browser overlay: {overlay.Name}"
+        : "Add a browser overlay source first";
 
     public ObservableCollection<AudioCaptureDevice> AudioCaptureDevices { get; } = [];
 
@@ -6351,7 +6362,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             await _bridge.RemoveBrowserSourceAsync(browserId).ConfigureAwait(false);
-            RunOnUiThread(() => CommandStatus = $"Browser source {browserId} removed.");
+            RunOnUiThread(() =>
+            {
+                _onAirBrowserOverlayIds.Remove(browserId);
+                _previewBrowserOverlayIds.Remove(browserId);
+                if (string.Equals(_primaryBrowserOverlayId, browserId, StringComparison.Ordinal))
+                {
+                    _primaryBrowserOverlayId = null;
+                }
+                NotifyBrowserOverlayControlStateChanged();
+                CommandStatus = $"Browser source {browserId} removed.";
+            });
             await RefreshCaptureDevicesAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -6646,6 +6667,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
 
             device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
+            device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
 
             CaptureDevices.Add(device);
         }
@@ -8352,7 +8374,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var resolvedSceneProgramRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
             .ToList();
-        var resolvedProgramRoutes = BrowserOverlayProgramService.ApplyOnAirState(
+        var resolvedProgramRoutes = BrowserOverlayProgramService.ApplyKeyState(
                 ActiveSceneId,
                 resolvedSceneProgramRoutes,
                 _onAirBrowserOverlayIds)
@@ -8364,8 +8386,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
         // the full previewed scene into its own preview shared texture. Resolved the same way
         // as the program routes; the core skips the extra composite for single-source previews.
-        var resolvedPreviewRoutes = GetPreviewEditableRoutes()
+        var resolvedScenePreviewRoutes = GetPreviewEditableRoutes()
             .Select(ResolveRouteFromShowInput)
+            .ToList();
+        var resolvedPreviewRoutes = BrowserOverlayProgramService.ApplyKeyState(
+                PreviewSceneId,
+                resolvedScenePreviewRoutes,
+                _previewBrowserOverlayIds)
             .ToList();
         var previewSceneRoutes = resolvedPreviewRoutes
             .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes))
@@ -12784,24 +12811,76 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         _primaryBrowserOverlayId = browser.Id;
-        var showing = _onAirBrowserOverlayIds.Add(browser.Id);
-        if (!showing)
+        var showing = !_onAirBrowserOverlayIds.Contains(browser.Id);
+        _onAirBrowserOverlayIds.Clear();
+        if (showing)
         {
-            _onAirBrowserOverlayIds.Remove(browser.Id);
+            _onAirBrowserOverlayIds.Add(browser.Id);
         }
 
-        browser.IsBrowserOverlayOnAir = showing;
+        foreach (var device in BrowserCaptureDevices)
+        {
+            device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
+        }
         NotifyBrowserOverlayControlStateChanged();
         CommandStatus = $"{browser.Name} overlay {(showing ? "shown on" : "hidden from")} Program";
         LaunchLog.Write($"overlay: browser key {(showing ? "in" : "out")} id={browser.Id}");
 
+        SyncBrowserOverlayKeyChange("browser-overlay-program-key");
+    }
+
+    [RelayCommand]
+    private void ToggleBrowserOverlayPreview(string? browserId)
+    {
+        if (string.IsNullOrWhiteSpace(browserId) ||
+            BrowserCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, browserId, StringComparison.Ordinal)) is not { } browser)
+        {
+            CommandStatus = "Browser overlay is no longer available";
+            return;
+        }
+
+        _primaryBrowserOverlayId = browser.Id;
+        var staging = !_previewBrowserOverlayIds.Contains(browser.Id);
+        _previewBrowserOverlayIds.Clear();
+        if (staging)
+        {
+            _previewBrowserOverlayIds.Add(browser.Id);
+        }
+
+        foreach (var device in BrowserCaptureDevices)
+        {
+            device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
+        }
+        NotifyBrowserOverlayControlStateChanged();
+        CommandStatus = $"{browser.Name} overlay {(staging ? "staged on" : "cleared from")} Preview";
+        LaunchLog.Write($"overlay: browser DSK preview {(staging ? "on" : "off")} id={browser.Id}");
+
+        SyncBrowserOverlayKeyChange("browser-overlay-preview-key");
+    }
+
+    private void SyncBrowserOverlayKeyChange(string reason)
+    {
         if (_applyingProductionPatch)
         {
-            QueueProductionSyncRetry("browser-overlay-key");
+            QueueProductionSyncRetry(reason);
         }
         else
         {
             _ = TrySyncMediaCoreAsync();
+        }
+    }
+
+    [RelayCommand]
+    private void TogglePrimaryBrowserOverlayPreview()
+    {
+        if (PrimaryBrowserOverlay is { } browser)
+        {
+            ToggleBrowserOverlayPreview(browser.Id);
+        }
+        else
+        {
+            CommandStatus = "Add a browser overlay URL first";
         }
     }
 
@@ -12821,7 +12900,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void NotifyBrowserOverlayControlStateChanged()
     {
         OnPropertyChanged(nameof(StudioBrowserOverlayButtonLabel));
+        OnPropertyChanged(nameof(StudioBrowserOverlayPreviewButtonLabel));
+        OnPropertyChanged(nameof(StudioBrowserOverlayPreviewStatus));
         OnPropertyChanged(nameof(StudioBrowserOverlayStatus));
+        OnPropertyChanged(nameof(StudioBrowserOverlayToolTip));
     }
 
     [RelayCommand]
@@ -12873,10 +12955,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        AddBrowserOverlay(added.Id);
         _primaryBrowserOverlayId = added.Id;
+        _previewBrowserOverlayIds.Clear();
+        _previewBrowserOverlayIds.Add(added.Id);
+        foreach (var device in BrowserCaptureDevices)
+        {
+            device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
+        }
         NotifyBrowserOverlayControlStateChanged();
-        CommandStatus = $"{added.Name} added to Preview as a full-canvas overlay";
+        SyncBrowserOverlayKeyChange("browser-overlay-added-to-preview");
+        CommandStatus = $"{added.Name} staged on DSK Preview - use DSK in when ready";
     }
 
     public static string NormalizeBrowserOverlayUrl(string? value)

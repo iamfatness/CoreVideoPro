@@ -47,4 +47,12 @@ public sealed partial class OverlaysPage : UserControl
             ViewModel?.ToggleBrowserOverlayOnAirCommand.Execute(browserId);
         }
     }
+
+    private void OnToggleBrowserOverlayPreviewClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string browserId })
+        {
+            ViewModel?.ToggleBrowserOverlayPreviewCommand.Execute(browserId);
+        }
+    }
 }
