@@ -13031,8 +13031,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void SyncLiveSceneEditIfNeeded(string sceneId)
     {
-        if (SceneBackgroundSelectionService.SelectionAffectsProgramScene(sceneId, ActiveSceneId))
+        // Every edit to the queued PREVIEW scene must reach set-preview-scene, even
+        // when that scene differs from PROGRAM. The old program-only gate updated
+        // WinUI's route list but never sent browser/bug layers to the native preview
+        // compositor, so "Show in Preview" appeared to do nothing in normal PGM/PVW
+        // operation. Keep the program check for callers that edit the live scene.
+        if (SceneBackgroundSelectionService.SceneEditNeedsMediaCoreSync(
+                sceneId,
+                PreviewSceneId,
+                ActiveSceneId))
         {
+            // Explicit operator edits must not disappear when they land during a
+            // snapshot patch. TrySyncMediaCoreAsync intentionally ignores calls made
+            // while applying a patch to prevent feedback loops, so queue one bounded
+            // retry here; the edited route remains in the draft and the retry sends it.
+            if (_applyingProductionPatch)
+            {
+                QueueProductionSyncRetry("preview-scene-edit");
+                return;
+            }
+
             _ = TrySyncMediaCoreAsync();
         }
     }
