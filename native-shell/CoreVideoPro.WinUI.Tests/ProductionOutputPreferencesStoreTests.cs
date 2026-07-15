@@ -24,6 +24,12 @@ public sealed class ProductionOutputPreferencesStoreTests
             StreamVideoCodec = "h264",
             StreamTargetBitrateMbps = 9.5,
             StreamEncoderMode = "nvenc",
+            StreamPlatformProfileId = "youtube-1080p60",
+            StreamKeyframeIntervalSeconds = 2,
+            StreamRateControl = "cbr",
+            StreamH264Profile = "high",
+            StreamBFrames = 2,
+            StreamAllowEnhancedRtmp = true,
             LocalAudioSourceEnabled = true,
             SelectedLocalAudioCaptureDeviceId = "loopback-chat",
             AudioMonitoringEnabled = true,
@@ -68,6 +74,12 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.True(roundTripped.StreamNdiEnabled);
         Assert.Equal(9.5, roundTripped.StreamTargetBitrateMbps);
         Assert.Equal("nvenc", roundTripped.StreamEncoderMode);
+        Assert.Equal("youtube-1080p60", roundTripped.StreamPlatformProfileId);
+        Assert.Equal(2, roundTripped.StreamKeyframeIntervalSeconds);
+        Assert.Equal("cbr", roundTripped.StreamRateControl);
+        Assert.Equal("high", roundTripped.StreamH264Profile);
+        Assert.Equal(2, roundTripped.StreamBFrames);
+        Assert.True(roundTripped.StreamAllowEnhancedRtmp);
         Assert.True(roundTripped.LocalAudioSourceEnabled);
         Assert.Equal("loopback-chat", roundTripped.SelectedLocalAudioCaptureDeviceId);
         Assert.True(roundTripped.AudioMonitoringEnabled);

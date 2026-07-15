@@ -59,6 +59,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private readonly IProductionOutputPreferencesStore _outputPreferencesStore = CreateProductionOutputPreferencesStore();
     private bool _outputPreferencesLoaded;
     private bool _programLowerThirdAutomationSuppressed;
+    private bool _applyingStreamingProfile;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -281,6 +282,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     [ObservableProperty]
     private string _streamEncoderMode = "auto";
+
+    [ObservableProperty]
+    private string _streamPlatformProfileId = StreamingProfileCatalog.CustomProfileId;
+
+    [ObservableProperty]
+    private double _streamKeyframeIntervalSeconds = 2;
+
+    [ObservableProperty]
+    private string _streamRateControl = "cbr";
+
+    [ObservableProperty]
+    private string _streamH264Profile = "high";
+
+    [ObservableProperty]
+    private double _streamBFrames = 2;
+
+    [ObservableProperty]
+    private bool _streamAllowEnhancedRtmp;
 
     [ObservableProperty]
     private string _recordingRenderResolution = MediaCoreProductionSyncContext.DefaultRecordingOutputProfile.Resolution;
@@ -570,6 +589,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<GraphicOverlay> Graphics { get; } = [];
 
     public ObservableCollection<CaptureDevice> CaptureDevices { get; } = [];
+
+    public IReadOnlyList<CaptureDevice> BrowserCaptureDevices => CaptureDevices
+        .Where(device => device.Id.StartsWith("browser:", StringComparison.Ordinal))
+        .ToList();
+
+    public bool HasBrowserCaptureDevices => BrowserCaptureDevices.Count > 0;
 
     public ObservableCollection<AudioCaptureDevice> AudioCaptureDevices { get; } = [];
 
@@ -1153,6 +1178,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<string> StreamRtmpProtocolOptions { get; } = ["rtmps", "rtmp"];
 
+    public IReadOnlyList<RouteSelectOption> StreamPlatformProfileOptions { get; } =
+        StreamingProfileCatalog.Profiles
+            .Select(profile => new RouteSelectOption { Value = profile.Id, Label = profile.Label })
+            .ToList();
+
+    public IReadOnlyList<RouteSelectOption> StreamRateControlOptions { get; } =
+    [
+        new() { Value = "cbr", Label = "CBR (constant bitrate)" },
+        new() { Value = "vbr", Label = "VBR (variable bitrate)" }
+    ];
+
+    public IReadOnlyList<RouteSelectOption> StreamH264ProfileOptions { get; } =
+    [
+        new() { Value = "auto", Label = "Auto" },
+        new() { Value = "baseline", Label = "Baseline" },
+        new() { Value = "main", Label = "Main" },
+        new() { Value = "high", Label = "High" }
+    ];
+
     public IReadOnlyList<string> StreamSrtModeOptions { get; } = ["caller", "listener", "rendezvous"];
 
     public IReadOnlyList<string> StreamSrtKeyLengthOptions { get; } = ["0", "16", "24", "32"];
@@ -1231,6 +1275,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string StreamRenderProfileSummary =>
         $"{StreamRenderResolution} - {NormalizeFpsText(StreamRenderFps)} fps - {FormatVideoCodec(StreamVideoCodec)} - {NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps):0.0} Mbps - {FormatStreamEncoderMode(StreamEncoderMode)}";
+
+    public string StreamPlatformProfileSummary =>
+        StreamingProfileCatalog.Find(StreamPlatformProfileId).Summary;
 
     public string StreamBitrateSummary =>
         FormatStreamBitrateSummary(StreamTargetBitrateMbps);
@@ -2275,7 +2322,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnStreamSrtEnabledChanged(bool value) => OnStreamOutputOptionChanged();
 
-    partial void OnStreamRtmpProtocolChanged(string value) => OnStreamOutputOptionChanged();
+    partial void OnStreamRtmpProtocolChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnStreamOutputOptionChanged();
+    }
 
     partial void OnStreamRtmpServerUrlChanged(string value) => OnStreamOutputOptionChanged();
 
@@ -2310,11 +2362,26 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnCanvasFpsChanged(string value) => OnOutputProfileChanged();
 
-    partial void OnStreamRenderResolutionChanged(string value) => OnOutputProfileChanged();
+    partial void OnStreamRenderResolutionChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
 
-    partial void OnStreamRenderFpsChanged(string value) => OnOutputProfileChanged();
+    partial void OnStreamRenderFpsChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
 
-    partial void OnStreamVideoCodecChanged(string value) => OnOutputProfileChanged();
+    partial void OnStreamVideoCodecChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
 
     partial void OnStreamTargetBitrateMbpsChanged(double value)
     {
@@ -2325,6 +2392,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
         OnOutputProfileChanged();
     }
 
@@ -2337,10 +2406,97 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
         OnOutputProfileChanged();
     }
 
-    partial void OnStreamEncoderModeChanged(string value) => OnOutputProfileChanged();
+    partial void OnStreamEncoderModeChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamPlatformProfileIdChanged(string value)
+    {
+        OnPropertyChanged(nameof(StreamPlatformProfileSummary));
+        var profile = StreamingProfileCatalog.Find(value);
+        if (_applyingStreamingProfile || profile.Id == StreamingProfileCatalog.CustomProfileId)
+        {
+            SaveProductionOutputPreferences();
+            return;
+        }
+
+        _applyingStreamingProfile = true;
+        try
+        {
+            StreamRenderResolution = profile.Resolution;
+            StreamRenderFps = profile.Fps;
+            StreamVideoCodec = profile.VideoCodec;
+            StreamTargetBitrateMbps = profile.TargetBitrateMbps;
+            StreamAudioBitrateKbps = profile.AudioBitrateKbps;
+            StreamKeyframeIntervalSeconds = profile.KeyframeIntervalSeconds;
+            StreamRateControl = profile.RateControl;
+            StreamH264Profile = profile.H264Profile;
+            StreamBFrames = profile.BFrames;
+            StreamRtmpProtocol = profile.Protocol;
+            StreamAllowEnhancedRtmp = profile.AllowEnhancedRtmp;
+        }
+        finally
+        {
+            _applyingStreamingProfile = false;
+        }
+
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamKeyframeIntervalSecondsChanged(double value)
+    {
+        var normalized = Math.Round(Math.Clamp(value, 0.5, 10), 1);
+        if (!value.Equals(normalized))
+        {
+            StreamKeyframeIntervalSeconds = normalized;
+            return;
+        }
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamRateControlChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamH264ProfileChanged(string value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamBFramesChanged(double value)
+    {
+        var normalized = Math.Round(Math.Clamp(value, 0, 4));
+        if (!value.Equals(normalized))
+        {
+            StreamBFrames = normalized;
+            return;
+        }
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
+
+    partial void OnStreamAllowEnhancedRtmpChanged(bool value)
+    {
+        if (_applyingStreamingProfile) return;
+        MarkStreamingProfileCustom();
+        OnOutputProfileChanged();
+    }
 
     partial void OnRecordingRenderResolutionChanged(string value) => OnOutputProfileChanged();
 
@@ -6486,6 +6642,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshPreviewRoutingState();
         RefreshMultiviewGridTiles();
         OnPropertyChanged(nameof(HasCaptureDevices));
+        OnPropertyChanged(nameof(BrowserCaptureDevices));
+        OnPropertyChanged(nameof(HasBrowserCaptureDevices));
         RebuildAudioCaptureDeviceCatalog();
         QueueSelectedCaptureDevicesOnline();
     }
@@ -8803,8 +8961,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 FfmpegBinDirectory: NormalizeOptionalOutputText(FfmpegBinDirectory),
                 Fps: streamProfile.Fps,
                 TargetBitrateMbps: streamProfile.TargetBitrateMbps,
+                AudioBitrateKbps: streamProfile.AudioBitrateKbps,
                 VideoCodec: streamProfile.Codec,
-                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
+                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode),
+                KeyframeIntervalSeconds: Math.Clamp(StreamKeyframeIntervalSeconds, 0.5, 10),
+                RateControl: NormalizeStreamRateControl(StreamRateControl),
+                H264Profile: NormalizeStreamH264Profile(StreamH264Profile),
+                BFrames: (int)Math.Clamp(Math.Round(StreamBFrames), 0, 4),
+                AllowEnhancedRtmp: StreamAllowEnhancedRtmp));
         }
 
         if (StreamNdiEnabled &&
@@ -9099,6 +9263,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return normalized is "auto" or "nvenc" or "qsv" or "amf" or "cpu" ? normalized : "auto";
     }
 
+    private static string NormalizeStreamRateControl(string? value) =>
+        string.Equals(value?.Trim(), "vbr", StringComparison.OrdinalIgnoreCase) ? "vbr" : "cbr";
+
+    private static string NormalizeStreamH264Profile(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized is "auto" or "baseline" or "main" or "high" ? normalized : "high";
+    }
+
     private static string FormatStreamEncoderMode(string? value) => NormalizeStreamEncoderMode(value) switch
     {
         "nvenc" => "NVENC",
@@ -9164,6 +9337,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);
         return keyLength > 0 ? $"AES-{keyLength * 8}" : "no encryption";
+    }
+
+    private void MarkStreamingProfileCustom()
+    {
+        if (_applyingStreamingProfile ||
+            string.Equals(StreamPlatformProfileId, StreamingProfileCatalog.CustomProfileId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _applyingStreamingProfile = true;
+        try
+        {
+            StreamPlatformProfileId = StreamingProfileCatalog.CustomProfileId;
+        }
+        finally
+        {
+            _applyingStreamingProfile = false;
+        }
     }
 
     private void OnOutputProfileChanged()
@@ -10666,7 +10858,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private ProductionOutputPreferences CaptureProductionOutputPreferences() =>
         new()
         {
-            Version = 1,
+            Version = 2,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
             StreamNdiEnabled = StreamNdiEnabled,
@@ -10696,6 +10888,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamTargetBitrateMbps = NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
             StreamAudioBitrateKbps = NormalizeAudioBitrateKbps(StreamAudioBitrateKbps),
             StreamEncoderMode = StreamEncoderMode,
+            StreamPlatformProfileId = StreamPlatformProfileId,
+            StreamKeyframeIntervalSeconds = Math.Clamp(StreamKeyframeIntervalSeconds, 0.5, 10),
+            StreamRateControl = NormalizeStreamRateControl(StreamRateControl),
+            StreamH264Profile = NormalizeStreamH264Profile(StreamH264Profile),
+            StreamBFrames = (int)Math.Clamp(Math.Round(StreamBFrames), 0, 4),
+            StreamAllowEnhancedRtmp = StreamAllowEnhancedRtmp,
             RecordingRenderResolution = RecordingRenderResolution,
             RecordingRenderFps = RecordingRenderFps,
             RecordingVideoCodec = RecordingVideoCodec,
@@ -10767,6 +10965,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? NormalizeAudioBitrateKbps(preferences.StreamAudioBitrateKbps)
             : StreamAudioBitrateKbps;
         StreamEncoderMode = preferences.StreamEncoderMode ?? StreamEncoderMode;
+        StreamKeyframeIntervalSeconds = preferences.StreamKeyframeIntervalSeconds > 0
+            ? Math.Clamp(preferences.StreamKeyframeIntervalSeconds, 0.5, 10)
+            : StreamKeyframeIntervalSeconds;
+        StreamRateControl = NormalizeStreamRateControl(preferences.StreamRateControl);
+        StreamH264Profile = NormalizeStreamH264Profile(preferences.StreamH264Profile);
+        StreamBFrames = Math.Clamp(preferences.StreamBFrames, 0, 4);
+        StreamAllowEnhancedRtmp = preferences.StreamAllowEnhancedRtmp;
+        StreamPlatformProfileId = StreamingProfileCatalog.Find(preferences.StreamPlatformProfileId).Id;
         RecordingRenderResolution = preferences.RecordingRenderResolution ?? RecordingRenderResolution;
         RecordingRenderFps = preferences.RecordingRenderFps ?? RecordingRenderFps;
         RecordingVideoCodec = preferences.RecordingVideoCodec ?? RecordingVideoCodec;
@@ -11839,7 +12045,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void RefreshSceneCompositionState(Scene scene, string sceneId, bool isPreview)
     {
-        var mutableRoutes = GetMutableRoutes(sceneId);
+        // Preview may be editing a draft of the on-air scene. Refreshing from the
+        // stored program routes here silently erased newly added overlay layers.
+        var mutableRoutes = isPreview ? GetPreviewEditableRoutes() : GetMutableRoutes(sceneId);
         var defaults = SceneRoutingService.GetRouteDefaults(
             scene,
             mutableRoutes,
@@ -12339,6 +12547,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return resolved;
         }
 
+        // A freshly launched standalone studio has no Zoom role holders. Keep the
+        // default Speaker + Slides scene immediately testable by resolving its transient
+        // role routes to assigned local camera/screen inputs. The stored scene remains
+        // role-based and takes over normally once Zoom video participants are present.
+        if (ShowInputRosterService.TryApplyStandaloneRoleFallback(
+                resolved,
+                ShowInputs,
+                RoomVideoParticipants))
+        {
+            ApplyKnownColorGradeToRoute(resolved);
+            return resolved;
+        }
+
         if (route.ShowInputSlotNumber is not { } slotNumber ||
             ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is not { } slot ||
             !slot.IsAssigned)
@@ -12486,7 +12707,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         else
         {
-            sourceLabel = AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
+            sourceLabel = optionValue.StartsWith("capture:", StringComparison.OrdinalIgnoreCase)
+                ? CaptureDevices.FirstOrDefault(device =>
+                    string.Equals(device.Id, optionValue["capture:".Length..], StringComparison.Ordinal))?.Name ?? optionValue
+                : AddSourceOptions.FirstOrDefault(option => option.Value == optionValue)?.Label ?? optionValue;
         }
 
         var routes = GetPreviewEditableRoutes();
@@ -12500,6 +12724,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene.Layout,
             RoomVideoParticipants);
 
+        LaunchLog.Write(
+            $"overlay: added parameter='{parameter}' scene={PreviewSceneId} routes={routes.Count} " +
+            $"source={optionValue} placement={placement}");
+
         CommandStatus =
             $"{sourceLabel} overlay added to {PreviewScene.Name} ({OverlayLayerService.PlacementLabel(placement)}) - drag or use Edit layout to fine-tune";
         SyncPreviewCanvasLayers(routes);
@@ -12508,6 +12736,102 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             routes.Select(ResolveRouteFromShowInput).ToList());
         SchedulePreviewRoutingRefresh();
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
+    }
+
+    [RelayCommand]
+    private void AddBrowserOverlay(string? browserId)
+    {
+        if (string.IsNullOrWhiteSpace(browserId) ||
+            !BrowserCaptureDevices.Any(device => string.Equals(device.Id, browserId, StringComparison.Ordinal)))
+        {
+            CommandStatus = "Add browser overlay failed: browser source is no longer available";
+            return;
+        }
+
+        AddOverlayLayer($"full-canvas|capture:{browserId}");
+    }
+
+    [RelayCommand]
+    private async Task ReloadBrowserOverlayAsync(string? browserId)
+    {
+        if (!string.IsNullOrWhiteSpace(browserId))
+        {
+            await ReloadBrowserSourceAsync(browserId);
+        }
+    }
+
+    [RelayCommand]
+    private async Task AddBrowserOverlayFromUrlAsync()
+    {
+        var originalUrl = NewBrowserSourceUrl;
+        NewBrowserSourceUrl = NormalizeBrowserOverlayUrl(originalUrl);
+        if (!string.Equals(originalUrl, NewBrowserSourceUrl, StringComparison.Ordinal))
+        {
+            LaunchLog.Write("overlay: removed forced browser background from overlay URL");
+        }
+
+        var existingIds = BrowserCaptureDevices
+            .Select(device => device.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        await AddBrowserSourceAsync().ConfigureAwait(true);
+
+        CaptureDevice? added = null;
+        for (var attempt = 0; attempt < 20 && added is null; attempt++)
+        {
+            added = BrowserCaptureDevices.LastOrDefault(device => !existingIds.Contains(device.Id));
+            if (added is not null)
+            {
+                break;
+            }
+
+            await Task.Delay(100).ConfigureAwait(true);
+            await RefreshCaptureDevicesAsync().ConfigureAwait(true);
+        }
+
+        if (added is null)
+        {
+            if (!CommandStatus.Contains("FAILED", StringComparison.OrdinalIgnoreCase) &&
+                !CommandStatus.StartsWith("Enter a URL", StringComparison.OrdinalIgnoreCase))
+            {
+                CommandStatus = "Browser source started, but CoreVideo could not attach its Preview layer.";
+            }
+            LaunchLog.Write("overlay: browser source catalog timeout; Preview layer not attached");
+            return;
+        }
+
+        AddBrowserOverlay(added.Id);
+        CommandStatus = $"{added.Name} added to Preview as a full-canvas overlay";
+    }
+
+    public static string NormalizeBrowserOverlayUrl(string? value)
+    {
+        var url = value?.Trim() ?? string.Empty;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed) || string.IsNullOrEmpty(parsed.Query))
+        {
+            return url;
+        }
+
+        var kept = parsed.Query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part =>
+            {
+                var separator = part.IndexOf('=');
+                var key = separator >= 0 ? part[..separator] : part;
+                return !string.Equals(Uri.UnescapeDataString(key), "bg", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+
+        if (kept.Length == parsed.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries).Length)
+        {
+            return url;
+        }
+
+        var builder = new UriBuilder(parsed)
+        {
+            Query = string.Join('&', kept)
+        };
+        return builder.Uri.AbsoluteUri;
     }
 
     // Scenes redesign S1: the missing layer primitives. Removing a source and

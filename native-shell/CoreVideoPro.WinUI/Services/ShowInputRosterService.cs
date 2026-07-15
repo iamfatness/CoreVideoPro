@@ -408,6 +408,55 @@ public static class ShowInputRosterService
         }
     }
 
+    /// <summary>
+    /// Keeps the default Speaker + Slides scene useful before a Zoom meeting is joined.
+    /// Role routes remain untouched whenever Zoom video participants exist, so normal
+    /// active-speaker and screen-share switching resumes as soon as a meeting is present.
+    /// The supplied route is expected to be a transient clone; saved scene semantics are
+    /// never rewritten by this fallback.
+    /// </summary>
+    public static bool TryApplyStandaloneRoleFallback(
+        SourceRoute route,
+        IReadOnlyList<ShowInputSlot> slots,
+        IReadOnlyList<Participant> roomVideoParticipants)
+    {
+        if (roomVideoParticipants.Count > 0 ||
+            route.Mode is not (SourceRouteMode.ActiveSpeaker or SourceRouteMode.ScreenShare))
+        {
+            return false;
+        }
+
+        var candidates = slots
+            .Where(slot => slot.InShow && slot.IsAssigned)
+            .OrderBy(slot => slot.SlotNumber);
+
+        var fallback = route.Mode == SourceRouteMode.ScreenShare
+            ? candidates.FirstOrDefault(slot => slot.Kind == ShowInputKind.Screen)
+            : candidates
+                .OrderBy(slot => slot.Kind switch
+                {
+                    ShowInputKind.UvcWebcam => 0,
+                    ShowInputKind.Blackmagic => 1,
+                    ShowInputKind.Aja => 2,
+                    ShowInputKind.SrtIngest => 3,
+                    _ => 4
+                })
+                .FirstOrDefault(slot => slot.Kind is
+                    ShowInputKind.UvcWebcam or
+                    ShowInputKind.Blackmagic or
+                    ShowInputKind.Aja or
+                    ShowInputKind.SrtIngest);
+
+        if (fallback is null)
+        {
+            return false;
+        }
+
+        route.ShowInputSlotNumber = fallback.SlotNumber;
+        ApplySlotRoute(route, fallback);
+        return true;
+    }
+
     public static IReadOnlyList<ShowInputSourceOption> BuildCaptureSourceOptions(
         IReadOnlyList<CaptureDevice> captureDevices) =>
         [

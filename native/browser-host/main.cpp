@@ -314,6 +314,65 @@ class SelfCapture {
   }
 
  private:
+  // Windows Graphics Capture flattens a transparent WebView window against
+  // black and commonly reports A=255 for every pixel. Recover a usable straight
+  // alpha channel from that black composite so browser graphics key over video
+  // instead of replacing the entire canvas. WebView content is rendered over
+  // black, so edge RGB is premultiplied; un-premultiply while recovering alpha
+  // to avoid dark fringes around antialiased text and shapes.
+  static void recoverTransparentWebViewAlpha(uint8_t* bgra, std::size_t pixelCount) {
+    if (bgra == nullptr) {
+      return;
+    }
+
+    for (std::size_t i = 0; i < pixelCount; ++i) {
+      uint8_t* pixel = bgra + i * 4;
+      if (pixel[3] < 250) {
+        continue;  // Capture path preserved real alpha; leave it untouched.
+      }
+
+      // H2R and several broadcast-graphics tools intentionally render an
+      // opaque #00ff00 canvas when browser alpha is unavailable. Recover
+      // straight alpha from that green composite before the black-background
+      // recovery below. For antialiased edges, remove the estimated green
+      // backing contribution so keyed text does not acquire a green fringe.
+      const int blue = static_cast<int>(pixel[0]);
+      const int green = static_cast<int>(pixel[1]);
+      const int red = static_cast<int>(pixel[2]);
+      const int greenBacking = (std::max)(0, green - (std::max)(red, blue));
+      if (green >= 64 && greenBacking >= 24) {
+        const float alpha = std::clamp(1.f - static_cast<float>(greenBacking) / 255.f, 0.f, 1.f);
+        if (alpha <= 0.02f) {
+          pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0;
+          continue;
+        }
+
+        pixel[0] = static_cast<uint8_t>(std::clamp(std::lround(blue / alpha), 0l, 255l));
+        pixel[1] = static_cast<uint8_t>(std::clamp(
+            std::lround((green - (1.f - alpha) * 255.f) / alpha), 0l, 255l));
+        pixel[2] = static_cast<uint8_t>(std::clamp(std::lround(red / alpha), 0l, 255l));
+        pixel[3] = static_cast<uint8_t>(std::lround(alpha * 255.f));
+        continue;
+      }
+
+      const int maximum = std::max({static_cast<int>(pixel[0]),
+                                    static_cast<int>(pixel[1]),
+                                    static_cast<int>(pixel[2])});
+      if (maximum <= 2) {
+        pixel[0] = pixel[1] = pixel[2] = pixel[3] = 0;
+        continue;
+      }
+
+      const float alpha = std::clamp((static_cast<float>(maximum) - 2.f) / 30.f, 0.f, 1.f);
+      pixel[3] = static_cast<uint8_t>(std::lround(alpha * 255.f));
+      if (alpha > 0.f && alpha < 1.f) {
+        pixel[0] = static_cast<uint8_t>(std::clamp(std::lround(pixel[0] / alpha), 0l, 255l));
+        pixel[1] = static_cast<uint8_t>(std::clamp(std::lround(pixel[1] / alpha), 0l, 255l));
+        pixel[2] = static_cast<uint8_t>(std::clamp(std::lround(pixel[2] / alpha), 0l, 255l));
+      }
+    }
+  }
+
   void onFrame(const wgc::Direct3D11CaptureFramePool& pool) {
     std::lock_guard<std::mutex> frameLock(frameMutex_);
     if (!running_.load(std::memory_order_acquire)) {
@@ -374,6 +433,8 @@ class SelfCapture {
                     src + static_cast<std::size_t>(row) * mapped.RowPitch,
                     static_cast<std::size_t>(copyWidth) * 4);
       }
+      recoverTransparentWebViewAlpha(
+          frame_.data(), static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_));
       context_->Unmap(staging_.Get(), 0);
       if (writer_ != nullptr) {
         writer_->publish(frame_.data(), width_, height_);

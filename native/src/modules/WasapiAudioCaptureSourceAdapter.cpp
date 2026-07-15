@@ -259,6 +259,27 @@ class WasapiAudioCaptureSource final : public IAudioCaptureSource {
       return;
     }
 
+    // Bypass endpoint audio effects when the driver supports raw capture. Some
+    // multi-endpoint USB interfaces apply communications processing when a
+    // conventional capture client opens, which can disturb their render paths.
+    // Raw mode is still shared-mode WASAPI and is deliberately best-effort.
+    IAudioClient2* client2 = nullptr;
+    if (SUCCEEDED(state.client->QueryInterface(__uuidof(IAudioClient2),
+                                               reinterpret_cast<void**>(&client2))) &&
+        client2 != nullptr) {
+      AudioClientProperties properties{};
+      properties.cbSize = sizeof(properties);
+      properties.bIsOffload = FALSE;
+      properties.eCategory = AudioCategory_Other;
+      properties.Options = AUDCLNT_STREAMOPTIONS_RAW;
+      const HRESULT propertiesHr = client2->SetClientProperties(&properties);
+      if (FAILED(propertiesHr)) {
+        warn("WASAPI raw capture is unavailable for " + state.participantId +
+             "; continuing in standard shared mode (hr=" + hexHrCapture(propertiesHr) + ").");
+      }
+      safeReleaseCapture(client2);
+    }
+
     constexpr REFERENCE_TIME kBufferDuration = 2'000'000;
     const DWORD flags = state.loopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
     hr = state.client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, kBufferDuration, 0, state.mixFormat, nullptr);

@@ -186,6 +186,12 @@ struct ProgramFrame {
   // sets fullProgramReadback (vcam enabled); empty otherwise. `preview` above
   // stays the small 320x180 UI thumbnail.
   ProgramFramePreviewPixels programFullBgra;
+  // Latest full-program GPU tap converted to NV12 on the compositor's
+  // dedicated device/thread. Network senders consume this directly so live
+  // output is 1080p program video, not the 320x180 UI thumbnail.
+  int programNv12Width = 0;
+  int programNv12Height = 0;
+  std::vector<uint8_t> programNv12;
   ProgramFrameSharedTexture sharedTexture;
   std::vector<ParticipantSharedTexture> participantSharedTextures;
   // Core-composited multiview grid: one keyed-mutex DXGI shared texture holding
@@ -405,6 +411,10 @@ struct OutputDestinationSettings {
   int audioBitrateKbps = 160;
   std::string videoCodec = "h264";
   std::string encoderMode = "auto";
+  double keyframeIntervalSeconds = 2.0;
+  std::string rateControl = "cbr";
+  std::string h264Profile = "high";
+  int bFrames = 2;
   // Opt in to enhanced-RTMP (E-RTMP) so H.265/AV1 can ride the FLV transport
   // instead of being downgraded to H.264. Defaulted off so the guaranteed
   // H.264 + AAC baseline stays the safe default.
@@ -662,6 +672,10 @@ class IOutputSender {
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   virtual OutputSenderSession session() const = 0;
+  // Non-blocking emergency cancellation used by the live async wrapper to
+  // release a sender stuck in pipe/network I/O. Implementations should only
+  // interrupt the transport here; normal state cleanup remains in sync().
+  virtual void interrupt(const std::string&) {}
 };
 
 class ICaptureDevice {

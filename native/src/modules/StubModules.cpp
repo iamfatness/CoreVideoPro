@@ -1,4 +1,5 @@
 #include "modules/AsyncEncoderSink.h"
+#include "modules/AsyncOutputSender.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -645,6 +646,12 @@ class CompositeOutputSender final : public IOutputSender {
     return combined;
   }
 
+  void interrupt(const std::string& destination) override {
+    for (const auto& sender : senders_) {
+      sender->interrupt(destination);
+    }
+  }
+
  private:
   static void mergeInto(OutputSenderSession& combined, const OutputSenderSession& next) {
     combined.senders.insert(combined.senders.end(), next.senders.begin(), next.senders.end());
@@ -1014,6 +1021,12 @@ ModuleSet createLiveServerModules() {
     // finalize at teardown). Unit tests use createDefaultModules directly and keep the
     // synchronous encoder so their post-command assertions stay deterministic.
     modules.encoder = std::make_unique<AsyncEncoderSink>(std::move(modules.encoder));
+  }
+  if (modules.outputSender) {
+    // FFmpeg/network backpressure must never run under the native core path.
+    // The async sender keeps only the freshest frame and exposes an immediate
+    // transport interrupt so Stop remains responsive even if a pipe is wedged.
+    modules.outputSender = std::make_unique<AsyncOutputSender>(std::move(modules.outputSender));
   }
   return modules;
 }

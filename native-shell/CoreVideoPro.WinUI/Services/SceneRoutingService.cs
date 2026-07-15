@@ -124,6 +124,12 @@ public static class SceneRoutingService
             route.Mode = SourceRouteMode.Fixed;
             route.ShowInputSlotNumber = slotNumber;
         }
+        else if (optionValue.StartsWith("capture:", StringComparison.OrdinalIgnoreCase) &&
+                 optionValue.Length > "capture:".Length)
+        {
+            route.Mode = SourceRouteMode.CaptureDevice;
+            route.CaptureDeviceId = optionValue["capture:".Length..];
+        }
         else if (ProductionRoleService.RoleIdFromOption(optionValue) is { Length: > 0 } roleId)
         {
             // R1: fixed-mode route whose participant is resolved from the role

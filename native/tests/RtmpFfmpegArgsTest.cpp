@@ -71,3 +71,51 @@ TEST(RtmpFfmpegArgs, VideoEncoderAndBitrateAreReflected) {
   EXPECT_NE(args.find("-c:v h264_nvenc"), std::string::npos);
   EXPECT_NE(args.find("-b:v 9000k -maxrate 9000k -bufsize 18000k"), std::string::npos);
 }
+
+TEST(RtmpFfmpegArgs, FullProgramNv12InputIsDeclaredWithoutBgraReinterpretation) {
+  auto config = baseConfig();
+  config.videoInputPixelFormat = "nv12";
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-f rawvideo -pix_fmt nv12 -s 1920x1080"), std::string::npos);
+  EXPECT_EQ(args.find("-pix_fmt bgra"), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, AdvancedPlatformSettingsReachEncoderArguments) {
+  auto config = baseConfig();
+  config.fps = 60;
+  config.keyframeIntervalSeconds = 1.5;
+  config.h264Profile = "baseline";
+  config.bFrames = 0;
+  const auto args = buildRtmpFfmpegArguments(config);
+
+  EXPECT_NE(args.find("-g 90"), std::string::npos);
+  EXPECT_NE(args.find("-profile:v baseline"), std::string::npos);
+  EXPECT_NE(args.find("-bf 0"), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, VbrAllowsHeadroomAboveTargetBitrate) {
+  auto config = baseConfig();
+  config.bitrateKbps = 6000;
+  config.rateControl = "vbr";
+  const auto args = buildRtmpFfmpegArguments(config);
+
+  EXPECT_NE(args.find("-b:v 6000k -maxrate 9000k -bufsize 12000k"), std::string::npos);
+}
+
+TEST(RtmpVideoFramePacer, FiftyHertzProducerYieldsThirtyVideoWritesPerSecond) {
+  RtmpVideoFramePacer pacer;
+  int accepted = 0;
+  for (int elapsedMs = 0; elapsedMs < 1000; elapsedMs += 20) {
+    accepted += pacer.shouldWrite(static_cast<double>(elapsedMs), 30) ? 1 : 0;
+  }
+
+  EXPECT_EQ(accepted, 30);
+}
+
+TEST(RtmpVideoFramePacer, ResetMakesNextFrameImmediatelyEligible) {
+  RtmpVideoFramePacer pacer;
+  EXPECT_TRUE(pacer.shouldWrite(1000.0, 30));
+  EXPECT_FALSE(pacer.shouldWrite(1010.0, 30));
+  pacer.reset();
+  EXPECT_TRUE(pacer.shouldWrite(1010.0, 30));
+}

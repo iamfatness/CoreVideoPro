@@ -23,6 +23,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
@@ -315,6 +316,75 @@
             </Border>
 
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <StackPanel>
+                        <TextBlock Text="Browser overlays" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Paste a graphics output URL and add it directly to Preview. Take or Update to put it on Program."
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox PlaceholderText="Graphics URL — https://…"
+                                 Text="{x:Bind ViewModel.NewBrowserSourceUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 FontSize="11" />
+                        <ComboBox Grid.Column="1" MinWidth="150" FontSize="11"
+                                  ItemsSource="{x:Bind ViewModel.BrowserSourcePresetOptions}"
+                                  SelectedIndex="{x:Bind ViewModel.NewBrowserSourcePresetIndex, Mode=TwoWay}" />
+                        <Button Grid.Column="2" Content="Add overlay"
+                                Style="{StaticResource StudioAccentButton}"
+                                Command="{x:Bind ViewModel.AddBrowserOverlayFromUrlCommand}" />
+                    </Grid>
+
+                    <Border Style="{StaticResource OperatorReadoutBorder}"
+                            Visibility="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                        <TextBlock Text="No browser sources yet — add a graphics output URL on the Sources tab."
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                    </Border>
+
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.BrowserCaptureDevices, Mode=OneWay}"
+                                   Visibility="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:CaptureDevice">
+                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock FontSize="10" Foreground="{StaticResource StudioMutedBrush}">
+                                                <Run Text="{x:Bind FormatLabel}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{x:Bind ConnectionLabel}" />
+                                            </TextBlock>
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="Reload"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Tag="{x:Bind Id}"
+                                                Click="OnReloadBrowserOverlayClick" />
+                                        <Button Grid.Column="2" Content="Show in Preview"
+                                                Style="{StaticResource StudioAccentButton}"
+                                                Tag="{x:Bind Id}"
+                                                Click="OnAddBrowserOverlayClick" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <Grid ColumnSpacing="12" RowSpacing="10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="1.2*" />
@@ -359,7 +429,7 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            <Border Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>

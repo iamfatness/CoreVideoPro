@@ -557,7 +557,12 @@ public static class MediaCoreCommandBuilder
                 ["targetBitrateMbps"] = destination.TargetBitrateMbps,
                 ["audioBitrateKbps"] = destination.AudioBitrateKbps,
                 ["videoCodec"] = destination.VideoCodec,
-                ["encoderMode"] = destination.EncoderMode
+                ["encoderMode"] = destination.EncoderMode,
+                ["keyframeIntervalSeconds"] = destination.KeyframeIntervalSeconds,
+                ["rateControl"] = destination.RateControl,
+                ["h264Profile"] = destination.H264Profile,
+                ["bFrames"] = destination.BFrames,
+                ["allowEnhancedRtmp"] = destination.AllowEnhancedRtmp
             }).ToList(),
             ["isoParticipantIds"] = context.Recording
                 ? context.RecordingTargets.IsoParticipantIds

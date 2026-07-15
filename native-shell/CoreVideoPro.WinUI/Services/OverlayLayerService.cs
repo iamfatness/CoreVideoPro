@@ -5,6 +5,7 @@ namespace CoreVideoPro.WinUI.Services;
 /// <summary>Preset spots for a small overlay ("bug") layer on the 16:9 canvas.</summary>
 public enum OverlayPlacement
 {
+    FullCanvas,
     TopLeft,
     TopRight,
     BottomLeft,
@@ -50,6 +51,7 @@ public static class OverlayLayerService
     /// <summary>Placement picker entries, in menu order.</summary>
     public static IReadOnlyList<RouteSelectOption> PlacementOptions { get; } =
     [
+        new() { Value = "full-canvas", Label = "Full canvas (transparent overlay)" },
         new() { Value = "top-left", Label = "Top left" },
         new() { Value = "top-right", Label = "Top right" },
         new() { Value = "bottom-left", Label = "Bottom left" },
@@ -60,6 +62,7 @@ public static class OverlayLayerService
 
     public static OverlayPlacement? PlacementFromWire(string? wire) => wire switch
     {
+        "full-canvas" => OverlayPlacement.FullCanvas,
         "top-left" => OverlayPlacement.TopLeft,
         "top-right" => OverlayPlacement.TopRight,
         "bottom-left" => OverlayPlacement.BottomLeft,
@@ -71,6 +74,7 @@ public static class OverlayLayerService
 
     public static string PlacementLabel(OverlayPlacement placement) => placement switch
     {
+        OverlayPlacement.FullCanvas => "Full canvas",
         OverlayPlacement.TopLeft => "Top left",
         OverlayPlacement.TopRight => "Top right",
         OverlayPlacement.BottomLeft => "Bottom left",
@@ -95,6 +99,11 @@ public static class OverlayLayerService
         double widthFraction = DefaultWidthFraction,
         double margin = DefaultSafeAreaMargin)
     {
+        if (placement == OverlayPlacement.FullCanvas)
+        {
+            return new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 };
+        }
+
         var aspect = sourceAspect is { } a && double.IsFinite(a) && a > 0 ? a : FallbackSourceAspect;
         margin = double.IsFinite(margin) ? Math.Clamp(margin, 0, 0.2) : DefaultSafeAreaMargin;
         var width = double.IsFinite(widthFraction)

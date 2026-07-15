@@ -100,6 +100,12 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
         std::max(32, std::min(512, static_cast<int>(value.getNumber("audioBitrateKbps", destination.audioBitrateKbps))));
     destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
     destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
+    destination.keyframeIntervalSeconds =
+        std::max(0.5, std::min(10.0, value.getNumber("keyframeIntervalSeconds", destination.keyframeIntervalSeconds)));
+    destination.rateControl = value.getString("rateControl", destination.rateControl);
+    destination.h264Profile = value.getString("h264Profile", destination.h264Profile);
+    destination.bFrames =
+        std::max(0, std::min(4, static_cast<int>(value.getNumber("bFrames", destination.bFrames))));
     if (const auto* enhanced = value.get("allowEnhancedRtmp")) {
       destination.allowEnhancedRtmp = enhanced->asBool(destination.allowEnhancedRtmp);
     }
@@ -4159,7 +4165,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   // program readback on the vcam being enabled; the publisher (on the audio/output
   // worker) converts that full BGRA to NV12 for the SHM slot. Independent of
   // skipCpuReadback so the light 60fps display tick still skips the small preview.
-  renderPlan.fullProgramReadback = virtualCameraEnabled_;
+  // Streaming needs the same GPU tap as the virtual camera. RTMP previously
+  // consumed `ProgramFrame::preview` (a 320x180 UI thumbnail), so YouTube saw
+  // the connection but could not render the declared 4K program correctly.
+  // The tap scales on-GPU to 1080p and converts to NV12 on its own thread.
+  renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive;
 
   if (modules_.mediaFrames) {
     auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
@@ -4726,11 +4736,33 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     } catch (...) {
     }
   };
+  // Fetch the compositor's full-program 1080p NV12 tap once and share it with
+  // both RTMP and the virtual camera. The tap owns the slow GPU work; this
+  // worker only copies the latest ~3MB frame and never maps the render device.
+  static std::vector<std::uint8_t> programNv12;  // output worker is single-threaded
+  static int programNv12Width = 0;
+  static int programNv12Height = 0;
+  bool hasNewProgramNv12 = false;
+  if (!outputDestinations.empty() || virtualCameraEnabled_) {
+    int width = 0;
+    int height = 0;
+    hasNewProgramNv12 = modules_.compositor->takeVcamNv12(programNv12, width, height);
+    if (hasNewProgramNv12) {
+      programNv12Width = width;
+      programNv12Height = height;
+    }
+  }
+  auto outputProgramFrame = work.programFrame;
+  if (!outputDestinations.empty() && !programNv12.empty() && programNv12Width > 0 && programNv12Height > 0) {
+    outputProgramFrame.programNv12Width = programNv12Width;
+    outputProgramFrame.programNv12Height = programNv12Height;
+    outputProgramFrame.programNv12 = programNv12;
+  }
   const auto tOut0 = std::chrono::steady_clock::now();
   try {
     modules_.outputSender->sync(
         outputDestinations,
-        &work.programFrame,
+        &outputProgramFrame,
         static_cast<double>(work.programFrame.frameNumber * 33),
         work.outputDestinationSettings,
         outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
@@ -4751,18 +4783,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // Virtual Camera: publish the program frame to the SHM slot the OS reads.
   // Same per-tick output cadence as the network senders (no shared-lock pixel
   // work). No-op when the operator has not enabled the virtual camera.
-  if (virtualCameraEnabled_) {
+  if (virtualCameraEnabled_ && hasNewProgramNv12) {
     try {
-      // The compositor's dedicated tap device+thread did the slow readback AND
-      // the BGRA->NV12 conversion off every hot path. Here on the output worker
-      // we just fetch the latest NV12 (cheap ~3MB copy) and seqlock it into the
-      // SHM - no GPU Map, no per-pixel conversion, so audio output is not starved.
-      static std::vector<std::uint8_t> vcamNv12;  // output worker is single-threaded
-      int vcw = 0;
-      int vch = 0;
-      if (modules_.compositor->takeVcamNv12(vcamNv12, vcw, vch)) {
-        virtualCamera_->publishNv12(vcamNv12.data(), vcw, vch);
-      }
+      virtualCamera_->publishNv12(programNv12.data(), programNv12Width, programNv12Height);
     } catch (...) {
     }
   }

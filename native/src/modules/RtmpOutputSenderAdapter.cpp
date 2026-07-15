@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -161,6 +162,19 @@ std::string normalizeEncoderMode(std::string value) {
     return value;
   }
   return "auto";
+}
+
+std::string normalizeRateControl(std::string value) {
+  value = lowercaseAscii(std::move(value));
+  return value == "vbr" ? "vbr" : "cbr";
+}
+
+std::string normalizeH264Profile(std::string value) {
+  value = lowercaseAscii(std::move(value));
+  if (value == "auto" || value == "baseline" || value == "main" || value == "high") {
+    return value;
+  }
+  return "high";
 }
 
 std::string buildRtmpEndpoint(const OutputDestinationSettings& settings) {
@@ -439,15 +453,16 @@ std::string ffmpegVideoEncoderFor(const std::string& codec, const std::string& e
   return "libx264";
 }
 
-std::string encoderSpecificArguments(const std::string& encoderName) {
+std::string encoderSpecificArguments(const std::string& encoderName, const std::string& rateControl) {
+  const auto rc = normalizeRateControl(rateControl);
   if (encoderName.find("_nvenc") != std::string::npos) {
-    return " -preset p4 -tune ll -rc cbr";
+    return " -preset p4 -tune ll -rc " + rc;
   }
   if (encoderName.find("_qsv") != std::string::npos) {
     return " -preset veryfast";
   }
   if (encoderName.find("_amf") != std::string::npos) {
-    return " -quality speed -rc cbr";
+    return " -quality speed -rc " + rc;
   }
   if (encoderName == "libsvtav1") {
     return " -preset 8";
@@ -455,7 +470,101 @@ std::string encoderSpecificArguments(const std::string& encoderName) {
   if (encoderName == "libx265") {
     return " -preset veryfast -tune zerolatency";
   }
-  return " -preset veryfast -tune zerolatency";
+  if (encoderName == "libx264") {
+    return " -preset veryfast -tune zerolatency";
+  }
+  // Media Foundation and OpenH264 do not accept libx264's preset/tune flags.
+  return "";
+}
+
+bool ffmpegEncoderIsAvailable(const std::string& executable, const std::string& encoderName) {
+  if (executable.empty() || encoderName.empty()) {
+    return false;
+  }
+#if defined(_WIN32)
+  STARTUPINFOA startupInfo{};
+  startupInfo.cb = sizeof(startupInfo);
+  PROCESS_INFORMATION processInfo{};
+  // `ffmpeg -h encoder=<name>` exits with code 0 even when <name> is unknown,
+  // so help output is not an availability probe. Encode one tiny synthetic
+  // frame instead; this verifies that the encoder is both registered and able
+  // to initialize on the current machine before a live stream selects it.
+  std::string commandLine = quoteArgument(executable) +
+                            " -hide_banner -loglevel quiet -nostdin"
+                            " -f lavfi -i color=c=black:s=1280x720:r=30"
+                            " -frames:v 30 -an -c:v " + encoderName +
+                            " -f null NUL";
+  std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
+  mutableCommandLine.push_back('\0');
+  if (!CreateProcessA(
+          executable.c_str(), mutableCommandLine.data(), nullptr, nullptr, FALSE,
+          CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo)) {
+    return false;
+  }
+  CloseHandle(processInfo.hThread);
+  const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 5000);
+  DWORD exitCode = 1;
+  if (waitResult == WAIT_TIMEOUT) {
+    TerminateProcess(processInfo.hProcess, 1);
+    WaitForSingleObject(processInfo.hProcess, 1000);
+  } else {
+    GetExitCodeProcess(processInfo.hProcess, &exitCode);
+  }
+  CloseHandle(processInfo.hProcess);
+  return waitResult == WAIT_OBJECT_0 && exitCode == 0;
+#else
+  // Release packaging on non-Windows supplies the documented software encoders.
+  (void)executable;
+  (void)encoderName;
+  return true;
+#endif
+}
+
+std::string selectFfmpegVideoEncoder(
+    const std::string& executable,
+    const std::string& codec,
+    const std::string& encoderMode) {
+  const auto normalizedCodec = normalizeVideoCodec(codec);
+  const auto normalizedMode = normalizeEncoderMode(encoderMode);
+  const auto preferred = ffmpegVideoEncoderFor(normalizedCodec, normalizedMode);
+
+  // Explicit hardware choices are operator intent; let FFmpeg report a precise
+  // device/driver failure instead of silently changing the requested encoder.
+  if (normalizedMode == "nvenc" || normalizedMode == "qsv" || normalizedMode == "amf") {
+    return preferred;
+  }
+
+  std::vector<std::string> candidates{preferred};
+  if (normalizedCodec == "h264") {
+#if defined(_WIN32)
+    if (normalizedMode == "auto") {
+      // Prefer vendor hardware encoders for sustained live output. The old
+      // auto path jumped directly to Media Foundation when libx264 was absent;
+      // MF initialized successfully but stopped consuming the YouTube RTMP
+      // stream after its initial burst on the affected workstation.
+      candidates = {"h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libopenh264"};
+    }
+#endif
+    if (std::find(candidates.begin(), candidates.end(), "libopenh264") == candidates.end()) {
+      candidates.emplace_back("libopenh264");
+    }
+  } else if (normalizedCodec == "h265") {
+#if defined(_WIN32)
+    if (normalizedMode == "auto") {
+      candidates = {"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "libkvazaar"};
+    }
+#endif
+    if (std::find(candidates.begin(), candidates.end(), "libkvazaar") == candidates.end()) {
+      candidates.emplace_back("libkvazaar");
+    }
+  }
+
+  for (const auto& candidate : candidates) {
+    if (ffmpegEncoderIsAvailable(executable, candidate)) {
+      return candidate;
+    }
+  }
+  return preferred;
 }
 
 class RtmpOutputSender final : public IOutputSender {
@@ -485,6 +594,8 @@ class RtmpOutputSender final : public IOutputSender {
     const bool wantsRtmp = std::find(destinations.begin(), destinations.end(), "rtmp") != destinations.end();
     if (!wantsRtmp) {
       stopFfmpegProcess();
+      videoFramePacer_.reset();
+      clearFfmpegRetryBackoff();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -530,6 +641,10 @@ class RtmpOutputSender final : public IOutputSender {
     configuredFps_ = (std::max)(1, settings->fps);
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
     configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
+    configuredKeyframeIntervalSeconds_ = (std::max)(0.5, (std::min)(10.0, settings->keyframeIntervalSeconds));
+    configuredRateControl_ = normalizeRateControl(settings->rateControl);
+    configuredH264Profile_ = normalizeH264Profile(settings->h264Profile);
+    configuredBFrames_ = (std::max)(0, (std::min)(4, settings->bFrames));
     configuredAllowEnhancedRtmp_ = settings->allowEnhancedRtmp;
     configuredAudioBitrateKbps_ = (std::max)(32, (std::min)(512, settings->audioBitrateKbps));
     sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
@@ -574,7 +689,8 @@ class RtmpOutputSender final : public IOutputSender {
       appendSendProof(frame, "waiting-for-frame");
       return snapshot();
     }
-    if (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty()) {
+    if (!hasProgramNv12(*frame) &&
+        (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty())) {
       sender_.status = "warning";
       sender_.warning = "RTMP sender is waiting for composed BGRA program pixels.";
       sender_.destinationHealth = "warning";
@@ -586,6 +702,21 @@ class RtmpOutputSender final : public IOutputSender {
 
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       appendSendProof(frame, "ffmpeg-start-failed");
+      return snapshot();
+    }
+
+    // Audio follows the 20 ms output-worker cadence. Video does not: pace it to
+    // the configured stream fps so a 50 Hz worker cannot overfill FFmpeg's raw
+    // 4K input pipe (the 2026-07-14 live freeze reproduced at 42 frames/0.84 s).
+    writeAudioToFfmpeg();
+    if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
+      sender_.status = "live";
+      sender_.warning.clear();
+      sender_.runtimeDetail = runtimeDetail_;
+      sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
+      sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
+      sender_.destinationHealth = "ok";
+      sender_.lastResultCode = "ok";
       return snapshot();
     }
 
@@ -603,6 +734,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
       sender_.lastError = sender_.warning;
       const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
+      scheduleFfmpegRetry();
       stopFfmpegProcess();
       appendSendProof(frame, proofStatus);
       return snapshot();
@@ -618,6 +750,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
     sender_.lastResultCode = "ok";
+    clearFfmpegRetryBackoff();
     appendSendProof(frame, "sent");
     return snapshot();
   }
@@ -642,6 +775,7 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
     stopFfmpegProcess();
+    clearFfmpegRetryBackoff();
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
@@ -658,7 +792,47 @@ class RtmpOutputSender final : public IOutputSender {
 
   OutputSenderSession session() const override { return snapshot(); }
 
+  void interrupt(const std::string& destination) override {
+    if (destination != "rtmp") {
+      return;
+    }
+#if defined(_WIN32)
+    std::lock_guard<std::mutex> lock(ffmpegProcessMutex_);
+    if (ffmpegProcess_) {
+      DWORD exitCode = 0;
+      if (GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode == STILL_ACTIVE) {
+        TerminateProcess(ffmpegProcess_, 1);
+      }
+    }
+#else
+    if (ffmpegPid_ > 0) {
+      ::kill(ffmpegPid_, SIGTERM);
+    }
+#endif
+  }
+
  private:
+  static bool hasProgramNv12(const ProgramFrame& frame) {
+    if (frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
+      return false;
+    }
+    const auto required = static_cast<size_t>(frame.programNv12Width) *
+                          static_cast<size_t>(frame.programNv12Height) * 3 / 2;
+    return frame.programNv12.size() >= required;
+  }
+
+  static int videoWidth(const ProgramFrame& frame) {
+    return hasProgramNv12(frame) ? frame.programNv12Width : frame.preview.width;
+  }
+
+  static int videoHeight(const ProgramFrame& frame) {
+    return hasProgramNv12(frame) ? frame.programNv12Height : frame.preview.height;
+  }
+
+  static std::string videoPixelFormat(const ProgramFrame& frame) {
+    return hasProgramNv12(frame) ? "nv12" : "bgra";
+  }
+
   void ensureSender(double elapsedMs) {
     if (!sender_.senderId.empty()) {
       return;
@@ -675,7 +849,11 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   bool ensureFfmpegProcess(const ProgramFrame& frame, double elapsedMs) {
-    const bool sizeChanged = frame.preview.width != ffmpegFrameWidth_ || frame.preview.height != ffmpegFrameHeight_;
+    const int width = videoWidth(frame);
+    const int height = videoHeight(frame);
+    const auto pixelFormat = videoPixelFormat(frame);
+    const bool sizeChanged = width != ffmpegFrameWidth_ || height != ffmpegFrameHeight_;
+    const bool pixelFormatChanged = pixelFormat != ffmpegPixelFormat_;
     const bool endpointChanged = configuredEndpoint_ != activeEndpoint_;
     const bool executableChanged = ffmpegExecutable_ != activeFfmpegExecutable_;
     const bool fpsChanged = configuredFps_ != activeFps_;
@@ -683,6 +861,10 @@ class RtmpOutputSender final : public IOutputSender {
     const bool audioBitrateChanged = configuredAudioBitrateKbps_ != activeAudioBitrateKbps_;
     const bool codecChanged = configuredVideoCodec_ != activeVideoCodec_;
     const bool encoderModeChanged = configuredEncoderMode_ != activeEncoderMode_;
+    const bool keyframeChanged = configuredKeyframeIntervalSeconds_ != activeKeyframeIntervalSeconds_;
+    const bool rateControlChanged = configuredRateControl_ != activeRateControl_;
+    const bool h264ProfileChanged = configuredH264Profile_ != activeH264Profile_;
+    const bool bFramesChanged = configuredBFrames_ != activeBFrames_;
     const bool enhancedChanged = configuredAllowEnhancedRtmp_ != activeAllowEnhancedRtmp_;
     // The audio input layout is baked into the FFmpeg argument list, so a change
     // in audio presence / channel count / sample rate requires a fresh process.
@@ -690,13 +872,27 @@ class RtmpOutputSender final : public IOutputSender {
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
-    if (ffmpegRunning_ && !sizeChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !enhancedChanged && !audioChanged) {
+    if (ffmpegRunning_ && !sizeChanged && !pixelFormatChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !keyframeChanged && !rateControlChanged && !h264ProfileChanged && !bFramesChanged && !enhancedChanged && !audioChanged) {
       return true;
     }
 
+    if (!ffmpegRunning_ && ffmpegRetryAfter_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < ffmpegRetryAfter_) {
+      const auto retryMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               ffmpegRetryAfter_ - std::chrono::steady_clock::now())
+                               .count();
+      sender_.status = "failed";
+      sender_.destinationHealth = "failed";
+      sender_.lastResultCode = "ffmpeg-retry-backoff";
+      sender_.warning = sender_.lastError + " Retry paused for " +
+                        std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) + "s.";
+      return false;
+    }
+
     stopFfmpegProcess();
-    ffmpegFrameWidth_ = frame.preview.width;
-    ffmpegFrameHeight_ = frame.preview.height;
+    ffmpegFrameWidth_ = width;
+    ffmpegFrameHeight_ = height;
+    ffmpegPixelFormat_ = pixelFormat;
     activeEndpoint_ = configuredEndpoint_;
     activeFfmpegExecutable_ = ffmpegExecutable_;
     activeFps_ = configuredFps_;
@@ -704,20 +900,36 @@ class RtmpOutputSender final : public IOutputSender {
     activeAudioBitrateKbps_ = configuredAudioBitrateKbps_;
     activeVideoCodec_ = configuredVideoCodec_;
     activeEncoderMode_ = configuredEncoderMode_;
+    activeKeyframeIntervalSeconds_ = configuredKeyframeIntervalSeconds_;
+    activeRateControl_ = configuredRateControl_;
+    activeH264Profile_ = configuredH264Profile_;
+    activeBFrames_ = configuredBFrames_;
     activeAllowEnhancedRtmp_ = configuredAllowEnhancedRtmp_;
     activeAudioPresent_ = audioPresent;
     activeAudioChannels_ = pendingAudioChannels_;
     activeAudioSampleRate_ = pendingAudioSampleRate_;
-    if (startFfmpegProcess(frame.preview.width, frame.preview.height)) {
+    if (startFfmpegProcess(width, height, pixelFormat)) {
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
       return true;
     }
+    scheduleFfmpegRetry();
     return false;
   }
 
-  std::string buildFfmpegArguments(int width, int height, const std::string& audioInput) const {
+  void scheduleFfmpegRetry() {
+    consecutiveFfmpegFailures_ = (std::min)(consecutiveFfmpegFailures_ + 1, 6);
+    const int delaySeconds = (std::min)(30, 1 << (consecutiveFfmpegFailures_ - 1));
+    ffmpegRetryAfter_ = std::chrono::steady_clock::now() + std::chrono::seconds(delaySeconds);
+  }
+
+  void clearFfmpegRetryBackoff() {
+    consecutiveFfmpegFailures_ = 0;
+    ffmpegRetryAfter_ = {};
+  }
+
+  std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
     // Resolve the requested codec to an RTMP-compatible one (H.265/AV1 fall back
     // to H.264 unless enhanced-RTMP is enabled) so the encoded stream always
     // matches what the FLV transport can carry.
@@ -727,8 +939,15 @@ class RtmpOutputSender final : public IOutputSender {
     config.height = height;
     config.fps = (std::max)(1, configuredFps_);
     config.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
-    config.videoEncoder = ffmpegVideoEncoderFor(compatibility.videoCodec, configuredEncoderMode_);
-    config.videoEncoderExtraArgs = encoderSpecificArguments(config.videoEncoder);
+    config.videoInputPixelFormat = videoInputPixelFormat;
+    config.videoEncoder = selectedFfmpegVideoEncoder_.empty()
+                              ? ffmpegVideoEncoderFor(compatibility.videoCodec, configuredEncoderMode_)
+                              : selectedFfmpegVideoEncoder_;
+    config.videoEncoderExtraArgs = encoderSpecificArguments(config.videoEncoder, configuredRateControl_);
+    config.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
+    config.rateControl = configuredRateControl_;
+    config.h264Profile = compatibility.videoCodec == "h264" ? configuredH264Profile_ : "auto";
+    config.bFrames = configuredBFrames_;
     config.endpoint = configuredEndpoint_;
     // When the program-audio tap delivered real PCM this tick, feed it over the
     // second input as raw f32le PCM; otherwise fall back to silent anullsrc.
@@ -741,7 +960,7 @@ class RtmpOutputSender final : public IOutputSender {
     return buildRtmpFfmpegArguments(config);
   }
 
-  bool startFfmpegProcess(int width, int height) {
+  bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
     if (ffmpegExecutable_.empty()) {
       sender_.status = "warning";
       sender_.warning = "FFmpeg executable was not found.";
@@ -750,6 +969,9 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.lastError = sender_.warning;
       return false;
     }
+    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
+        ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
@@ -812,15 +1034,33 @@ class RtmpOutputSender final : public IOutputSender {
       return false;
     }
 
+    // Preserve FFmpeg warnings locally. Previously stderr went to NUL, so an
+    // ingest rejection and a blocked pipe looked identical in diagnostics.
+    const auto diagnosticNow = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+    ffmpegStderrPath_ = std::filesystem::temp_directory_path() /
+                        ("corevideo-ffmpeg-rtmp-" + std::to_string(GetCurrentProcessId()) + "-" +
+                         std::to_string(diagnosticNow) + ".log");
+    HANDLE diagnosticHandle = CreateFileA(
+        ffmpegStderrPath_.string().c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, &securityAttributes, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (diagnosticHandle == INVALID_HANDLE_VALUE) {
+      diagnosticHandle = nullptr;
+      ffmpegStderrPath_.clear();
+    }
+
     STARTUPINFOA startupInfo{};
     startupInfo.cb = sizeof(startupInfo);
     startupInfo.dwFlags = STARTF_USESTDHANDLES;
     startupInfo.hStdInput = childStdinRead;
     startupInfo.hStdOutput = nullHandle;
-    startupInfo.hStdError = nullHandle;
+    startupInfo.hStdError = diagnosticHandle ? diagnosticHandle : nullHandle;
 
     PROCESS_INFORMATION processInfo{};
-    std::string commandLine = quoteArgument(ffmpegExecutable_) + buildFfmpegArguments(width, height, audioInputArg);
+    std::string commandLine = quoteArgument(ffmpegExecutable_) +
+                              buildFfmpegArguments(width, height, audioInputArg, videoInputPixelFormat);
     std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
     mutableCommandLine.push_back('\0');
 
@@ -837,6 +1077,9 @@ class RtmpOutputSender final : public IOutputSender {
         &processInfo);
     CloseHandle(childStdinRead);
     CloseHandle(nullHandle);
+    if (diagnosticHandle) {
+      CloseHandle(diagnosticHandle);
+    }
     if (!started) {
       CloseHandle(childStdinWrite);
       closeAudioPipe();
@@ -849,7 +1092,10 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     ffmpegStdin_ = childStdinWrite;
-    ffmpegProcess_ = processInfo.hProcess;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegProcessMutex_);
+      ffmpegProcess_ = processInfo.hProcess;
+    }
     audioPipeConnected_ = false;
     CloseHandle(processInfo.hThread);
     ffmpegRunning_ = true;
@@ -863,7 +1109,9 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"audioInput\":" + jsonString(activeAudioPresent_ ? std::string("pcm") : std::string("anullsrc")) +
               ",\"audioChannels\":" + std::to_string(activeAudioPresent_ ? activeAudioChannels_ : 0) +
               ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_)) + "}");
+              ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) +
+              ",\"ffmpegStderrPath\":" + jsonString(ffmpegStderrPath_.string()) + "}");
     return true;
 #else
     // POSIX (macOS/Linux) frame path: posix_spawn FFmpeg with the video pipe on
@@ -911,7 +1159,7 @@ class RtmpOutputSender final : public IOutputSender {
       posix_spawn_file_actions_addclose(&actions, audioPipe[1]);
     }
 
-    const std::string argString = buildFfmpegArguments(width, height, audioInputArg);
+    const std::string argString = buildFfmpegArguments(width, height, audioInputArg, videoInputPixelFormat);
     std::vector<std::string> tokens = tokenizeArguments(argString);
     std::vector<char*> argv;
     argv.reserve(tokens.size() + 2);
@@ -957,7 +1205,8 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"audioInput\":" + jsonString(activeAudioPresent_ ? std::string("pcm") : std::string("anullsrc")) +
               ",\"audioChannels\":" + std::to_string(activeAudioPresent_ ? activeAudioChannels_ : 0) +
               ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_)) + "}");
+              ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) + "}");
     return true;
 #endif
   }
@@ -967,19 +1216,23 @@ class RtmpOutputSender final : public IOutputSender {
     if (!ffmpegRunning_ || !ffmpegStdin_) {
       return false;
     }
+    HANDLE process = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegProcessMutex_);
+      process = ffmpegProcess_;
+    }
     DWORD exitCode = 0;
-    if (ffmpegProcess_ && GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode != STILL_ACTIVE) {
+    if (process && GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
       sender_.lastResultCode = "ffmpeg-exited";
       sender_.lastError = "FFmpeg process exited before accepting program frames. Exit code " + std::to_string(exitCode) + ".";
       return false;
     }
-    // Write the audio PCM for this tick first so FFmpeg has matched A/V data per
-    // frame. A failed audio write is non-fatal (we keep the video stream alive),
-    // but a failed video write stops the process.
-    writeAudioToFfmpeg();
+    // Audio is written on every output-worker tick before video pacing is
+    // evaluated in sync(). A failed video write stops the process.
     DWORD written = 0;
-    const auto* data = frame.preview.bgra.data();
-    size_t remaining = frame.preview.bgra.size();
+    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto* data = videoBytes.data();
+    size_t remaining = videoBytes.size();
     while (remaining > 0) {
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
       if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
@@ -1009,9 +1262,9 @@ class RtmpOutputSender final : public IOutputSender {
         return false;  // FFmpeg exited
       }
     }
-    writeAudioToFfmpeg();
-    const auto* data = reinterpret_cast<const char*>(frame.preview.bgra.data());
-    size_t remaining = frame.preview.bgra.size();
+    const auto& videoBytes = hasProgramNv12(frame) ? frame.programNv12 : frame.preview.bgra;
+    const auto* data = reinterpret_cast<const char*>(videoBytes.data());
+    size_t remaining = videoBytes.size();
     while (remaining > 0) {
       const ssize_t written = ::write(ffmpegStdinFd_, data, remaining);
       if (written <= 0) {
@@ -1106,13 +1359,18 @@ class RtmpOutputSender final : public IOutputSender {
       ffmpegStdin_ = nullptr;
     }
     closeAudioPipe();
-    if (ffmpegProcess_) {
-      DWORD exitCode = 0;
-      if (GetExitCodeProcess(ffmpegProcess_, &exitCode) && exitCode == STILL_ACTIVE) {
-        WaitForSingleObject(ffmpegProcess_, 500);
-      }
-      CloseHandle(ffmpegProcess_);
+    HANDLE process = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(ffmpegProcessMutex_);
+      process = ffmpegProcess_;
       ffmpegProcess_ = nullptr;
+    }
+    if (process) {
+      DWORD exitCode = 0;
+      if (GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE) {
+        WaitForSingleObject(process, 500);
+      }
+      CloseHandle(process);
     }
 #else
     if (ffmpegStdinFd_ >= 0) {
@@ -1166,7 +1424,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_)) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -1177,12 +1435,13 @@ class RtmpOutputSender final : public IOutputSender {
     std::string line = "{\"type\":\"rtmp-send-attempt\",\"destination\":\"rtmp\",\"endpointMode\":\"ffmpeg-process\",\"status\":" + jsonString(status);
     if (frame) {
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
-              ",\"width\":" + std::to_string(frame->width) +
-              ",\"height\":" + std::to_string(frame->height) +
+              ",\"width\":" + std::to_string(videoWidth(*frame)) +
+              ",\"height\":" + std::to_string(videoHeight(*frame)) +
+              ",\"videoInputPixelFormat\":" + jsonString(videoPixelFormat(*frame)) +
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_));
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(configuredVideoCodec_, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);
@@ -1217,21 +1476,34 @@ class RtmpOutputSender final : public IOutputSender {
   std::string configuredFfmpegBinDirectory_;
   std::string configuredVideoCodec_ = "h264";
   std::string configuredEncoderMode_ = "auto";
+  double configuredKeyframeIntervalSeconds_ = 2.0;
+  std::string configuredRateControl_ = "cbr";
+  std::string configuredH264Profile_ = "high";
+  int configuredBFrames_ = 2;
   bool configuredAllowEnhancedRtmp_ = false;
   std::string ffmpegExecutable_;
+  std::string selectedFfmpegVideoEncoder_;
+  std::filesystem::path ffmpegStderrPath_;
   std::string activeEndpoint_;
   std::string activeFfmpegExecutable_;
   std::string activeVideoCodec_;
   std::string activeEncoderMode_;
+  double activeKeyframeIntervalSeconds_ = 0;
+  std::string activeRateControl_;
+  std::string activeH264Profile_;
+  int activeBFrames_ = -1;
   bool activeAllowEnhancedRtmp_ = false;
   int ffmpegFrameWidth_ = 0;
   int ffmpegFrameHeight_ = 0;
+  std::string ffmpegPixelFormat_ = "bgra";
   int configuredFps_ = 30;
   int configuredAudioBitrateKbps_ = 160;
   int activeFps_ = 0;
   double activeBitrateMbps_ = 0;
   int activeAudioBitrateKbps_ = 0;
   bool ffmpegRunning_ = false;
+  int consecutiveFfmpegFailures_ = 0;
+  std::chrono::steady_clock::time_point ffmpegRetryAfter_{};
   // Latest real program-audio mix for this tick (interleaved float PCM), and the
   // audio layout currently baked into the running FFmpeg process. `pending*` is
   // refreshed by sync(); `active*` reflects the live process configuration.
@@ -1242,6 +1514,7 @@ class RtmpOutputSender final : public IOutputSender {
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
 #if defined(_WIN32)
+  mutable std::mutex ffmpegProcessMutex_;
   HANDLE ffmpegProcess_ = nullptr;
   HANDLE ffmpegStdin_ = nullptr;
   HANDLE audioPipeServer_ = nullptr;
@@ -1252,6 +1525,7 @@ class RtmpOutputSender final : public IOutputSender {
   pid_t ffmpegPid_ = 0;
 #endif
   OutputSender sender_;
+  RtmpVideoFramePacer videoFramePacer_;
   std::ofstream sendProof_;
 };
 #endif
