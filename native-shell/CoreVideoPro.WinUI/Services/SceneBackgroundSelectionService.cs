@@ -68,4 +68,12 @@ public static class SceneBackgroundSelectionService
     public static bool SelectionAffectsProgramScene(string selectedSceneId, string activeSceneId) =>
         !string.IsNullOrWhiteSpace(selectedSceneId) &&
         string.Equals(selectedSceneId, activeSceneId, StringComparison.Ordinal);
+
+    public static bool SceneEditNeedsMediaCoreSync(
+        string editedSceneId,
+        string previewSceneId,
+        string activeSceneId) =>
+        !string.IsNullOrWhiteSpace(editedSceneId) &&
+        (string.Equals(editedSceneId, previewSceneId, StringComparison.Ordinal) ||
+         string.Equals(editedSceneId, activeSceneId, StringComparison.Ordinal));
 }

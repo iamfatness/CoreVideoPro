@@ -87,6 +87,33 @@ public sealed class SceneBackgroundSelectionServiceTests
         Assert.False(SceneBackgroundSelectionService.SelectionAffectsProgramScene("scene-preview", "scene-program"));
     }
 
+    [Fact]
+    public void SceneEditNeedsMediaCoreSync_WhenEditingQueuedPreviewScene()
+    {
+        Assert.True(SceneBackgroundSelectionService.SceneEditNeedsMediaCoreSync(
+            "scene-preview",
+            "scene-preview",
+            "scene-program"));
+    }
+
+    [Fact]
+    public void SceneEditNeedsMediaCoreSync_WhenEditingActiveProgramScene()
+    {
+        Assert.True(SceneBackgroundSelectionService.SceneEditNeedsMediaCoreSync(
+            "scene-program",
+            "scene-preview",
+            "scene-program"));
+    }
+
+    [Fact]
+    public void SceneEditNeedsMediaCoreSync_IgnoresUnrelatedScene()
+    {
+        Assert.False(SceneBackgroundSelectionService.SceneEditNeedsMediaCoreSync(
+            "scene-idle",
+            "scene-preview",
+            "scene-program"));
+    }
+
     private static MediaAsset? Find(string assetId) => assetId switch
     {
         "video-bg" => new MediaAsset
