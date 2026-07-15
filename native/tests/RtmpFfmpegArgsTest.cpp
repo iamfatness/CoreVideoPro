@@ -42,6 +42,8 @@ TEST(RtmpFfmpegArgs, RealAudioReplacesAnullsrcWithPcmInput) {
   // A/V are explicitly mapped and the audio is encoded to AAC.
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);
+  EXPECT_NE(args.find("-re -thread_queue_size 512 -f rawvideo"), std::string::npos);
+  EXPECT_NE(args.find("-re -thread_queue_size 512 -f f32le"), std::string::npos);
 }
 
 TEST(RtmpFfmpegArgs, HonorsAudioChannelsAndSampleRate) {

@@ -103,12 +103,19 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       static_cast<double>(fps) * (std::max)(0.5, (std::min)(10.0, config.keyframeIntervalSeconds)))));
   std::ostringstream args;
   args << " -hide_banner -loglevel warning"
+       // Pace raw pipe input by its declared media clock. The application also
+       // paces writes, while -re prevents short queue bursts from advancing RTMP
+       // timestamps faster than wall time.
+       << " -re -thread_queue_size 512"
        << " -f rawvideo -pix_fmt " << config.videoInputPixelFormat << " -s " << config.width << "x" << config.height
        << " -r " << fps << " -i pipe:0";
   if (config.hasAudio) {
     const int channels = (std::max)(1, config.audioChannels);
     const int sampleRate = (std::max)(8000, config.audioSampleRate);
-    args << " -f " << config.audioSampleFormat << " -ar " << sampleRate
+    // Real PCM can arrive in coalesced blocks after encoder startup. Pace it by
+    // sample count just like video so AAC cannot race several seconds ahead of
+    // the RTMP video clock and make the ingest stall.
+    args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
          << " -ac " << channels << " -i " << config.audioInput;
   } else {
     args << " -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";

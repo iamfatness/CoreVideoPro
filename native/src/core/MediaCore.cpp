@@ -4760,10 +4760,21 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   }
   const auto tOut0 = std::chrono::steady_clock::now();
   try {
+    // RTMP pacing must follow wall time, not ProgramFrame::frameNumber. The
+    // audio/output worker runs at ~50 Hz, so the old frameNumber * 33 clock
+    // advanced ~1.65 seconds per real second and pushed a declared 30 fps
+    // stream at almost 50 fps. YouTube accepts the handshake, then closes that
+    // over-speed ingest after a few seconds. Capture real monotonic time before
+    // enqueueing into AsyncOutputSender so dropped work cannot accelerate it.
+    static const auto outputClockEpoch = std::chrono::steady_clock::now();
+    const double outputElapsedMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - outputClockEpoch)
+            .count());
     modules_.outputSender->sync(
         outputDestinations,
         &outputProgramFrame,
-        static_cast<double>(work.programFrame.frameNumber * 33),
+        outputElapsedMs,
         work.outputDestinationSettings,
         outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
         outputAudioChannels,

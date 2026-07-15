@@ -1,6 +1,7 @@
 #include "modules/AsyncOutputSender.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <utility>
 
@@ -57,6 +58,28 @@ uint64_t AsyncOutputSender::enqueue(Item&& item) {
     if (item.kind == Kind::Sync) {
       for (auto it = state_->queue.begin(); it != state_->queue.end();) {
         if (it->kind == Kind::Sync) {
+          // Video is state: only the newest frame matters. Audio is a timeline:
+          // dropping the PCM attached to a stale video frame makes FFmpeg's
+          // audio clock fall behind its video clock until the two-input muxer
+          // stops consuming the video pipe. Preserve compatible audio blocks
+          // in chronological order while replacing the stale video frame.
+          if (it->audioChannels == item.audioChannels &&
+              it->audioSampleRate == item.audioSampleRate &&
+              !it->audioPcm.empty()) {
+            it->audioPcm.insert(it->audioPcm.end(), item.audioPcm.begin(), item.audioPcm.end());
+            item.audioPcm = std::move(it->audioPcm);
+
+            // A blocked network endpoint must not grow memory without bound.
+            // Five seconds is ample to bridge normal encoder/ingest startup;
+            // beyond that, keep the newest samples and let recovery restart.
+            const size_t maxSamples = static_cast<size_t>((std::max)(1, item.audioSampleRate)) *
+                                      static_cast<size_t>((std::max)(1, item.audioChannels)) * 5;
+            if (item.audioPcm.size() > maxSamples) {
+              item.audioPcm.erase(
+                  item.audioPcm.begin(),
+                  item.audioPcm.begin() + static_cast<std::ptrdiff_t>(item.audioPcm.size() - maxSamples));
+            }
+          }
           it = state_->queue.erase(it);
           state_->dropped.fetch_add(1);
         } else {

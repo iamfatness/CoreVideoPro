@@ -2440,7 +2440,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRateControl = profile.RateControl;
             StreamH264Profile = profile.H264Profile;
             StreamBFrames = profile.BFrames;
-            StreamRtmpProtocol = profile.Protocol;
             StreamAllowEnhancedRtmp = profile.AllowEnhancedRtmp;
         }
         finally

@@ -3,15 +3,19 @@
 #include "modules/RtmpFfmpegArgs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,7 +24,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -93,42 +96,6 @@ std::string runtimeCandidatesJson(const std::vector<RuntimeCandidate>& candidate
   }
   json += "]";
   return json;
-}
-
-RuntimeProbe probeLibavformatRuntime() {
-  RuntimeProbe probe;
-#if defined(_WIN32)
-  const char* candidates[] = {"avformat-62.dll", "avformat-61.dll", "avformat-60.dll", "avformat-59.dll", "avformat.dll"};
-  for (const auto* candidate : candidates) {
-    if (HMODULE module = LoadLibraryA(candidate)) {
-      char modulePath[MAX_PATH] = {};
-      const auto pathLength = GetModuleFileNameA(module, modulePath, MAX_PATH);
-      FreeLibrary(module);
-      probe.available = true;
-      probe.detail = std::string("available:") + candidate;
-      probe.candidates.push_back({candidate, "available", pathLength > 0 ? std::string(modulePath, pathLength) : "LoadLibraryA succeeded"});
-      return probe;
-    }
-    const auto error = GetLastError();
-    probe.candidates.push_back({candidate, "unavailable", "LoadLibraryA failed with Win32 error " + std::to_string(error)});
-  }
-  probe.detail = "missing:avformat-62.dll,avformat-61.dll,avformat-60.dll,avformat-59.dll,avformat.dll";
-#else
-  const char* candidates[] = {"libavformat.so.62", "libavformat.so.61", "libavformat.so.60", "libavformat.so.59", "libavformat.so"};
-  for (const auto* candidate : candidates) {
-    if (void* module = dlopen(candidate, RTLD_LAZY | RTLD_LOCAL)) {
-      dlclose(module);
-      probe.available = true;
-      probe.detail = std::string("available:") + candidate;
-      probe.candidates.push_back({candidate, "available", "dlopen succeeded"});
-      return probe;
-    }
-    const char* error = dlerror();
-    probe.candidates.push_back({candidate, "unavailable", error ? error : "dlopen failed"});
-  }
-  probe.detail = "missing:libavformat.so.62,libavformat.so.61,libavformat.so.60,libavformat.so.59,libavformat.so";
-#endif
-  return probe;
 }
 
 std::string trimTrailingSlash(std::string value) {
@@ -343,7 +310,12 @@ std::string resolveFfmpegExecutable(const std::string& configuredBinDirectory) {
 }
 
 RuntimeProbe probeFfmpegRuntime(const std::string& configuredBinDirectory) {
-  RuntimeProbe probe = probeLibavformatRuntime();
+  // RTMP output is implemented through the external FFmpeg process below; it
+  // does not link to libavformat in-process. Loading and immediately unloading
+  // avformat here is both unnecessary and unsafe: current FFmpeg DLLs run
+  // teardown code during FreeLibrary, and repeated per-frame probes eventually
+  // abort the host process. Probe only the executable we actually launch.
+  RuntimeProbe probe;
   const auto executable = resolveFfmpegExecutable(configuredBinDirectory);
   if (!executable.empty()) {
     probe.available = true;
@@ -635,6 +607,7 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
     configuredEndpoint_ = buildRtmpEndpoint(*settings);
     configuredStreamKey_ = settings->streamKey;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
@@ -648,7 +621,12 @@ class RtmpOutputSender final : public IOutputSender {
     configuredAllowEnhancedRtmp_ = settings->allowEnhancedRtmp;
     configuredAudioBitrateKbps_ = (std::max)(32, (std::min)(512, settings->audioBitrateKbps));
     sender_.bitrateMbps = (std::max)(0.5, settings->targetBitrateMbps);
-    runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
+    // Filesystem/runtime discovery is configuration state, not frame work.
+    // Re-probing on every 20 ms sync previously loaded/unloaded FFmpeg DLLs
+    // hundreds of times and crashed corevideo-native during a live stream.
+    if (ffmpegBinDirectoryChanged || runtimeProbe_.candidates.empty()) {
+      runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
+    }
     runtimeDetail_ = runtimeProbe_.detail;
     // Surface a codec/container compatibility note (e.g. H.265 -> H.264 fallback)
     // so the operator sees why the on-air codec may differ from the request.
@@ -951,13 +929,18 @@ class RtmpOutputSender final : public IOutputSender {
     config.endpoint = configuredEndpoint_;
     // When the program-audio tap delivered real PCM this tick, feed it over the
     // second input as raw f32le PCM; otherwise fall back to silent anullsrc.
-    config.hasAudio = activeAudioPresent_;
+    config.hasAudio = realAudioEnabledForProcess();
     config.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 2;
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     return buildRtmpFfmpegArguments(config);
+  }
+
+  bool realAudioEnabledForProcess() const {
+    const char* value = std::getenv("COREVIDEO_RTMP_DISABLE_REAL_AUDIO");
+    return activeAudioPresent_ && !(value && std::string(value) == "1");
   }
 
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
@@ -995,13 +978,16 @@ class RtmpOutputSender final : public IOutputSender {
     // mux a real AAC track instead of `anullsrc` silence.
     std::string audioPipeName;
     std::string audioInputArg = "pipe:0";  // unused when no audio
-    if (activeAudioPresent_) {
+    if (realAudioEnabledForProcess()) {
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
       audioPipeName = "\\\\.\\pipe\\corevideo-rtmp-audio-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(now);
       audioPipeServer_ = CreateNamedPipeA(
           audioPipeName.c_str(),
           PIPE_ACCESS_OUTBOUND,
-          PIPE_TYPE_BYTE | PIPE_NOWAIT,
+          // Audio now has its own writer thread, so a blocking byte pipe is
+          // desirable: Windows backpressure paces PCM instead of returning a
+          // zero-byte non-blocking write that silently kills the audio feed.
+          PIPE_TYPE_BYTE | PIPE_WAIT,
           1,
           1 << 20,
           1 << 20,
@@ -1097,6 +1083,9 @@ class RtmpOutputSender final : public IOutputSender {
       ffmpegProcess_ = processInfo.hProcess;
     }
     audioPipeConnected_ = false;
+    if (audioPipeServer_) {
+      startAudioWriterThread();
+    }
     CloseHandle(processInfo.hThread);
     ffmpegRunning_ = true;
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
@@ -1106,9 +1095,9 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"audioInput\":" + jsonString(activeAudioPresent_ ? std::string("pcm") : std::string("anullsrc")) +
-              ",\"audioChannels\":" + std::to_string(activeAudioPresent_ ? activeAudioChannels_ : 0) +
-              ",\"audioSampleRate\":" + std::to_string(activeAudioPresent_ ? activeAudioSampleRate_ : 0) +
+              ",\"audioInput\":" + jsonString(realAudioEnabledForProcess() ? std::string("pcm") : std::string("anullsrc")) +
+              ",\"audioChannels\":" + std::to_string(realAudioEnabledForProcess() ? activeAudioChannels_ : 0) +
+              ",\"audioSampleRate\":" + std::to_string(realAudioEnabledForProcess() ? activeAudioSampleRate_ : 0) +
               ",\"videoInputPixelFormat\":" + jsonString(videoInputPixelFormat) +
               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_) +
               ",\"ffmpegStderrPath\":" + jsonString(ffmpegStderrPath_.string()) + "}");
@@ -1293,31 +1282,20 @@ class RtmpOutputSender final : public IOutputSender {
     if (!audioPipeServer_) {
       return;
     }
-    if (!audioPipeConnected_) {
-      // FFmpeg opens its audio input asynchronously relative to our video pipe.
-      // Keep this non-blocking so a slow or failed FFmpeg audio-open cannot
-      // stall the media tick and take the app down when streaming starts.
-      if (ConnectNamedPipe(audioPipeServer_, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
-        audioPipeConnected_ = true;
-      } else {
-        const DWORD error = GetLastError();
-        if (error == ERROR_PIPE_LISTENING || error == ERROR_NO_DATA || error == ERROR_PIPE_BUSY) {
-          return;
-        }
-        closeAudioPipe();
-        return;
+    {
+      std::lock_guard<std::mutex> lock(audioQueueMutex_);
+      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin(), pendingAudioPcm_->end());
+      const size_t maxSamples = static_cast<size_t>((std::max)(1, activeAudioSampleRate_)) *
+                                static_cast<size_t>((std::max)(1, activeAudioChannels_)) * 5;
+      while (audioQueue_.size() > maxSamples) {
+        audioQueue_.pop_front();
       }
     }
-    while (remaining > 0) {
-      DWORD written = 0;
-      const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
-      if (!WriteFile(audioPipeServer_, bytes, chunk, &written, nullptr) || written == 0) {
-        break;  // non-fatal; FFmpeg will pad with the resampler
-      }
-      bytes += written;
-      remaining -= written;
-      accepted += written;
-    }
+    audioQueueCv_.notify_one();
+    sender_.audioBytesSent = audioBytesWritten_.load();
+    const int bytesPerFrame = (std::max)(1, activeAudioChannels_) * static_cast<int>(sizeof(float));
+    sender_.audioFramesSent = sender_.audioBytesSent / bytesPerFrame;
+    return;
 #else
     if (ffmpegAudioFd_ < 0) {
       return;
@@ -1343,7 +1321,114 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
 #if defined(_WIN32)
+  void startAudioWriterThread() {
+    {
+      std::lock_guard<std::mutex> lock(audioQueueMutex_);
+      audioWriterStop_ = false;
+      audioQueue_.clear();
+    }
+    audioBytesWritten_.store(0);
+    audioWriterThread_ = std::thread([this] { audioWriterLoop(); });
+  }
+
+  void audioWriterLoop() {
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lock(audioQueueMutex_);
+        if (audioWriterStop_) {
+          return;
+        }
+      }
+
+      if (!audioPipeConnected_) {
+        if (ConnectNamedPipe(audioPipeServer_, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
+          audioPipeConnected_ = true;
+        } else {
+          const DWORD error = GetLastError();
+          if (error != ERROR_PIPE_LISTENING && error != ERROR_NO_DATA && error != ERROR_PIPE_BUSY) {
+            return;
+          }
+          std::unique_lock<std::mutex> lock(audioQueueMutex_);
+          audioQueueCv_.wait_for(lock, std::chrono::milliseconds(2), [&] { return audioWriterStop_; });
+          continue;
+        }
+      }
+
+      std::vector<float> samples;
+      {
+        std::unique_lock<std::mutex> lock(audioQueueMutex_);
+        audioQueueCv_.wait_for(lock, std::chrono::milliseconds(5), [&] {
+          return audioWriterStop_ || !audioQueue_.empty();
+        });
+        if (audioWriterStop_) {
+          return;
+        }
+        const size_t chunkSamples = (std::min)(audioQueue_.size(), static_cast<size_t>(4096));
+        samples.reserve(chunkSamples);
+        for (size_t index = 0; index < chunkSamples; ++index) {
+          samples.push_back(audioQueue_.front());
+          audioQueue_.pop_front();
+        }
+      }
+      if (samples.empty()) {
+        continue;
+      }
+
+      const auto* data = reinterpret_cast<const char*>(samples.data());
+      size_t bytesRemaining = samples.size() * sizeof(float);
+      while (bytesRemaining > 0) {
+        DWORD written = 0;
+        const DWORD chunk = static_cast<DWORD>((std::min)(bytesRemaining, static_cast<size_t>(1) << 20));
+        const BOOL writeSucceeded = WriteFile(audioPipeServer_, data, chunk, &written, nullptr);
+        if (writeSucceeded && written == 0) {
+          // A zero-byte success must not end the audio writer; retain the same
+          // buffer and let pipe backpressure clear.
+          std::unique_lock<std::mutex> lock(audioQueueMutex_);
+          audioQueueCv_.wait_for(lock, std::chrono::milliseconds(2), [&] { return audioWriterStop_; });
+          if (audioWriterStop_) {
+            return;
+          }
+          continue;
+        }
+        if (!writeSucceeded) {
+          const DWORD error = GetLastError();
+          if (error == ERROR_OPERATION_ABORTED && audioWriterStop_) {
+            return;
+          }
+          if (error == ERROR_NO_DATA || error == ERROR_PIPE_LISTENING || error == ERROR_PIPE_BUSY) {
+            std::unique_lock<std::mutex> lock(audioQueueMutex_);
+            audioQueueCv_.wait_for(lock, std::chrono::milliseconds(2), [&] { return audioWriterStop_; });
+            if (audioWriterStop_) {
+              return;
+            }
+            continue;
+          }
+          return;
+        }
+        data += written;
+        bytesRemaining -= written;
+        audioBytesWritten_.fetch_add(written);
+      }
+    }
+  }
+
+  void stopAudioWriterThread() {
+    {
+      std::lock_guard<std::mutex> lock(audioQueueMutex_);
+      audioWriterStop_ = true;
+      audioQueue_.clear();
+    }
+    audioQueueCv_.notify_all();
+    if (audioWriterThread_.joinable()) {
+      // PIPE_WAIT makes steady-state audio lossless. Explicitly cancel a
+      // pending ConnectNamedPipe/WriteFile so stream stop remains bounded.
+      CancelSynchronousIo(static_cast<HANDLE>(audioWriterThread_.native_handle()));
+      audioWriterThread_.join();
+    }
+  }
+
   void closeAudioPipe() {
+    stopAudioWriterThread();
     if (audioPipeServer_) {
       CloseHandle(audioPipeServer_);
       audioPipeServer_ = nullptr;
@@ -1519,6 +1604,12 @@ class RtmpOutputSender final : public IOutputSender {
   HANDLE ffmpegStdin_ = nullptr;
   HANDLE audioPipeServer_ = nullptr;
   bool audioPipeConnected_ = false;
+  std::mutex audioQueueMutex_;
+  std::condition_variable audioQueueCv_;
+  std::deque<float> audioQueue_;
+  std::thread audioWriterThread_;
+  bool audioWriterStop_ = true;
+  std::atomic<int64_t> audioBytesWritten_{0};
 #else
   int ffmpegStdinFd_ = -1;
   int ffmpegAudioFd_ = -1;
