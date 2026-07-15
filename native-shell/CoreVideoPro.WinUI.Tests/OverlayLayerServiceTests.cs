@@ -16,6 +16,17 @@ public sealed class OverlayLayerServiceTests
     // ==== Preset rect math ====
 
     [Fact]
+    public void ComputeOverlayRect_FullCanvasCoversProgramWithoutSafeAreaInset()
+    {
+        var rect = OverlayLayerService.ComputeOverlayRect(OverlayPlacement.FullCanvas);
+
+        Assert.Equal(0, rect.X, Precision);
+        Assert.Equal(0, rect.Y, Precision);
+        Assert.Equal(1, rect.Width, Precision);
+        Assert.Equal(1, rect.Height, Precision);
+    }
+
+    [Fact]
     public void ComputeOverlayRect_DefaultIsFifteenPercentWideWithFivePercentMargin()
     {
         var rect = OverlayLayerService.ComputeOverlayRect(OverlayPlacement.BottomRight);
@@ -146,6 +157,7 @@ public sealed class OverlayLayerServiceTests
     [InlineData("center|input-03", "input-03")]
     [InlineData("free|role:host", "role:host")]
     [InlineData("top-left|active-speaker", "active-speaker")]
+    [InlineData("full-canvas|capture:browser:1", "capture:browser:1")]
     public void TryParseAddOverlayParameter_ParsesAddSourceOptionEntries(string parameter, string expectedOption)
     {
         var ok = OverlayLayerService.TryParseAddOverlayParameter(
@@ -262,6 +274,30 @@ public sealed class OverlayLayerServiceTests
     }
 
     [Fact]
+    public void AppendOverlayRoute_BrowserCaptureIsDirectFullCanvasTopLayer()
+    {
+        var routes = new List<SourceRoute>
+        {
+            new() { Id = "scene-1-1", Mode = SourceRouteMode.Fixed, ParticipantId = "p1",
+                    CanvasRect = new NormalizedCanvasRect { X = 0, Y = 0, Width = 1, Height = 1 } }
+        };
+
+        var route = OverlayLayerService.AppendOverlayRoute(
+            routes, "scene-1", "capture:browser:1", mediaAssetId: null, sourceAspect: 16.0 / 9.0,
+            OverlayPlacement.FullCanvas, layoutHint: "host-focus", participants: []);
+
+        Assert.Equal(SourceRouteMode.CaptureDevice, route.Mode);
+        Assert.Equal("browser:1", route.CaptureDeviceId);
+        Assert.Null(route.ShowInputSlotNumber);
+        Assert.Equal(0, route.CanvasRect!.X, Precision);
+        Assert.Equal(0, route.CanvasRect.Y, Precision);
+        Assert.Equal(1, route.CanvasRect.Width, Precision);
+        Assert.Equal(1, route.CanvasRect.Height, Precision);
+        Assert.Equal(routes.Count - 1, route.ZIndex);
+        Assert.Equal("fit", route.FitMode);
+    }
+
+    [Fact]
     public void AppendOverlayRoute_MutatesOnlyTheGivenDraftList()
     {
         // Models the S2b contract the ViewModel relies on: the command inserts into
@@ -313,7 +349,7 @@ public sealed class OverlayLayerServiceTests
     [Fact]
     public void PlacementOptions_CoverEveryWirePlacement()
     {
-        Assert.Equal(6, OverlayLayerService.PlacementOptions.Count);
+        Assert.Equal(7, OverlayLayerService.PlacementOptions.Count);
         Assert.All(
             OverlayLayerService.PlacementOptions,
             option => Assert.NotNull(OverlayLayerService.PlacementFromWire(option.Value)));

@@ -184,7 +184,12 @@ public sealed record MediaCoreStreamDestinationWire(
     double? TargetBitrateMbps = null,
     int? AudioBitrateKbps = null,
     string? VideoCodec = null,
-    string? EncoderMode = null);
+    string? EncoderMode = null,
+    double? KeyframeIntervalSeconds = null,
+    string? RateControl = null,
+    string? H264Profile = null,
+    int? BFrames = null,
+    bool? AllowEnhancedRtmp = null);
 
 public sealed record MediaCoreSrtIngestSourceWire(
     string Id,

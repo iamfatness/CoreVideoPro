@@ -4,7 +4,7 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class ProductionOutputPreferences
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public string? FfmpegBinDirectory { get; set; }
     public bool StreamRtmpEnabled { get; set; } = true;
     public bool StreamNdiEnabled { get; set; }
@@ -34,6 +34,12 @@ public sealed class ProductionOutputPreferences
     public double StreamTargetBitrateMbps { get; set; }
     public int StreamAudioBitrateKbps { get; set; } = 160;
     public string? StreamEncoderMode { get; set; }
+    public string? StreamPlatformProfileId { get; set; }
+    public double StreamKeyframeIntervalSeconds { get; set; } = 2;
+    public string? StreamRateControl { get; set; }
+    public string? StreamH264Profile { get; set; }
+    public int StreamBFrames { get; set; } = 2;
+    public bool StreamAllowEnhancedRtmp { get; set; }
     public string? RecordingRenderResolution { get; set; }
     public string? RecordingRenderFps { get; set; }
     public string? RecordingVideoCodec { get; set; }

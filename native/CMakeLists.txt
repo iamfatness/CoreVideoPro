@@ -48,6 +48,7 @@ add_library(corevideo_native
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/modules/AsyncEncoderSink.cpp
+  src/modules/AsyncOutputSender.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
@@ -440,6 +441,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
+    tests/AsyncOutputSenderTest.cpp
     tests/AudioDspTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp

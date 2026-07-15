@@ -254,6 +254,24 @@
                                Style="{StaticResource OperatorSummary}" />
 
                     <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Platform profile" Style="{StaticResource SettingsLabel}" />
+                            <ComboBox Header="Recommended starting point"
+                                      ItemsSource="{x:Bind ViewModel.StreamPlatformProfileOptions}"
+                                      SelectedValue="{x:Bind ViewModel.StreamPlatformProfileId, Mode=TwoWay}"
+                                      SelectedValuePath="Value"
+                                      DisplayMemberPath="Label"
+                                      HorizontalAlignment="Stretch" />
+                            <TextBlock Text="{x:Bind ViewModel.StreamPlatformProfileSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="The server URL and stream key stay independent from the preset. Changing any encoder value switches to Custom without losing your endpoint."
+                                       Style="{StaticResource OperatorSummary}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
                             <TextBlock Text="Destinations" Style="{StaticResource SettingsLabel}" />
                             <Grid ColumnSpacing="12">
@@ -298,6 +316,8 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <ComboBox Header="Render size"
                                           ItemsSource="{x:Bind ViewModel.OutputResolutionOptions}"
@@ -336,6 +356,45 @@
                                           SelectedValuePath="Value"
                                           DisplayMemberPath="Label"
                                           HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Row="2"
+                                           Header="Keyframe interval (seconds)"
+                                           Value="{x:Bind ViewModel.StreamKeyframeIntervalSeconds, Mode=TwoWay}"
+                                           Minimum="0.5"
+                                           Maximum="10"
+                                           SmallChange="0.5"
+                                           SpinButtonPlacementMode="Inline" />
+                                <NumberBox Grid.Row="2" Grid.Column="1"
+                                           Header="Audio kbps"
+                                           Value="{x:Bind ViewModel.StreamAudioBitrateKbps, Mode=TwoWay}"
+                                           Minimum="32"
+                                           Maximum="512"
+                                           SmallChange="16"
+                                           SpinButtonPlacementMode="Inline" />
+                                <ComboBox Grid.Row="2" Grid.Column="2"
+                                          Header="Rate control"
+                                          ItemsSource="{x:Bind ViewModel.StreamRateControlOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamRateControl, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <ComboBox Grid.Row="3"
+                                          Header="H.264 profile"
+                                          ItemsSource="{x:Bind ViewModel.StreamH264ProfileOptions}"
+                                          SelectedValue="{x:Bind ViewModel.StreamH264Profile, Mode=TwoWay}"
+                                          SelectedValuePath="Value"
+                                          DisplayMemberPath="Label"
+                                          HorizontalAlignment="Stretch" />
+                                <NumberBox Grid.Row="3" Grid.Column="1"
+                                           Header="B-frames"
+                                           Value="{x:Bind ViewModel.StreamBFrames, Mode=TwoWay}"
+                                           Minimum="0"
+                                           Maximum="4"
+                                           SmallChange="1"
+                                           SpinButtonPlacementMode="Inline" />
+                                <CheckBox Grid.Row="3" Grid.Column="2"
+                                          Content="Enhanced RTMP (H.265 / AV1)"
+                                          IsChecked="{x:Bind ViewModel.StreamAllowEnhancedRtmp, Mode=TwoWay}"
+                                          VerticalAlignment="Center" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.StreamRenderProfileSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />

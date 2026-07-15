@@ -24,6 +24,24 @@ internal static class OverlayLayerMenuBuilder
 
         // Media assets first — logos/bugs are the primary overlay case. Empty state is
         // explicit and LOUD (a disabled row), never a silent blank menu.
+        // Browser graphics are normally full-canvas alpha overlays. List them by
+        // URL/name so the operator never has to remember a generic Show Input slot.
+        var browserSources = viewModel.BrowserCaptureDevices;
+        if (browserSources.Count > 0)
+        {
+            var browsers = new MenuFlyoutSubItem { Text = "Browser overlays" };
+            foreach (var browser in browserSources)
+            {
+                browsers.Items.Add(BuildSourceSubMenu(
+                    viewModel,
+                    browser.Name,
+                    $"capture:{browser.Id}"));
+            }
+
+            flyout.Items.Add(browsers);
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+
         var mediaAssets = viewModel.OverlayMediaAssets;
         if (mediaAssets.Count == 0)
         {

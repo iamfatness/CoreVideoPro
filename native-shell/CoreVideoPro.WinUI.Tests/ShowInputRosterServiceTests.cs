@@ -543,6 +543,47 @@ public sealed class ShowInputRosterServiceTests
     }
 
     [Fact]
+    public void TryApplyStandaloneRoleFallback_UsesLocalCameraAndScreenWithoutZoom()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.UvcWebcam;
+        slots[0].CaptureDeviceId = "camera-1";
+        slots[0].InShow = true;
+        slots[2].Kind = ShowInputKind.Screen;
+        slots[2].CaptureDeviceId = "screen:0";
+        slots[2].InShow = true;
+
+        var speaker = new SourceRoute { Id = "speaker", Mode = SourceRouteMode.ActiveSpeaker };
+        var slides = new SourceRoute { Id = "slides", Mode = SourceRouteMode.ScreenShare };
+
+        Assert.True(ShowInputRosterService.TryApplyStandaloneRoleFallback(speaker, slots, []));
+        Assert.Equal(SourceRouteMode.CaptureDevice, speaker.Mode);
+        Assert.Equal("camera-1", speaker.CaptureDeviceId);
+        Assert.Equal(1, speaker.ShowInputSlotNumber);
+
+        Assert.True(ShowInputRosterService.TryApplyStandaloneRoleFallback(slides, slots, []));
+        Assert.Equal(SourceRouteMode.CaptureDevice, slides.Mode);
+        Assert.Equal("screen:0", slides.CaptureDeviceId);
+        Assert.Equal(3, slides.ShowInputSlotNumber);
+    }
+
+    [Fact]
+    public void TryApplyStandaloneRoleFallback_PreservesZoomRoleRoutesWhenMeetingExists()
+    {
+        var slots = ShowInputRosterService.CreateDefaultSlots().ToList();
+        slots[0].Kind = ShowInputKind.UvcWebcam;
+        slots[0].CaptureDeviceId = "camera-1";
+        slots[0].InShow = true;
+        var route = new SourceRoute { Id = "speaker", Mode = SourceRouteMode.ActiveSpeaker };
+        var participants = new[] { new Participant { Id = "zoom-1", Name = "Guest" } };
+
+        Assert.False(ShowInputRosterService.TryApplyStandaloneRoleFallback(route, slots, participants));
+        Assert.Equal(SourceRouteMode.ActiveSpeaker, route.Mode);
+        Assert.Null(route.CaptureDeviceId);
+        Assert.Null(route.ShowInputSlotNumber);
+    }
+
+    [Fact]
     public void BuildMultiviewTiles_KeepsZoomSlotInOwnPositionWhenParticipantHasNoLiveTile()
     {
         // Regression: the operator assigns a Zoom participant whose camera is momentarily off.

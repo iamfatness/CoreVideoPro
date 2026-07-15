@@ -261,8 +261,14 @@ public sealed class MediaCoreCommandBuilderTests
                     FfmpegBinDirectory: "C:\\ffmpeg\\bin",
                     Fps: 30,
                     TargetBitrateMbps: 4.1,
+                    AudioBitrateKbps: 128,
                     VideoCodec: "h265",
-                    EncoderMode: "nvenc"),
+                    EncoderMode: "nvenc",
+                    KeyframeIntervalSeconds: 2,
+                    RateControl: "cbr",
+                    H264Profile: "high",
+                    BFrames: 2,
+                    AllowEnhancedRtmp: true),
                 new(
                     "ndi",
                     "NDI",
@@ -317,8 +323,14 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("C:\\ffmpeg\\bin", destinationSettings[0].GetProperty("ffmpegBinDirectory").GetString());
         Assert.Equal(30, destinationSettings[0].GetProperty("fps").GetInt32());
         Assert.Equal(4.1, destinationSettings[0].GetProperty("targetBitrateMbps").GetDouble());
+        Assert.Equal(128, destinationSettings[0].GetProperty("audioBitrateKbps").GetInt32());
         Assert.Equal("h265", destinationSettings[0].GetProperty("videoCodec").GetString());
         Assert.Equal("nvenc", destinationSettings[0].GetProperty("encoderMode").GetString());
+        Assert.Equal(2, destinationSettings[0].GetProperty("keyframeIntervalSeconds").GetDouble());
+        Assert.Equal("cbr", destinationSettings[0].GetProperty("rateControl").GetString());
+        Assert.Equal("high", destinationSettings[0].GetProperty("h264Profile").GetString());
+        Assert.Equal(2, destinationSettings[0].GetProperty("bFrames").GetInt32());
+        Assert.True(destinationSettings[0].GetProperty("allowEnhancedRtmp").GetBoolean());
         Assert.Equal("CoreVideo Pro Program", destinationSettings[1].GetProperty("ndiName").GetString());
         Assert.Equal("public", destinationSettings[1].GetProperty("ndiGroup").GetString());
         Assert.Equal(4.1, destinationSettings[1].GetProperty("targetBitrateMbps").GetDouble());
