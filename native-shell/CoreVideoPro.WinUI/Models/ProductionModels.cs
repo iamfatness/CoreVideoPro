@@ -201,6 +201,24 @@ public partial class CaptureDevice : ObservableObject
     public required IReadOnlyList<CaptureDeviceInput> Inputs { get; init; }
     public required string SelectedInputId { get; set; }
 
+    private bool _isBrowserOverlayOnAir;
+    public bool IsBrowserOverlayOnAir
+    {
+        get => _isBrowserOverlayOnAir;
+        set
+        {
+            if (SetProperty(ref _isBrowserOverlayOnAir, value))
+            {
+                OnPropertyChanged(nameof(BrowserOverlayActionLabel));
+                OnPropertyChanged(nameof(BrowserOverlayStatusLabel));
+            }
+        }
+    }
+
+    public string BrowserOverlayActionLabel => IsBrowserOverlayOnAir ? "Hide" : "Show";
+
+    public string BrowserOverlayStatusLabel => IsBrowserOverlayOnAir ? "On Program" : "Off air";
+
     private string? _assignedAudioDeviceId;
     public string? AssignedAudioDeviceId
     {

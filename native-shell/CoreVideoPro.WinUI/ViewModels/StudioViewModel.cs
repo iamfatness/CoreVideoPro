@@ -596,6 +596,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public bool HasBrowserCaptureDevices => BrowserCaptureDevices.Count > 0;
 
+    private readonly HashSet<string> _onAirBrowserOverlayIds = new(StringComparer.Ordinal);
+    private string? _primaryBrowserOverlayId;
+
+    private CaptureDevice? PrimaryBrowserOverlay =>
+        BrowserCaptureDevices.FirstOrDefault(device =>
+            string.Equals(device.Id, _primaryBrowserOverlayId, StringComparison.Ordinal)) ??
+        BrowserCaptureDevices.FirstOrDefault();
+
+    public string StudioBrowserOverlayButtonLabel =>
+        PrimaryBrowserOverlay?.IsBrowserOverlayOnAir == true ? "Overlay out" : "Overlay in";
+
+    public string StudioBrowserOverlayStatus =>
+        PrimaryBrowserOverlay is { } overlay ? overlay.Name : "No browser source";
+
     public ObservableCollection<AudioCaptureDevice> AudioCaptureDevices { get; } = [];
 
     public ObservableCollection<AudioRenderDevice> AudioRenderDevices { get; } = [];
@@ -6631,6 +6645,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 device.ApplyObservedFrameTelemetry(prior.ObservedFrameWidth, prior.ObservedFrameHeight, prior.ObservedFrameRate);
             }
 
+            device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
+
             CaptureDevices.Add(device);
         }
 
@@ -6643,6 +6659,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptureDevices));
         OnPropertyChanged(nameof(BrowserCaptureDevices));
         OnPropertyChanged(nameof(HasBrowserCaptureDevices));
+        NotifyBrowserOverlayControlStateChanged();
         RebuildAudioCaptureDeviceCatalog();
         QueueSelectedCaptureDevicesOnline();
     }
@@ -8332,8 +8349,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreProductionSyncContext BuildProductionSyncContext()
     {
-        var resolvedProgramRoutes = GetMutableRoutes(ActiveSceneId)
+        var resolvedSceneProgramRoutes = GetMutableRoutes(ActiveSceneId)
             .Select(ResolveRouteFromShowInput)
+            .ToList();
+        var resolvedProgramRoutes = BrowserOverlayProgramService.ApplyOnAirState(
+                ActiveSceneId,
+                resolvedSceneProgramRoutes,
+                _onAirBrowserOverlayIds)
             .ToList();
         var sceneRoutes = resolvedProgramRoutes
             .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes))
@@ -12751,6 +12773,58 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
+    private void ToggleBrowserOverlayOnAir(string? browserId)
+    {
+        if (string.IsNullOrWhiteSpace(browserId) ||
+            BrowserCaptureDevices.FirstOrDefault(device =>
+                string.Equals(device.Id, browserId, StringComparison.Ordinal)) is not { } browser)
+        {
+            CommandStatus = "Browser overlay is no longer available";
+            return;
+        }
+
+        _primaryBrowserOverlayId = browser.Id;
+        var showing = _onAirBrowserOverlayIds.Add(browser.Id);
+        if (!showing)
+        {
+            _onAirBrowserOverlayIds.Remove(browser.Id);
+        }
+
+        browser.IsBrowserOverlayOnAir = showing;
+        NotifyBrowserOverlayControlStateChanged();
+        CommandStatus = $"{browser.Name} overlay {(showing ? "shown on" : "hidden from")} Program";
+        LaunchLog.Write($"overlay: browser key {(showing ? "in" : "out")} id={browser.Id}");
+
+        if (_applyingProductionPatch)
+        {
+            QueueProductionSyncRetry("browser-overlay-key");
+        }
+        else
+        {
+            _ = TrySyncMediaCoreAsync();
+        }
+    }
+
+    [RelayCommand]
+    private void TogglePrimaryBrowserOverlay()
+    {
+        if (PrimaryBrowserOverlay is { } browser)
+        {
+            ToggleBrowserOverlayOnAir(browser.Id);
+        }
+        else
+        {
+            CommandStatus = "Add a browser overlay URL first";
+        }
+    }
+
+    private void NotifyBrowserOverlayControlStateChanged()
+    {
+        OnPropertyChanged(nameof(StudioBrowserOverlayButtonLabel));
+        OnPropertyChanged(nameof(StudioBrowserOverlayStatus));
+    }
+
+    [RelayCommand]
     private async Task ReloadBrowserOverlayAsync(string? browserId)
     {
         if (!string.IsNullOrWhiteSpace(browserId))
@@ -12800,6 +12874,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         AddBrowserOverlay(added.Id);
+        _primaryBrowserOverlayId = added.Id;
+        NotifyBrowserOverlayControlStateChanged();
         CommandStatus = $"{added.Name} added to Preview as a full-canvas overlay";
     }
 
