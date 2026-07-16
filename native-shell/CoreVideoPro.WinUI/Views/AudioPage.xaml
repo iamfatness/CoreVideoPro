@@ -197,8 +197,8 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
-                            <TextBlock Text="Master bus processing" Style="{StaticResource OperatorSectionTitle}" />
-                            <TextBlock Text="Program L/R · ordered pre-output signal chain"
+                            <TextBlock Text="Master processor" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="Native DSP · Program L/R · ordered pre-output chain"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1" Header="MASTER IN"
@@ -209,6 +209,52 @@
                     <Border Background="#091017" BorderBrush="#1B5E6B" BorderThickness="1"
                             CornerRadius="6" Padding="12">
                         <StackPanel Spacing="10">
+                            <Border Background="#0D1520" BorderBrush="#243746" BorderThickness="1"
+                                    CornerRadius="4" Padding="10">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="94" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="128" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="1">
+                                        <TextBlock Text="INTEGRATED" FontSize="9" FontWeight="Bold"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.Transport.MasterLufsLabel, Mode=OneWay}"
+                                                   FontSize="22" FontWeight="Bold" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="12" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="L" FontSize="9" VerticalAlignment="Center" />
+                                            <controls:AudioLevelMeter Grid.Column="1"
+                                                                      Level="{x:Bind ViewModel.Transport.MasterLevelLeft, Mode=OneWay}"
+                                                                      SegmentCount="30" Height="10" />
+                                        </Grid>
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="12" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="R" FontSize="9" VerticalAlignment="Center" />
+                                            <controls:AudioLevelMeter Grid.Column="1"
+                                                                      Level="{x:Bind ViewModel.Transport.MasterLevelRight, Mode=OneWay}"
+                                                                      SegmentCount="30" Height="10" />
+                                        </Grid>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Spacing="1">
+                                        <TextBlock Text="TRUE PEAK / LIMIT" FontSize="9" FontWeight="Bold"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.TruePeakLabel, Mode=OneWay}"
+                                                   FontSize="14" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind ViewModel.MasterLimiterActivityLabel, Mode=OneWay}"
+                                                   FontSize="9" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -225,6 +271,40 @@
                                            Foreground="{StaticResource StudioMutedBrush}"
                                            VerticalAlignment="Center" />
                             </Grid>
+
+                            <Border Background="#080D13" BorderBrush="#243746" BorderThickness="1"
+                                    CornerRadius="4" Padding="8,6,8,4">
+                                <Grid RowSpacing="3">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="112" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <controls:MasteringToneCurve
+                                        HighPassHz="{x:Bind ViewModel.MasteringHighPassHz, Mode=OneWay}"
+                                        LowPassHz="{x:Bind ViewModel.MasteringLowPassHz, Mode=OneWay}"
+                                        LowShelfDb="{x:Bind ViewModel.MasteringLowShelfDb, Mode=OneWay}"
+                                        PresenceDb="{x:Bind ViewModel.MasteringPresenceDb, Mode=OneWay}"
+                                        HighShelfDb="{x:Bind ViewModel.MasteringHighShelfDb, Mode=OneWay}" />
+                                    <Grid Grid.Row="1">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="20 Hz" FontSize="8" Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Grid.Column="1" Text="120" FontSize="8" HorizontalAlignment="Center"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Grid.Column="2" Text="1 kHz" FontSize="8" HorizontalAlignment="Center"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Grid.Column="3" Text="10 kHz" FontSize="8" HorizontalAlignment="Center"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Grid.Column="4" Text="20 kHz" FontSize="8" HorizontalAlignment="Right"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
 
                             <Grid ColumnSpacing="8" RowSpacing="8">
                                 <Grid.ColumnDefinitions>
@@ -342,9 +422,14 @@
                                FontSize="16" FontWeight="SemiBold" />
                     <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetDetail, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
-                    <!-- U1a: plugin browser — auto-scans on first open, searchable,
-                         status in operator words (never phase jargon). -->
-                    <StackPanel Spacing="4">
+                    <!-- Plugin discovery is explicitly operator-opened. Audio/PCM
+                         snapshots must never reveal or focus this advanced panel. -->
+                    <Expander Header="Advanced · VST3 plug-in browser"
+                              IsExpanded="False"
+                              Expanding="OnVstBrowserExpanding"
+                              HorizontalAlignment="Stretch"
+                              HorizontalContentAlignment="Stretch">
+                    <StackPanel Spacing="4" Padding="0,8,0,0">
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -383,6 +468,7 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </StackPanel>
+                    </Expander>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="Audio gain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />

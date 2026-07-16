@@ -4639,10 +4639,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsAudioShowMode));
         OnPropertyChanged(nameof(IsAudioRoutingSurface));
         OnPropertyChanged(nameof(IsAudioSetupMode));
-        if (IsAudioSetupMode)
-        {
-            EnsureVstPluginScan();  // U1a: SETUP shows the plugin browser — never empty
-        }
     }
 
     public void ToggleSelectedRackInsert(string insertName)

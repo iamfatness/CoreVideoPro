@@ -47,12 +47,15 @@ public sealed class OperatorUiTelemetryPlacementTests
     {
         var xaml = ReadView("AudioPage.xaml");
 
-        Assert.Contains("Master bus processing", xaml, StringComparison.Ordinal);
+        Assert.Contains("Master processor", xaml, StringComparison.Ordinal);
         Assert.Contains("01  INPUT", xaml, StringComparison.Ordinal);
         Assert.Contains("06  SAFETY LIMITER", xaml, StringComparison.Ordinal);
-        Assert.Contains("Program L/R · ordered pre-output signal chain", xaml, StringComparison.Ordinal);
+        Assert.Contains("Native DSP · Program L/R · ordered pre-output chain", xaml, StringComparison.Ordinal);
+        Assert.Contains("controls:MasteringToneCurve", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Header=\"Mastering rack\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("land next", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Advanced · VST3 plug-in browser", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsExpanded=\"False\"", xaml, StringComparison.Ordinal);
     }
 
     private static string ReadView(string fileName)

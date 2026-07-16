@@ -86,6 +86,9 @@ public sealed partial class AudioPage : UserControl
     private void OnScanVstPluginsClicked(object sender, RoutedEventArgs e) =>
         ViewModel?.RequestVstPluginScan();
 
+    private void OnVstBrowserExpanding(Expander sender, ExpanderExpandingEventArgs args) =>
+        ViewModel?.EnsureVstPluginScan();
+
     // ---- C5a insert rack ----------------------------------------------------
     private void OnRemoveInsertSlotClicked(object sender, RoutedEventArgs e)
     {
