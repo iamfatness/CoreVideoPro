@@ -318,8 +318,8 @@
             <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <StackPanel>
-                        <TextBlock Text="Browser overlays" Style="{StaticResource OperatorSectionTitle}" />
-                        <TextBlock Text="Paste a graphics output URL and add it directly to Preview. Take or Update to put it on Program."
+                        <TextBlock Text="Browser overlays (DSK)" Style="{StaticResource OperatorSectionTitle}" />
+                        <TextBlock Text="Stage the downstream key on Preview, inspect it over PVW, then use DSK in or out independently of the background scene. Save to scene is the optional USK-style path."
                                    FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                    TextWrapping="WrapWholeWords" />
                     </StackPanel>
@@ -358,6 +358,8 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel>
                                             <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12"
@@ -372,10 +374,18 @@
                                                 Style="{StaticResource OperatorGhostButton}"
                                                 Tag="{x:Bind Id}"
                                                 Click="OnReloadBrowserOverlayClick" />
-                                        <Button Grid.Column="2" Content="Show in Preview"
-                                                Style="{StaticResource StudioAccentButton}"
+                                        <Button Grid.Column="2" Content="Save to scene"
+                                                Style="{StaticResource OperatorGhostButton}"
                                                 Tag="{x:Bind Id}"
                                                 Click="OnAddBrowserOverlayClick" />
+                                        <Button Grid.Column="3" Content="{x:Bind BrowserOverlayPreviewActionLabel, Mode=OneWay}"
+                                                Style="{StaticResource OperatorGhostButton}"
+                                                Tag="{x:Bind Id}"
+                                                Click="OnToggleBrowserOverlayPreviewClick" />
+                                        <Button Grid.Column="4" Content="{x:Bind BrowserOverlayActionLabel, Mode=OneWay}"
+                                                Style="{StaticResource StudioAccentButton}"
+                                                Tag="{x:Bind Id}"
+                                                Click="OnToggleBrowserOverlayOnAirClick" />
                                     </Grid>
                                 </Border>
                             </DataTemplate>

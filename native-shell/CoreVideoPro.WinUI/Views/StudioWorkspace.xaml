@@ -817,7 +817,7 @@
                             Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.Transport.SetAndForgetButtonBorder, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE713;" FontSize="18" />
+                            <FontIcon Glyph="&#xE945;" FontSize="18" />
                             <StackPanel Spacing="1">
                                 <TextBlock Text="Set &amp; Forget" FontWeight="Bold" FontSize="12" />
                                 <TextBlock FontSize="10" FontWeight="Bold" Foreground="{StaticResource StudioMutedBrush}">
@@ -836,91 +836,130 @@
                         </StackPanel>
                     </Button>
 
-                    <Button Style="{StaticResource AutomationToggleButton}"
-                            Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE8D2;" FontSize="18" />
-                            <StackPanel Spacing="1">
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
-                                           FontWeight="Bold" FontSize="12" />
-                                <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
-                                           FontSize="10" FontWeight="Bold"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextTrimming="CharacterEllipsis"
-                                           MaxWidth="72" />
-                            </StackPanel>
-                        </StackPanel>
-                    </Button>
-
-                    <Button Style="{StaticResource AutomationToggleButton}"
-                            MinWidth="42"
-                            Padding="10,8"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
-                        <FontIcon Glyph="&#xE713;" FontSize="16" />
-                        <Button.Flyout>
-                            <Flyout Placement="Top">
-                                <StackPanel Spacing="10" MinWidth="280">
-                                    <TextBlock Text="Lower third controls"
-                                               FontSize="14"
-                                               FontWeight="Bold" />
-                                    <TextBlock Text="{x:Bind ViewModel.LowerThirdKeyStatus, Mode=OneWay}"
-                                               FontSize="12"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Text="Position" FontSize="11" />
-                                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
-                                                      SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" Spacing="4">
-                                            <TextBlock Text="Style" FontSize="11" />
-                                            <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandLowerThirdStyleOptions, Mode=OneWay}"
-                                                      SelectedItem="{x:Bind ViewModel.Overlays.BrandLowerThirdStyle, Mode=TwoWay}"
-                                                      HorizontalAlignment="Stretch" />
-                                        </StackPanel>
-                                    </Grid>
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <NumberBox Header="Build in ms"
-                                                   Value="{x:Bind ViewModel.LowerThirdBuildInMs, Mode=TwoWay}"
-                                                   Minimum="50"
-                                                   Maximum="2000"
-                                                   SmallChange="50"
-                                                   LargeChange="100"
-                                                   SpinButtonPlacementMode="Inline" />
-                                        <NumberBox Grid.Column="1"
-                                                   Header="Build out ms"
-                                                   Value="{x:Bind ViewModel.LowerThirdBuildOutMs, Mode=TwoWay}"
-                                                   Minimum="50"
-                                                   Maximum="2000"
-                                                   SmallChange="50"
-                                                   LargeChange="100"
-                                                   SpinButtonPlacementMode="Inline" />
-                                    </Grid>
-                                    <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
-                                               FontSize="11"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <TextBlock Text="{x:Bind ViewModel.NativeLowerThirdStatus, Mode=OneWay}"
-                                               FontSize="11"
-                                               TextWrapping="WrapWholeWords"
-                                               IsTextSelectionEnabled="True"
-                                               Foreground="{StaticResource StudioMutedBrush}" />
-                                    <Button Content="Rebuild lower third"
-                                            Style="{StaticResource StudioAccentButton}"
-                                            Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}" />
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                CornerRadius="8,0,0,8"
+                                Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE8D2;" FontSize="18" />
+                                <StackPanel Spacing="1">
+                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
+                                               FontWeight="Bold" FontSize="12" />
+                                    <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactStatus, Mode=OneWay}"
+                                               FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource StudioMutedBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxWidth="72" />
                                 </StackPanel>
-                            </Flyout>
-                        </Button.Flyout>
-                    </Button>
+                            </StackPanel>
+                        </Button>
+
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                Width="30"
+                                Padding="0"
+                                CornerRadius="0,8,8,0"
+                                BorderThickness="1"
+                                ToolTipService.ToolTip="Lower third options">
+                            <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
+                            <Button.Flyout>
+                                <Flyout Placement="Top">
+                                    <StackPanel Spacing="10" MinWidth="280">
+                                        <TextBlock Text="Lower third controls"
+                                                   FontSize="14"
+                                                   FontWeight="Bold" />
+                                        <TextBlock Text="{x:Bind ViewModel.LowerThirdKeyStatus, Mode=OneWay}"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="Position" FontSize="11" />
+                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.LowerThirdPositionOptions, Mode=OneWay}"
+                                                          SelectedItem="{x:Bind ViewModel.Overlays.LowerThirdPosition, Mode=TwoWay}"
+                                                          HorizontalAlignment="Stretch" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                <TextBlock Text="Style" FontSize="11" />
+                                                <ComboBox ItemsSource="{x:Bind ViewModel.Overlays.BrandLowerThirdStyleOptions, Mode=OneWay}"
+                                                          SelectedItem="{x:Bind ViewModel.Overlays.BrandLowerThirdStyle, Mode=TwoWay}"
+                                                          HorizontalAlignment="Stretch" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <NumberBox Header="Build in ms"
+                                                       Value="{x:Bind ViewModel.LowerThirdBuildInMs, Mode=TwoWay}"
+                                                       Minimum="50"
+                                                       Maximum="2000"
+                                                       SmallChange="50"
+                                                       LargeChange="100"
+                                                       SpinButtonPlacementMode="Inline" />
+                                            <NumberBox Grid.Column="1"
+                                                       Header="Build out ms"
+                                                       Value="{x:Bind ViewModel.LowerThirdBuildOutMs, Mode=TwoWay}"
+                                                       Minimum="50"
+                                                       Maximum="2000"
+                                                       SmallChange="50"
+                                                       LargeChange="100"
+                                                       SpinButtonPlacementMode="Inline" />
+                                        </Grid>
+                                        <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.NativeLowerThirdStatus, Mode=OneWay}"
+                                                   FontSize="11"
+                                                   TextWrapping="WrapWholeWords"
+                                                   IsTextSelectionEnabled="True"
+                                                   Foreground="{StaticResource StudioMutedBrush}" />
+                                        <Button Content="Rebuild lower third"
+                                                Style="{StaticResource StudioAccentButton}"
+                                                Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}" />
+                                    </StackPanel>
+                                </Flyout>
+                            </Button.Flyout>
+                        </Button>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="3">
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                Padding="9,8"
+                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayPreviewCommand}"
+                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
+                            <StackPanel Spacing="1">
+                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewButtonLabel, Mode=OneWay}"
+                                           FontWeight="Bold" FontSize="12" />
+                                <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayPreviewStatus, Mode=OneWay}"
+                                           FontSize="10" FontWeight="Bold"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button Style="{StaticResource AutomationToggleButton}"
+                                Padding="9,8"
+                                Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayCommand}"
+                                IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.StudioBrowserOverlayToolTip, Mode=OneWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                                <StackPanel Spacing="1">
+                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayButtonLabel, Mode=OneWay}"
+                                               FontWeight="Bold" FontSize="12" />
+                                    <TextBlock Text="{x:Bind ViewModel.StudioBrowserOverlayStatus, Mode=OneWay}"
+                                               FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource StudioMutedBrush}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
                 </StackPanel>
 
                 <!-- Center: output status + transport controls -->
@@ -993,7 +1032,8 @@
                             </Button.Flyout>
                         </Button>
                     </StackPanel>
-                    <Button MinWidth="92" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.RecordButtonBorder, Mode=OneWay}"
@@ -1016,9 +1056,9 @@
                                        HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            ToolTipService.ToolTip="Set recording bitrate, format, codec, size, and folder">
-                        <FontIcon Glyph="&#xE713;" FontSize="14" />
+                    <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            ToolTipService.ToolTip="Recording output options">
+                        <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
                                 <StackPanel Spacing="12" MinWidth="420" MaxWidth="520">
@@ -1101,7 +1141,9 @@
                             </Flyout>
                         </Button.Flyout>
                     </Button>
-                    <Button MinWidth="92" MinHeight="44" CornerRadius="8" BorderThickness="1" FontWeight="ExtraBold"
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -1124,9 +1166,9 @@
                                        HorizontalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            ToolTipService.ToolTip="Set streaming destinations, bitrate, encoder, size, and codec">
-                        <FontIcon Glyph="&#xE713;" FontSize="14" />
+                    <Button Width="30" MinHeight="44" CornerRadius="0,8,8,0" BorderThickness="1" Padding="0"
+                            ToolTipService.ToolTip="Streaming output options">
+                        <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
                                 <StackPanel Spacing="12" MinWidth="420" MaxWidth="520">
@@ -1213,14 +1255,11 @@
                             </Flyout>
                         </Button.Flyout>
                     </Button>
-                    <Button MinWidth="40" MinHeight="40" CornerRadius="8" BorderThickness="1"
-                            Command="{x:Bind ViewModel.OpenProductionSettingsCommand}"
-                            ToolTipService.ToolTip="Open Settings">
-                        <FontIcon Glyph="&#xE713;" FontSize="16" />
-                    </Button>
+                    </StackPanel>
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
-                    <ToggleButton MinHeight="44" CornerRadius="8" Padding="12,4"
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <ToggleButton MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
@@ -1234,9 +1273,9 @@
                         </StackPanel>
                     </ToggleButton>
                     <!-- V5: virtual camera options (mirror). -->
-                    <Button MinHeight="44" MinWidth="36" CornerRadius="8" Padding="8"
-                            ToolTipService.ToolTip="Virtual camera options">
-                        <FontIcon Glyph="&#xE713;" FontSize="13" />
+                    <Button MinHeight="44" Width="30" CornerRadius="0,8,8,0" Padding="0" BorderThickness="1"
+                             ToolTipService.ToolTip="Virtual camera options">
+                        <FontIcon Glyph="&#xE70D;" FontSize="8" Opacity="0.72" />
                         <Button.Flyout>
                             <Flyout Placement="Top">
                                 <StackPanel Spacing="10" MinWidth="230">
@@ -1256,6 +1295,7 @@
                             </Flyout>
                         </Button.Flyout>
                     </Button>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->

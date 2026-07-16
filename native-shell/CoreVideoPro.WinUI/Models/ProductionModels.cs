@@ -201,6 +201,42 @@ public partial class CaptureDevice : ObservableObject
     public required IReadOnlyList<CaptureDeviceInput> Inputs { get; init; }
     public required string SelectedInputId { get; set; }
 
+    private bool _isBrowserOverlayOnAir;
+    public bool IsBrowserOverlayOnAir
+    {
+        get => _isBrowserOverlayOnAir;
+        set
+        {
+            if (SetProperty(ref _isBrowserOverlayOnAir, value))
+            {
+                OnPropertyChanged(nameof(BrowserOverlayActionLabel));
+                OnPropertyChanged(nameof(BrowserOverlayStatusLabel));
+            }
+        }
+    }
+
+    public string BrowserOverlayActionLabel => IsBrowserOverlayOnAir ? "DSK out" : "DSK in";
+
+    public string BrowserOverlayStatusLabel => IsBrowserOverlayOnAir ? "On Program" : "Off air";
+
+    private bool _isBrowserOverlayInPreview;
+    public bool IsBrowserOverlayInPreview
+    {
+        get => _isBrowserOverlayInPreview;
+        set
+        {
+            if (SetProperty(ref _isBrowserOverlayInPreview, value))
+            {
+                OnPropertyChanged(nameof(BrowserOverlayPreviewActionLabel));
+                OnPropertyChanged(nameof(BrowserOverlayPreviewStatusLabel));
+            }
+        }
+    }
+
+    public string BrowserOverlayPreviewActionLabel => IsBrowserOverlayInPreview ? "Clear PVW" : "Preview";
+
+    public string BrowserOverlayPreviewStatusLabel => IsBrowserOverlayInPreview ? "Staged on Preview" : "Not staged";
+
     private string? _assignedAudioDeviceId;
     public string? AssignedAudioDeviceId
     {
