@@ -35,9 +35,24 @@ public sealed class OperatorUiTelemetryPlacementTests
 
         Assert.DoesNotContain("Header=\"Diagnostics\"", audioXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.AudioMonitorEngineStatus", audioXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.LocalAudioSourceStatus", audioXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.AudioMonitorEngineStatus", outputXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.LocalAudioSourceStatus", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("COREVIDEO_FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MasterBusProcessing_UsesAnOrderedAlwaysVisibleSignalChain()
+    {
+        var xaml = ReadView("AudioPage.xaml");
+
+        Assert.Contains("Master bus processing", xaml, StringComparison.Ordinal);
+        Assert.Contains("01  INPUT", xaml, StringComparison.Ordinal);
+        Assert.Contains("06  SAFETY LIMITER", xaml, StringComparison.Ordinal);
+        Assert.Contains("Program L/R · ordered pre-output signal chain", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"Mastering rack\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("land next", xaml, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ReadView(string fileName)

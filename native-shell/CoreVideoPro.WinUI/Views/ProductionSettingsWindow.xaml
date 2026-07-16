@@ -528,7 +528,7 @@
                                               MinWidth="96"
                                               VerticalAlignment="Bottom" />
                             </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
+                            <TextBlock Text="{x:Bind ViewModel.LocalAudioOperatorStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                             <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceRecommendation, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}"

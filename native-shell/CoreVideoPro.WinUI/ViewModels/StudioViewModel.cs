@@ -705,6 +705,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
     public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
+    private string _audioProcessingTargetsSignature = string.Empty;
 
     public string CaptionQualitySummary =>
         ProductionStateHelper.CaptionQualitySummary(
@@ -1017,6 +1018,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LocalAudioSourceEnabled
             ? ResolveLocalAudioSourceStatus()
             : "Local machine audio source disabled";
+
+    public string LocalAudioOperatorStatus =>
+        LocalAudioSourceEnabled
+            ? ResolveLocalAudioOperatorStatus()
+            : "Local audio source off";
 
     public string LocalAudioSourceRecommendation =>
         LocalAudioSourceEnabled
@@ -7899,6 +7905,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             capture);
     }
 
+    private string ResolveLocalAudioOperatorStatus()
+    {
+        if (AudioCaptureDevices.All(device =>
+                !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
+        {
+            return "Choose an audio input or loopback device";
+        }
+
+        var source = _bridge.LastSnapshot?.CaptureAudioSources?.Sources.FirstOrDefault(source =>
+            string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
+        if (source is null)
+        {
+            return $"Waiting for {SelectedLocalAudioCaptureDeviceName}";
+        }
+
+        var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
+            ? source.EndpointName
+            : SelectedLocalAudioCaptureDeviceName;
+        if (source.SignalPresent)
+        {
+            return $"Signal detected - {sourceLabel}";
+        }
+
+        if (!source.CaptureStreaming)
+        {
+            return $"Starting - {sourceLabel}";
+        }
+
+        return $"Connected - no signal from {sourceLabel}";
+    }
+
     public static string FormatLocalAudioSourceStatus(
         string? selectedDeviceId,
         string selectedDeviceName,
@@ -8171,6 +8210,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
+        OnPropertyChanged(nameof(LocalAudioOperatorStatus));
         OnPropertyChanged(nameof(LocalAudioSourceRecommendation));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
         OnPropertyChanged(nameof(CaptureAudioSourceSummary));
@@ -10454,7 +10494,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        foreach (var bus in AudioRoutingMatrix.BusHeaders)
+        // The master path is a first-class processing target even before the
+        // routing matrix has hydrated its bus headers. Setup should never open
+        // on an empty target while presenting master-bus controls.
+        var masterTargetId = FormatBusProcessingTargetId("master");
+        targets.Add(new AudioProcessingTargetOption
+        {
+            Id = masterTargetId,
+            Label = ResolveAudioProcessingTargetName(masterTargetId),
+            Kind = ResolveBusProcessingKind("master"),
+            Detail = ResolveBusProcessingDetail("master"),
+            InsertLabel = FormatInsertLabel(ResolveAudioProcessingInserts(masterTargetId))
+        });
+
+        foreach (var bus in AudioRoutingMatrix.BusHeaders.Where(bus =>
+                     !string.Equals(bus.Id, "master", StringComparison.OrdinalIgnoreCase)))
         {
             var targetId = FormatBusProcessingTargetId(bus.Id);
             targets.Add(new AudioProcessingTargetOption
@@ -10467,7 +10521,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        AudioProcessingTargetOptions = targets;
+        var targetsSignature = string.Join(
+            "\u001f",
+            targets.Select(target => string.Join(
+                "\u001e",
+                target.Id,
+                target.Label,
+                target.Kind,
+                target.Detail,
+                target.InsertLabel)));
+        var targetsChanged = !string.Equals(
+            targetsSignature,
+            _audioProcessingTargetsSignature,
+            StringComparison.Ordinal);
+        if (targetsChanged)
+        {
+            // Meter/audio snapshots arrive while the operator may be using this
+            // ComboBox. Keep the existing ItemsSource instance unless the target
+            // structure or insert labels actually changed; replacing it for every
+            // PCM update can reopen the popup or steal focus while someone speaks.
+            AudioProcessingTargetOptions = targets;
+            _audioProcessingTargetsSignature = targetsSignature;
+            OnPropertyChanged(nameof(AudioProcessingTargetOptions));
+        }
+
         if (AudioProcessingTargetOptions.Count > 0 &&
             AudioProcessingTargetOptions.All(target =>
                 !string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal)))
@@ -10475,12 +10552,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedAudioProcessingTargetId = AudioProcessingTargetOptions.First().Id;
         }
 
-        OnPropertyChanged(nameof(AudioProcessingTargetOptions));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
-        OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        if (targetsChanged)
+        {
+            OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
+            OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        }
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
     }
 

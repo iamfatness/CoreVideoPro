@@ -12,6 +12,19 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml" />
             </ResourceDictionary.MergedDictionaries>
+            <Style x:Key="MasterStageBorder" TargetType="Border">
+                <Setter Property="Background" Value="#0C1118" />
+                <Setter Property="BorderBrush" Value="#243746" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="5" />
+                <Setter Property="Padding" Value="10" />
+            </Style>
+            <Style x:Key="MasterStageLabel" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="9" />
+                <Setter Property="FontWeight" Value="Bold" />
+                <Setter Property="CharacterSpacing" Value="80" />
+                <Setter Property="Foreground" Value="#79D6E5" />
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -32,7 +45,7 @@
                 <!-- U2c: SETUP two-region layout — Devices | Processing.
                      (Buses + matrix live on the dedicated ROUTING surface.) -->
                 <ColumnDefinition Width="340" />
-                <ColumnDefinition Width="*" MaxWidth="520" />
+                <ColumnDefinition Width="*" MaxWidth="820" />
             </Grid.ColumnDefinitions>
 
             <!-- Header: mode switch and the first actionable issue. Detailed
@@ -79,10 +92,10 @@
                 </Border>
             </StackPanel>
 
-            <!-- DEVICES and master processing -->
+            <!-- Device I/O stays separate from the master processing path. -->
             <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}" VerticalAlignment="Top">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Devices &amp; master" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="Devices &amp; monitoring" Style="{StaticResource OperatorSectionTitle}" />
                         <Border Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
@@ -138,7 +151,7 @@
                                     <TextBlock Text="Local audio source"
                                                FontSize="12"
                                                FontWeight="SemiBold" />
-                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceStatus, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioOperatorStatus, Mode=OneWay}"
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
@@ -165,89 +178,6 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
-                        <Grid ColumnSpacing="10"
-                              Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="{x:Bind ViewModel.MasterLimiterModeLabel, Mode=OneWay}"
-                                           FontSize="12"
-                                           FontWeight="SemiBold" />
-                                <TextBlock Text="{x:Bind ViewModel.MasterLimiterSummary, Mode=OneWay}"
-                                           FontSize="10"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                            </StackPanel>
-                            <ToggleSwitch Grid.Column="1"
-                                          Header="Master limiter"
-                                          IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
-                        </Grid>
-
-                        <!-- Mastering chain (mastering-chain-spec M1): master-bus
-                             processor; program L/R inherit the processed signal. -->
-                        <Grid ColumnSpacing="8"
-                              Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="Mastering" FontSize="12" FontWeight="SemiBold" />
-                                <TextBlock Text="{x:Bind ViewModel.MasteringActivityLabel, Mode=OneWay}"
-                                           FontSize="10"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <ComboBox Header="Loudness target"
-                                          SelectedIndex="{x:Bind ViewModel.MasteringTargetIndex, Mode=TwoWay}"
-                                          IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                          HorizontalAlignment="Stretch">
-                                    <ComboBoxItem Content="-14 LUFS (Streaming)" />
-                                    <ComboBoxItem Content="-16 LUFS (Podcast)" />
-                                    <ComboBoxItem Content="-23 LUFS (Broadcast)" />
-                                </ComboBox>
-                                <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
-                                        Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}"
-                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}" />
-                                <!-- Mastering rack (mastering-chain-spec M2, TG-style stages):
-                                     simple by default, the full rack one click down. -->
-                                <Expander Header="Mastering rack" IsExpanded="False" HorizontalAlignment="Stretch"
-                                          HorizontalContentAlignment="Stretch"
-                                          IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}">
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="INPUT" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
-                                        <Slider Header="Input gain (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
-                                                Value="{x:Bind ViewModel.MasteringInputGainDb, Mode=TwoWay}" />
-                                        <TextBlock Text="FILTER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
-                                        <Slider Header="High-pass (Hz, 0 = off)" Minimum="0" Maximum="300" StepFrequency="5"
-                                                Value="{x:Bind ViewModel.MasteringHighPassHz, Mode=TwoWay}" />
-                                        <Slider Header="Low-pass (Hz, 0 = off)" Minimum="0" Maximum="20000" StepFrequency="500"
-                                                Value="{x:Bind ViewModel.MasteringLowPassHz, Mode=TwoWay}" />
-                                        <TextBlock Text="TONE" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
-                                        <Slider Header="Low shelf @120Hz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
-                                                Value="{x:Bind ViewModel.MasteringLowShelfDb, Mode=TwoWay}" />
-                                        <Slider Header="Presence @3kHz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
-                                                Value="{x:Bind ViewModel.MasteringPresenceDb, Mode=TwoWay}" />
-                                        <Slider Header="High shelf @10kHz (dB)" Minimum="-12" Maximum="12" StepFrequency="0.5"
-                                                Value="{x:Bind ViewModel.MasteringHighShelfDb, Mode=TwoWay}" />
-                                        <TextBlock Text="LIMITER / SPREADER" FontSize="9" FontWeight="Bold" Foreground="{StaticResource StudioAccentBrush}" />
-                                        <Slider Header="True-peak ceiling (dBFS)" Minimum="-6" Maximum="-0.5" StepFrequency="0.1"
-                                                Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" />
-                                        <Slider Header="Max loudness ride (dB)" Minimum="0" Maximum="12" StepFrequency="0.5"
-                                                Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" />
-                                        <Slider Header="Stereo width (1 = normal, 0 = mono, 2 = wide)" Minimum="0" Maximum="2" StepFrequency="0.05"
-                                                Value="{x:Bind ViewModel.MasteringStereoWidth, Mode=TwoWay}" />
-                                        <TextBlock Text="Reference-matched presets (matchering-style) land next: analyze a reference track, apply its curve here."
-                                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                                                   TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                </Expander>
-                            </StackPanel>
-                            <ToggleSwitch Grid.Column="1"
-                                          Header="Mastering"
-                                          IsOn="{x:Bind ViewModel.MasteringEnabled, Mode=TwoWay}" />
-                        </Grid>
                 </StackPanel>
             </Border>
 
@@ -261,7 +191,157 @@
             <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource OperatorSectionBorder}" VerticalAlignment="Top"
                     Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                 <StackPanel Spacing="10">
-                    <TextBlock Text="Processing target" Style="{StaticResource OperatorSectionTitle}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="Master bus processing" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="Program L/R · ordered pre-output signal chain"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1" Header="MASTER IN"
+                                      OnContent="Active" OffContent="Bypass"
+                                      IsOn="{x:Bind ViewModel.MasteringEnabled, Mode=TwoWay}" />
+                    </Grid>
+
+                    <Border Background="#091017" BorderBrush="#1B5E6B" BorderThickness="1"
+                            CornerRadius="6" Padding="12">
+                        <StackPanel Spacing="10">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="{x:Bind ViewModel.MasteringActivityLabel, Mode=OneWay}"
+                                               FontSize="11" FontWeight="SemiBold" />
+                                    <TextBlock Text="Adjust stages left-to-right. The safety limiter remains independent."
+                                               FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="INPUT  ›  FILTER  ›  TONE  ›  DYNAMICS  ›  IMAGE  ›  LIMIT"
+                                           FontSize="9" FontWeight="Bold" CharacterSpacing="40"
+                                           Foreground="{StaticResource StudioMutedBrush}"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+
+                            <Grid ColumnSpacing="8" RowSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <Border Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="01  INPUT" Style="{StaticResource MasterStageLabel}" />
+                                        <NumberBox Header="Trim · dB" Minimum="-12" Maximum="12"
+                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringInputGainDb, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Column="1" Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="02  FILTER" Style="{StaticResource MasterStageLabel}" />
+                                        <NumberBox Header="High-pass · Hz" Minimum="0" Maximum="300"
+                                                   SmallChange="5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringHighPassHz, Mode=TwoWay}" />
+                                        <NumberBox Header="Low-pass · Hz" Minimum="0" Maximum="20000"
+                                                   SmallChange="500" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringLowPassHz, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Column="2" Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="03  TONE" Style="{StaticResource MasterStageLabel}" />
+                                        <NumberBox Header="Low 120 Hz · dB" Minimum="-12" Maximum="12"
+                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringLowShelfDb, Mode=TwoWay}" />
+                                        <NumberBox Header="Presence 3 kHz · dB" Minimum="-12" Maximum="12"
+                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringPresenceDb, Mode=TwoWay}" />
+                                        <NumberBox Header="High 10 kHz · dB" Minimum="-12" Maximum="12"
+                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringHighShelfDb, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Row="1" Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="04  DYNAMICS" Style="{StaticResource MasterStageLabel}" />
+                                        <Slider Header="Glue" Minimum="0" Maximum="1" StepFrequency="0.05"
+                                                IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                Value="{x:Bind ViewModel.MasteringGlueAmount, Mode=TwoWay}" />
+                                        <NumberBox Header="Max loudness ride · dB" Minimum="0" Maximum="12"
+                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="05  LOUDNESS / IMAGE" Style="{StaticResource MasterStageLabel}" />
+                                        <ComboBox Header="Target"
+                                                  IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                  SelectedIndex="{x:Bind ViewModel.MasteringTargetIndex, Mode=TwoWay}"
+                                                  HorizontalAlignment="Stretch">
+                                            <ComboBoxItem Content="-14 LUFS · Streaming" />
+                                            <ComboBoxItem Content="-16 LUFS · Podcast" />
+                                            <ComboBoxItem Content="-23 LUFS · Broadcast" />
+                                        </ComboBox>
+                                        <NumberBox Header="Stereo width · 1.0 = normal" Minimum="0" Maximum="2"
+                                                   SmallChange="0.05" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringStereoWidth, Mode=TwoWay}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource MasterStageBorder}">
+                                    <StackPanel Spacing="7">
+                                        <TextBlock Text="06  SAFETY LIMITER" Style="{StaticResource MasterStageLabel}" />
+                                        <ToggleSwitch Header="Protection" OnContent="In" OffContent="Bypass"
+                                                      IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
+                                        <NumberBox Header="True-peak ceiling · dBFS" Minimum="-6" Maximum="-0.5"
+                                                   SmallChange="0.1" SpinButtonPlacementMode="Compact"
+                                                   IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
+                                                   Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" />
+                                        <TextBlock Text="{x:Bind ViewModel.MasterLimiterSummary, Mode=OneWay}"
+                                                   FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
+                                                   TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Height="1" Background="{StaticResource StudioBorderBrush}" Margin="0,4" />
+                    <TextBlock Text="Inserts &amp; plug-ins" Style="{StaticResource OperatorSectionTitle}" />
+                    <TextBlock Text="Choose the exact channel or bus, then build its insert chain in processing order."
+                               Style="{StaticResource OperatorSummary}" />
+                    <ComboBox Header="Processing target"
+                              ItemsSource="{x:Bind ViewModel.AudioProcessingTargetOptions, Mode=OneWay}"
+                              SelectedValue="{x:Bind ViewModel.SelectedAudioProcessingTargetId, Mode=TwoWay}"
+                              SelectedValuePath="Id"
+                              DisplayMemberPath="Label"
+                              HorizontalAlignment="Stretch" />
+                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetLabel, Mode=OneWay}"
+                               FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetDetail, Mode=OneWay}"
+                               Style="{StaticResource OperatorSummary}" />
                     <!-- U1a: plugin browser — auto-scans on first open, searchable,
                          status in operator words (never phase jargon). -->
                     <StackPanel Spacing="4">
@@ -303,16 +383,6 @@
                             </ItemsRepeater.ItemTemplate>
                         </ItemsRepeater>
                     </StackPanel>
-                    <ComboBox Header="Apply inserts to"
-                              ItemsSource="{x:Bind ViewModel.AudioProcessingTargetOptions, Mode=OneWay}"
-                              SelectedValue="{x:Bind ViewModel.SelectedAudioProcessingTargetId, Mode=TwoWay}"
-                              SelectedValuePath="Id"
-                              DisplayMemberPath="Label"
-                              HorizontalAlignment="Stretch" />
-                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetLabel, Mode=OneWay}"
-                               FontSize="16" FontWeight="SemiBold" />
-                    <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingTargetDetail, Mode=OneWay}"
-                               Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
                             <TextBlock Text="Audio gain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
