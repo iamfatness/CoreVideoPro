@@ -60,6 +60,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _outputPreferencesLoaded;
     private bool _programLowerThirdAutomationSuppressed;
     private bool _applyingStreamingProfile;
+    private bool _suppressMasteringSync;
+    private string _masteringCompareSlot = "A";
+    private MasteringSettings _masteringCompareA = MasteringPresetCatalog.Neutral;
+    private MasteringSettings _masteringCompareB = MasteringPresetCatalog.Neutral;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -899,6 +903,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         !MasteringEnabled
             ? "Bypassed"
             : $"Riding {_bridge.LastSnapshot?.AudioMixSession.MasteringRideDb ?? 0:+0.0;-0.0} dB toward {MasteringTargetLufs:0} LUFS";
+
+    public string MasteringCompareSlot => _masteringCompareSlot;
+
+    public bool IsMasteringCompareA => string.Equals(_masteringCompareSlot, "A", StringComparison.Ordinal);
+
+    public bool IsMasteringCompareB => string.Equals(_masteringCompareSlot, "B", StringComparison.Ordinal);
 
     public string MasterLimiterSummary =>
         MasterLimiterEnabled
@@ -2182,6 +2192,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMasterLimiterEnabledChanged(bool value)
     {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
         RefreshAudioReadoutBindings();
         RefreshTransportState();
         _ = TrySyncMediaCoreAsync();
@@ -2189,24 +2204,147 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMasteringEnabledChanged(bool value)
     {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnMasteringTargetIndexChanged(int value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringTargetIndexChanged(int value) => SyncMasteringControlChange();
 
-    partial void OnMasteringGlueAmountChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringGlueAmountChanged(double value) => SyncMasteringControlChange();
 
-    partial void OnMasteringCeilingDbfsChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringCeilingDbfsChanged(double value) => SyncMasteringControlChange();
 
-    partial void OnMasteringMaxRideDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringInputGainDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringHighPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringLowPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringLowShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringPresenceDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringHighShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringStereoWidthChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringMaxRideDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringInputGainDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringHighPassHzChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringLowPassHzChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringLowShelfDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringPresenceDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringHighShelfDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringStereoWidthChanged(double value) => SyncMasteringControlChange();
+
+    private void SyncMasteringControlChange()
+    {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    [RelayCommand]
+    private void SelectMasteringCompareSlot(string? slotId)
+    {
+        var normalized = string.Equals(slotId, "B", StringComparison.OrdinalIgnoreCase) ? "B" : "A";
+        if (string.Equals(normalized, _masteringCompareSlot, StringComparison.Ordinal))
+        {
+            // A checked ToggleButton can still receive a click. Re-assert the
+            // one-way state so comparison always has exactly one active slot.
+            OnPropertyChanged(normalized == "A" ? nameof(IsMasteringCompareA) : nameof(IsMasteringCompareB));
+            return;
+        }
+
+        if (IsMasteringCompareA)
+        {
+            _masteringCompareA = CaptureMasteringSettings();
+        }
+        else
+        {
+            _masteringCompareB = CaptureMasteringSettings();
+        }
+
+        _masteringCompareSlot = normalized;
+        OnPropertyChanged(nameof(MasteringCompareSlot));
+        OnPropertyChanged(nameof(IsMasteringCompareA));
+        OnPropertyChanged(nameof(IsMasteringCompareB));
+        ApplyMasteringSettings(IsMasteringCompareA ? _masteringCompareA : _masteringCompareB);
+        CommandStatus = $"Master processor recalled comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void ApplyMasteringPreset(string? presetId)
+    {
+        if (string.IsNullOrWhiteSpace(presetId))
+        {
+            return;
+        }
+
+        var settings = MasteringPresetCatalog.Create(presetId);
+        ApplyMasteringSettings(settings);
+        CommandStatus = $"{CultureInfo.InvariantCulture.TextInfo.ToTitleCase(presetId)} mastering starting point applied to comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void ResetMasteringStage(string? stageId)
+    {
+        if (string.IsNullOrWhiteSpace(stageId))
+        {
+            return;
+        }
+
+        ApplyMasteringSettings(MasteringPresetCatalog.ResetStage(CaptureMasteringSettings(), stageId));
+        CommandStatus = $"{CultureInfo.InvariantCulture.TextInfo.ToTitleCase(stageId)} stage reset to neutral.";
+    }
+
+    private MasteringSettings CaptureMasteringSettings() => new(
+        MasteringEnabled,
+        MasteringTargetIndex,
+        MasteringGlueAmount,
+        MasteringCeilingDbfs,
+        MasteringMaxRideDb,
+        MasteringInputGainDb,
+        MasteringHighPassHz,
+        MasteringLowPassHz,
+        MasteringLowShelfDb,
+        MasteringPresenceDb,
+        MasteringHighShelfDb,
+        MasteringStereoWidth,
+        MasterLimiterEnabled);
+
+    private void ApplyMasteringSettings(MasteringSettings settings)
+    {
+        _suppressMasteringSync = true;
+        try
+        {
+            MasteringEnabled = settings.Enabled;
+            MasteringTargetIndex = settings.TargetIndex;
+            MasteringGlueAmount = settings.GlueAmount;
+            MasteringCeilingDbfs = settings.CeilingDbfs;
+            MasteringMaxRideDb = settings.MaxRideDb;
+            MasteringInputGainDb = settings.InputGainDb;
+            MasteringHighPassHz = settings.HighPassHz;
+            MasteringLowPassHz = settings.LowPassHz;
+            MasteringLowShelfDb = settings.LowShelfDb;
+            MasteringPresenceDb = settings.PresenceDb;
+            MasteringHighShelfDb = settings.HighShelfDb;
+            MasteringStereoWidth = settings.StereoWidth;
+            MasterLimiterEnabled = settings.LimiterEnabled;
+        }
+        finally
+        {
+            _suppressMasteringSync = false;
+        }
+
+        if (IsMasteringCompareA)
+        {
+            _masteringCompareA = settings;
+        }
+        else
+        {
+            _masteringCompareB = settings;
+        }
+
+        RefreshAudioReadoutBindings();
+        RefreshTransportState();
+        _ = TrySyncMediaCoreAsync();
+    }
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {

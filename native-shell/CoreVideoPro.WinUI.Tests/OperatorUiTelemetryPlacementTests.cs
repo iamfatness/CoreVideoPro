@@ -52,6 +52,11 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.Contains("06  SAFETY LIMITER", xaml, StringComparison.Ordinal);
         Assert.Contains("Native DSP · Program L/R · ordered pre-output chain", xaml, StringComparison.Ordinal);
         Assert.Contains("controls:MasteringToneCurve", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.SelectMasteringCompareSlotCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.ApplyMasteringPresetCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.ResetMasteringStageCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("A/B stores two complete processor states", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.AudioValidationFirstIssue", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Header=\"Mastering rack\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("land next", xaml, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Advanced · VST3 plug-in browser", xaml, StringComparison.Ordinal);
