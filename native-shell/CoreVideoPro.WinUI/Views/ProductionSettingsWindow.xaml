@@ -505,7 +505,7 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Spacing="14">
                     <TextBlock Text="Audio" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}"
+                    <TextBlock Text="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"
                                Style="{StaticResource OperatorSummary}" />
 
                     <Border Style="{StaticResource OperatorSectionBorder}">
@@ -749,7 +749,7 @@
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.FfmpegRuntimeStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
-                            <TextBlock Text="Package scripts read COREVIDEO_FFMPEG_BIN_DIR or FFMPEG_BIN_DIR. This field also feeds the running media engine so RTMP/RTMPS can launch FFmpeg without restarting the app."
+                            <TextBlock Text="Choose the folder containing ffmpeg.exe when it is not bundled with the app. Changes apply without restarting CoreVideo."
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>

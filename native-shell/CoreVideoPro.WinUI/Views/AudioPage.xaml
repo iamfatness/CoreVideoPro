@@ -35,7 +35,8 @@
                 <ColumnDefinition Width="*" MaxWidth="520" />
             </Grid.ColumnDefinitions>
 
-            <!-- Header: mode switch, first issue, diagnostics drawer -->
+            <!-- Header: mode switch and the first actionable issue. Detailed
+                 engine telemetry lives in the dedicated Health window. -->
             <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Spacing="12">
                 <Border Style="{StaticResource OperatorSectionBorder}">
                     <StackPanel Spacing="10">
@@ -67,58 +68,10 @@
                                     Visibility="{x:Bind ShowPopOutButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                     Command="{x:Bind ViewModel.OpenAudioMixerCommand}" />
                         </Grid>
-                        <!-- C1/C3: the console shows state with meters and lit buttons; the
-                             telemetry wall lives in a drawer for when something is wrong.
-                             The first-issue line stays visible below the expander header. -->
                         <TextBlock Text="{x:Bind ViewModel.AudioValidationFirstIssue, Mode=OneWay}"
                                    FontSize="11"
                                    Foreground="{StaticResource StudioWarningBrush}"
                                    TextWrapping="WrapWholeWords" />
-                        <Expander Header="Diagnostics" IsExpanded="False" HorizontalAlignment="Stretch"
-                                  HorizontalContentAlignment="Stretch"
-                                  Visibility="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <Border Style="{StaticResource OperatorReadoutBorder}">
-                            <StackPanel Spacing="3">
-                                <TextBlock Text="{x:Bind ViewModel.NativeAudioRuntimeStatus, Mode=OneWay}"
-                                           FontSize="12"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="What the meters show"
-                                           FontSize="10"
-                                           Foreground="{StaticResource StudioMutedBrush}" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioMeterSourceSummary, Mode=OneWay}"
-                                           FontSize="12"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioValidationSummary, Mode=OneWay}"
-                                           FontSize="12"
-                                           Foreground="{StaticResource StudioAccentBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioValidationChecklist, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioValidationFirstIssue, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioWarningBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioFullChainValidationSummary, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.CaptureAudioSignalSummary, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.AudioBusTapSummary, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                                <TextBlock Text="{x:Bind ViewModel.CaptureAudioSourceSummary, Mode=OneWay}"
-                                           FontSize="11"
-                                           Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                            </StackPanel>
-                        </Border>
-                        </Expander>
                         <!-- C1: the master loudness/bus/limiter readout trio moved into the
                              console's MASTER strip (big LUFS + meters). -->
 
@@ -140,7 +93,7 @@
                                     <TextBlock Text="Monitor output"
                                                FontSize="12"
                                                FontWeight="SemiBold" />
-                                    <TextBlock Text="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}"
+                                    <TextBlock Text="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}"
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
