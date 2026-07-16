@@ -223,9 +223,6 @@
                             <TextBlock Text="CAPTURE" CharacterSpacing="100" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <TextBlock Text="{x:Bind ViewModel.EngineStatus, Mode=OneWay}" FontSize="11"
-                               Foreground="{StaticResource StudioMutedBrush}" VerticalAlignment="Center" MaxWidth="180"
-                               TextTrimming="CharacterEllipsis" />
                     <Border Background="{x:Bind ViewModel.ZoomPillBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.ZoomPillBorder, Mode=OneWay}" BorderThickness="1"
                             CornerRadius="6" Padding="11,6" VerticalAlignment="Center">
@@ -913,11 +910,6 @@
                                         <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
                                                    FontSize="11"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
-                                        <TextBlock Text="{x:Bind ViewModel.NativeLowerThirdStatus, Mode=OneWay}"
-                                                   FontSize="11"
-                                                   TextWrapping="WrapWholeWords"
-                                                   IsTextSelectionEnabled="True"
-                                                   Foreground="{StaticResource StudioMutedBrush}" />
                                         <Button Content="Rebuild lower third"
                                                 Style="{StaticResource StudioAccentButton}"
                                                 Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}" />
@@ -1337,36 +1329,6 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <StackPanel Spacing="2" MinWidth="56">
-                                <TextBlock Text="{x:Bind ViewModel.Transport.CpuLoadLine, Mode=OneWay}"
-                                           FontSize="10" Foreground="#E8F2EC" />
-                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
-                                    <Border HorizontalAlignment="Left"
-                                            Width="{x:Bind ViewModel.Transport.CpuLoadBarWidth, Mode=OneWay}"
-                                            Height="16"
-                                            Background="#3DDC97" CornerRadius="2" />
-                                </Border>
-                            </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="56">
-                                <TextBlock Text="{x:Bind ViewModel.Transport.MemoryLoadLine, Mode=OneWay}"
-                                           FontSize="10" Foreground="#E8F2EC" />
-                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
-                                    <Border HorizontalAlignment="Left"
-                                            Width="{x:Bind ViewModel.Transport.MemoryLoadBarWidth, Mode=OneWay}"
-                                            Height="16"
-                                            Background="#5B9BD5" CornerRadius="2" />
-                                </Border>
-                            </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="56">
-                                <TextBlock Text="{x:Bind ViewModel.Transport.DiskLoadLine, Mode=OneWay}"
-                                           FontSize="10" Foreground="#E8F2EC" />
-                                <Border Width="56" Height="16" Background="#1A2229" CornerRadius="2">
-                                    <Border HorizontalAlignment="Left"
-                                            Width="{x:Bind ViewModel.Transport.DiskLoadBarWidth, Mode=OneWay}"
-                                            Height="16"
-                                            Background="#F0A85C" CornerRadius="2" />
-                                </Border>
-                            </StackPanel>
                             <StackPanel Spacing="2" MinWidth="72">
                                 <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"

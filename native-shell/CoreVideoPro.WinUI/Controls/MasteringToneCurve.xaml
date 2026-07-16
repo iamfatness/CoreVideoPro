@@ -1,0 +1,10 @@
+<UserControl
+    x:Class="CoreVideoPro.WinUI.Controls.MasteringToneCurve"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    IsHitTestVisible="False">
+
+    <Grid Background="#080D13">
+        <Canvas x:Name="CurveCanvas" />
+    </Grid>
+</UserControl>

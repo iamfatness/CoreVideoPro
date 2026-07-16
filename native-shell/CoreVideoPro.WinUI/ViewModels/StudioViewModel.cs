@@ -60,6 +60,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private bool _outputPreferencesLoaded;
     private bool _programLowerThirdAutomationSuppressed;
     private bool _applyingStreamingProfile;
+    private bool _suppressMasteringSync;
+    private string _masteringCompareSlot = "A";
+    private MasteringSettings _masteringCompareA = MasteringPresetCatalog.Neutral;
+    private MasteringSettings _masteringCompareB = MasteringPresetCatalog.Neutral;
 
     [ObservableProperty]
     private bool _zoomCaptureSubscribed;
@@ -705,6 +709,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public ObservableCollection<AudioParticipantRow> AudioParticipantRows { get; } = [];
 
     public IReadOnlyList<AudioProcessingTargetOption> AudioProcessingTargetOptions { get; private set; } = [];
+    private string _audioProcessingTargetsSignature = string.Empty;
 
     public string CaptionQualitySummary =>
         ProductionStateHelper.CaptionQualitySummary(
@@ -899,6 +904,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? "Bypassed"
             : $"Riding {_bridge.LastSnapshot?.AudioMixSession.MasteringRideDb ?? 0:+0.0;-0.0} dB toward {MasteringTargetLufs:0} LUFS";
 
+    public string MasteringCompareSlot => _masteringCompareSlot;
+
+    public bool IsMasteringCompareA => string.Equals(_masteringCompareSlot, "A", StringComparison.Ordinal);
+
+    public bool IsMasteringCompareB => string.Equals(_masteringCompareSlot, "B", StringComparison.Ordinal);
+
     public string MasterLimiterSummary =>
         MasterLimiterEnabled
             ? "Master protection is armed; activity only lights when peaks reach the ceiling."
@@ -1017,6 +1028,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         LocalAudioSourceEnabled
             ? ResolveLocalAudioSourceStatus()
             : "Local machine audio source disabled";
+
+    public string LocalAudioOperatorStatus =>
+        LocalAudioSourceEnabled
+            ? ResolveLocalAudioOperatorStatus()
+            : "Local audio source off";
 
     public string LocalAudioSourceRecommendation =>
         LocalAudioSourceEnabled
@@ -2176,6 +2192,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMasterLimiterEnabledChanged(bool value)
     {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
         RefreshAudioReadoutBindings();
         RefreshTransportState();
         _ = TrySyncMediaCoreAsync();
@@ -2183,24 +2204,147 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnMasteringEnabledChanged(bool value)
     {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
     }
 
-    partial void OnMasteringTargetIndexChanged(int value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringTargetIndexChanged(int value) => SyncMasteringControlChange();
 
-    partial void OnMasteringGlueAmountChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringGlueAmountChanged(double value) => SyncMasteringControlChange();
 
-    partial void OnMasteringCeilingDbfsChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringCeilingDbfsChanged(double value) => SyncMasteringControlChange();
 
-    partial void OnMasteringMaxRideDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringInputGainDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringHighPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringLowPassHzChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringLowShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringPresenceDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringHighShelfDbChanged(double value) => _ = TrySyncMediaCoreAsync();
-    partial void OnMasteringStereoWidthChanged(double value) => _ = TrySyncMediaCoreAsync();
+    partial void OnMasteringMaxRideDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringInputGainDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringHighPassHzChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringLowPassHzChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringLowShelfDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringPresenceDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringHighShelfDbChanged(double value) => SyncMasteringControlChange();
+    partial void OnMasteringStereoWidthChanged(double value) => SyncMasteringControlChange();
+
+    private void SyncMasteringControlChange()
+    {
+        if (_suppressMasteringSync)
+        {
+            return;
+        }
+
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    [RelayCommand]
+    private void SelectMasteringCompareSlot(string? slotId)
+    {
+        var normalized = string.Equals(slotId, "B", StringComparison.OrdinalIgnoreCase) ? "B" : "A";
+        if (string.Equals(normalized, _masteringCompareSlot, StringComparison.Ordinal))
+        {
+            // A checked ToggleButton can still receive a click. Re-assert the
+            // one-way state so comparison always has exactly one active slot.
+            OnPropertyChanged(normalized == "A" ? nameof(IsMasteringCompareA) : nameof(IsMasteringCompareB));
+            return;
+        }
+
+        if (IsMasteringCompareA)
+        {
+            _masteringCompareA = CaptureMasteringSettings();
+        }
+        else
+        {
+            _masteringCompareB = CaptureMasteringSettings();
+        }
+
+        _masteringCompareSlot = normalized;
+        OnPropertyChanged(nameof(MasteringCompareSlot));
+        OnPropertyChanged(nameof(IsMasteringCompareA));
+        OnPropertyChanged(nameof(IsMasteringCompareB));
+        ApplyMasteringSettings(IsMasteringCompareA ? _masteringCompareA : _masteringCompareB);
+        CommandStatus = $"Master processor recalled comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void ApplyMasteringPreset(string? presetId)
+    {
+        if (string.IsNullOrWhiteSpace(presetId))
+        {
+            return;
+        }
+
+        var settings = MasteringPresetCatalog.Create(presetId);
+        ApplyMasteringSettings(settings);
+        CommandStatus = $"{CultureInfo.InvariantCulture.TextInfo.ToTitleCase(presetId)} mastering starting point applied to comparison {_masteringCompareSlot}.";
+    }
+
+    [RelayCommand]
+    private void ResetMasteringStage(string? stageId)
+    {
+        if (string.IsNullOrWhiteSpace(stageId))
+        {
+            return;
+        }
+
+        ApplyMasteringSettings(MasteringPresetCatalog.ResetStage(CaptureMasteringSettings(), stageId));
+        CommandStatus = $"{CultureInfo.InvariantCulture.TextInfo.ToTitleCase(stageId)} stage reset to neutral.";
+    }
+
+    private MasteringSettings CaptureMasteringSettings() => new(
+        MasteringEnabled,
+        MasteringTargetIndex,
+        MasteringGlueAmount,
+        MasteringCeilingDbfs,
+        MasteringMaxRideDb,
+        MasteringInputGainDb,
+        MasteringHighPassHz,
+        MasteringLowPassHz,
+        MasteringLowShelfDb,
+        MasteringPresenceDb,
+        MasteringHighShelfDb,
+        MasteringStereoWidth,
+        MasterLimiterEnabled);
+
+    private void ApplyMasteringSettings(MasteringSettings settings)
+    {
+        _suppressMasteringSync = true;
+        try
+        {
+            MasteringEnabled = settings.Enabled;
+            MasteringTargetIndex = settings.TargetIndex;
+            MasteringGlueAmount = settings.GlueAmount;
+            MasteringCeilingDbfs = settings.CeilingDbfs;
+            MasteringMaxRideDb = settings.MaxRideDb;
+            MasteringInputGainDb = settings.InputGainDb;
+            MasteringHighPassHz = settings.HighPassHz;
+            MasteringLowPassHz = settings.LowPassHz;
+            MasteringLowShelfDb = settings.LowShelfDb;
+            MasteringPresenceDb = settings.PresenceDb;
+            MasteringHighShelfDb = settings.HighShelfDb;
+            MasteringStereoWidth = settings.StereoWidth;
+            MasterLimiterEnabled = settings.LimiterEnabled;
+        }
+        finally
+        {
+            _suppressMasteringSync = false;
+        }
+
+        if (IsMasteringCompareA)
+        {
+            _masteringCompareA = settings;
+        }
+        else
+        {
+            _masteringCompareB = settings;
+        }
+
+        RefreshAudioReadoutBindings();
+        RefreshTransportState();
+        _ = TrySyncMediaCoreAsync();
+    }
 
     partial void OnAudioMonitoringEnabledChanged(bool value)
     {
@@ -4633,10 +4777,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(IsAudioShowMode));
         OnPropertyChanged(nameof(IsAudioRoutingSurface));
         OnPropertyChanged(nameof(IsAudioSetupMode));
-        if (IsAudioSetupMode)
-        {
-            EnsureVstPluginScan();  // U1a: SETUP shows the plugin browser — never empty
-        }
     }
 
     public void ToggleSelectedRackInsert(string insertName)
@@ -7899,6 +8039,39 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             capture);
     }
 
+    private string ResolveLocalAudioOperatorStatus()
+    {
+        if (AudioCaptureDevices.All(device =>
+                !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
+        {
+            return "Choose an audio input or loopback device";
+        }
+
+        var source = _bridge.LastSnapshot?.CaptureAudioSources?.Sources.FirstOrDefault(source =>
+            string.Equals(source.CaptureDeviceId, "local-machine-audio", StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceId, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal) ||
+            string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
+        if (source is null)
+        {
+            return $"Waiting for {SelectedLocalAudioCaptureDeviceName}";
+        }
+
+        var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
+            ? source.EndpointName
+            : SelectedLocalAudioCaptureDeviceName;
+        if (source.SignalPresent)
+        {
+            return $"Signal detected - {sourceLabel}";
+        }
+
+        if (!source.CaptureStreaming)
+        {
+            return $"Starting - {sourceLabel}";
+        }
+
+        return $"Connected - no signal from {sourceLabel}";
+    }
+
     public static string FormatLocalAudioSourceStatus(
         string? selectedDeviceId,
         string selectedDeviceName,
@@ -8171,6 +8344,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(SelectedLocalAudioCaptureDeviceName));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
+        OnPropertyChanged(nameof(LocalAudioOperatorStatus));
         OnPropertyChanged(nameof(LocalAudioSourceRecommendation));
         OnPropertyChanged(nameof(CaptureAudioSignalSummary));
         OnPropertyChanged(nameof(CaptureAudioSourceSummary));
@@ -10454,7 +10628,21 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        foreach (var bus in AudioRoutingMatrix.BusHeaders)
+        // The master path is a first-class processing target even before the
+        // routing matrix has hydrated its bus headers. Setup should never open
+        // on an empty target while presenting master-bus controls.
+        var masterTargetId = FormatBusProcessingTargetId("master");
+        targets.Add(new AudioProcessingTargetOption
+        {
+            Id = masterTargetId,
+            Label = ResolveAudioProcessingTargetName(masterTargetId),
+            Kind = ResolveBusProcessingKind("master"),
+            Detail = ResolveBusProcessingDetail("master"),
+            InsertLabel = FormatInsertLabel(ResolveAudioProcessingInserts(masterTargetId))
+        });
+
+        foreach (var bus in AudioRoutingMatrix.BusHeaders.Where(bus =>
+                     !string.Equals(bus.Id, "master", StringComparison.OrdinalIgnoreCase)))
         {
             var targetId = FormatBusProcessingTargetId(bus.Id);
             targets.Add(new AudioProcessingTargetOption
@@ -10467,7 +10655,30 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             });
         }
 
-        AudioProcessingTargetOptions = targets;
+        var targetsSignature = string.Join(
+            "\u001f",
+            targets.Select(target => string.Join(
+                "\u001e",
+                target.Id,
+                target.Label,
+                target.Kind,
+                target.Detail,
+                target.InsertLabel)));
+        var targetsChanged = !string.Equals(
+            targetsSignature,
+            _audioProcessingTargetsSignature,
+            StringComparison.Ordinal);
+        if (targetsChanged)
+        {
+            // Meter/audio snapshots arrive while the operator may be using this
+            // ComboBox. Keep the existing ItemsSource instance unless the target
+            // structure or insert labels actually changed; replacing it for every
+            // PCM update can reopen the popup or steal focus while someone speaks.
+            AudioProcessingTargetOptions = targets;
+            _audioProcessingTargetsSignature = targetsSignature;
+            OnPropertyChanged(nameof(AudioProcessingTargetOptions));
+        }
+
         if (AudioProcessingTargetOptions.Count > 0 &&
             AudioProcessingTargetOptions.All(target =>
                 !string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal)))
@@ -10475,12 +10686,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SelectedAudioProcessingTargetId = AudioProcessingTargetOptions.First().Id;
         }
 
-        OnPropertyChanged(nameof(AudioProcessingTargetOptions));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
-        OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
-        OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        if (targetsChanged)
+        {
+            OnPropertyChanged(nameof(SelectedAudioProcessingTarget));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetLabel));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetKindLabel));
+            OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
+            OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
+        }
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
     }
 
