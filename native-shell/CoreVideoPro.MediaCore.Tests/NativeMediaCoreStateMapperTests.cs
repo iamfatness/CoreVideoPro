@@ -449,6 +449,22 @@ public sealed class NativeMediaCoreStateMapperTests
                 Status = "live",
                 MasterLevel = 42,
                 LoudnessLufs = -18,
+                PluginHost = new NativeMediaCorePluginHost
+                {
+                    Status = "ready",
+                    Plugins =
+                    [
+                        new NativeMediaCorePluginInfo
+                        {
+                            Id = "waves",
+                            Name = "WaveShell",
+                            Probe = "pass",
+                            ClassNames = ["Curves AQ Stereo"]
+                        }
+                    ]
+                },
+                MasteringEnabled = true,
+                MasteringRideDb = 1.5,
                 MixedFrameCount = 12,
                 Summary = "Program mix receiving PCM.",
                 Warnings = []
@@ -471,6 +487,10 @@ public sealed class NativeMediaCoreStateMapperTests
         Assert.Contains(
             "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
             snapshot.AudioMixSession.Warnings);
+        Assert.Equal("ready", snapshot.AudioMixSession.PluginHost.Status);
+        Assert.Equal("Curves AQ Stereo", Assert.Single(snapshot.AudioMixSession.PluginHost.Plugins).ClassNames[0]);
+        Assert.True(snapshot.AudioMixSession.MasteringEnabled);
+        Assert.Equal(1.5, snapshot.AudioMixSession.MasteringRideDb);
         Assert.Contains(
             "local-machine-audio: Audio capture stream is open but no PCM frames have arrived.",
             snapshot.Diagnostics.Warnings);

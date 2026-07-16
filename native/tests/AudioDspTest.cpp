@@ -525,6 +525,52 @@ TEST(AudioDsp, RoutedBusMixWithoutCrosspointsProducesNoBuses) {
   EXPECT_TRUE(buses.empty());
 }
 
+TEST(AudioDsp, RoutedBusMixRunsExternalChannelInsertBeforeRouting) {
+  std::vector<float> sourcePcm(4, 0.5f);
+  const std::vector<std::string> inserts = {"VST:Test Gain"};
+  const std::vector<RoutedAudioSource> sources = {
+      {"a", &sourcePcm, 1, 1.0, 0.0, false, false, &inserts},
+  };
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", 1.0}};
+  int calls = 0;
+  const auto buses = mixRoutedBuses(
+      sources, crosspoints, false, nullptr, nullptr,
+      [&calls](const std::string& insert, std::vector<float>& pcm, double) {
+        ++calls;
+        EXPECT_EQ(insert, "VST:Test Gain");
+        for (auto& sample : pcm) {
+          sample *= 0.5f;
+        }
+        return true;
+      });
+
+  ASSERT_EQ(calls, 1);
+  const auto master = buses.find("master");
+  ASSERT_TRUE(master != buses.end());
+  ASSERT_FALSE(master->second.empty());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.25f) < kTightTol);
+}
+
+TEST(AudioDsp, RoutedBusMixExternalInsertCanFailOpenWithoutChangingAudio) {
+  std::vector<float> sourcePcm(4, 0.5f);
+  const std::vector<std::string> inserts = {"VST:Unavailable"};
+  const std::vector<RoutedAudioSource> sources = {
+      {"a", &sourcePcm, 1, 1.0, 0.0, false, false, &inserts},
+  };
+  const std::vector<RoutedAudioCrosspoint> crosspoints = {{"a", "master", 1.0}};
+  const auto buses = mixRoutedBuses(
+      sources, crosspoints, false, nullptr, nullptr,
+      [](const std::string&, std::vector<float>&, double) {
+        // Host-owned insert is bypassed after a load/deadline failure.
+        return true;
+      });
+
+  const auto master = buses.find("master");
+  ASSERT_TRUE(master != buses.end());
+  ASSERT_FALSE(master->second.empty());
+  EXPECT_TRUE(std::abs(master->second[0] - 0.5f) < kTightTol);
+}
+
 // --- BS.1770 integrated loudness meter ---------------------------------------
 
 TEST(AudioDsp, IntegratedLoudnessSilenceStaysBelowGate) {

@@ -211,7 +211,7 @@ public sealed partial class AudioPage : UserControl
         }
 
         flyout.Items.Add(new MenuFlyoutSeparator());
-        flyout.Items.Add(new MenuFlyoutItem { Text = "VST3 PLUGINS — pass-through until live hosting ships", IsEnabled = false });
+        flyout.Items.Add(new MenuFlyoutItem { Text = "VST3 PLUG-INS — isolated host · fail-open bypass", IsEnabled = false });
         if (viewModel.VstPlugins.Count == 0)
         {
             var hostStatus = viewModel.VstPluginHostSummary;
@@ -225,12 +225,7 @@ public sealed partial class AudioPage : UserControl
             return;
         }
 
-        foreach (var plugin in viewModel.VstPlugins)
-        {
-            var item = new MenuFlyoutItem { Text = plugin.Name, Tag = plugin.Name };
-            item.Click += OnAddVstInsertClicked;
-            flyout.Items.Add(item);
-        }
+        AddValidatedVstItems(flyout, viewModel, OnAddVstInsertClicked);
     }
 
     private void OnAddBuiltInInsertClicked(object sender, RoutedEventArgs e)
@@ -248,9 +243,75 @@ public sealed partial class AudioPage : UserControl
 
     private void OnAddVstInsertClicked(object sender, RoutedEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: string pluginName })
+        if (sender is FrameworkElement { Tag: string pluginSelection })
         {
-            ViewModel?.AddVstInsertToSelectedChannel(pluginName);
+            ViewModel?.AddVstInsertToSelectedChannel(pluginSelection);
+        }
+    }
+
+    private void OnAddProcessingVstFlyoutOpening(object sender, object e)
+    {
+        if (sender is not MenuFlyout flyout || ViewModel is not { } viewModel)
+        {
+            return;
+        }
+
+        viewModel.EnsureVstPluginScan();
+        flyout.Items.Clear();
+        AddValidatedVstItems(flyout, viewModel, OnAddProcessingVstInsertClicked);
+    }
+
+    private void OnAddProcessingVstInsertClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string pluginSelection })
+        {
+            ViewModel?.AddVstInsertToSelectedProcessingTarget(pluginSelection);
+        }
+    }
+
+    private static void AddValidatedVstItems(
+        MenuFlyout flyout,
+        StudioViewModel viewModel,
+        RoutedEventHandler clickHandler)
+    {
+        var added = 0;
+        // Respect the browser search field so large shell bundles (Waves can
+        // expose hundreds of classes) do not create an unusable flyout.
+        foreach (var plugin in viewModel.FilteredVstPlugins)
+        {
+            if (!string.Equals(plugin.Probe, "pass", StringComparison.Ordinal) || plugin.ClassNames.Count == 0)
+            {
+                flyout.Items.Add(new MenuFlyoutItem
+                {
+                    Text = $"{plugin.Name} · {plugin.ProbeLabel}",
+                    IsEnabled = false
+                });
+                continue;
+            }
+
+            foreach (var className in plugin.ClassNames)
+            {
+                var selection = $"VST:{plugin.Name}/{className}";
+                var item = new MenuFlyoutItem
+                {
+                    Text = string.IsNullOrWhiteSpace(plugin.Vendor)
+                        ? $"{className} · {plugin.Name}"
+                        : $"{className} · {plugin.Vendor}",
+                    Tag = selection
+                };
+                item.Click += clickHandler;
+                flyout.Items.Add(item);
+                added++;
+            }
+        }
+
+        if (added == 0)
+        {
+            flyout.Items.Add(new MenuFlyoutItem
+            {
+                Text = viewModel.VstPluginHostSummary,
+                IsEnabled = false
+            });
         }
     }
 

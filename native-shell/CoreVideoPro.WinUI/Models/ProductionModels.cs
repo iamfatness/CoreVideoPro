@@ -108,9 +108,8 @@ public enum StudioTab
     Automation
 }
 
-// C5a: one slot in the selected channel's visible insert rack. Built-ins are
-// processed by the core today; VST slots pass audio through unchanged until
-// live hosting (P2c) ships — the chip says so in words (U1c), never jargon.
+// C5a: one slot in the selected channel's visible insert rack. Built-ins run
+// in the core; VST3 slots report isolated-host processing or fail-open bypass.
 public sealed class InsertSlotItem
 {
     private static readonly Microsoft.UI.Xaml.Media.Brush LiveBrush =
@@ -122,9 +121,10 @@ public sealed class InsertSlotItem
     public required string Name { get; init; }
     public required string SlotLabel { get; init; }
     public bool IsBuiltIn { get; init; }
+    public bool IsProcessing { get; init; }
     public string StatusLabel { get; init; } = "";
     public string StatusTooltip { get; init; } = "";
-    public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn ? LiveBrush : PendingBrush;
+    public Microsoft.UI.Xaml.Media.Brush StatusBrush => IsBuiltIn || IsProcessing ? LiveBrush : PendingBrush;
 }
 
 public sealed class FeedHealthRow

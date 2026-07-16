@@ -2863,6 +2863,11 @@ rpc::Json MediaCore::audioMixSessionState() const {
   int manualCount = 0;
   int soloCount = 0;
   int insertCount = 0;
+  const bool vstHostRunning = pluginHostClient_.ready() && pluginHostClient_.hostAlive();
+  const auto vstHostExchanges = pluginHostClient_.exchanges();
+  const int vstHostStatusCode = pluginHostClient_.statusCode();
+  const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
+  const std::string vstHostError = pluginHostClient_.lastError();
 
   for (const auto& channel : audioChannels_) {
     const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
@@ -2889,9 +2894,6 @@ rpc::Json MediaCore::audioMixSessionState() const {
     if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
     if (!channel.pluginInserts.empty()) {
       insertCount += static_cast<int>(channel.pluginInserts.size());
-      if (warningSet.insert("vst-bridge-scan-only").second) {
-        warnings.emplace_back("VST inserts are configured but live third-party plugin processing requires the dev VST bridge.");
-      }
     }
     if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
       warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
@@ -2899,11 +2901,22 @@ rpc::Json MediaCore::audioMixSessionState() const {
 
     rpc::Json::Array pluginInserts;
     for (const auto& insert : channel.pluginInserts) {
+      const bool isVst = isHostHandledInsertName(insert);
+      const std::string query = vstSelectionQueryFromInsertName(insert);
+      const bool active = isVst && vstHostRunning && vstHostExchanges > 0 &&
+                          vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginActive &&
+                          (query.empty() || vstHostActivePlugin == query ||
+                           query.find(vstHostActivePlugin) != std::string::npos);
+      const bool failed = isVst && vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginFailed &&
+                          !vstHostError.empty();
+      if (failed && warningSet.insert("vst-host-failed:" + insert).second) {
+        warnings.emplace_back("VST3 insert bypassed safely: " + vstHostError);
+      }
       pluginInserts.emplace_back(rpc::Json::Object{
           {"name", insert},
-          {"format", insert.rfind("VST", 0) == 0 ? "vst3" : "builtin"},
-          {"status", insert.rfind("VST", 0) == 0 ? "scan-only" : "available"},
-          {"processingEnabled", false},
+          {"format", isVst ? "vst3" : "builtin"},
+          {"status", !isVst ? "available" : active ? "processing" : failed ? "bypassed" : "starting"},
+          {"processingEnabled", !isVst || active},
       });
     }
 
@@ -4492,9 +4505,58 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     for (const auto& send : work.routingSends) {
       crosspoints.push_back({send.sourceId, send.busId, modules::dbfsToLinear(send.gainDb)});
     }
+    // One fail-open bridge hook for both channel and bus chains. A recognized
+    // host insert always returns true even when unresolved/loading/failed so
+    // no built-in name matcher can accidentally reinterpret it. PCM is copied
+    // back only after a completed isolated-host exchange.
+    const auto processExternalInsert = [this](const std::string& insertName,
+                                              std::vector<float>& pcm,
+                                              double sampleRate) -> bool {
+      if (!isHostHandledInsertName(insertName)) {
+        return false;
+      }
+
+      const std::string vstQuery = vstSelectionQueryFromInsertName(insertName);
+      VstInsertSelection selection;
+      selection.resolved = true;  // legacy host-test names select test gain
+      if (!vstQuery.empty()) {
+        selection = resolveVstInsertForWorker(vstQuery);
+      }
+      if (!selection.resolved || pcm.empty()) {
+        return true;  // recognized, safely bypassed
+      }
+      if (pluginHostClient_.ready()) {
+        pluginHostClient_.exchange(
+            pcm.data(), pcm.size(), 2, static_cast<int>(sampleRate), 4,
+            selection.bundleId, selection.className);
+      } else {
+        ensurePluginHostServeStarted();
+      }
+      return true;
+    };
     const auto tMrb0 = std::chrono::steady_clock::now();
     results.routedBusPcm = modules::mixRoutedBuses(routedSources, crosspoints, work.limiterEnabled,
-                                                   &results.compGainReductionDbBySource, &busLimiterGains_);
+                                                   &results.compGainReductionDbBySource, &busLimiterGains_,
+                                                   processExternalInsert);
+    std::map<std::string, std::vector<std::string>> busInserts;
+    for (const auto& send : work.routingSends) {
+      if (!send.busPluginInserts.empty()) {
+        busInserts[send.busId] = send.busPluginInserts;
+      }
+    }
+    const auto applyOrderedBusInserts = [&](const std::string& busId) {
+      auto pcmIt = results.routedBusPcm.find(busId);
+      const auto insertsIt = busInserts.find(busId);
+      if (pcmIt == results.routedBusPcm.end() || pcmIt->second.empty() || insertsIt == busInserts.end()) {
+        return;
+      }
+      for (const auto& insert : insertsIt->second) {
+        if (processExternalInsert(insert, pcmIt->second, 48000.0)) {
+          continue;
+        }
+        modules::applyBusInsertChain(pcmIt->second.data(), pcmIt->second.size(), 48000.0, {insert});
+      }
+    };
     // BUS OUTPUT ROUTING (mixer topology): aux/custom bus mixes sum into their
     // destinations in two passes around the mastering block. Pass 1 (targets
     // = "master") runs BEFORE mastering so an aux feeding the program is
@@ -4527,6 +4589,10 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     if (!preMasterSends.empty()) {
       relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, preMasterSends));
     }
+    // The master insert chain must run BEFORE Program/Stream/Monitor inherit
+    // the master signal. The previous post-copy placement processed a dead-end
+    // master buffer while the outgoing program retained the unprocessed PCM.
+    applyOrderedBusInserts("master");
     // Mastering chain on the MASTER bus (M1). Topology CONFIRMED by owner
     // 2026-07-06: master and program L/R carry the SAME signal - the chain
     // applies once and pgm-l/pgm-r inherit the processed master.
@@ -4546,16 +4612,41 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
                        results.masteringRideDb, masteringState_.loudnessAvgLufs,
                        work.masteringParams.targetLufs);
         }
-        results.routedBusPcm["pgm-l"] = master->second;
-        results.routedBusPcm["pgm-r"] = master->second;
-        results.routedBusPcm["stream"] = master->second;
-        results.routedBusPcm["mon"] = master->second;
       }
+    }
+    // MASTER is the default program signal even when the built-in mastering
+    // chain is bypassed. An explicitly routed STREAM or MON bus is a deliberate
+    // matrix override and must retain its own mix; only missing/empty program
+    // buses inherit the processed master.
+    if (const auto master = results.routedBusPcm.find("master");
+        master != results.routedBusPcm.end() && !master->second.empty()) {
+      const auto inheritWhenUnrouted = [&](const std::string& busId) {
+        auto target = results.routedBusPcm.find(busId);
+        if (target == results.routedBusPcm.end() || target->second.empty()) {
+          results.routedBusPcm[busId] = master->second;
+        }
+      };
+      inheritWhenUnrouted("pgm-l");
+      inheritWhenUnrouted("pgm-r");
+      inheritWhenUnrouted("stream");
+      inheritWhenUnrouted("mon");
     }
     // Bus sends pass 2: non-master targets, after the mastering-inherit so a
     // cue/aux send into MON or STREAM is not wiped by the inherit copy.
     if (!postMasterSends.empty()) {
       relimitTouchedBuses(modules::applyBusSends(results.routedBusPcm, postMasterSends));
+    }
+    const auto tBic0 = std::chrono::steady_clock::now();
+    for (const auto& [busId, inserts] : busInserts) {
+      if (busId != "master" && !inserts.empty()) {
+        applyOrderedBusInserts(busId);
+      }
+    }
+    const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - tBic0)
+                           .count();
+    if (bicMs >= 20) {
+      std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
     }
     if (debugDir != nullptr) {
       const auto monTap = results.routedBusPcm.find("mon");
@@ -4574,57 +4665,6 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     }
     const auto mrbMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tMrb0).count();
     if (mrbMs >= 20) std::fprintf(stderr, "[audio] mixRoutedBuses %lldms (%zu src, %zu sends)\n", static_cast<long long>(mrbMs), routedSources.size(), work.routingSends.size());
-    if (!results.routedBusPcm.empty()) {
-      std::map<std::string, std::vector<std::string>> busInserts;
-      for (const auto& send : work.routingSends) {
-        if (!send.busPluginInserts.empty()) {
-          busInserts[send.busId] = send.busPluginInserts;
-        }
-      }
-      const auto tBic0 = std::chrono::steady_clock::now();
-      for (auto& [busId, pcm] : results.routedBusPcm) {
-        const auto found = busInserts.find(busId);
-        if (found != busInserts.end() && !pcm.empty()) {
-          // P2b-2: host-handled inserts (vst*/host*) route the bus block
-          // through the out-of-process plugin host with a hard 4ms deadline.
-          // Not ready -> kick the async starter and BYPASS this tick; miss ->
-          // BYPASS with the audio untouched. Built-in inserts always run.
-          // P2c: a "vst:<name>" insert selects a REAL scanned plugin (the host
-          // loads it on demand); plain "vst"/"host" names keep the -6dB test
-          // processor. Unresolvable selections BYPASS loudly (serve.lastError
-          // + rate-capped log) — the exchange never runs with a fake target.
-          const bool wantsHost = std::any_of(found->second.begin(), found->second.end(), isHostHandledInsertName);
-          if (wantsHost) {
-            std::string vstQuery;
-            for (const auto& insertName : found->second) {
-              if (!isHostHandledInsertName(insertName)) {
-                continue;
-              }
-              vstQuery = vstSelectionQueryFromInsertName(insertName);
-              if (!vstQuery.empty()) {
-                break;  // first vst: selection wins (one host slot per bus block)
-              }
-            }
-            VstInsertSelection selection;
-            selection.resolved = true;  // legacy names: empty selection = test processor
-            if (!vstQuery.empty()) {
-              selection = resolveVstInsertForWorker(vstQuery);
-            }
-            if (!selection.resolved) {
-              // loud bypass — built-ins below still run
-            } else if (pluginHostClient_.ready()) {
-              pluginHostClient_.exchange(pcm.data(), pcm.size(), 2, 48000, 4,
-                                         selection.bundleId, selection.className);
-            } else {
-              ensurePluginHostServeStarted();
-            }
-          }
-          modules::applyBusInsertChain(pcm.data(), pcm.size(), 48000.0, found->second);
-        }
-      }
-      const auto bicMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tBic0).count();
-      if (bicMs >= 20) std::fprintf(stderr, "[audio] busInsertChains %lldms\n", static_cast<long long>(bicMs));
-    }
   }
 
   // LOCAL bus tap lookups over the freshly-mixed routedBusPcm (NOT the published member).
@@ -4982,6 +5022,10 @@ void MediaCore::ensurePluginHostServeStarted() {
     if (!exePath.empty()) {
       pluginHostClient_.start(exePath, "serve-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
     }
+    // Allow a new starter after launch failure or a later isolated-host exit.
+    // The audio worker observes ready()==false and requests a replacement;
+    // program audio stays fail-open while that happens.
+    pluginHostServeStarting_.store(false, std::memory_order_release);
   }).detach();
 }
 

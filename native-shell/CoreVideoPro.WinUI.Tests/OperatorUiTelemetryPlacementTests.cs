@@ -63,6 +63,19 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.Contains("IsExpanded=\"False\"", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AudioPage_OffersValidatedVstPluginsWithoutPlaceholderLanguage()
+    {
+        var xaml = ReadView("AudioPage.xaml");
+        var codeBehind = ReadView("AudioPage.xaml.cs");
+
+        Assert.Contains("Add VST3 plug-in", xaml, StringComparison.Ordinal);
+        Assert.Contains("isolated host", codeBehind, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("viewModel.FilteredVstPlugins", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("Add VST3 slot", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("pass-through until live hosting ships", codeBehind, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string ReadView(string fileName)
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);

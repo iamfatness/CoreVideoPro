@@ -37,6 +37,9 @@ public sealed record ControlState
     public bool MasterLimiterOn { get; init; }
     public bool MasteringOn { get; init; }
     public int MasteringTarget { get; init; }
+    public string VstHostStatus { get; init; } = string.Empty;
+    public int VstPluginCount { get; init; }
+    public string VstHostSummary { get; init; } = string.Empty;
 
     public bool VirtualCameraOn { get; init; }
     public string VirtualCameraStatus { get; init; } = string.Empty;

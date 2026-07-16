@@ -4084,6 +4084,20 @@ TEST(PluginHostTransport, ExchangesBlocksWithTheRealHostAndBypassesOnDeath) {
   EXPECT_FALSE(client.exchange(pcm.data(), pcm.size(), 2, 48000, 30));
   EXPECT_TRUE(std::fabs(pcm[0] - 0.25f) < 1e-6);
   EXPECT_TRUE(client.deadlineMisses() > missesBefore);
+  EXPECT_FALSE(client.ready());
+
+  // A dead host is recoverable without restarting CoreVideo.
+  ASSERT_TRUE(client.start(hostPath, "transport-test-2"));
+  processed = false;
+  for (int attempt = 0; attempt < 50 && !processed; ++attempt) {
+    std::fill(pcm.begin(), pcm.end(), 0.5f);
+    processed = client.exchange(pcm.data(), pcm.size(), 2, 48000, 100);
+    if (!processed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  ASSERT_TRUE(processed);
+  EXPECT_TRUE(std::fabs(pcm[0] - 0.5f * 0.5012f) < 1e-4);
   client.stop();
 }
 #endif

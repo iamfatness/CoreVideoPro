@@ -67,6 +67,13 @@ class PluginHostClient {
       return false;
     }
     new (block_) HostAudioBlock();
+    harvestedStatusGeneration_ = 0;
+    {
+      std::lock_guard<std::mutex> lock(statusMutex_);
+      activePlugin_.clear();
+      lastError_.clear();
+      statusCode_ = corevideo::pluginhost::kHostStatusTestProcessor;
+    }
 
     // Spawn the resident host — exact exe path, no shell (see PluginHostScan.h
     // security note), no inherited stdio needed.
@@ -98,6 +105,11 @@ class PluginHostClient {
                 const std::string& pluginBundle = {}, const std::string& pluginClass = {}) {
     using namespace corevideo::pluginhost;
     if (!ready_ || pcm == nullptr || count == 0 || count > static_cast<size_t>(kHostBlockMaxSamples)) {
+      return false;
+    }
+    if (!hostAlive()) {
+      deadlineMisses_.fetch_add(1, std::memory_order_relaxed);
+      stop();
       return false;
     }
 

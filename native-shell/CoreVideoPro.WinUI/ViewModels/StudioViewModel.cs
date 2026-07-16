@@ -1531,8 +1531,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // ---- C5a: the visible insert rack (LV1-style slot chain). Each applied
     // insert is a SLOT in chain order; built-ins process today (#178),
-    // third-party VST3 slots are explicitly "awaiting host" until P2 — shown,
-    // never faked. Signature-gated rebuild (bound-collection churn is the
+    // third-party VST3 slots report isolated-host processing or bypass — never
+    // faked. Signature-gated rebuild (bound-collection churn is the
     // 0xc000027b crash class).
     private IReadOnlyList<InsertSlotItem> _selectedChannelInsertSlots = [];
     private string _insertSlotsSignature = "";
@@ -1542,16 +1542,38 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private static readonly string[] BuiltInInsertNames = ["Noise Gate", "Built-in EQ", "Compressor", "Limiter"];
 
     private static bool IsBuiltInInsert(string name) =>
-        BuiltInInsertNames.Any(builtIn => string.Equals(builtIn, name, StringComparison.OrdinalIgnoreCase)) ||
-        name.Contains("gate", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("eq", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("compressor", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("limiter", StringComparison.OrdinalIgnoreCase);
+        !name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase) &&
+        (BuiltInInsertNames.Any(builtIn => string.Equals(builtIn, name, StringComparison.OrdinalIgnoreCase)) ||
+         name.Contains("gate", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("eq", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("compressor", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("limiter", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsVstInsert(string name) =>
+        name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("VST3", StringComparison.OrdinalIgnoreCase);
+
+    private NativeMediaCorePluginHostServe VstServeState =>
+        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Serve ?? new();
+
+    private bool IsVstInsertProcessing(string name)
+    {
+        var serve = VstServeState;
+        var query = name.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? name[4..].Trim()
+            : name;
+        return serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0 &&
+               (string.Equals(serve.ActivePlugin, query, StringComparison.OrdinalIgnoreCase) ||
+                query.Contains(serve.ActivePlugin, StringComparison.OrdinalIgnoreCase) ||
+                serve.ActivePlugin.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
 
     private void RefreshSelectedChannelInsertSlots()
     {
         var inserts = SelectedAudioMix?.PluginInserts ?? [];
-        var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts);
+        var serve = VstServeState;
+        var signature = (SelectedParticipantId ?? "") + "|" + string.Join("", inserts) +
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}";
         if (string.Equals(signature, _insertSlotsSignature, StringComparison.Ordinal))
         {
             return;
@@ -1559,16 +1581,29 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _insertSlotsSignature = signature;
         _selectedChannelInsertSlots = inserts
-            .Select((name, index) => new InsertSlotItem
+            .Select((name, index) =>
             {
-                Name = name,
-                SlotLabel = $"{index + 1}",
-                IsBuiltIn = IsBuiltInInsert(name),
-                // U1c: truthful status in operator words, never phase jargon.
-                StatusLabel = IsBuiltInInsert(name) ? "LIVE" : "BYPASS",
-                StatusTooltip = IsBuiltInInsert(name)
-                    ? "Processing audio live."
-                    : "Installed, but audio passes through UNCHANGED — live VST processing has not shipped yet. The built-in processors are fully live.",
+                var builtIn = IsBuiltInInsert(name);
+                var processing = !builtIn && IsVstInsertProcessing(name);
+                var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
+                             !string.IsNullOrWhiteSpace(serve.LastError);
+                return new InsertSlotItem
+                {
+                    // Keep the canonical value: removal/reordering use it as
+                    // the insert-chain identity.
+                    Name = name,
+                    SlotLabel = $"{index + 1}",
+                    IsBuiltIn = builtIn,
+                    IsProcessing = processing,
+                    StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
+                    StatusTooltip = builtIn
+                        ? "Processing audio in CoreVideo's native DSP chain."
+                        : processing
+                            ? $"Processing live in the isolated VST3 host ({serve.Exchanges} completed blocks)."
+                            : failed
+                                ? $"Plug-in bypassed; program audio is unchanged. {serve.LastError}"
+                                : "The isolated VST3 host is starting or waiting for PCM; audio remains safely bypassed until processing is proven.",
+                };
             })
             .ToList();
         OnPropertyChanged(nameof(SelectedChannelInsertSlots));
@@ -1766,21 +1801,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
-    public void AddVstInsertToSelectedChannel(string pluginName)
+    public void AddVstInsertToSelectedChannel(string pluginClassName)
     {
-        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginName))
+        if (SelectedAudioMix is not { } mix || string.IsNullOrWhiteSpace(pluginClassName))
         {
             return;
         }
 
-        if (mix.PluginInserts.Any(insert => string.Equals(insert, pluginName, StringComparison.OrdinalIgnoreCase)))
+        var insertName = pluginClassName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? pluginClassName.Trim()
+            : $"VST:{pluginClassName.Trim()}";
+
+        if (mix.PluginInserts.Any(insert => string.Equals(insert, insertName, StringComparison.OrdinalIgnoreCase)))
         {
-            CommandStatus = $"{pluginName} is already on {SelectedParticipant?.Name ?? "selected channel"}";
+            CommandStatus = $"{pluginClassName} is already on {SelectedParticipant?.Name ?? "selected channel"}";
             return;
         }
 
-        mix.PluginInserts.Add(pluginName);
-        CommandStatus = $"{pluginName} added to {SelectedParticipant?.Name ?? "selected channel"} — audio passes through unchanged until live VST processing ships";
+        mix.PluginInserts.Add(insertName);
+        CommandStatus = $"{pluginClassName} added to {SelectedParticipant?.Name ?? "selected channel"}; isolated host starting with fail-open bypass.";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
         NotifySelectedRackChanged();
@@ -1788,9 +1827,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     public string VstBridgeStatusLabel =>
-        SelectedAudioMix?.PluginInserts.Any(insert => insert.StartsWith("VST", StringComparison.OrdinalIgnoreCase)) == true
-            ? "VST3 bridge slot configured - scan/load bridge required for live PCM processing"
-            : "No VST bridge slot on selected channel";
+        SelectedAudioMix?.PluginInserts.Any(IsVstInsert) == true
+            ? FormatVstServeStatus(VstServeState)
+            : "No VST3 insert on selected channel";
 
     public AudioProcessingTargetOption? SelectedAudioProcessingTarget =>
         AudioProcessingTargetOptions.FirstOrDefault(target =>
@@ -1809,9 +1848,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedAudioProcessingTarget?.InsertLabel ?? "No inserts";
 
     public string ProcessingBridgeStatusLabel =>
-        SelectedAudioProcessingInsertLabel.Contains("VST", StringComparison.OrdinalIgnoreCase)
-            ? "VST3 slot is staged for this processing target; live plugin execution still requires the native plugin bridge."
+        ResolveAudioProcessingInserts(NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId)).Any(IsVstInsert)
+            ? FormatVstServeStatus(VstServeState)
             : "Built-in processing settings are synced with the native media core metadata.";
+
+    private static string FormatVstServeStatus(NativeMediaCorePluginHostServe serve) =>
+        serve.Running && serve.StatusCode == 1 && serve.Exchanges > 0
+            ? $"Processing {serve.ActivePlugin} in the isolated VST3 host."
+            : serve.StatusCode == 2 && !string.IsNullOrWhiteSpace(serve.LastError)
+                ? $"Bypassed safely: {serve.LastError}"
+                : serve.DeadlineMisses > 0
+                    ? $"Host starting or missed its deadline ({serve.DeadlineMisses}); audio remains bypassed."
+                    : "Isolated VST3 host starting; audio remains bypassed until the first processed block returns.";
 
     // Status-pill design language: a pill is GREEN (dot + tint + text) when its
     // thing is on/live, RED when off/offline. Capture and Zoom share this so the
@@ -4640,6 +4688,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _vstScanRequested = true;
         CommandStatus = "Scanning VST3 plugins…";
+        if (_applyingProductionPatch)
+        {
+            QueueProductionSyncRetry("vst-scan-during-snapshot");
+            return;
+        }
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -4672,6 +4725,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string _vstPluginHostSignature = "";
     private IReadOnlyList<NativeMediaCorePluginInfo> _filteredVstPlugins = [];
     private string _vstFilteredSignature = "";
+    private string _vstServeSignature = "";
     private string _vstPluginFilter = "";
     private DateTime? _vstScanObservedAt;
 
@@ -4696,13 +4750,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public IReadOnlyList<NativeMediaCorePluginInfo> FilteredVstPlugins => _filteredVstPlugins;
 
+    public string VstHostStatus =>
+        _bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent";
+
     public string VstPluginHostSummary =>
         (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
         {
             "ready" =>
-                $"{_vstPlugins.Count} VST3 plugin(s) installed" +
+                $"{_vstPlugins.Sum(plugin => plugin.ClassNames.Count)} validated VST3 processor(s)" +
                 (_vstScanObservedAt is { } at ? $" · scanned {at:HH:mm}" : "") +
-                " — installed plugins pass audio through unchanged until live hosting ships",
+                " · isolated hosting available",
+            "probing" => "Validating installed VST3 plug-ins in isolated processes…",
             "scanning" => "Scanning for installed VST3 plugins…",
             "error" => "Plugin scan failed — see media-core.log",
             _ => "Looking for installed VST3 plugins…"
@@ -4711,22 +4769,34 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void RefreshVstPluginHostFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
         var host = snapshot.AudioMixSession.PluginHost;
-        var signature = host.Status + "|" + host.Plugins.Count + "|" +
-                        (host.Plugins.Count > 0 ? host.Plugins[0].Id + host.Plugins[^1].Id : "");
-        if (string.Equals(signature, _vstPluginHostSignature, StringComparison.Ordinal))
+        var signature = host.Status + "|" + string.Join(
+            "\u001f",
+            host.Plugins.Select(plugin =>
+                $"{plugin.Id}\u001e{plugin.Probe}\u001e{string.Join("\u001d", plugin.ClassNames)}"));
+        if (!string.Equals(signature, _vstPluginHostSignature, StringComparison.Ordinal))
         {
-            return;  // nothing changed — no notify, no ItemsSource swap
+            _vstPluginHostSignature = signature;
+            _vstPlugins = host.Plugins;
+            if (string.Equals(host.Status, "ready", StringComparison.Ordinal))
+            {
+                _vstScanObservedAt = DateTime.Now;
+            }
+            OnPropertyChanged(nameof(VstPlugins));
+            OnPropertyChanged(nameof(VstHostStatus));
+            OnPropertyChanged(nameof(VstPluginHostSummary));
+            RefreshFilteredVstPlugins();
         }
 
-        _vstPluginHostSignature = signature;
-        _vstPlugins = host.Plugins;
-        if (string.Equals(host.Status, "ready", StringComparison.Ordinal))
+        var serve = host.Serve;
+        var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
+                             $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}";
+        if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
-            _vstScanObservedAt = DateTime.Now;
+            _vstServeSignature = serveSignature;
+            OnPropertyChanged(nameof(VstBridgeStatusLabel));
+            OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+            RefreshSelectedChannelInsertSlots();
         }
-        OnPropertyChanged(nameof(VstPlugins));
-        OnPropertyChanged(nameof(VstPluginHostSummary));
-        RefreshFilteredVstPlugins();
     }
 
     private void RefreshFilteredVstPlugins()
@@ -4743,7 +4813,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : _vstPlugins
                 .Where(plugin =>
                     plugin.Name.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase) ||
-                    plugin.Vendor.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase))
+                    plugin.Vendor.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase) ||
+                    plugin.ClassNames.Any(className =>
+                        className.Contains(_vstPluginFilter, StringComparison.OrdinalIgnoreCase)))
                 .ToList();
         OnPropertyChanged(nameof(FilteredVstPlugins));
     }
@@ -4822,7 +4894,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         mix.PluginInserts.Add(normalized);
         CommandStatus = normalized.StartsWith("VST", StringComparison.OrdinalIgnoreCase)
-            ? $"Added {normalized} scan slot. Live VST processing requires the native bridge."
+            ? $"Added {normalized}. The isolated VST3 host will start when audio reaches this insert."
             : $"Added {normalized} to {SelectedParticipant?.Name ?? "selected channel"}";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
@@ -4884,6 +4956,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
+    }
+
+    public void AddVstInsertToSelectedProcessingTarget(string pluginClassName)
+    {
+        if (string.IsNullOrWhiteSpace(pluginClassName))
+        {
+            return;
+        }
+
+        var insertName = pluginClassName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? pluginClassName.Trim()
+            : $"VST:{pluginClassName.Trim()}";
+        AddAudioProcessingInsert(insertName);
     }
 
     [RelayCommand]
@@ -8633,6 +8718,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         audioRoutingSends = EnsureDefaultZoomAudioRoutingSends(
             audioRoutingSends,
             RoomParticipantsForInputs.Select(participant => participant.Id).ToList())
+            .ToList();
+        // Default/fallback sends are synthesized after the matrix rows above.
+        // Attach each bus's insert chain here so MASTER VST processing remains
+        // live even when a source is using an implicit default route.
+        audioRoutingSends = audioRoutingSends
+            .Select(send => send with
+            {
+                BusPluginInserts = ResolveAudioProcessingInserts(FormatBusProcessingTargetId(send.BusId))
+            })
             .ToList();
 
         RefreshAudioMixChannels();

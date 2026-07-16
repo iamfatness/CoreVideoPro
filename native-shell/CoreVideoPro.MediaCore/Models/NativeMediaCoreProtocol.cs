@@ -428,6 +428,17 @@ public sealed class NativeMediaCorePluginHost
 {
     public string Status { get; init; } = "absent";
     public IReadOnlyList<NativeMediaCorePluginInfo> Plugins { get; init; } = [];
+    public NativeMediaCorePluginHostServe Serve { get; init; } = new();
+}
+
+public sealed class NativeMediaCorePluginHostServe
+{
+    public bool Running { get; init; }
+    public long Exchanges { get; init; }
+    public long DeadlineMisses { get; init; }
+    public string ActivePlugin { get; init; } = string.Empty;
+    public int StatusCode { get; init; }
+    public string LastError { get; init; } = string.Empty;
 }
 
 public sealed class NativeMediaCorePluginInfo
@@ -436,6 +447,7 @@ public sealed class NativeMediaCorePluginInfo
     public string Name { get; init; } = string.Empty;
     public string Vendor { get; init; } = string.Empty;
     public string Probe { get; init; } = "pending";
+    public IReadOnlyList<string> ClassNames { get; init; } = [];
 
     /// <summary>Probe verdict in operator words (U1a). Core emits pending|pass|fail.</summary>
     public string ProbeLabel => Probe switch
