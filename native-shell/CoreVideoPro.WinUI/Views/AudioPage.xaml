@@ -562,9 +562,46 @@
                     </Border>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
-                            <TextBlock Text="Insert chain" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="SIGNAL FLOW · TOP TO BOTTOM" FontSize="9" FontWeight="Bold"
+                                       Foreground="{StaticResource StudioMutedBrush}" />
+                            <ItemsRepeater ItemsSource="{x:Bind ViewModel.SelectedAudioProcessingSlots, Mode=OneWay}">
+                                <ItemsRepeater.Layout>
+                                    <StackLayout Orientation="Vertical" Spacing="4" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate x:DataType="models:InsertSlotItem">
+                                        <Grid ColumnSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Tag="{x:Bind Name}" Padding="8,5"
+                                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                                    Click="OnProcessingSlotClicked"
+                                                    ToolTipService.ToolTip="{x:Bind StatusTooltip}">
+                                                <Grid ColumnSpacing="7">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="28" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{x:Bind SlotLabel}" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <TextBlock Grid.Column="1" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="2" Text="{x:Bind StatusLabel}" FontSize="9" FontWeight="Bold"
+                                                               Foreground="{x:Bind StatusBrush}" />
+                                                </Grid>
+                                            </Button>
+                                            <Button Grid.Column="1" Content="×" Tag="{x:Bind Name}" Padding="8,4"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Click="OnRemoveProcessingSlotClicked"
+                                                    ToolTipService.ToolTip="Remove this processor" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
                             <TextBlock Text="{x:Bind ViewModel.SelectedAudioProcessingInsertLabel, Mode=OneWay}"
-                                       FontSize="12" TextWrapping="WrapWholeWords" />
+                                       FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                       TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
                     <Grid ColumnSpacing="8" RowSpacing="8">
@@ -597,10 +634,10 @@
                                 Content="Clear chain"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
-                        <Button Grid.Row="2" Grid.ColumnSpan="2"
-                                Content="Open VST3 plug-in controls"
-                                Style="{StaticResource OperatorGhostButton}"
-                                Click="OnOpenProcessingVstControlsClicked" />
+                        <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
+                                   Text="Select a VST3 slot above to open that plug-in's native controls. Plug-in failure always bypasses safely."
+                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                                   TextWrapping="WrapWholeWords" />
                     </Grid>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">

@@ -292,11 +292,28 @@ public sealed partial class AudioPage : UserControl
         }
     }
 
-    private async void OnOpenProcessingVstControlsClicked(object sender, RoutedEventArgs e)
+    private async void OnProcessingSlotClicked(object sender, RoutedEventArgs e)
     {
-        if (ViewModel is { } viewModel)
+        if (sender is not FrameworkElement { Tag: string insertName } || ViewModel is not { } viewModel)
         {
-            await viewModel.OpenSelectedAudioProcessingVstControlsAsync();
+            return;
+        }
+
+        if (insertName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase) ||
+            insertName.Contains("VST3", StringComparison.OrdinalIgnoreCase))
+        {
+            await viewModel.OpenVstControlsAsync(insertName);
+            return;
+        }
+
+        viewModel.CommandStatus = $"{insertName} is live native processing; adjust it in the master processor above.";
+    }
+
+    private void OnRemoveProcessingSlotClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string insertName })
+        {
+            ViewModel?.RemoveAudioProcessingInsert(insertName);
         }
     }
 

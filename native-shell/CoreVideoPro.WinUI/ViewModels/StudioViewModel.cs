@@ -1867,6 +1867,22 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return OpenVstControlsAsync(insert);
     }
 
+    public void RemoveAudioProcessingInsert(string insertName)
+    {
+        var targetId = NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId);
+        var inserts = ResolveAudioProcessingInsertList(targetId);
+        var removed = inserts.RemoveAll(candidate =>
+            string.Equals(candidate, insertName, StringComparison.OrdinalIgnoreCase));
+        if (removed == 0) return;
+
+        CommandStatus = $"Removed {insertName} from {ResolveAudioProcessingTargetName(targetId)}";
+        RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
+        RefreshAudioParticipantRows();
+        RefreshAudioReadoutBindings();
+        _ = TrySyncMediaCoreAsync();
+    }
+
     public AudioProcessingTargetOption? SelectedAudioProcessingTarget =>
         AudioProcessingTargetOptions.FirstOrDefault(target =>
             string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal));
@@ -1882,6 +1898,46 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     public string SelectedAudioProcessingInsertLabel =>
         SelectedAudioProcessingTarget?.InsertLabel ?? "No inserts";
+
+    private IReadOnlyList<InsertSlotItem> _selectedAudioProcessingSlots = [];
+    private string _audioProcessingSlotsSignature = string.Empty;
+
+    public IReadOnlyList<InsertSlotItem> SelectedAudioProcessingSlots => _selectedAudioProcessingSlots;
+
+    private void RefreshSelectedAudioProcessingSlots()
+    {
+        var inserts = ResolveAudioProcessingInserts(NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId));
+        var serve = VstServeState;
+        var signature = (SelectedAudioProcessingTargetId ?? string.Empty) + "|" + string.Join("\u0001", inserts) +
+                        $"|host:{serve.Running}:{serve.StatusCode}:{serve.ActivePlugin}:{serve.LastError}:" +
+                        $"{serve.EditorStatusCode}:{serve.EditorActivePlugin}:{serve.EditorLastError}";
+        if (string.Equals(signature, _audioProcessingSlotsSignature, StringComparison.Ordinal)) return;
+
+        _audioProcessingSlotsSignature = signature;
+        _selectedAudioProcessingSlots = inserts.Select((name, index) =>
+        {
+            var builtIn = IsBuiltInInsert(name);
+            var processing = !builtIn && IsVstInsertProcessing(name);
+            var failed = !builtIn && IsVstInsert(name) && serve.StatusCode == 2 &&
+                         !string.IsNullOrWhiteSpace(serve.LastError);
+            return new InsertSlotItem
+            {
+                Name = name,
+                SlotLabel = $"{index + 1:00}",
+                IsBuiltIn = builtIn,
+                IsProcessing = processing,
+                StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
+                StatusTooltip = builtIn
+                    ? "Processing in the native DSP chain."
+                    : processing
+                        ? $"Processing in the isolated VST3 host ({serve.Exchanges} completed blocks). Click to open its controls."
+                        : failed
+                            ? $"Safely bypassed; program audio is unchanged. {serve.LastError}"
+                            : "Waiting for proven PCM processing; program audio passes safely until the host is ready. Click to open its controls."
+            };
+        }).ToList();
+        OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
+    }
 
     public string ProcessingBridgeStatusLabel =>
         ResolveAudioProcessingInserts(NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId)).Any(IsVstInsert)
@@ -2560,6 +2616,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SelectedAudioProcessingTargetDetail));
         OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+        RefreshSelectedAudioProcessingSlots();
     }
 
     partial void OnFfmpegBinDirectoryChanged(string value)
@@ -4825,13 +4882,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         var serve = host.Serve;
         var serveSignature = $"{serve.Running}|{serve.StatusCode}|{serve.ActivePlugin}|{serve.LastError}|" +
-                             $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}";
+                             $"{serve.DeadlineMisses}|{(serve.Exchanges > 0)}|" +
+                             $"{serve.EditorStatusCode}|{serve.EditorActivePlugin}|{serve.EditorLastError}";
         if (!string.Equals(serveSignature, _vstServeSignature, StringComparison.Ordinal))
         {
             _vstServeSignature = serveSignature;
             OnPropertyChanged(nameof(VstBridgeStatusLabel));
             OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
             RefreshSelectedChannelInsertSlots();
+            RefreshSelectedAudioProcessingSlots();
         }
     }
 
@@ -4989,6 +5048,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         inserts.Add(normalized);
         CommandStatus = $"{normalized} added to {ResolveAudioProcessingTargetName(targetId)}";
         RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
@@ -5019,6 +5079,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ResolveAudioProcessingInsertList(targetId).Clear();
         CommandStatus = $"Insert chain cleared for {ResolveAudioProcessingTargetName(targetId)}";
         RefreshAudioProcessingTargets();
+        RefreshSelectedAudioProcessingSlots();
         RefreshAudioParticipantRows();
         RefreshAudioReadoutBindings();
         _ = TrySyncMediaCoreAsync();
@@ -10825,6 +10886,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(SelectedAudioProcessingInsertLabel));
         }
         OnPropertyChanged(nameof(ProcessingBridgeStatusLabel));
+        RefreshSelectedAudioProcessingSlots();
     }
 
     private static string FormatInsertLabel(IReadOnlyList<string> inserts) =>

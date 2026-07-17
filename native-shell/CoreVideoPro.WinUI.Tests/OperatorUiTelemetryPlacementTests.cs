@@ -61,6 +61,10 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("land next", xaml, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Advanced · VST3 plug-in browser", xaml, StringComparison.Ordinal);
         Assert.Contains("IsExpanded=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SIGNAL FLOW · TOP TO BOTTOM", xaml, StringComparison.Ordinal);
+        Assert.Contains("OnProcessingSlotClicked", xaml, StringComparison.Ordinal);
+        Assert.Contains("OnRemoveProcessingSlotClicked", xaml, StringComparison.Ordinal);
+        Assert.Contains("Plug-in failure always bypasses safely", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
