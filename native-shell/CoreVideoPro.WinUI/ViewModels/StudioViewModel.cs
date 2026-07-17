@@ -12551,21 +12551,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (!lowerThirdEnabled || source is null)
         {
-            // Idempotent: only push a hidden key (and re-sync the media core) when the key
-            // ACTUALLY changes. RefreshSceneCompositionState(program) calls this on every
-            // production-sync response — it runs via the dispatcher-scheduled
-            // SchedulePreviewRoutingRefresh, which fires AFTER ApplyLiveProductionPatch clears
-            // _applyingProductionPatch. So an unconditional TrySyncMediaCoreAsync() here re-armed
-            // a self-sustaining production-sync loop (~13/s back-to-back) that starved the render
-            // (frozen preview) and fail-fast-crashed WinUI (CoreMessagingXP 0xc000027b). When the
-            // lower third is already hidden (the steady state) we now do nothing -> loop broken.
-            var hidden = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
-            if (ProgramLowerThirdKey != hidden)
+            // Keep the shell preview and compositor on the same out phase.
+            // Jumping directly to hidden made the UI vanish while the native
+            // graphic was still moving and let refreshes assert conflicting states.
+            if (ProgramLowerThirdKey.IsVisible &&
+                !string.Equals(ProgramLowerThirdKey.Phase, "building-out", StringComparison.Ordinal))
             {
                 _lowerThirdKeyTransitionCts?.Cancel();
                 _lowerThirdTargetSourceId = string.Empty;
-                ProgramLowerThirdKey = hidden;
-                _ = TrySyncMediaCoreAsync();
+                var outTransitionCts = new CancellationTokenSource();
+                _lowerThirdKeyTransitionCts = outTransitionCts;
+                _ = RunLowerThirdKeyOutAsync(outTransitionCts.Token);
             }
             return;
         }
@@ -12634,6 +12630,27 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 () => NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
                 cancellationToken).ConfigureAwait(true);
             ProgramLowerThirdKey = BuildLowerThirdKey(source, "on-air");
+            _ = TrySyncMediaCoreAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task RunLowerThirdKeyOutAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProgramLowerThirdKey = ProgramLowerThirdKey with
+            {
+                Phase = "building-out",
+                BuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs)
+            };
+            _ = TrySyncMediaCoreAsync();
+            await WaitForLowerThirdPhaseAsync(
+                () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
+                cancellationToken).ConfigureAwait(true);
+            ProgramLowerThirdKey = LowerThirdKeyState.Hidden(Overlays.LowerThirdPosition);
             _ = TrySyncMediaCoreAsync();
         }
         catch (OperationCanceledException)

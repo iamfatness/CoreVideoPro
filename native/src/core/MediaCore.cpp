@@ -3775,16 +3775,18 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
 
 void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
   overlayAnimationClockMs_ += frameIntervalMs;
-  // A keyPhase transition completes over a fixed wall-clock window so the
-  // animation is frame-rate independent and deterministic for a given fps.
-  constexpr double kPhaseDurationMs = 420.0;
-  const float step = kPhaseDurationMs > 0.0
-                         ? static_cast<float>(frameIntervalMs / kPhaseDurationMs)
-                         : 1.f;
-
   std::vector<std::string> retired;
   for (auto& [overlayId, asset] : overlayAssets_) {
     if (asset.keyPhase == "building-in" || asset.keyPhase == "building-out") {
+      // The shell and compositor must share one timing contract. Using the old
+      // fixed 420 ms clock here while the shell waited for the operator's
+      // buildInMs/buildOutMs caused the core to settle/retire a key early and
+      // then recreate it on the next phase command -- the visible bounce.
+      const double phaseDurationMs = static_cast<double>(
+          asset.keyPhase == "building-in" ? asset.buildInMs : asset.buildOutMs);
+      const float step = phaseDurationMs > 0.0
+                             ? static_cast<float>(frameIntervalMs / phaseDurationMs)
+                             : 1.f;
       asset.keyProgress = std::min(1.f, asset.keyProgress + step);
       if (asset.keyProgress >= 1.f) {
         if (asset.keyPhase == "building-in") {

@@ -771,6 +771,41 @@ TEST(MediaCoreCommand, StableOverlayIdDoesNotDuplicateKeyLayer) {
   EXPECT_EQ(lowerThird.get("buildOutMs")->asNumber(), 275);
 }
 
+TEST(MediaCoreCommand, LowerThirdAnimationHonorsConfiguredBuildDurations) {
+  corevideo::core::MediaCore mediaCore;
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-in"},
+          {"buildInMs", 1000},
+          {"buildOutMs", 900},
+      },
+  });
+
+  // Twelve default render ticks are roughly 400 ms. The former hard-coded
+  // 420 ms clock settled here even though the operator requested one second.
+  for (int i = 0; i < 11; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "building-in");
+  EXPECT_LT(overlays->asArray().front().get("keyProgress")->asNumber(), 0.75);
+
+  for (int i = 0; i < 55; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "on-air");
+}
+
 TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {
   corevideo::core::MediaCore mediaCore;
   const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{
