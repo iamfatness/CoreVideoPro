@@ -391,9 +391,9 @@ inline float overlayEase(float t) {
 
 // Resolves the animated keying transform for an overlay layer from its phase
 // and normalized progress. "building-in" slides from its horizontal anchor +
-// fades in, "on-air" is fully settled, "building-out" returns toward that
-// anchor + fades out, and "hidden" is invisible. Horizontal motion keeps a
-// lower third away from the bottom edge of Program throughout the transition.
+// fades in, "on-air" is fully settled, "building-out" performs a stationary
+// linear dissolve, and "hidden" is invisible. The stationary exit avoids edge
+// crossings and makes every build-out frame a monotonic reduction in opacity.
 inline OverlayKeyTransform computeOverlayKeyTransform(
     const std::string& keyPhase,
     float keyProgress,
@@ -424,9 +424,8 @@ inline OverlayKeyTransform computeOverlayKeyTransform(
     return transform;
   }
   if (keyPhase == "building-out") {
-    const float eased = overlayEase(progress);
-    transform.alpha = 1.f - eased;
-    transform.slideX = slideSign * slideTravel * eased;
+    transform.alpha = 1.f - progress;
+    transform.slideX = 0.f;
     transform.slideY = 0.f;
     transform.contentScale = 1.f;
     if (transform.alpha <= 0.001f) {
