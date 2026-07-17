@@ -390,9 +390,10 @@ inline float overlayEase(float t) {
 }
 
 // Resolves the animated keying transform for an overlay layer from its phase
-// and normalized progress. "building-in" slides up + fades in, "on-air" is
-// fully settled, "building-out" slides down + fades out, "hidden" is invisible.
-// keyPosition controls the slide direction's anchor (lower vs upper third).
+// and normalized progress. "building-in" slides from its horizontal anchor +
+// fades in, "on-air" is fully settled, "building-out" returns toward that
+// anchor + fades out, and "hidden" is invisible. Horizontal motion keeps a
+// lower third away from the bottom edge of Program throughout the transition.
 inline OverlayKeyTransform computeOverlayKeyTransform(
     const std::string& keyPhase,
     float keyProgress,
@@ -400,30 +401,33 @@ inline OverlayKeyTransform computeOverlayKeyTransform(
     float overlayHeight = 0.16f) {
   OverlayKeyTransform transform;
   const float progress = std::clamp(keyProgress, 0.f, 1.f);
-  // Lower-third slides up from below; upper third slides down from above.
-  const float slideSign = keyPosition == "upper-left" ? -1.f : 1.f;
-  // Travel is relative to the overlay itself. This preserves the same motion
-  // after a program scene is remapped into a smaller multiview cell.
-  const float slideTravel = std::max(0.f, overlayHeight) * 0.5f;
+  // Left-anchored keys move toward the left edge; future right-anchored keys
+  // move toward the right. Travel is relative to overlay height so it scales
+  // with a program scene remapped into a smaller multiview cell.
+  const float slideSign = keyPosition.find("right") != std::string::npos ? 1.f : -1.f;
+  const float slideTravel = std::max(0.f, overlayHeight) * 0.35f;
 
   if (keyPhase == "hidden") {
     transform.visible = false;
     transform.alpha = 0.f;
-    transform.slideY = slideSign * slideTravel;
+    transform.slideX = slideSign * slideTravel;
+    transform.slideY = 0.f;
     transform.contentScale = 1.f;
     return transform;
   }
   if (keyPhase == "building-in") {
     const float eased = overlayEase(progress);
     transform.alpha = eased;
-    transform.slideY = slideSign * slideTravel * (1.f - eased);
+    transform.slideX = slideSign * slideTravel * (1.f - eased);
+    transform.slideY = 0.f;
     transform.contentScale = 1.f;
     return transform;
   }
   if (keyPhase == "building-out") {
     const float eased = overlayEase(progress);
     transform.alpha = 1.f - eased;
-    transform.slideY = slideSign * slideTravel * eased;
+    transform.slideX = slideSign * slideTravel * eased;
+    transform.slideY = 0.f;
     transform.contentScale = 1.f;
     if (transform.alpha <= 0.001f) {
       transform.visible = false;
@@ -432,6 +436,7 @@ inline OverlayKeyTransform computeOverlayKeyTransform(
   }
   // "on-air" (and any unknown phase): fully settled.
   transform.alpha = 1.f;
+  transform.slideX = 0.f;
   transform.slideY = 0.f;
   transform.contentScale = 1.f;
   return transform;
