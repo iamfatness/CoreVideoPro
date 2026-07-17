@@ -143,6 +143,7 @@ class MediaCore {
   // P2b-2: idempotent async start of the resident serve host (worker-safe:
   // only flips an atomic + detaches a starter thread).
   void ensurePluginHostServeStarted();
+  void openVstPluginEditor(const rpc::Json& command);
   // P2c: resolves a "vst:<name>" insert query against the scan results.
   // Worker-safe: takes only the leaf pluginHostMutex_, briefly. Failures are
   // recorded (snapshot serve.lastError) + logged rate-capped — loud, never fake.

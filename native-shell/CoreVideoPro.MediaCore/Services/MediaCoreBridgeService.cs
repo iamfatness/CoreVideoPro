@@ -101,6 +101,9 @@ public sealed class MediaCoreBridgeService : IAsyncDisposable
     public Task<bool> PingAsync(CancellationToken cancellationToken = default) =>
         _supervisor.PingAsync(cancellationToken);
 
+    public Task OpenVstEditorAsync(string selection, CancellationToken cancellationToken = default) =>
+        _supervisor.OpenVstEditorAsync(selection, cancellationToken);
+
     public Task SetCaptureAudioSyncOffsetAsync(
         string deviceId,
         int offsetMs,

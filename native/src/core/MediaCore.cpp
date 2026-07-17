@@ -1057,6 +1057,8 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
     syncAudioMonitor(command);
   } else if (type == "scan-vst-plugins") {
     startPluginHostScan();
+  } else if (type == "open-vst-editor") {
+    openVstPluginEditor(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
   } else if (type == "sync-capture-audio-sources") {
@@ -5029,6 +5031,37 @@ void MediaCore::ensurePluginHostServeStarted() {
   }).detach();
 }
 
+void MediaCore::openVstPluginEditor(const rpc::Json& command) {
+  const std::string selectionName = command.getString("selection");
+  const std::string query = vstSelectionQueryFromInsertName(selectionName);
+  if (query.empty()) {
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "cannot open controls: no VST3 plug-in selected";
+    return;
+  }
+  const VstInsertSelection selection = resolveVstInsertForWorker(query);
+  if (!selection.resolved) return;
+  if (pluginHostClient_.ready() && pluginHostClient_.hostAlive()) {
+    pluginHostClient_.requestEditor(selection.bundleId, selection.className);
+    return;
+  }
+  ensurePluginHostServeStarted();
+  // Opening controls is control-plane work, never the audio worker. Give the
+  // isolated host a short launch window and then signal its dedicated editor
+  // event; audio continues fail-open throughout.
+  std::thread([this, selection] {
+    for (int attempt = 0; attempt < 40; ++attempt) {
+      if (pluginHostClient_.ready() && pluginHostClient_.hostAlive()) {
+        pluginHostClient_.requestEditor(selection.bundleId, selection.className);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::lock_guard<std::mutex> lock(pluginHostMutex_);
+    pluginHostInsertError_ = "isolated VST3 host did not start for the editor";
+  }).detach();
+}
+
 VstInsertSelection MediaCore::resolveVstInsertForWorker(const std::string& query) {
   VstInsertSelection selection;
   bool kickScan = false;
@@ -5088,6 +5121,9 @@ rpc::Json MediaCore::pluginHostState() const {
                     {"activePlugin", pluginHostClient_.activePlugin()},
                     {"statusCode", static_cast<double>(pluginHostClient_.statusCode())},
                     {"lastError", lastError},
+                    {"editorStatusCode", static_cast<double>(pluginHostClient_.editorStatusCode())},
+                    {"editorActivePlugin", pluginHostClient_.editorActivePlugin()},
+                    {"editorLastError", pluginHostClient_.editorLastError()},
                 }},
   };
 }

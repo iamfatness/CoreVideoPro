@@ -421,7 +421,8 @@ int serveInstance(const std::string& instance) {
   HANDLE shm = ::OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, hostShmName(instance).c_str());
   HANDLE req = ::OpenEventA(SYNCHRONIZE, FALSE, hostReqEventName(instance).c_str());
   HANDLE done = ::OpenEventA(EVENT_MODIFY_STATE, FALSE, hostDoneEventName(instance).c_str());
-  if (shm == nullptr || req == nullptr || done == nullptr) {
+  HANDLE editor = ::OpenEventA(SYNCHRONIZE, FALSE, hostEditorEventName(instance).c_str());
+  if (shm == nullptr || req == nullptr || done == nullptr || editor == nullptr) {
     std::fprintf(stdout, "{\"cmd\":\"error\",\"msg\":\"serve: transport objects missing for '%s'\"}\n",
                  jsonEscape(instance).c_str());
     return 3;
@@ -437,6 +438,7 @@ int serveInstance(const std::string& instance) {
 
   std::map<std::string, std::unique_ptr<ServeSlot>> slots;
   std::string publishedStatusKey;  // dedupes statusGeneration bumps
+  std::string publishedEditorStatusKey;
 
   const auto publishStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error) {
     const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error;
@@ -450,10 +452,60 @@ int serveInstance(const std::string& instance) {
     block->statusGeneration = block->statusGeneration + 1;
   };
 
+  const auto publishEditorStatus = [&](int32_t code, const std::string& activePlugin, const std::string& error) {
+    const std::string key = std::to_string(code) + "\x1f" + activePlugin + "\x1f" + error;
+    if (key == publishedEditorStatusKey) return;
+    publishedEditorStatusKey = key;
+    block->editorStatusCode = code;
+    copyBlockString(block->editorActivePlugin, activePlugin.c_str());
+    copyBlockString(block->editorLastError, error.c_str());
+    block->editorStatusGeneration = block->editorStatusGeneration + 1;
+  };
+
+  const auto ensureSlot = [&](const std::string& bundle, const std::string& className) -> ServeSlot* {
+    const std::string slotKey = bundle + "\x1f" + className;
+    auto found = slots.find(slotKey);
+    if (found != slots.end()) return found->second.get();
+    auto slot = std::make_unique<ServeSlot>();
+    const LoadedModule loaded = loadPluginModule(bundle);
+    if (loaded.factory == nullptr) {
+      slot->error = loaded.error;
+    } else {
+      corevideo::vsthost::VstProcessorConfig config;
+      config.sampleRate = 48000.0;
+      config.maxBlockFrames = kHostBlockMaxSamples / 2;
+      if (!slot->instance.start(loaded.factory, className, config)) slot->error = slot->instance.lastError();
+    }
+    std::fflush(stdout);
+    return slots.emplace(slotKey, std::move(slot)).first->second.get();
+  };
+
   for (;;) {
-    const DWORD wait = ::WaitForSingleObject(req, 30000);
+    HANDLE waits[] = {req, editor};
+    const DWORD wait = ::MsgWaitForMultipleObjects(2, waits, FALSE, 30000, QS_ALLINPUT);
+    if (wait == WAIT_OBJECT_0 + 2) {
+      for (auto& entry : slots) entry.second->instance.pumpEditorMessages();
+      continue;
+    }
+    if (wait == WAIT_OBJECT_0 + 1) {
+      const std::string bundle(block->editorPluginBundle,
+                               strnlen(block->editorPluginBundle, sizeof(block->editorPluginBundle)));
+      const std::string className(block->editorPluginClass,
+                                  strnlen(block->editorPluginClass, sizeof(block->editorPluginClass)));
+      ServeSlot* slot = ensureSlot(bundle, className);
+      if (slot == nullptr || !slot->error.empty()) {
+        publishEditorStatus(kHostEditorFailed, className,
+                            slot != nullptr ? slot->error : "editor slot could not load");
+      } else if (slot->instance.showEditor("CoreVideo Pro - " + slot->instance.activeClassName())) {
+        publishEditorStatus(kHostEditorOpen, slot->instance.activeClassName(), "");
+      } else {
+        publishEditorStatus(kHostEditorFailed, slot->instance.activeClassName(), slot->instance.lastError());
+      }
+      continue;
+    }
     if (wait != WAIT_OBJECT_0) {
-      return 0;  // idle 30s — parent gone or bypassed; exit, the core respawns
+      if (slots.empty()) return 0;
+      continue;
     }
     // Capture the sequence BEFORE processing: if the core abandons this tick
     // and writes a new one while we work, seqOut must NOT accidentally match

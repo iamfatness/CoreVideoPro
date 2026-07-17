@@ -46,8 +46,19 @@ class PluginHostClient {
 #ifdef _WIN32
   bool start(const std::string& exePath, const std::string& instance) {
     using namespace corevideo::pluginhost;
-    if (ready_ || exePath.empty()) {
-      return ready_;
+    if (exePath.empty()) {
+      return false;
+    }
+    // The resident host intentionally exits after an idle window. A client can
+    // therefore still be marked ready while its process handle is signaled,
+    // especially when the operator opens an editor before audio has flowed.
+    // Reap that stale transport here so control-plane editor requests can
+    // relaunch the host without waiting for exchange() to notice the exit.
+    if (ready_) {
+      if (hostAlive()) {
+        return true;
+      }
+      stop();
     }
 
     instance_ = instance;
@@ -55,7 +66,8 @@ class PluginHostClient {
                                 sizeof(HostAudioBlock), hostShmName(instance).c_str());
     req_ = ::CreateEventA(nullptr, FALSE, FALSE, hostReqEventName(instance).c_str());
     done_ = ::CreateEventA(nullptr, FALSE, FALSE, hostDoneEventName(instance).c_str());
-    if (shm_ == nullptr || req_ == nullptr || done_ == nullptr) {
+    editor_ = ::CreateEventA(nullptr, FALSE, FALSE, hostEditorEventName(instance).c_str());
+    if (shm_ == nullptr || req_ == nullptr || done_ == nullptr || editor_ == nullptr) {
       std::fprintf(stderr, "[plugin-host-client] kernel object creation failed (err=%lu)\n", ::GetLastError());
       stop();
       return false;
@@ -97,6 +109,15 @@ class PluginHostClient {
   }
 
   [[nodiscard]] bool ready() const { return ready_; }
+
+  bool requestEditor(const std::string& pluginBundle, const std::string& pluginClass) {
+    using namespace corevideo::pluginhost;
+    if (!ready_ || block_ == nullptr || editor_ == nullptr || pluginBundle.empty()) return false;
+    copyBlockString(block_->editorPluginBundle, pluginBundle.c_str());
+    copyBlockString(block_->editorPluginClass, pluginClass.c_str());
+    block_->editorRequestGeneration = block_->editorRequestGeneration + 1;
+    return ::SetEvent(editor_) != FALSE;
+  }
 
   // P2c: pluginBundle/pluginClass select the plugin the host runs on this
   // block. Empty bundle = the legacy -6dB test processor (plain "vst" insert
@@ -166,7 +187,7 @@ class PluginHostClient {
       ::UnmapViewOfFile(block_);
       block_ = nullptr;
     }
-    for (HANDLE* handle : {&shm_, &req_, &done_}) {
+    for (HANDLE* handle : {&shm_, &req_, &done_, &editor_}) {
       if (*handle != nullptr) {
         ::CloseHandle(*handle);
         *handle = nullptr;
@@ -194,16 +215,32 @@ class PluginHostClient {
     statusCode_ = block_->statusCode;
   }
 
+  void harvestEditorStatus() const {
+    if (block_ == nullptr) return;
+    const uint32_t generation = block_->editorStatusGeneration;
+    if (generation == harvestedEditorStatusGeneration_) return;
+    harvestedEditorStatusGeneration_ = generation;
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    editorActivePlugin_.assign(block_->editorActivePlugin,
+                               strnlen(block_->editorActivePlugin, sizeof(block_->editorActivePlugin)));
+    editorLastError_.assign(block_->editorLastError,
+                            strnlen(block_->editorLastError, sizeof(block_->editorLastError)));
+    editorStatusCode_ = block_->editorStatusCode;
+  }
+
   std::string instance_;
   HANDLE shm_ = nullptr;
   HANDLE req_ = nullptr;
   HANDLE done_ = nullptr;
+  HANDLE editor_ = nullptr;
   HANDLE process_ = nullptr;
   corevideo::pluginhost::HostAudioBlock* block_ = nullptr;
   uint32_t harvestedStatusGeneration_ = 0;  // audio worker only
+  mutable uint32_t harvestedEditorStatusGeneration_ = 0;
 #else
   bool start(const std::string&, const std::string&) { return false; }
   [[nodiscard]] bool ready() const { return false; }
+  bool requestEditor(const std::string&, const std::string&) { return false; }
   bool exchange(float*, size_t, int, int, int, const std::string& = {}, const std::string& = {}) {
     return false;
   }
@@ -217,6 +254,9 @@ class PluginHostClient {
   std::string activePlugin_;
   std::string lastError_;
   int32_t statusCode_ = 0;
+  mutable std::string editorActivePlugin_;
+  mutable std::string editorLastError_;
+  mutable int32_t editorStatusCode_ = 0;
   std::atomic<bool> ready_{false};  // starter thread writes, audio worker reads
   std::atomic<int64_t> exchanges_{0};
   std::atomic<int64_t> deadlineMisses_{0};
@@ -236,6 +276,27 @@ class PluginHostClient {
   [[nodiscard]] int32_t statusCode() const {
     std::lock_guard<std::mutex> lock(statusMutex_);
     return statusCode_;
+  }
+  [[nodiscard]] int32_t editorStatusCode() const {
+#ifdef _WIN32
+    harvestEditorStatus();
+#endif
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return editorStatusCode_;
+  }
+  [[nodiscard]] std::string editorActivePlugin() const {
+#ifdef _WIN32
+    harvestEditorStatus();
+#endif
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return editorActivePlugin_;
+  }
+  [[nodiscard]] std::string editorLastError() const {
+#ifdef _WIN32
+    harvestEditorStatus();
+#endif
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    return editorLastError_;
   }
 };
 

@@ -169,6 +169,19 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task OpenVstEditorAsync(string selection, CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "open-vst-editor",
+                ["selection"] = selection
+            },
+            cancellationToken).ConfigureAwait(false);
+        response.Dispose();
+    }
+
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
     {
         lock (_gate)

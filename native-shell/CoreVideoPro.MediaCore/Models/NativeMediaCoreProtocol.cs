@@ -439,6 +439,9 @@ public sealed class NativeMediaCorePluginHostServe
     public string ActivePlugin { get; init; } = string.Empty;
     public int StatusCode { get; init; }
     public string LastError { get; init; } = string.Empty;
+    public int EditorStatusCode { get; init; }
+    public string EditorActivePlugin { get; init; } = string.Empty;
+    public string EditorLastError { get; init; } = string.Empty;
 }
 
 public sealed class NativeMediaCorePluginInfo

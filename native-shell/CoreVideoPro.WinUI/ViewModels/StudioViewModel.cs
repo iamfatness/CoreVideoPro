@@ -1831,6 +1831,42 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ? FormatVstServeStatus(VstServeState)
             : "No VST3 insert on selected channel";
 
+    public async Task OpenVstControlsAsync(string insertName)
+    {
+        if (!IsVstInsert(insertName))
+        {
+            CommandStatus = "Select a VST3 insert to open its controls.";
+            return;
+        }
+
+        var label = insertName.StartsWith("VST:", StringComparison.OrdinalIgnoreCase)
+            ? insertName[4..].Trim()
+            : insertName;
+        CommandStatus = $"Opening {label} controls…";
+        try
+        {
+            await _bridge.OpenVstEditorAsync(insertName);
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = $"Could not open plug-in controls: {ex.Message}";
+        }
+    }
+
+    public Task OpenSelectedAudioProcessingVstControlsAsync()
+    {
+        var insert = ResolveAudioProcessingInserts(
+                NormalizeAudioProcessingTargetId(SelectedAudioProcessingTargetId))
+            .FirstOrDefault(IsVstInsert);
+        if (string.IsNullOrWhiteSpace(insert))
+        {
+            CommandStatus = "Add a VST3 plug-in to this processing target first.";
+            return Task.CompletedTask;
+        }
+
+        return OpenVstControlsAsync(insert);
+    }
+
     public AudioProcessingTargetOption? SelectedAudioProcessingTarget =>
         AudioProcessingTargetOptions.FirstOrDefault(target =>
             string.Equals(target.Id, SelectedAudioProcessingTargetId, StringComparison.Ordinal));

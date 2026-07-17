@@ -24,6 +24,7 @@
 // Real-time discipline: all buffers are allocated once in start(); process
 // calls do no allocation.
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "vst-abi.h"
 
@@ -90,8 +98,55 @@ inline vst3::IHostApplicationVtbl* hostApplicationVtbl() {
 
 // Empty IParameterChanges for ProcessData — safer than null pointers, which
 // some plugins dereference unconditionally.
-struct EmptyParameterChanges {
+inline std::string utf16ToUtf8Ascii(const char16_t* value, size_t capacity) {
+  std::string result;
+  for (size_t index = 0; value != nullptr && index < capacity && value[index] != 0; ++index) {
+    result.push_back(value[index] <= 0x7f ? static_cast<char>(value[index]) : '?');
+  }
+  return result;
+}
+
+struct ParameterValueQueue {
+  vst3::IParamValueQueueVtbl* vtbl;
+  vst3::ParamID id = 0;
+  int32_t pointCount = 0;
+  int32_t sampleOffset = 0;
+  double value = 0.0;
+};
+
+inline vst3::tresult CVST_API paramQueueQueryInterface(void* self, const char*, void** obj) {
+  if (obj == nullptr) return vst3::kNoInterface;
+  *obj = self;
+  return vst3::kResultOk;
+}
+inline vst3::ParamID CVST_API paramQueueId(void* self) { return static_cast<ParameterValueQueue*>(self)->id; }
+inline int32_t CVST_API paramQueueCount(void* self) { return static_cast<ParameterValueQueue*>(self)->pointCount; }
+inline vst3::tresult CVST_API paramQueueGetPoint(void* self, int32_t index, int32_t* offset, double* value) {
+  auto* queue = static_cast<ParameterValueQueue*>(self);
+  if (index != 0 || queue->pointCount == 0 || offset == nullptr || value == nullptr) return vst3::kResultFalse;
+  *offset = queue->sampleOffset;
+  *value = queue->value;
+  return vst3::kResultOk;
+}
+inline vst3::tresult CVST_API paramQueueAddPoint(void* self, int32_t offset, double value, int32_t* index) {
+  auto* queue = static_cast<ParameterValueQueue*>(self);
+  queue->sampleOffset = offset;
+  queue->value = value;
+  queue->pointCount = 1;
+  if (index != nullptr) *index = 0;
+  return vst3::kResultOk;
+}
+inline vst3::IParamValueQueueVtbl* parameterValueQueueVtbl() {
+  static vst3::IParamValueQueueVtbl vtbl = {
+      &paramQueueQueryInterface, &staticAddRef, &staticRelease,
+      &paramQueueId, &paramQueueCount, &paramQueueGetPoint, &paramQueueAddPoint};
+  return &vtbl;
+}
+
+struct ParameterChanges {
   vst3::IParameterChangesVtbl* vtbl;
+  std::array<ParameterValueQueue, 32> queues{};
+  int32_t count = 0;
 };
 
 inline vst3::tresult CVST_API paramChangesQueryInterface(void* self, const char* iid, void** obj) {
@@ -107,11 +162,31 @@ inline vst3::tresult CVST_API paramChangesQueryInterface(void* self, const char*
   return vst3::kNoInterface;
 }
 
-inline int32_t CVST_API paramChangesCount(void*) { return 0; }
-inline void* CVST_API paramChangesGetData(void*, int32_t) { return nullptr; }
-inline void* CVST_API paramChangesAddData(void*, const vst3::ParamID*, int32_t*) { return nullptr; }
+inline int32_t CVST_API paramChangesCount(void* self) { return static_cast<ParameterChanges*>(self)->count; }
+inline void* CVST_API paramChangesGetData(void* self, int32_t index) {
+  auto* changes = static_cast<ParameterChanges*>(self);
+  return index >= 0 && index < changes->count ? &changes->queues[static_cast<size_t>(index)] : nullptr;
+}
+inline void* CVST_API paramChangesAddData(void* self, const vst3::ParamID* id, int32_t* index) {
+  auto* changes = static_cast<ParameterChanges*>(self);
+  if (id == nullptr) return nullptr;
+  for (int32_t i = 0; i < changes->count; ++i) {
+    if (changes->queues[static_cast<size_t>(i)].id == *id) {
+      if (index != nullptr) *index = i;
+      return &changes->queues[static_cast<size_t>(i)];
+    }
+  }
+  if (changes->count >= static_cast<int32_t>(changes->queues.size())) return nullptr;
+  const int32_t next = changes->count++;
+  auto& queue = changes->queues[static_cast<size_t>(next)];
+  queue.vtbl = parameterValueQueueVtbl();
+  queue.id = *id;
+  queue.pointCount = 0;
+  if (index != nullptr) *index = next;
+  return &queue;
+}
 
-inline vst3::IParameterChangesVtbl* emptyParameterChangesVtbl() {
+inline vst3::IParameterChangesVtbl* parameterChangesVtbl() {
   static vst3::IParameterChangesVtbl vtbl = {
       &paramChangesQueryInterface, &staticAddRef, &staticRelease,
       &paramChangesCount, &paramChangesGetData, &paramChangesAddData,
@@ -190,9 +265,63 @@ struct VstProcessorConfig {
   int32_t maxBlockFrames = 4096;  // >= kHostBlockMaxSamples/2 (host-transport.h)
 };
 
+class VstPluginInstance;
+
+struct ComponentHandler {
+  vst3::IComponentHandlerVtbl* vtbl;
+  VstPluginInstance* owner = nullptr;
+};
+
+struct PlugFrame {
+  vst3::IPlugFrameVtbl* vtbl;
+  VstPluginInstance* owner = nullptr;
+};
+
 class VstPluginInstance {
  public:
-  VstPluginInstance() { hostContext_.vtbl = detail::hostApplicationVtbl(); }
+  VstPluginInstance() {
+    hostContext_.vtbl = detail::hostApplicationVtbl();
+    static vst3::IComponentHandlerVtbl componentHandlerVtbl = {
+        [](void* self, const char* iid, void** obj) -> vst3::tresult {
+          if (obj == nullptr) return vst3::kNoInterface;
+          if (vst3::tuidEqual(iid, vst3::kFUnknownIid.bytes) ||
+              vst3::tuidEqual(iid, vst3::kIComponentHandlerIid.bytes)) {
+            *obj = self;
+            return vst3::kResultOk;
+          }
+          *obj = nullptr;
+          return vst3::kNoInterface;
+        },
+        &detail::staticAddRef, &detail::staticRelease,
+        [](void*, vst3::ParamID) -> vst3::tresult { return vst3::kResultOk; },
+        [](void* self, vst3::ParamID id, double value) -> vst3::tresult {
+          auto* handler = static_cast<ComponentHandler*>(self);
+          return handler->owner != nullptr && handler->owner->queueParameterChange(id, value)
+                     ? vst3::kResultOk : vst3::kResultFalse;
+        },
+        [](void*, vst3::ParamID) -> vst3::tresult { return vst3::kResultOk; },
+        [](void*, int32_t) -> vst3::tresult { return vst3::kResultOk; }};
+    static vst3::IPlugFrameVtbl plugFrameVtbl = {
+        [](void* self, const char* iid, void** obj) -> vst3::tresult {
+          if (obj == nullptr) return vst3::kNoInterface;
+          if (vst3::tuidEqual(iid, vst3::kFUnknownIid.bytes) ||
+              vst3::tuidEqual(iid, vst3::kIPlugFrameIid.bytes)) {
+            *obj = self;
+            return vst3::kResultOk;
+          }
+          *obj = nullptr;
+          return vst3::kNoInterface;
+        },
+        &detail::staticAddRef, &detail::staticRelease,
+        [](void* self, vst3::IPlugView*, vst3::ViewRect* rect) -> vst3::tresult {
+          auto* frame = static_cast<PlugFrame*>(self);
+          return frame->owner != nullptr ? frame->owner->resizeEditor(rect) : vst3::kResultFalse;
+        }};
+    componentHandler_.vtbl = &componentHandlerVtbl;
+    componentHandler_.owner = this;
+    plugFrame_.vtbl = &plugFrameVtbl;
+    plugFrame_.owner = this;
+  }
   ~VstPluginInstance() { shutdown(); }
   VstPluginInstance(const VstPluginInstance&) = delete;
   VstPluginInstance& operator=(const VstPluginInstance&) = delete;
@@ -201,6 +330,26 @@ class VstPluginInstance {
   [[nodiscard]] const std::string& lastError() const { return lastError_; }
   [[nodiscard]] const std::string& activeClassName() const { return activeClassName_; }
   [[nodiscard]] uint32_t latencySamples() const { return latencySamples_; }
+
+  bool queueParameterChange(vst3::ParamID id, double normalized) {
+    normalized = std::max(0.0, std::min(1.0, normalized));
+    int32_t queueIndex = -1;
+    auto* queue = static_cast<detail::ParameterValueQueue*>(
+        inputParameterChanges_.vtbl->addParameterData(&inputParameterChanges_, &id, &queueIndex));
+    return queue != nullptr && queue->vtbl->addPoint(queue, 0, normalized, nullptr) == vst3::kResultOk;
+  }
+
+#ifdef _WIN32
+  bool showEditor(const std::string& title);
+  void closeEditor();
+  void pumpEditorMessages();
+  vst3::tresult resizeEditor(vst3::ViewRect* requested);
+#else
+  bool showEditor(const std::string&) { return false; }
+  void closeEditor() {}
+  void pumpEditorMessages() {}
+  vst3::tresult resizeEditor(vst3::ViewRect*) { return vst3::kNotImplemented; }
+#endif
 
   bool start(vst3::IPluginFactory* factory, const std::string& className,
              const VstProcessorConfig& config = {}) {
@@ -234,6 +383,31 @@ class VstPluginInstance {
       return fail("IComponent::initialize failed (0x" + hex(initialized) + ")");
     }
     initialized_ = true;
+
+    // The edit controller owns the plug-in's professional native GUI and
+    // reports parameter gestures back through IComponentHandler. Keep it in
+    // this isolated process beside the exact processor instance it controls.
+    void* rawController = nullptr;
+    if (component_->vtbl->queryInterface(component_, kIEditControllerIid.bytes, &rawController) == kResultOk &&
+        rawController != nullptr) {
+      controller_ = static_cast<IEditController*>(rawController);
+    } else {
+      char controllerClassId[16] = {};
+      if (component_->vtbl->getControllerClassId(component_, controllerClassId) == kResultOk &&
+          factory->vtbl->createInstance(factory, controllerClassId, kIEditControllerIid.bytes,
+                                        &rawController) == kResultOk && rawController != nullptr) {
+        controller_ = static_cast<IEditController*>(rawController);
+        if (controller_->vtbl->initialize(controller_, &hostContext_) == kResultOk) {
+          controllerInitialized_ = true;
+        } else {
+          controller_->vtbl->release(controller_);
+          controller_ = nullptr;
+        }
+      }
+    }
+    if (controller_ != nullptr) {
+      controller_->vtbl->setComponentHandler(controller_, &componentHandler_);
+    }
 
     void* rawProcessor = nullptr;
     if (component_->vtbl->queryInterface(component_, kIAudioProcessorIid.bytes, &rawProcessor) != kResultOk ||
@@ -347,6 +521,7 @@ class VstPluginInstance {
     data.outputParameterChanges = &outputParameterChanges_;
 
     const tresult processed = processor_->vtbl->process(processor_, &data);
+    inputParameterChanges_.count = 0;
     if (processed != kResultOk) {
       fail("process() returned 0x" + hex(processed));
       return false;
@@ -372,6 +547,7 @@ class VstPluginInstance {
 
   void shutdown() {
     started_ = false;
+    closeEditor();
     if (processor_ != nullptr) {
       if (processing_) {
         processor_->vtbl->setProcessing(processor_, 0);
@@ -385,6 +561,13 @@ class VstPluginInstance {
     if (component_ != nullptr && initialized_) {
       component_->vtbl->terminate(component_);
       initialized_ = false;
+    }
+    if (controller_ != nullptr) {
+      controller_->vtbl->setComponentHandler(controller_, nullptr);
+      if (controllerInitialized_) controller_->vtbl->terminate(controller_);
+      controller_->vtbl->release(controller_);
+      controller_ = nullptr;
+      controllerInitialized_ = false;
     }
     if (processor_ != nullptr) {
       processor_->vtbl->release(processor_);
@@ -443,14 +626,21 @@ class VstPluginInstance {
   }
 
   HostApplicationContext hostContext_{};
-  detail::EmptyParameterChanges inputParameterChanges_{detail::emptyParameterChangesVtbl()};
-  detail::EmptyParameterChanges outputParameterChanges_{detail::emptyParameterChangesVtbl()};
+  detail::ParameterChanges inputParameterChanges_{detail::parameterChangesVtbl()};
+  detail::ParameterChanges outputParameterChanges_{detail::parameterChangesVtbl()};
 
   vst3::IComponent* component_ = nullptr;
   vst3::IAudioProcessor* processor_ = nullptr;
+  vst3::IEditController* controller_ = nullptr;
+  vst3::IPlugView* editorView_ = nullptr;
+  ComponentHandler componentHandler_{};
+  PlugFrame plugFrame_{};
+  void* editorWindow_ = nullptr;
   bool initialized_ = false;
   bool active_ = false;
   bool processing_ = false;
+  bool controllerInitialized_ = false;
+  bool editorAttached_ = false;
   bool started_ = false;
   int32_t inputBusCount_ = 0;
   int32_t outputBusCount_ = 0;
@@ -465,5 +655,136 @@ class VstPluginInstance {
   std::vector<std::vector<float*>> outputChannels_;
   std::vector<std::unique_ptr<float[]>> channelStorage_;
 };
+
+#ifdef _WIN32
+inline LRESULT CALLBACK vstEditorWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto* owner = reinterpret_cast<VstPluginInstance*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (message == WM_NCCREATE) {
+    const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+    owner = static_cast<VstPluginInstance*>(create->lpCreateParams);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owner));
+  }
+  switch (message) {
+    case WM_CLOSE:
+      ::ShowWindow(hwnd, SW_HIDE);
+      return 0;
+    case WM_SETFOCUS:
+      return 0;
+    default:
+      return ::DefWindowProcW(hwnd, message, wParam, lParam);
+  }
+}
+
+inline bool VstPluginInstance::showEditor(const std::string& title) {
+  if (controller_ == nullptr) {
+    lastError_ = "plugin exposes no edit controller";
+    return false;
+  }
+  if (editorWindow_ != nullptr) {
+    ::ShowWindow(static_cast<HWND>(editorWindow_), SW_SHOWNORMAL);
+    ::SetForegroundWindow(static_cast<HWND>(editorWindow_));
+    return true;
+  }
+  editorView_ = static_cast<vst3::IPlugView*>(controller_->vtbl->createView(controller_, "editor"));
+  if (editorView_ == nullptr || editorView_->vtbl == nullptr) {
+    lastError_ = "plugin does not provide a native editor";
+    editorView_ = nullptr;
+    return false;
+  }
+  if (editorView_->vtbl->isPlatformTypeSupported(editorView_, "HWND") != vst3::kResultOk) {
+    lastError_ = "plugin editor does not support HWND";
+    editorView_->vtbl->release(editorView_);
+    editorView_ = nullptr;
+    return false;
+  }
+  vst3::ViewRect viewRect{};
+  if (editorView_->vtbl->getSize(editorView_, &viewRect) != vst3::kResultOk) {
+    viewRect.right = 800;
+    viewRect.bottom = 600;
+  }
+  const int width = std::max(160, viewRect.right - viewRect.left);
+  const int height = std::max(120, viewRect.bottom - viewRect.top);
+  static const wchar_t* kClassName = L"CoreVideoProVst3EditorHost";
+  static ATOM atom = 0;
+  if (atom == 0) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = &vstEditorWindowProc;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.hCursor = ::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = kClassName;
+    atom = ::RegisterClassW(&wc);
+    if (atom == 0 && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      lastError_ = "could not register editor host window";
+      editorView_->vtbl->release(editorView_);
+      editorView_ = nullptr;
+      return false;
+    }
+  }
+  RECT outer{0, 0, width, height};
+  const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  ::AdjustWindowRect(&outer, style, FALSE);
+  std::wstring wideTitle(title.begin(), title.end());
+  HWND hwnd = ::CreateWindowExW(0, kClassName, wideTitle.c_str(), style,
+                                CW_USEDEFAULT, CW_USEDEFAULT,
+                                outer.right - outer.left, outer.bottom - outer.top,
+                                nullptr, nullptr, ::GetModuleHandleW(nullptr), this);
+  if (hwnd == nullptr) {
+    lastError_ = "could not create editor host window";
+    editorView_->vtbl->release(editorView_);
+    editorView_ = nullptr;
+    return false;
+  }
+  editorWindow_ = hwnd;
+  editorView_->vtbl->setFrame(editorView_, &plugFrame_);
+  if (editorView_->vtbl->attached(editorView_, hwnd, "HWND") != vst3::kResultOk) {
+    lastError_ = "plugin editor failed to attach";
+    closeEditor();
+    return false;
+  }
+  editorAttached_ = true;
+  ::ShowWindow(hwnd, SW_SHOWNORMAL);
+  ::UpdateWindow(hwnd);
+  ::SetForegroundWindow(hwnd);
+  return true;
+}
+
+inline void VstPluginInstance::closeEditor() {
+  if (editorView_ != nullptr && editorAttached_) {
+    editorView_->vtbl->removed(editorView_);
+    editorAttached_ = false;
+  }
+  if (editorView_ != nullptr) {
+    editorView_->vtbl->setFrame(editorView_, nullptr);
+    editorView_->vtbl->release(editorView_);
+    editorView_ = nullptr;
+  }
+  if (editorWindow_ != nullptr) {
+    ::DestroyWindow(static_cast<HWND>(editorWindow_));
+    editorWindow_ = nullptr;
+  }
+}
+
+inline void VstPluginInstance::pumpEditorMessages() {
+  MSG message{};
+  while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+    ::TranslateMessage(&message);
+    ::DispatchMessageW(&message);
+  }
+}
+
+inline vst3::tresult VstPluginInstance::resizeEditor(vst3::ViewRect* requested) {
+  if (requested == nullptr || editorWindow_ == nullptr || editorView_ == nullptr) return vst3::kResultFalse;
+  const int width = std::max(160, requested->right - requested->left);
+  const int height = std::max(120, requested->bottom - requested->top);
+  RECT outer{0, 0, width, height};
+  const DWORD style = static_cast<DWORD>(::GetWindowLongPtrW(static_cast<HWND>(editorWindow_), GWL_STYLE));
+  ::AdjustWindowRect(&outer, style, FALSE);
+  ::SetWindowPos(static_cast<HWND>(editorWindow_), nullptr, 0, 0,
+                 outer.right - outer.left, outer.bottom - outer.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  return editorView_->vtbl->onSize(editorView_, requested);
+}
+#endif
 
 }  // namespace corevideo::vsthost

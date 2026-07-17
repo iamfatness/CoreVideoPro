@@ -27,6 +27,9 @@ inline constexpr int32_t kHostBlockMaxSamples = 8192;    // interleaved floats (
 inline constexpr int32_t kHostPluginPathMax = 512;       // NUL-terminated bundle path
 inline constexpr int32_t kHostPluginNameMax = 128;       // NUL-terminated class name
 inline constexpr int32_t kHostErrorMax = 256;            // NUL-terminated error text
+inline constexpr int32_t kHostEditorIdle = 0;
+inline constexpr int32_t kHostEditorOpen = 1;
+inline constexpr int32_t kHostEditorFailed = 2;
 
 // Host status codes (statusCode field).
 inline constexpr int32_t kHostStatusTestProcessor = 0;  // legacy -6dB test gain
@@ -52,6 +55,16 @@ struct HostAudioBlock {
   int32_t statusCode = kHostStatusTestProcessor;
   char activePlugin[kHostPluginNameMax] = {};
   char lastError[kHostErrorMax] = {};
+  // UI -> host editor request. It uses a dedicated named event so opening a
+  // GUI never races or waits on the realtime audio request/done exchange.
+  volatile uint32_t editorRequestGeneration = 0;
+  char editorPluginBundle[kHostPluginPathMax] = {};
+  char editorPluginClass[kHostPluginNameMax] = {};
+  // host -> core editor result telemetry.
+  volatile uint32_t editorStatusGeneration = 0;
+  int32_t editorStatusCode = kHostEditorIdle;
+  char editorActivePlugin[kHostPluginNameMax] = {};
+  char editorLastError[kHostErrorMax] = {};
   float pcm[kHostBlockMaxSamples];
 };
 
@@ -73,5 +86,6 @@ inline void copyBlockString(char (&field)[Capacity], const char* text) {
 inline std::string hostShmName(const std::string& instance) { return "corevideo-vsthost-shm-" + instance; }
 inline std::string hostReqEventName(const std::string& instance) { return "corevideo-vsthost-req-" + instance; }
 inline std::string hostDoneEventName(const std::string& instance) { return "corevideo-vsthost-done-" + instance; }
+inline std::string hostEditorEventName(const std::string& instance) { return "corevideo-vsthost-editor-" + instance; }
 
 }  // namespace corevideo::pluginhost

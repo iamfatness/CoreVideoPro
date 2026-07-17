@@ -135,8 +135,19 @@ public sealed partial class AudioPage : UserControl
     private void OnInsertSlotFlyoutOpening(object sender, object e)
     {
         if (sender is not Flyout { Content: StackPanel panel } flyout ||
-            flyout.Target is not FrameworkElement { DataContext: Models.InsertSlotItem slot } ||
+            flyout.Target is not FrameworkElement target ||
             ViewModel is not { } viewModel)
+        {
+            return;
+        }
+
+        var slot = target.DataContext as Models.InsertSlotItem;
+        if (slot is null && target.Tag is string taggedName)
+        {
+            slot = viewModel.SelectedChannelInsertSlots.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, taggedName, StringComparison.OrdinalIgnoreCase));
+        }
+        if (slot is null)
         {
             return;
         }
@@ -147,13 +158,25 @@ public sealed partial class AudioPage : UserControl
         var specs = InsertParamSpecs(slot.Name);
         if (specs.Length == 0)
         {
+            if (!slot.IsBuiltIn)
+            {
+                var openControls = new Button
+                {
+                    Content = "Open plug-in controls",
+                    HorizontalAlignment = HorizontalAlignment.Stretch
+                };
+                openControls.Click += async (_, _) =>
+                {
+                    flyout.Hide();
+                    await viewModel.OpenVstControlsAsync(slot.Name);
+                };
+                panel.Children.Add(openControls);
+            }
             panel.Children.Add(new TextBlock
             {
-                // U1c: the truth in operator words — an installed VST does NOT
-                // change the audio yet; never let it look live.
                 Text = slot.IsBuiltIn
                     ? "No adjustable parameters."
-                    : "This plugin is installed but not processing audio yet — sound passes through unchanged. Live VST processing is coming; the built-in processors are fully live today.",
+                    : "The plug-in's native editor opens in its isolated host. Its controls affect this live processor; if the editor crashes, program audio fails open instead of taking down CoreVideo.",
                 FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.7
@@ -266,6 +289,14 @@ public sealed partial class AudioPage : UserControl
         if (sender is FrameworkElement { Tag: string pluginSelection })
         {
             ViewModel?.AddVstInsertToSelectedProcessingTarget(pluginSelection);
+        }
+    }
+
+    private async void OnOpenProcessingVstControlsClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel is { } viewModel)
+        {
+            await viewModel.OpenSelectedAudioProcessingVstControlsAsync();
         }
     }
 

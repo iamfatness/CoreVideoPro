@@ -575,6 +575,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Button Content="Add EQ"
                                 Style="{StaticResource OperatorGhostButton}"
@@ -596,6 +597,10 @@
                                 Content="Clear chain"
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
+                        <Button Grid.Row="2" Grid.ColumnSpan="2"
+                                Content="Open VST3 plug-in controls"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Click="OnOpenProcessingVstControlsClicked" />
                     </Grid>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
                         <StackPanel Spacing="2">
@@ -824,6 +829,7 @@
                                 <ItemsRepeater.ItemTemplate>
                                     <DataTemplate x:DataType="models:InsertSlotItem">
                                         <Button Padding="8,4" CornerRadius="3" BorderThickness="1"
+                                                Tag="{x:Bind Name}"
                                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
                                                 Background="#10222B" BorderBrush="#1B5E6B"
                                                 ToolTipService.ToolTip="{x:Bind StatusTooltip}">
