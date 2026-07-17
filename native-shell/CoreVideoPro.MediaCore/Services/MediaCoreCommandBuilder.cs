@@ -462,14 +462,21 @@ public static class MediaCoreCommandBuilder
             });
         }
 
-        foreach (var graphic in graphics.Where(graphic => graphic.Enabled))
+        foreach (var graphic in graphics)
         {
+            // Lower thirds have one canonical keyed overlay above. Older UI
+            // paths also store a generic lower-third graphic as show intent;
+            // sending that as a second enabled asset made one TAKE visibly
+            // build in twice. Explicitly retire the generic asset while its
+            // enabled flag continues to drive the canonical key's intent.
+            var isCanonicalLowerThirdIntent =
+                graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase);
             yield return Command("set-overlay-asset", new Dictionary<string, object?>
             {
                 ["overlayId"] = graphic.Id,
                 ["text"] = graphic.Text,
                 ["position"] = graphic.Position,
-                ["enabled"] = true
+                ["enabled"] = graphic.Enabled && !isCanonicalLowerThirdIntent
             });
         }
     }

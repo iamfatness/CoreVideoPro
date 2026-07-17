@@ -8940,7 +8940,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     graphic.Id,
                     graphic.Name,
                     graphic.Position,
-                    graphic.Enabled))
+                    graphic.Enabled,
+                    graphic.Kind))
                 .ToList(),
             LowerThirdKey = ProgramLowerThirdKey.IsVisible
                 ? new MediaCoreLowerThirdKeyWire(

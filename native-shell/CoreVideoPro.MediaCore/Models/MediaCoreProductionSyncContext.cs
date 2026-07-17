@@ -76,7 +76,8 @@ public sealed record MediaCoreGraphicWire(
     string Id,
     string Text,
     string Position,
-    bool Enabled);
+    bool Enabled,
+    string Kind = "graphic");
 
 public sealed record MediaCoreLowerThirdKeyWire(
     string SourceId,
