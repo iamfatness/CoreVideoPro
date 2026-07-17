@@ -806,6 +806,103 @@ TEST(MediaCoreCommand, LowerThirdAnimationHonorsConfiguredBuildDurations) {
   EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "on-air");
 }
 
+TEST(MediaCoreCommand, SettledExplicitLowerThirdBuildOutDoesNotRecreateOrFlash) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "on-air"},
+          {"buildOutMs", 50},
+      },
+  });
+
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-out"},
+          {"buildOutMs", 50},
+      },
+  });
+  for (int i = 0; i < 8; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().getString("keyPhase"), "building-out");
+  EXPECT_EQ(overlays->asArray().front().get("keyProgress")->asNumber(), 1.0);
+
+  // A normal scene refresh can resend the phase after its visual duration.
+  // It must update the settled invisible asset, not create a fresh build-out.
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"text", "Ada Otieno"},
+          {"position", "lower-third"},
+          {"enabled", true},
+          {"keyPhase", "building-out"},
+          {"buildOutMs", 50},
+      },
+  });
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  ASSERT_EQ(overlays->asArray().size(), 1u);
+  EXPECT_EQ(overlays->asArray().front().get("keyProgress")->asNumber(), 1.0);
+
+  state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "key:lower-third"},
+          {"position", "lower-third"},
+          {"enabled", false},
+          {"keyPhase", "hidden"},
+      },
+  });
+  overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  EXPECT_TRUE(overlays->asArray().empty());
+  EXPECT_EQ(state.get("overlayCount")->asNumber(), 0);
+}
+
+TEST(MediaCoreCommand, NativeOwnedBuildOutRetiresOverlayIdentityCompletely) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "generic-overlay"},
+          {"text", "Generic"},
+          {"enabled", true},
+          {"keyPhase", "on-air"},
+          {"buildOutMs", 50},
+      },
+  });
+  auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-overlay-asset"},
+          {"overlayId", "generic-overlay"},
+          {"enabled", false},
+      },
+  });
+  for (int i = 0; i < 8; ++i) {
+    state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+  }
+
+  const auto* overlays = state.get("overlayState")->get("overlays");
+  ASSERT_NE(overlays, nullptr);
+  EXPECT_TRUE(overlays->asArray().empty());
+  EXPECT_EQ(state.get("overlayCount")->asNumber(), 0);
+}
+
 TEST(MediaCoreCommand, DisabledOverlayClearsStableKeyLayer) {
   corevideo::core::MediaCore mediaCore;
   const auto active = mediaCore.applyCommands(corevideo::rpc::Json::Array{

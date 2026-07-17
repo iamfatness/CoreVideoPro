@@ -1421,6 +1421,17 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
   if (command.get("enabled") && !command.get("enabled")->asBool()) {
     overlayIds_.erase(overlayId);
     if (auto existing = overlayAssets_.find(overlayId); existing != overlayAssets_.end()) {
+      const auto* requestedPhase = command.get("keyPhase");
+      const bool explicitlyHidden = requestedPhase && requestedPhase->isString() &&
+                                    requestedPhase->asString() == "hidden";
+      if (explicitlyHidden) {
+        // The shell already presented and timed the building-out phase. Its
+        // final hidden command is a retirement acknowledgement, not a request
+        // to start another native build-out.
+        overlayAssets_.erase(existing);
+        overlayCount_ = static_cast<int>(overlayIds_.size());
+        return;
+      }
       // Animate the overlay out rather than dropping it instantly; the render
       // tick retires it once the building-out animation has settled. Only START the
       // build-out once: the shell re-sends enabled=false on every sync while the key is
@@ -1431,6 +1442,7 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
         existing->second.keyPhase = "building-out";
         existing->second.keyProgress = 0.f;
       }
+      existing->second.retireAfterBuildOut = true;
     }
     overlayCount_ = static_cast<int>(overlayIds_.size());
     return;
@@ -1446,6 +1458,7 @@ void MediaCore::setOverlayAsset(const rpc::Json& command) {
     asset.keyPhase = "building-in";
     asset.keyProgress = 0.f;
   }
+  asset.retireAfterBuildOut = false;
   asset.text = command.getString("text", asset.text);
   asset.imageUri = command.getString("imageUri", asset.imageUri);
   asset.sourceId = command.getString("sourceId", asset.sourceId);
@@ -3796,9 +3809,15 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
         if (asset.keyPhase == "building-in") {
           asset.keyPhase = "on-air";
           asset.keyProgress = 1.f;
-        } else {
-          // building-out settled -> retire the asset entirely.
+        } else if (asset.retireAfterBuildOut) {
+          // Native-owned build-out settled -> retire the asset entirely.
           retired.push_back(overlayId);
+        } else {
+          // Shell-owned lower-third build-out has settled. Keep one invisible
+          // layer until the explicit hidden command arrives. Repeated scene
+          // syncs can now update this same stable layer instead of recreating a
+          // fresh key and flashing it back on screen.
+          asset.keyProgress = 1.f;
         }
       }
     } else {
@@ -3807,7 +3826,9 @@ void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
   }
   for (const auto& overlayId : retired) {
     overlayAssets_.erase(overlayId);
+    overlayIds_.erase(overlayId);
   }
+  overlayCount_ = static_cast<int>(overlayIds_.size());
 }
 
 modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {

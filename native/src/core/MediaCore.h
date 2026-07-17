@@ -298,6 +298,12 @@ class MediaCore {
     // Animation clock: the keyPhase the layer is animating toward, and the
     // monotonically-advanced progress [0,1] within the current phase.
     float keyProgress = 0.f;
+    // Generic overlays disabled directly by the native protocol retire when
+    // their build-out completes. Shell-timed lower thirds remain as a fully
+    // transparent, settled building-out layer until the shell sends its final
+    // explicit hidden command. This prevents a late scene sync from recreating
+    // the key for one frame at the transition boundary.
+    bool retireAfterBuildOut = false;
   };
   std::map<std::string, OverlayAssetState> overlayAssets_;
   int overlayInsertionCounter_ = 0;
