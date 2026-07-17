@@ -2494,6 +2494,8 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
           pgmRect.y + src.rect.y * pgmRect.height,
           src.rect.width * pgmRect.width,
           src.rect.height * pgmRect.height};
+      layer.hasClipRect = true;
+      layer.clipRect = {pgmRect.x, pgmRect.y, pgmRect.width, pgmRect.height};
       layer.order = order++;
       layer.borderStyle = "none";
       layer.borderThickness = 0.f;
@@ -2518,6 +2520,8 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
             pvwRect.y + src.rect.y * pvwRect.height,
             src.rect.width * pvwRect.width,
             src.rect.height * pvwRect.height};
+        layer.hasClipRect = true;
+        layer.clipRect = {pvwRect.x, pvwRect.y, pvwRect.width, pvwRect.height};
         layer.order = order++;
         layer.borderStyle = "none";
         layer.borderThickness = 0.f;

@@ -372,9 +372,9 @@ inline BorderFraming computeBorderFraming(
 
 // Resolved animated overlay keying state. alpha multiplies the layer opacity;
 // (slideX, slideY) is an additional normalized translation applied to the
-// overlay content (a slide-in/out), and contentScale scales the content about
-// its center (a subtle pop). All values are deterministic functions of phase +
-// progress so the D3D11 and CPU paths animate identically.
+// overlay content (a slide-in/out). contentScale is retained for renderer
+// compatibility but remains 1 for the clean, non-bouncing key motion. All
+// values are deterministic so the D3D11 and CPU paths animate identically.
 struct OverlayKeyTransform {
   float alpha = 1.f;
   float slideX = 0.f;
@@ -396,32 +396,35 @@ inline float overlayEase(float t) {
 inline OverlayKeyTransform computeOverlayKeyTransform(
     const std::string& keyPhase,
     float keyProgress,
-    const std::string& keyPosition = "lower-left") {
+    const std::string& keyPosition = "lower-left",
+    float overlayHeight = 0.16f) {
   OverlayKeyTransform transform;
   const float progress = std::clamp(keyProgress, 0.f, 1.f);
   // Lower-third slides up from below; upper third slides down from above.
   const float slideSign = keyPosition == "upper-left" ? -1.f : 1.f;
-  const float slideTravel = 0.08f;  // Normalized slide distance.
+  // Travel is relative to the overlay itself. This preserves the same motion
+  // after a program scene is remapped into a smaller multiview cell.
+  const float slideTravel = std::max(0.f, overlayHeight) * 0.5f;
 
   if (keyPhase == "hidden") {
     transform.visible = false;
     transform.alpha = 0.f;
     transform.slideY = slideSign * slideTravel;
-    transform.contentScale = 0.96f;
+    transform.contentScale = 1.f;
     return transform;
   }
   if (keyPhase == "building-in") {
     const float eased = overlayEase(progress);
     transform.alpha = eased;
     transform.slideY = slideSign * slideTravel * (1.f - eased);
-    transform.contentScale = 0.96f + 0.04f * eased;
+    transform.contentScale = 1.f;
     return transform;
   }
   if (keyPhase == "building-out") {
     const float eased = overlayEase(progress);
     transform.alpha = 1.f - eased;
     transform.slideY = slideSign * slideTravel * eased;
-    transform.contentScale = 1.f - 0.04f * eased;
+    transform.contentScale = 1.f;
     if (transform.alpha <= 0.001f) {
       transform.visible = false;
     }

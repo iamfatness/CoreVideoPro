@@ -281,6 +281,10 @@ struct CompositorRenderPlanLayer {
   // sources, which leaves overlay rendering on the prior solid-fill fallback.
   bool hasOverlayContent = false;
   CompositorOverlayContent overlay;
+  // Optional hard viewport boundary for a remapped composite. Multiview PGM/PVW
+  // layers use this so animated overlays cannot escape their monitor cell.
+  bool hasClipRect = false;
+  CompositorLayerRect clipRect;
 };
 
 struct CompositorRenderPlan {

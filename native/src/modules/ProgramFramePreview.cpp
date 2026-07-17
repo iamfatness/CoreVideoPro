@@ -141,7 +141,7 @@ void drawOverlayContentBgra(
     const CompositorOverlayContent& overlay,
     float layerOpacity) {
   const auto key = compositor::computeOverlayKeyTransform(
-      overlay.keyPhase, overlay.keyProgress, overlay.keyPosition);
+      overlay.keyPhase, overlay.keyProgress, overlay.keyPosition, rect.height);
   if (!key.visible || key.alpha <= 0.001f) {
     return;
   }
@@ -150,7 +150,7 @@ void drawOverlayContentBgra(
     return;
   }
 
-  // Apply the animated slide + content scale about the rect center.
+  // Apply the animated slide (and renderer-compatible scale) about the rect center.
   compositor::LayerRect animated = rect;
   animated.x += key.slideX;
   animated.y += key.slideY;

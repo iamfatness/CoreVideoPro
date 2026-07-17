@@ -1166,7 +1166,7 @@ class D3D11Compositor final : public ICompositor {
       float layerAlpha) {
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(
-        overlay.keyPhase, overlay.keyProgress, overlay.keyPosition);
+        overlay.keyPhase, overlay.keyProgress, overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
       return;
     }
@@ -1175,7 +1175,7 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
 
-    // Animated slide + content scale about the rect center (mirror of CPU math).
+    // Animated slide (and renderer-compatible scale) about the rect center.
     compositor::LayerRect animated = rect;
     animated.x += key.slideX;
     animated.y += key.slideY;
@@ -1188,8 +1188,14 @@ class D3D11Compositor final : public ICompositor {
 
     const uint32_t background = compositor::parseHexColorRgba(overlay.brandBackgroundColor, 0xff0c1118u);
     const uint32_t accent = compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u);
+    const compositor::LayerRect clip = layer.plan.hasClipRect
+        ? compositor::LayerRect{layer.plan.clipRect.x, layer.plan.clipRect.y,
+                                layer.plan.clipRect.width, layer.plan.clipRect.height}
+        : compositor::LayerRect{0.f, 0.f, 1.f, 1.f};
 
     // Brand-styled band background.
+    context_->RSSetState(scissorRasterizerState_.get());
+    setScissorFromRect(clip);
     drawSolidQuad(layer, renderPlan, animated, background, alpha);
 
     // If a DirectWrite/WIC raster is available, composite it over the band; the
@@ -1199,6 +1205,8 @@ class D3D11Compositor final : public ICompositor {
     // scales the SAME cached texture (via the viewport) instead of re-rastering
     // every frame of the key transition.
     if (ID3D11ShaderResourceView* overlayView = rasterOverlayTexture(overlay, rect)) {
+      context_->RSSetState(scissorRasterizerState_.get());
+      setScissorFromRect(clip);
       setViewportFromRect(animated);
       if (writeLayerConstants(layer, renderPlan, 0xffffffffu, alpha, 1.f, 1.f, 0.f, 0.f)) {
         context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
@@ -1214,6 +1222,8 @@ class D3D11Compositor final : public ICompositor {
         context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
       }
     } else {
+      context_->RSSetState(scissorRasterizerState_.get());
+      setScissorFromRect(clip);
       // Accent bar: left edge for lower-thirds, top edge for captions.
       if (overlay.isCaption) {
         drawSolidQuad(layer, renderPlan, {animated.x, animated.y, animated.width, animated.height * 0.10f}, accent, alpha);
@@ -1221,6 +1231,7 @@ class D3D11Compositor final : public ICompositor {
         drawSolidQuad(layer, renderPlan, {animated.x, animated.y, animated.width * 0.04f, animated.height}, accent, alpha);
       }
     }
+    context_->RSSetState(rasterizerState_.get());
   }
 
   // Lazily creates the D2D/DirectWrite (and best-effort WIC) factories used by

@@ -292,6 +292,15 @@ TEST(CompositorFraming, OverlayKeyPhaseBuildingOutFadesOut) {
   EXPECT_TRUE(nearly(start.alpha, 1.f));
   EXPECT_TRUE(end.alpha < 0.01f);
   EXPECT_TRUE(!end.visible);
+  EXPECT_TRUE(nearly(start.contentScale, 1.f));
+  EXPECT_TRUE(nearly(end.contentScale, 1.f));
+}
+
+// Motion scales with a remapped overlay instead of using full-canvas travel.
+TEST(CompositorFraming, OverlayKeyTravelScalesWithOverlayHeight) {
+  const auto fullProgram = computeOverlayKeyTransform("building-out", 0.5f, "lower-left", 0.16f);
+  const auto multiviewCell = computeOverlayKeyTransform("building-out", 0.5f, "lower-left", 0.08f);
+  EXPECT_TRUE(nearly(fullProgram.slideY, multiviewCell.slideY * 2.f));
 }
 
 // keyPosition flips the slide direction: lower-third slides up (+), upper down.
