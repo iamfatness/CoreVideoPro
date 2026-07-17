@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
@@ -2268,6 +2269,25 @@ public sealed class StudioViewModelAudioStatusTests
         int expected)
     {
         Assert.Equal(expected, StudioViewModel.RemainingLowerThirdPhaseDelayMs(elapsedMs, currentDurationMs));
+    }
+
+    [Fact]
+    public async Task RetryLowerThirdPhaseSyncAsync_WaitsForInFlightSyncBeforeStartingPhase()
+    {
+        var attempts = 0;
+
+        await StudioViewModel.RetryLowerThirdPhaseSyncAsync(
+            () =>
+            {
+                attempts++;
+                return attempts < 3
+                    ? Task.FromException(new MediaCoreSyncInFlightException())
+                    : Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.Equal(3, attempts);
     }
 
     [Theory]

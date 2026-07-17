@@ -12648,7 +12648,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (hasCurrentKey)
             {
                 ProgramLowerThirdKey = ProgramLowerThirdKey with { Phase = "building-out" };
-                _ = TrySyncMediaCoreAsync();
+                if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+                {
+                    return;
+                }
                 await WaitForLowerThirdPhaseAsync(
                     () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
                     cancellationToken).ConfigureAwait(true);
@@ -12658,7 +12661,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdName = source.SourceName;
             LowerThirdTitle = source.Title;
             LowerThirdOrg = source.Org;
-            _ = TrySyncMediaCoreAsync();
+            if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+            {
+                return;
+            }
             await WaitForLowerThirdPhaseAsync(
                 () => NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
                 cancellationToken).ConfigureAwait(true);
@@ -12679,7 +12685,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 Phase = "building-out",
                 BuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs)
             };
-            _ = TrySyncMediaCoreAsync();
+            if (!await SyncLowerThirdPhaseAsync(cancellationToken).ConfigureAwait(true))
+            {
+                return;
+            }
             await WaitForLowerThirdPhaseAsync(
                 () => NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
                 cancellationToken).ConfigureAwait(true);
@@ -12688,6 +12697,57 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private async Task<bool> SyncLowerThirdPhaseAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (_applyingProductionPatch)
+            {
+                await Task.Delay(25, cancellationToken).ConfigureAwait(true);
+            }
+
+            await RetryLowerThirdPhaseSyncAsync(
+                async () =>
+                {
+                    await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
+                    await SyncActiveSceneAsync().ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(true);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            CommandStatus = ex.Message;
+            return false;
+        }
+    }
+
+    public static async Task RetryLowerThirdPhaseSyncAsync(
+        Func<Task> syncAttempt,
+        CancellationToken cancellationToken,
+        int retryDelayMs = 25)
+    {
+        ArgumentNullException.ThrowIfNull(syncAttempt);
+        var delayMs = Math.Max(1, retryDelayMs);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await syncAttempt().ConfigureAwait(false);
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
