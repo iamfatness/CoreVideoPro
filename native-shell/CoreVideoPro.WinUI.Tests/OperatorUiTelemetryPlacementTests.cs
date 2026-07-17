@@ -80,6 +80,18 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("pass-through until live hosting ships", codeBehind, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void LowerThirdDesigner_ExposesRealTakeRebuildAndTimingControls()
+    {
+        var xaml = ReadView("OverlaysPage.xaml");
+
+        Assert.Contains("ViewModel.ToggleProgramLowerThirdCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.RebuildProgramLowerThirdCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.LowerThirdTimingPresetOptions", xaml, StringComparison.Ordinal);
+        Assert.Contains("SOURCE BEHAVIOR", xaml, StringComparison.Ordinal);
+        Assert.Contains("stays locked while that source remains on program", xaml, StringComparison.Ordinal);
+    }
+
     private static string ReadView(string fileName)
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);

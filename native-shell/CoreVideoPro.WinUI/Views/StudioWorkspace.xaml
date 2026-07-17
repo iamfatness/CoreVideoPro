@@ -910,6 +910,10 @@
                                         <TextBlock Text="{x:Bind ViewModel.LowerThirdTimingSummary, Mode=OneWay}"
                                                    FontSize="11"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
+                                        <ComboBox Header="Motion timing"
+                                                  ItemsSource="{x:Bind ViewModel.LowerThirdTimingPresetOptions, Mode=OneWay}"
+                                                  SelectedItem="{x:Bind ViewModel.SelectedLowerThirdTimingPreset, Mode=TwoWay}"
+                                                  HorizontalAlignment="Stretch" />
                                         <Button Content="Rebuild lower third"
                                                 Style="{StaticResource StudioAccentButton}"
                                                 Command="{x:Bind ViewModel.RebuildProgramLowerThirdCommand}" />

@@ -410,6 +410,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private double _lowerThirdBuildOutMs = 160;
 
     [ObservableProperty]
+    private string _selectedLowerThirdTimingPreset = "Quick";
+
+    public IReadOnlyList<string> LowerThirdTimingPresetOptions { get; } =
+        ["Quick", "Smooth", "Gentle", "Custom"];
+
+    [ObservableProperty]
     private VideoSurfaceState _programSurface = VideoSurfaceState.Slate(VideoSurfaceKind.Program, "program", "Program");
 
     [ObservableProperty]
@@ -824,7 +830,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             : "Native lower-third state waiting for media core.";
 
     public string LowerThirdTimingSummary =>
-        $"Build {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
+        $"{SelectedLowerThirdTimingPreset} · in {LowerThirdBuildInMs:0} ms / out {LowerThirdBuildOutMs:0} ms";
 
     public string LoudnessTargetLabel => "target -16 LUFS";
 
@@ -2501,6 +2507,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnAudioMonitorVolumeChanged(double value) => OnAudioMonitorSettingsChanged();
 
+    private bool _applyingLowerThirdTimingPreset;
+
+    partial void OnSelectedLowerThirdTimingPresetChanged(string value)
+    {
+        if (string.Equals(value, "Custom", StringComparison.Ordinal)) return;
+        var timing = value switch
+        {
+            "Smooth" => (BuildIn: 420d, BuildOut: 320d),
+            "Gentle" => (BuildIn: 700d, BuildOut: 550d),
+            _ => (BuildIn: 220d, BuildOut: 160d)
+        };
+        _applyingLowerThirdTimingPreset = true;
+        LowerThirdBuildInMs = timing.BuildIn;
+        LowerThirdBuildOutMs = timing.BuildOut;
+        _applyingLowerThirdTimingPreset = false;
+        ApplyProgramLowerThirdTimingChange();
+    }
+
     partial void OnLowerThirdBuildInMsChanged(double value)
     {
         var normalized = NormalizeLowerThirdTimingMs(value);
@@ -2510,7 +2534,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        ApplyProgramLowerThirdTimingChange();
+        if (!_applyingLowerThirdTimingPreset)
+        {
+            SelectedLowerThirdTimingPreset = "Custom";
+            ApplyProgramLowerThirdTimingChange();
+        }
     }
 
     partial void OnLowerThirdBuildOutMsChanged(double value)
@@ -2522,7 +2550,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        ApplyProgramLowerThirdTimingChange();
+        if (!_applyingLowerThirdTimingPreset)
+        {
+            SelectedLowerThirdTimingPreset = "Custom";
+            ApplyProgramLowerThirdTimingChange();
+        }
     }
 
     private void ApplyProgramLowerThirdTimingChange()
@@ -5432,7 +5464,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void RebuildProgramLowerThird()
     {
-        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
+        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not { } source)
         {
             CommandStatus = "Lower third needs a program source";
             OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
@@ -5443,7 +5475,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         _programLowerThirdAutomationSuppressed = false;
         ProgramLowerThirdEnabled = true;
-        RefreshProgramLowerThirdKeyPosition();
+        UpdateProgramLowerThirdKey(source, force: true);
         CommandStatus = "Lower third rebuilt";
         _ = TrySyncMediaCoreAsync();
     }
