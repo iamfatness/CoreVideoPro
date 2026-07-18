@@ -5,6 +5,11 @@ _Created 2026-07-12; rewritten 2026-07-18 after the alpha gates were re-scored (
 changes the question from "does the product work?" to "can someone who is not us
 install it, get to a show, and be supported when something breaks?"_
 
+_The engineering design for the build-workstreams (B1 distribution, B2 onboarding,
+B3 access control, B4 supportability) lives in `docs/beta-engineering-spec.md`
+(written 2026-07-18 against a same-day audit of the packaging scripts, CI, the
+Cloudflare workers, and the shell's settings/support surface)._
+
 ## 1. What beta means
 
 **Beta = a small set of external operators (5-20) run real shows on their own
@@ -60,8 +65,10 @@ update mechanism. Two items here are calendar-bound and start immediately.
       token-refresh fallback itself is DONE (#290) — the broker is now a hard
       runtime dependency for every beta user's sign-in AND refresh, which raises
       the availability bar
-- [ ] Sane first-launch defaults per machine class (canvas/render resolution by GPU -
-      4K canvas is an RTX-4090 assumption; pick 1080p defaults on lesser GPUs)
+- [ ] Sane first-launch defaults per machine class (audited 2026-07-18: the canvas
+      default is ALREADY 1080p — `MediaCoreProductionSyncContext` — so the remaining
+      work is gating the 4K option + multiview tile counts behind a GPU probe, not
+      changing defaults; see spec §O3)
 - [ ] Quickstart doc: one page from install to first show (derive from
       `docs/operator-validation-runbook.md`)
 
