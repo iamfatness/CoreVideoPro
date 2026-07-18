@@ -37,6 +37,8 @@
     "pack:native:msix": "powershell -ExecutionPolicy Bypass -File scripts/package-native-msix.ps1",
     "sign:native-msix": "powershell -ExecutionPolicy Bypass -File scripts/sign-native-msix.ps1",
     "bump:version": "node scripts/bump-version.mjs",
+    "stamp:version": "node scripts/stamp-version.mjs",
+    "stamp:version:check": "node scripts/stamp-version.mjs --check",
     "release:notes": "node scripts/release-notes.mjs",
     "validate:live-zoom": "node ./scripts/validate-live-zoom.mjs",
     "validate:record-stream": "node ./scripts/validate-record-stream.mjs"

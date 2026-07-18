@@ -16,7 +16,7 @@ What exists vs. what the plans assumed:
 |---|---|
 | Packaging | `scripts/package-native.ps1` (loose folder) and `package-native-msix.ps1` (unsigned MSIX with a robust MakeAppx/layout fallback chain) both stage native core + Zoom runtime + FFmpeg. Neither registers the vcam DLL, sets up crash dumps, nor creates the recording folder |
 | Signing | `sign-native-msix.ps1` is dev-only: self-signed cert, and **exits 0 when signtool is missing** — a silent no-op. No production cert handling anywhere |
-| Versioning | THREE unsynced version sources: `package.json` (0.1.0), `Package.appxmanifest` (0.1.0.0, `Publisher="CN=CoreVideo Pro Dev"`), csproj (`ApplicationDisplayVersion`). Release tag validation checks only `package.json` |
+| Versioning | ~~THREE unsynced version sources~~ **Synced via D1 (2026-07-18):** `package.json` is the source of truth; `scripts/stamp-version.mjs` stamps `Package.appxmanifest` (`Identity Version`, still `Publisher="CN=CoreVideo Pro Dev"` — D2 owns that) and the csproj; CI `version-sync` job enforces it. Release tag validation still checks only `package.json` (fine — everything else must now match it) |
 | CI release | `release.yml` builds the **loose folder** (not MSIX), never signs, never creates a GitHub Release; the artifact upload is gated on `COREVIDEO_PUBLISH == 'never'` (inverted/dead). `bump:version` + `release:notes` exist but are unwired |
 | Auto-update | **Zero code.** No version check, no channel, no AppInstaller URI in the manifest |
 | Crash handling | Shell logs unhandled exceptions to `launch.log` (and swallows recoverable COM ones); `MediaCoreSupervisor` tracks child crashes (ring of 20, respawn ≤5). **No code touches `%LOCALAPPDATA%\CrashDumps`** — no detection, no upload. `setup-crash-dumps.ps1` (elevated, HKLM) is a manual dev-rig script |
@@ -54,6 +54,16 @@ What exists vs. what the plans assumed:
 `scripts/stamp-version.mjs` invoked by both packagers) rewrites the appxmanifest
 `Identity Version` (x.y.z.0) and csproj `ApplicationDisplayVersion`. CI gains a
 version-sync check; the release tag validator keeps validating `package.json`.
+
+**Status: SHIPPED 2026-07-18.** `scripts/stamp-version.mjs` (plain Node, no
+deps, targeted string replacement — no XML reformat) rewrites the appxmanifest
+`Identity Version` (x.y.z.0) and the csproj `ApplicationDisplayVersion` (x.y.z)
++ `ApplicationVersion` (major\*10000 + minor\*100 + patch); `--check` exits
+non-zero with a diff-style report. Invoked by both packagers before staging, by
+`npm run bump:version` after the bump (a bump can never leave sources
+diverged), and by the new `version-sync` job in `ci.yml`. npm entry points:
+`stamp:version` / `stamp:version:check`. `release.yml` picks up the same check
+as part of the D5 rework (not done here).
 
 ### D2 — Production signing mode
 `sign-native-msix.ps1` grows `-Mode production`: signs via Trusted Signing

@@ -315,6 +315,15 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "node is required on PATH for packaging helpers."
 }
 
+# D1: package.json is the single version source of truth; re-stamp the
+# appxmanifest + csproj before anything is built or staged (the MSIX Identity
+# Version comes straight from Package.appxmanifest).
+Write-Host "[pack:native:msix] stamping version from package.json..." -ForegroundColor Cyan
+node (Join-Path $repoRoot "scripts\stamp-version.mjs")
+if ($LASTEXITCODE -ne 0) {
+  throw "Version stamp failed (scripts/stamp-version.mjs exited $LASTEXITCODE)."
+}
+
 New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 
 Write-Host "[pack:native:msix] preparing MSIX assets..." -ForegroundColor Cyan
