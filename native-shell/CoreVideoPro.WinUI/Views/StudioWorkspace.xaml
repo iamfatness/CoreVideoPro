@@ -546,7 +546,17 @@
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon Glyph="&#xE8D2;" FontSize="12" />
+                                <Grid Width="16" Height="12" VerticalAlignment="Center" IsHitTestVisible="False">
+                                    <Border Width="3" Height="12" CornerRadius="1"
+                                            Background="{StaticResource StudioAccentBrush}"
+                                            HorizontalAlignment="Left" />
+                                    <Border Height="3" Margin="5,1,0,0" CornerRadius="1"
+                                            Background="{StaticResource StudioTextBrush}"
+                                            VerticalAlignment="Top" />
+                                    <Border Width="8" Height="2" Margin="5,7,0,0" CornerRadius="1"
+                                            Background="{StaticResource StudioMutedBrush}"
+                                            HorizontalAlignment="Left" VerticalAlignment="Top" />
+                                </Grid>
                                 <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                            FontSize="11"
                                            FontWeight="Bold" />
@@ -842,7 +852,17 @@
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
                             <StackPanel Orientation="Horizontal" Spacing="10">
-                                <FontIcon Glyph="&#xE8D2;" FontSize="18" />
+                                <Grid Width="18" Height="14" VerticalAlignment="Center" IsHitTestVisible="False">
+                                    <Border Width="3" Height="14" CornerRadius="1"
+                                            Background="{StaticResource StudioAccentBrush}"
+                                            HorizontalAlignment="Left" />
+                                    <Border Height="3" Margin="5,1,0,0" CornerRadius="1"
+                                            Background="{StaticResource StudioTextBrush}"
+                                            VerticalAlignment="Top" />
+                                    <Border Width="9" Height="2" Margin="5,8,0,0" CornerRadius="1"
+                                            Background="{StaticResource StudioMutedBrush}"
+                                            HorizontalAlignment="Left" VerticalAlignment="Top" />
+                                </Grid>
                                 <StackPanel Spacing="1">
                                     <TextBlock Text="{x:Bind ViewModel.StudioLowerThirdCompactLabel, Mode=OneWay}"
                                                FontWeight="Bold" FontSize="12" />
