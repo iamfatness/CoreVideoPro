@@ -121,7 +121,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
     private int _customBusCounter = 1;
 
     public string SelectionSummary => SelectedCrosspoint is null
-        ? "Select a crosspoint to route it and set its level."
+        ? "Select a route to set its level."
         : $"{SelectedCrosspoint.SourceLabel}  →  {SelectedCrosspoint.BusLabel}";
 
     public double SelectedGainDb

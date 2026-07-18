@@ -5,11 +5,16 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class OperatorUiTelemetryPlacementTests
 {
     [Fact]
-    public void ZoomPage_KeepsLiveEngineEvidenceInDedicatedHealthWindow()
+    public void ZoomPage_UsesOperatorStatusAndKeepsTechnicalEvidenceInHealth()
     {
         var xaml = ReadView("SettingsPage.xaml");
 
-        Assert.Contains("Zoom readiness", xaml, StringComparison.Ordinal);
+        Assert.Contains("Zoom status", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.ZoomStatusGuidance", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Zoom readiness", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SdkBlockers", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Public Client OAuth", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Detailed engine information", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ZoomEngineEvidence", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DiagnosticsReadout", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Zoom engine evidence", xaml, StringComparison.Ordinal);
@@ -25,6 +30,15 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("Transport.MemoryLoadLine", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Transport.DiskLoadLine", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.NativeLowerThirdStatus", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Show readiness", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.ShowReadinessSummary", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SceneRailDisplaySummary", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SceneBuilderHint", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tap a scene to queue", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.AudioMonitorEngineStatus", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.OutputStatus,", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("crosspoint matrix", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ViewModel.OutputOperatorStatus", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -40,6 +54,22 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("ViewModel.LocalAudioSourceStatus", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("COREVIDEO_FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.FfmpegRuntimeStatus", outputXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("staged beside the packaged app", outputXaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("local alpha toggles", outputXaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("licensing backend", outputXaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Plan upgrades", outputXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("crosspoint matrix", audioXaml, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ViewModel.FfmpegOperatorStatus", outputXaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RoutingPage_UsesOperatorLanguage()
+    {
+        var xaml = ReadView("RoutingPage.xaml");
+
+        Assert.Contains("Click a cell to send a source", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Video crosspoints", xaml, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -50,7 +80,8 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.Contains("Master processor", xaml, StringComparison.Ordinal);
         Assert.Contains("01  INPUT", xaml, StringComparison.Ordinal);
         Assert.Contains("06  SAFETY LIMITER", xaml, StringComparison.Ordinal);
-        Assert.Contains("Native DSP · Program L/R · ordered pre-output chain", xaml, StringComparison.Ordinal);
+        Assert.Contains("Program L/R · processing order", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Native DSP", xaml, StringComparison.Ordinal);
         Assert.Contains("controls:MasteringToneCurve", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.SelectMasteringCompareSlotCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ViewModel.ApplyMasteringPresetCommand", xaml, StringComparison.Ordinal);
@@ -64,7 +95,9 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.Contains("SIGNAL FLOW · TOP TO BOTTOM", xaml, StringComparison.Ordinal);
         Assert.Contains("OnProcessingSlotClicked", xaml, StringComparison.Ordinal);
         Assert.Contains("OnRemoveProcessingSlotClicked", xaml, StringComparison.Ordinal);
-        Assert.Contains("Plug-in failure always bypasses safely", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.ProcessingBridgeStatusLabel", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("isolated host", xaml, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fail-open", xaml, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -74,8 +107,9 @@ public sealed class OperatorUiTelemetryPlacementTests
         var codeBehind = ReadView("AudioPage.xaml.cs");
 
         Assert.Contains("Add VST3 plug-in", xaml, StringComparison.Ordinal);
-        Assert.Contains("isolated host", codeBehind, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("viewModel.FilteredVstPlugins", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("isolated host", codeBehind, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fail-open", codeBehind, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Add VST3 slot", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("pass-through until live hosting ships", codeBehind, StringComparison.OrdinalIgnoreCase);
     }

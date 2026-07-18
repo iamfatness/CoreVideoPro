@@ -1856,13 +1856,13 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Contains("No loopback packets from Game output", recommendation, StringComparison.Ordinal);
-        Assert.Contains("Play audio through that Windows output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("No audio detected", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Play audio through Game output", recommendation, StringComparison.Ordinal);
         Assert.Contains("Try Studio Mic", recommendation, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void FormatLocalAudioSourceRecommendation_ShowsSilentPcmAndAlternateSource()
+    public void FormatLocalAudioSourceRecommendation_UsesPlainLanguageAndAlternateSource()
     {
         var recommendation = StudioViewModel.FormatLocalAudioSourceRecommendation(
             "loopback-game",
@@ -1893,8 +1893,10 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Contains("Selected source is producing silent PCM from Game output (-120.0 dBFS)", recommendation, StringComparison.Ordinal);
-        Assert.Contains("Confirm Windows is playing to that endpoint", recommendation, StringComparison.Ordinal);
+        Assert.Contains("No audio signal detected from Game output", recommendation, StringComparison.Ordinal);
+        Assert.Contains("Check that the device is active", recommendation, StringComparison.Ordinal);
+        Assert.DoesNotContain("PCM", recommendation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("dBFS", recommendation, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Try Chat output", recommendation, StringComparison.Ordinal);
     }
 
@@ -1927,7 +1929,7 @@ public sealed class StudioViewModelAudioStatusTests
                 ]
             });
 
-        Assert.Equal("Local audio is receiving signal from Game output at -18.2 dBFS.", recommendation);
+        Assert.Equal(string.Empty, recommendation);
     }
 
     [Fact]

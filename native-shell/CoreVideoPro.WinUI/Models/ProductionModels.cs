@@ -174,9 +174,7 @@ public sealed class AudioCaptureDevice
     {
         get
         {
-            var label = string.IsNullOrWhiteSpace(DriverName)
-                ? $"{Name} - {KindLabel}"
-                : $"{Name} - {KindLabel} - {DriverName}";
+            var label = $"{Name} - {KindLabel}";
             return IsDefault ? $"{label} - Default" : label;
         }
     }

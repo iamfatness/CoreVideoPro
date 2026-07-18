@@ -1070,6 +1070,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
+    public string FfmpegOperatorStatus =>
+        StudioStreamOutputValidation.ResolveFfmpegExecutable(FfmpegBinDirectory) is not null
+            ? "Streaming encoder ready."
+            : "Streaming encoder not found. Choose the folder containing ffmpeg.exe.";
+
     public StudioViewModel()
     {
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
@@ -1216,8 +1221,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool CanToggleRecording => Settings.IsInMeeting && !_recordingToggleInFlight;
 
     public string CaptureEngineHint => CanToggleCapture
-        ? "Requests the raw Zoom capture subscription for the active meeting."
-        : "Join a Zoom meeting first, then request capture.";
+        ? "Start or stop Zoom video capture for this meeting."
+        : "Join a Zoom meeting before starting capture.";
 
     public string RecordingLabel => Recording ? "Recording" : "Record";
 
@@ -1261,7 +1266,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool CanAddSrtIngestSource => SrtIngestSources.Count < MaxSrtIngestSources;
 
     public string SrtIngestRuntimeSummary =>
-        "Each SRT source is exposed as a routable input. Real SRT receive/decode requires the libsrt ingest adapter.";
+        "Configured SRT sources are available in Show inputs and Routing.";
 
     public IReadOnlyList<RouteSelectOption> OutputResolutionOptions { get; } =
     [
@@ -1392,6 +1397,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         $"{NormalizeRecordingFormat(RecordingFormat).ToUpperInvariant()} - {FormatRecordingQuality(RecordingQuality)} - {RecordingRenderProfileSummary} - {RecordingFilenamePrefix}";
 
     public string OutputStatusBrief => FormatOutputStatusBrief(OutputStatus);
+
+    public string OutputOperatorStatus =>
+        ShouldShowOutputStatusDetails(OutputStatus)
+            ? $"{OutputStatusBrief}. Open Health for technical details."
+            : OutputStatusBrief;
 
     public string OutputStatusDetailsLabel =>
         ShouldShowOutputStatusDetails(OutputStatus) ? "Show error" : "Details";
@@ -1603,12 +1613,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                     IsProcessing = processing,
                     StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
                     StatusTooltip = builtIn
-                        ? "Processing audio in CoreVideo's native DSP chain."
+                        ? "Processing active."
                         : processing
-                            ? $"Processing live in the isolated VST3 host ({serve.Exchanges} completed blocks)."
+                            ? "Plug-in active. Click to open its controls."
                             : failed
-                                ? $"Plug-in bypassed; program audio is unchanged. {serve.LastError}"
-                                : "The isolated VST3 host is starting or waiting for PCM; audio remains safely bypassed until processing is proven.",
+                                ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                                : "Plug-in starting; audio continues unchanged.",
                 };
             })
             .ToList();
@@ -1825,7 +1835,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         mix.PluginInserts.Add(insertName);
-        CommandStatus = $"{pluginClassName} added to {SelectedParticipant?.Name ?? "selected channel"}; isolated host starting with fail-open bypass.";
+        CommandStatus = $"{pluginClassName} added to {SelectedParticipant?.Name ?? "selected channel"}.";
         RefreshMixerValueBindings(mix.ParticipantId);
         RefreshAudioProcessingTargets();
         NotifySelectedRackChanged();
@@ -1934,12 +1944,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 IsProcessing = processing,
                 StatusLabel = builtIn || processing ? "LIVE" : failed ? "BYPASS" : "START",
                 StatusTooltip = builtIn
-                    ? "Processing in the native DSP chain."
+                    ? "Processing active."
                     : processing
-                        ? $"Processing in the isolated VST3 host ({serve.Exchanges} completed blocks). Click to open its controls."
+                        ? "Plug-in active. Click to open its controls."
                         : failed
-                            ? $"Safely bypassed; program audio is unchanged. {serve.LastError}"
-                            : "Waiting for proven PCM processing; program audio passes safely until the host is ready. Click to open its controls."
+                            ? "Plug-in bypassed; audio continues unchanged. Open Health for details."
+                            : "Plug-in starting; audio continues unchanged. Click to open its controls."
             };
         }).ToList();
         OnPropertyChanged(nameof(SelectedAudioProcessingSlots));
@@ -2032,23 +2042,50 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         get
         {
-            var active = ShowInputRosterService.CountActiveShowInputs(ShowInputs);
             var displayed = MultiviewGridTiles.Count(tile => !tile.IsEmpty);
-            return $"Show inputs · {displayed} of {active} live · {ShowInputRosterService.MaxShowInputs}-input capacity";
+            var inputLabel = displayed == 1 ? "input" : "inputs";
+            return $"{displayed} live {inputLabel}";
         }
     }
 
-    public string ShowInputSummary =>
-        $"{ShowInputs.Count(slot => slot.InShow)}/{ShowInputRosterService.MaxMultiviewBoxes} in show · " +
-        $"{ShowInputRosterService.MaxShowInputs} slots — pick input type + source, then toggle In show";
-
-    public string SetupProgressSummary
+    public string ShowInputSummary
     {
         get
         {
             var assigned = ShowInputs.Count(slot => slot.IsAssigned);
             var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
-            return $"{assigned}/{ShowInputRosterService.MaxShowInputs} inputs assigned - {inShow} in show - {RoomVideoParticipants.Count} Zoom feeds";
+            return $"{inShow} in show · {assigned} assigned";
+        }
+    }
+
+    public string SetupProgressSummary
+    {
+        get
+        {
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            var inputLabel = inShow == 1 ? "input" : "inputs";
+            var guestLabel = RoomVideoParticipants.Count == 1 ? "guest" : "guests";
+            return $"{inShow} {inputLabel} · {RoomVideoParticipants.Count} Zoom {guestLabel}";
+        }
+    }
+
+    public string ShowStatusSummary
+    {
+        get
+        {
+            var assigned = ShowInputs.Count(slot => slot.IsAssigned);
+            var inShow = ShowInputs.Count(slot => slot.InShow && slot.IsAssigned);
+            if (assigned == 0)
+            {
+                return "Add sources";
+            }
+
+            if (inShow == 0)
+            {
+                return "Choose inputs for the show";
+            }
+
+            return Recording || Streaming ? "On air" : "Ready";
         }
     }
 
@@ -2324,6 +2361,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(RecordButtonForeground));
         OnPropertyChanged(nameof(RecordingLiveDotVisibility));
         OnPropertyChanged(nameof(RecordIconVisibility));
+        OnPropertyChanged(nameof(ShowStatusSummary));
         RefreshTransportState();
     }
 
@@ -2333,6 +2371,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamButtonBackground));
         OnPropertyChanged(nameof(StreamButtonBorder));
         OnPropertyChanged(nameof(StreamButtonForeground));
+        OnPropertyChanged(nameof(ShowStatusSummary));
         RefreshTransportState();
     }
 
@@ -2655,6 +2694,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         ApplyFfmpegRuntimeEnvironment(value);
         OnPropertyChanged(nameof(FfmpegRuntimeStatus));
+        OnPropertyChanged(nameof(FfmpegOperatorStatus));
         SaveProductionOutputPreferences();
     }
 
@@ -2696,6 +2736,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnOutputStatusChanged(string value)
     {
         OnPropertyChanged(nameof(OutputStatusBrief));
+        OnPropertyChanged(nameof(OutputOperatorStatus));
         OnPropertyChanged(nameof(OutputStatusDetailsLabel));
         OnPropertyChanged(nameof(OutputStatusDetailsVisibility));
     }
@@ -3118,7 +3159,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             if (ZoomCaptureSubscribed)
             {
-                UnsubscribeZoomCapture("Capture off — raw Zoom ingest paused");
+                UnsubscribeZoomCapture("Zoom capture paused");
             }
             else
             {
@@ -4881,14 +4922,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string VstPluginHostSummary =>
         (_bridge.LastSnapshot?.AudioMixSession.PluginHost.Status ?? "absent") switch
         {
-            "ready" =>
-                $"{_vstPlugins.Sum(plugin => plugin.ClassNames.Count)} validated VST3 processor(s)" +
-                (_vstScanObservedAt is { } at ? $" · scanned {at:HH:mm}" : "") +
-                " · isolated hosting available",
-            "probing" => "Validating installed VST3 plug-ins in isolated processes…",
-            "scanning" => "Scanning for installed VST3 plugins…",
-            "error" => "Plugin scan failed — see media-core.log",
-            _ => "Looking for installed VST3 plugins…"
+            "ready" => $"{_vstPlugins.Sum(plugin => plugin.ClassNames.Count)} VST3 plug-in(s) available",
+            "probing" => "Checking installed VST3 plug-ins…",
+            "scanning" => "Finding installed VST3 plug-ins…",
+            "error" => "VST3 scan needs attention — open Health for details",
+            _ => "Checking for installed VST3 plug-ins…"
         };
 
     private void RefreshVstPluginHostFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
@@ -6407,7 +6445,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RefreshShowInputEditors();
             RefreshPreviewRoutingState();
             RefreshMultiviewGridTiles();
-            CommandStatus = "SRT ingest source routed. Waiting for libsrt receiver frames.";
+            CommandStatus = "SRT source routed. Waiting for video.";
             return;
         }
 
@@ -8319,12 +8357,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
         var alternateText = alternate is null
-            ? "No alternate local audio device is currently available."
-            : $"Try {alternate.DisplayLabel}.";
+            ? string.Empty
+            : $" Try {alternate.DisplayLabel}.";
 
         if (source is null)
         {
-            return $"Waiting for native PCM from {selectedDeviceName}. {alternateText}";
+            return $"Waiting for audio from {selectedDeviceName}.{alternateText}";
         }
 
         var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
@@ -8333,25 +8371,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         if (source.SignalPresent)
         {
-            return $"Local audio is receiving signal from {sourceLabel} at {source.PeakDbfs:0.0} dBFS.";
+            return string.Empty;
         }
 
         if (source.CaptureStreaming && source.CaptureFramesReceived <= 0 && IsLoopbackAudioSourceKind(source.AudioSourceKind))
         {
-            return $"No loopback packets from {sourceLabel}. Play audio through that Windows output or choose a different input/loopback. {alternateText}";
+            return $"No audio detected. Play audio through {sourceLabel}, or choose another source.{alternateText}";
         }
 
         if (source.CaptureFramesReceived > 0 && !source.SignalPresent)
         {
-            return $"Selected source is producing silent PCM from {sourceLabel} ({source.PeakDbfs:0.0} dBFS). Confirm Windows is playing to that endpoint or choose another source. {alternateText}";
+            return $"No audio signal detected from {sourceLabel}. Check that the device is active, or choose another source.{alternateText}";
         }
 
         if (!source.CaptureStreaming)
         {
-            return $"Local source is paired but not streaming yet. Reselect {selectedDeviceName} or restart the audio engine. {alternateText}";
+            return $"{selectedDeviceName} is not active yet. Reselect it, or choose another source.{alternateText}";
         }
 
-        return $"Local audio is waiting for signal from {sourceLabel}. {alternateText}";
+        return $"Waiting for audio from {sourceLabel}.{alternateText}";
     }
 
     public static string FormatCaptureAudioSourceStatus(NativeMediaCoreCaptureAudioSource source)
@@ -12322,6 +12360,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(SetupProgressSummary));
         OnPropertyChanged(nameof(ShowReadinessSummary));
+        OnPropertyChanged(nameof(ShowStatusSummary));
     }
 
     private void RefreshTransportAutomationState()

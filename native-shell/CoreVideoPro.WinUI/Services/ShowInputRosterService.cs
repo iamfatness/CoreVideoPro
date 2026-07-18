@@ -776,7 +776,7 @@ public static class ShowInputRosterService
                     : VideoSurfaceState.Waiting(VideoSurfaceKind.Multiview, $"capture:{device.Id}", label)) with
                     {
                         DetailLine = device.IsConnected
-                            ? $"{device.ConnectionLabel} - {device.SignalLabel} - waiting for capture frames"
+                            ? "Source connected · waiting for video."
                             : "Connect device in Sources to bring online."
                     };
 
@@ -846,7 +846,7 @@ public static class ShowInputRosterService
                 SurfaceKey = $"capture:{device.Id}",
                 Kind = VideoSurfaceKind.Multiview,
                 Title = label,
-                DetailLine = "Live capture fallback - assign to a Show Input to lock its slot."
+                DetailLine = "Assign this source to a Show Input to keep it in the multiview."
             },
             SourceIndex = sourceIndex
         };

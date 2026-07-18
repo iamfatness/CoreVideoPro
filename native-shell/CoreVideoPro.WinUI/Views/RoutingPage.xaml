@@ -28,7 +28,7 @@
                 <StackPanel Spacing="2">
                     <TextBlock Text="Video Routing" FontSize="16" FontWeight="Bold"
                                Foreground="{StaticResource StudioTextBrush}" />
-                    <TextBlock Text="Video crosspoints — click a cell to route a source to ISO record, multiview, or aux. Audio routing lives on the Audio tab (SETUP)."
+                    <TextBlock Text="Click a cell to send a source to ISO record, multiview, or aux. Audio routing is available on the Audio tab."
                                FontSize="11" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords" />
                 </StackPanel>
             </StackPanel>

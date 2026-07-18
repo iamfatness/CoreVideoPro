@@ -159,7 +159,7 @@
                     <StackPanel VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="CoreVideo Pro" FontWeight="SemiBold" FontSize="14"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <TextBlock Text="Zoom-native production" FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                        <TextBlock Text="Live production" FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
                     </StackPanel>
                 </StackPanel>
 
@@ -207,7 +207,7 @@
                             BorderBrush="{x:Bind ViewModel.RoutingTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.RoutingTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="routing"
-                            ToolTipService.ToolTip="Routing - audio and video crosspoint matrix" />
+                            ToolTipService.ToolTip="Manage audio and video routing" />
                     <Button Content="Overlays" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.OverlaysTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OverlaysTabChrome.BorderBrush, Mode=OneWay}"
@@ -233,7 +233,7 @@
                                VerticalAlignment="Center" Margin="10,0,2,0" />
                     <Button Content="Health" Style="{StaticResource GhostButton}"
                             Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"
-                            ToolTipService.ToolTip="Diagnostics, support bundle, and native runtime readiness" />
+                            ToolTipService.ToolTip="System status and support tools" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -280,11 +280,11 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <FontIcon Glyph="&#xE930;" FontSize="14" Foreground="{StaticResource StudioAccentBrush}" />
-                    <TextBlock Text="Show readiness" FontSize="11" FontWeight="ExtraBold"
+                    <TextBlock Text="SHOW" FontSize="11" FontWeight="ExtraBold"
                                Foreground="#8FDCC8" CharacterSpacing="40" />
                 </StackPanel>
                 <TextBlock Grid.Column="1"
-                           Text="{x:Bind ViewModel.ShowReadinessSummary, Mode=OneWay}"
+                           Text="{x:Bind ViewModel.ShowStatusSummary, Mode=OneWay}"
                            FontSize="12"
                            Foreground="{StaticResource StudioTextBrush}"
                            TextTrimming="CharacterEllipsis"
@@ -321,8 +321,6 @@
                     <StackPanel Spacing="2">
                         <TextBlock Text="Scenes" FontWeight="SemiBold" FontSize="14"
                                    Foreground="{StaticResource StudioTextBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.SceneRailDisplaySummary, Mode=OneWay}" FontSize="11"
-                                   Foreground="{StaticResource StudioTextSecondaryBrush}" TextWrapping="Wrap" />
                     </StackPanel>
 
                     <Grid Grid.Row="1" ColumnSpacing="6">
@@ -433,8 +431,6 @@
                     </ScrollViewer>
 
                     <StackPanel Grid.Row="3" Spacing="6">
-                        <TextBlock Text="Tap a scene to queue on preview - Take swaps PVW and PGM"
-                                   FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                         <Button Style="{StaticResource SceneBuilderCalloutButton}"
                                 HorizontalAlignment="Stretch"
                                 Command="{x:Bind ViewModel.OpenSceneBuilderCommand}">
@@ -443,8 +439,6 @@
                                 <TextBlock Text="Open Scene builder" />
                             </StackPanel>
                         </Button>
-                        <TextBlock Text="{x:Bind ViewModel.SceneBuilderHint, Mode=OneWay}"
-                                   FontSize="9" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="Wrap" />
                         <Border Background="#0C1118"
                                 BorderBrush="{StaticResource StudioBorderBrush}"
                                 BorderThickness="1"
@@ -1008,7 +1002,7 @@
                         <TextBlock Text="{x:Bind ViewModel.OutputStatusBrief, Mode=OneWay}" VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
                                    MaxWidth="190" TextTrimming="CharacterEllipsis"
-                                   ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}" />
+                                   ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}" />
                         <Button Content="{x:Bind ViewModel.OutputStatusDetailsLabel, Mode=OneWay}"
                                 Padding="8,4"
                                 MinWidth="0"
@@ -1023,7 +1017,7 @@
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
                                                    Foreground="{StaticResource StudioTextBrush}" />
-                                        <TextBlock Text="{x:Bind ViewModel.OutputStatus, Mode=OneWay}"
+                                        <TextBlock Text="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}"
                                                    TextWrapping="WrapWholeWords"
                                                    IsTextSelectionEnabled="True"
                                                    Foreground="{StaticResource StudioMutedBrush}" />
@@ -1187,7 +1181,7 @@
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.StreamButtonForeground, Mode=OneWay}"
-                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputStatus, Mode=OneWay}">
+                            ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}">
                         <StackPanel Spacing="1">
                             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
                                 <!-- Design: LIVE = pulsing green dot while streaming. -->
@@ -1396,7 +1390,7 @@
                                       MinHeight="30"
                                       FontSize="12"
                                       VerticalAlignment="Center"
-                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}" />
+                                      ToolTipService.ToolTip="{x:Bind ViewModel.AudioMonitorStatus, Mode=OneWay}" />
 
                         <Border MinWidth="292"
                                 Padding="10,7"

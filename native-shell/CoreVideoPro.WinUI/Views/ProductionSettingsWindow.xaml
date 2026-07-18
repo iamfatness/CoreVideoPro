@@ -728,11 +728,11 @@
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Spacing="14">
                     <TextBlock Text="FFmpeg" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="RTMP and RTMPS output require ffmpeg.exe staged beside the packaged app."
+                    <TextBlock Text="CoreVideo checks the selected streaming encoder before going live."
                                Style="{StaticResource OperatorSummary}" />
                     <Border Style="{StaticResource OperatorSectionBorder}">
                         <StackPanel Spacing="12">
-                            <TextBlock Text="Runtime folder" Style="{StaticResource SettingsLabel}" />
+                            <TextBlock Text="Encoder location" Style="{StaticResource SettingsLabel}" />
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -747,9 +747,9 @@
                                         Style="{StaticResource OperatorGhostButton}"
                                         Command="{x:Bind ViewModel.BrowseFfmpegBinFolderCommand}" />
                             </Grid>
-                            <TextBlock Text="{x:Bind ViewModel.FfmpegRuntimeStatus, Mode=OneWay}"
+                            <TextBlock Text="{x:Bind ViewModel.FfmpegOperatorStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
-                            <TextBlock Text="Choose the folder containing ffmpeg.exe when it is not bundled with the app. Changes apply without restarting CoreVideo."
+                            <TextBlock Text="If CoreVideo cannot find the encoder automatically, choose the folder containing ffmpeg.exe."
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
@@ -871,27 +871,6 @@
                         </StackPanel>
                     </Border>
 
-                    <Border Style="{StaticResource OperatorSectionBorder}">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Plan upgrades" Style="{StaticResource SettingsLabel}" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button Content="Creator"
-                                        Style="{StaticResource OperatorGhostButton}"
-                                        Command="{x:Bind ViewModel.Settings.UpgradeCommand}"
-                                        CommandParameter="creator" />
-                                <Button Content="Pro"
-                                        Style="{StaticResource OperatorGhostButton}"
-                                        Command="{x:Bind ViewModel.Settings.UpgradeCommand}"
-                                        CommandParameter="pro" />
-                                <Button Content="Team"
-                                        Style="{StaticResource OperatorGhostButton}"
-                                        Command="{x:Bind ViewModel.Settings.UpgradeCommand}"
-                                        CommandParameter="team" />
-                            </StackPanel>
-                            <TextBlock Text="Plan controls are local alpha toggles until the licensing backend is connected."
-                                       Style="{StaticResource OperatorSummary}" />
-                        </StackPanel>
-                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

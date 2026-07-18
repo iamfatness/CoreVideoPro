@@ -142,7 +142,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Spacing="2" VerticalAlignment="Center">
-                    <TextBlock Text="Selected crosspoint" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
+                    <TextBlock Text="Selected route" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
                                CharacterSpacing="40" />
                     <TextBlock Text="{x:Bind ViewModel.AudioRoutingMatrix.SelectionSummary, Mode=OneWay}"
                                FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource StudioTextBrush}" />

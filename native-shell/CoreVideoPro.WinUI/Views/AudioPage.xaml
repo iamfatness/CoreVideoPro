@@ -69,7 +69,7 @@
                                 <ToggleButton Content="ROUTING" FontSize="10" Padding="10,4"
                                               IsChecked="{x:Bind ViewModel.IsAudioRoutingSurface, Mode=OneWay}"
                                               Tag="routing" Click="OnAudioModeClicked"
-                                              ToolTipService.ToolTip="Buses and the crosspoint matrix" />
+                                              ToolTipService.ToolTip="Choose where each source is heard" />
                                 <ToggleButton Content="SETUP" FontSize="10" Padding="10,4"
                                               IsChecked="{x:Bind ViewModel.IsAudioSetupMode, Mode=OneWay}"
                                               Tag="setup" Click="OnAudioModeClicked"
@@ -194,7 +194,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="2">
                             <TextBlock Text="Master processor" Style="{StaticResource OperatorSectionTitle}" />
-                            <TextBlock Text="Native DSP · Program L/R · ordered pre-output chain"
+                            <TextBlock Text="Program L/R · processing order"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1" Header="MASTER IN"
@@ -635,17 +635,10 @@
                                 Style="{StaticResource OperatorGhostButton}"
                                 Command="{x:Bind ViewModel.ClearAudioProcessingInsertsCommand}" />
                         <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
-                                   Text="Select a VST3 slot above to open that plug-in's native controls. Plug-in failure always bypasses safely."
+                                   Text="Select a VST3 plug-in above to open its controls."
                                    FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
                                    TextWrapping="WrapWholeWords" />
                     </Grid>
-                    <Border Style="{StaticResource OperatorReadoutBorder}">
-                        <StackPanel Spacing="2">
-                            <TextBlock Text="VST3 host" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.ProcessingBridgeStatusLabel, Mode=OneWay}"
-                                       FontSize="12" TextWrapping="WrapWholeWords" />
-                        </StackPanel>
-                    </Border>
                     <Button Content="{x:Bind ViewModel.SelectedMuteButtonLabel, Mode=OneWay}"
                             Style="{StaticResource OperatorGhostButton}"
                             Command="{x:Bind ViewModel.ToggleSelectedParticipantMuteCommand}" />

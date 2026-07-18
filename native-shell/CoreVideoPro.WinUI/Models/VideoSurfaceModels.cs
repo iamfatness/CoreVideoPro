@@ -61,7 +61,7 @@ public sealed record VideoSurfaceState
     public VideoSurfaceKind Kind { get; init; }
     public string Title { get; init; } = "Video";
     public string StatusLine { get; init; } = "Waiting for frames";
-    public string DetailLine { get; init; } = "Start the engine to receive media-core frames.";
+    public string DetailLine { get; init; } = "Video will appear when the source is ready.";
     public VideoFrameMetadata? LastFrame { get; init; }
     public SharedTextureHandle? PendingSharedHandle { get; init; }
     public string? MediaAssetPath { get; init; }
@@ -100,8 +100,8 @@ public sealed record VideoSurfaceState
             SurfaceKey = surfaceKey,
             Kind = kind,
             Title = title,
-            StatusLine = "Waiting for media engine",
-            DetailLine = "Program output appears after media-core publishes compositor state."
+            StatusLine = "Preparing video",
+            DetailLine = "Program output will appear automatically."
         };
 
     public static VideoSurfaceState WaitingForFirstFrame(VideoSurfaceKind kind, string surfaceKey, string title) =>
@@ -110,8 +110,8 @@ public sealed record VideoSurfaceState
             SurfaceKey = surfaceKey,
             Kind = kind,
             Title = title,
-            StatusLine = "Waiting for first compositor frame",
-            DetailLine = "The media engine is running; the Program monitor will update on the first rendered frame."
+            StatusLine = "Preparing Program",
+            DetailLine = "Program will appear when video is ready."
         };
 
     /// <summary>
@@ -125,7 +125,7 @@ public sealed record VideoSurfaceState
             Kind = kind,
             Title = title,
             StatusLine = "Capture paused",
-            DetailLine = "Showing program slate. Turn Capture on to ingest Zoom video."
+            DetailLine = "Showing the program slate. Turn Capture on to show Zoom video."
         };
 
     public static VideoSurfaceState CaptureSourceOnline(VideoSurfaceKind kind, string surfaceKey, string title) =>
@@ -211,7 +211,7 @@ public sealed record VideoSurfaceState
             Kind = Kind,
             Title = Title,
             StatusLine = StatusLine,
-            DetailLine = "GPU shared texture ready.",
+            DetailLine = DetailLine,
             LastFrame = LastFrame,
             PendingSharedHandle = handle,
             MediaAssetPath = MediaAssetPath,

@@ -176,7 +176,7 @@ public sealed partial class AudioPage : UserControl
             {
                 Text = slot.IsBuiltIn
                     ? "No adjustable parameters."
-                    : "The plug-in's native editor opens in its isolated host. Its controls affect this live processor; if the editor crashes, program audio fails open instead of taking down CoreVideo.",
+                    : "Open the plug-in controls for this processor. If the plug-in becomes unavailable, CoreVideo keeps program audio running.",
                 FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.7
@@ -234,7 +234,7 @@ public sealed partial class AudioPage : UserControl
         }
 
         flyout.Items.Add(new MenuFlyoutSeparator());
-        flyout.Items.Add(new MenuFlyoutItem { Text = "VST3 PLUG-INS — isolated host · fail-open bypass", IsEnabled = false });
+        flyout.Items.Add(new MenuFlyoutItem { Text = "VST3 PLUG-INS", IsEnabled = false });
         if (viewModel.VstPlugins.Count == 0)
         {
             var hostStatus = viewModel.VstPluginHostSummary;
@@ -306,7 +306,7 @@ public sealed partial class AudioPage : UserControl
             return;
         }
 
-        viewModel.CommandStatus = $"{insertName} is live native processing; adjust it in the master processor above.";
+        viewModel.CommandStatus = $"{insertName} is active; adjust it in the master processor above.";
     }
 
     private void OnRemoveProcessingSlotClicked(object sender, RoutedEventArgs e)
