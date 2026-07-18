@@ -25,14 +25,6 @@
             <Setter Property="Padding" Value="12,10" />
         </Style>
 
-        <Style x:Key="SdkChipWarning" TargetType="Border">
-            <Setter Property="Background" Value="#1F1A10" />
-            <Setter Property="BorderBrush" Value="#F59E0B" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="12,10" />
-        </Style>
-
         <Style x:Key="SdkChipBlocked" TargetType="Border">
             <Setter Property="Background" Value="#1F1212" />
             <Setter Property="BorderBrush" Value="#EF4444" />
@@ -147,19 +139,13 @@
                     <TextBlock Text="Zoom status" Style="{StaticResource StudioSectionTitle}" />
 
                     <Border Style="{StaticResource SdkChipReady}"
-                            Visibility="{x:Bind ViewModel.SdkIsReady, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            Visibility="{x:Bind ViewModel.ZoomOperatorIsReady, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
                                    Foreground="#86EFAC" FontSize="12" VerticalAlignment="Center" />
                     </Border>
 
-                    <Border Style="{StaticResource SdkChipWarning}"
-                            Visibility="{x:Bind ViewModel.SdkIsWarning, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
-                                   Foreground="#FCD34D" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-                    </Border>
-
                     <Border Style="{StaticResource SdkChipBlocked}"
-                            Visibility="{x:Bind ViewModel.SdkIsBlocked, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                            Visibility="{x:Bind ViewModel.ZoomOperatorIsBlocked, Mode=OneWay, Converter={StaticResource BoolToVis}}">
                         <TextBlock Text="{x:Bind ViewModel.SdkChipLabel, Mode=OneWay}"
                                    Foreground="#FCA5A5" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
                     </Border>

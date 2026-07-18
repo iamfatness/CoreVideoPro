@@ -171,23 +171,38 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public bool ShowLicenseActionStatus => !string.IsNullOrWhiteSpace(LicenseActionStatus);
 
-    public string SdkChipLabel =>
-        _sdkReadiness.Status switch
-        {
-            ZoomSdkReadinessStatus.Ready => IsInMeeting ? "Connected to Zoom" : "Ready to join Zoom",
-            ZoomSdkReadinessStatus.Warning => "Zoom needs attention",
-            _ => "Zoom is unavailable"
-        };
+    public bool ZoomOperatorIsBlocked =>
+        !IsInMeeting && _sdkReadiness.Status == ZoomSdkReadinessStatus.Blocked;
 
-    public string ZoomStatusGuidance =>
-        _sdkReadiness.Status switch
+    public bool ZoomOperatorIsReady => !ZoomOperatorIsBlocked;
+
+    public string SdkChipLabel => FormatZoomOperatorStatus(_sdkReadiness.Status, IsInMeeting);
+
+    public string ZoomStatusGuidance => FormatZoomOperatorGuidance(_sdkReadiness.Status, IsInMeeting);
+
+    public static string FormatZoomOperatorStatus(ZoomSdkReadinessStatus readinessStatus, bool isInMeeting)
+    {
+        if (isInMeeting)
         {
-            ZoomSdkReadinessStatus.Ready => IsInMeeting
-                ? "Meeting controls and participant video are available."
-                : "Enter a meeting link or ID above when you are ready to connect.",
-            ZoomSdkReadinessStatus.Warning => "Some Zoom features may be unavailable. Open Health for details.",
-            _ => "CoreVideo cannot join Zoom yet. Open Health for details."
-        };
+            return "Connected to Zoom";
+        }
+
+        return readinessStatus == ZoomSdkReadinessStatus.Blocked
+            ? "Zoom is unavailable"
+            : "Ready to join Zoom";
+    }
+
+    public static string FormatZoomOperatorGuidance(ZoomSdkReadinessStatus readinessStatus, bool isInMeeting)
+    {
+        if (isInMeeting)
+        {
+            return "Zoom is connected and working.";
+        }
+
+        return readinessStatus == ZoomSdkReadinessStatus.Blocked
+            ? "CoreVideo cannot join Zoom yet. Open Health for details."
+            : "Enter a meeting link or ID above when you are ready to connect.";
+    }
 
     public bool SdkIsReady => _sdkReadiness.Status == ZoomSdkReadinessStatus.Ready;
 
@@ -885,6 +900,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(MeetingStatusLine));
         OnPropertyChanged(nameof(SdkChipLabel));
         OnPropertyChanged(nameof(ZoomStatusGuidance));
+        OnPropertyChanged(nameof(ZoomOperatorIsReady));
+        OnPropertyChanged(nameof(ZoomOperatorIsBlocked));
         _onMeetingPresenceChanged?.Invoke();
     }
 
@@ -895,6 +912,8 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SdkBlockers));
         OnPropertyChanged(nameof(SdkChipLabel));
         OnPropertyChanged(nameof(ZoomStatusGuidance));
+        OnPropertyChanged(nameof(ZoomOperatorIsReady));
+        OnPropertyChanged(nameof(ZoomOperatorIsBlocked));
         OnPropertyChanged(nameof(SdkIsReady));
         OnPropertyChanged(nameof(SdkIsWarning));
         OnPropertyChanged(nameof(SdkIsBlocked));

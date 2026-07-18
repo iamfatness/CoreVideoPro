@@ -19,6 +19,10 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("DiagnosticsReadout", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Zoom engine evidence", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Diagnostics &amp; support", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("SdkChipWarning", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.SdkIsWarning", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.ZoomOperatorIsReady", xaml, StringComparison.Ordinal);
+        Assert.Contains("ViewModel.ZoomOperatorIsBlocked", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -50,8 +54,10 @@ public sealed class OperatorUiTelemetryPlacementTests
         Assert.DoesNotContain("Header=\"Diagnostics\"", audioXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.AudioMonitorEngineStatus", audioXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.LocalAudioSourceStatus", audioXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.LocalAudioSourceRecommendation", audioXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.AudioMonitorEngineStatus", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.LocalAudioSourceStatus", outputXaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ViewModel.LocalAudioSourceRecommendation", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("COREVIDEO_FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("FFMPEG_BIN_DIR", outputXaml, StringComparison.Ordinal);
         Assert.DoesNotContain("ViewModel.FfmpegRuntimeStatus", outputXaml, StringComparison.Ordinal);

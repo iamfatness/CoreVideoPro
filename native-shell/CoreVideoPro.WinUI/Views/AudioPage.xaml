@@ -151,10 +151,6 @@
                                                FontSize="10"
                                                Foreground="{StaticResource StudioMutedBrush}"
                                                TextWrapping="WrapWholeWords" />
-                                    <TextBlock Text="{x:Bind ViewModel.LocalAudioSourceRecommendation, Mode=OneWay}"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioWarningBrush}"
-                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                                 <ComboBox Header="Input / loopback"
                                           ItemsSource="{x:Bind ViewModel.AudioCaptureDevices, Mode=OneWay}"
@@ -167,10 +163,6 @@
                                                   IsChecked="{x:Bind ViewModel.LocalAudioSourceEnabled, Mode=TwoWay}"
                                                   MinWidth="96"
                                                   HorizontalAlignment="Stretch" />
-                                    <TextBlock Text="{x:Bind ViewModel.SelectedLocalAudioCaptureDeviceName, Mode=OneWay}"
-                                               FontSize="10"
-                                               Foreground="{StaticResource StudioMutedBrush}"
-                                               TextWrapping="WrapWholeWords" />
                                 </StackPanel>
                             </StackPanel>
                         </Border>

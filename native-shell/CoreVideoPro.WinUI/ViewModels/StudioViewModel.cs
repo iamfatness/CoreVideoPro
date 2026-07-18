@@ -8296,7 +8296,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (AudioCaptureDevices.All(device =>
                 !string.Equals(device.Id, SelectedLocalAudioCaptureDeviceId, StringComparison.Ordinal)))
         {
-            return "Choose an audio input or loopback device";
+            return "Choose an audio input";
         }
 
         var source = _bridge.LastSnapshot?.CaptureAudioSources?.Sources.FirstOrDefault(source =>
@@ -8305,23 +8305,20 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             string.Equals(source.AudioDeviceName, SelectedLocalAudioCaptureDeviceName, StringComparison.Ordinal));
         if (source is null)
         {
-            return $"Waiting for {SelectedLocalAudioCaptureDeviceName}";
+            return "Waiting for audio";
         }
 
-        var sourceLabel = !string.IsNullOrWhiteSpace(source.EndpointName)
-            ? source.EndpointName
-            : SelectedLocalAudioCaptureDeviceName;
         if (source.SignalPresent)
         {
-            return $"Signal detected - {sourceLabel}";
+            return "Audio detected";
         }
 
         if (!source.CaptureStreaming)
         {
-            return $"Starting - {sourceLabel}";
+            return "Starting audio source";
         }
 
-        return $"Connected - no signal from {sourceLabel}";
+        return "No audio detected";
     }
 
     public static string FormatLocalAudioSourceStatus(
