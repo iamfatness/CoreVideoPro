@@ -41,6 +41,14 @@ pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 
+MSIX signing (beta D2, 2026-07-18): `scripts/sign-native-msix.ps1 -Mode dev|production`.
+Dev = self-signed, tolerates missing signtool (exit 0 + LOUD unsigned warning).
+Production = Azure Trusted Signing (`COREVIDEO_SIGN_DLIB`+`COREVIDEO_SIGN_METADATA`)
+or PFX/thumbprint env, RFC3161 timestamp + `verify /pa` + manifest-Publisher match
+all REQUIRED — any gap hard-fails (never a silent unsigned artifact). `-DryRun`
+prints the resolved plan; tests: `scripts/tests/test-sign-native-msix.ps1`. Full
+env contract in the script header and `docs/beta-engineering-spec.md` §D2.
+
 ## Testing multi-participant WITHOUT a real meeting (important)
 
 There is a **synthetic Zoom engine**: `native/zoom-engine/fake/fake-engine.cpp` →
