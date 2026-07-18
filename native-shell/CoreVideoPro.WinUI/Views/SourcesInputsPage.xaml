@@ -331,7 +331,8 @@
                         </ItemsRepeater.Layout>
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
-                                <Border Background="#0C1118" CornerRadius="4" Padding="8,3">
+                                <Border Background="#0C1118" CornerRadius="4" Padding="8,3"
+                                        Opacity="{x:Bind RowOpacity, Mode=OneWay}">
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="30" />
@@ -354,9 +355,10 @@
                                              / SRT), so long device lists stay filterable AT PICK TIME (the
                                              reason the old TYPE dropdown existed) without a second control
                                              to keep consistent. The button face carries "Group · Name", so
-                                             no separate type chip. MISSING badge when the assigned source is
-                                             gone (binding kept; never silently substituted). The flyout is
-                                             built in code-behind on open (OnShowInputEditorPrepared). -->
+                                             no separate type chip. An OFFLINE warning appears only when an
+                                             enabled slot's source is unavailable; inactive slots retain the
+                                             binding quietly. The flyout is built in code-behind on open
+                                             (OnShowInputEditorPrepared). -->
                                         <Grid Grid.Column="2" ColumnSpacing="6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -370,9 +372,9 @@
                                                             VerticalAlignment="Center" />
                                             <Border Grid.Column="1" Background="#3A2A10" CornerRadius="3" Padding="6,2"
                                                     VerticalAlignment="Center"
-                                                    Visibility="{x:Bind IsSourceMissing, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                    ToolTipService.ToolTip="This source is unavailable (unplugged / left / removed). The slot keeps its binding and re-attaches when it returns.">
-                                                <TextBlock Text="MISSING" FontSize="10" FontWeight="SemiBold"
+                                                    Visibility="{x:Bind ShowSourceUnavailableWarning, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                    ToolTipService.ToolTip="This input is in show, but its saved source is offline. Reconnect it or choose a replacement; the saved binding will reconnect if the source returns.">
+                                                <TextBlock Text="OFFLINE" FontSize="10" FontWeight="SemiBold"
                                                            Foreground="#E8B341" />
                                             </Border>
                                         </Grid>

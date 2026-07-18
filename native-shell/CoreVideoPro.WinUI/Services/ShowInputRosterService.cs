@@ -114,9 +114,9 @@ public static class ShowInputRosterService
     /// operator picks a source, never a type. Values are the canonical ids
     /// (zoom:/capture:/media:), labels carry the group ("Camera · Elgato…"). Empty Zoom/Media
     /// groups get a non-selectable hint row instead of silently vanishing. When
-    /// <paramref name="currentSourceId"/> is assigned but no longer present, a
-    /// "Missing — was …" entry is prepended so the slot KEEPS its binding visibly instead of
-    /// silently re-pointing at another source.
+    /// <paramref name="currentSourceId"/> is assigned but no longer present, a saved-source
+    /// entry is prepended so the slot KEEPS its binding instead of silently re-pointing at
+    /// another source.
     /// </summary>
     public static IReadOnlyList<ShowInputSourceOption> BuildUnifiedSourceOptions(
         IReadOnlyList<Participant> participants,
@@ -182,18 +182,53 @@ public static class ShowInputRosterService
             }));
         }
 
-        // Never silently substitute: an assigned-but-gone source stays visible as Missing.
+        // Never silently substitute: an assigned-but-gone source stays available as a saved binding.
         if (currentSourceId is { Length: > 0 } &&
             !options.Any(option => string.Equals(option.Value, currentSourceId, StringComparison.Ordinal)))
         {
             options.Insert(0, new ShowInputSourceOption
             {
                 Value = currentSourceId,
-                Label = $"Missing — was {(string.IsNullOrWhiteSpace(currentSourceLabel) ? currentSourceId : currentSourceLabel)}"
+                Label = $"Saved source unavailable — {UnavailableSourceDescription(currentSourceId, currentSourceLabel)}"
             });
         }
 
         return options;
+    }
+
+    private static string UnavailableSourceDescription(string sourceId, string? sourceLabel)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceLabel))
+        {
+            return sourceLabel;
+        }
+
+        if (sourceId.StartsWith("capture:window:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous window capture";
+        }
+
+        if (sourceId.StartsWith("capture:screen:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous screen capture";
+        }
+
+        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous capture source";
+        }
+
+        if (sourceId.StartsWith("zoom:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous Zoom guest";
+        }
+
+        if (sourceId.StartsWith("media:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "previous media asset";
+        }
+
+        return "previous source";
     }
 
     /// <summary>Fixed submenu order for the source-picker menu.</summary>
@@ -201,7 +236,7 @@ public static class ShowInputRosterService
 
     /// <summary>The label shown on a slot's picker button: "Camera · Elgato HD60" for a bound
     /// source (group carries the type, so no separate type chip is needed), the bare label for
-    /// group-less entries (Missing), or null when unbound (the button shows its placeholder).</summary>
+    /// group-less saved-source entries, or null when unbound (the button shows its placeholder).</summary>
     public static string? UnifiedSourceDisplayLabel(
         IReadOnlyList<ShowInputSourceOption> options, string? sourceId)
     {

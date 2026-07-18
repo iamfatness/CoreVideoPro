@@ -226,11 +226,23 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public IReadOnlyList<ShowInputSourceOption> UnifiedSourceOptions { get; private set; } = [];
 
-    /// <summary>Button-face label for the picker ("Camera · Elgato HD60", "Missing — was …"),
-    /// or "Select a source" when unbound. The group prefix carries the type, so no separate
-    /// type chip is shown.</summary>
-    public string SelectedUnifiedSourceLabel =>
-        ShowInputRosterService.UnifiedSourceDisplayLabel(UnifiedSourceOptions, SourceId) ?? "Select a source";
+    /// <summary>Button-face label for the picker. An unavailable saved binding is presented
+    /// as an inactive saved source while the slot is out of show, and as an actionable offline
+    /// state only while the slot is enabled.</summary>
+    public string SelectedUnifiedSourceLabel
+    {
+        get
+        {
+            if (_isSourceMissing)
+            {
+                return InShow
+                    ? "Source offline — choose or reconnect"
+                    : "Not in show · saved source";
+            }
+
+            return ShowInputRosterService.UnifiedSourceDisplayLabel(UnifiedSourceOptions, SourceId) ?? "Select a source";
+        }
+    }
 
     private bool _isSourceMissing;
 
@@ -238,6 +250,14 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// (device unplugged, guest left, asset removed). The binding is KEPT — the source
     /// re-attaches when it returns; we never silently substitute another source.</summary>
     public bool IsSourceMissing => _isSourceMissing;
+
+    /// <summary>An unavailable source is an operator warning only when the slot is enabled.
+    /// Disabled slots retain their binding quietly so they can reconnect later.</summary>
+    public bool ShowSourceUnavailableWarning => InShow && _isSourceMissing;
+
+    /// <summary>Assigned slots that are out of show are visibly passive without disabling
+    /// their picker or Unassign action.</summary>
+    public double RowOpacity => IsAssigned && !InShow ? 0.72 : 1.0;
 
     public string KindLabel => _slot.KindLabel;
 
@@ -307,8 +327,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             // auto-pick: the old fallback here substituted the FIRST available source whenever
             // the current one wasn't in the rebuilt list, so a device blip (or the old
             // type-switch flow) could re-point a slot at something the operator never chose —
-            // mid-show. A gone source now surfaces as an explicit "Missing — was …" entry and
-            // the binding is kept so it re-attaches when the source returns.
+            // mid-show. A gone source now remains as a saved-unavailable entry and the binding
+            // is kept so it re-attaches when the source returns.
             var unified = ShowInputRosterService.BuildUnifiedSourceOptions(participants, captureDevices, _mediaAssets);
             _isSourceMissing = SourceId is { Length: > 0 } assignedId &&
                 !unified.Any(option => string.Equals(option.Value, assignedId, StringComparison.Ordinal));
@@ -335,6 +355,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
         OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
         OnPropertyChanged(nameof(IsSourceMissing));
+        OnPropertyChanged(nameof(ShowSourceUnavailableWarning));
+        OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(AudioDeviceOptions));
@@ -368,6 +390,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
         OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
         OnPropertyChanged(nameof(IsSourceMissing));
+        OnPropertyChanged(nameof(ShowSourceUnavailableWarning));
+        OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(IsAssigned));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
