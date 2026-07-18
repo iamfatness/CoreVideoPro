@@ -3314,7 +3314,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"Inputs {request.FromSlot} and {request.ToSlot} swapped on the multiviewer.";
     }
 
-    public bool CanTake => PreviewSceneId != ActiveSceneId;
+    public bool CanTake =>
+        PreviewSceneId != ActiveSceneId ||
+        (_livePreviewDraft is not null &&
+         string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
+         HasPendingProgramMediaCue(GetMutableRoutes(ActiveSceneId), _livePreviewDraft));
 
     public string TakeTransitionLabel => TakeTransitionMode switch
     {
@@ -3553,8 +3557,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var previousProgramSceneId = ActiveSceneId;
         var takenSceneId = PreviewSceneId;
 
-        ActiveSceneId = takenSceneId;
-        PreviewSceneId = previousProgramSceneId;
+        // Cueing media while Preview and Program reference the same scene creates an
+        // off-air draft. A conventional Take must still put that cue on air; the old
+        // scene-id-only CanTake rule disabled the button and stranded the operator.
+        // Commit only the pending draft in this case, then run the normal media
+        // promotion so the held Preview frame restarts from frame zero on Program.
+        if (string.Equals(previousProgramSceneId, takenSceneId, StringComparison.Ordinal) &&
+            _livePreviewDraft is not null &&
+            HasPendingProgramMediaCue(GetMutableRoutes(takenSceneId), _livePreviewDraft))
+        {
+            CopyPreviewRoutesToScene(takenSceneId);
+        }
+        else
+        {
+            ActiveSceneId = takenSceneId;
+            PreviewSceneId = previousProgramSceneId;
+        }
+
         _programMediaPlaybackTakeVersion++;
         PromoteProgramMediaRouteToPlayback();
         RefreshPreviewRoutingState();
@@ -5775,18 +5794,81 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public bool HasSelectedMediaAsset => !string.IsNullOrWhiteSpace(SelectedMediaAssetId);
 
     public string SelectedMediaAssetSummary =>
-        HasSelectedMediaAsset
-            ? $"{SelectedMediaAssetName} selected"
-            : "No media asset selected";
+        FormatSelectedMediaAssetSummary(
+            SelectedMediaAssetName,
+            IsSelectedMediaAssetOnProgram,
+            IsSelectedMediaAssetCuedInPreview,
+            SelectedMediaAssetPlaying);
 
-    public string MediaPlaybackButtonLabel => SelectedMediaAssetPlaying ? "Pause" : "Play";
+    public string MediaPlaybackButtonLabel =>
+        CanToggleSelectedMediaPlayback
+            ? FormatMediaPlaybackActionLabel(IsSelectedMediaAssetOnProgram, SelectedMediaAssetPlaying)
+            : "Still image";
+
+    public string MediaCueButtonLabel => IsSelectedMediaAssetCuedInPreview ? "Cued in Preview" : "Cue in Preview";
 
     public string NativeMediaPlaybackStatus =>
         _bridge.LastSnapshot?.MediaPlayback is { } playback
             ? FormatNativeMediaPlaybackStatus(playback)
             : "Native media playback waiting for media core.";
 
-    public bool CanAddSelectedMediaAssetToPreview => HasSelectedMediaAsset;
+    public bool CanAddSelectedMediaAssetToPreview =>
+        HasSelectedMediaAsset && !IsSelectedMediaAssetCuedInPreview;
+
+    public bool CanToggleSelectedMediaPlayback =>
+        SelectedMediaAssetId is { Length: > 0 } assetId &&
+        FindMediaAsset(assetId)?.SupportsPlayback == true;
+
+    private bool IsSelectedMediaAssetOnProgram =>
+        SelectedMediaAssetId is { Length: > 0 } assetId &&
+        MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, GetMutableRoutes(ActiveSceneId));
+
+    private bool IsSelectedMediaAssetCuedInPreview
+    {
+        get
+        {
+            if (SelectedMediaAssetId is not { Length: > 0 } assetId)
+            {
+                return false;
+            }
+
+            IReadOnlyList<SourceRoute> routes =
+                string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal) &&
+                string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
+                _livePreviewDraft is not null
+                    ? _livePreviewDraft
+                    : GetMutableRoutes(PreviewSceneId);
+            return MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(assetId, routes);
+        }
+    }
+
+    public static string FormatSelectedMediaAssetSummary(
+        string? assetName,
+        bool isOnProgram,
+        bool isCuedInPreview,
+        bool playing)
+    {
+        if (string.IsNullOrWhiteSpace(assetName))
+        {
+            return "No media asset selected";
+        }
+
+        if (isOnProgram)
+        {
+            return playing
+                ? $"Playing {assetName} on Program"
+                : $"{assetName} paused on Program";
+        }
+
+        return isCuedInPreview
+            ? $"{assetName} cued in Preview"
+            : $"{assetName} ready to cue";
+    }
+
+    public static string FormatMediaPlaybackActionLabel(bool isOnProgram, bool playing) =>
+        isOnProgram
+            ? playing ? "Pause Program" : "Restart Program"
+            : playing ? "Pause audition" : "Audition";
 
     public bool HasCaptionTranscript => CaptionTranscript.Count > 0;
 
@@ -5813,7 +5895,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(SuperSourceBackgroundOptions));
         PruneMissingSceneBackgrounds();
         RefreshSceneBackgroundSelection();
@@ -5937,15 +6021,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SelectedMediaAssetPath = asset.FilePath;
         SelectedMediaAssetKind = asset.Kind;
         SelectedMediaAssetPlaying = false;
-        MediaPlaybackStatus = $"{asset.Name} selected";
+        MediaPlaybackStatus = $"{asset.Name} is ready to cue";
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         RefreshMultiviewGridTiles();
-        CommandStatus = $"{asset.Name} ready for playback";
+        CommandStatus = $"{asset.Name} ready to cue or audition";
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -6087,7 +6173,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
         RefreshMultiviewGridTiles();
@@ -6124,16 +6212,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         MediaBinGroups = ApplyMediaSelection(MediaBinGroups);
 
-        MediaPlaybackStatus = SelectedMediaAssetPlaying
-            ? $"Playing {asset.Name}"
-            : $"{asset.Name} paused";
+        var isOnProgram = MediaRoutePlaybackService.IsMediaAssetRoutedOnProgram(
+            asset.Id,
+            GetResolvedProgramRoutes());
+        MediaPlaybackStatus = isOnProgram
+            ? SelectedMediaAssetPlaying
+                ? $"Playing {asset.Name} on Program"
+                : $"{asset.Name} paused on Program"
+            : SelectedMediaAssetPlaying
+                ? $"Auditioning {asset.Name}"
+                : $"{asset.Name} audition paused";
         CommandStatus = MediaPlaybackStatus;
 
         OnPropertyChanged(nameof(MediaBinGroups));
         OnPropertyChanged(nameof(HasSelectedMediaAsset));
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
         OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
+        OnPropertyChanged(nameof(CanToggleSelectedMediaPlayback));
         OnPropertyChanged(nameof(IsMediaAssetPlaying));
         RefreshMultiviewGridTiles();
 
@@ -6154,7 +6251,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private bool _applyingProductionPatch;
-    private int _productionSyncRetryQueued;
+    private int _productionSyncRetryVersion;
+    private int _productionSyncRetryWorkerRunning;
 
     private async Task TrySyncMediaCoreAsync()
     {
@@ -6187,27 +6285,103 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void QueueProductionSyncRetry(string reason)
     {
-        if (Interlocked.Exchange(ref _productionSyncRetryQueued, 1) == 1)
+        var version = Interlocked.Increment(ref _productionSyncRetryVersion);
+        LaunchLog.Write($"media-core sync deferred reason={reason}; request={version}");
+        EnsureProductionSyncRetryWorker();
+    }
+
+    private void EnsureProductionSyncRetryWorker()
+    {
+        if (Interlocked.CompareExchange(ref _productionSyncRetryWorkerRunning, 1, 0) != 0)
         {
             return;
         }
 
-        LaunchLog.Write($"media-core sync deferred reason={reason}; retry queued");
-        _ = Task.Run(async () =>
+        _ = Task.Run(RunProductionSyncRetryWorkerAsync);
+    }
+
+    private async Task RunProductionSyncRetryWorkerAsync()
+    {
+        var handledVersion = 0;
+        try
         {
+            while (_bridge.Running)
+            {
+                var requestedVersion = Volatile.Read(ref _productionSyncRetryVersion);
+                if (requestedVersion == handledVersion)
+                {
+                    break;
+                }
+
+                var synced = await RetryDeferredProductionSyncAsync(
+                        () => _bridge.Running,
+                        () => Volatile.Read(ref _applyingProductionPatch),
+                        async () => { await SyncActiveSceneAsync().ConfigureAwait(false); },
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!synced)
+                {
+                    break;
+                }
+
+                handledVersion = requestedVersion;
+                LaunchLog.Write($"media-core deferred sync completed request={handledVersion}");
+            }
+        }
+        catch (Exception ex)
+        {
+            // A non-contention failure should be visible to the operator, but should not
+            // spin forever. A later edit creates a new request and gets another attempt.
+            handledVersion = Volatile.Read(ref _productionSyncRetryVersion);
+            RunOnUiThread(() => CommandStatus = ex.Message);
+            LaunchLog.Write($"media-core deferred sync failed request={handledVersion}: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _productionSyncRetryWorkerRunning, 0);
+
+            // Close the handoff race: if an edit arrived while this worker was completing,
+            // its version differs and a new worker is guaranteed to pick it up.
+            if (_bridge.Running && Volatile.Read(ref _productionSyncRetryVersion) != handledVersion)
+            {
+                EnsureProductionSyncRetryWorker();
+            }
+        }
+    }
+
+    public static async Task<bool> RetryDeferredProductionSyncAsync(
+        Func<bool> keepRunning,
+        Func<bool> shouldDefer,
+        Func<Task> syncAttempt,
+        CancellationToken cancellationToken,
+        int retryDelayMs = 50)
+    {
+        ArgumentNullException.ThrowIfNull(keepRunning);
+        ArgumentNullException.ThrowIfNull(shouldDefer);
+        ArgumentNullException.ThrowIfNull(syncAttempt);
+
+        var delayMs = Math.Max(1, retryDelayMs);
+        while (keepRunning())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (shouldDefer())
+            {
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             try
             {
-                await Task.Delay(350).ConfigureAwait(false);
-                if (_bridge.Running)
-                {
-                    await TrySyncMediaCoreAsync().ConfigureAwait(false);
-                }
+                await syncAttempt().ConfigureAwait(false);
+                return true;
             }
-            finally
+            catch (MediaCoreSyncInFlightException)
             {
-                Interlocked.Exchange(ref _productionSyncRetryQueued, 0);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
-        });
+        }
+
+        return false;
     }
 
     private async Task StartMediaCoreOnLaunchAsync()
@@ -8803,7 +8977,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _onAirBrowserOverlayIds)
             .ToList();
         var sceneRoutes = resolvedProgramRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes))
+            .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
             .ToList();
 
         // PREVIEW scene graph (same wire shape as the program scene), so the core composites
@@ -8818,7 +8992,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 _previewBrowserOverlayIds)
             .ToList();
         var previewSceneRoutes = resolvedPreviewRoutes
-            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes))
+            .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
             .ToList();
 
         var participants = RoomVideoParticipants
@@ -9051,17 +9225,18 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private MediaCoreSceneRouteWire BuildSceneRouteWire(
         SourceRoute route,
-        IReadOnlyList<SourceRoute> programRoutes)
+        IReadOnlyList<SourceRoute> sceneRoutes,
+        bool isProgramScene)
     {
         var mediaAsset = TryResolveRouteMediaAsset(route);
         var mediaPlayback = mediaAsset is null
             ? null
             : MediaRoutePlaybackService.ResolveSceneRoutePlayback(
                 mediaAsset.Id,
-                isProgramScene: true,
+                isProgramScene,
                 SelectedMediaAssetId,
                 SelectedMediaAssetPlaying,
-                programRoutes,
+                sceneRoutes,
                 _programMediaPlaybackTakeVersion);
         return new MediaCoreSceneRouteWire(
             route.Id,
@@ -11852,6 +12027,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return string.Join("|", mediaAssetIds);
     }
 
+    public static bool HasPendingProgramMediaCue(
+        IReadOnlyList<SourceRoute> programRoutes,
+        IReadOnlyList<SourceRoute> previewRoutes) =>
+        !string.Equals(
+            BuildProgramMediaRouteSignature(programRoutes),
+            BuildProgramMediaRouteSignature(previewRoutes),
+            StringComparison.Ordinal);
+
     private static bool IsVisualMediaAsset(MediaAsset asset)
     {
         var kind = asset.Kind.ToLowerInvariant();
@@ -12534,6 +12717,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _livePreviewDraft = null;
         _livePreviewDraftSceneId = null;
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
     }
 
     // Commits the live-scene draft into the stored scene (called by the Update
@@ -13262,6 +13447,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
         routes.Add(route);
 
+        OnPropertyChanged(nameof(CanTake));
+        TakeCommand.NotifyCanExecuteChanged();
+
         var label = string.Equals(optionValue, "media", StringComparison.OrdinalIgnoreCase) &&
             SelectedMediaAssetName is { Length: > 0 } mediaName
                 ? mediaName
@@ -13623,9 +13811,25 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (GetPreviewEditableRoutes()
+            .Select(ResolveRouteFromShowInput)
+            .Select(TryResolveRouteMediaAsset)
+            .Any(routeAsset => string.Equals(routeAsset?.Id, asset.Id, StringComparison.Ordinal)))
+        {
+            MediaPlaybackStatus = $"{asset.Name} is already cued in Preview";
+            CommandStatus = MediaPlaybackStatus;
+            OnPropertyChanged(nameof(MediaPlaybackStatus));
+            return;
+        }
+
         AddCanvasSourceCommand.Execute("media");
-        MediaPlaybackStatus = $"{asset.Name} cued in Preview; Take the scene to Program to auto-play";
+        MediaPlaybackStatus = asset.IsStillImage
+            ? $"{asset.Name} cued in Preview; Take to show it on Program"
+            : $"{asset.Name} cued in Preview; Take to start playback on Program";
         CommandStatus = MediaPlaybackStatus;
+        OnPropertyChanged(nameof(SelectedMediaAssetSummary));
+        OnPropertyChanged(nameof(MediaCueButtonLabel));
+        OnPropertyChanged(nameof(CanAddSelectedMediaAssetToPreview));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
     }
 
@@ -13758,8 +13962,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             // Explicit operator edits must not disappear when they land during a
             // snapshot patch. TrySyncMediaCoreAsync intentionally ignores calls made
-            // while applying a patch to prevent feedback loops, so queue one bounded
-            // retry here; the edited route remains in the draft and the retry sends it.
+            // while applying a patch to prevent feedback loops, so queue a coalesced
+            // retry; the edited route remains in the draft until the retry sends it.
             if (_applyingProductionPatch)
             {
                 QueueProductionSyncRetry("preview-scene-edit");

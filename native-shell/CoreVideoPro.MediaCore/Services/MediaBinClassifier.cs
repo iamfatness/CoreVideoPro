@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Buffers.Binary;
 
 namespace CoreVideoPro.MediaCore.Services;
 
@@ -126,6 +127,30 @@ public static class MediaBinClassifier
         return string.IsNullOrWhiteSpace(extension) ? "file" : extension.ToUpperInvariant();
     }
 
+    public static bool IsUsableMediaFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var extension = Path.GetExtension(filePath).ToLowerInvariant();
+            return extension switch
+            {
+                ".png" => IsCompletePng(filePath),
+                ".jpg" or ".jpeg" => IsCompleteJpeg(filePath),
+                ".gif" => IsCompleteGif(filePath),
+                _ => new FileInfo(filePath).Length > 0
+            };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static string KindLabel(string kind) => kind switch
     {
         "stinger" => "Stinger",
@@ -167,7 +192,7 @@ public static class MediaBinClassifier
                     }
 
                     var kind = ClassifyFile(relativePath, fileName);
-                    if (kind is null)
+                    if (kind is null || !IsUsableMediaFile(filePath))
                     {
                         continue;
                     }
@@ -193,6 +218,92 @@ public static class MediaBinClassifier
         }
 
         return assets;
+    }
+
+    private static bool IsCompletePng(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        Span<byte> signature = stackalloc byte[8];
+        ReadOnlySpan<byte> expectedSignature =
+            [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if (stream.Read(signature) != signature.Length ||
+            !signature.SequenceEqual(expectedSignature))
+        {
+            return false;
+        }
+
+        var foundHeader = false;
+        var foundImageData = false;
+        Span<byte> chunkHeader = stackalloc byte[8];
+        Span<byte> dimensions = stackalloc byte[8];
+        while (stream.Position + 12 <= stream.Length)
+        {
+            if (stream.Read(chunkHeader) != chunkHeader.Length)
+            {
+                return false;
+            }
+
+            var length = BinaryPrimitives.ReadUInt32BigEndian(chunkHeader[..4]);
+            var chunkType = Encoding.ASCII.GetString(chunkHeader[4..8]);
+            if (length > int.MaxValue || stream.Position + length + 4 > stream.Length)
+            {
+                return false;
+            }
+
+            if (chunkType == "IHDR")
+            {
+                if (foundHeader || length != 13)
+                {
+                    return false;
+                }
+
+                if (stream.Read(dimensions) != dimensions.Length ||
+                    BinaryPrimitives.ReadUInt32BigEndian(dimensions[..4]) == 0 ||
+                    BinaryPrimitives.ReadUInt32BigEndian(dimensions[4..]) == 0)
+                {
+                    return false;
+                }
+                stream.Seek(length - dimensions.Length, SeekOrigin.Current);
+                foundHeader = true;
+            }
+            else
+            {
+                stream.Seek(length, SeekOrigin.Current);
+            }
+
+            stream.Seek(4, SeekOrigin.Current); // CRC
+            foundImageData |= chunkType == "IDAT" && length > 0;
+            if (chunkType == "IEND")
+            {
+                return foundHeader && foundImageData && length == 0;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsCompleteJpeg(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        if (stream.Length < 4 || stream.ReadByte() != 0xFF || stream.ReadByte() != 0xD8)
+        {
+            return false;
+        }
+        stream.Seek(-2, SeekOrigin.End);
+        return stream.ReadByte() == 0xFF && stream.ReadByte() == 0xD9;
+    }
+
+    private static bool IsCompleteGif(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        Span<byte> header = stackalloc byte[6];
+        if (stream.Length < 14 || stream.Read(header) != header.Length)
+        {
+            return false;
+        }
+        var validHeader = header.SequenceEqual("GIF87a"u8) || header.SequenceEqual("GIF89a"u8);
+        stream.Seek(-1, SeekOrigin.End);
+        return validHeader && stream.ReadByte() == 0x3B;
     }
 
     public static IReadOnlyList<MediaBinGroupDescriptor> GroupAssets(IReadOnlyList<MediaBinAssetDescriptor> assets) =>

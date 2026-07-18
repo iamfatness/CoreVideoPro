@@ -283,7 +283,12 @@ public static class SceneRoutingService
                 ? participants.FirstOrDefault(item => item.Id == route.ParticipantId)
                 : null;
 
-            if (route.Mode == SourceRouteMode.Fixed && participant is null)
+            // Media routes intentionally use the Fixed wire shape with a
+            // "media:<assetId>" identity. They are not Zoom participants and must
+            // not surface the alarming (and false) participant-unavailable warning.
+            if (route.Mode == SourceRouteMode.Fixed &&
+                participant is null &&
+                !ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out _))
             {
                 warnings.Add($"Slot {index + 1} fixed participant is unavailable.");
             }

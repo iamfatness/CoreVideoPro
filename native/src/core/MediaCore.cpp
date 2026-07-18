@@ -1388,7 +1388,8 @@ void MediaCore::syncStillMediaDesired() {
     return;
   }
   std::vector<modules::StillMediaFrameCache::StillRequest> desired;
-  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes) {
+  const auto addRoutes = [&desired](const std::vector<SceneRouteState>& routes,
+                                    const std::string& sourcePrefix) {
     for (const auto& route : routes) {
       if (route.mediaAssetId.empty() || route.mediaAssetPath.empty()) {
         continue;
@@ -1396,12 +1397,12 @@ void MediaCore::syncStillMediaDesired() {
       if (!modules::isStillImageMediaAsset(route.mediaAssetKind, route.mediaAssetPath)) {
         continue;  // video media routes keep the existing playout path
       }
-      desired.push_back({"media:" + route.mediaAssetId,
+      desired.push_back({sourcePrefix + route.mediaAssetId,
                          modules::normalizeMediaAssetPath(route.mediaAssetPath)});
     }
   };
-  addRoutes(sceneRoutes_);
-  addRoutes(previewSceneRoutes_);
+  addRoutes(sceneRoutes_, "media:");
+  addRoutes(previewSceneRoutes_, "preview:media:");
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -3842,10 +3843,20 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   // The preview scene composites its own routes/background/overlays/grade. Captions
   // are a program broadcast element, so the preview bus renders no caption band.
-  return buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
-                                 previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
-                                 previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                 videoFrames);
+  auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
+                                      previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
+                                      previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
+                                      videoFrames);
+  // Program and Preview may hold the same asset at different playback positions.
+  // Give Preview its own frame-source namespace so its held cue frame cannot be
+  // replaced by Program's moving decoder (or vice versa).
+  for (auto& layer : plan.layers) {
+    if (!layer.mediaAssetId.empty()) {
+      const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+      layer.sourceId = "preview:" + sourceId;
+    }
+  }
+  return plan;
 }
 
 bool MediaCore::hasPreviewScene() const {
@@ -4214,7 +4225,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly) {
   renderPlan.fullProgramReadback = virtualCameraEnabled_ || outputActive;
 
   if (modules_.mediaFrames) {
-    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(renderPlan.layers, frameTimestampMs);
+    auto mediaLayers = renderPlan.layers;
+    if (hasPreviewScene()) {
+      const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      mediaLayers.insert(mediaLayers.end(), previewMediaPlan.layers.begin(), previewMediaPlan.layers.end());
+    }
+    auto mediaFrames = modules_.mediaFrames->pollMediaFrames(mediaLayers, frameTimestampMs);
     videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
     for (const auto& warning : modules_.mediaFrames->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {

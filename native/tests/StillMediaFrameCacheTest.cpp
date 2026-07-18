@@ -374,7 +374,9 @@ TEST(StillMediaFrameCache, PreviewSceneStillRoutesAreDecodedToo) {
   EXPECT_EQ(fake->decodeCount, 1);
   const auto frames = mediaCore.stillMediaCacheForTest()->collectFrames(100);
   ASSERT_EQ(frames.size(), 1u);
-  EXPECT_EQ(frames[0].participantId, "media:logo-9");
+  // Preview has a distinct source namespace so it can hold a cue frame while
+  // Program independently plays the same asset.
+  EXPECT_EQ(frames[0].participantId, "preview:media:logo-9");
 }
 
 #if defined(_WIN32)

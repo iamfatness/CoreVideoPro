@@ -173,6 +173,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
   }
 
   std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+    warnings_.clear();
     std::vector<VideoFrame> frames;
     std::set<std::string> seen;
     for (const auto& layer : layers) {
@@ -263,15 +264,29 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
       return true;
     }
     if (!layer.mediaAssetPlaying) {
+      if (state.playbackKey != playbackKey) {
+        state.reader = {};
+        state.ended = false;
+        state.frameId = 0;
+        state.lastFrame = {};
+      }
       state.wasPlaying = false;
       state.playbackKey = playbackKey;
-      if (state.lastFrame.hasPixels()) {
-        frame = state.lastFrame;
-        frame.participantId = frameSourceId;
-        frame.timestampMs = timestampMs;
-        return true;
+      // A Preview cue is intentionally paused, but it must still display a
+      // real poster frame. Decode exactly one frame and retain it until Take.
+      if (!state.lastFrame.hasPixels()) {
+        if (!state.reader && !openVideoReader(path, state)) {
+          warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Preview cueing.");
+          return false;
+        }
+        if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) {
+          return false;
+        }
       }
-      return false;
+      frame = state.lastFrame;
+      frame.participantId = frameSourceId;
+      frame.timestampMs = timestampMs;
+      return frame.hasPixels();
     }
     if (!state.wasPlaying || state.playbackKey != playbackKey) {
       state.reader = {};
@@ -333,7 +348,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     if (!mfStarted_) {
       return false;
     }
-    if (FAILED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), nullptr, state.reader.put()))) {
+    // The source reader normally exposes the decoder's native YUV output.
+    // Enable Media Foundation video processing so our requested RGB32 output
+    // is negotiated through the built-in color converter/scaler.
+    ComPtrLite<IMFAttributes> attributes;
+    if (FAILED(MFCreateAttributes(attributes.put(), 1)) ||
+        FAILED(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE)) ||
+        FAILED(MFCreateSourceReaderFromURL(widenUtf8(path).c_str(), attributes.get(), state.reader.put()))) {
       return false;
     }
     ComPtrLite<IMFMediaType> mediaType;
@@ -381,11 +402,14 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     const HRESULT read = state.reader->ReadSample(
         MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &streamIndex, &flags, &sampleTime, sample.put());
     if (FAILED(read)) {
-      warnings_.push_back("Media asset " + assetId + " failed while decoding a Program frame.");
+      warnings_.push_back("Media asset " + assetId + " failed while decoding a video frame.");
       return false;
     }
     if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) {
       state.ended = true;
+      if (!state.lastFrame.hasPixels()) {
+        warnings_.push_back("Media asset " + assetId + " ended before a video frame could be decoded.");
+      }
       return state.lastFrame.hasPixels();
     }
     if (!sample) {
@@ -393,12 +417,14 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     }
     ComPtrLite<IMFMediaBuffer> buffer;
     if (FAILED(sample->ConvertToContiguousBuffer(buffer.put()))) {
+      warnings_.push_back("Media asset " + assetId + " produced a video sample that could not be copied.");
       return false;
     }
     BYTE* data = nullptr;
     DWORD maxLength = 0;
     DWORD currentLength = 0;
     if (FAILED(buffer->Lock(&data, &maxLength, &currentLength)) || !data || currentLength == 0) {
+      warnings_.push_back("Media asset " + assetId + " produced an empty video sample.");
       return false;
     }
     ComPtrLite<IMFMediaType> currentType;
@@ -409,12 +435,23 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource {
     }
     if (width == 0 || height == 0 || currentLength < width * height * 4u) {
       buffer->Unlock();
+      warnings_.push_back("Media asset " + assetId + " produced an invalid RGB32 video frame.");
       return false;
     }
     const int stride = static_cast<int>(width) * 4;
     auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(stride) * static_cast<size_t>(height));
     std::memcpy(pixels->data(), data, pixels->size());
     buffer->Unlock();
+
+    // MFVideoFormat_RGB32 is BGRX, not BGRA: the high byte is padding and many
+    // H.264 decoders leave it at zero. The compositor samples this buffer as
+    // BGRA and uses source alpha, so an untouched BGRX frame decodes correctly
+    // but becomes completely transparent over the scene underneath. Video is
+    // always opaque at this stage; graphics transparency is handled by the
+    // still-image/overlay paths.
+    for (size_t offset = 3; offset < pixels->size(); offset += 4) {
+      (*pixels)[offset] = 0xff;
+    }
 
     VideoFrame frame;
     frame.participantId = frameSourceId;

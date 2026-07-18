@@ -695,7 +695,16 @@ public sealed class MediaAsset
 
     public string SelectionLabel => IsSelected ? "Selected" : "Select";
 
-    public string PlaybackLabel => IsPlaying ? "Pause" : "Play";
+    public bool IsStillImage =>
+        Path.GetExtension(FilePath) is { } extension &&
+        (extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+         extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+         extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+         extension.Equals(".gif", StringComparison.OrdinalIgnoreCase));
+
+    public bool SupportsPlayback => !IsStillImage;
+
+    public string PlaybackLabel => SupportsPlayback ? IsPlaying ? "Pause" : "Play" : "Still";
 }
 
 public sealed class MediaBinGroup

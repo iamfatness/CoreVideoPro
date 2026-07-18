@@ -2292,6 +2292,107 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(3, attempts);
     }
 
+    [Fact]
+    public async Task RetryDeferredProductionSyncAsync_WaitsForPatchAndInFlightSync()
+    {
+        var patchChecks = 0;
+        var syncAttempts = 0;
+
+        var synced = await StudioViewModel.RetryDeferredProductionSyncAsync(
+            () => true,
+            () => ++patchChecks < 3,
+            () =>
+            {
+                syncAttempts++;
+                return syncAttempts < 3
+                    ? Task.FromException(new MediaCoreSyncInFlightException())
+                    : Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.True(synced);
+        Assert.Equal(3, syncAttempts);
+        Assert.True(patchChecks >= 5);
+    }
+
+    [Fact]
+    public async Task RetryDeferredProductionSyncAsync_StopsWhenCoreStops()
+    {
+        var runningChecks = 0;
+        var syncAttempts = 0;
+
+        var synced = await StudioViewModel.RetryDeferredProductionSyncAsync(
+            () => ++runningChecks < 3,
+            () => true,
+            () =>
+            {
+                syncAttempts++;
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            retryDelayMs: 1);
+
+        Assert.False(synced);
+        Assert.Equal(0, syncAttempts);
+    }
+
+    [Theory]
+    [InlineData(false, false, "Audition")]
+    [InlineData(false, true, "Pause audition")]
+    [InlineData(true, false, "Restart Program")]
+    [InlineData(true, true, "Pause Program")]
+    public void FormatMediaPlaybackActionLabel_UsesCurrentBus(
+        bool isOnProgram,
+        bool playing,
+        string expected)
+    {
+        Assert.Equal(expected, StudioViewModel.FormatMediaPlaybackActionLabel(isOnProgram, playing));
+    }
+
+    [Theory]
+    [InlineData(null, false, false, false, "No media asset selected")]
+    [InlineData("Clip", false, false, false, "Clip ready to cue")]
+    [InlineData("Clip", false, true, false, "Clip cued in Preview")]
+    [InlineData("Clip", true, true, true, "Playing Clip on Program")]
+    [InlineData("Clip", true, true, false, "Clip paused on Program")]
+    public void FormatSelectedMediaAssetSummary_UsesCurrentWorkflowState(
+        string? assetName,
+        bool isOnProgram,
+        bool isCuedInPreview,
+        bool playing,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            StudioViewModel.FormatSelectedMediaAssetSummary(
+                assetName,
+                isOnProgram,
+                isCuedInPreview,
+                playing));
+    }
+
+    [Theory]
+    [InlineData(@"C:\media\still.jpg", false, "Still")]
+    [InlineData(@"C:\media\still.PNG", false, "Still")]
+    [InlineData(@"C:\media\clip.mp4", true, "Play")]
+    public void MediaAsset_PlaybackControlsMatchAssetType(
+        string filePath,
+        bool expectedSupportsPlayback,
+        string expectedLabel)
+    {
+        var asset = new MediaAsset
+        {
+            Id = "asset",
+            Name = "Asset",
+            Kind = "media",
+            FilePath = filePath
+        };
+
+        Assert.Equal(expectedSupportsPlayback, asset.SupportsPlayback);
+        Assert.Equal(expectedLabel, asset.PlaybackLabel);
+    }
+
     [Theory]
     [InlineData(true, ProductionMode.Manual, false, false, false, true)]
     [InlineData(false, ProductionMode.SetAndForget, true, false, false, true)]

@@ -6,6 +6,19 @@ namespace CoreVideoPro.WinUI.Services;
 
 public sealed class MediaBinService
 {
+    private readonly string _mediaRoot;
+    private readonly IReadOnlyList<string> _mediaRoots;
+
+    public MediaBinService(string? mediaRoot = null, IReadOnlyList<string>? mediaRoots = null)
+    {
+        _mediaRoot = string.IsNullOrWhiteSpace(mediaRoot)
+            ? MediaBinClassifier.DefaultMediaRoot
+            : Path.GetFullPath(mediaRoot);
+        _mediaRoots = mediaRoots ?? (string.IsNullOrWhiteSpace(mediaRoot)
+            ? MediaBinClassifier.ResolveMediaRoots()
+            : [_mediaRoot]);
+    }
+
     public IReadOnlyList<string> SupportedExtensions { get; } =
         [".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg", ".gif", ".wav", ".mp3", ".aac", ".m4a"];
 
@@ -13,7 +26,7 @@ public sealed class MediaBinService
     {
         try
         {
-            var assets = MediaBinClassifier.ScanMediaRoots(MediaBinClassifier.ResolveMediaRoots());
+            var assets = MediaBinClassifier.ScanMediaRoots(_mediaRoots);
             return MediaBinClassifier.GroupAssets(assets)
                 .Select(ToMediaBinGroup)
                 .ToList();
@@ -27,7 +40,7 @@ public sealed class MediaBinService
     public IReadOnlyList<MediaAsset> ImportFiles(IEnumerable<string> filePaths)
     {
         var imported = new List<MediaAsset>();
-        Directory.CreateDirectory(MediaBinClassifier.DefaultMediaRoot);
+        Directory.CreateDirectory(_mediaRoot);
 
         foreach (var sourcePath in filePaths.Where(File.Exists))
         {
@@ -38,17 +51,17 @@ public sealed class MediaBinService
             }
 
             var kind = MediaBinClassifier.ClassifyFile(fileName, fileName);
-            if (kind is null)
+            if (kind is null || !MediaBinClassifier.IsUsableMediaFile(sourcePath))
             {
                 continue;
             }
 
-            var folder = Path.Combine(MediaBinClassifier.DefaultMediaRoot, kind);
+            var folder = Path.Combine(_mediaRoot, kind);
             Directory.CreateDirectory(folder);
             var destinationPath = BuildUniqueDestinationPath(folder, fileName);
             File.Copy(sourcePath, destinationPath);
 
-            var relativePath = Path.GetRelativePath(MediaBinClassifier.DefaultMediaRoot, destinationPath);
+            var relativePath = Path.GetRelativePath(_mediaRoot, destinationPath);
             var dimensions = ProbeMediaDimensions(destinationPath, kind);
             imported.Add(new MediaAsset
             {
@@ -79,7 +92,7 @@ public sealed class MediaBinService
 
         try
         {
-            var trashFolder = Path.Combine(MediaBinClassifier.DefaultMediaRoot, ".trash");
+            var trashFolder = Path.Combine(_mediaRoot, ".trash");
             Directory.CreateDirectory(trashFolder);
             var destination = BuildUniqueDestinationPath(trashFolder, Path.GetFileName(asset.FilePath));
             File.Move(asset.FilePath, destination);
@@ -141,11 +154,9 @@ public sealed class MediaBinService
             // Dimension probing is best-effort; media remains usable without metadata.
         }
 
-        return kind.Equals("video", StringComparison.OrdinalIgnoreCase) ||
-            kind.Equals("stinger", StringComparison.OrdinalIgnoreCase) ||
-            kind.Equals("slate", StringComparison.OrdinalIgnoreCase)
-                ? (1920, 1080)
-                : (null, null);
+        // Do not invent 1080p metadata for videos whose container has not been
+        // probed. The local player and native decoder still use their real size.
+        return (null, null);
     }
 
     private static (int? Width, int? Height) ProbePngDimensions(string filePath)
