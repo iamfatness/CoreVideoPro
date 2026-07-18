@@ -541,7 +541,7 @@
                             </StackPanel>
                         </Button>
                         <Button Grid.Column="6" Style="{StaticResource GhostButton}"
-                                MinWidth="74"
+                                Width="122"
                                 Padding="8,4"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdSourceLabel, Mode=OneWay}">
@@ -833,8 +833,11 @@
                         </StackPanel>
                     </Button>
 
-                    <StackPanel Orientation="Horizontal" Spacing="0">
+                    <!-- Keep the lower-third transport footprint fixed. Phase labels such
+                         as "Building out" must not reflow the live control row. -->
+                    <StackPanel Orientation="Horizontal" Spacing="0" Width="148">
                         <Button Style="{StaticResource AutomationToggleButton}"
+                                Width="118"
                                 CornerRadius="8,0,0,8"
                                 Command="{x:Bind ViewModel.ToggleProgramLowerThirdCommand}"
                                 ToolTipService.ToolTip="{x:Bind ViewModel.StudioLowerThirdToolTip, Mode=OneWay}">
